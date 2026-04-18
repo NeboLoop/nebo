@@ -219,6 +219,11 @@ impl Runner {
         info!(count, "reloaded AI providers");
     }
 
+    /// Access the model selector (e.g. to inject runtime-discovered models).
+    pub fn selector(&self) -> &ModelSelector {
+        &self.selector
+    }
+
     /// Run the agentic loop: prompt -> stream -> tool calls -> loop.
     /// Returns a receiver of streaming events.
     pub async fn run(
@@ -805,6 +810,7 @@ async fn run_loop(
             db_context: Some(db_context_formatted.clone()),
             active_agent: active_agent_body,
             plugin_inventory,
+            research_prompt: None,
         };
         prompt::build_static(&pctx)
     } else {
@@ -1192,6 +1198,22 @@ async fn run_loop(
                 content: cont,
                 priority: 8,
             });
+        }
+
+        // Inject research mode nudge when detect_objective classified this as a research task.
+        // Short directive only — the full methodology is delivered via the bot tool result.
+        {
+            let detected_mode = sessions.get_detected_mode(session_id);
+            if detected_mode == "research" {
+                all_directives.push(steering::SteeringDirective {
+                    label: "Research Mode".to_string(),
+                    content: "This task requires multi-source research. \
+                        Call bot(resource: \"research\", action: \"research\", query: \"<the user's research question>\") \
+                        to activate parallel sub-agent research."
+                        .to_string(),
+                    priority: 9,
+                });
+            }
         }
 
         // Convert ChatMessage to ai::Message (no steering injection — steering goes in system prompt)
@@ -2421,6 +2443,7 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     // Phase 3: Rebuild with tool results injected after their assistant
     let mut result = Vec::with_capacity(messages.len());
     let mut reordered = 0u32;
+    let mut orphaned_uses = 0u32;
 
     for (i, msg) in messages.into_iter().enumerate() {
         if tool_msg_indices.contains(&i) {
@@ -2438,6 +2461,27 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
                             if let Some(tool_msg) = tool_result_map.remove(id) {
                                 reordered += 1;
                                 result.push(tool_msg);
+                            } else {
+                                // Orphaned tool_use: no matching tool_result exists.
+                                // Inject a synthetic result so strict providers
+                                // (Anthropic, GPT) don't reject the conversation.
+                                orphaned_uses += 1;
+                                let synthetic = serde_json::json!([{
+                                    "tool_call_id": id,
+                                    "content": "[Tool result unavailable]"
+                                }]);
+                                result.push(ChatMessage {
+                                    id: String::new(),
+                                    chat_id: String::new(),
+                                    role: "tool".to_string(),
+                                    content: "[Tool result unavailable]".to_string(),
+                                    metadata: None,
+                                    created_at: chrono::Utc::now().timestamp(),
+                                    day_marker: None,
+                                    tool_calls: None,
+                                    tool_results: Some(synthetic.to_string()),
+                                    token_estimate: Some(0),
+                                });
                             }
                         }
                     }
@@ -2451,6 +2495,9 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     }
     if orphaned > 0 {
         debug!(orphaned, "stripped orphaned tool results");
+    }
+    if orphaned_uses > 0 {
+        debug!(orphaned_uses, "injected synthetic results for orphaned tool_use blocks");
     }
     // Drop any remaining unmatched results — they're double orphans
     let unmatched = tool_result_map.len();
@@ -2522,10 +2569,14 @@ Recent conversation:
 Latest user message: {msg}
 
 Respond with ONLY one JSON line, no markdown fences:
-{{"action": "set", "objective": "concise 1-sentence objective"}}
-OR {{"action": "update", "objective": "refined objective incorporating the addition"}}
+{{"action": "set", "objective": "concise 1-sentence objective", "mode": "normal"}}
+OR {{"action": "update", "objective": "refined objective incorporating the addition", "mode": "normal"}}
 OR {{"action": "clear"}}
 OR {{"action": "keep"}}
+
+The "mode" field (required for "set" and "update") classifies HOW the agent should work:
+- "research" — the user wants multi-source investigation: comparing options, finding deals, evaluating alternatives, gathering information from multiple websites. The agent should use parallel sub-agents for coverage.
+- "normal" — everything else: direct actions, conversations, single lookups, creative tasks.
 
 ## Decision rules (in priority order):
 
@@ -2601,6 +2652,8 @@ OR {{"action": "keep"}}
         action: String,
         #[serde(default)]
         objective: String,
+        #[serde(default)]
+        mode: String,
     }
 
     let result: ObjectiveResult = match serde_json::from_str(resp) {
@@ -2613,16 +2666,21 @@ OR {{"action": "keep"}}
 
     match result.action.as_str() {
         "set" if !result.objective.is_empty() => {
-            info!(objective = %result.objective, "objective set");
+            info!(objective = %result.objective, mode = %result.mode, "objective set");
             let _ = sessions.set_active_task(session_id, &result.objective);
+            sessions.set_detected_mode(session_id, &result.mode);
         }
         "update" if !result.objective.is_empty() => {
-            info!(objective = %result.objective, "objective updated");
+            info!(objective = %result.objective, mode = %result.mode, "objective updated");
             let _ = sessions.set_active_task(session_id, &result.objective);
+            if !result.mode.is_empty() {
+                sessions.set_detected_mode(session_id, &result.mode);
+            }
         }
         "clear" => {
             info!("objective cleared");
             let _ = sessions.clear_active_task(session_id);
+            sessions.set_detected_mode(session_id, "");
         }
         "keep" | _ => {
             // No change

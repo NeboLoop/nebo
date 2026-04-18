@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy, tick } from 'svelte';
+	import { onMount, onDestroy, tick, getContext } from 'svelte';
 	import { browser } from '$app/environment';
 	import { t } from 'svelte-i18n';
 	import {
@@ -15,7 +15,7 @@
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { getCompanionChat, createNewCompanionChat, getChatMessages, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
 	import { goto } from '$app/navigation';
-	import { getAgent, getAgentSurfaces, editChatMessage } from '$lib/api/nebo';
+	import { getAgent, getAgentSurfaces, editChatMessage, listAgentChats, createNewAgentChat, activateAgentChat } from '$lib/api/nebo';
 	import { logger } from '$lib/monitoring/logger';
 
 	const log = logger.child({ component: 'Chat' });
@@ -61,6 +61,13 @@
 	const isChannel = $derived(mode.type === 'channel');
 	const isAgent = $derived(mode.type === 'agent');
 
+	// Multi-chat: expose switchToChat/newChat to sidebar via channelState context.
+	const channelState = getContext<{
+		activeChatId: string;
+		onSwitchChat: ((chatId: string) => void) | null;
+		onNewChat: (() => void) | null;
+	}>('channelState');
+
 	// Entity config panel state
 	let showConfig = $state(false);
 	const entityType = $derived(isChannel ? 'channel' : isAgent ? 'agent' : 'main');
@@ -102,8 +109,8 @@
 
 	const DRAFT_STORAGE_KEY = 'nebo_companion_draft';
 	const draftKey = $derived(
-		isAgent && mode.agentId
-			? `nebo_agent_draft_${mode.agentId}`
+		isAgent && chatId
+			? `nebo_draft_${chatId}`
 			: DRAFT_STORAGE_KEY
 	);
 
@@ -161,6 +168,14 @@
 	// ── Shared state ───────────────────────────────────────────────────
 	let chatId = $state<string | null>(null);
 	let sessionKey = $state<string | null>(null);
+
+	// Sync chatId to channelState so sidebar can highlight active chat.
+	$effect(() => {
+		if (isAgent && channelState && chatId) {
+			channelState.activeChatId = chatId;
+		}
+	});
+
 	let messages = $state<Message[]>([]);
 	let totalMessages = $state<number>(0);
 	let inputValue = $state('');
@@ -439,6 +454,18 @@
 		window.addEventListener('nebo:focus-mode', handleFocusSync);
 		unsubscribers.push(() => window.removeEventListener('nebo:focus-mode', handleFocusSync));
 
+		// Register multi-chat callbacks on channelState so sidebar can trigger chat switching.
+		if (isAgent && channelState) {
+			channelState.onSwitchChat = (targetChatId: string) => switchToChat(targetChatId);
+			channelState.onNewChat = () => newChat();
+			unsubscribers.push(() => {
+				if (channelState) {
+					channelState.onSwitchChat = null;
+					channelState.onNewChat = null;
+				}
+			});
+		}
+
 		// Load marketplace roles for empty state (no tokens — pure UI)
 		if (isCompanion) loadMarketplaceAgents();
 
@@ -506,6 +533,7 @@
 					}
 				}),
 				client.on('code_processing', (data: Record<string, unknown>) => {
+					if (!isOurSession(data)) return;
 					isLoading = false; // Code intercepted server-side — no chat stream coming
 					installModal?.onCodeProcessing(data);
 				}),
@@ -533,7 +561,11 @@
 						if (data?.newChatId) {
 							chatId = data.newChatId as string;
 						}
-						loadCompanionChat();
+						if (isAgent) {
+							loadAgentChat();
+						} else {
+							loadCompanionChat();
+						}
 					}
 				}),
 				client.on('session_compact', (data: Record<string, unknown>) => {
@@ -564,8 +596,9 @@
 			}
 
 			if (isAgent) {
-				// Agent chat: set chatId to agent-scoped session key, load existing messages
-				chatId = `agent:${mode.agentId}:web`;
+				// Agent chat: resolve active chatId from backend, fall back to session key
+				sessionKey = `agent:${mode.agentId}:web`;
+				chatId = sessionKey;
 				agentName = mode.agentName || $t('common.agent');
 				// Fetch agent details for empty state display + deterministic views
 				if (mode.agentId) {
@@ -799,35 +832,38 @@
 		}
 	}
 
+	/** Map an API ChatMessage to the local Message interface. */
+	function mapApiMessage(m: ApiChatMessage): Message {
+		const meta = parseMetadata((m as { metadata?: string }).metadata);
+		let content = m.content;
+		let contentBlocks = meta.contentBlocks;
+		if (!contentBlocks?.length) {
+			const multipart = parseMultipartContent(content);
+			if (multipart) {
+				content = multipart.text;
+				contentBlocks = multipart.blocks;
+			}
+		}
+		return {
+			id: m.id,
+			role: m.role as 'user' | 'assistant' | 'system',
+			content,
+			contentHtml: m.contentHtml || undefined,
+			timestamp: new Date(m.createdAt * 1000),
+			toolCalls: meta.toolCalls,
+			thinking: meta.thinking,
+			contentBlocks,
+			proactive: meta.proactive
+		};
+	}
+
 	async function loadCompanionChat() {
 		try {
 			const res = await getCompanionChat();
 			chatId = res.chat.id;
 			sessionKey = res.sessionKey || res.chat.id;
 			log.debug('Loaded companion chat: ' + chatId + ' sessionKey: ' + sessionKey);
-			messages = (res.messages || []).map((m: ApiChatMessage) => {
-				const meta = parseMetadata((m as { metadata?: string }).metadata);
-				let content = m.content;
-				let contentBlocks = meta.contentBlocks;
-				if (!contentBlocks?.length) {
-					const multipart = parseMultipartContent(content);
-					if (multipart) {
-						content = multipart.text;
-						contentBlocks = multipart.blocks;
-					}
-				}
-				return {
-					id: m.id,
-					role: m.role as 'user' | 'assistant' | 'system',
-					content,
-					contentHtml: m.contentHtml || undefined,
-					timestamp: new Date(m.createdAt * 1000),
-					toolCalls: meta.toolCalls,
-					thinking: meta.thinking,
-					contentBlocks,
-					proactive: meta.proactive
-				};
-			});
+			messages = (res.messages || []).map(mapApiMessage);
 			totalMessages = res.totalMessages || messages.length;
 			chatLoaded = true;
 			log.debug('Messages loaded: ' + messages.length + ' total: ' + totalMessages);
@@ -848,30 +884,19 @@
 
 	async function loadAgentChat() {
 		try {
-			const res = await getChatMessages(chatId);
-			messages = (res.messages || []).map((m: ApiChatMessage) => {
-				const meta = parseMetadata((m as { metadata?: string }).metadata);
-				let content = m.content;
-				let contentBlocks = meta.contentBlocks;
-				if (!contentBlocks?.length) {
-					const multipart = parseMultipartContent(content);
-					if (multipart) {
-						content = multipart.text;
-						contentBlocks = multipart.blocks;
+			// Resolve active chatId from backend when possible
+			if (mode.agentId) {
+				try {
+					const chatList = await listAgentChats(mode.agentId);
+					if (chatList.activeChatId) {
+						chatId = chatList.activeChatId;
 					}
+				} catch {
+					// No chats yet — will use session key as chatId (first use)
 				}
-				return {
-					id: m.id,
-					role: m.role as 'user' | 'assistant' | 'system',
-					content,
-					contentHtml: m.contentHtml || undefined,
-					timestamp: new Date(m.createdAt * 1000),
-					toolCalls: meta.toolCalls,
-					thinking: meta.thinking,
-					contentBlocks,
-					proactive: meta.proactive
-				};
-			});
+			}
+			const res = await getChatMessages(chatId);
+			messages = (res.messages || []).map(mapApiMessage);
 			totalMessages = res.totalMessages || messages.length;
 			chatLoaded = true;
 			if (messages.length > 0) {
@@ -965,28 +990,7 @@
 		if (!oldestId) { loadingMore = false; return; }
 		try {
 			const res = await getChatMessages(chatId, { before: oldestId });
-			const older = (res.messages || []).map((m: ApiChatMessage) => {
-				const meta = parseMetadata((m as { metadata?: string }).metadata);
-				let content = m.content;
-				let contentBlocks = meta.contentBlocks;
-				if (!contentBlocks?.length) {
-					const multipart = parseMultipartContent(content);
-					if (multipart) {
-						content = multipart.text;
-						contentBlocks = multipart.blocks;
-					}
-				}
-				return {
-					id: m.id,
-					role: m.role as 'user' | 'assistant' | 'system',
-					content,
-					contentHtml: m.contentHtml || undefined,
-					timestamp: new Date(m.createdAt * 1000),
-					toolCalls: meta.toolCalls,
-					thinking: meta.thinking,
-					contentBlocks
-				};
-			});
+			const older = (res.messages || []).map(mapApiMessage);
 			if (older.length > 0) {
 				const prevH = messagesContainer?.scrollHeight ?? 0;
 				messages = [...older, ...messages];
@@ -2064,28 +2068,7 @@
 			const oldestId = messages[0]?.id;
 			if (oldestId && (mode.type === 'agent' || mode.type === 'companion')) {
 				getChatMessages(chatId, { before: oldestId }).then((res) => {
-					const older = (res.messages || []).map((m: ApiChatMessage) => {
-						const meta = parseMetadata((m as { metadata?: string }).metadata);
-						let content = m.content;
-						let contentBlocks = meta.contentBlocks;
-						if (!contentBlocks?.length) {
-							const multipart = parseMultipartContent(content);
-							if (multipart) {
-								content = multipart.text;
-								contentBlocks = multipart.blocks;
-							}
-						}
-						return {
-							id: m.id,
-							role: m.role as 'user' | 'assistant' | 'system',
-							content,
-							contentHtml: m.contentHtml || undefined,
-							timestamp: new Date(m.createdAt * 1000),
-							toolCalls: meta.toolCalls,
-							thinking: meta.thinking,
-							contentBlocks
-						};
-					});
+					const older = (res.messages || []).map(mapApiMessage);
 					if (older.length > 0) {
 						const prevH = messagesContainer?.scrollHeight ?? 0;
 						messages = [...older, ...messages];
@@ -2188,18 +2171,48 @@
 
 	async function newChat() {
 		try {
-			const res = await createNewCompanionChat();
-			chatId = res.chat.id;
-			sessionKey = res.sessionKey || res.chat.id;
+			if (isAgent && mode.agentId) {
+				const res = await createNewAgentChat(mode.agentId);
+				chatId = res.chat.id;
+				sessionKey = res.sessionKey || `agent:${mode.agentId}:web`;
+				log.debug('Created new agent chat: ' + chatId);
+			} else {
+				const res = await createNewCompanionChat();
+				chatId = res.chat.id;
+				sessionKey = res.sessionKey || res.chat.id;
+				log.debug('Created new companion chat: ' + chatId + ' sessionKey: ' + sessionKey);
+			}
 			messages = [];
 			currentStreamingMessage = null;
 			inputValue = '';
 			renderStart = 0;
 			clearDraft();
-			log.debug('Created new companion chat: ' + chatId + ' sessionKey: ' + sessionKey);
 		} catch (err) {
 			log.error('Failed to create new chat', err);
 			addSystemMessage('Failed to create new session.');
+		}
+	}
+
+	/** Switch to an existing agent chat (agent mode only). */
+	async function switchToChat(targetChatId: string) {
+		if (!isAgent || !mode.agentId) return;
+		try {
+			const res = await activateAgentChat(mode.agentId, targetChatId);
+			chatId = res.chatId;
+			sessionKey = res.sessionKey || `agent:${mode.agentId}:web`;
+			messages = (res.messages || []).map(mapApiMessage);
+			totalMessages = res.totalMessages || messages.length;
+			currentStreamingMessage = null;
+			renderStart = 0;
+			if (messages.length > 0) {
+				await tick();
+				scrollToBottomOnLoad();
+			} else {
+				initialScrollDone = true;
+			}
+		} catch (err) {
+			log.error('Failed to switch chat', err);
+			addSystemMessage('Failed to switch chat.');
 		}
 	}
 

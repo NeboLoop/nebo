@@ -18,6 +18,7 @@ pub mod personality;
 pub mod proactive;
 pub mod prompt;
 pub mod pruning;
+pub mod research;
 pub mod agent_worker;
 pub mod runner;
 pub mod sanitize;

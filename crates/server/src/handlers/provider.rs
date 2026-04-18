@@ -141,6 +141,23 @@ pub(crate) async fn reload_providers(state: &AppState) {
         }
     }
 
+    // Auto-create Ollama provider if Ollama is running and has active models,
+    // even without an auth_profile (Ollama needs no API key).
+    let has_ollama_profile = profiles.iter().any(|p| p.provider == "ollama" && p.is_active.unwrap_or(0) == 1);
+    if !has_ollama_profile {
+        if let Ok(active_models) = state.store.list_active_provider_models("ollama") {
+            if !active_models.is_empty() {
+                // Pick the first active model as the default
+                let model = active_models[0].model_id.clone();
+                info!(model = %model, "auto-creating Ollama provider (no auth profile needed)");
+                providers.push(Arc::new(ai::OllamaProvider::new(
+                    "http://localhost:11434".into(),
+                    model,
+                )));
+            }
+        }
+    }
+
     // Add CLI providers from models.yaml config
     // Re-detect CLIs live instead of using the startup snapshot,
     // so toggling a CLI provider works even when the app was launched
@@ -175,6 +192,9 @@ pub(crate) async fn reload_providers(state: &AppState) {
 
     info!(count = providers.len(), "reloading providers");
     state.runner.reload_providers(providers).await;
+
+    // Refresh Ollama models in the selector (they're DB-discovered, not in yaml)
+    crate::inject_ollama_models(&state.store, state.runner.selector());
 }
 
 /// GET /api/v1/providers

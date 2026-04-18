@@ -24,6 +24,12 @@ pub struct ResolvedEntityConfig {
     /// Allowed filesystem paths — restricts file writes and shell to these directories.
     #[serde(default)]
     pub allowed_paths: Vec<String>,
+    /// Whether this entity is pinned in the sidebar.
+    #[serde(default)]
+    pub pinned: bool,
+    /// Whether this entity supports multiple concurrent chats.
+    #[serde(default)]
+    pub multi_chat: bool,
 }
 
 /// Resolve entity config by layering overrides on global defaults.
@@ -134,6 +140,18 @@ pub fn resolve(
         overrides.insert("allowedPaths".into(), true);
     }
 
+    // Pinned
+    let pinned = entity
+        .and_then(|e| e.pinned)
+        .map(|v| v != 0)
+        .unwrap_or(false);
+
+    // Multi-chat
+    let multi_chat = entity
+        .and_then(|e| e.multi_chat)
+        .map(|v| v != 0)
+        .unwrap_or(false);
+
     ResolvedEntityConfig {
         entity_type: entity_type.to_string(),
         entity_id: entity_id.to_string(),
@@ -147,6 +165,8 @@ pub fn resolve(
         personality_snippet,
         overrides,
         allowed_paths,
+        pinned,
+        multi_chat,
     }
 }
 

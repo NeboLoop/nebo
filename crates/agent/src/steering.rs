@@ -76,7 +76,6 @@ impl Pipeline {
             Box::new(ChannelAdapter),
             Box::new(ToolNudge),
             Box::new(PendingTaskAction),
-            Box::new(ActionBias),
             Box::new(OutputDiscipline),
             Box::new(NarrationSuppressor),
             Box::new(RepetitionDetector),
@@ -116,7 +115,7 @@ impl Pipeline {
 
         for g in &self.generators {
             // Skip narration/discipline generators for direct Claude only — Claude follows system prompt well
-            if is_claude && matches!(g.name(), "action_bias" | "narration_suppressor" | "output_discipline" | "repetition_detector") {
+            if is_claude && matches!(g.name(), "narration_suppressor" | "output_discipline" | "repetition_detector" | "ask_tool_nudge") {
                 continue;
             }
             // Skip JanusQuotaWarning for Ollama
@@ -341,113 +340,36 @@ impl Generator for PendingTaskAction {
     }
 }
 
-// 5. Action Bias — language-agnostic structural detection of narration
-struct ActionBias;
-impl Generator for ActionBias {
-    fn name(&self) -> &str { "action_bias" }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.active_task.is_empty() || ctx.iteration < 2 {
-            return vec![];
-        }
-
-        // Count consecutive text-only assistant responses (no tool calls)
-        let mut consecutive_text_only = 0usize;
-        for msg in ctx.messages.iter().rev() {
-            if msg.role == "user" { break; }
-            if msg.role != "assistant" { continue; }
-            let has_tool_calls = msg.tool_calls.as_ref()
-                .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
-            if has_tool_calls { break; }
-            if !msg.content.is_empty() {
-                consecutive_text_only += 1;
-            }
-        }
-
-        if consecutive_text_only >= 2 {
-            return vec![SteeringDirective {
-                label: "Action Bias".to_string(),
-                content: format!(
-                    "You have responded with text {} times without calling any tool. \
-                     You have an active task — call a tool NOW to make progress. \
-                     Do not describe what you plan to do — just do it.",
-                    consecutive_text_only
-                ),
-                priority: 8,
-            }];
-        }
-
-        // Detect: long text response (>200 chars) with no tool call during active task
-        if let Some(last) = ctx.messages.iter().rev()
-            .find(|m| m.role == "assistant")
-        {
-            let has_tool_calls = last.tool_calls.as_ref()
-                .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
-            if !has_tool_calls && last.content.len() > 200 && ctx.iteration >= 3 {
-                return vec![SteeringDirective {
-                    label: "Action Bias".to_string(),
-                    content: "Your last response was long text with no tool call. \
-                             Keep responses brief — the user can see your tool calls. \
-                             Take the next action instead of explaining.".to_string(),
-                    priority: 7,
-                }];
-            }
-        }
-
-        vec![]
-    }
-}
-
-// 6. Output Discipline — proactive reinforcement for non-Claude models.
+// 5. Output Discipline — proactive reinforcement for non-Claude models.
 // Modeled after Hermes TOOL_USE_ENFORCEMENT_GUIDANCE which uses forceful
 // language ("MUST", "immediately", "not acceptable") targeted at GPT/Codex.
 struct OutputDiscipline;
 impl Generator for OutputDiscipline {
     fn name(&self) -> &str { "output_discipline" }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        let mut directives = Vec::new();
-
-        // Always-on tool enforcement (fires from iteration 0).
-        // Hermes-strength language — "MUST", "immediately", "not acceptable".
-        directives.push(SteeringDirective {
-            label: "Tool Enforcement".to_string(),
-            content: "You MUST use your tools to take action — do not describe what you would do \
-                     or plan to do without actually doing it. When you say you will perform an \
-                     action (e.g. 'I will search', 'Let me check', 'I will look up'), you MUST \
-                     immediately make the corresponding tool call in the same response. \
-                     Never end your turn with a promise of future action — execute it now.\n\
-                     Keep working until the task is actually complete. Do not stop with a summary \
-                     of what you plan to do next. If you have tools available that can accomplish \
-                     the task, use them instead of telling the user what you would do.\n\
-                     Every response MUST either (a) contain tool calls that make progress, or \
-                     (b) deliver a final result to the user. Responses that only describe \
-                     intentions without acting are not acceptable.".to_string(),
-            priority: 9,
-        });
-
-        // Check if last assistant message was excessively long
-        if ctx.iteration >= 1 {
-            let last_len = ctx.messages.iter().rev()
-                .find(|m| m.role == "assistant")
-                .map(|m| m.content.len())
-                .unwrap_or(0);
-
-            if last_len > 300 {
-                directives.push(SteeringDirective {
-                    label: "Output Violation".to_string(),
-                    content: "Your last response was too long. STRICT CORRECTIONS:\n\
-                             1. When calling tools: output ZERO text. No preamble, no summary, no status update.\n\
-                             2. When reporting results: 1-3 sentences maximum. No bullet lists of \"what I tried\".\n\
-                             3. NEVER repeat information you already said.\n\
-                             4. NEVER say \"if you want, I can...\" — just continue working.\n\
-                             5. NEVER announce timeouts, errors, or limitations — handle them silently or try a different approach.\n\
-                             6. NEVER explain what blocked you. The user cares about results, not your process.\n\
-                             7. Cut your output by 80%.".to_string(),
-                    priority: 9,
-                });
-            }
+        // Only fire when the last response was excessively long
+        if ctx.iteration < 1 {
+            return vec![];
         }
+        let last_len = ctx.messages.iter().rev()
+            .find(|m| m.role == "assistant")
+            .map(|m| m.content.len())
+            .unwrap_or(0);
 
-        directives
+        if last_len > 300 {
+            vec![SteeringDirective {
+                label: "Output Discipline".to_string(),
+                content: "Your last response was too long. Corrections:\n\
+                         1. Tool calls: output ZERO text alongside them.\n\
+                         2. Results: 1-3 sentences maximum.\n\
+                         3. Never repeat information you already said.\n\
+                         4. Never announce errors or limitations — handle them silently or try a different approach."
+                    .to_string(),
+                priority: 9,
+            }]
+        } else {
+            vec![]
+        }
     }
 }
 
@@ -870,9 +792,8 @@ impl Generator for ContextPressure {
         }
         vec![SteeringDirective {
             label: "Context Pressure".to_string(),
-            content: "Context window is filling up. Keep responses concise. \
-                      Summarize tool results instead of echoing them verbatim. \
-                      If you need earlier results, re-run the tool."
+            content: "Context window is filling up. Summarize tool results instead of echoing them verbatim. \
+                      If you need earlier results, re-run the tool rather than quoting from memory."
                 .to_string(),
             priority: 6,
         }]
@@ -974,15 +895,16 @@ impl Generator for AskToolNudge {
         vec![SteeringDirective {
             label: "Ask Tool".to_string(),
             content: "When you need user input, ALWAYS use the ask tool instead of asking in plain text.\n\
-                     - Yes/no: bot(resource: \"ask\", action: \"confirm\", text: \"...\")\n\
-                     - Choices: bot(resource: \"ask\", action: \"select\", text: \"...\", options: [\"A\", \"B\", \"C\"])\n\
-                     - Open-ended: bot(resource: \"ask\", action: \"prompt\", text: \"...\")\n\
-                     Never ask questions as plain text — use the ask tool so the user gets interactive buttons."
+                     - Yes/no: agent(resource: \"ask\", action: \"confirm\", text: \"...\")\n\
+                     - Choices: agent(resource: \"ask\", action: \"select\", text: \"...\", options: [\"A\", \"B\", \"C\"])\n\
+                     - Open-ended: agent(resource: \"ask\", action: \"prompt\", text: \"...\")\n\
+                     Never ask questions as plain text �� use the ask tool so the user gets interactive buttons."
                 .to_string(),
             priority: 7,
         }]
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1116,38 +1038,27 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_skips_action_bias_for_claude() {
+    fn test_pipeline_skips_ask_tool_nudge_for_claude() {
         let pipeline = Pipeline::new();
         let mut ctx = make_ctx(vec![
-            make_msg("user", "do something"),
-            make_msg("assistant", "I will explain what I plan to do in great detail here and here and here and more text"),
-            make_msg("assistant", "I will explain what I plan to do in great detail here and here and here and more text again"),
+            make_msg("user", "help me pick a color"),
+            make_msg("assistant", "Which color do you prefer? Red or blue?"),
         ]);
-        ctx.active_task = "test task".to_string();
-        ctx.iteration = 3;
+        ctx.iteration = 2;
 
-        // OpenAI should get ActionBias
+        // OpenAI should get AskToolNudge
         ctx.provider_id = "openai".to_string();
         let (dirs_openai, _) = pipeline.generate(&ctx);
-        let has_action_bias = dirs_openai.iter().any(|d| d.label == "Action Bias");
+        let has_ask_nudge_openai = dirs_openai.iter().any(|d| d.label == "Ask Tool");
 
-        // Claude should NOT get ActionBias
+        // Claude should NOT get AskToolNudge
         ctx.provider_id = "anthropic".to_string();
         let (dirs_claude, _) = pipeline.generate(&ctx);
-        let has_action_bias_claude = dirs_claude.iter().any(|d| d.label == "Action Bias");
+        let has_ask_nudge_claude = dirs_claude.iter().any(|d| d.label == "Ask Tool");
 
-        // Janus is a gateway — should NOT skip ActionBias (may proxy to GPT)
-        ctx.provider_id = "janus".to_string();
-        let (dirs_janus, _) = pipeline.generate(&ctx);
-        let has_action_bias_janus = dirs_janus.iter().any(|d| d.label == "Action Bias");
-
-        // ActionBias fires for openai and janus but not claude
-        // (Note: it may not fire in these exact conditions, but the skip rule is exercised)
-        assert!(!has_action_bias_claude || !has_action_bias,
-            "Claude should skip action_bias when openai doesn't");
-        // Janus should behave like openai, not like anthropic
-        assert_eq!(has_action_bias, has_action_bias_janus,
-            "Janus should not skip action_bias — it's a gateway, not Claude");
+        // AskToolNudge fires for openai but not claude
+        assert!(has_ask_nudge_openai, "OpenAI should get ask_tool_nudge");
+        assert!(!has_ask_nudge_claude, "Claude should skip ask_tool_nudge");
     }
 
     #[test]
@@ -1220,5 +1131,167 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert!(result[0].content.contains("CRITICAL"));
         assert_eq!(result[0].priority, 10);
+    }
+
+    // --- Level 2: Failure-mode scenario tests ---
+
+    fn make_assistant_with_tools(content: &str, tool_calls_json: &str) -> ChatMessage {
+        ChatMessage {
+            tool_calls: Some(tool_calls_json.to_string()),
+            ..make_msg("assistant", content)
+        }
+    }
+
+    #[test]
+    fn test_fm1_plain_text_question() {
+        // Assistant asks a question on its own line ending with ? → AskToolNudge fires (OpenAI), skipped (Claude)
+        let pipeline = Pipeline::new();
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "Help me redecorate my living room"),
+            make_msg("assistant", "I can suggest a few options.\nWhich do you prefer?"),
+        ]);
+        ctx.iteration = 2;
+
+        // OpenAI: should fire
+        ctx.provider_id = "openai".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(dirs.iter().any(|d| d.label == "Ask Tool"),
+            "AskToolNudge should fire for OpenAI when assistant asks plain-text question");
+
+        // Claude: should be skipped
+        ctx.provider_id = "anthropic".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(!dirs.iter().any(|d| d.label == "Ask Tool"),
+            "AskToolNudge should be skipped for Claude");
+    }
+
+    #[test]
+    fn test_fm2_narration_with_tools() {
+        // Assistant says "Let me search for flights..." + tool call (>50 chars text)
+        let pipeline = Pipeline::new();
+        let narration = "Let me search for flights from Denver to Tokyo. I'll check multiple airlines for the best prices and dates.";
+        let tool_call = r#"[{"name":"web","input":{"action":"search","query":"flights Denver to Tokyo June"}}]"#;
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "Search for flights"),
+            make_assistant_with_tools(narration, tool_call),
+        ]);
+        ctx.iteration = 2;
+
+        // OpenAI: NarrationSuppressor should fire
+        ctx.provider_id = "openai".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(dirs.iter().any(|d| d.label == "Narration"),
+            "NarrationSuppressor should fire for OpenAI when text+tool call detected");
+
+        // Claude: should be skipped
+        ctx.provider_id = "anthropic".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(!dirs.iter().any(|d| d.label == "Narration"),
+            "NarrationSuppressor should be skipped for Claude");
+    }
+
+    #[test]
+    fn test_fm3_verbose_output() {
+        // Assistant response > 300 chars, no tool call → OutputDiscipline fires (OpenAI), skipped (Claude)
+        let pipeline = Pipeline::new();
+        let verbose = "I'd be happy to help you with that! Let me explain in detail what I'm going to do. First, I'll search the web for the latest information. Then I'll compile all the results into a comprehensive summary. After that, I'll format everything nicely for you. This process might take a moment, so please bear with me while I work through each step carefully and thoroughly.";
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "What's the weather?"),
+            make_msg("assistant", verbose),
+        ]);
+        ctx.iteration = 2;
+
+        // OpenAI: OutputDiscipline should fire
+        ctx.provider_id = "openai".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(dirs.iter().any(|d| d.label == "Output Discipline"),
+            "OutputDiscipline should fire for OpenAI when response > 300 chars");
+
+        // Claude: should be skipped
+        ctx.provider_id = "anthropic".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(!dirs.iter().any(|d| d.label == "Output Discipline"),
+            "OutputDiscipline should be skipped for Claude");
+    }
+
+    #[test]
+    fn test_fm4_pending_task_text_only() {
+        // Active task, iteration 3, last response text-only → PendingTaskAction fires
+        let generator = PendingTaskAction;
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "Clean up my inbox"),
+            make_msg("assistant", "I'll start cleaning up your inbox now."),
+            make_msg("assistant", "I found 50 emails to archive."),
+        ]);
+        ctx.active_task = "Clean up inbox".to_string();
+        ctx.iteration = 3;
+
+        let result = generator.generate(&ctx);
+        assert_eq!(result.len(), 1, "PendingTaskAction should fire when active task + text-only response");
+        assert_eq!(result[0].label, "Action Required");
+    }
+
+    #[test]
+    fn test_fm5_consecutive_errors() {
+        // consecutive_error_iterations = 1 → ErrorRecovery fires (priority 9)
+        let generator = ErrorRecovery;
+        let mut ctx = make_ctx(vec![]);
+        ctx.consecutive_error_iterations = 1;
+
+        let result = generator.generate(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].label, "Error Recovery");
+        assert_eq!(result[0].priority, 9);
+        assert!(result[0].content.contains("Do NOT retry"));
+    }
+
+    #[test]
+    fn test_fm6_same_tool_loop() {
+        // 3 identical (name_hash, args_hash) entries → LoopDetector same-tool arm fires
+        let generator = LoopDetector;
+        let mut ctx = make_ctx(vec![]);
+        ctx.recent_tool_result_hashes = vec![(100, 200, 300), (100, 200, 301), (100, 200, 302)];
+
+        let result = generator.generate(&ctx);
+        assert!(result.iter().any(|d| d.label == "Loop Warning"),
+            "LoopDetector same-tool arm should fire at 3 identical name+args hashes");
+    }
+
+    #[test]
+    fn test_fm7_ping_pong_loop() {
+        // A→B→A→B pattern in hash history → LoopDetector ping-pong arm fires
+        let generator = LoopDetector;
+        let mut ctx = make_ctx(vec![]);
+        // Tool A: (1, 2, x), Tool B: (3, 4, x), alternating
+        ctx.recent_tool_result_hashes = vec![
+            (1, 2, 10),  // A
+            (3, 4, 20),  // B
+            (1, 2, 11),  // A again
+            (3, 4, 21),  // B again
+        ];
+
+        let result = generator.generate(&ctx);
+        assert!(result.iter().any(|d| d.label == "Ping-Pong"),
+            "LoopDetector ping-pong arm should fire on A→B→A→B pattern");
+    }
+
+    #[test]
+    fn test_fm8_browser_reads_no_mutation() {
+        // 3 consecutive read_page with no click/fill between → AutomationSpeed fires
+        let generator = AutomationSpeed;
+        let read_call = r#"[{"name":"web","input":{"action":"read_page"}}]"#;
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "Check the page"),
+            make_assistant_with_tools("", read_call),
+            make_assistant_with_tools("", read_call),
+            make_assistant_with_tools("", read_call),
+        ]);
+        ctx.iteration = 5;
+
+        let result = generator.generate(&ctx);
+        assert!(!result.is_empty(),
+            "AutomationSpeed should fire after consecutive read-only browser responses");
+        assert!(result[0].content.contains("automation loop") || result[0].content.contains("re-read"),
+            "Should mention automation loop or re-reading");
     }
 }

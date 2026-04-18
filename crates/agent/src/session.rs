@@ -18,6 +18,8 @@ pub struct SessionManager {
     chat_ids: Arc<RwLock<HashMap<String, String>>>,
     /// Cache: session_id -> session_key (name) for routing lookups.
     session_keys: Arc<RwLock<HashMap<String, String>>>,
+    /// In-memory: session_id -> detected mode (e.g. "research"). Ephemeral, not persisted.
+    detected_modes: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl SessionManager {
@@ -26,6 +28,7 @@ impl SessionManager {
             store,
             chat_ids: Arc::new(RwLock::new(HashMap::new())),
             session_keys: Arc::new(RwLock::new(HashMap::new())),
+            detected_modes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -224,6 +227,24 @@ impl SessionManager {
         self.store.clear_session_active_task(session_id)
     }
 
+    /// Get the detected mode for a session (e.g. "research"). Returns empty string if none.
+    pub fn get_detected_mode(&self, session_id: &str) -> String {
+        self.detected_modes.read().ok()
+            .and_then(|m| m.get(session_id).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Set the detected mode for a session.
+    pub fn set_detected_mode(&self, session_id: &str, mode: &str) {
+        if let Ok(mut m) = self.detected_modes.write() {
+            if mode.is_empty() {
+                m.remove(session_id);
+            } else {
+                m.insert(session_id.to_string(), mode.to_string());
+            }
+        }
+    }
+
     /// Get work tasks JSON.
     pub fn get_work_tasks(&self, session_id: &str) -> Result<String, NeboError> {
         self.store.get_session_work_tasks(session_id)
@@ -232,6 +253,15 @@ impl SessionManager {
     /// Set work tasks JSON.
     pub fn set_work_tasks(&self, session_id: &str, tasks_json: &str) -> Result<(), NeboError> {
         self.store.set_session_work_tasks(session_id, tasks_json)
+    }
+
+    /// Switch the active chat for a session (updates DB and in-memory cache).
+    pub fn set_active_chat(&self, session_id: &str, chat_id: &str) -> Result<(), NeboError> {
+        self.store.set_session_active_chat_id(session_id, chat_id)?;
+        if let Ok(mut cache) = self.chat_ids.write() {
+            cache.insert(session_id.to_string(), chat_id.to_string());
+        }
+        Ok(())
     }
 
     /// Create a new conversation under the same session, preserving old messages.
@@ -243,11 +273,15 @@ impl SessionManager {
         let session_name = session.name.clone().unwrap_or_default();
         let new_chat_id = uuid::Uuid::new_v4().to_string();
 
+        // Generate a sequential title based on existing chat count.
+        let existing = self.store.list_chats_by_session(&session_name).unwrap_or_default();
+        let title = format!("Chat {}", existing.len() + 1);
+
         // Create a new chat row linked to this session.
         self.store.create_chat_for_session(
             &new_chat_id,
             &session_name,
-            "New Chat",
+            &title,
             user_id,
         )?;
 

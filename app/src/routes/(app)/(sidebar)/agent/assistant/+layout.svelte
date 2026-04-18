@@ -36,23 +36,22 @@
 </script>
 
 <div class="flex flex-col flex-1 min-h-0">
-	<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
-		<div class="flex items-center justify-between px-6 h-12">
-			<div class="flex items-center gap-3">
-				<svg class="w-5 h-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-				</svg>
-				<h1 class="text-base font-semibold text-base-content leading-tight">{$t('agent.assistant')}</h1>
+	<!-- V2 Assistant Header: avatar + name + tab pills -->
+	<div class="v2-main-head">
+		<div class="v2-main-title">
+			<div class="sidebar-agent-avatar" style="width: 26px; height: 26px; border-radius: 7px; background: var(--agent-violet-bg); color: var(--agent-violet-ink); font-size: 11px;">
+				A
 			</div>
-			<div class="agent-tab-bar-inline">
-				<a href="{basePath}/chat" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('chat')}>{$t('agent.chatTab')}</a>
-				<a href="{basePath}/persona" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('persona')}>{$t('agent.personaTab')}</a>
-				<a href="{basePath}/automate" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('automate')}>{$t('agent.automate')}</a>
-				<a href="{basePath}/activity" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('activity')}>{$t('agent.activity')}</a>
-				<a href="{basePath}/settings" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('settings')}>{$t('agent.settingsTab')}</a>
-			</div>
+			<span>{$t('agent.assistant')}</span>
 		</div>
-	</header>
+		<div class="agent-tab-bar-inline">
+			<a href="{basePath}/chat" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('chat')}>{$t('agent.chatTab')}</a>
+			<a href="{basePath}/persona" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('persona')}>{$t('agent.personaTab')}</a>
+			<a href="{basePath}/automate" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('automate')}>{$t('agent.automate')}</a>
+			<a href="{basePath}/activity" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('activity')}>{$t('agent.activity')}</a>
+			<a href="{basePath}/settings" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('settings')}>{$t('agent.settingsTab')}</a>
+		</div>
+	</div>
 
 	<div class="flex-1 flex flex-col min-h-0">
 		{@render children()}

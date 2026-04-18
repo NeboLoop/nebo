@@ -1,7 +1,6 @@
 <!--
-  AppNav Component
-  Top header bar: logo, search, marketplace, settings
-  Page nav items (Dashboard, Agents, etc.) live in the SideNav component
+  AppNav Component — V2 Header
+  4-column grid: Brand | Nav Tabs | Search + Redeem | Utilities + Avatar
 -->
 
 <script lang="ts">
@@ -11,16 +10,26 @@
 	import { updateInfo } from '$lib/stores/update';
 	import {
 		Search,
-		Puzzle,
 		Link2,
 		Settings,
 		Menu,
 		X,
+		Zap,
+		Home,
+		Bot,
+		Store,
 		LayoutDashboard
 	} from 'lucide-svelte';
 
+	interface Props {
+		userName?: string;
+	}
+
+	let { userName = '' }: Props = $props();
+
 	const currentPath = $derived($page.url.pathname);
 	const hasUpdate = $derived($updateInfo?.available === true);
+	const userInitial = $derived(userName ? userName.charAt(0).toUpperCase() : '?');
 
 	let mobileMenuOpen = $state(false);
 
@@ -36,94 +45,105 @@
 		if (href === '/') {
 			return currentPath === '/';
 		}
+		// Both /agents (management) and /agent/* (individual) highlight the Agents tab
+		if (href === '/agents') {
+			return currentPath.startsWith('/agents') || currentPath.startsWith('/agent');
+		}
 		return currentPath.startsWith(href);
 	}
 
-	// Mobile-only nav items (these are in the SideNav on desktop)
-	const mobileNavItems = [
-		{ labelKey: 'nav.chat', href: '/', icon: LayoutDashboard }
+	function openCommandPalette() {
+		window.dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true })
+		);
+	}
+
+	function openRedeem() {
+		window.dispatchEvent(new CustomEvent('nebo:open-redeem'));
+	}
+
+	// Nav tabs for the v2 header
+	const navTabs = [
+		{ label: 'Home', href: '/', icon: Home },
+		{ label: 'Agents', href: '/agents', icon: Bot },
+		{ label: 'Marketplace', href: '/marketplace', icon: Store }
 	];
 </script>
 
-<header class="layout-app-header">
+<!-- Desktop Header (v2 design) -->
+<header class="v2-header hidden md:grid">
+	<!-- 1. Brand -->
+	<a href="/" class="v2-header-brand no-underline" title={$t('nav.home')} aria-label={$t('nav.home')}>
+		<div class="v2-header-brand-mark">
+			<NeboIcon class="w-[18px] h-[18px]" />
+		</div>
+		<div>
+			<div class="v2-header-brand-name">Nebo</div>
+			<div class="v2-header-brand-beta">{$t('common.beta')}</div>
+		</div>
+	</a>
+
+	<!-- 2. Nav Tabs -->
+	<nav class="v2-nav-tabs" aria-label={$t('nav.pageNavigation')}>
+		{#each navTabs as tab}
+			<a
+				href={tab.href}
+				class="v2-nav-tab {isActive(tab.href) ? 'v2-nav-tab-active' : ''}"
+			>
+				{tab.label}
+			</a>
+		{/each}
+	</nav>
+
+	<!-- 3. Center-Right: Search + Redeem -->
+	<div class="v2-header-center-right">
+		<button type="button" class="v2-search-pill" onclick={openCommandPalette} aria-label={$t('nav.search')}>
+			<Search class="w-[14px] h-[14px]" />
+			<span>Search agents, chats, workspaces…</span>
+			<span class="v2-kbd">⌘K</span>
+		</button>
+		<button type="button" class="v2-redeem-btn" onclick={openRedeem} title="Redeem install code">
+			<Zap class="w-3 h-3" />
+			Redeem code
+		</button>
+	</div>
+
+	<!-- 4. Right: Icons + Avatar -->
+	<div class="v2-header-right">
+		<a href="/integrations" class="v2-header-icon-btn" title={$t('nav.connectors')} aria-label={$t('nav.connectors')}>
+			<Link2 class="w-[17px] h-[17px]" />
+		</a>
+		<a
+			href={hasUpdate ? "/settings/about" : "/settings/account"}
+			class="v2-header-icon-btn relative"
+			title={hasUpdate ? $t('nav.updateAvailable') : $t('nav.settings')}
+			aria-label={$t('nav.settings')}
+		>
+			<Settings class="w-[17px] h-[17px]" />
+			{#if hasUpdate}
+				<span class="v2-update-dot"></span>
+			{/if}
+		</a>
+		<div class="v2-header-sep"></div>
+		<a href="/settings/account" class="v2-user-avatar" title={userName || 'Account'}>
+			{userInitial}
+		</a>
+	</div>
+</header>
+
+<!-- Mobile Header (compact) -->
+<header class="layout-app-header md:hidden">
 	<div class="w-full mx-auto flex items-center justify-between gap-4">
-		<div class="flex items-center gap-8">
-			<!-- Logo -->
-			<a href="/" class="flex items-center gap-2 no-underline" title={$t('nav.home')} aria-label={$t('nav.home')}>
-				<NeboIcon class="w-10 h-10" />
-				<div class="flex flex-col leading-none">
-					<span class="font-display text-xl font-bold text-base-content tracking-tight">Nebo</span>
-					<span class="text-xs font-semibold uppercase tracking-widest text-base-content/80"
-						>{$t('common.beta')}</span
-					>
-				</div>
-			</a>
-		</div>
-
-		<div class="hidden md:flex items-center gap-1">
-			<!-- Command Palette Trigger -->
-			<button
-				type="button"
-				class="flex items-center gap-1.5 h-9 px-2.5 rounded-lg transition-colors text-base-content/60 hover:text-base-content hover:bg-base-200"
-				aria-label={$t('nav.search')}
-				title={$t('nav.search')}
-				onclick={() => {
-					window.dispatchEvent(
-						new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true })
-					);
-				}}
-			>
-				<Search class="w-4 h-4" />
-				<kbd class="kbd kbd-sm text-sm opacity-60">&#8984;K</kbd>
-			</button>
-			<!-- Marketplace Link -->
-			<a
-				href="/marketplace"
-				title={$t('nav.marketplace')}
-				class="flex items-center justify-center w-9 h-9 rounded-lg transition-colors {isActive(
-					'/marketplace'
-				)
-					? 'text-primary bg-primary/10'
-					: 'text-base-content/90 hover:text-base-content hover:bg-base-200'}"
-				aria-label={$t('nav.marketplace')}
-			>
-				<Puzzle class="w-5 h-5" />
-			</a>
-			<!-- Connectors Link -->
-			<a
-				href="/integrations"
-				title={$t('nav.connectors')}
-				class="flex items-center justify-center w-9 h-9 rounded-lg transition-colors {isActive(
-					'/integrations'
-				)
-					? 'text-primary bg-primary/10'
-					: 'text-base-content/90 hover:text-base-content hover:bg-base-200'}"
-				aria-label={$t('nav.connectors')}
-			>
-				<Link2 class="w-5 h-5" />
-			</a>
-			<!-- Settings Link -->
-			<a
-				href={hasUpdate ? "/settings/about" : "/settings/account"}
-				title={hasUpdate ? $t('nav.updateAvailable') : $t('nav.settings')}
-				class="relative flex items-center justify-center w-9 h-9 rounded-lg transition-colors {isActive(
-					'/settings'
-				)
-					? 'text-primary bg-primary/10'
-					: 'text-base-content/90 hover:text-base-content hover:bg-base-200'}"
-				aria-label={$t('nav.settings')}
-			>
-				<Settings class="w-5 h-5" />
-				{#if hasUpdate}
-					<span class="absolute top-1 right-1 w-2.5 h-2.5 rounded-full bg-info border-2 border-base-100"></span>
-				{/if}
-			</a>
-		</div>
-
-		<!-- Mobile Menu Button -->
+		<a href="/" class="flex items-center gap-2 no-underline" title={$t('nav.home')} aria-label={$t('nav.home')}>
+			<NeboIcon class="w-10 h-10" />
+			<div class="flex flex-col leading-none">
+				<span class="font-display text-xl font-bold text-base-content tracking-tight">Nebo</span>
+				<span class="text-xs font-semibold uppercase tracking-widest text-base-content/80">{$t('common.beta')}</span>
+			</div>
+		</a>
 		<button
 			type="button"
-			class="md:hidden flex items-center justify-center w-10 h-10 rounded-lg text-base-content/90 hover:text-base-content hover:bg-base-200 transition-colors"
+			class="flex items-center justify-center w-10 h-10 rounded-lg text-base-content/90 hover:text-base-content hover:bg-base-200 transition-colors"
 			aria-label={$t('nav.openMenu')}
 			title={$t('nav.openMenu')}
 			onclick={toggleMobileMenu}
@@ -160,17 +180,14 @@
 			</div>
 
 			<div class="flex flex-col gap-1 p-3">
-				{#each mobileNavItems as item}
-					<a
-						href={item.href}
-						class="nav-link"
-						class:active={isActive(item.href)}
-						onclick={closeMobileMenu}
-					>
-						<item.icon class="w-[18px] h-[18px]" />
-						{$t(item.labelKey)}
-					</a>
-				{/each}
+				<a href="/" class="nav-link" class:active={isActive('/')} onclick={closeMobileMenu}>
+					<LayoutDashboard class="w-[18px] h-[18px]" />
+					{$t('nav.chat')}
+				</a>
+				<a href="/agents" class="nav-link" class:active={isActive('/agents')} onclick={closeMobileMenu}>
+					<Bot class="w-[18px] h-[18px]" />
+					Agents
+				</a>
 			</div>
 
 			<div class="border-t border-base-300 p-3 flex flex-col gap-1">
@@ -180,7 +197,7 @@
 					class:active={currentPath.startsWith('/marketplace')}
 					onclick={closeMobileMenu}
 				>
-					<Puzzle class="w-[18px] h-[18px]" />
+					<Store class="w-[18px] h-[18px]" />
 					{$t('nav.marketplace')}
 				</a>
 				<a

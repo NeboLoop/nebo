@@ -166,23 +166,6 @@ impl AnthropicProvider {
             }
         }
 
-        // Cache breakpoints: mark the last content block of the last 3 messages
-        // with cache_control ephemeral for conversation context caching
-        let len = messages.len();
-        for i in (0..len).rev().take(3) {
-            if let AnthropicContent::Blocks(ref mut blocks) = messages[i].content {
-                if let Some(last_block) = blocks.last_mut() {
-                    let cc = Some(CacheControl { cache_type: "ephemeral".to_string() });
-                    match last_block {
-                        ContentBlock::Text { cache_control, .. } => *cache_control = cc,
-                        ContentBlock::Image { cache_control, .. } => *cache_control = cc,
-                        ContentBlock::ToolUse { cache_control, .. } => *cache_control = cc,
-                        ContentBlock::ToolResult { cache_control, .. } => *cache_control = cc,
-                    }
-                }
-            }
-        }
-
         (messages, system_prompt)
     }
 
@@ -358,7 +341,7 @@ impl Provider for AnthropicProvider {
         &self,
         req: &ChatRequest,
     ) -> Result<EventReceiver, ProviderError> {
-        let (messages, system_prompt) = self.build_messages(req);
+        let (mut messages, system_prompt) = self.build_messages(req);
 
         let model = if req.model.is_empty() { &self.model } else { &req.model };
 
@@ -474,6 +457,33 @@ impl Provider for AnthropicProvider {
             }
             Some(tool_list)
         };
+
+        // Anthropic allows max 4 blocks with cache_control. Budget them:
+        // system blocks + last tool + remaining → last N messages.
+        let system_cache_count = system_blocks.as_ref().map_or(0, |blocks| {
+            blocks.iter().filter(|b| b.cache_control.is_some()).count()
+        });
+        let tool_cache_count = if tools.as_ref().map_or(false, |t| {
+            t.last().map_or(false, |last| last.cache_control.is_some())
+        }) { 1 } else { 0 };
+        let message_cache_budget = 4usize.saturating_sub(system_cache_count + tool_cache_count);
+
+        if message_cache_budget > 0 {
+            let len = messages.len();
+            for i in (0..len).rev().take(message_cache_budget) {
+                if let AnthropicContent::Blocks(ref mut blocks) = messages[i].content {
+                    if let Some(last_block) = blocks.last_mut() {
+                        let cc = Some(CacheControl { cache_type: "ephemeral".to_string() });
+                        match last_block {
+                            ContentBlock::Text { cache_control, .. } => *cache_control = cc,
+                            ContentBlock::Image { cache_control, .. } => *cache_control = cc,
+                            ContentBlock::ToolUse { cache_control, .. } => *cache_control = cc,
+                            ContentBlock::ToolResult { cache_control, .. } => *cache_control = cc,
+                        }
+                    }
+                }
+            }
+        }
 
         let api_req = AnthropicApiRequest {
             model: model.to_string(),

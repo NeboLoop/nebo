@@ -34,4 +34,7 @@ pub fn routes() -> Router<AppState> {
         .route("/agents/{id}/surfaces", axum::routing::get(handlers::agents::get_agent_surfaces))
         .route("/agents/{id}/nav", axum::routing::get(handlers::agents::get_agent_nav))
         .route("/agents/{id}/theme.css", axum::routing::get(handlers::agents::get_agent_theme))
+        .route("/agents/{id}/chats", axum::routing::get(handlers::agents::list_agent_chats))
+        .route("/agents/{id}/chats", axum::routing::post(handlers::agents::create_new_agent_chat))
+        .route("/agents/{id}/chats/{chat_id}/activate", axum::routing::post(handlers::agents::activate_agent_chat))
 }

@@ -8,6 +8,9 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+/// Per-worker wall-clock timeout for parallel spawns.
+const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 use ai::StreamEventType;
 use db::Store;
 use tools::{SpawnRequest, SpawnResult, SubAgentOrchestrator};
@@ -106,6 +109,7 @@ impl Orchestrator {
                     "",
                     cancel.clone(),
                     &format!("subagent:{}:{}", req.parent_session_key, task_id),
+                    req.max_iterations,
                 )
                 .await;
 
@@ -141,6 +145,7 @@ impl Orchestrator {
             let prompt = prefixed_prompt;
             let model_override = req.model_override.clone();
             let user_id = req.user_id.clone();
+            let max_iterations = req.max_iterations;
             let concurrency = self.concurrency.clone();
 
             let bg_session_key = format!("subagent:{}:{}", req.parent_session_key, task_id_clone);
@@ -149,7 +154,7 @@ impl Orchestrator {
                 let _permit = concurrency.acquire_llm_permit().await;
 
                 let run_req = build_subagent_request(
-                    &bg_session_key, &prompt, &model_override, &user_id, &cancel,
+                    &bg_session_key, &prompt, &model_override, &user_id, &cancel, max_iterations,
                 );
 
                 let result = run_and_collect(&runner, run_req, cancel, None).await;
@@ -185,6 +190,7 @@ impl Orchestrator {
         dep_context: &str,
         cancel: CancellationToken,
         session_key: &str,
+        max_iterations: usize,
     ) -> Result<String, String> {
         let _ = self.store.update_task_running(task_id);
 
@@ -194,7 +200,7 @@ impl Orchestrator {
             format!("{}\n\n{}", dep_context, prompt)
         };
 
-        let req = build_subagent_request(session_key, &full_prompt, model_override, user_id, &cancel);
+        let req = build_subagent_request(session_key, &full_prompt, model_override, user_id, &cancel, max_iterations);
         run_and_collect(&self.runner, req, cancel, None).await
     }
 
@@ -224,6 +230,7 @@ impl Orchestrator {
                 user_id: user_id.to_string(),
                 wait: true,
                 parent_cancel: parent_cancel.clone(),
+                max_iterations: 0,
             };
             return self.spawn_internal(req).await;
         }
@@ -311,7 +318,7 @@ impl Orchestrator {
                     };
 
                     let req = build_subagent_request(
-                        &session_key, &full_prompt, &model_override, &user_id, &cancel,
+                        &session_key, &full_prompt, &model_override, &user_id, &cancel, 0,
                     );
 
                     let result = run_and_collect(&runner, req, cancel, None).await;
@@ -525,15 +532,25 @@ impl Orchestrator {
             let prog_tx_clone = prog_tx.clone();
 
             let run_req = build_subagent_request(
-                &session_key, &prefixed_prompt, &req.model_override, &req.user_id, &cancel,
+                &session_key, &prefixed_prompt, &req.model_override, &req.user_id, &cancel, req.max_iterations,
             );
 
             running.push(Box::pin(async move {
                 let _permit = concurrency.acquire_llm_permit().await;
-                let result = run_and_collect(
-                    &runner, run_req, cancel,
-                    Some((tid.clone(), prog_tx_clone)),
-                ).await;
+                let result = match tokio::time::timeout(
+                    WORKER_TIMEOUT,
+                    run_and_collect(
+                        &runner, run_req, cancel.clone(),
+                        Some((tid.clone(), prog_tx_clone)),
+                    ),
+                ).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        warn!(task_id = %tid, "worker timed out after {}s", WORKER_TIMEOUT.as_secs());
+                        cancel.cancel();
+                        Err(format!("Worker timed out after {}s", WORKER_TIMEOUT.as_secs()))
+                    }
+                };
 
                 let (tool_count, token_count) = (0usize, 0i32); // final counts come from progress events
                 match &result {
@@ -783,6 +800,7 @@ fn build_subagent_request(
     model_override: &str,
     user_id: &str,
     cancel: &CancellationToken,
+    max_iterations: usize,
 ) -> RunRequest {
     RunRequest {
         session_key: session_key.to_string(),
@@ -794,6 +812,7 @@ fn build_subagent_request(
         channel: "subagent".to_string(),
         cancel_token: cancel.clone(),
         prompt_mode: crate::prompt::PromptMode::Minimal,
+        max_iterations,
         ..Default::default()
     }
 }

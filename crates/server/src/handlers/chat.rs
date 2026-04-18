@@ -131,7 +131,7 @@ fn default_content_blocks(content: &str, call_count: usize) -> Vec<serde_json::V
 /// 1. Old metadata with toolCalls already built — strip outputs, done
 /// 2. New metadata with only contentBlocks (persisted block order) — build toolCalls, use persisted order
 /// 3. No metadata — build everything, fall back to text→tools order
-fn build_message_metadata(messages: &mut [db::models::ChatMessage]) {
+pub fn build_message_metadata(messages: &mut [db::models::ChatMessage]) {
     // Phase 1: Collect tool result statuses from role="tool" messages
     let mut tool_statuses: HashMap<String, bool> = HashMap::new();
     for msg in messages.iter() {

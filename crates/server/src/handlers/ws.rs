@@ -841,6 +841,37 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         return;
     }
 
+    // Auto-activate paused agents so their persona is loaded into the prompt.
+    // Without this, a paused agent's chat works but has no personality.
+    if !agent_id.is_empty() {
+        let needs_activation = !state.agent_registry.read().await.contains_key(&agent_id);
+        if needs_activation {
+            if let Ok(Some(agent)) = state.store.get_agent(&agent_id) {
+                let config = if !agent.frontmatter.is_empty() {
+                    napp::agent::parse_agent_config(&agent.frontmatter).ok()
+                } else {
+                    None
+                };
+                let active = tools::ActiveAgent {
+                    agent_id: agent.id.clone(),
+                    name: agent.name.clone(),
+                    agent_md: agent.agent_md.clone(),
+                    config,
+                    channel_id: None,
+                    degraded: None,
+                };
+                state.agent_registry.write().await.insert(agent.id.clone(), active);
+                state.store.set_agent_enabled(&agent_id, true).ok();
+                state.agent_workers.start_agent(&agent_id, &agent.name).await;
+                state.hub.broadcast(
+                    "agent_activated",
+                    serde_json::json!({ "agentId": &agent_id, "name": &agent.name }),
+                );
+                info!(agent_id = %agent_id, name = %agent.name, "auto-activated paused agent for chat");
+            }
+        }
+    }
+
     // If agent_id is set, build an agent-scoped session key for isolation
     let session_key = if !agent_id.is_empty() {
         agent::keyparser::build_agent_session_key(&agent_id, &channel)

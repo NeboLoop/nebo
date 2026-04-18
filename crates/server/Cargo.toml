@@ -65,3 +65,5 @@ agent = { workspace = true }
 chrono = { workspace = true }
 cron = { workspace = true }
 uuid = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = "0.3"

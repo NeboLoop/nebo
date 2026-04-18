@@ -30,6 +30,7 @@
 	import WhatsNewModal from '$lib/components/WhatsNewModal.svelte';
 	import UpgradeSuccessModal from '$lib/components/UpgradeSuccessModal.svelte';
 	import Toast from '$lib/components/ui/Toast.svelte';
+	import CodeRedeemModal from '$lib/components/CodeRedeemModal.svelte';
 	import { a2ui } from '$lib/stores/a2ui';
 
 	let { children }: { children: Snippet } = $props();
@@ -59,6 +60,12 @@
 	// Onboarding state
 	let isCheckingOnboarding = $state(true);
 	let showOnboarding = $state(false);
+
+	// User profile for header avatar
+	let userName = $state('');
+
+	// Global code redeem modal (triggered by header button)
+	let showRedeemModal = $state(false);
 
 	// Quarantine notices from NeboLoop
 	interface QuarantineNotice {
@@ -201,6 +208,10 @@
 			}
 		});
 
+		// Listen for global redeem code event (from header button)
+		const handleRedeem = () => { showRedeemModal = true; };
+		window.addEventListener('nebo:open-redeem', handleRedeem);
+
 		// On connect (initial + reconnect after restart): reset stale update
 		// state and re-check. onStatus fires immediately with current status,
 		// so this also covers the initial check.
@@ -243,6 +254,7 @@
 				api.getPreferences().catch(() => ({ preferences: null }))
 			]);
 			showOnboarding = !response.profile?.onboardingCompleted;
+			userName = response.profile?.displayName || '';
 			const savedTheme = prefsData.preferences?.theme;
 			if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
 				themePref = savedTheme;
@@ -275,6 +287,7 @@
 			unsubA2UI();
 			unsubA2UIAction();
 			a2ui.destroy();
+			window.removeEventListener('nebo:open-redeem', handleRedeem);
 			delete (window as any).__NEBO_CHECK_UPDATE__;
 		};
 	});
@@ -301,7 +314,7 @@
 	</div>
 {:else}
 	<div class="h-dvh flex flex-col overflow-hidden bg-base-100">
-		<AppNav />
+		<AppNav {userName} />
 		{#each quarantineNotices as notice (notice.app_id)}
 			<div class="px-4 pt-2">
 				<Alert type="warning" title={$t('layout.quarantineTitle', { values: { name: notice.app_name } })} dismissible onclose={() => dismissQuarantine(notice.app_id)}>
@@ -367,3 +380,5 @@
 	type="success"
 	duration={3000}
 />
+
+<CodeRedeemModal bind:show={showRedeemModal} onclose={() => { showRedeemModal = false; }} />

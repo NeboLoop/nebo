@@ -684,6 +684,8 @@ pub struct EntityConfig {
     pub model_preference: Option<String>,
     pub personality_snippet: Option<String>,
     pub allowed_paths: Option<String>,
+    pub pinned: Option<i64>,
+    pub multi_chat: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }

@@ -18,6 +18,7 @@ pub mod message_tool;
 pub mod music_tool;
 pub mod orchestrator;
 mod organizer;
+pub mod research;
 pub mod run_querier;
 pub mod origin;
 pub mod os_tool;

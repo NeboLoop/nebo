@@ -208,6 +208,16 @@
 		provider.isActive = newActive;
 		try {
 			await api.updateAuthProfile({ isActive: newActive }, provider.id);
+			// When disabling a provider, also disable all its models
+			if (!newActive) {
+				const providerModels = models[provider.provider] || [];
+				for (const model of providerModels) {
+					if (model.isActive) {
+						model.isActive = false;
+						api.updateModel({ active: false }, provider.provider, model.id).catch(() => {});
+					}
+				}
+			}
 		} catch (err: any) {
 			provider.isActive = !newActive;
 			error = err?.message || $t('settingsProviders.toggleFailed');
@@ -484,15 +494,16 @@
 
 						<!-- Model toggles -->
 						{#if prov.models.length > 0}
+							{@const providerActive = prov.configured && prov.profile?.isActive !== false}
 							<div class="mt-3 space-y-1.5">
 								{#each prov.models as model (model.id)}
-									<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5 {!prov.configured ? 'opacity-50' : ''}">
+									<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5 {!providerActive ? 'opacity-50' : ''}">
 										<p class="text-base text-base-content">{model.displayName}</p>
 										<div class="flex items-center gap-3">
 											<span class="text-sm text-base-content/60 tabular-nums">{$t('settingsProviders.contextWindow', { values: { count: model.contextWindow?.toLocaleString() || '?' } })}</span>
 											<Toggle
-												checked={prov.configured ? model.isActive : false}
-												disabled={!prov.configured}
+												checked={providerActive ? model.isActive : false}
+												disabled={!providerActive}
 												onchange={() => toggleModel(prov.type, model)}
 											/>
 										</div>

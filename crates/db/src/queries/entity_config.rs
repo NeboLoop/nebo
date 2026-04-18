@@ -19,6 +19,8 @@ fn row_to_entity_config(row: &rusqlite::Row) -> rusqlite::Result<EntityConfig> {
         model_preference: row.get("model_preference")?,
         personality_snippet: row.get("personality_snippet")?,
         allowed_paths: row.get("allowed_paths")?,
+        pinned: row.get("pinned")?,
+        multi_chat: row.get("multi_chat")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -70,6 +72,8 @@ impl Store {
             ("model_preference", "modelPreference"),
             ("personality_snippet", "personalitySnippet"),
             ("allowed_paths", "allowedPaths"),
+            ("pinned", "pinned"),
+            ("multi_chat", "multiChat"),
         ];
 
         for (col, json_key) in &columns {

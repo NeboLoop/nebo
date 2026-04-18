@@ -1991,3 +1991,102 @@ pub async fn get_agent_views(state: &AppState, agent_id: &str) -> Option<serde_j
 
     None
 }
+
+// ── Agent Multi-Chat ─────────────────────────────────────────────────────────
+
+/// GET /api/v1/agents/{id}/chats — list all chats for an agent.
+pub async fn list_agent_chats(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
+    let mut chats = state.store.list_chats_by_session(&session_key).unwrap_or_default();
+
+    // Resolve active chat_id from session (if session exists).
+    let active_chat_id = state.runner.sessions()
+        .resolve_session_id_by_key(&session_key)
+        .ok()
+        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .unwrap_or_default();
+
+    // Backfill: legacy agent chats store messages under the session key as chat_id
+    // but have no `chats` row. If we found no chats but messages exist, create the row.
+    if chats.is_empty() {
+        let legacy_chat_id = if active_chat_id.is_empty() { &session_key } else { &active_chat_id };
+        let msg_count = state.store.count_chat_messages(legacy_chat_id).unwrap_or(0);
+        if msg_count > 0 {
+            if let Ok(chat) = state.store.create_chat_for_session(
+                legacy_chat_id,
+                &session_key,
+                "Chat 1",
+                None,
+            ) {
+                chats.push(chat);
+            }
+        }
+    }
+
+    let total = chats.len();
+    Ok(Json(serde_json::json!({
+        "chats": chats,
+        "activeChatId": active_chat_id,
+        "total": total,
+    })))
+}
+
+/// POST /api/v1/agents/{id}/chats — create a new chat under the agent's session.
+pub async fn create_new_agent_chat(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
+
+    // Ensure the session exists (get_or_create lazily creates it).
+    let session = state.runner.sessions()
+        .get_or_create(&session_key, "")
+        .map_err(to_error_response)?;
+
+    let new_chat_id = state.runner.sessions()
+        .rotate_chat(&session.id, None)
+        .map_err(to_error_response)?;
+
+    let chat = state.store.get_chat(&new_chat_id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    Ok(Json(serde_json::json!({
+        "chat": chat,
+        "messages": [],
+        "totalMessages": 0,
+        "sessionKey": session_key,
+    })))
+}
+
+/// POST /api/v1/agents/{id}/chats/{chat_id}/activate — switch to an existing chat.
+pub async fn activate_agent_chat(
+    State(state): State<AppState>,
+    Path((id, chat_id)): Path<(String, String)>,
+) -> HandlerResult<serde_json::Value> {
+    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
+
+    let session_id = state.runner.sessions()
+        .resolve_session_id_by_key(&session_key)
+        .map_err(to_error_response)?;
+
+    state.runner.sessions()
+        .set_active_chat(&session_id, &chat_id)
+        .map_err(to_error_response)?;
+
+    let mut messages = state.store
+        .get_chat_messages_budgeted(&chat_id, 12000, None)
+        .unwrap_or_default();
+    super::chat::build_message_metadata(&mut messages);
+    let total = state.store.count_chat_messages(&chat_id).unwrap_or(messages.len() as i64);
+
+    Ok(Json(serde_json::json!({
+        "chatId": chat_id,
+        "messages": messages,
+        "totalMessages": total,
+        "sessionKey": session_key,
+    })))
+}

@@ -71,6 +71,7 @@ impl AgentTool {
         match action {
             "store" | "recall" | "search" => "memory",
             "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create" | "update" | "delete" => "task",
+            "research" | "submit_findings" => "research",
             "active" | "cancel_run" => "runs",
             "history" | "query" => "session",
             "reset" | "compact" | "summary" => "context",
@@ -347,6 +348,7 @@ impl AgentTool {
                 );
                 let model_override = input["model_override"].as_str().unwrap_or("");
                 let wait = input["wait"].as_bool().unwrap_or(true);
+                let max_iterations = input["max_iterations"].as_u64().unwrap_or(0) as usize;
 
                 if task_prompt.is_empty() {
                     return ToolResult::error("prompt is required for task spawn");
@@ -367,6 +369,7 @@ impl AgentTool {
                     user_id: ctx.user_id.clone(),
                     wait,
                     parent_cancel: Some(ctx.cancel_token.clone()),
+                    max_iterations,
                 };
 
                 match orch.spawn(req).await {
@@ -424,6 +427,7 @@ impl AgentTool {
                             user_id: ctx.user_id.clone(),
                             wait: true, // spawn_parallel always waits for all
                             parent_cancel: Some(ctx.cancel_token.clone()),
+                            max_iterations: t["max_iterations"].as_u64().unwrap_or(0) as usize,
                         }
                     })
                     .collect();
@@ -1006,6 +1010,104 @@ impl AgentTool {
             )),
         }
     }
+
+    async fn handle_research(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let action = input["action"].as_str().unwrap_or("");
+
+        match action {
+            "research" => {
+                let query = input["query"].as_str().unwrap_or("");
+                if query.is_empty() {
+                    return ToolResult::error("query is required for research");
+                }
+
+                let data_dir = match config::data_dir() {
+                    Ok(d) => d,
+                    Err(e) => return ToolResult::error(format!("Cannot determine data dir: {}", e)),
+                };
+
+                let run_id = format!("research-{}", uuid::Uuid::new_v4().as_simple());
+
+                let run_dir = match crate::research::create_run_dir(&data_dir, &run_id, query) {
+                    Ok(d) => d,
+                    Err(e) => return ToolResult::error(format!("Failed to create research dir: {}", e)),
+                };
+
+                ToolResult::ok(format!(
+                    "Research mode active. Run ID: {}. Dir: {}.\n\n{}",
+                    run_id,
+                    run_dir.display(),
+                    crate::research::RESEARCH_LEAD_PROMPT,
+                ))
+            }
+            "submit_findings" => {
+                let subtask_id = input["subtask_id"].as_str().unwrap_or("");
+                if subtask_id.is_empty() {
+                    return ToolResult::error("subtask_id is required for submit_findings");
+                }
+
+                // Parse findings from JSON
+                let findings_arr = match input["findings"].as_array() {
+                    Some(arr) => arr,
+                    None => return ToolResult::error("findings array is required"),
+                };
+
+                let mut findings = Vec::new();
+                for (i, f) in findings_arr.iter().enumerate() {
+                    findings.push(crate::research::Finding {
+                        claim: f["claim"].as_str().unwrap_or("").to_string(),
+                        source_url: f["source_url"].as_str().unwrap_or("").to_string(),
+                        source_ref: f["source_ref"].as_str().unwrap_or("").to_string(),
+                        confidence: f["confidence"].as_f64().unwrap_or(0.5) as f32,
+                        quote: f["quote"].as_str().unwrap_or("").to_string(),
+                    });
+                    if findings[i].claim.is_empty() {
+                        return ToolResult::error(format!("findings[{}].claim is empty", i));
+                    }
+                }
+
+                let gaps: Vec<String> = input["gaps"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .filter_map(|g| g.as_str().map(String::from))
+                    .collect();
+
+                let worker_findings = crate::research::WorkerFindings {
+                    subtask_id: subtask_id.to_string(),
+                    findings,
+                    gaps: gaps.clone(),
+                };
+
+                // Find the active research dir — look for it in the session key context.
+                // The research dir is passed to workers in their prompt, so they'll include it.
+                // For now, scan <data_dir>/research/ for the most recent run with status "running".
+                let data_dir = match config::data_dir() {
+                    Ok(d) => d,
+                    Err(e) => return ToolResult::error(format!("Cannot determine data dir: {}", e)),
+                };
+
+                let research_dir = data_dir.join("research");
+                let run_dir = match crate::research::find_active_run_dir(&research_dir) {
+                    Some(d) => d,
+                    None => return ToolResult::error("No active research run found. Was bot(action: 'research') called first?"),
+                };
+
+                match crate::research::write_worker_findings(&run_dir, &worker_findings) {
+                    Ok(()) => ToolResult::ok(format!(
+                        "Findings submitted. {} claims, {} gaps.",
+                        worker_findings.findings.len(),
+                        gaps.len()
+                    )),
+                    Err(e) => ToolResult::error(format!("Failed to write findings: {}", e)),
+                }
+            }
+            other => ToolResult::error(format!(
+                "Unknown research action: {:?}. Available: research, submit_findings",
+                other
+            )),
+        }
+    }
 }
 
 impl DynTool for AgentTool {
@@ -1056,7 +1158,7 @@ impl DynTool for AgentTool {
                 "resource": {
                     "type": "string",
                     "description": "Resource type",
-                    "enum": ["memory", "task", "session", "context", "advisors", "ask"]
+                    "enum": ["memory", "task", "session", "context", "advisors", "ask", "research"]
                 },
                 "action": {
                     "type": "string",
@@ -1078,7 +1180,11 @@ impl DynTool for AgentTool {
                 "session_id": { "type": "string", "description": "Session ID" },
                 "task": { "type": "string", "description": "Task description for advisor deliberation" },
                 "text": { "type": "string", "description": "Text for ask prompts" },
-                "options": { "type": "array", "description": "Options for select action" }
+                "options": { "type": "array", "description": "Options for select action" },
+                "subtask_id": { "type": "string", "description": "Subtask ID for submit_findings" },
+                "findings": { "type": "array", "description": "Array of findings from research worker" },
+                "gaps": { "type": "array", "description": "Array of gaps (unanswered questions) from research worker" },
+                "max_iterations": { "type": "integer", "description": "Max iterations for sub-agent (default: 100)" }
             },
             "required": ["action"]
         })
@@ -1107,7 +1213,7 @@ impl DynTool for AgentTool {
 
             if resource.is_empty() {
                 return ToolResult::error(
-                    "Resource is required. Available: memory, task, session, context, advisors, ask",
+                    "Resource is required. Available: memory, task, session, context, advisors, ask, research",
                 );
             }
 
@@ -1119,8 +1225,9 @@ impl DynTool for AgentTool {
                 "advisors" => self.handle_advisors(&input).await,
                 "ask" => self.handle_ask(&input).await,
                 "runs" => self.handle_runs(&input, ctx).await,
+                "research" => self.handle_research(&input, ctx).await,
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: memory, task, session, context, advisors, ask, runs",
+                    "Resource {:?} not available. Available: memory, task, session, context, advisors, ask, runs, research",
                     other
                 )),
             }

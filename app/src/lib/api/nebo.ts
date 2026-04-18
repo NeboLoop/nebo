@@ -255,6 +255,27 @@ export function listAgentRuns(agentId: string, limit = 20, offset = 0) {
 }
 
 /**
+ * @description "List chats for an agent"
+ */
+export function listAgentChats(agentId: string) {
+	return webapi.get<{ chats: components.Chat[]; activeChatId: string; total: number }>(`/api/v1/agents/${agentId}/chats`)
+}
+
+/**
+ * @description "Create a new chat for an agent"
+ */
+export function createNewAgentChat(agentId: string) {
+	return webapi.post<{ chat: components.Chat; messages: never[]; totalMessages: number; sessionKey: string }>(`/api/v1/agents/${agentId}/chats`, {})
+}
+
+/**
+ * @description "Switch to an existing agent chat"
+ */
+export function activateAgentChat(agentId: string, chatId: string) {
+	return webapi.post<{ chatId: string; messages: components.ChatMessage[]; totalMessages: number; sessionKey: string }>(`/api/v1/agents/${agentId}/chats/${chatId}/activate`, {})
+}
+
+/**
  * @description "List personality presets"
  */
 export function listPersonalityPresets() {

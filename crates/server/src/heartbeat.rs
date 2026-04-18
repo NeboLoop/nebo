@@ -114,6 +114,8 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
                     model_preference: None,
                     personality_snippet: None,
                     allowed_paths: None,
+                    pinned: None,
+                    multi_chat: None,
                     created_at: 0,
                     updated_at: 0,
                 });

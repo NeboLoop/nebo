@@ -17,6 +17,12 @@
 		activeAgentId = $state('');
 		activeAgentName = $state('');
 		activeView = $state<'companion' | 'channel' | 'agent' | 'overview'>('overview');
+		/** Active chat within the current agent (multi-chat). */
+		activeChatId = $state('');
+		/** Callback for sidebar to trigger chat switch in Chat.svelte. */
+		onSwitchChat: ((chatId: string) => void) | null = null;
+		/** Callback for sidebar to trigger new chat creation. */
+		onNewChat: (() => void) | null = null;
 	}
 
 	const channelState = new ChannelState();
@@ -48,7 +54,7 @@
 </script>
 
 <div class="flex flex-1 min-h-0">
-	<div class={focusMode ? 'sidebar-rail' : ''}>
+	<div class="{focusMode ? 'sidebar-rail' : ''} flex flex-col min-h-0">
 	<Sidebar
 		bind:activeChannelId={channelState.activeChannelId}
 		activeAgentId={channelState.activeAgentId}

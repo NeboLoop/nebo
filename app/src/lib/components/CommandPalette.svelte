@@ -20,6 +20,7 @@
 
 	let query = $state('');
 	let selectedIndex = $state(0);
+	let mouseActive = $state(false);
 	let skills = $state<ExtensionSkill[]>([]);
 	let skillsLoaded = $state(false);
 	let skillsLoading = $state(false);
@@ -101,6 +102,7 @@
 		if (open) {
 			query = '';
 			selectedIndex = 0;
+			mouseActive = false;
 			// Focus the input after it mounts
 			requestAnimationFrame(() => {
 				const el = document.querySelector<HTMLInputElement>('.command-palette-card input');
@@ -220,7 +222,8 @@
 							class="command-palette-item"
 							data-selected={globalIndex === selectedIndex}
 							onclick={() => activate(item)}
-							onmouseenter={() => { selectedIndex = globalIndex; }}
+							onmousemove={() => { mouseActive = true; selectedIndex = globalIndex; }}
+						onmouseenter={() => { if (mouseActive) selectedIndex = globalIndex; }}
 						>
 							<svg
 								class="w-4 h-4 shrink-0 opacity-50"

@@ -154,6 +154,8 @@ pub struct ModelSelector {
     fuzzy: RwLock<Option<FuzzyMatcher>>,
     /// Provider IDs that are actually loaded (have running Provider instances).
     loaded_providers: RwLock<Vec<String>>,
+    /// Models discovered at runtime (e.g., Ollama), not in the static yaml catalog.
+    runtime_models: RwLock<HashMap<String, Vec<ModelInfo>>>,
 }
 
 impl ModelSelector {
@@ -169,6 +171,7 @@ impl ModelSelector {
             excluded: RwLock::new(HashMap::new()),
             fuzzy: RwLock::new(Some(fuzzy)),
             loaded_providers: RwLock::new(Vec::new()),
+            runtime_models: RwLock::new(HashMap::new()),
         }
     }
 
@@ -190,10 +193,23 @@ impl ModelSelector {
         lock.as_ref().map(|f| f.get_aliases_text()).unwrap_or_default()
     }
 
+    /// Inject additional provider models discovered at runtime (e.g., Ollama).
+    /// These are checked alongside the static yaml-based models during selection.
+    pub fn inject_provider_models(&self, provider: &str, models: Vec<ModelInfo>) {
+        let mut lock = self.runtime_models.write().unwrap();
+        lock.insert(provider.to_string(), models);
+    }
+
     /// Rebuild the fuzzy matcher (e.g., after provider reload).
     pub fn rebuild_fuzzy(&self, user_aliases: &HashMap<String, String>) {
+        // Merge static yaml models with runtime-discovered models for fuzzy matching
+        let mut all_models = self.config.provider_models.clone();
+        let runtime = self.runtime_models.read().unwrap();
+        for (k, v) in runtime.iter() {
+            all_models.entry(k.clone()).or_default().extend(v.iter().cloned());
+        }
         let new_fuzzy = FuzzyMatcher::new(
-            &self.config.provider_models,
+            &all_models,
             user_aliases,
             &self.config.provider_credentials,
         );
@@ -415,15 +431,18 @@ impl ModelSelector {
             return self.config.default_model.clone();
         }
 
-        // Last resort: any non-gateway available model
-        for (provider_id, models) in &self.config.provider_models {
-            if provider_id == "janus" {
-                continue; // Skip gateway — prefer CLI or direct API
-            }
-            for model in models {
-                let id = format!("{}/{}", provider_id, model.id);
-                if model.active && is_usable(&id) {
-                    return id;
+        // Last resort: any non-gateway available model (static yaml + runtime-discovered)
+        let runtime = self.runtime_models.read().unwrap();
+        for source in [&self.config.provider_models, &*runtime] {
+            for (provider_id, models) in source {
+                if provider_id == "janus" {
+                    continue; // Skip gateway — prefer CLI or direct API
+                }
+                for model in models {
+                    let id = format!("{}/{}", provider_id, model.id);
+                    if model.active && is_usable(&id) {
+                        return id;
+                    }
                 }
             }
         }
@@ -438,11 +457,13 @@ impl ModelSelector {
         }
 
         // True last resort: gateway model
-        for (provider_id, models) in &self.config.provider_models {
-            for model in models {
-                let id = format!("{}/{}", provider_id, model.id);
-                if model.active && is_usable(&id) {
-                    return id;
+        for source in [&self.config.provider_models, &*runtime] {
+            for (provider_id, models) in source {
+                for model in models {
+                    let id = format!("{}/{}", provider_id, model.id);
+                    if model.active && is_usable(&id) {
+                        return id;
+                    }
                 }
             }
         }

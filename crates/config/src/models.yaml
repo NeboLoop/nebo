@@ -30,32 +30,35 @@ credentials:
 # Model selection defaults
 defaults:
   # Primary provider/model (used first)
-  # Format: "provider/model" or just "provider" (uses provider's default)
-  primary: anthropic/claude-sonnet-4-6
+  # Nebo 1 (Janus gateway) is the default — works out of the box with NeboLoop auth.
+  # Users with their own API keys can override in Settings > Routing.
+  primary: janus/nebo-1
 
   # Fallback chain (tried in order if primary fails)
   fallbacks:
+    - anthropic/claude-sonnet-4-6
     - anthropic/claude-haiku-4-5-20251001
 
 # Task-based model routing
 # Automatically selects the best model based on the task type
+# Nebo 1 handles all tasks by default (server-side routing picks the best upstream model).
+# Users with direct API keys can override per-task in Settings > Routing.
 task_routing:
-  vision: anthropic/claude-sonnet-4-6
-  audio: openai/gpt-5.4
-  reasoning: anthropic/claude-opus-4-6
-  code: anthropic/claude-sonnet-4-6
-  general: anthropic/claude-sonnet-4-6
+  vision: janus/nebo-1
+  audio: janus/nebo-1
+  reasoning: janus/nebo-1
+  code: janus/nebo-1
+  general: janus/nebo-1
   fallbacks:
     vision:
-      - anthropic/claude-opus-4-6
+      - anthropic/claude-sonnet-4-6
       - openai/gpt-5.4
     reasoning:
-      - openai/gpt-5.4
-      - anthropic/claude-sonnet-4-6
-    code:
       - anthropic/claude-opus-4-6
       - openai/gpt-5.4
-      - openai/codex-mini-latest
+    code:
+      - anthropic/claude-sonnet-4-6
+      - openai/gpt-5.4
     general:
       - anthropic/claude-haiku-4-5-20251001
       - openai/gpt-5.4-nano

@@ -119,6 +119,34 @@ fn seed_models_from_catalog(store: &db::Store, models_cfg: &config::ModelsConfig
     }
 }
 
+/// Inject Ollama models from DB into the selector's runtime models.
+/// Ollama models are auto-discovered and stored in the DB, not in models.yaml,
+/// so the selector needs them injected separately.
+pub fn inject_ollama_models(store: &db::Store, selector: &agent::ModelSelector) {
+    if let Ok(ollama_models) = store.list_active_provider_models("ollama") {
+        if !ollama_models.is_empty() {
+            let infos: Vec<agent::selector::ModelInfo> = ollama_models.iter().map(|m| {
+                agent::selector::ModelInfo {
+                    id: m.model_id.clone(),
+                    display_name: m.display_name.clone(),
+                    context_window: m.context_window.unwrap_or(128_000) as i32,
+                    input_price: 0.0,
+                    output_price: 0.0,
+                    capabilities: m.capabilities.as_ref()
+                        .and_then(|c| serde_json::from_str(c).ok())
+                        .unwrap_or_default(),
+                    kind: m.kind.as_ref()
+                        .and_then(|k| serde_json::from_str(k).ok())
+                        .unwrap_or_default(),
+                    preferred: false,
+                    active: true,
+                }
+            }).collect();
+            selector.inject_provider_models("ollama", infos);
+        }
+    }
+}
+
 /// Build a map of "provider/model_id" → is_active from the DB provider_models table.
 /// Used to override the yaml catalog defaults so the selector respects user toggles.
 pub fn build_model_overrides(store: &db::Store) -> std::collections::HashMap<String, bool> {
@@ -280,6 +308,22 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                 gateway_providers.push(p);
             } else {
                 providers.push(p);
+            }
+        }
+    }
+
+    // Auto-create Ollama provider if Ollama is running and has active models,
+    // even without an auth_profile (Ollama needs no API key).
+    let has_ollama_profile = profiles.iter().any(|p| p.provider == "ollama" && p.is_active.unwrap_or(0) == 1);
+    if !has_ollama_profile {
+        if let Ok(active_models) = store.list_active_provider_models("ollama") {
+            if !active_models.is_empty() {
+                let model = active_models[0].model_id.clone();
+                info!(model = %model, "auto-creating Ollama provider (no auth profile needed)");
+                providers.push(Arc::new(ai::OllamaProvider::new(
+                    "http://localhost:11434".into(),
+                    model,
+                )));
             }
         }
     }
@@ -797,6 +841,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Build real routing config from models catalog
     let routing_config = agent::selector::ModelRoutingConfig::from_models_config(&models_cfg, &active_provider_ids, &model_overrides);
     let selector = agent::ModelSelector::new(routing_config);
+
+    // Inject Ollama models from DB (they're auto-discovered, not in the yaml)
+    inject_ollama_models(&store, &selector);
 
     // Set loaded providers and rebuild fuzzy with user aliases
     selector.set_loaded_providers(active_provider_ids);

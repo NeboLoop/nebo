@@ -4,7 +4,6 @@
 -->
 
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { Check, CircleAlert, CreditCard, KeyRound, Loader2 } from 'lucide-svelte';
 	import { pluginAuthLogin } from '$lib/api/nebo';
@@ -58,23 +57,9 @@
 						: `Installing ${typeLabel}`
 	);
 	const installedCount = $derived(deps.filter((d) => d.status === 'installed').length);
-	const canClose = $derived(phase !== 'installing' || installElapsed >= 10);
 
-	// Allow closing the modal if install has been running for more than 10 seconds
-	let installElapsed = $state(0);
-	let installTimer: ReturnType<typeof setInterval> | null = null;
-
-	function startInstallTimer() {
-		installElapsed = 0;
-		stopInstallTimer();
-		installTimer = setInterval(() => { installElapsed++; }, 1000);
-	}
-
-	function stopInstallTimer() {
-		if (installTimer) { clearInterval(installTimer); installTimer = null; }
-	}
-
-	onDestroy(stopInstallTimer);
+	// Modal is always dismissable
+	const canClose = true;
 
 	function reset() {
 		phase = 'installing';
@@ -93,7 +78,6 @@
 		authQueue = [];
 		authIndex = 0;
 		pendingAgentId = '';
-		stopInstallTimer();
 	}
 
 	function findOrAddDep(reference: string, type: string): number {
@@ -111,7 +95,6 @@
 		codeType = (data?.code_type as string) || '';
 		statusMessage = (data?.status_message as string) || 'Processing...';
 		show = true;
-		startInstallTimer();
 	}
 
 	export function onPluginInstalling(data: Record<string, unknown>) {
@@ -270,7 +253,6 @@
 	}
 
 	export function onCodeResult(data: Record<string, unknown>) {
-		stopInstallTimer();
 		const success = data?.success as boolean;
 		const paymentRequired = data?.payment_required as boolean;
 		const checkout = data?.checkout_url as string | undefined;
@@ -332,11 +314,9 @@
 					<p class="text-sm text-base-content/50 mt-1 font-mono">{code}</p>
 				{/if}
 			</div>
-			{#if installElapsed >= 10}
-				<button type="button" class="btn btn-sm btn-ghost" onclick={() => { show = false; stopInstallTimer(); onclose?.(); }}>
-					Cancel
-				</button>
-			{/if}
+			<button type="button" class="btn btn-sm btn-ghost" onclick={() => { show = false; onclose?.(); }}>
+				Cancel
+			</button>
 		</div>
 
 	{:else if phase === 'auth'}
