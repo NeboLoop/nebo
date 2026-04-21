@@ -1,9 +1,10 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { onMount } from 'svelte';
+	import { onMount, setContext } from 'svelte';
 	import { page } from '$app/stores';
 	import { beforeNavigate } from '$app/navigation';
-	import { AppNav, SideNav } from '$lib/components/navigation';
+	import { AppNav } from '$lib/components/navigation';
+	import Sidebar from '$lib/components/sidebar/Sidebar.svelte';
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import { auth } from '$lib/stores/auth';
 	import { get } from 'svelte/store';
@@ -67,6 +68,31 @@
 	// Global code redeem modal (triggered by header button)
 	let showRedeemModal = $state(false);
 
+	// ── Sidebar + ChannelState ──
+	class ChannelState {
+		activeChannelId = $state('');
+		activeChannelName = $state('');
+		activeLoopName = $state('');
+		activeAgentId = $state('');
+		activeAgentName = $state('');
+		activeView = $state<'companion' | 'channel' | 'agent' | 'overview'>('overview');
+		activeChatId = $state('');
+		onSwitchChat: ((chatId: string) => void) | null = null;
+		onNewChat: (() => void) | null = null;
+	}
+	const channelState = new ChannelState();
+	setContext('channelState', channelState);
+
+	let focusMode = $state(false);
+
+	function clearAll() {
+		channelState.activeChannelId = '';
+		channelState.activeChannelName = '';
+		channelState.activeLoopName = '';
+		channelState.activeAgentId = '';
+		channelState.activeAgentName = '';
+	}
+
 	// Quarantine notices from NeboLoop
 	interface QuarantineNotice {
 		app_id: string;
@@ -80,8 +106,8 @@
 		$page.url.pathname.startsWith('/agent')
 	);
 
-	// Edge-to-edge routes with their own sidebar (no centering wrapper)
-	const isEdgeToEdgeRoute = $derived(
+	// Marketplace has its own category sidebar — hide the global chat sidebar
+	const isMarketplaceRoute = $derived(
 		$page.url.pathname.startsWith('/marketplace')
 	);
 
@@ -274,8 +300,23 @@
 			isCheckingOnboarding = false;
 		}
 
+		// Sidebar: sync activeView from URL on initial load
+		const initPath = $page.url.pathname;
+		if (initPath.startsWith('/agent/assistant')) {
+			channelState.activeView = 'companion';
+		} else if (initPath.startsWith('/agent/persona/')) {
+			channelState.activeView = 'agent';
+		}
+
+		// Sidebar: listen for focus mode events
+		function handleFocusMode(e: Event) {
+			focusMode = (e as CustomEvent).detail;
+		}
+		window.addEventListener('nebo:focus-mode', handleFocusMode);
+
 		return () => {
 			mq.removeEventListener('change', onSystemChange);
+			window.removeEventListener('nebo:focus-mode', handleFocusMode);
 			unsubQuarantine();
 			unsubUpdate();
 			unsubProgress();
@@ -323,7 +364,19 @@
 			</div>
 		{/each}
 		<div class="flex flex-1 min-h-0 overflow-hidden">
-			<SideNav />
+			{#if !isSettingsRoute && !isUpgradeRoute && !isCanvasRoute && !isMarketplaceRoute}
+				<div class="{focusMode ? 'sidebar-rail' : ''} flex flex-col min-h-0">
+					<Sidebar
+						bind:activeChannelId={channelState.activeChannelId}
+						activeAgentId={channelState.activeAgentId}
+						activeView={channelState.activeView}
+						{userName}
+						onSelectMyChat={() => { clearAll(); channelState.activeView = 'companion'; goto('/agent/assistant/chat'); }}
+						onSelectChannel={(id, name, loop) => { clearAll(); channelState.activeChannelId = id; channelState.activeChannelName = name; channelState.activeLoopName = loop; channelState.activeView = 'channel'; goto(`/agent/channel/${encodeURIComponent(name.toLowerCase())}`); }}
+						onSelectAgent={(id, name) => { clearAll(); channelState.activeAgentId = id; channelState.activeAgentName = name; channelState.activeView = 'agent'; goto(`/agent/persona/${id}/chat`); }}
+					/>
+				</div>
+			{/if}
 			{#if isCanvasRoute}
 				<main id="main-content" class="flex-1 min-w-0 overflow-hidden">
 					{@render children()}
@@ -340,15 +393,13 @@
 				<div class="flex-1 min-w-0 overflow-hidden">
 					{@render children()}
 				</div>
-			{:else if isEdgeToEdgeRoute}
+			{:else if isMarketplaceRoute}
 				<main id="main-content" class="flex-1 min-w-0 px-6 pt-6 overflow-y-auto">
 					{@render children()}
 				</main>
 			{:else}
-				<main id="main-content" class="flex-1 min-w-0 p-6 overflow-y-auto">
-					<div class="max-w-[1400px] mx-auto">
-						{@render children()}
-					</div>
+				<main id="main-content" class="flex-1 flex flex-col min-w-0 overflow-hidden">
+					{@render children()}
 				</main>
 			{/if}
 		</div>

@@ -39,7 +39,7 @@
 	<!-- V2 Assistant Header: avatar + name + tab pills -->
 	<div class="v2-main-head">
 		<div class="v2-main-title">
-			<div class="sidebar-agent-avatar" style="width: 26px; height: 26px; border-radius: 7px; background: var(--agent-violet-bg); color: var(--agent-violet-ink); font-size: 11px;">
+			<div class="sidebar-agent-avatar w-[26px] h-[26px] rounded-[7px] bg-[var(--agent-violet-bg)] text-[var(--agent-violet-ink)] text-[11px]">
 				A
 			</div>
 			<span>{$t('agent.assistant')}</span>

@@ -54,7 +54,11 @@ impl WebTool {
             | "right_click" | "fill" | "form_input" | "type" | "screenshot" | "evaluate"
             | "close" | "list_tabs" | "new_tab" | "close_tab"
             | "back" | "go_back" | "forward" | "go_forward" | "scroll" | "scroll_to"
-            | "hover" | "select" | "press" | "key" | "wait" | "drag" | "status" => {
+            | "hover" | "select" | "press" | "key" | "wait" | "drag" | "status"
+            | "zoom" | "get_page_text" | "read_console_messages" | "console_messages"
+            | "read_network_requests" | "network_requests" | "resize_window" | "resize"
+            | "file_upload" | "upload_file" | "find" | "find_elements"
+            | "browser_batch" => {
                 "browser"
             }
             "console" | "source" | "storage" | "dom" | "cookies" | "performance" => "devtools",
@@ -194,7 +198,7 @@ impl WebTool {
         }
     }
 
-    async fn handle_search(&self, input: &serde_json::Value) -> ToolResult {
+    async fn handle_search(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
         let query = match input.get("query").and_then(|v| v.as_str()) {
             Some(q) => q,
             None => return ToolResult::error("query is required for search"),
@@ -219,8 +223,71 @@ impl WebTool {
             }
         }
 
-        // 2. Fallback: Brave HTML scraping (no API key needed)
-        self.search_brave_html(query).await
+        // 2. Fallback: browser-based search (Chrome extension navigates to DuckDuckGo)
+        tracing::info!(query, "no search API configured — trying browser search");
+        let browser_result = self.search_via_browser(query, session_id).await;
+        if !browser_result.is_error {
+            return browser_result;
+        }
+
+        // 3. Final fallback: DuckDuckGo HTTP scraping (no browser needed)
+        tracing::info!(query, "browser search failed — using DuckDuckGo HTTP scraping");
+        self.search_duckduckgo_html(query).await
+    }
+
+    /// Search via the user's browser — navigate to DuckDuckGo and read the results page.
+    async fn search_via_browser(&self, query: &str, session_id: &str) -> ToolResult {
+        let manager = match &self.browser {
+            Some(m) => m,
+            None => {
+                // No browser — try DuckDuckGo HTTP scraping, then Brave
+                return self.search_duckduckgo_html(query).await;
+            }
+        };
+
+        let executor = match manager.executor() {
+            Some(e) => e,
+            None => {
+                return self.search_duckduckgo_html(query).await;
+            }
+        };
+
+        if !executor.is_connected() {
+            let grace = std::time::Duration::from_secs(3);
+            if !executor.was_recently_connected(grace).await || !executor.wait_for_connection(grace).await {
+                self.broadcast_extension_disconnected("not_connected", session_id);
+                return self.search_duckduckgo_html(query).await;
+            }
+        }
+
+        // Navigate to DuckDuckGo search
+        let search_url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding::encode(query));
+        let nav_args = serde_json::json!({ "url": search_url });
+        if let Err(e) = executor.execute("navigate", &nav_args).await {
+            tracing::warn!(error = %e, "browser navigate failed, falling back to DDG scraping");
+            return self.search_duckduckgo_html(query).await;
+        }
+
+        // Read the search results page
+        let read_args = serde_json::json!({});
+        match executor.execute("read_page", &read_args).await {
+            Ok(result) => {
+                let text = result.get("pageContent")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if text.is_empty() {
+                    // DuckDuckGo HTML version failed too — try HTTP scraping as final fallback
+                    tracing::warn!("browser read_page returned empty for DuckDuckGo, trying DDG HTTP scraping");
+                    self.search_duckduckgo_html(query).await
+                } else {
+                    ToolResult::ok(format!("Search results for: {}\n\n{}", query, text))
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "read_page failed after DuckDuckGo search");
+                self.search_duckduckgo_html(query).await
+            }
+        }
     }
 
     /// Dispatch to the correct BYOK search API provider.
@@ -315,6 +382,33 @@ impl WebTool {
                 Err(e) => ToolResult::error(format!("Failed to read search response: {}", e)),
             },
             Err(e) => ToolResult::error(format!("Search request failed: {}", e)),
+        }
+    }
+
+    /// Fallback: DuckDuckGo HTML scraping (no API key needed, no rate limits).
+    async fn search_duckduckgo_html(&self, query: &str) -> ToolResult {
+        let search_url = format!(
+            "https://html.duckduckgo.com/html/?q={}",
+            urlencoding::encode(query)
+        );
+
+        match self.client.get(&search_url).send().await {
+            Ok(resp) => match resp.text().await {
+                Ok(html) => {
+                    let results = parse_duckduckgo_results(&html);
+                    if results.is_empty() {
+                        // Final fallback: try Brave
+                        self.search_brave_html(query).await
+                    } else {
+                        format_search_results(query, &results)
+                    }
+                }
+                Err(e) => ToolResult::error(format!("Failed to read DuckDuckGo response: {}", e)),
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "DuckDuckGo scraping failed, falling back to Brave");
+                self.search_brave_html(query).await
+            }
         }
     }
 
@@ -444,47 +538,83 @@ impl WebTool {
         action: &str,
         input: &serde_json::Value,
     ) -> ToolResult {
-        // Map action names to extension tool names
-        let tool_name = match action {
-            "snapshot" | "read_page" => "read_page",
-            "navigate" => "navigate",
-            "click" => "click",
-            "double_click" => "double_click",
-            "triple_click" => "triple_click",
-            "right_click" => "right_click",
-            "hover" => "hover",
-            "fill" | "form_input" => "form_input",
-            "type" => "type",
-            "select" => "select",
-            "screenshot" => "screenshot",
-            "scroll" => "scroll",
-            "scroll_to" => "scroll_to",
-            "press" | "key" => "press",
-            "drag" => "drag",
-            "back" | "go_back" => "go_back",
-            "forward" | "go_forward" => "go_forward",
-            "wait" => "wait",
-            "evaluate" => "evaluate",
-            "list_tabs" => "list_tabs",
-            "new_tab" => {
-                let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                if url.is_empty() || url == "about:blank" {
-                    return ToolResult::error(
-                        "new_tab requires a URL. Use navigate to change the current tab, \
-                         or new_tab with a specific URL."
-                    );
+        // browser_batch: execute multiple actions in one round trip
+        if action == "browser_batch" {
+            let actions_val = match input.get("actions").and_then(|v| v.as_array()) {
+                Some(a) if !a.is_empty() => a,
+                _ => return ToolResult::error("browser_batch requires a non-empty 'actions' array"),
+            };
+
+            let mut batch_actions = Vec::new();
+            for item in actions_val {
+                let sub_action = match item.get("action").and_then(|v| v.as_str()) {
+                    Some(a) => a,
+                    None => return ToolResult::error("Each action in browser_batch must have an 'action' field"),
+                };
+                let tool = match map_action_to_tool(sub_action) {
+                    Some(t) => t,
+                    None => return ToolResult::error(format!(
+                        "browser_batch: unsupported action '{}'. Use individual tool calls for tab/console/network actions.",
+                        sub_action
+                    )),
+                };
+                let args = build_extension_args(sub_action, item);
+                batch_actions.push(browser::BatchAction { tool: tool.to_string(), args });
+            }
+
+            let opts = browser::BatchOptions { stop_on_error: true };
+            return match executor.batch_execute(batch_actions, opts).await {
+                Ok(results) => {
+                    let mut parts = Vec::new();
+                    for (i, result) in results.iter().enumerate() {
+                        let action_name = actions_val.get(i)
+                            .and_then(|v| v.get("action"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        match result {
+                            Ok(val) => {
+                                let text = if let Some(pc) = val.get("pageContent").and_then(|v| v.as_str()) {
+                                    pc.to_string()
+                                } else if let Some(t) = val.get("text").and_then(|v| v.as_str()) {
+                                    t.to_string()
+                                } else {
+                                    serde_json::to_string(val).unwrap_or_default()
+                                };
+                                parts.push(format!("[{}] {}: {}", i + 1, action_name, text));
+                            }
+                            Err(e) => {
+                                parts.push(format!("[{}] {}: ERROR — {}", i + 1, action_name, e));
+                            }
+                        }
+                    }
+                    ToolResult::ok(parts.join("\n\n"))
                 }
-                "new_tab"
+                Err(e) => ToolResult::error(format!("browser_batch failed: {}", e)),
+            };
+        }
+
+        // Special cases that need validation before mapping
+        if action == "new_tab" {
+            let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            if url.is_empty() || url == "about:blank" {
+                return ToolResult::error(
+                    "new_tab requires a URL. Use navigate to change the current tab, \
+                     or new_tab with a specific URL."
+                );
             }
-            "close_tab" | "close" => "close_tab",
-            "status" => {
-                return ToolResult::ok(format!(
-                    "Extension connected: true\nUse read_page to see the current page."
-                ));
-            }
-            _ => {
+        }
+        if action == "status" {
+            return ToolResult::ok(
+                "Extension connected: true\nUse read_page to see the current page.".to_string()
+            );
+        }
+
+        // Map action names to extension tool names
+        let tool_name = match map_action_to_tool(action) {
+            Some(t) => t,
+            None => {
                 return ToolResult::error(format!(
-                    "Browser action '{}' is not supported via extension. Available: navigate, read_page, click, double_click, triple_click, right_click, hover, fill, form_input, type, select, screenshot, scroll, scroll_to, press, drag, go_back, go_forward, wait, evaluate, list_tabs",
+                    "Browser action '{}' is not supported via extension. Available: navigate, read_page, click, double_click, triple_click, right_click, hover, fill, form_input, type, select, screenshot, scroll, scroll_to, press, drag, go_back, go_forward, wait, evaluate, list_tabs, zoom, get_page_text, read_console_messages, read_network_requests, resize_window, file_upload, find, browser_batch",
                     action
                 ));
             }
@@ -493,14 +623,52 @@ impl WebTool {
         // Build args for the extension tool
         let args = build_extension_args(action, input);
 
-        match executor.execute(tool_name, &args).await {
+        // Execute with auto-retry for read_page character limit errors.
+        // The extension (at parity with Claude) returns an error when output > maxChars.
+        // Nebo handles this by retrying with tighter params so the agent always gets content.
+        let result = executor.execute(tool_name, &args).await;
+
+        // read_page character limit retry: depth 5 → depth 3 → filter interactive
+        if action == "snapshot" || action == "read_page" {
+            if let Err(ref e) = result {
+                let err_msg = e.to_string();
+                if err_msg.contains("character limit") || err_msg.contains("Output exceeds") {
+                    let retries: Vec<serde_json::Value> = vec![
+                        serde_json::json!({"depth": 5, "filter": null, "maxChars": 50000}),
+                        serde_json::json!({"depth": 3, "filter": null, "maxChars": 50000}),
+                        serde_json::json!({"filter": "interactive", "maxChars": 50000}),
+                    ];
+                    for retry_override in &retries {
+                        let mut retry_args = args.clone();
+                        if let (Some(obj), Some(overrides)) = (retry_args.as_object_mut(), retry_override.as_object()) {
+                            for (k, v) in overrides {
+                                if v.is_null() { obj.remove(k); } else { obj.insert(k.clone(), v.clone()); }
+                            }
+                        }
+                        if let Ok(retry_result) = executor.execute(tool_name, &retry_args).await {
+                            let page_content = retry_result.get("pageContent").and_then(|v| v.as_str()).unwrap_or("");
+                            if !page_content.is_empty() {
+                                return ToolResult {
+                                    content: page_content.to_string(),
+                                    is_error: false,
+                                    image_url: None,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        match result {
             Ok(result) => {
                 // Check for post-action screenshot in result: { text: "...", screenshot: { data, format } }
                 let (text_result, screenshot_b64) = if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
-                    let screenshot = result.get("screenshot")
-                        .and_then(|s| s.get("data"))
-                        .and_then(|d| d.as_str())
-                        .map(|d| format!("data:image/png;base64,{}", d));
+                    let screenshot = result.get("screenshot").and_then(|s| {
+                        let data = s.get("data")?.as_str()?;
+                        let fmt = s.get("format").and_then(|f| f.as_str()).unwrap_or("jpeg");
+                        Some(format!("data:image/{};base64,{}", fmt, data))
+                    });
                     (text.to_string(), screenshot)
                 } else if action == "snapshot" || action == "read_page" {
                     let page_content = result.get("pageContent").and_then(|v| v.as_str()).unwrap_or("");
@@ -533,31 +701,50 @@ impl DynTool for WebTool {
          - fetch/search: Simple HTTP requests and web search (no JavaScript, no rendering)\n\
          - browser: Controls the user's Chrome browser via the Nebo extension. Full automation — navigate, read pages, click, fill forms, take screenshots. Works on the user's real browser with their logged-in sessions.\n\n\
          Decision: If you just need an API response or static HTML → fetch. If you need to read a rendered page, interact with elements, or use the user's sessions → browser actions.\n\n\
-         Actions:\n\
-         - web(action: \"fetch\", url: \"...\") — Simple HTTP request (no JS rendering)\n\
-         - web(action: \"sanitize\", url: \"...\") — Extract visible text and chunk for LLM\n\
-         - web(action: \"search\", query: \"...\") — Web search\n\
-         - web(action: \"navigate\", url: \"...\") — Navigate browser tab\n\
-         - web(action: \"read_page\") — Get page accessibility tree with element refs [ref_1], [ref_2]\n\
-         - web(action: \"read_page\", filter: \"interactive\") — Only interactive elements\n\
-         - web(action: \"read_page\", depth: 5) — Limit tree depth (default 15)\n\
-         - web(action: \"click\", ref: \"ref_5\") — Click element by ref\n\
-         - web(action: \"fill\", ref: \"ref_3\", value: \"hello\") — Set form input value directly\n\
-         - web(action: \"type\", text: \"hello\") — Type via real keystrokes into focused element\n\
-         - web(action: \"select\", ref: \"ref_7\", value: \"option1\") — Select dropdown option\n\
-         - web(action: \"screenshot\") — Capture page screenshot\n\
-         - web(action: \"scroll\", direction: \"down\") — Scroll page\n\
-         - web(action: \"press\", key: \"Enter\") / web(action: \"press\", key: \"cmd+a\") — Press key/chord\n\
-         - web(action: \"evaluate\", expression: \"document.title\") — Run JavaScript\n\
-         - web(action: \"new_tab\", url: \"...\") / web(action: \"close_tab\") / web(action: \"list_tabs\")\n\
-         - web(action: \"go_back\") / web(action: \"go_forward\")\n\
-         - web(action: \"console\") / web(action: \"cookies\") / web(action: \"performance\")\n\n\
-         CRITICAL — Browse Like a Human:\n\
-         - Read before interacting: Always read_page first to understand what's on screen before clicking\n\
-         - Scroll to explore: NEVER assume you can see everything — scroll down and read_page again\n\
-         - read_page returns ONLY elements visible in the current viewport. You MUST scroll to see more.\n\
-         - For React/modern sites: if fill doesn't work, use click → press(key: \"cmd+a\") → type (real keystrokes)\n\
-         - NEVER navigate directly to URLs with search query params (triggers anti-bot). Navigate to homepage, find search box, type query, press Enter.\n\n\
+         ## HTTP & Search\n\
+         - fetch: Simple HTTP request. Params: url, method, headers, body\n\
+         - sanitize: Extract visible text from URL, chunked for LLM. Params: url, chunk_size (default 4000)\n\
+         - search: Web search. Params: query (keep short, 1-6 words)\n\n\
+         ## Browser — Page Reading\n\
+         - read_page: Get accessibility tree of page elements with refs like [ref_1], [ref_2]. Output limited to 50000 chars by default. If output exceeds this limit, you'll receive an error — retry with smaller depth or use refId to focus on a subtree. Params: filter (\"interactive\"|\"all\"), depth (default 15), refId, maxChars\n\
+         - get_page_text: Extract raw article/readable text from page. Ideal for text-heavy pages. Params: max_chars (default 50000)\n\
+         - find: Find elements by natural language description (e.g. \"search bar\", \"add to cart button\", \"product title containing organic\"). Returns up to 20 matching refs. Params: query\n\
+         - screenshot: Capture page screenshot. Returns image.\n\
+         - zoom: Take a higher-res screenshot of a specific region for closer inspection. IMPORTANT: Coordinates in subsequent click calls always refer to the full-screen screenshot, never the zoomed image. This is read-only. Params: region [x0, y0, x1, y1]\n\n\
+         ## Browser — Interaction\n\
+         - click: Click element. Params: ref OR coordinate [x,y], modifiers (\"ctrl\", \"shift\", \"alt\", \"cmd\", combine with \"+\")\n\
+         - double_click / triple_click / right_click: Same params as click.\n\
+         - hover: Move cursor without clicking. Useful for tooltips/dropdowns. Params: ref OR coordinate\n\
+         - fill: Set form input value directly (only works on INPUT/TEXTAREA/SELECT/contenteditable). If fill fails, use click on the element then type. Params: ref, value (string/bool/number)\n\
+         - type: Type text via real keystrokes into the focused element. Params: text\n\
+         - select: Select dropdown option. Params: ref, value (option value or text)\n\
+         - press: Press keyboard key or chord. Params: key (e.g. \"Enter\", \"Tab\", \"cmd+a\", \"Backspace\"), repeat (default 1, max 100)\n\
+         - scroll: Scroll the viewport. Params: direction (up/down/left/right), amount (ticks, default 3), coordinate (optional scroll target)\n\
+         - scroll_to: Scroll element into view by ref. Params: ref\n\
+         - drag: Drag from one point to another. Params: start_coordinate [x,y], coordinate [x,y]\n\
+         - file_upload: Upload files to a file input element. Do NOT click file upload buttons — that opens a native picker you cannot interact with. Use read_page/find to locate the file input ref, then use this. Params: ref, paths (array of absolute file paths)\n\
+         - evaluate: Run JavaScript expression on the page. The value of the last expression is returned. Do NOT use 'return'. Params: expression\n\
+         - wait: Pause for a duration. Params: duration (seconds, max 30) or ms (milliseconds, max 10000)\n\n\
+         ## Browser — Navigation & Tabs\n\
+         - navigate: Go to URL or \"back\"/\"forward\" for history. Params: url, force (bypass 'Leave site?' dialogs)\n\
+         - new_tab: Open URL in new tab. Params: url (required)\n\
+         - close_tab: Close current or specific tab. Params: tabId (optional)\n\
+         - list_tabs: List all open tabs.\n\
+         - go_back / go_forward: Navigate browser history.\n\n\
+         ## Browser — Batching\n\
+         - browser_batch: Execute multiple browser actions in ONE round trip. Use this extensively when you can predict 2+ steps ahead — e.g. navigate then read_page, click a field then type then press Enter. Actions execute sequentially and stop on first error. Params: actions (array of objects, each with \"action\" plus that action's normal params)\n\n\
+         ## Browser — Debugging\n\
+         - read_console_messages: Read browser console output. Params: onlyErrors, pattern, limit, clear\n\
+         - read_network_requests: Read network traffic. Params: urlPattern, limit, clear\n\
+         - resize_window: Set browser window size. Params: width, height\n\n\
+         ## DevTools\n\
+         - console / source / storage / dom / cookies / performance\n\n\
+         ## CRITICAL — Browse Like a Human\n\
+         - Always read_page first to understand the page before clicking anything.\n\
+         - NEVER assume you see everything — scroll down and read_page again to find more content.\n\
+         - Use browser_batch to chain predictable steps in one call (faster, fewer round trips).\n\
+         - For React/modern sites: if fill doesn't work, use click → press(key: \"cmd+a\") → type (real keystrokes).\n\
+         - NEVER navigate to URLs with search query params (triggers anti-bot). Go to the homepage, find the search box, type your query, press Enter.\n\n\
          GUARDRAILS: Always include source URLs in your response when citing web results."
             .to_string()
     }
@@ -581,6 +768,9 @@ impl DynTool for WebTool {
                              "type", "select", "screenshot", "scroll", "scroll_to", "press",
                              "drag", "go_back", "go_forward", "wait", "evaluate",
                              "list_tabs", "new_tab", "close_tab", "status",
+                             "zoom", "get_page_text", "read_console_messages",
+                             "read_network_requests", "resize_window", "file_upload", "find",
+                             "browser_batch",
                              "console", "source", "storage", "dom", "cookies", "performance"]
                 },
                 "url": {
@@ -686,6 +876,65 @@ impl DynTool for WebTool {
                 "chunk_size": {
                     "type": "integer",
                     "description": "Max characters per chunk for sanitize (default 4000)"
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Max output characters for get_page_text (default 50000)"
+                },
+                "onlyErrors": {
+                    "type": "boolean",
+                    "description": "For read_console_messages: only return error/exception messages (default false)"
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "For read_console_messages/read_network_requests: clear after reading (default false)"
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "For read_console_messages: regex pattern to filter messages"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "For read_console_messages/read_network_requests: max results (default 100)"
+                },
+                "urlPattern": {
+                    "type": "string",
+                    "description": "For read_network_requests: URL substring to filter requests"
+                },
+                "width": {
+                    "type": "number",
+                    "description": "For resize_window: target window width in pixels"
+                },
+                "height": {
+                    "type": "number",
+                    "description": "For resize_window: target window height in pixels"
+                },
+                "paths": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "For file_upload: absolute file paths to upload"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "For find: natural language description of elements to find"
+                },
+                "region": {
+                    "type": "array",
+                    "items": { "type": "number" },
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": "For zoom: [x0, y0, x1, y1] rectangle from top-left to bottom-right in viewport pixels"
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "For navigate: force navigation past 'Leave site?' dialogs (default false)"
+                },
+                "actions": {
+                    "type": "array",
+                    "description": "For browser_batch: list of actions to execute sequentially in one round trip. Each item is an object with 'action' plus that action's normal params. Stops on first error.",
+                    "items": {
+                        "type": "object"
+                    }
                 }
             },
             "required": ["action"]
@@ -739,7 +988,7 @@ impl DynTool for WebTool {
             let session_id = &ctx.session_id;
             match resource.as_str() {
                 "http" => self.handle_http(&input).await,
-                "search" => self.handle_search(&input).await,
+                "search" => self.handle_search(&input, session_id).await,
                 "browser" => self.handle_browser(&input, session_id).await,
                 "devtools" => self.handle_devtools(&input, session_id).await,
                 other => ToolResult::error(format!(
@@ -751,13 +1000,51 @@ impl DynTool for WebTool {
     }
 }
 
+/// Map a web tool action name to the corresponding extension tool name.
+/// Returns None for actions that don't map (status, new_tab validation, etc.)
+fn map_action_to_tool(action: &str) -> Option<&'static str> {
+    match action {
+        "snapshot" | "read_page" => Some("read_page"),
+        "navigate" => Some("navigate"),
+        "click" => Some("click"),
+        "double_click" => Some("double_click"),
+        "triple_click" => Some("triple_click"),
+        "right_click" => Some("right_click"),
+        "hover" => Some("hover"),
+        "fill" | "form_input" => Some("form_input"),
+        "type" => Some("type"),
+        "select" => Some("select"),
+        "screenshot" => Some("screenshot"),
+        "scroll" => Some("scroll"),
+        "scroll_to" => Some("scroll_to"),
+        "press" | "key" => Some("press"),
+        "drag" => Some("drag"),
+        "back" | "go_back" => Some("go_back"),
+        "forward" | "go_forward" => Some("go_forward"),
+        "wait" => Some("wait"),
+        "evaluate" => Some("evaluate"),
+        "list_tabs" => Some("list_tabs"),
+        "new_tab" => Some("new_tab"),
+        "close_tab" | "close" => Some("close_tab"),
+        "zoom" => Some("zoom"),
+        "get_page_text" => Some("get_page_text"),
+        "read_console_messages" | "console_messages" => Some("read_console_messages"),
+        "read_network_requests" | "network_requests" => Some("read_network_requests"),
+        "resize_window" | "resize" => Some("resize_window"),
+        "file_upload" | "upload_file" => Some("file_upload"),
+        "find" | "find_elements" => Some("find"),
+        _ => None,
+    }
+}
+
 /// Build extension tool arguments from the web tool input.
 fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::Value {
     let mut args = serde_json::Map::new();
 
     // Forward common parameters
     let forward_keys = match action {
-        "navigate" | "new_tab" => vec!["url"],
+        "navigate" => vec!["url", "force"],
+        "new_tab" => vec!["url"],
         "click" | "double_click" | "triple_click" | "right_click" => {
             vec!["ref", "selector", "coordinate", "x", "y", "modifiers"]
         }
@@ -772,6 +1059,14 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
         "wait" => vec!["ms", "duration"],
         "evaluate" => vec!["expression", "text"],
         "snapshot" | "read_page" => vec!["filter", "depth", "maxChars", "refId"],
+        "close_tab" | "close" => vec!["tabId", "tabIds"],
+        "zoom" => vec!["region"],
+        "get_page_text" => vec!["max_chars"],
+        "read_console_messages" | "console_messages" => vec!["onlyErrors", "clear", "pattern", "limit"],
+        "read_network_requests" | "network_requests" => vec!["urlPattern", "clear", "limit"],
+        "resize_window" | "resize" => vec!["width", "height"],
+        "file_upload" | "upload_file" => vec!["paths", "ref"],
+        "find" | "find_elements" => vec!["query"],
         // DevTools actions — forward url, selector, expression, and filter params
         "console" | "source" | "storage" | "dom" | "cookies" | "performance" => {
             vec!["url", "selector", "expression", "filter"]
@@ -988,6 +1283,63 @@ fn parse_brave_results(html: &str) -> Vec<SearchResult> {
             .unwrap_or_default();
 
         if !title.is_empty() && !url.is_empty() {
+            results.push(SearchResult {
+                title,
+                url,
+                snippet,
+            });
+        }
+    }
+
+    results
+}
+
+/// Parse DuckDuckGo HTML lite results.
+/// DDG HTML lite page has results in <a class="result__a" href="...">title</a>
+/// and snippets in <a class="result__snippet" ...>description</a>.
+fn parse_duckduckgo_results(html: &str) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+
+    // Split by "result__a" class which marks each result link
+    let chunks: Vec<&str> = html.split("result__a").collect();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        if i == 0 || results.len() >= 10 {
+            continue;
+        }
+
+        // Extract href from the result link
+        let url = extract_attr_forward(chunk, "href")
+            .map(|u| {
+                // DDG wraps URLs in redirect: //duckduckgo.com/l/?uddg=ENCODED_URL
+                if let Some(uddg_idx) = u.find("uddg=") {
+                    let encoded = &u[uddg_idx + 5..];
+                    let end = encoded.find('&').unwrap_or(encoded.len());
+                    urlencoding::decode(&encoded[..end])
+                        .map(|s| s.into_owned())
+                        .unwrap_or(u)
+                } else {
+                    u
+                }
+            })
+            .unwrap_or_default();
+
+        // Title is the text content of the <a> tag
+        let title = extract_between(chunk, ">", "</a>")
+            .map(|s| strip_html(&s).trim().to_string())
+            .unwrap_or_default();
+
+        // Snippet is in the nearby result__snippet
+        let snippet = if let Some(snip_chunk) = chunk.split("result__snippet").nth(1) {
+            extract_between(snip_chunk, ">", "</a>")
+                .or_else(|| extract_between(snip_chunk, ">", "</"))
+                .map(|s| strip_html(&s).trim().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        if !title.is_empty() && !url.is_empty() && url.starts_with("http") {
             results.push(SearchResult {
                 title,
                 url,

@@ -1096,7 +1096,7 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                                     let result = if let Some(err) = parsed["error"].as_str() {
                                         Err(err.to_string())
                                     } else {
-                                        Ok(parsed["results"].clone())
+                                        Ok(parsed["result"].clone())
                                     };
                                     bridge_recv.deliver_result(id, result).await;
                                 }

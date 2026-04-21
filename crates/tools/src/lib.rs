@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod a2ui_tool;
 pub mod app_tool;
 pub mod bot_tool;

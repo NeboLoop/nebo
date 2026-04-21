@@ -150,14 +150,14 @@
 			<line x1="15" y1="9" x2="15.01" y2="9" />
 		</svg>
 		<p class="text-sm">{$t('agent.agentNotFound')}</p>
-		<a href="/agents" class="btn btn-sm btn-ghost">{$t('agent.backToAgents')}</a>
+		<a href="/" class="btn btn-sm btn-ghost">{$t('agent.backToAgents')}</a>
 	</div>
 {:else}
 	<div class="flex flex-col flex-1 min-h-0">
 		<!-- V2 Agent Header: avatar + name + tab pills -->
 		<div class="v2-main-head">
 			<div class="v2-main-title">
-				<div class="sidebar-agent-avatar" style="width: 26px; height: 26px; border-radius: 7px; background: var(--v2-primary-soft); color: var(--v2-primary-ink); font-size: 11px;">
+				<div class="sidebar-agent-avatar w-[26px] h-[26px] rounded-[7px] bg-primary/10 text-primary text-[11px]">
 					{(displayName || '?').charAt(0).toUpperCase()}
 				</div>
 				{#if editing}

@@ -257,8 +257,14 @@
 
 <!-- Chat group - user on right, assistant on left -->
 <div class="flex gap-3 mb-4 {role === 'user' ? 'flex-row-reverse' : ''}">
+	<!-- Agent avatar (left side for assistant) -->
+	{#if role === 'assistant'}
+		<div class="w-7 h-7 rounded-lg grid place-items-center text-xs font-semibold shrink-0 bg-primary/10 text-primary">
+			{(agentName || 'N').charAt(0).toUpperCase()}
+		</div>
+	{/if}
 	<!-- Messages container -->
-	<div class="flex flex-col gap-0.5 max-w-[min(900px,100%)] {role === 'user' ? 'items-end' : 'items-start'}">
+	<div class="flex flex-col gap-0.5 {role === 'user' ? 'max-w-[72%] items-end' : 'max-w-[min(900px,100%)] items-start'}">{''}
 		<!-- Messages -->
 		{#each resolvedMessages as resolved (resolved.id)}
 			<div class="group w-full">
@@ -338,13 +344,13 @@
 								</div>
 							{:else}
 								<div
-									class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming && block.isLastBlock ? 'animate-pulse-border' : ''} {resolved.message.proactive ? 'proactive-message' : ''}"
+									class="relative rounded-2xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 rounded-br-md' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming && block.isLastBlock ? 'animate-pulse-border' : ''} {resolved.message.proactive ? 'proactive-message' : ''}"
 								>
 									<div class="prose prose-invert max-w-none leading-relaxed">
 										<Markdown content={block.text} />
 									</div>
 									{#if resolved.message.streaming && block.isLastBlock}
-										<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>
+										<span class="inline-block w-0.5 h-[1em] bg-base-content animate-blink ml-0.5 align-text-bottom"></span>
 									{/if}
 
 									<!-- Copy button on last text block -->
@@ -411,7 +417,7 @@
 							</div>
 						{:else}
 							<div
-								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming ? 'animate-pulse-border' : ''} {resolved.message.proactive ? 'proactive-message' : ''}"
+								class="relative rounded-2xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 {role === 'user' ? 'bg-primary/10 rounded-br-md' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming ? 'animate-pulse-border' : ''} {resolved.message.proactive ? 'proactive-message' : ''}"
 							>
 								{#if resolved.message.streaming && !resolved.cleanContent}
 									<ReadingIndicator />
@@ -420,7 +426,7 @@
 										<Markdown content={resolved.cleanContent} preRenderedHtml={resolved.message.contentHtml} />
 									</div>
 									{#if resolved.message.streaming}
-										<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>
+										<span class="inline-block w-0.5 h-[1em] bg-base-content animate-blink ml-0.5 align-text-bottom"></span>
 									{/if}
 								{/if}
 

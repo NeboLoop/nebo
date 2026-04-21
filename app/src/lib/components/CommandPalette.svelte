@@ -36,9 +36,9 @@
 
 	const navItems: PaletteItem[] = $derived([
 		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.dashboard'), icon: 'grid', action: () => goto('/') },
-		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.agents'), icon: 'cpu', action: () => goto('/agents') },
-		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.skills'), icon: 'zap', action: () => goto('/skills') },
-		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.integrations'), icon: 'plug', action: () => goto('/integrations') },
+		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.agents'), icon: 'cpu', action: () => goto('/marketplace/agents') },
+		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.skills'), icon: 'zap', action: () => goto('/marketplace/skills') },
+		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.integrations'), icon: 'plug', action: () => goto('/settings/extensions') },
 		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.events'), icon: 'calendar', action: () => goto('/events') },
 		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.marketplace'), icon: 'store', action: () => goto('/marketplace') }
 	]);

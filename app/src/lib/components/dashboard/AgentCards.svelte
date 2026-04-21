@@ -45,7 +45,7 @@
 						</div>
 					</div>
 				</div>
-				<button class="btn btn-primary btn-sm btn-outline gap-1.5" onclick={() => goto('/agents')}>
+				<button class="btn btn-primary btn-sm btn-outline gap-1.5" onclick={() => goto('/')}>
 					<MessageSquare class="w-3.5 h-3.5" /> Chat
 				</button>
 			</div>

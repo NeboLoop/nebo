@@ -3,6 +3,6 @@
 	import { onMount } from 'svelte';
 
 	onMount(() => {
-		goto('/integrations', { replaceState: true });
+		goto('/settings/mcp', { replaceState: true });
 	});
 </script>

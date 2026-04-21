@@ -82,7 +82,7 @@
 			<line x1="15" y1="9" x2="15.01" y2="9" />
 		</svg>
 		<p class="text-base">{$t('agent.channelNotFound', { values: { name: decodeURIComponent($page.params.name) } })}</p>
-		<a href="/agents" class="btn btn-sm btn-ghost">{$t('agent.backToChat')}</a>
+		<a href="/" class="btn btn-sm btn-ghost">{$t('agent.backToChat')}</a>
 	</div>
 {:else}
 	{#key mode.type === 'channel' ? mode.channelId : 'companion'}

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 
 	onMount(() => {
-		goto('/integrations', { replaceState: true });
+		goto('/settings/extensions', { replaceState: true });
 	});
 </script>

@@ -32,6 +32,7 @@ This document covers the full browser automation pipeline in the Rust rewrite: e
 22. [Audit Logging](#22-audit-logging)
 23. [Known Issues and Failure Modes](#23-known-issues-and-failure-modes)
 24. [Debugging Guide](#24-debugging-guide)
+25. [PRD: Headless Fallback (No Extension)](#25-prd-headless-fallback-no-extension)
 
 ---
 
@@ -1206,3 +1207,106 @@ ps aux | grep nebo | grep chrome-extension
 | `chrome-extension/src/content/accessibility-tree.ts` | 340 | Content script — a11y tree generation |
 | `chrome-extension/src/content/visual-indicator.ts` | 226 | Content script — glow + stop button |
 | `chrome-extension/manifest.json` | 51 | MV3 manifest — permissions, content scripts |
+
+---
+
+## 25. PRD: Headless Fallback (No Extension)
+
+### Problem
+
+Browser automation currently requires the Nebo Chrome extension. Users who don't install the extension (or who use a non-Chrome browser) have zero browser capabilities. Since Nebo targets non-technical professionals, requiring a Chrome extension install is a friction point.
+
+### Solution
+
+Two execution paths behind the same `web(action: ...)` tool interface:
+
+```
+web(action: "click", ref: "ref_1")
+    ↓
+ExtensionBridge connected?
+    YES → Chrome extension path (CDP via extension, visible browser, JPEG screenshots)
+    NO  → Headless path (CDP over WebSocket, headless Chromium, text-only a11y tree)
+```
+
+The agent doesn't know which path is active. Same tool schemas, same ref system, same accessibility tree format. The only difference: headless path has no screenshots (text-only, like Hermes Agent by Nous Research — see `janus/docs/info/browser-agent-pattern.md`).
+
+### What We Need
+
+#### 1. `HeadlessBridge` (new, in `crates/browser/`)
+
+Counterpart to `ExtensionBridge`. Manages a headless Chromium process and communicates via CDP WebSocket.
+
+- **Launch**: Spawn headless Chrome with `--headless=new --remote-debugging-port=0` (random port). Parse the DevTools WebSocket URL from stderr.
+- **CDP client**: WebSocket connection to `ws://127.0.0.1:{port}/devtools/page/{id}`. Send JSON-RPC commands, receive events. Reuse or adapt `crates/mcp/src/client.rs` SSE/HTTP patterns for WebSocket.
+- **Session lifecycle**: One headless browser per Nebo session. Create new pages (tabs) on demand. Clean up on session end.
+- **Same trait**: Implement the same `ActionExecutor` trait that `ExtensionBridge` implements, so `web_tool.rs` can use either interchangeably.
+
+#### 2. Accessibility Tree Injection
+
+The Chrome extension uses `chrome-extension/src/content/accessibility-tree.ts` (content script injected at `document_start`). For headless, we need the same tree but injected via CDP:
+
+- Use `Runtime.evaluate` to inject the accessibility tree generator into the page.
+- Same output format: `[ref_1] button "Submit"`, `[ref_2] link "Home"`, etc.
+- Same `__neboElementMap` WeakRef store for element resolution.
+- Same `resolveRef` logic (scrollIntoView + getBoundingClientRect + center coords).
+
+The content script source can be shared — bundle `accessibility-tree.ts` as a string constant and inject via CDP `Runtime.evaluate` or `Page.addScriptToEvaluateOnNewDocument`.
+
+#### 3. Tool Routing in `web_tool.rs`
+
+Currently `handle_browser_via_extension()` assumes the extension is connected. Change to:
+
+```rust
+async fn handle_browser_action(&self, action: &str, params: Value) -> ToolResult {
+    if self.extension_bridge.is_connected() {
+        self.handle_via_extension(action, params).await
+    } else {
+        self.handle_via_headless(action, params).await
+    }
+}
+```
+
+`handle_via_headless` maps the same STRAP actions to CDP commands:
+
+| Action | CDP Command |
+|--------|-------------|
+| `navigate` | `Page.navigate` + wait for `Page.loadEventFired` |
+| `read_page` | `Runtime.evaluate` (inject + call a11y tree generator) |
+| `click` | `Input.dispatchMouseEvent` (mouseMoved + mousePressed + mouseReleased) |
+| `type` | `Input.dispatchKeyEvent` per character |
+| `fill` | `Runtime.evaluate` (native setter + input/change events) |
+| `press` | `Input.dispatchKeyEvent` |
+| `scroll` | `Input.dispatchMouseEvent` (mouseWheel) |
+| `screenshot` | `Page.captureScreenshot` (JPEG, token-optimized) |
+| `evaluate` | `Runtime.evaluate` |
+| `new_tab` | `Target.createTarget` |
+| `close_tab` | `Target.closeTarget` |
+
+#### 4. Chrome Detection & Download
+
+Headless mode needs a Chromium binary. Priority:
+
+1. **Detect installed Chrome/Chromium** — check standard paths (`/Applications/Google Chrome.app`, `chrome.exe`, `chromium-browser`, etc.). Already partially implemented in `crates/browser/src/detect.rs`.
+2. **Bundled Chromium** — optional. Download a known-good Chromium build on first use (like Playwright does). Store in `~/.nebo/chromium/`. ~150MB download.
+3. **No browser available** — return clear error: "Install Google Chrome for browser features, or install the Nebo Browser Extension for enhanced automation."
+
+#### 5. Differences from Extension Path
+
+| Capability | Extension | Headless |
+|-----------|-----------|----------|
+| Visible browser | Yes (user sees actions) | No (invisible) |
+| Screenshots | JPEG, token-optimized | Available but no sidecar vision by default |
+| User's cookies/logins | Yes (user's Chrome profile) | No (clean profile, unless `--user-data-dir` specified) |
+| Extension install required | Yes | No |
+| Works without Chrome | No | Yes (if Chromium bundled) |
+| Performance | Slower (relay chain) | Faster (direct CDP WebSocket) |
+| a11y tree | Content script at document_start | Injected via CDP |
+
+#### 6. Implementation Order
+
+1. **`HeadlessBridge`** — Chrome launch, CDP WebSocket, basic commands (navigate, evaluate)
+2. **A11y tree injection** — Port content script to CDP-injectable form
+3. **Action mapping** — click, type, fill, press, scroll via CDP
+4. **Tool routing** — `web_tool.rs` auto-selects extension vs headless
+5. **Chrome detection** — find installed Chrome, graceful fallback messages
+6. **Testing** — same test suite against both paths

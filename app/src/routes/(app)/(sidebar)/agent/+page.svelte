@@ -2,9 +2,9 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 
-	// /agent is no longer a destination — redirect to /agents overview
+	// /agent is no longer a destination — redirect to home
 	onMount(() => {
-		goto('/agents', { replaceState: true });
+		goto('/', { replaceState: true });
 	});
 </script>
 

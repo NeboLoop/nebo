@@ -7,10 +7,22 @@
 		UserCog,
 		FileText,
 		Grid3x3,
-		PackageCheck
+		PackageCheck,
+		ArrowLeft
 	} from 'lucide-svelte';
+	import AvatarMenu from '$lib/components/sidebar/AvatarMenu.svelte';
+	import * as api from '$lib/api/nebo';
+	import { onMount } from 'svelte';
 
 	let { children }: { children: Snippet } = $props();
+	let userName = $state('');
+
+	onMount(async () => {
+		try {
+			const res = await api.getUserProfile();
+			userName = res.profile?.displayName || '';
+		} catch { /* fine */ }
+	});
 
 	const currentPath = $derived($page.url.pathname);
 
@@ -46,6 +58,10 @@
 <div class="marketplace-layout">
 	<aside class="marketplace-sidebar">
 		<div class="marketplace-sidebar-header">
+			<a href="/" class="marketplace-nav-link text-base-content/60 no-underline">
+				<ArrowLeft class="w-4 h-4" />
+				<span class="text-[13px]">Back to chats</span>
+			</a>
 			<h2 class="marketplace-sidebar-title">{$t('marketplace.title')}</h2>
 		</div>
 
@@ -77,13 +93,9 @@
 			{/each}
 		</nav>
 
-		<!-- Publish: hidden until SDK is ready -->
-		<!-- <div class="marketplace-sidebar-footer">
-			<a href="/marketplace" class="marketplace-nav-link">
-				<Code2 class="w-4.5 h-4.5" strokeWidth={1.5} />
-				<span>Publish</span>
-			</a>
-		</div> -->
+		<div class="mt-auto px-2.5 pb-2.5 pt-1 border-t border-base-300">
+			<AvatarMenu {userName} />
+		</div>
 	</aside>
 
 	<main class="marketplace-content">
