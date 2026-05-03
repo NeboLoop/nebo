@@ -263,14 +263,14 @@ impl WebTool {
         // Navigate to DuckDuckGo search
         let search_url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding::encode(query));
         let nav_args = serde_json::json!({ "url": search_url });
-        if let Err(e) = executor.execute("navigate", &nav_args).await {
+        if let Err(e) = executor.execute("navigate", &nav_args, Some(session_id)).await {
             tracing::warn!(error = %e, "browser navigate failed, falling back to DDG scraping");
             return self.search_duckduckgo_html(query).await;
         }
 
         // Read the search results page
         let read_args = serde_json::json!({});
-        match executor.execute("read_page", &read_args).await {
+        match executor.execute("read_page", &read_args, Some(session_id)).await {
             Ok(result) => {
                 let text = result.get("pageContent")
                     .and_then(|v| v.as_str())
@@ -438,19 +438,22 @@ impl WebTool {
 
         // Status works even when disconnected
         if action == "status" {
-            let connected = manager.extension_connected();
+            let ext_connected = manager.extension_connected();
+            let headless = manager.headless_available();
+            let status = if ext_connected {
+                "Browser extension connected. Ready. Use read_page to see the current page."
+            } else if headless {
+                "Headless browser available (agent-browser). Use read_page to see the current page."
+            } else {
+                "No browser backend available. Connect the Nebo Chrome/Brave extension \
+                 or install agent-browser (`npm i -g agent-browser && agent-browser install`)."
+            };
             return ToolResult::ok(format!(
-                "Browser extension connected: {}\n{}",
-                connected,
-                if connected {
-                    "Ready. Use read_page to see the current page."
-                } else {
-                    "Install the Nebo Chrome/Brave extension and make sure Nebo is running."
-                }
+                "Extension: {}, Headless: {}\n{}",
+                ext_connected, headless, status
             ));
         }
 
-        // Extension is the only browser path — no managed profiles
         let executor = match manager.executor() {
             Some(e) => e,
             None => {
@@ -470,13 +473,13 @@ impl WebTool {
             } else {
                 self.broadcast_extension_disconnected("not_connected", session_id);
                 return ToolResult::error(
-                    "Browser extension not connected. Install the Nebo Chrome/Brave extension \
-                     and make sure Nebo is running."
+                    "No browser backend available. Connect the Nebo Chrome/Brave extension \
+                     or install agent-browser (`npm i -g agent-browser && agent-browser install`)."
                 );
             }
         }
 
-        self.handle_browser_via_extension(&executor, action, input).await
+        self.handle_browser_via_extension(&executor, action, input, Some(session_id)).await
     }
 
     /// Handle devtools actions via the Chrome extension (CDP bridge).
@@ -521,7 +524,7 @@ impl WebTool {
         };
 
         let args = build_extension_args(action, input);
-        match executor.execute(tool_name, &args).await {
+        match executor.execute(tool_name, &args, Some(session_id)).await {
             Ok(result) => {
                 let text = serde_json::to_string_pretty(&result)
                     .unwrap_or_else(|_| format!("{}", result));
@@ -537,6 +540,7 @@ impl WebTool {
         executor: &browser::ActionExecutor,
         action: &str,
         input: &serde_json::Value,
+        session_id: Option<&str>,
     ) -> ToolResult {
         // browser_batch: execute multiple actions in one round trip
         if action == "browser_batch" {
@@ -563,7 +567,7 @@ impl WebTool {
             }
 
             let opts = browser::BatchOptions { stop_on_error: true };
-            return match executor.batch_execute(batch_actions, opts).await {
+            return match executor.batch_execute(batch_actions, opts, session_id).await {
                 Ok(results) => {
                     let mut parts = Vec::new();
                     for (i, result) in results.iter().enumerate() {
@@ -626,7 +630,7 @@ impl WebTool {
         // Execute with auto-retry for read_page character limit errors.
         // The extension (at parity with Claude) returns an error when output > maxChars.
         // Nebo handles this by retrying with tighter params so the agent always gets content.
-        let result = executor.execute(tool_name, &args).await;
+        let result = executor.execute(tool_name, &args, session_id).await;
 
         // read_page character limit retry: depth 5 → depth 3 → filter interactive
         if action == "snapshot" || action == "read_page" {
@@ -645,7 +649,7 @@ impl WebTool {
                                 if v.is_null() { obj.remove(k); } else { obj.insert(k.clone(), v.clone()); }
                             }
                         }
-                        if let Ok(retry_result) = executor.execute(tool_name, &retry_args).await {
+                        if let Ok(retry_result) = executor.execute(tool_name, &retry_args, session_id).await {
                             let page_content = retry_result.get("pageContent").and_then(|v| v.as_str()).unwrap_or("");
                             if !page_content.is_empty() {
                                 return ToolResult {
@@ -663,7 +667,7 @@ impl WebTool {
         match result {
             Ok(result) => {
                 // Check for post-action screenshot in result: { text: "...", screenshot: { data, format } }
-                let (text_result, screenshot_b64) = if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
+                let (mut text_result, screenshot_b64) = if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
                     let screenshot = result.get("screenshot").and_then(|s| {
                         let data = s.get("data")?.as_str()?;
                         let fmt = s.get("format").and_then(|f| f.as_str()).unwrap_or("jpeg");
@@ -678,13 +682,34 @@ impl WebTool {
                     (s, None)
                 };
 
+                // Auto-snapshot after navigate: return a compact interactive snapshot
+                // so the model can act immediately without a separate read_page call.
+                if action == "navigate" {
+                    let snap_args = serde_json::json!({"filter": "interactive"});
+                    match executor.execute("read_page", &snap_args, session_id).await {
+                        Ok(snap_result) => {
+                            let snapshot_text = snap_result.get("pageContent")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if !snapshot_text.is_empty() {
+                                let truncated = truncate_snapshot(snapshot_text, 8000);
+                                text_result = format!(
+                                    "{}\n\n## Page Snapshot (interactive elements)\n{}",
+                                    text_result, truncated
+                                );
+                            }
+                        }
+                        Err(_) => {} // Snapshot failed — navigate still succeeded
+                    }
+                }
+
                 ToolResult {
                     content: text_result,
                     is_error: false,
                     image_url: screenshot_b64,
                 }
             }
-            Err(e) => ToolResult::error(format!("Browser action failed: {}", e)),
+            Err(e) => ToolResult::error(friendly_browser_error(action, &e.to_string())),
         }
     }
 }
@@ -695,57 +720,25 @@ impl DynTool for WebTool {
     }
 
     fn description(&self) -> String {
-        "Web operations — HTTP requests, search, browser automation, and devtools.\n\
-         USE THIS when: user mentions a URL, asks to look something up, browse, search the web, fetch a page, or interact with a website.\n\n\
-         Two modes:\n\
-         - fetch/search: Simple HTTP requests and web search (no JavaScript, no rendering)\n\
-         - browser: Controls the user's Chrome browser via the Nebo extension. Full automation — navigate, read pages, click, fill forms, take screenshots. Works on the user's real browser with their logged-in sessions.\n\n\
-         Decision: If you just need an API response or static HTML → fetch. If you need to read a rendered page, interact with elements, or use the user's sessions → browser actions.\n\n\
+        "Web operations — HTTP requests, search, browser automation, and devtools.\n\n\
+         Decision: API response or static HTML → fetch/search. Rendered page, interaction, or user sessions → browser.\n\n\
          ## HTTP & Search\n\
-         - fetch: Simple HTTP request. Params: url, method, headers, body\n\
-         - sanitize: Extract visible text from URL, chunked for LLM. Params: url, chunk_size (default 4000)\n\
-         - search: Web search. Params: query (keep short, 1-6 words)\n\n\
-         ## Browser — Page Reading\n\
-         - read_page: Get accessibility tree of page elements with refs like [ref_1], [ref_2]. Output limited to 50000 chars by default. If output exceeds this limit, you'll receive an error — retry with smaller depth or use refId to focus on a subtree. Params: filter (\"interactive\"|\"all\"), depth (default 15), refId, maxChars\n\
-         - get_page_text: Extract raw article/readable text from page. Ideal for text-heavy pages. Params: max_chars (default 50000)\n\
-         - find: Find elements by natural language description (e.g. \"search bar\", \"add to cart button\", \"product title containing organic\"). Returns up to 20 matching refs. Params: query\n\
-         - screenshot: Capture page screenshot. Returns image.\n\
-         - zoom: Take a higher-res screenshot of a specific region for closer inspection. IMPORTANT: Coordinates in subsequent click calls always refer to the full-screen screenshot, never the zoomed image. This is read-only. Params: region [x0, y0, x1, y1]\n\n\
-         ## Browser — Interaction\n\
-         - click: Click element. Params: ref OR coordinate [x,y], modifiers (\"ctrl\", \"shift\", \"alt\", \"cmd\", combine with \"+\")\n\
-         - double_click / triple_click / right_click: Same params as click.\n\
-         - hover: Move cursor without clicking. Useful for tooltips/dropdowns. Params: ref OR coordinate\n\
-         - fill: Set form input value directly (only works on INPUT/TEXTAREA/SELECT/contenteditable). If fill fails, use click on the element then type. Params: ref, value (string/bool/number)\n\
-         - type: Type text via real keystrokes into the focused element. Params: text\n\
-         - select: Select dropdown option. Params: ref, value (option value or text)\n\
-         - press: Press keyboard key or chord. Params: key (e.g. \"Enter\", \"Tab\", \"cmd+a\", \"Backspace\"), repeat (default 1, max 100)\n\
-         - scroll: Scroll the viewport. Params: direction (up/down/left/right), amount (ticks, default 3), coordinate (optional scroll target)\n\
-         - scroll_to: Scroll element into view by ref. Params: ref\n\
-         - drag: Drag from one point to another. Params: start_coordinate [x,y], coordinate [x,y]\n\
-         - file_upload: Upload files to a file input element. Do NOT click file upload buttons — that opens a native picker you cannot interact with. Use read_page/find to locate the file input ref, then use this. Params: ref, paths (array of absolute file paths)\n\
-         - evaluate: Run JavaScript expression on the page. The value of the last expression is returned. Do NOT use 'return'. Params: expression\n\
-         - wait: Pause for a duration. Params: duration (seconds, max 30) or ms (milliseconds, max 10000)\n\n\
-         ## Browser — Navigation & Tabs\n\
-         - navigate: Go to URL or \"back\"/\"forward\" for history. Params: url, force (bypass 'Leave site?' dialogs)\n\
-         - new_tab: Open URL in new tab. Params: url (required)\n\
-         - close_tab: Close current or specific tab. Params: tabId (optional)\n\
-         - list_tabs: List all open tabs.\n\
-         - go_back / go_forward: Navigate browser history.\n\n\
-         ## Browser — Batching\n\
-         - browser_batch: Execute multiple browser actions in ONE round trip. Use this extensively when you can predict 2+ steps ahead — e.g. navigate then read_page, click a field then type then press Enter. Actions execute sequentially and stop on first error. Params: actions (array of objects, each with \"action\" plus that action's normal params)\n\n\
-         ## Browser — Debugging\n\
-         - read_console_messages: Read browser console output. Params: onlyErrors, pattern, limit, clear\n\
-         - read_network_requests: Read network traffic. Params: urlPattern, limit, clear\n\
-         - resize_window: Set browser window size. Params: width, height\n\n\
-         ## DevTools\n\
-         - console / source / storage / dom / cookies / performance\n\n\
+         fetch, sanitize, search — see parameter descriptions in schema.\n\n\
+         ## Browser\n\
+         Controls the user's real Chrome browser. navigate returns a compact page snapshot automatically.\n\n\
+         Reading: read_page (accessibility tree with refs like [ref_1]), get_page_text, find, screenshot, zoom\n\
+         Interaction: click, fill, type, select, press, scroll, hover, drag, file_upload, evaluate, wait\n\
+         Navigation: navigate, new_tab, close_tab, list_tabs, go_back, go_forward\n\
+         Batching: browser_batch — chain 2+ predictable steps in one call (e.g. click + type + press Enter)\n\
+         Debugging: read_console_messages, read_network_requests, resize_window\n\
+         DevTools: console, source, storage, dom, cookies, performance\n\n\
          ## CRITICAL — Browse Like a Human\n\
-         - Always read_page first to understand the page before clicking anything.\n\
-         - NEVER assume you see everything — scroll down and read_page again to find more content.\n\
-         - Use browser_batch to chain predictable steps in one call (faster, fewer round trips).\n\
-         - For React/modern sites: if fill doesn't work, use click → press(key: \"cmd+a\") → type (real keystrokes).\n\
-         - NEVER navigate to URLs with search query params (triggers anti-bot). Go to the homepage, find the search box, type your query, press Enter.\n\n\
-         GUARDRAILS: Always include source URLs in your response when citing web results."
+         - read_page first to see elements before clicking. Scroll + read_page to find more content.\n\
+         - browser_batch for predictable multi-step sequences (faster, fewer round trips).\n\
+         - If fill fails on React/modern sites: click → press(key: \"cmd+a\") → type.\n\
+         - Do NOT click file upload buttons (opens native picker). Use file_upload with ref instead.\n\
+         - NEVER navigate to URLs with search query params (anti-bot). Use the site's search box.\n\
+         - Always cite source URLs when reporting web results."
             .to_string()
     }
 
@@ -1081,6 +1074,40 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
     }
 
     serde_json::Value::Object(args)
+}
+
+/// Truncate a snapshot at a line boundary, appending an omission note.
+/// Used by auto-snapshot after navigate to keep output compact.
+fn truncate_snapshot(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    let truncated = &text[..max_chars];
+    let last_newline = truncated.rfind('\n').unwrap_or(max_chars);
+    let clean = &text[..last_newline];
+    let omitted = text.len() - last_newline;
+    format!(
+        "{}\n\n[...{} chars omitted. Use read_page for full content.]",
+        clean, omitted
+    )
+}
+
+/// Map raw browser errors to AI-friendly messages with recovery suggestions.
+fn friendly_browser_error(action: &str, raw_error: &str) -> String {
+    let suggestion = if raw_error.contains("Timeout") || raw_error.contains("timeout") {
+        "The page may still be loading. Try read_page to check current state, or wait and retry."
+    } else if raw_error.contains("not found") || raw_error.contains("No element") || raw_error.contains("no element") {
+        "Element not found on page. Use read_page to get current page elements and their refs."
+    } else if raw_error.contains("not connected") || raw_error.contains("disconnected") {
+        "Browser disconnected. Check web(action: \"status\") and retry."
+    } else if raw_error.contains("intercept") || raw_error.contains("overlay") {
+        "Click was intercepted by an overlay/popup. Try closing it first, or click a different element."
+    } else if raw_error.contains("navigation") || raw_error.contains("net::ERR") {
+        "Navigation failed. The URL may be invalid or the site may be down. Verify the URL and retry."
+    } else {
+        "Try read_page to see current page state and adjust your approach."
+    };
+    format!("{} failed: {}. Recovery: {}", action, raw_error, suggestion)
 }
 
 /// Simple SSRF check: block private/loopback IPs.

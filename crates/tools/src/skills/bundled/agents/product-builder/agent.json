@@ -1,0 +1,236 @@
+{
+  "inputs": [
+    {
+      "type": "text",
+      "required": false,
+      "placeholder": "My App",
+      "description": "Name of the project you're building",
+      "key": "project_name"
+    },
+    {
+      "type": "textarea",
+      "required": false,
+      "description": "Brief description of what you're building",
+      "key": "project_description"
+    },
+    {
+      "type": "text",
+      "required": false,
+      "description": "Who is this for?",
+      "key": "target_users"
+    }
+  ],
+  "workflows": {
+    "ideate": {
+      "trigger": {
+        "type": "manual"
+      },
+      "description": "Socratic brainstorming: explore the idea through clarifying questions, then converge on 2-3 approaches and a design decision",
+      "activities": [
+        {
+          "id": "gather-context",
+          "intent": "Understand the idea, the user, and the constraints before brainstorming",
+          "skills": [
+            "@nebo/skills/brainstorming@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Ask the user to describe their idea in their own words",
+            "Ask clarifying questions one at a time: who is this for, what problem does it solve, what does success look like",
+            "Identify constraints: time, budget, technical ability, existing tools"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "brainstorm-approaches",
+          "intent": "Generate 2-3 concrete approaches and help the user choose one",
+          "skills": [
+            "@nebo/skills/brainstorming@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Synthesize what you learned into a brief summary and confirm understanding",
+            "Generate 2-3 distinct approaches, each with trade-offs explained in plain language",
+            "Help the user evaluate each approach against their constraints",
+            "Arrive at a design decision with clear rationale"
+          ],
+          "token_budget": {
+            "max": 2500
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 5000
+      },
+      "emit": "brainstorm.complete"
+    },
+    "spec-it": {
+      "trigger": {
+        "type": "event",
+        "sources": [
+          "brainstorm.complete"
+        ]
+      },
+      "description": "Convert the approved design decision into a formal spec document with decisions, rationale, and scope",
+      "activities": [
+        {
+          "id": "draft-spec",
+          "intent": "Write a clear, concise spec that captures what will be built and why",
+          "skills": [
+            "@nebo/skills/spec-writing@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Review the brainstorming output and design decision",
+            "Write the spec: problem statement, proposed solution, scope (what's in and what's out), key decisions with rationale",
+            "Define acceptance criteria: how will we know this is done and working",
+            "Present the spec to the user for review and approval"
+          ],
+          "token_budget": {
+            "max": 4000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 5000
+      },
+      "emit": "spec.approved"
+    },
+    "plan-it": {
+      "trigger": {
+        "type": "event",
+        "sources": [
+          "spec.approved"
+        ]
+      },
+      "description": "Break the approved spec into bite-sized tasks with exact steps and verification criteria",
+      "activities": [
+        {
+          "id": "create-plan",
+          "intent": "Produce an ordered list of small tasks that together deliver the spec",
+          "skills": [
+            "@nebo/skills/plan-writing@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Review the approved spec and acceptance criteria",
+            "Break the work into tasks that take no more than 5 minutes each",
+            "Order tasks by dependency: what must happen first, what can happen in parallel",
+            "For each task, write exact steps and a verification check (how to confirm it's done)",
+            "Present the plan to the user for review and approval"
+          ],
+          "token_budget": {
+            "max": 4000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 5000
+      },
+      "emit": "plan.approved"
+    },
+    "build-it": {
+      "trigger": {
+        "type": "event",
+        "sources": [
+          "plan.approved"
+        ]
+      },
+      "description": "Execute the plan task by task, verifying each step before moving to the next",
+      "activities": [
+        {
+          "id": "execute-tasks",
+          "intent": "Work through every task in the plan, verifying completion at each step",
+          "skills": [
+            "@nebo/skills/brainstorming@^1.0.0",
+            "@nebo/skills/spec-writing@^1.0.0",
+            "@nebo/skills/plan-writing@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Read the plan and identify the first incomplete task",
+            "Execute the task following its exact steps",
+            "Run the verification check to confirm the task is done",
+            "If verification fails, diagnose and fix before moving on",
+            "Mark the task complete and move to the next one",
+            "After all tasks are done, run the spec's acceptance criteria to verify the full deliverable"
+          ],
+          "token_budget": {
+            "max": 4000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 10000
+      }
+    },
+    "weekly-standup": {
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 9 * * 1"
+      },
+      "description": "Monday morning review of all in-progress specs and plans \u2014 surface blockers, suggest next steps",
+      "activities": [
+        {
+          "id": "review-progress",
+          "intent": "Summarize where things stand and highlight anything that needs attention",
+          "skills": [
+            "@nebo/skills/plan-writing@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Gather all in-progress specs and plans from memory",
+            "For each, summarize: what's done, what's next, any blockers",
+            "Flag items that have been stalled for more than a week",
+            "Suggest concrete next steps for each active project",
+            "Present a brief standup summary to the user"
+          ],
+          "token_budget": {
+            "max": 2500
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 3000
+      }
+    }
+  },
+  "skills": [
+    "@nebo/skills/brainstorming@^1.0.0",
+    "@nebo/skills/spec-writing@^1.0.0",
+    "@nebo/skills/plan-writing@^1.0.0"
+  ],
+  "pricing": {
+    "model": "monthly_fixed",
+    "cost": 0.0
+  },
+  "defaults": {
+    "timezone": "user_local"
+  }
+}

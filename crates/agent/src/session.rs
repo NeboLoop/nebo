@@ -273,9 +273,7 @@ impl SessionManager {
         let session_name = session.name.clone().unwrap_or_default();
         let new_chat_id = uuid::Uuid::new_v4().to_string();
 
-        // Generate a sequential title based on existing chat count.
-        let existing = self.store.list_chats_by_session(&session_name).unwrap_or_default();
-        let title = format!("Chat {}", existing.len() + 1);
+        let title = "New Chat".to_string();
 
         // Create a new chat row linked to this session.
         self.store.create_chat_for_session(

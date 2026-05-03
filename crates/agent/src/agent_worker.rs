@@ -26,8 +26,8 @@ pub struct AgentWorker {
     cancel: CancellationToken,
     event_dispatcher: Arc<EventDispatcher>,
     workflow_manager: Arc<dyn WorkflowManager>,
-    plugin_store: Arc<PluginStore>,
-    event_bus: EventBus,
+    _plugin_store: Arc<PluginStore>,
+    _event_bus: EventBus,
 }
 
 impl AgentWorker {
@@ -47,7 +47,7 @@ impl AgentWorker {
             Ok(b) => b,
             Err(e) => {
                 warn!(agent = %agent_id, error = %e, "failed to load agent workflow bindings");
-                return Self { agent_id, name, cancel, event_dispatcher, workflow_manager, plugin_store, event_bus };
+                return Self { agent_id, name, cancel, event_dispatcher, workflow_manager, _plugin_store: plugin_store, _event_bus: event_bus };
             }
         };
 
@@ -344,7 +344,7 @@ impl AgentWorker {
 
         info!(agent = %agent_id, name = %name, bindings = bindings.len(), "agent worker started");
 
-        Self { agent_id, name, cancel, event_dispatcher, workflow_manager, plugin_store, event_bus }
+        Self { agent_id, name, cancel, event_dispatcher, workflow_manager, _plugin_store: plugin_store, _event_bus: event_bus }
     }
 
     /// Stop the worker: cancel all spawned tasks, running workflows, cron jobs and event subscriptions.

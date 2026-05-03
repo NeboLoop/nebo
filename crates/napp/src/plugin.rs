@@ -174,6 +174,11 @@ impl PluginStore {
         &self.installed_dir
     }
 
+    /// Root directory for user-provided plugin storage (overrides marketplace).
+    pub fn user_plugins_dir(&self) -> &Path {
+        &self.user_dir
+    }
+
     /// Resolve a plugin binary path from local storage only. Non-async.
     ///
     /// Checks user directory first (override), then installed directory.

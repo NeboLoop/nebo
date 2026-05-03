@@ -81,7 +81,6 @@ impl Pipeline {
             Box::new(RepetitionDetector),
             Box::new(LoopDetector),
             Box::new(ErrorRecovery),
-            Box::new(AutomationSpeed),
             Box::new(PresenceAwareness),
             Box::new(ContextPressure),
             Box::new(JanusQuotaWarning),
@@ -177,9 +176,15 @@ fn count_turns_since_any_tool_use(messages: &[ChatMessage]) -> i32 {
 
 /// Detect if recent user messages contain stop/cancel/abort requests.
 fn user_requested_stop(messages: &[ChatMessage]) -> bool {
-    let stop_patterns = [
-        "stop", "cancel", "abort", "halt", "quit",
-        "enough", "break out", "stop stop",
+    // Exact stop commands — the ENTIRE message (trimmed) must match one of these.
+    // This prevents false positives like "stop submitting the form" or
+    // "and stop doing that" which are instructions, not stop commands.
+    let exact_commands = [
+        "stop", "stop.", "stop!", "stop it", "stop it.", "stop now",
+        "cancel", "abort", "halt", "quit",
+        "enough", "enough.", "that's enough",
+        "break out", "stop stop",
+        "please stop", "just stop", "ok stop",
     ];
     // Check last 3 user messages
     let recent_user: Vec<&ChatMessage> = messages
@@ -191,11 +196,11 @@ fn user_requested_stop(messages: &[ChatMessage]) -> bool {
 
     for msg in &recent_user {
         let lower = msg.content.to_lowercase();
-        // Short messages that are clearly stop commands (not long messages that happen
-        // to contain the word "stop" in a different context)
-        if lower.len() < 80 {
-            for p in &stop_patterns {
-                if lower.contains(p) {
+        let trimmed = lower.trim();
+        // Only match if the entire message is a stop command (< 30 chars)
+        if trimmed.len() < 30 {
+            for p in &exact_commands {
+                if trimmed == *p {
                     return true;
                 }
             }
@@ -207,39 +212,11 @@ fn user_requested_stop(messages: &[ChatMessage]) -> bool {
 /// Check if the loop should be force-broken. Called by the runner BEFORE
 /// making the next LLM call. Returns Some(reason) if the loop must stop.
 pub fn should_force_break(ctx: &Context) -> Option<String> {
-    // 1. Consecutive error iterations — hard limit
-    if ctx.consecutive_error_iterations >= 3 {
-        return Some(format!(
-            "Circuit breaker: {} consecutive iterations where all tool calls failed. \
-             Breaking loop to prevent runaway execution.",
-            ctx.consecutive_error_iterations,
-        ));
-    }
-
-    // 2. Same-tool-same-args loop at extreme count — the LLM is ignoring steering.
-    // Uses hash-based detection: (name_hash, args_hash) must match for it to count.
-    // This correctly allows web(navigate)→web(click)→web(fill) while catching
-    // web(search, "flights") × 6 with identical args.
-    if ctx.recent_tool_result_hashes.len() >= 2 {
-        let last = ctx.recent_tool_result_hashes.last().unwrap();
-        let mut same_call_count = 1usize;
-        for entry in ctx.recent_tool_result_hashes.iter().rev().skip(1) {
-            if entry.0 == last.0 && entry.1 == last.1 {
-                same_call_count += 1;
-            } else {
-                break;
-            }
-        }
-        if same_call_count >= 4 {
-            return Some(format!(
-                "Circuit breaker: same tool called with identical arguments {} times. \
-                 The agent is stuck in a loop and steering was ignored.",
-                same_call_count,
-            ));
-        }
-    }
-
-    // 3. User explicitly asked to stop — unconditional hard break
+    // Only hard-stop on explicit user stop command.
+    // Everything else is handled by the iteration budget (100 iterations).
+    // Hermes uses budget-only (90 iterations, no error/loop tracking) and it works.
+    // The model is smart enough to self-correct — aggressive circuit breakers
+    // kill legitimate browser automation (Google Flights, Amazon, etc.).
     if user_requested_stop(&ctx.messages) && ctx.iteration > 2 {
         return Some(
             "Circuit breaker: user requested stop. Halting agent loop.".to_string()
@@ -470,132 +447,14 @@ impl Generator for RepetitionDetector {
 // This correctly distinguishes web(navigate, google.com) → web(click, button)
 // (legitimate browser work) from web(search, "flights") × 5 (actual loop).
 struct LoopDetector;
-impl LoopDetector {
-    /// Check if the tool involved in the detected loop is the plugin tool.
-    /// Returns true when the most recent entry in recent_tool_names is "plugin".
-    fn is_plugin_loop(names: &[String]) -> bool {
-        names.last().is_some_and(|n| n == "plugin")
-    }
-
-    /// Extra guidance when the looping tool is a plugin CLI command.
-    fn plugin_hint() -> &'static str {
-        "\n--- PLUGIN-SPECIFIC RECOVERY ---\n\
-         The failing tool is a plugin (external CLI). The command syntax may be wrong. Try:\n\
-         - Run the plugin with --help to discover the correct subcommands and flags \
-         (e.g. plugin(resource: \"gws\", command: \"gmail users messages --help\"))\n\
-         - Check if you're passing the right parameter format (JSON vs positional args)\n\
-         - Try a simpler variant of the command first to confirm the subcommand exists"
-    }
-}
 impl Generator for LoopDetector {
     fn name(&self) -> &str { "loop_detector" }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         let mut directives = Vec::new();
-        let hashes = &ctx.recent_tool_result_hashes;
 
-        // A. Same-tool-same-args detection (OpenClaw "generic repeat" pattern).
-        // Counts consecutive calls with identical (name_hash, args_hash).
-        // Different args = different action = not a loop.
-        if hashes.len() >= 2 {
-            let last = hashes.last().unwrap();
-            let mut same_call_count = 1usize;
-            for entry in hashes.iter().rev().skip(1) {
-                if entry.0 == last.0 && entry.1 == last.1 {
-                    same_call_count += 1;
-                } else {
-                    break;
-                }
-            }
-
-            if same_call_count >= 3 {
-                let plugin_extra = if Self::is_plugin_loop(&ctx.recent_tool_names) {
-                    Self::plugin_hint()
-                } else { "" };
-                directives.push(SteeringDirective {
-                    label: "Loop Warning".to_string(),
-                    content: format!(
-                        "LOOP DETECTED: You have called the same tool with identical arguments {} times. \
-                         You are in an infinite loop and MUST break out NOW. Do one of the following:\n\
-                         1. Check if a skill can handle this: skill(action: \"catalog\") — a specialized skill may solve this differently.\n\
-                         2. Ask your advisors for help: agent(resource: \"advisors\", action: \"deliberate\", task: \"I am stuck in a loop trying to [describe what you're doing]. What alternative approach should I take?\")\n\
-                         3. Try a COMPLETELY different tool or approach — not the same tool with different args.\n\
-                         4. If none of the above work, tell the user what's blocking you and ask for guidance.\n\
-                         Do NOT call the same tool again.{}",
-                        same_call_count, plugin_extra
-                    ),
-                    priority: 10,
-                });
-            } else if same_call_count >= 2 {
-                let plugin_extra = if Self::is_plugin_loop(&ctx.recent_tool_names) {
-                    Self::plugin_hint()
-                } else { "" };
-                directives.push(SteeringDirective {
-                    label: "Loop Warning".to_string(),
-                    content: format!(
-                        "You have called the same tool with identical arguments {} times and the result will not change. \
-                         Before repeating, consider:\n\
-                         - Is there a skill for this? Try skill(action: \"catalog\") to check.\n\
-                         - Try different parameters, a different tool, or a different approach entirely.{}",
-                        same_call_count, plugin_extra
-                    ),
-                    priority: 8,
-                });
-            }
-        }
-
-        // B. Stale-result detection — same tool, same args, AND same result.
-        // Stronger signal: even the output is identical.
-        if hashes.len() >= 2 {
-            let last = hashes.last().unwrap();
-            let prev = &hashes[hashes.len() - 2];
-            if last.0 == prev.0 && last.1 == prev.1 && last.2 == prev.2 {
-                directives.push(SteeringDirective {
-                    label: "Stale Results".to_string(),
-                    content: format!("You called the same tool with the same arguments and got \
-                             identical results. You are NOT making progress. STOP and pivot:\n\
-                             1. Check for a skill: skill(action: \"catalog\") — a specialized skill may handle this.\n\
-                             2. Consult advisors: agent(resource: \"advisors\", action: \"deliberate\", task: \"describe your stuck situation\") for a fresh perspective.\n\
-                             3. Use a completely different tool or approach.\n\
-                             Do NOT repeat the same call.{}",
-                             if Self::is_plugin_loop(&ctx.recent_tool_names) { Self::plugin_hint() } else { "" }),
-                    priority: 9,
-                });
-            }
-        }
-
-        // C. Ping-pong detection (OpenClaw pattern) — A→B→A→B alternating.
-        if hashes.len() >= 4 {
-            let len = hashes.len();
-            let a1 = &hashes[len - 4];
-            let b1 = &hashes[len - 3];
-            let a2 = &hashes[len - 2];
-            let b2 = &hashes[len - 1];
-            // Check: (name+args of position -4) == (name+args of position -2)
-            //    AND (name+args of position -3) == (name+args of position -1)
-            //    AND they're different from each other
-            let a_matches = a1.0 == a2.0 && a1.1 == a2.1;
-            let b_matches = b1.0 == b2.0 && b1.1 == b2.1;
-            let a_differs_from_b = a1.0 != b1.0 || a1.1 != b1.1;
-            if a_matches && b_matches && a_differs_from_b {
-                directives.push(SteeringDirective {
-                    label: "Ping-Pong".to_string(),
-                    content: format!("You are alternating between two tool calls in a loop (A→B→A→B). \
-                             Neither is making progress. STOP this pattern immediately.\n\
-                             1. Check if a skill can handle this differently: skill(action: \"catalog\")\n\
-                             2. Ask advisors for a fresh approach: agent(resource: \"advisors\", action: \"deliberate\", task: \"describe the problem you're trying to solve\")\n\
-                             3. Try a completely different strategy — not a variation of the same two tools.\n\
-                             4. If truly stuck, tell the user what's blocking you.{}",
-                             if Self::is_plugin_loop(&ctx.recent_tool_names) { Self::plugin_hint() } else { "" }),
-                    priority: 9,
-                });
-            }
-        }
-
-        // D. (Removed — ErrorRecovery generator handles consecutive errors at 1+,
-        //     circuit breaker fires at 3.)
-
-        // E. Budget pressure warnings (Hermes pattern — 70%/90% thresholds).
-        // Max iterations is 100 (from runner).
+        // Budget pressure warnings (Hermes pattern — 70%/90% thresholds).
+        // This is the only loop-related steering we keep. Hermes has no explicit
+        // loop detection — just an iteration budget of 90. We match that approach.
         const MAX_ITERATIONS: usize = 100;
         let pct = (ctx.iteration * 100) / MAX_ITERATIONS;
         if pct >= 90 {
@@ -621,7 +480,7 @@ impl Generator for LoopDetector {
             });
         }
 
-        // F. User stop detection
+        // User stop detection (soft steering — hard stop is in should_force_break)
         if user_requested_stop(&ctx.messages) {
             directives.push(SteeringDirective {
                 label: "User Stop".to_string(),
@@ -636,117 +495,10 @@ impl Generator for LoopDetector {
     }
 }
 
-// 8. Automation Speed — nudges agent to stop wasting time in automation loops
-struct AutomationSpeed;
-impl Generator for AutomationSpeed {
-    fn name(&self) -> &str { "automation_speed" }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.iteration < 4 {
-            return vec![];
-        }
-
-        // Inspect recent assistant messages for automation inefficiencies
-        let recent: Vec<&ChatMessage> = ctx.messages.iter().rev()
-            .filter(|m| m.role == "assistant")
-            .take(8)
-            .collect();
-
-        if recent.is_empty() {
-            return vec![];
-        }
-
-        // Count wait() calls, redundant read_page/see calls, and single-tool responses
-        let mut wait_calls = 0usize;
-        let mut consecutive_reads = 0usize;
-        let mut max_consecutive_reads = 0usize;
-        let mut single_tool_responses = 0usize;
-
-        for msg in &recent {
-            if let Some(ref tc_json) = msg.tool_calls {
-                if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) {
-                    if calls.len() == 1 {
-                        single_tool_responses += 1;
-                    }
-
-                    let mut has_mutation = false;
-                    let mut has_read = false;
-                    for call in &calls {
-                        let name = call.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        let input = call.get("input").or_else(|| call.get("arguments"));
-
-                        // Detect wait() calls
-                        if name == "web" {
-                            if let Some(args) = input {
-                                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                                if action == "wait" {
-                                    wait_calls += 1;
-                                } else if action == "read_page" || action == "screenshot" {
-                                    has_read = true;
-                                } else if matches!(action,
-                                    "click" | "double_click" | "triple_click" | "right_click"
-                                    | "fill" | "form_input" | "type" | "select" | "press"
-                                    | "navigate" | "go_back" | "go_forward" | "evaluate"
-                                    | "drag" | "new_tab" | "close_tab" | "scroll"
-                                ) {
-                                    has_mutation = true;
-                                }
-                            }
-                        } else if name == "desktop" || name == "os" {
-                            if let Some(args) = input {
-                                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                                if action == "see" || action == "screenshot" {
-                                    has_read = true;
-                                } else if matches!(action,
-                                    "click" | "double_click" | "right_click" | "type"
-                                    | "press" | "hotkey" | "scroll" | "drag" | "paste"
-                                ) {
-                                    has_mutation = true;
-                                }
-                            }
-                        }
-                    }
-
-                    // Track consecutive read-only responses (no mutation between reads)
-                    if has_read && !has_mutation {
-                        consecutive_reads += 1;
-                        if consecutive_reads > max_consecutive_reads {
-                            max_consecutive_reads = consecutive_reads;
-                        }
-                    } else if has_mutation {
-                        consecutive_reads = 0;
-                    }
-                }
-            }
-        }
-
-        // Fire if: 2+ wait calls, or 2+ consecutive reads without mutation, or mostly single-tool responses
-        let should_fire = wait_calls >= 2
-            || max_consecutive_reads >= 2
-            || (single_tool_responses >= 4 && recent.len() >= 5);
-
-        if !should_fire {
-            return vec![];
-        }
-
-        let mut tips = String::from("You are in an automation loop. Speed tips:");
-        if wait_calls >= 2 {
-            tips.push_str(" (1) Don't call wait() unless you see a loading spinner.");
-        }
-        if single_tool_responses >= 4 {
-            tips.push_str(" (2) Chain multiple tool calls in one response when possible.");
-        }
-        if max_consecutive_reads >= 2 {
-            tips.push_str(" (3) Don't re-read the page unless you performed an action that changes it.");
-        }
-        tips.push_str(" Work efficiently.");
-
-        vec![SteeringDirective {
-            label: "Automation Speed".to_string(),
-            content: tips,
-            priority: 6,
-        }]
-    }
-}
+// 8. AutomationSpeed — REMOVED.
+// Hermes has no equivalent. It penalized legitimate browser workflows
+// (snapshot→click→snapshot→click is how browser automation works).
+// The iteration budget is sufficient to prevent runaway execution.
 
 // 9. Presence Awareness — adapts behavior based on user focus state
 struct PresenceAwareness;
@@ -822,40 +574,29 @@ impl Generator for JanusQuotaWarning {
     }
 }
 
-// 14. Error Recovery — fires after the first all-error iteration to prevent blind retries
+// 14. Error Recovery — soft advisory after sustained errors.
+// Hermes has no error recovery steering at all. We keep a light nudge at 3+
+// consecutive errors as an advisory, not a command. Single failures are normal
+// (browser timeouts, transient network issues).
 struct ErrorRecovery;
 impl Generator for ErrorRecovery {
     fn name(&self) -> &str { "error_recovery" }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.consecutive_error_iterations == 0 {
+        // Don't fire on 1-2 errors — single failures are normal, especially
+        // in browser automation (click timeouts, page loading, etc.)
+        if ctx.consecutive_error_iterations < 3 {
             return vec![];
         }
 
-        // At 1 consecutive error iteration: firm warning
-        if ctx.consecutive_error_iterations == 1 {
-            return vec![SteeringDirective {
-                label: "Error Recovery".to_string(),
-                content: "Your last tool call FAILED. Do NOT retry with the same parameters. \
-                         Read the error message carefully and either:\n\
-                         1. Fix the parameters based on the error output\n\
-                         2. Run the command with --help to discover correct usage\n\
-                         3. Try a completely different approach\n\
-                         4. Tell the user what failed and ask for guidance\n\
-                         Retrying the same call will fail again."
-                    .to_string(),
-                priority: 9,
-            }];
-        }
-
-        // At 2+: escalate (LoopDetector arm D handles 3+ separately)
+        // At 3+: soft advisory suggesting a different approach
         vec![SteeringDirective {
             label: "Error Recovery".to_string(),
             content: format!(
-                "CRITICAL: {} consecutive iterations have ALL failed. You are wasting resources. \
-                 STOP retrying and tell the user what's wrong. Do NOT call the same tool again.",
+                "Note: {} consecutive iterations had errors. Consider reading the error messages \
+                 carefully and trying a different approach if the current one isn't working.",
                 ctx.consecutive_error_iterations
             ),
-            priority: 10,
+            priority: 6,
         }]
     }
 }
@@ -1088,49 +829,44 @@ mod tests {
     }
 
     #[test]
-    fn test_circuit_breaker_fires_at_3_consecutive_errors() {
+    fn test_no_hard_stop_on_consecutive_errors() {
+        // Hermes approach: no hard stops on errors, only budget.
         let mut ctx = make_ctx(vec![]);
-        ctx.consecutive_error_iterations = 2;
-        assert!(should_force_break(&ctx).is_none(), "should NOT break at 2");
         ctx.consecutive_error_iterations = 3;
-        let result = should_force_break(&ctx);
-        assert!(result.is_some(), "should break at 3");
-        assert!(result.unwrap().contains("Circuit breaker"));
+        assert!(should_force_break(&ctx).is_none(), "should NOT break on errors");
+        ctx.consecutive_error_iterations = 10;
+        assert!(should_force_break(&ctx).is_none(), "should NOT break even at 10 errors");
     }
 
     #[test]
-    fn test_circuit_breaker_same_tool_fires_at_4() {
+    fn test_no_hard_stop_on_same_tool() {
+        // Hermes approach: no hard stops on same-tool calls, only budget.
         let mut ctx = make_ctx(vec![]);
-        // 4 identical calls: same name_hash (1) and args_hash (2)
         ctx.recent_tool_result_hashes = vec![(1, 2, 3), (1, 2, 3), (1, 2, 3), (1, 2, 3)];
-        let result = should_force_break(&ctx);
-        assert!(result.is_some(), "should break at 4 same-tool calls");
-        assert!(result.unwrap().contains("identical arguments"));
+        assert!(should_force_break(&ctx).is_none(), "should NOT break on same-tool calls");
     }
 
     #[test]
-    fn test_error_recovery_fires_at_1() {
+    fn test_error_recovery_silent_at_1_and_2() {
         let recovery = ErrorRecovery;
         let mut ctx = make_ctx(vec![]);
-        ctx.consecutive_error_iterations = 0;
-        assert!(recovery.generate(&ctx).is_empty(), "should not fire at 0");
 
         ctx.consecutive_error_iterations = 1;
-        let result = recovery.generate(&ctx);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].label, "Error Recovery");
-        assert!(result[0].content.contains("Do NOT retry"));
+        assert!(recovery.generate(&ctx).is_empty(), "should NOT fire at 1 error");
+
+        ctx.consecutive_error_iterations = 2;
+        assert!(recovery.generate(&ctx).is_empty(), "should NOT fire at 2 errors");
     }
 
     #[test]
-    fn test_error_recovery_escalates_at_2() {
+    fn test_error_recovery_soft_advisory_at_3() {
         let recovery = ErrorRecovery;
         let mut ctx = make_ctx(vec![]);
-        ctx.consecutive_error_iterations = 2;
+        ctx.consecutive_error_iterations = 3;
         let result = recovery.generate(&ctx);
         assert_eq!(result.len(), 1);
-        assert!(result[0].content.contains("CRITICAL"));
-        assert_eq!(result[0].priority, 10);
+        assert_eq!(result[0].priority, 6, "should be low priority advisory");
+        assert!(result[0].content.contains("different approach"));
     }
 
     // --- Level 2: Failure-mode scenario tests ---
@@ -1232,37 +968,32 @@ mod tests {
     }
 
     #[test]
-    fn test_fm5_consecutive_errors() {
-        // consecutive_error_iterations = 1 → ErrorRecovery fires (priority 9)
+    fn test_fm5_consecutive_errors_no_fire_at_1() {
+        // Hermes approach: single error is normal, no steering needed
         let generator = ErrorRecovery;
         let mut ctx = make_ctx(vec![]);
         ctx.consecutive_error_iterations = 1;
-
-        let result = generator.generate(&ctx);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].label, "Error Recovery");
-        assert_eq!(result[0].priority, 9);
-        assert!(result[0].content.contains("Do NOT retry"));
+        assert!(generator.generate(&ctx).is_empty(),
+            "ErrorRecovery should NOT fire at 1 error (single failures are normal)");
     }
 
     #[test]
-    fn test_fm6_same_tool_loop() {
-        // 3 identical (name_hash, args_hash) entries → LoopDetector same-tool arm fires
+    fn test_fm6_no_same_tool_loop_detection() {
+        // Hermes approach: no same-tool detection, model self-corrects
         let generator = LoopDetector;
         let mut ctx = make_ctx(vec![]);
         ctx.recent_tool_result_hashes = vec![(100, 200, 300), (100, 200, 301), (100, 200, 302)];
 
         let result = generator.generate(&ctx);
-        assert!(result.iter().any(|d| d.label == "Loop Warning"),
-            "LoopDetector same-tool arm should fire at 3 identical name+args hashes");
+        assert!(!result.iter().any(|d| d.label == "Loop Warning"),
+            "LoopDetector should NOT fire on same-tool calls (removed)");
     }
 
     #[test]
-    fn test_fm7_ping_pong_loop() {
-        // A→B→A→B pattern in hash history → LoopDetector ping-pong arm fires
+    fn test_fm7_no_ping_pong_detection() {
+        // Hermes approach: no ping-pong detection
         let generator = LoopDetector;
         let mut ctx = make_ctx(vec![]);
-        // Tool A: (1, 2, x), Tool B: (3, 4, x), alternating
         ctx.recent_tool_result_hashes = vec![
             (1, 2, 10),  // A
             (3, 4, 20),  // B
@@ -1271,27 +1002,7 @@ mod tests {
         ];
 
         let result = generator.generate(&ctx);
-        assert!(result.iter().any(|d| d.label == "Ping-Pong"),
-            "LoopDetector ping-pong arm should fire on A→B→A→B pattern");
-    }
-
-    #[test]
-    fn test_fm8_browser_reads_no_mutation() {
-        // 3 consecutive read_page with no click/fill between → AutomationSpeed fires
-        let generator = AutomationSpeed;
-        let read_call = r#"[{"name":"web","input":{"action":"read_page"}}]"#;
-        let mut ctx = make_ctx(vec![
-            make_msg("user", "Check the page"),
-            make_assistant_with_tools("", read_call),
-            make_assistant_with_tools("", read_call),
-            make_assistant_with_tools("", read_call),
-        ]);
-        ctx.iteration = 5;
-
-        let result = generator.generate(&ctx);
-        assert!(!result.is_empty(),
-            "AutomationSpeed should fire after consecutive read-only browser responses");
-        assert!(result[0].content.contains("automation loop") || result[0].content.contains("re-read"),
-            "Should mention automation loop or re-reading");
+        assert!(!result.iter().any(|d| d.label == "Ping-Pong"),
+            "LoopDetector should NOT have ping-pong detection (removed)");
     }
 }

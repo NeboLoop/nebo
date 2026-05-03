@@ -39,8 +39,6 @@ impl TestServer {
         std::fs::create_dir_all(data_dir.join("user").join("tools")).unwrap();
         std::fs::create_dir_all(data_dir.join("user").join("workflows")).unwrap();
         std::fs::create_dir_all(data_dir.join("user").join("agents")).unwrap();
-        std::fs::create_dir_all(data_dir.join("bundled").join("skills")).unwrap();
-
         // Set NEBO_DATA_DIR so config::data_dir() resolves to our temp dir
         // SAFETY: single-threaded at this point (before server spawn)
         unsafe { std::env::set_var("NEBO_DATA_DIR", &data_dir); }
@@ -975,7 +973,7 @@ fn test_role_trigger_parsing() -> TestResult {
     }}}"#;
     let cfg = napp::agent::parse_agent_config(json).unwrap();
     match &cfg.workflows["w1"].trigger {
-        napp::agent::AgentTrigger::Schedule { cron } => assert_eq!(cron, "0 7 * * *"),
+        napp::agent::AgentTrigger::Schedule { cron, .. } => assert_eq!(cron, "0 7 * * *"),
         other => panic!("expected Schedule, got {:?}", other),
     }
 

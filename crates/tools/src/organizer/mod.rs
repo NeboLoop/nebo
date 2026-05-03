@@ -11,9 +11,7 @@ mod linux;
 #[cfg(target_os = "windows")]
 mod windows;
 
-pub use shared::{parse_date, which_exists};
-
-use crate::registry::ToolResult;
+// parse_date and which_exists are used by platform modules via super::shared::
 
 // ═══════════════════════════════════════════════════════════════════════
 // Platform dispatch
@@ -59,6 +57,7 @@ pub struct OrganizerInput {
     #[serde(default)]
     pub action: String,
     #[serde(default)]
+    #[allow(dead_code)] // Deserialized from STRAP input but routing handled by caller
     pub resource: String,
 
     // Mail fields

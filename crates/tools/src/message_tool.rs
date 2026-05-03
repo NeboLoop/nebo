@@ -525,6 +525,7 @@ async fn run_osascript(script: &str) -> ToolResult {
 // Helper: run an arbitrary command
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)] // Used on Linux
 async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     let output = tokio::process::Command::new(cmd)
         .args(args)

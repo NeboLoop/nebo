@@ -1,0 +1,394 @@
+{
+  "inputs": [
+    {
+      "key": "brand_name",
+      "label": "Your brand name",
+      "description": "The brand or product name for your social presence",
+      "type": "text",
+      "required": true,
+      "placeholder": "Acme Inc"
+    },
+    {
+      "key": "social_profiles",
+      "label": "Your social media profiles",
+      "description": "Your social media profile URLs, one per line",
+      "type": "textarea",
+      "required": true,
+      "placeholder": "https://x.com/yourbrand\nhttps://linkedin.com/company/yourbrand"
+    },
+    {
+      "key": "competitors_social",
+      "label": "Competitor social profiles",
+      "description": "Competitor social media profile URLs to monitor, one per line",
+      "type": "textarea",
+      "required": false,
+      "placeholder": "https://x.com/competitor1\nhttps://linkedin.com/company/competitor2"
+    },
+    {
+      "key": "content_topics",
+      "label": "Content topics",
+      "description": "Topics you want to post about, one per line",
+      "type": "textarea",
+      "required": true,
+      "placeholder": "AI automation tips\nProduct updates\nIndustry trends\nBehind the scenes"
+    },
+    {
+      "key": "posting_frequency",
+      "label": "Posting frequency",
+      "description": "How often to create content",
+      "type": "select",
+      "options": [
+        {
+          "value": "daily",
+          "label": "Daily"
+        },
+        {
+          "value": "3x-week",
+          "label": "3x per week (recommended)"
+        },
+        {
+          "value": "weekly",
+          "label": "Weekly"
+        }
+      ],
+      "default": "3x-week"
+    },
+    {
+      "key": "brand_voice",
+      "label": "Brand voice",
+      "description": "The tone of voice for your social content",
+      "type": "select",
+      "options": [
+        {
+          "value": "professional",
+          "label": "Professional"
+        },
+        {
+          "value": "casual",
+          "label": "Casual (recommended)"
+        },
+        {
+          "value": "playful",
+          "label": "Playful"
+        },
+        {
+          "value": "authoritative",
+          "label": "Authoritative"
+        }
+      ],
+      "default": "casual"
+    },
+    {
+      "key": "platforms",
+      "label": "Platforms to focus on",
+      "description": "Which social platforms to create content for, one per line",
+      "type": "textarea",
+      "required": false,
+      "default": "X/Twitter\nLinkedIn",
+      "placeholder": "X/Twitter\nLinkedIn\nInstagram"
+    }
+  ],
+  "workflows": {
+    "daily-content": {
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 8 * * *"
+      },
+      "description": "Scan trending topics and generate platform-specific post drafts for approval",
+      "activities": [
+        {
+          "id": "scan-trends",
+          "intent": "Scan trending topics on X, LinkedIn, and Reddit relevant to the brand's content topics",
+          "skills": [
+            "@nebo/skills/web-scraper@^1.0.0",
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Open X/Twitter trending topics and search for content_topics via browser",
+            "Check LinkedIn feed for trending posts in the brand's industry",
+            "Scan relevant Reddit communities for hot discussions",
+            "Identify 3-5 trending angles that align with the brand's topics"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "skip"
+          }
+        },
+        {
+          "id": "generate-drafts",
+          "intent": "Create 2-3 post drafts tailored to each target platform using brand voice",
+          "skills": [
+            "@nebo/skills/social-content@^1.0.0",
+            "@nebo/skills/copywriting@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "For each trending angle, draft 2-3 posts adapted to the target platforms",
+            "Match the brand_voice setting for tone and style",
+            "Include hooks, calls to action, and hashtags appropriate to each platform",
+            "Add suggested posting times based on typical engagement windows"
+          ],
+          "token_budget": {
+            "max": 4000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "present-for-approval",
+          "intent": "Present drafts to user with recommendations and queue approved posts",
+          "skills": [],
+          "model": "nebo-1",
+          "steps": [
+            "Present all drafts grouped by platform with a clear recommendation for each",
+            "Explain why each draft should perform well based on current trends",
+            "Wait for user approval or edits before queuing"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 12000
+      },
+      "emit": "social.content.drafted"
+    },
+    "mention-monitor": {
+      "trigger": {
+        "type": "heartbeat",
+        "interval": "4h",
+        "window": "07:00-23:00"
+      },
+      "description": "Search for brand mentions, categorize them, and draft responses for complaints and questions",
+      "activities": [
+        {
+          "id": "spot-check",
+          "intent": "Quick scan of social platforms for brand mentions and categorize them",
+          "skills": [
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Search X/Twitter for brand_name mentions and related keywords via browser",
+            "Search LinkedIn for brand mentions and tags",
+            "Categorize each mention: praise, complaint, question, or neutral mention",
+            "Compare against previous check in memory to identify new mentions only"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "skip"
+          }
+        },
+        {
+          "id": "draft-responses",
+          "intent": "Draft responses for complaints and questions, alert on significant mentions",
+          "skills": [
+            "@nebo/skills/copywriting@^1.0.0",
+            "@nebo/skills/copy-editing@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "For complaints and questions, draft on-brand responses matching brand_voice",
+            "Flag any mentions from high-follower accounts or potential PR issues",
+            "Only alert the user if there are actionable mentions \u2014 skip routine noise",
+            "Present responses for approval \u2014 never auto-reply"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 6000
+      },
+      "emit": "social.mentions.checked"
+    },
+    "weekly-digest": {
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 9 * * 1"
+      },
+      "description": "Compile weekly social performance report with engagement analysis and content recommendations",
+      "activities": [
+        {
+          "id": "gather-metrics",
+          "intent": "Compile engagement, reach, and follower growth data from all platforms",
+          "skills": [
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Check each social profile for this week's performance metrics via browser",
+            "Record engagement rate, impressions, follower count changes, and top posts",
+            "Compare against previous week's data stored in memory"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "analyze-and-recommend",
+          "intent": "Identify top and bottom performing posts and recommend content themes for next week",
+          "skills": [
+            "@nebo/skills/product-marketing-context@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Rank posts by engagement rate, not just impressions",
+            "Identify patterns: what topics, formats, and posting times drove the most replies and shares",
+            "Identify underperforming content and explain why it likely fell flat",
+            "Recommend 3-5 content themes for the coming week based on what worked",
+            "Store the digest in memory for trend tracking",
+            "Present the report to the user"
+          ],
+          "token_budget": {
+            "max": 4000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 10000
+      },
+      "emit": "social.digest.complete"
+    },
+    "competitor-watch": {
+      "trigger": {
+        "type": "heartbeat",
+        "interval": "12h"
+      },
+      "description": "Monitor competitor social profiles for notable activity \u2014 viral posts, new campaigns, or messaging changes",
+      "activities": [
+        {
+          "id": "scan-competitors",
+          "intent": "Check competitor social profiles for new posts and high-engagement content",
+          "skills": [
+            "@nebo/skills/web-scraper@^1.0.0",
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Visit each competitor social profile listed in competitors_social via browser",
+            "Identify new posts since the last check",
+            "Note any posts with unusually high engagement (viral content, new campaigns)",
+            "Detect messaging changes, new product announcements, or positioning shifts",
+            "Only alert the user if something notable happened \u2014 skip routine posts",
+            "Store findings in memory for weekly trend analysis"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "skip"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 4000
+      },
+      "emit": "social.competitor.checked"
+    },
+    "content-repurpose": {
+      "trigger": {
+        "type": "manual"
+      },
+      "description": "Take a blog post, article, or video URL and create platform-specific social content from it",
+      "activities": [
+        {
+          "id": "extract-content",
+          "intent": "Read and extract the key points from the provided URL",
+          "skills": [
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Open the provided URL via browser and extract the full content",
+            "Identify the main thesis, key takeaways, quotable moments, and data points",
+            "Note the original format (blog post, article, video transcript) for adaptation"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "create-platform-versions",
+          "intent": "Create platform-specific versions adapted for tone, format, and audience",
+          "skills": [
+            "@nebo/skills/social-content@^1.0.0",
+            "@nebo/skills/copywriting@^1.0.0",
+            "@nebo/skills/copy-editing@^1.0.0",
+            "@nebo/skills/ad-creative@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Create an X/Twitter thread: hook tweet + 3-5 follow-up tweets with key insights",
+            "Create a LinkedIn post: professional tone, storytelling format, clear takeaway",
+            "Create an Instagram caption: conversational, emoji-friendly, with relevant hashtags",
+            "Adapt tone and format per platform while keeping the core message consistent",
+            "Present all versions side by side for user review and approval"
+          ],
+          "token_budget": {
+            "max": 4000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 8000
+      }
+    }
+  },
+  "skills": [
+    "@nebo/skills/social-content@^1.0.0",
+    "@nebo/skills/copywriting@^1.0.0",
+    "@nebo/skills/copy-editing@^1.0.0",
+    "@nebo/skills/product-marketing-context@^1.0.0",
+    "@nebo/skills/web-scraper@^1.0.0",
+    "@nebo/skills/deep-research@^1.0.0",
+    "@nebo/skills/ad-creative@^1.0.0"
+  ],
+  "pricing": {
+    "model": "monthly_fixed",
+    "cost": 0.0
+  },
+  "defaults": {
+    "timezone": "user_local",
+    "configurable": [
+      "workflows.daily-content.trigger.cron",
+      "workflows.weekly-digest.trigger.cron"
+    ]
+  }
+}

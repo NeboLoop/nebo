@@ -1,0 +1,343 @@
+{
+  "inputs": [
+    {
+      "key": "email_provider",
+      "label": "Email provider",
+      "description": "Your email provider",
+      "type": "select",
+      "options": [
+        {
+          "value": "gmail",
+          "label": "Gmail"
+        },
+        {
+          "value": "outlook",
+          "label": "Outlook"
+        }
+      ],
+      "default": "gmail"
+    },
+    {
+      "key": "name",
+      "label": "Your name",
+      "description": "Your name (for signing draft replies)",
+      "type": "text",
+      "required": true,
+      "placeholder": "Jane Smith"
+    },
+    {
+      "key": "role_title",
+      "label": "Job title",
+      "description": "Your job title (helps prioritize emails)",
+      "type": "text",
+      "required": false,
+      "placeholder": "VP of Product"
+    },
+    {
+      "key": "vip_senders",
+      "label": "VIP senders",
+      "description": "People whose emails always get flagged (boss, investors, key clients), one per line",
+      "type": "textarea",
+      "required": false,
+      "placeholder": "Sarah Chen (CEO)\nMike Ross (Lead Investor)\nAlex Kim (Key Client)"
+    },
+    {
+      "key": "auto_categories",
+      "label": "Triage categories",
+      "description": "Categories for sorting incoming email, one per line",
+      "type": "textarea",
+      "required": false,
+      "default": "Action Required\nFYI Only\nScheduling\nSales/Marketing\nNewsletters"
+    },
+    {
+      "key": "reply_style",
+      "label": "Reply style",
+      "description": "How long your replies typically are",
+      "type": "select",
+      "options": [
+        {
+          "value": "brief",
+          "label": "Brief"
+        },
+        {
+          "value": "detailed",
+          "label": "Detailed"
+        },
+        {
+          "value": "match-sender",
+          "label": "Match sender's style"
+        }
+      ],
+      "default": "match-sender"
+    },
+    {
+      "key": "quiet_hours",
+      "label": "Quiet hours",
+      "description": "Don't send notifications during these hours (24h format)",
+      "type": "text",
+      "required": false,
+      "default": "22:00-07:00",
+      "placeholder": "22:00-07:00"
+    }
+  ],
+  "workflows": {
+    "morning-triage": {
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 7 * * 1-5"
+      },
+      "description": "Read unread emails, categorize, flag VIPs, draft replies for straightforward ones, and present a summary",
+      "activities": [
+        {
+          "id": "fetch-unread",
+          "intent": "Read all unread emails from the inbox via Google Workspace",
+          "skills": [
+            "@nebo/skills/google-workspace@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Connect to the user's email via Google Workspace skill",
+            "Fetch all unread emails since last triage",
+            "Extract sender, subject, body preview, timestamp, and any attachments"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "categorize-and-flag",
+          "intent": "Categorize each email and flag VIP senders",
+          "skills": [
+            "@nebo/skills/copywriting@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Categorize each email into the user's configured categories (Action Required, FYI, Scheduling, Sales/Marketing, Newsletters)",
+            "Flag any emails from VIP senders regardless of category",
+            "Identify emails with urgent keywords (ASAP, urgent, deadline, overdue)",
+            "For straightforward emails (scheduling, simple questions), draft replies in the user's voice and reply_style"
+          ],
+          "token_budget": {
+            "max": 4000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "present-summary",
+          "intent": "Compile and present the morning inbox summary",
+          "skills": [],
+          "model": "nebo-1",
+          "steps": [
+            "Build the summary: total new emails, how many need action, how many have draft replies ready, how many are FYI",
+            "List VIP emails at the top with one-line previews",
+            "Group remaining emails by category",
+            "Present draft replies for approval",
+            "Store triage results in memory for the draft-replies workflow"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 10000
+      },
+      "emit": "inbox.triaged"
+    },
+    "urgent-watch": {
+      "trigger": {
+        "type": "heartbeat",
+        "interval": "30m",
+        "window": "07:00-22:00"
+      },
+      "description": "Check for new emails from VIP senders or with urgent keywords \u2014 only alert if genuinely urgent",
+      "activities": [
+        {
+          "id": "urgent-scan",
+          "intent": "Quick scan for urgent or VIP emails since last check",
+          "skills": [
+            "@nebo/skills/google-workspace@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Check for new emails since last scan",
+            "Filter for VIP senders from the user's list",
+            "Filter for urgent keywords (ASAP, urgent, deadline, overdue, time-sensitive)",
+            "Only alert the user if something is genuinely urgent \u2014 don't cry wolf",
+            "Respect quiet_hours setting \u2014 suppress non-critical notifications"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "skip"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 3000
+      }
+    },
+    "draft-replies": {
+      "trigger": {
+        "type": "event",
+        "sources": [
+          "inbox.triaged"
+        ]
+      },
+      "description": "Draft replies for action-required emails in the user's voice, matching sender style",
+      "activities": [
+        {
+          "id": "draft-action-replies",
+          "intent": "Draft replies for each action-required email in the user's communication style",
+          "skills": [
+            "@nebo/skills/copywriting@^1.0.0",
+            "@nebo/skills/copy-editing@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "For each email categorized as 'Action Required', analyze the sender's tone and length",
+            "Draft a reply matching the user's reply_style preference (brief, detailed, or match-sender)",
+            "Use the user's name and role_title appropriately in sign-offs",
+            "Run each draft through copy-editing for grammar and tone consistency",
+            "Present all drafts for user approval \u2014 never auto-send"
+          ],
+          "token_budget": {
+            "max": 4000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 5000
+      }
+    },
+    "weekly-inbox-report": {
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 9 * * 1"
+      },
+      "description": "Summarize last week's inbox: volume, response times, categories, unanswered emails, and unsubscribe suggestions",
+      "activities": [
+        {
+          "id": "compile-weekly-stats",
+          "intent": "Gather and analyze one week of inbox data for the report",
+          "skills": [
+            "@nebo/skills/google-workspace@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Pull email data from the past 7 days",
+            "Calculate: total received, total sent, average response time",
+            "Break down by category (Action Required, FYI, Scheduling, Sales/Marketing, Newsletters)",
+            "Flag any emails unanswered for more than 48 hours",
+            "Identify repeat senders who could be unsubscribed"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "generate-weekly-report",
+          "intent": "Compile findings into a scannable weekly inbox report",
+          "skills": [
+            "@nebo/skills/daily-briefing@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Create the report with these sections:",
+            "1. HEADLINE: One sentence summary of the week (e.g., 'Inbox volume down 15% \u2014 2 emails still need replies')",
+            "2. BY THE NUMBERS: Total received, sent, response time, category breakdown",
+            "3. NEEDS ATTENTION: Emails unanswered >48h with context",
+            "4. CLEANUP SUGGESTIONS: Newsletters to unsubscribe, repeat low-value senders",
+            "5. TRENDS: Compare to previous weeks if data available in memory",
+            "Store report in memory for trend tracking",
+            "Present to user"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 8000
+      },
+      "emit": "inbox.weekly.report"
+    },
+    "cleanup": {
+      "trigger": {
+        "type": "manual"
+      },
+      "description": "Identify stale newsletters, archivable threads, and suggest better inbox organization",
+      "activities": [
+        {
+          "id": "inbox-cleanup-scan",
+          "intent": "Scan for newsletters not opened in 3+ months, archivable threads, and organization improvements",
+          "skills": [
+            "@nebo/skills/google-workspace@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Identify newsletter subscriptions the user hasn't opened in 3+ months",
+            "Find email threads that can be safely archived (resolved, old, no pending action)",
+            "Suggest labels or folders for better organization based on email patterns",
+            "Present all suggestions for approval \u2014 never auto-archive or unsubscribe"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 4000
+      }
+    }
+  },
+  "skills": [
+    "@nebo/skills/google-workspace@^1.0.0",
+    "@nebo/skills/copywriting@^1.0.0",
+    "@nebo/skills/copy-editing@^1.0.0",
+    "@nebo/skills/product-marketing-context@^1.0.0",
+    "@nebo/skills/cold-email@^1.0.0",
+    "@nebo/skills/email-sequence@^1.0.0",
+    "@nebo/skills/daily-briefing@^1.0.0"
+  ],
+  "pricing": {
+    "model": "monthly_fixed",
+    "cost": 0.0
+  },
+  "defaults": {
+    "timezone": "user_local",
+    "configurable": [
+      "workflows.morning-triage.trigger.cron",
+      "workflows.weekly-inbox-report.trigger.cron"
+    ]
+  }
+}

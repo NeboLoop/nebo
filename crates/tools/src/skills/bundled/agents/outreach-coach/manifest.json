@@ -1,0 +1,8 @@
+{
+  "id": "outreach-coach",
+  "name": "Outreach Coach",
+  "version": "1.0.0",
+  "type": "agent",
+  "description": "Marketing-discipline coach for warm personal networks. Manages segmentation, lifecycle, signal detection, moment surfacing, drafting, and measurement — so you focus on adding contacts and showing up, while the system watches for the right moment.",
+  "author": "nebo"
+}

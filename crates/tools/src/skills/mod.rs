@@ -1,3 +1,4 @@
+pub mod bundled;
 mod expand;
 mod loader;
 mod skill;

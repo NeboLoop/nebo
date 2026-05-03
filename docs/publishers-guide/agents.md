@@ -134,7 +134,7 @@ Input fields define a dynamic form rendered in the agent's Configure tab. Users 
 **How input values are used:**
 
 1. **System prompt injection** — All filled input values are appended to the agent's system prompt as a "Configured Inputs" section. The LLM sees them and uses them without asking the user again.
-2. **Watch trigger template substitution** — `{{key}}` placeholders in watch trigger commands are replaced with the corresponding input value at runtime. Example: `gmail +watch --project {{gcp_project}}`.
+2. **Watch trigger template substitution** — `{{key}}` placeholders in watch trigger commands are replaced with the corresponding input value at runtime. Example: `gmail +watch --project {{gcp_project}}`. **The placeholder name must exactly match an input `key`** — if the command uses `{{gcp_project}}`, there must be an input with `"key": "gcp_project"`. Unmatched placeholders are left as literal text (e.g., `--project {{gcp_project}}`), which will cause the watch command to fail or behave unexpectedly.
 3. **Stored separately from schema** — The input field *schema* lives in `agent.json`. The user-supplied *values* are stored in the `input_values` DB column and updated via `PUT /agents/{id}/inputs`.
 
 ### Inline Activities
@@ -165,8 +165,22 @@ Each entry in the `workflows` map binds a workflow to a trigger:
 | `description` | string | no | `""` | Human-readable description of this binding |
 | `inputs` | map | no | `{}` | Default inputs passed to the workflow on trigger |
 | `activities` | array | no | `[]` | Inline activity definitions (see below). When present, the workflow runs inline — no external `ref` needed. |
-| `budget` | object | no | `{}` | Token budget constraints. `total_per_run` limits total tokens across all activities. |
+| `budget` | object | no | `{}` | Token budget constraints. `total_per_run` limits total tokens across all activities (see [Budget Math](#budget-math) below). |
 | `emit` | string | no | — | Event name to emit on workflow completion. Emitted as `{agent_slug}.{emit}` into the EventBus. |
+
+### Budget Math
+
+When using inline activities with a `budget.total_per_run`, the sum of all activity `token_budget.max` values **must not exceed** `total_per_run`. This is validated at parse time — a mismatch prevents the agent from loading.
+
+```
+Activity 1: process-trigger → 2,000 tokens
+Activity 2: notify-user     → 1,500 tokens
+                               ─────
+Sum:                           3,500 tokens
+budget.total_per_run:          4,000 tokens  ✓ (>= sum)
+```
+
+Set `total_per_run` to at least the sum of all activity budgets. Add headroom only if you use retries.
 
 ### Trigger Types
 
@@ -174,7 +188,7 @@ Each entry in the `workflows` map binds a workflow to a trigger:
 |------|--------|-------------|
 | `schedule` | `cron` (string) | Fires on a cron schedule. Standard 5-field cron expression. |
 | `heartbeat` | `interval` (string), `window` (string, optional) | Fires at a recurring interval. Window limits active hours (e.g., `"08:00-18:00"`). |
-| `event` | `sources` (string[]) | Fires when a matching event occurs. See [Event System](#event-system) below. |
+| `event` | `sources` (string[], defaults to `[]`) | Fires when a matching event occurs. An empty `sources` array is valid JSON but the trigger will never fire — always include at least one source. See [Event System](#event-system) below. |
 | `watch` | `plugin` (string), `event` (string, optional), `command` (string, optional), `restart_delay_secs` (u64, optional) | Long-running plugin process that emits NDJSON events. See [Watch Triggers](#watch-triggers) below. |
 | `manual` | — | Only fires by explicit user request or API call. |
 
@@ -301,9 +315,9 @@ Read top to bottom: triage runs every 30 minutes. For each email it classifies, 
 
 Watch triggers run a long-lived plugin process that outputs NDJSON to stdout. Each JSON line triggers the bound activities and optionally auto-emits into the EventBus so other agents can subscribe.
 
-### With a Plugin Event (Recommended)
+### With Event + Command Fallback (Recommended)
 
-Reference an event declared in the plugin's `plugin.json`. The CLI command is resolved from the manifest automatically:
+Reference an event declared in the plugin's `plugin.json` AND provide a `command` fallback. The `event` enables auto-emission into the EventBus; the `command` ensures the watcher starts even if the event isn't in the plugin manifest:
 
 ```json
 {
@@ -312,6 +326,7 @@ Reference an event declared in the plugin's `plugin.json`. The CLI command is re
       "type": "watch",
       "plugin": "gws",
       "event": "email.new",
+      "command": "gmail +watch --format ndjson",
       "restart_delay_secs": 5
     },
     "description": "React to new emails in real-time",
@@ -326,9 +341,9 @@ Reference an event declared in the plugin's `plugin.json`. The CLI command is re
 }
 ```
 
-### With an Explicit Command
+### With Command Only
 
-Specify the CLI args directly instead of referencing a manifest event:
+Specify the CLI args directly without EventBus auto-emission:
 
 ```json
 {
@@ -349,6 +364,20 @@ Specify the CLI args directly instead of referencing a manifest event:
 | `event` | string | No | — | Plugin event name. Resolves command from the plugin manifest's `events` array |
 | `command` | string | No | `""` | CLI args appended to the plugin binary. Required if `event` is not set |
 | `restart_delay_secs` | u64 | No | `5` | Seconds to wait before restarting the process on crash |
+
+> **Always provide a `command` fallback.** When `event` is set, the runtime resolves the CLI command from the plugin manifest's `events` array. If the plugin is not installed, the event is not declared in the manifest, or the manifest is unavailable, the resolution fails silently and the watcher is skipped. Setting `command` alongside `event` ensures the watcher starts regardless — the `event` still enables auto-emission into the EventBus, but `command` provides the fallback execution path:
+>
+> ```json
+> {
+>   "trigger": {
+>     "type": "watch",
+>     "plugin": "gws",
+>     "event": "email.new",
+>     "command": "gmail +watch --format ndjson",
+>     "restart_delay_secs": 5
+>   }
+> }
+> ```
 
 ### How It Works
 
@@ -686,8 +715,10 @@ Changes are debounced at 1 second. No restart needed.
 - Trigger type must be one of: `schedule`, `heartbeat`, `event`, `watch`, `manual`
 - Schedule triggers must have a valid `cron` expression
 - Heartbeat triggers must have a valid `interval` (e.g., `"30m"`, `"1h"`)
-- Event triggers must have at least one entry in `sources`
+- Event triggers should have at least one entry in `sources` — an empty array is accepted but the trigger will never fire
 - Skill refs must be qualified names (`@org/skills/name`)
-- Watch triggers must have a `plugin` and either `event` or `command`
+- Watch triggers must have a `plugin` and either `event` or `command` (both recommended — `command` as fallback for when `event` resolution fails)
 - Activity IDs must be unique within each binding
+- If `budget.total_per_run > 0`, the sum of all activity `token_budget.max` values must not exceed it
+- All `{{key}}` placeholders in watch trigger commands must match an input `key` exactly
 - An Agent with no workflows is valid — it provides only a persona and skill declarations

@@ -305,7 +305,7 @@ function createAuthStore() {
 			if (!state.refreshToken) return false;
 
 			try {
-				const response = await api.refreshToken({ refreshToken: state.refreshToken });
+				const response = await api.refresh({ refreshToken: state.refreshToken });
 
 				// Keep the same refresh token, update access token
 				storeTokens(response.token, state.refreshToken, response.expiresAt);

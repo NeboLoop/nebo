@@ -21,11 +21,14 @@ else
     ARCH = $(UNAME_M)
 endif
 
-.PHONY: help dev build build-desktop test clean release release-darwin release-linux release-windows app-bundle dmg notarize install github-release
+.PHONY: help dev build build-desktop test clean seed-plugins release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
 	@echo "Nebo — AI Agent Platform (Rust)"
+	@echo ""
+	@echo "Code Generation:"
+	@echo "  make gen            - Generate TS API client from Rust routes"
 	@echo ""
 	@echo "Development:"
 	@echo "  make dev            - Hot reload headless server (cargo watch)"
@@ -33,6 +36,7 @@ help:
 	@echo "  make build-desktop  - Build Tauri desktop app"
 	@echo "  make test           - Run all tests"
 	@echo "  make clean          - Clean build artifacts"
+	@echo "  make seed-plugins   - Copy plugin binaries from sibling repos"
 	@echo ""
 	@echo "Desktop (macOS):"
 	@echo "  make app-bundle     - Re-sign Tauri .app with Developer ID"
@@ -47,11 +51,19 @@ help:
 	@echo "  make release-windows      - Windows .exe + .msi"
 	@echo "  make github-release TAG=v0.1.0  - Create GitHub release"
 
+# ─── Code Generation ────────────────────────────────────────────────────────
+gen:
+	@echo "Generating API client from Rust routes..."
+	@cd app && pnpm run gen:api
+
 # ─── Development ─────────────────────────────────────────────────────────────
 
 dev:
-	@echo "Starting Nebo with hot reload..."
-	cargo watch -x 'run -p nebo'
+	@echo "Starting Nebo (Tauri + Vite)..."
+	@echo "  Vite HMR for frontend, Tauri watch for backend"
+	@echo "  Proxy errors during Rust build are normal — Tauri window waits for build."
+	@echo ""
+	cargo tauri dev
 
 build:
 	@echo "Building headless CLI binary..."
@@ -69,6 +81,41 @@ test:
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf target/ dist/
+
+# Copy plugin binaries + manifests from sibling repos into the local plugin store.
+# Prerequisites: build each plugin first (cargo build --release in each repo).
+REPOS_DIR ?= $(shell cd .. && pwd)/repos/plugins
+PLUGIN_DIR ?= $(HOME)/.nebo/nebo/plugins
+PLUGINS = gws nebo-pdf nebo-office ffmpeg outreach sfdc social warm-market nuskin
+
+seed-plugins:
+	@echo "Seeding plugin binaries from $(REPOS_DIR)..."
+	@for slug in $(PLUGINS); do \
+		src="$(REPOS_DIR)/$$slug"; \
+		if [ ! -d "$$src" ]; then \
+			echo "  SKIP $$slug (repo not found)"; \
+			continue; \
+		fi; \
+		manifest="$$src/plugin.json"; \
+		if [ ! -f "$$manifest" ]; then \
+			echo "  SKIP $$slug (no plugin.json)"; \
+			continue; \
+		fi; \
+		version=$$(python3 -c "import json; print(json.load(open('$$manifest'))['version'])" 2>/dev/null || echo "0.1.0"); \
+		dst="$(PLUGIN_DIR)/$$slug/$$version"; \
+		binary_name=$$(python3 -c "import json; p=json.load(open('$$manifest')).get('platforms',{}).get('darwin-arm64',{}); print(p.get('binaryName','$$slug'))" 2>/dev/null || echo "$$slug"); \
+		binary="$$src/target/release/$$binary_name"; \
+		if [ ! -f "$$binary" ]; then \
+			echo "  SKIP $$slug (binary not built at $$binary)"; \
+			continue; \
+		fi; \
+		mkdir -p "$$dst"; \
+		cp "$$manifest" "$$dst/plugin.json"; \
+		cp "$$binary" "$$dst/$$binary_name"; \
+		chmod +x "$$dst/$$binary_name"; \
+		echo "  OK   $$slug $$version → $$dst"; \
+	done
+	@echo "Done. Restart Nebo to pick up plugins."
 
 # ─── Release Targets ────────────────────────────────────────────────────────
 

@@ -1,0 +1,9 @@
+{
+  "id": "product-builder",
+  "name": "Product Builder",
+  "version": "1.0.0",
+  "type": "agent",
+  "description": "Go from idea to shipped feature. Brainstorms with you, writes the spec, breaks it into tasks, and gets it done.",
+  "author": "nebo",
+  "tags": ["product", "planning", "ideation", "execution"]
+}

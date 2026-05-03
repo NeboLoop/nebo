@@ -27,6 +27,9 @@ pub struct ToolRequest {
     /// the actions array and options.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_batch: bool,
+    /// Session/agent identifier — extension uses this to scope tab groups per agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// A single action in a batch request.
@@ -166,10 +169,12 @@ impl ExtensionBridge {
 
     /// Execute a browser tool via the extension. Routes to the default browser.
     /// read_page results are cached for 2.5s; mutation tools invalidate the cache.
+    /// `session_id` scopes the tab group in the extension (each agent gets its own tabs).
     pub async fn execute(
         &self,
         tool: &str,
         args: &serde_json::Value,
+        session_id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         // Check read_page cache (snapshot-then-release)
         if tool == "read_page" {
@@ -216,6 +221,7 @@ impl ExtensionBridge {
             tool: tool.to_string(),
             args: args.clone(),
             is_batch: false,
+            session_id: session_id.map(|s| s.to_string()),
         };
 
         if tx.send(request).await.is_err() {
@@ -223,8 +229,11 @@ impl ExtensionBridge {
             return Err("Failed to send tool request to browser".to_string());
         }
 
-        // Wait with timeout
-        let result = match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx).await {
+        // Wait with timeout — 60s accommodates extension-side timeouts
+        // (executeScript 45s + CDP sendCommand 30s + overhead).
+        // Claude's extension uses the same values; they don't have a bridge
+        // timeout because they use native messaging, so we must be generous.
+        let result = match tokio::time::timeout(std::time::Duration::from_secs(60), resp_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
                 self.pending.lock().await.remove(&id);
@@ -238,10 +247,10 @@ impl ExtensionBridge {
                 warn!(
                     tool = tool,
                     pending = pending_count,
-                    "browser tool timed out after 30s"
+                    "browser tool timed out after 60s"
                 );
                 Err(format!(
-                    "Tool '{}' timed out after 30s (pending: {})",
+                    "Tool '{}' timed out after 60s (pending: {})",
                     tool, pending_count
                 ))
             }
@@ -266,6 +275,7 @@ impl ExtensionBridge {
         &self,
         actions: Vec<BatchAction>,
         opts: BatchOptions,
+        session_id: Option<&str>,
     ) -> Result<Vec<Result<serde_json::Value, String>>, String> {
         if actions.is_empty() {
             return Ok(vec![]);
@@ -305,6 +315,7 @@ impl ExtensionBridge {
                 "stop_on_error": opts.stop_on_error,
             }),
             is_batch: true,
+            session_id: session_id.map(|s| s.to_string()),
         };
 
         if tx.send(request).await.is_err() {

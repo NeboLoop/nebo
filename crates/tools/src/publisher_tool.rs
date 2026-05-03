@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use tracing::warn;
-
 use db::Store;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
@@ -168,8 +166,8 @@ impl PublisherTool {
                     detail.item.name,
                     detail.item.version,
                     detail.item.status,
-                    detail.artifact_type.as_deref().unwrap_or("unknown"),
-                    detail.code.as_deref().unwrap_or("none"),
+                    detail.item.artifact_type.as_deref().unwrap_or("unknown"),
+                    detail.item.code.as_deref().unwrap_or("none"),
                 ))
             }
             Err(e) => ToolResult::error(format!("Failed to fetch artifact: {}", e)),

@@ -44,7 +44,7 @@ pub struct IntegrationInfo {
 pub struct Bridge {
     connections: Mutex<HashMap<String, Connection>>,
     client: Arc<McpClient>,
-    registry: Arc<dyn ProxyToolRegistry>,
+    _registry: Arc<dyn ProxyToolRegistry>,
 }
 
 impl Bridge {
@@ -52,7 +52,7 @@ impl Bridge {
         Self {
             connections: Mutex::new(HashMap::new()),
             client,
-            registry,
+            _registry: registry,
         }
     }
 

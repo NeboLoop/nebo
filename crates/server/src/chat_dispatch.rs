@@ -539,6 +539,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     "session_id": sid,
                     "agentId": agent_id,
                 }));
+
+                // Auto-generate a descriptive chat title in the background
+                let title_runner = runner.clone();
+                let title_hub = hub.clone();
+                let title_sid = sid.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = generate_chat_title_if_needed(
+                        &title_runner, &title_hub, &title_sid,
+                    ).await {
+                        tracing::debug!(error = %e, "chat title generation skipped");
+                    }
+                });
             }
             Err(e) => {
                 warn!(error = %e, "agent run failed");
@@ -586,4 +598,106 @@ async fn send_to_channel(
         }
     }
     Err(comm::CommError::Other(format!("unknown channel provider: {}", provider)))
+}
+
+/// Generate a descriptive chat title from the conversation's first messages.
+/// Spawned as a background task after chat_complete — failures are non-fatal.
+async fn generate_chat_title_if_needed(
+    runner: &Arc<agent::Runner>,
+    hub: &Arc<crate::handlers::ws::ClientHub>,
+    session_key: &str,
+) -> Result<(), types::NeboError> {
+    let store = runner.store();
+
+    // Resolve session key → internal session ID → active chat ID
+    let session_id = runner.sessions().resolve_session_id_by_key(session_key)?;
+    let chat_id = runner.sessions().active_chat_id(&session_id);
+
+    let chat = store.get_chat(&chat_id)?.ok_or(types::NeboError::NotFound)?;
+
+    // Skip if already has a real title
+    let title = &chat.title;
+    let is_default = title.is_empty()
+        || title == "New Chat"
+        || title == "Untitled"
+        || title.starts_with("Chat ");
+    if !is_default {
+        return Ok(());
+    }
+
+    // Need at least 2 messages (user + assistant) for a meaningful title
+    let messages = store.get_recent_chat_messages(&chat_id, 6)?;
+    if messages.len() < 2 {
+        return Ok(());
+    }
+
+    // Build a compact transcript from the first few messages
+    let transcript: String = messages.iter()
+        .take(4)
+        .map(|m| {
+            let snippet = if m.content.len() > 200 { &m.content[..200] } else { &m.content };
+            format!("{}: {}", m.role, snippet)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Use the cheapest available provider
+    let providers_lock = runner.providers();
+    let providers = providers_lock.read().await;
+    let provider = providers.first()
+        .ok_or_else(|| types::NeboError::Internal("no providers available".into()))?;
+
+    let req = ai::ChatRequest {
+        messages: vec![ai::Message {
+            role: "user".into(),
+            content: format!(
+                "Generate a short title (3-8 words) for this conversation. Reply with ONLY the title, no quotes or punctuation.\n\n{}",
+                transcript
+            ),
+            ..Default::default()
+        }],
+        max_tokens: 30,
+        temperature: 0.3,
+        model: String::new(),
+        system: String::new(),
+        static_system: String::new(),
+        tools: vec![],
+        enable_thinking: false,
+        metadata: None,
+        cache_breakpoints: vec![],
+        cancel_token: None,
+    };
+
+    let mut rx = provider.stream(&req).await
+        .map_err(|e| types::NeboError::Internal(format!("provider error: {}", e)))?;
+
+    let mut new_title = String::new();
+    while let Some(event) = rx.recv().await {
+        match event.event_type {
+            StreamEventType::Text => new_title.push_str(&event.text),
+            StreamEventType::Error => {
+                return Err(types::NeboError::Internal(
+                    event.error.unwrap_or_else(|| "LLM error".into()),
+                ));
+            }
+            StreamEventType::Done => break,
+            _ => {}
+        }
+    }
+
+    let new_title = new_title.trim().to_string();
+    if new_title.is_empty() || new_title.len() > 100 {
+        return Ok(());
+    }
+
+    store.update_chat_title(&chat_id, &new_title)?;
+
+    hub.broadcast("chat_title_updated", serde_json::json!({
+        "chatId": chat_id,
+        "title": new_title,
+    }));
+
+    info!(chat_id = %chat_id, title = %new_title, "auto-generated chat title");
+
+    Ok(())
 }

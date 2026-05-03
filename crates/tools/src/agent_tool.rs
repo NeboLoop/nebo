@@ -340,7 +340,7 @@ impl PersonaTool {
                         info.push_str("\nWorkflows:\n");
                         for (binding, wf) in &config.workflows {
                             let trigger_desc = match &wf.trigger {
-                                napp::agent::AgentTrigger::Schedule { cron } => format!("schedule({})", cron),
+                                napp::agent::AgentTrigger::Schedule { cron, .. } => format!("schedule({})", cron),
                                 napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                                     match window {
                                         Some(w) => format!("heartbeat({}, {})", interval, w),
@@ -477,7 +477,7 @@ impl PersonaTool {
                     // Describe what was registered
                     let trigger_descs: Vec<String> = config.workflows.iter().map(|(name, wf)| {
                         let t = match &wf.trigger {
-                            napp::agent::AgentTrigger::Schedule { cron } => format!("schedule({})", cron),
+                            napp::agent::AgentTrigger::Schedule { cron, .. } => format!("schedule({})", cron),
                             napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                                 has_heartbeat_or_event = true;
                                 match window {
@@ -722,10 +722,14 @@ impl PersonaTool {
                             let inputs_json = if binding.inputs.is_empty() { None } else {
                                 serde_json::to_string(&binding.inputs).ok()
                             };
+                            let connections_json = if binding.connections.is_empty() { None } else {
+                                serde_json::to_string(&binding.connections).ok()
+                            };
                             let _ = self.store.upsert_agent_workflow(
                                 agent_id, binding_name, &trigger_type, &trigger_config,
                                 Some(&binding.description), inputs_json.as_deref(),
                                 binding.emit.as_deref(), activities_json.as_deref(),
+                                connections_json.as_deref(),
                             );
                         }
                     }
@@ -1141,6 +1145,7 @@ impl PersonaTool {
                         None,
                         None,
                         None,
+                        None,
                     ) {
                         fixes.push(format!("FAILED {}/{}: {} ({})", agent.name, binding.binding_name, normalized, e));
                         continue;
@@ -1165,11 +1170,11 @@ impl PersonaTool {
                     let mut updated_workflows = config.workflows.clone();
 
                     for (wf_name, binding) in &config.workflows {
-                        if let napp::agent::AgentTrigger::Schedule { cron } = &binding.trigger {
+                        if let napp::agent::AgentTrigger::Schedule { cron, .. } = &binding.trigger {
                             let normalized = Self::normalize_cron(cron);
                             if normalized != *cron {
                                 let mut updated = binding.clone();
-                                updated.trigger = napp::agent::AgentTrigger::Schedule { cron: normalized.clone() };
+                                updated.trigger = napp::agent::AgentTrigger::Schedule { cron: normalized.clone(), schedule: None };
                                 updated_workflows.insert(wf_name.clone(), updated);
                                 frontmatter_changed = true;
                                 fixes.push(format!("fixed {}/{} frontmatter: '{}' → '{}'", agent.name, wf_name, cron, normalized));
@@ -1235,7 +1240,7 @@ impl PersonaTool {
     fn register_config_triggers(&self, agent_id: &str, config: &napp::agent::AgentConfig) {
         for (binding_name, binding) in &config.workflows {
             let (trigger_type, trigger_config) = match &binding.trigger {
-                napp::agent::AgentTrigger::Schedule { cron } => ("schedule", Self::normalize_cron(cron)),
+                napp::agent::AgentTrigger::Schedule { cron, .. } => ("schedule", Self::normalize_cron(cron)),
                 napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                     let cfg = match window {
                         Some(w) => format!("{}|{}", interval, w),
@@ -1275,6 +1280,12 @@ impl PersonaTool {
                 serde_json::to_string(&binding.activities).ok()
             };
 
+            let connections_json = if binding.connections.is_empty() {
+                None
+            } else {
+                serde_json::to_string(&binding.connections).ok()
+            };
+
             if let Err(e) = self.store.upsert_agent_workflow(
                 agent_id,
                 binding_name,
@@ -1284,6 +1295,7 @@ impl PersonaTool {
                 inputs_json.as_deref(),
                 binding.emit.as_deref(),
                 activities_json.as_deref(),
+                connections_json.as_deref(),
             ) {
                 warn!(agent = agent_id, binding = %binding_name, error = %e, "failed to upsert agent workflow");
             }
@@ -1497,7 +1509,7 @@ impl PersonaTool {
     /// Convert a parsed AgentTrigger into flat (type, config) strings for DB storage.
     fn flatten_trigger(trigger: &napp::agent::AgentTrigger) -> (String, String) {
         match trigger {
-            napp::agent::AgentTrigger::Schedule { cron } => ("schedule".to_string(), cron.clone()),
+            napp::agent::AgentTrigger::Schedule { cron, .. } => ("schedule".to_string(), cron.clone()),
             napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                 let config = match window {
                     Some(w) => format!("{}|{}", interval, w),
@@ -2057,7 +2069,6 @@ mod tests {
         use tempfile::TempDir;
 
         // Set up a skill loader with one skill loaded
-        let bundled = TempDir::new().unwrap();
         let installed = TempDir::new().unwrap();
         let user = TempDir::new().unwrap();
 
@@ -2070,7 +2081,6 @@ mod tests {
         ).unwrap();
 
         let loader = crate::skills::Loader::new(
-            bundled.path().to_path_buf(),
             installed.path().to_path_buf(),
             user.path().to_path_buf(),
         );
@@ -2123,7 +2133,6 @@ mod tests {
     async fn test_validate_agent_dependencies_all_satisfied() {
         use tempfile::TempDir;
 
-        let bundled = TempDir::new().unwrap();
         let installed = TempDir::new().unwrap();
         let user = TempDir::new().unwrap();
 
@@ -2136,7 +2145,6 @@ mod tests {
         ).unwrap();
 
         let loader = crate::skills::Loader::new(
-            bundled.path().to_path_buf(),
             installed.path().to_path_buf(),
             user.path().to_path_buf(),
         );

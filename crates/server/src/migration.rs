@@ -220,12 +220,14 @@ fn extract_napps_recursive(dir: &Path) -> usize {
 
 // ── Phase 4: Rename roles/ → agents/ and ROLE.md → AGENT.md ─────────
 
+#[allow(dead_code)] // One-time migration, kept for users upgrading from older versions
 const ROLES_TO_AGENTS_MARKER: &str = ".migrated-v4";
 
 /// Rename `roles/` directories to `agents/` and ROLE.md/role.json → AGENT.md/agent.json.
 ///
 /// Must run BEFORE `ensure_artifact_dirs()` so the renamed directories are in place
 /// before the directory structure is validated.
+#[allow(dead_code)]
 pub fn migrate_roles_to_agents(data_dir: &Path) {
     let marker = data_dir.join(ROLES_TO_AGENTS_MARKER);
     if marker.exists() {
@@ -293,6 +295,7 @@ pub fn migrate_roles_to_agents(data_dir: &Path) {
 
 /// Recursively rename ROLE.md → AGENT.md, role.json → agent.json,
 /// and fix manifest.json `"type": "role"` → `"type": "agent"`.
+#[allow(dead_code)]
 fn rename_role_files_recursive(dir: &Path) -> usize {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -357,6 +360,82 @@ fn rename_role_files_recursive(dir: &Path) -> usize {
         }
     }
     count
+}
+
+// ── Phase 5: Migrate data directory to ~/.nebo/ ──────────────────────
+
+const DATA_DIR_MARKER: &str = ".migrated-v5";
+
+/// Migrate data from the old platform-specific directory to `~/.nebo/`.
+///
+/// - macOS:   ~/Library/Application Support/Nebo/ → ~/.nebo/
+/// - Windows: %AppData%\Nebo\ → ~/.nebo/
+/// - Linux:   ~/.config/nebo/ → ~/.nebo/
+///
+/// Must run BEFORE `ensure_data_dir()`. Idempotent via marker file.
+pub fn migrate_data_dir() {
+    let new_dir = match config::data_dir() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+
+    // If new dir already has the marker, migration already ran
+    if new_dir.join(DATA_DIR_MARKER).exists() {
+        return;
+    }
+
+    let old_dir = match config::legacy_data_dir() {
+        Some(d) => d,
+        None => {
+            // No legacy path known — fresh install, just write marker
+            let _ = std::fs::create_dir_all(&new_dir);
+            let _ = std::fs::write(new_dir.join(DATA_DIR_MARKER), "fresh");
+            return;
+        }
+    };
+
+    // Same path (shouldn't happen but guard against it)
+    if old_dir == new_dir {
+        let _ = std::fs::write(new_dir.join(DATA_DIR_MARKER), "same");
+        return;
+    }
+
+    // Old dir doesn't exist — fresh install
+    if !old_dir.exists() {
+        let _ = std::fs::create_dir_all(&new_dir);
+        let _ = std::fs::write(new_dir.join(DATA_DIR_MARKER), "fresh");
+        return;
+    }
+
+    // Both exist — don't interfere, user may have set up manually
+    if new_dir.exists() && std::fs::read_dir(&new_dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
+        info!("both old and new data dirs exist, skipping migration");
+        let _ = std::fs::write(new_dir.join(DATA_DIR_MARKER), "skipped");
+        return;
+    }
+
+    info!(
+        old = %old_dir.display(),
+        new = %new_dir.display(),
+        "migrating data directory to ~/.nebo/"
+    );
+
+    // Move (rename) the old directory to the new location
+    if let Err(_rename_err) = std::fs::rename(&old_dir, &new_dir) {
+        // Cross-device or permission issue — fall back to recursive copy
+        if let Err(e) = copy_dir_recursive(&old_dir, &new_dir) {
+            warn!(error = %e, "failed to copy data directory during migration");
+            return;
+        }
+        // Don't delete old dir — leave it as a backup
+        info!("data directory copied (old directory preserved as backup)");
+    } else {
+        info!("data directory moved successfully");
+    }
+
+    if let Err(e) = std::fs::write(new_dir.join(DATA_DIR_MARKER), "migrated") {
+        warn!(error = %e, "failed to write data dir migration marker");
+    }
 }
 
 /// Recursively copy a directory.

@@ -462,7 +462,7 @@ pub fn build_quick_fallback_summary(messages: &[ChatMessage], active_objective: 
 }
 
 /// Max tokens for compaction summary output.
-const COMPACTION_MAX_TOKENS: i32 = 2000;
+const COMPACTION_MAX_TOKENS: i32 = 4000;
 /// Max chars of evicted content to feed to the compaction model.
 const COMPACTION_CONTENT_CAP: usize = 80_000;
 
@@ -521,16 +521,25 @@ pub async fn build_llm_summary(
 
     let system = "\
 You are a conversation compaction engine. Produce a structured summary of the conversation transcript below. \
-If an existing summary is provided, merge it with the new information into one coherent summary. \
-Be concise but preserve critical context.
+If an existing summary is provided, PRESERVE all existing information and ADD new completed actions, decisions, and context. \
+Be concise but preserve critical context needed to resume work.
 
 Output format (use these exact headings):
 
+## Active Task
+One sentence: what is the user currently trying to accomplish?
+
 ## Goal
-One sentence: what is the user trying to accomplish?
+The end state the user wants to reach.
+
+## Constraints
+Any constraints, preferences, or requirements the user has stated.
+
+## Completed Actions
+Bullet list of actions taken and their outcomes (tools called, files modified, commands run).
 
 ## Key Decisions
-Bullet list of decisions made and approaches chosen.
+Decisions made and approaches chosen or rejected.
 
 ## Files & Resources
 Full paths of files read, written, or referenced.
@@ -538,14 +547,14 @@ Full paths of files read, written, or referenced.
 ## Errors & Resolutions
 Any errors encountered and how they were resolved (or if still open).
 
-## Current State
-What has been completed and what remains.
+## Pending Items
+What remains to be done. Include blocked items and why they're blocked.
 
 ## User Requests
-Verbatim key requests from the user (quoted, max 3).
+Verbatim key requests from the user (quoted, max 3 most recent).
 
-## Pending Items
-Anything incomplete or blocked.";
+## Critical Context
+Any other context needed to resume this work (environment details, API endpoints, credentials hints, etc.).";
 
     let req = ChatRequest {
         messages: vec![Message {

@@ -1011,7 +1011,7 @@ impl AgentTool {
         }
     }
 
-    async fn handle_research(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+    async fn handle_research(&self, input: &serde_json::Value, _ctx: &ToolContext) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("");
 
         match action {

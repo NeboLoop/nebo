@@ -1,7 +1,9 @@
 use std::io::Read;
 use std::path::Path;
 
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use flate2::read::GzDecoder;
+use sha2::{Digest, Sha256};
 use tar::Archive;
 use tracing::info;
 
@@ -11,6 +13,70 @@ use crate::NappError;
 const MAX_BINARY_SIZE: u64 = 500 * 1024 * 1024; // 500MB
 const MAX_UI_FILE_SIZE: u64 = 5 * 1024 * 1024;  // 5MB
 const MAX_METADATA_SIZE: u64 = 1024 * 1024;      // 1MB
+
+// .napp envelope constants
+const NAPP_MAGIC: &[u8; 4] = b"NAPP";
+const NAPP_VERSION: u8 = 0x01;
+const NAPP_HEADER_SIZE: usize = 4 + 1 + 64 + 32; // 101 bytes
+
+/// Verify and unwrap a .napp envelope, returning the inner tar.gz payload.
+///
+/// Checks magic bytes, SHA256 integrity, and ED25519 signature before
+/// returning the payload. If verification fails, nothing is extracted.
+pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, NappError> {
+    if data.len() < NAPP_HEADER_SIZE {
+        return Err(NappError::Extraction(format!(
+            "file too small to be a valid .napp ({} bytes)",
+            data.len()
+        )));
+    }
+
+    // Check magic
+    if &data[0..4] != NAPP_MAGIC {
+        return Err(NappError::Extraction(format!(
+            "invalid .napp magic: {:?}",
+            &data[0..4]
+        )));
+    }
+
+    // Check version
+    let version = data[4];
+    if version != NAPP_VERSION {
+        return Err(NappError::Extraction(format!(
+            "unsupported .napp version: {}",
+            version
+        )));
+    }
+
+    let sig_bytes = &data[5..69];
+    let expected_hash = &data[69..101];
+    let payload = &data[101..];
+
+    // Verify SHA256 first (cheap)
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let actual_hash = hasher.finalize();
+    if actual_hash.as_slice() != expected_hash {
+        return Err(NappError::Extraction(
+            "payload hash mismatch: file corrupted or tampered".into(),
+        ));
+    }
+
+    // Verify ED25519 signature (proves origin)
+    let signature = Signature::from_slice(sig_bytes)
+        .map_err(|e| NappError::Extraction(format!("invalid signature: {}", e)))?;
+
+    let mut signed = Vec::with_capacity(32 + payload.len());
+    signed.extend_from_slice(expected_hash);
+    signed.extend_from_slice(payload);
+
+    public_key
+        .verify(&signed, &signature)
+        .map_err(|_| NappError::Extraction("signature verification failed: not signed by NeboLoop".into()))?;
+
+    info!("napp envelope verified");
+    Ok(payload.to_vec())
+}
 
 /// Allowed file names in a .napp archive.
 const ALLOWED_FILES: &[&str] = &[

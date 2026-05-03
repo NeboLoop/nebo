@@ -554,10 +554,9 @@ impl Registry {
             self.register(Box::new(crate::skill_tool::SkillTool::new(loader.clone()).with_store(store.clone()))).await;
         } else {
             let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let bundled_dir = data.join("bundled").join("skills");
             let installed_dir = data.join("nebo").join("skills");
             let user_dir = data.join("user").join("skills");
-            let loader_default = Arc::new(crate::skills::Loader::new(bundled_dir, installed_dir, user_dir));
+            let loader_default = Arc::new(crate::skills::Loader::new(installed_dir, user_dir));
             self.register(Box::new(crate::skill_tool::SkillTool::new(loader_default))).await;
         }
 

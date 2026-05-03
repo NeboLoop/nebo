@@ -1,8 +1,9 @@
 //! Agent filesystem loader.
 //!
 //! Loads agent definitions from:
+//! - Embedded bundled agents (compiled into binary, lowest priority)
 //! - `nebo/agents/` — sealed .napp archives (marketplace)
-//! - `user/agents/` — loose files (user-created)
+//! - `user/agents/` — loose files (user-created, highest priority)
 //!
 //! This is a content scanner only. The DB remains the single source of truth
 //! for agent state (enabled, input_values, etc.). The loader reads filesystem
@@ -72,11 +73,16 @@ pub enum AgentFsEvent {
     },
 }
 
-/// Manages loading, caching, and hot-reloading of agents from the filesystem.
+/// Manages loading, caching, and hot-reloading of agents.
 ///
 /// Content-only scanner — no CRUD, no state management. The DB owns all
 /// mutable agent state (enabled, input_values, etc.).
+///
+/// Three-tier loading: embedded bundled (lowest) → installed (marketplace) → user (highest).
 pub struct AgentLoader {
+    /// Embedded bundled agents: `(name, AGENT.md, agent.json, manifest.json)`.
+    /// Compiled into the binary — no filesystem directory needed.
+    bundled: &'static [(&'static str, &'static str, &'static str, &'static str)],
     installed_dir: PathBuf,
     user_dir: PathBuf,
     agents: Arc<RwLock<HashMap<String, LoadedAgent>>>,
@@ -85,16 +91,35 @@ pub struct AgentLoader {
 impl AgentLoader {
     pub fn new(installed_dir: PathBuf, user_dir: PathBuf) -> Self {
         Self {
+            bundled: &[],
             installed_dir,
             user_dir,
             agents: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Load all agents from installed and user directories.
-    /// Loading order: installed → user (user overrides by name).
+    /// Set the embedded bundled agents (compiled into the binary, lowest priority).
+    pub fn with_bundled(mut self, bundled: &'static [(&'static str, &'static str, &'static str, &'static str)]) -> Self {
+        self.bundled = bundled;
+        self
+    }
+
+    /// Load all agents from embedded bundled, installed, and user directories.
+    /// Loading order: embedded → installed → user (user overrides by name).
     pub async fn load_all(&self) -> usize {
         let mut loaded = HashMap::new();
+
+        // 0. Load embedded bundled agents (lowest priority — compiled into binary)
+        for (name, agent_md, agent_json, manifest_json) in self.bundled {
+            match load_from_embedded(name, agent_md, agent_json, manifest_json) {
+                Ok(agent) => {
+                    loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+                }
+                Err(e) => {
+                    warn!(agent = name, error = %e, "failed to load bundled agent");
+                }
+            }
+        }
 
         // 1. Load installed agents from extracted .napp directories
         for agent in scan_installed_agents(&self.installed_dir) {
@@ -259,6 +284,63 @@ impl AgentLoader {
     }
 }
 
+/// Load an agent from embedded (compiled-in) content strings.
+fn load_from_embedded(
+    name: &str,
+    agent_md_raw: &str,
+    agent_json_raw: &str,
+    manifest_json_raw: &str,
+) -> Result<LoadedAgent, NappError> {
+    let mut agent_def = parse_agent(agent_md_raw)?;
+    if agent_def.name.is_empty() {
+        agent_def.name = name.to_string();
+    }
+
+    let (config, frontmatter) = if agent_json_raw.is_empty() {
+        (None, String::new())
+    } else {
+        let cfg = parse_agent_config(agent_json_raw)?;
+        (Some(cfg), agent_json_raw.to_string())
+    };
+
+    let (version, id, manifest_name) = if manifest_json_raw.is_empty() {
+        (None, None, None)
+    } else {
+        match serde_json::from_str::<serde_json::Value>(manifest_json_raw) {
+            Ok(v) => (
+                v["version"].as_str().map(String::from),
+                v["id"].as_str().map(String::from),
+                v["name"].as_str().map(String::from),
+            ),
+            Err(_) => (None, None, None),
+        }
+    };
+
+    // Prefer manifest.json display name, but skip package-style identifiers
+    if let Some(ref mname) = manifest_name {
+        if !mname.is_empty() && !mname.contains('@') && !mname.contains('/') {
+            agent_def.name = mname.clone();
+        }
+    }
+
+    let description = agent_def.description.clone();
+
+    Ok(LoadedAgent {
+        agent_def,
+        config,
+        source: AgentSource::Installed,
+        napp_path: None,
+        source_path: PathBuf::new(),
+        version,
+        agent_md: agent_md_raw.to_string(),
+        frontmatter,
+        description,
+        id,
+        views: None,
+        theme_css: None,
+    })
+}
+
 /// Load an agent from a directory (loose files or extracted .napp).
 pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, NappError> {
     let agent_md_path = dir.join("AGENT.md");
@@ -312,9 +394,10 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
         }
     };
 
-    // Prefer manifest.json display name over AGENT.md frontmatter slug
+    // Prefer manifest.json display name over AGENT.md frontmatter slug,
+    // but skip package-style identifiers (contain @ or /)
     if let Some(ref name) = manifest_name {
-        if !name.is_empty() {
+        if !name.is_empty() && !name.contains('@') && !name.contains('/') {
             agent_def.name = name.clone();
         }
     }

@@ -1,0 +1,281 @@
+<script lang="ts">
+  import { page } from '$app/stores';
+  import { onMount } from 'svelte';
+  import { getStoreProduct, getStoreProductReviews } from '$lib/api/index';
+  import { installedIds, installItem, uninstallItem } from '$lib/stores/marketplace.js';
+  import Star from 'lucide-svelte/icons/star';
+  import ArrowLeft from 'lucide-svelte/icons/arrow-left';
+  import ShieldCheck from 'lucide-svelte/icons/shield-check';
+  import Copy from 'lucide-svelte/icons/copy';
+  import Check from 'lucide-svelte/icons/check';
+  import Terminal from 'lucide-svelte/icons/terminal';
+  import Globe from 'lucide-svelte/icons/globe';
+  import Mail from 'lucide-svelte/icons/mail';
+  import Calendar from 'lucide-svelte/icons/calendar';
+  import ChevronLeft from 'lucide-svelte/icons/chevron-left';
+  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+
+  const connectorId = $derived($page.params.id);
+
+  let apiProduct = $state<Record<string, unknown> | null>(null);
+  let apiReviews = $state<Record<string, unknown>[]>([]);
+
+  onMount(async () => {
+    try {
+      const [productRes, reviewsRes] = await Promise.all([
+        getStoreProduct(connectorId),
+        getStoreProductReviews(connectorId),
+      ]);
+      if (productRes?.app) {
+        const a = productRes.app as Record<string, unknown>;
+        apiProduct = {
+          id: a.id, name: a.name, desc: a.description || '',
+          category: a.category || '', rating: a.rating || 0,
+          installs: a.installCount || 0, price: a.price || 'Get', code: a.code || '',
+          longDesc: a.longDesc || '', features: a.features || [],
+          screenshots: ((a.screenshots || []) as Record<string, unknown>[]).map((s: Record<string, unknown>) => typeof s === 'string' ? { title: s, desc: '' } : s),
+          tools: a.tools || [], worksWith: a.worksWith || [],
+          platforms: a.platforms || [], developer: a.developer || null,
+          pricing: a.pricing || null, ratingDistribution: a.ratingDistribution || null,
+          authorVerified: (a.author as Record<string, unknown>)?.verified ?? false,
+          hasAuth: a.hasAuth || false, serverType: a.serverType || '',
+          authType: a.authType || '', reviews: [] as Record<string, unknown>[],
+        };
+      }
+      if (reviewsRes?.reviews?.length) {
+        apiReviews = reviewsRes.reviews.map((r: Record<string, unknown>) => ({
+          user: r.userName || '', rating: r.rating || 0,
+          text: r.body || '', date: r.createdAt || '',
+          role: r.role || '', duration: r.duration || '',
+        }));
+        if (apiProduct) apiProduct.reviews = apiReviews;
+      }
+    } catch {}
+  });
+
+  const detail = $derived(apiProduct);
+  const connector = $derived(apiProduct || null);
+  const installed = $derived($installedIds.has(connectorId));
+
+  let copied = $state(false);
+  let activeScreenshot = $state(0);
+
+  const iconColors = [
+    'bg-primary/15 text-primary', 'bg-accent/15 text-accent', 'bg-success/15 text-success',
+    'bg-warning/15 text-warning', 'bg-error/15 text-error', 'bg-info/15 text-info', 'bg-secondary/15 text-secondary',
+  ];
+  function getIconColor(id: string) {
+    let hash = 0;
+    for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
+    return iconColors[Math.abs(hash) % iconColors.length];
+  }
+  function getInitials(name: string) {
+    return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  }
+
+  const totalReviews = $derived(detail?.ratingDistribution ? Object.values(detail.ratingDistribution as Record<string, number>).reduce((a: number, b: number) => a + b, 0) : (detail?.reviews?.length ?? 0));
+  const maxRatingCount = $derived(detail?.ratingDistribution ? Math.max(...Object.values(detail.ratingDistribution as Record<string, number>)) : 1);
+
+  function handleInstall() {
+    if (installed) {
+      uninstallItem(connectorId);
+    } else if (connector) {
+      installItem({ id: connectorId, name: connector.name, type: 'connector' });
+    }
+  }
+
+  function copyCode() {
+    if (connector?.code) {
+      navigator.clipboard.writeText(connector.code);
+      copied = true;
+      setTimeout(() => copied = false, 2000);
+    }
+  }
+</script>
+
+{#if connector}
+  <div class="p-6 max-w-[960px]">
+    <a href="/marketplace/connectors" class="inline-flex items-center gap-1.5 text-xs text-base-content/50 hover:text-base-content transition-colors mb-5">
+      <ArrowLeft class="w-3 h-3" /> Connectors
+    </a>
+
+    <div class="flex gap-8">
+      <!-- Left sidebar -->
+      <div class="w-[240px] shrink-0">
+        <div class="w-16 h-16 rounded-2xl {getIconColor(connectorId)} grid place-items-center text-lg font-bold mb-3">{getInitials(connector.name)}</div>
+        <h1 class="text-lg font-semibold mb-1">{connector.name}</h1>
+        <div class="text-xs text-base-content/60 mb-3">{connector.desc}</div>
+
+        <div class="flex items-center gap-1.5 mb-1">
+          <div class="flex items-center gap-0.5">
+            {#each Array(5) as _, i}
+              <Star class="w-3.5 h-3.5 {i < Math.round(connector.rating) ? 'text-warning fill-warning' : 'text-base-content/20'}" />
+            {/each}
+          </div>
+          <span class="text-xs font-medium">{connector.rating}</span>
+        </div>
+        <div class="text-xs text-base-content/50 mb-4">{totalReviews.toLocaleString()} reviews · {connector.installs?.toLocaleString()} installs</div>
+
+        <div class="text-sm font-medium mb-4">Free</div>
+
+        {#if detail?.authorVerified}
+          <div class="flex items-center gap-1.5 mb-4">
+            <ShieldCheck class="w-3.5 h-3.5 text-success" />
+            <span class="text-xs font-medium text-success">Verified Publisher</span>
+          </div>
+        {/if}
+
+        <button
+          class="w-full py-2.5 px-4 rounded-lg text-sm font-medium cursor-pointer border-none transition-all mb-2.5 {installed ? 'bg-base-300 text-base-content hover:bg-base-content/10' : 'bg-primary text-primary-content hover:brightness-110'}"
+          onclick={handleInstall}
+        >{installed ? 'Uninstall' : 'Install'}</button>
+
+        {#if connector.code}
+          <button class="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg border border-base-300 bg-base-100 text-xs font-mono text-base-content/60 cursor-pointer hover:text-base-content hover:border-base-content/20 transition-colors mb-5" onclick={copyCode}>
+            {connector.code}
+            {#if copied}<Check class="w-3 h-3 text-success" />{:else}<Copy class="w-3 h-3" />{/if}
+          </button>
+        {/if}
+
+        <!-- Server info -->
+        <div class="border-t border-base-300 pt-4 mb-4">
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2.5">Connection</div>
+          <div class="flex flex-col gap-2">
+            {#if detail?.serverType}
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-base-content/50">Transport</span>
+                <span class="text-xs font-mono font-medium">{detail.serverType}</span>
+              </div>
+            {/if}
+            {#if connector.authType}
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-base-content/50">Auth</span>
+                <span class="text-xs font-medium">{connector.authType === 'none' ? 'None required' : connector.authType === 'api_key' ? 'API Key' : 'OAuth'}</span>
+              </div>
+            {/if}
+            {#if detail?.tools}
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-base-content/50">Tools</span>
+                <span class="text-xs font-medium">{detail.tools.length} available</span>
+              </div>
+            {/if}
+          </div>
+        </div>
+
+        {#if detail?.developer}
+          <div class="border-t border-base-300 pt-4">
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2.5">Developer</div>
+            <div class="text-sm font-medium mb-2">{detail.developer.name}</div>
+            <div class="flex flex-col gap-1.5">
+              <div class="flex items-center gap-1.5 text-xs text-base-content/50"><Globe class="w-3 h-3" /><span>{detail.developer.website}</span></div>
+              <div class="flex items-center gap-1.5 text-xs text-base-content/50"><Mail class="w-3 h-3" /><span>{detail.developer.support}</span></div>
+              <div class="flex items-center gap-1.5 text-xs text-base-content/50"><Calendar class="w-3 h-3" /><span>Launched {detail.developer.launched}</span></div>
+            </div>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Main content -->
+      <div class="flex-1 min-w-0">
+        {#if detail?.screenshots?.length}
+          <div class="mb-8">
+            <div class="relative rounded-xl overflow-hidden border border-base-300 bg-base-200 aspect-[16/9] mb-2.5">
+              <div class="absolute inset-0 flex items-center justify-center text-center">
+                <div>
+                  <div class="text-sm font-medium text-base-content/70 mb-1">{detail.screenshots[activeScreenshot].title}</div>
+                  <div class="text-xs text-base-content/40">{detail.screenshots[activeScreenshot].desc}</div>
+                </div>
+              </div>
+              {#if detail.screenshots.length > 1}
+                <button class="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-base-100/80 border border-base-300 grid place-items-center cursor-pointer hover:bg-base-100 transition-colors" onclick={() => activeScreenshot = (activeScreenshot - 1 + detail.screenshots.length) % detail.screenshots.length}><ChevronLeft class="w-4 h-4" /></button>
+                <button class="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-base-100/80 border border-base-300 grid place-items-center cursor-pointer hover:bg-base-100 transition-colors" onclick={() => activeScreenshot = (activeScreenshot + 1) % detail.screenshots.length}><ChevronRight class="w-4 h-4" /></button>
+              {/if}
+            </div>
+            {#if detail.screenshots.length > 1}
+              <div class="flex items-center justify-center gap-1.5">
+                {#each detail.screenshots as _, i}
+                  <button class="w-2 h-2 rounded-full transition-colors cursor-pointer border-none {i === activeScreenshot ? 'bg-primary' : 'bg-base-content/20 hover:bg-base-content/40'}" onclick={() => activeScreenshot = i}></button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        {#if detail?.longDesc}
+          <div class="mb-8">
+            <h2 class="text-sm font-semibold mb-2.5">About this connector</h2>
+            <div class="text-sm leading-relaxed text-base-content/80 mb-4">{detail.longDesc}</div>
+            {#if detail?.features?.length}
+              <ul class="flex flex-col gap-1.5">
+                {#each detail.features as feature}
+                  <li class="flex items-start gap-2 text-sm text-base-content/80"><Check class="w-4 h-4 text-success shrink-0 mt-0.5" />{feature}</li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+
+        {#if detail?.tools?.length}
+          <div class="mb-8">
+            <h2 class="text-sm font-semibold mb-2.5">Tools ({detail.tools.length})</h2>
+            <div class="flex flex-wrap gap-2">
+              {#each detail.tools as tool}
+                <span class="inline-flex items-center gap-1.5 py-1.5 px-3 rounded-lg border border-base-300 bg-base-100 text-xs font-mono"><Terminal class="w-3 h-3 text-base-content/40" />{tool}</span>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        {#if detail?.reviews?.length || detail?.ratingDistribution}
+          <div>
+            <h2 class="text-sm font-semibold mb-4">Reviews</h2>
+            {#if detail?.ratingDistribution}
+              <div class="flex gap-6 mb-6 p-4 rounded-xl border border-base-300 bg-base-100">
+                <div class="text-center shrink-0">
+                  <div class="text-3xl font-bold mb-1">{connector.rating}</div>
+                  <div class="flex items-center gap-0.5 justify-center mb-1">
+                    {#each Array(5) as _, i}<Star class="w-3.5 h-3.5 {i < Math.round(connector.rating) ? 'text-warning fill-warning' : 'text-base-content/20'}" />{/each}
+                  </div>
+                  <div class="text-xs text-base-content/50">{totalReviews.toLocaleString()} reviews</div>
+                </div>
+                <div class="flex-1 flex flex-col gap-1">
+                  {#each [5, 4, 3, 2, 1] as stars}
+                    {@const count = (detail.ratingDistribution as Record<number, number>)[stars] ?? 0}
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs text-base-content/50 w-3 text-right">{stars}</span>
+                      <Star class="w-3 h-3 text-warning fill-warning shrink-0" />
+                      <div class="flex-1 h-2 rounded-full bg-base-200 overflow-hidden"><div class="h-full rounded-full bg-warning transition-all" style="width: {(count / maxRatingCount) * 100}%"></div></div>
+                      <span class="text-xs text-base-content/40 w-10 text-right">{count.toLocaleString()}</span>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if detail?.reviews?.length}
+              <div class="flex flex-col gap-3">
+                {#each detail.reviews as review}
+                  <div class="p-4 rounded-xl border border-base-300 bg-base-100">
+                    <div class="flex items-start gap-3 mb-2.5">
+                      <div class="w-8 h-8 rounded-full bg-base-200 grid place-items-center text-xs font-bold shrink-0">{review.user[0]}</div>
+                      <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2 mb-0.5">
+                          <span class="text-sm font-medium">{review.user}</span>
+                          <div class="flex items-center gap-0.5">{#each Array(5) as _, i}<Star class="w-3 h-3 {i < review.rating ? 'text-warning fill-warning' : 'text-base-content/20'}" />{/each}</div>
+                          <span class="text-xs text-base-content/40 ml-auto shrink-0">{review.date}</span>
+                        </div>
+                        {#if review.role || review.duration}<div class="text-xs text-base-content/40 mb-1.5">{review.role ?? ''}{review.role && review.duration ? ' · ' : ''}{review.duration ?? ''}</div>{/if}
+                      </div>
+                    </div>
+                    <div class="text-sm leading-relaxed text-base-content/80 pl-11">{review.text}</div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    </div>
+  </div>
+{:else}
+  <div class="flex-1 flex items-center justify-center text-sm text-base-content/50">Connector not found</div>
+{/if}

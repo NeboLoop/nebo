@@ -1,0 +1,431 @@
+{
+  "inputs": [
+    {
+      "type": "textarea",
+      "required": false,
+      "placeholder": "AI trends in healthcare\nCompetitor pricing changes",
+      "description": "Topics to track for daily digests and trend monitoring, one per line",
+      "key": "research_topics"
+    },
+    {
+      "type": "text",
+      "required": false,
+      "placeholder": "Healthcare technology",
+      "description": "Your industry for contextual research",
+      "key": "industry"
+    },
+    {
+      "type": "select",
+      "required": false,
+      "options": [
+        {
+          "value": "quick",
+          "label": "Quick (3 phases, 2-5 min)"
+        },
+        {
+          "value": "standard",
+          "label": "Standard (6 phases, 5-10 min)"
+        },
+        {
+          "value": "deep",
+          "label": "Deep (8 phases, 10-20 min)"
+        }
+      ],
+      "default": "standard",
+      "description": "Default research depth for new requests",
+      "key": "preferred_depth"
+    },
+    {
+      "type": "select",
+      "required": false,
+      "options": [
+        {
+          "value": "markdown",
+          "label": "Markdown"
+        },
+        {
+          "value": "html",
+          "label": "HTML report"
+        },
+        {
+          "value": "both",
+          "label": "Both"
+        }
+      ],
+      "default": "markdown",
+      "description": "Output format for research reports",
+      "key": "report_format"
+    }
+  ],
+  "workflows": {
+    "deep-dive": {
+      "trigger": {
+        "type": "manual"
+      },
+      "description": "Full 8-phase research: scope, plan, retrieve, triangulate, synthesize, critique, refine, package",
+      "activities": [
+        {
+          "id": "scope-and-plan",
+          "intent": "Define the research question precisely and build a search strategy",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Clarify the research question with the user \u2014 what exactly do they need to know and why",
+            "Identify sub-questions that must be answered to address the main question",
+            "Build a search plan: sources to check, search terms, expected source types",
+            "Set scope boundaries \u2014 what is in and out of scope for this research"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "retrieve-and-triangulate",
+          "intent": "Gather information from multiple sources and cross-reference findings",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0",
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Execute search plan across multiple source types (web, databases, reports)",
+            "Extract key claims, data points, and findings from each source",
+            "Record full citation metadata for every source (author, date, publication, URL)",
+            "Triangulate \u2014 cross-reference each major finding across at least two independent sources",
+            "Flag single-source claims and note confidence level"
+          ],
+          "token_budget": {
+            "max": 4000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "synthesize-and-critique",
+          "intent": "Build the narrative, then stress-test it from multiple perspectives",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Synthesize findings into a coherent narrative with clear takeaways",
+            "Search for disconfirming evidence \u2014 actively look for the opposing view",
+            "Apply multi-persona critique: subject-matter expert, skeptic, decision-maker",
+            "Identify gaps, weak claims, and areas needing more evidence",
+            "Refine the report based on critique findings"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "package",
+          "intent": "Produce the final executive-ready report with citations and confidence assessment",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Structure the report: executive summary, key findings, evidence, citations, confidence rating",
+            "Ensure every factual claim has an inline citation",
+            "Add confidence assessment (high/medium/low) with explanation",
+            "Format for the target audience"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 12000
+      }
+    },
+    "quick-brief": {
+      "trigger": {
+        "type": "manual"
+      },
+      "description": "3-phase quick research for time-sensitive questions \u2014 fast but still cited",
+      "activities": [
+        {
+          "id": "rapid-search",
+          "intent": "Quickly gather the most relevant and credible sources",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0",
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Identify the core question and two to three most likely source types",
+            "Search for high-credibility sources \u2014 prioritize primary sources and established publications",
+            "Extract key data points with full citations"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "verify",
+          "intent": "Cross-check the top findings against at least one additional source",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Cross-reference key claims against at least one independent source",
+            "Flag anything that could not be verified",
+            "Note data freshness \u2014 flag anything older than 12 months"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "brief",
+          "intent": "Deliver a concise answer with inline citations and confidence level",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Write a concise brief: answer first, then supporting evidence",
+            "Include inline citations for every factual claim",
+            "State confidence level and what would change it",
+            "Note any areas that would benefit from deeper research"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 6000
+      }
+    },
+    "daily-digest": {
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 7 * * *"
+      },
+      "description": "Morning briefing on tracked topics \u2014 industry news, competitor moves, trend updates",
+      "activities": [
+        {
+          "id": "scan-topics",
+          "intent": "Check all tracked topics for new developments since the last digest",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0",
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Read the user's tracked topics from memory",
+            "Search for developments on each topic from the past 24 hours",
+            "Filter for genuinely new or significant information \u2014 skip noise"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "compile-digest",
+          "intent": "Produce a scannable morning briefing with sourced highlights",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Organize findings by topic with the most important items first",
+            "Write a one-sentence summary per item with source link",
+            "Add a 'So What' note for items that may require action",
+            "Include a 'Nothing New' note for tracked topics with no developments"
+          ],
+          "token_budget": {
+            "max": 3000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 5000
+      },
+      "emit": "digest.ready"
+    },
+    "trend-watch": {
+      "trigger": {
+        "type": "heartbeat",
+        "interval": "12h"
+      },
+      "description": "Monitor the web for significant developments on saved topics \u2014 only alerts when something matters",
+      "activities": [
+        {
+          "id": "monitor",
+          "intent": "Scan saved topics for significant changes or breaking developments",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0",
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Read saved topics and their last-known state from memory",
+            "Search for new developments on each topic",
+            "Apply significance filter \u2014 only flag developments that are genuinely new and impactful",
+            "Compare against last-known state to detect real changes vs. repeated coverage"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "alert",
+          "intent": "Send a concise alert only if something significant was found",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "If no significant developments found, update last-checked timestamp and exit silently",
+            "If significant development found, write a brief alert: what changed, why it matters, source",
+            "Update the saved topic state in memory with new findings"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 4000
+      },
+      "emit": "trend.alert"
+    },
+    "fact-check": {
+      "trigger": {
+        "type": "event",
+        "sources": [
+          "content.drafted"
+        ]
+      },
+      "description": "Validate claims and statistics in drafted content before publishing",
+      "activities": [
+        {
+          "id": "extract-claims",
+          "intent": "Identify all factual claims, statistics, and citations in the content",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Read the drafted content",
+            "Extract every factual claim, statistic, quote, and citation",
+            "Categorize each as: verifiable fact, statistic, quote, opinion, or general claim"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "verify-claims",
+          "intent": "Check each verifiable claim against credible sources",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0",
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "For each verifiable claim and statistic, search for the original source",
+            "Verify the claim matches the source \u2014 check for misquotes, outdated data, or misattribution",
+            "Check that statistics have not been superseded by newer data",
+            "Verify quotes are accurate and properly attributed"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "report",
+          "intent": "Deliver a fact-check report with pass/fail per claim and suggested corrections",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Produce a claim-by-claim report: verified, unverified, incorrect, or outdated",
+            "For incorrect or outdated claims, provide the correct information with source",
+            "For unverified claims, suggest how to verify or recommend removing",
+            "Give an overall content accuracy score"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 6000
+      }
+    }
+  },
+  "skills": [
+    "@nebo/skills/deep-research@^1.0.0",
+    "@nebo/skills/web-scraper@^1.0.0"
+  ],
+  "pricing": {
+    "model": "monthly_fixed",
+    "cost": 0.0
+  },
+  "defaults": {
+    "timezone": "user_local"
+  }
+}

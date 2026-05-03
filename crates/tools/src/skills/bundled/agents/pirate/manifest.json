@@ -1,0 +1,9 @@
+{
+  "id": "pirate",
+  "name": "Pirate",
+  "version": "1.0.0",
+  "type": "agent",
+  "description": "A pirate-themed test agent for verifying agent install, workflows, schedules, and event triggers.",
+  "author": "nebo",
+  "tags": ["test", "demo"]
+}

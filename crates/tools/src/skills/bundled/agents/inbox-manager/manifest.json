@@ -1,0 +1,9 @@
+{
+  "id": "inbox-manager",
+  "name": "Inbox Manager",
+  "version": "1.0.0",
+  "type": "agent",
+  "description": "Wake up to a clean inbox. Emails triaged, replies drafted, urgent items flagged.",
+  "author": "nebo",
+  "tags": ["email", "inbox", "productivity", "automation", "gmail"]
+}

@@ -1,0 +1,9 @@
+{
+  "id": "seo-auditor",
+  "name": "SEO Auditor",
+  "version": "1.0.0",
+  "type": "agent",
+  "description": "Agency-grade SEO without the agency. Crawls your site, finds problems, tells you exactly what to fix.",
+  "author": "nebo",
+  "tags": ["seo", "audit", "technical-seo", "content", "search"]
+}

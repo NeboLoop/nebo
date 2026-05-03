@@ -1,0 +1,9 @@
+{
+  "id": "private-investigator",
+  "name": "Private Investigator",
+  "version": "1.0.0",
+  "type": "agent",
+  "description": "Deep background research on people, companies, and claims. OSINT, public records, cross-referencing, and dossier-grade reports.",
+  "author": "nebo",
+  "tags": ["research", "osint", "investigation"]
+}

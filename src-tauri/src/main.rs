@@ -16,12 +16,24 @@ use tracing_subscriber::EnvFilter;
 
 const SERVER_URL: &str = "http://localhost:27895";
 
+/// In dev mode, load from Vite dev server for HMR. In production, load from the backend.
+fn frontend_url() -> &'static str {
+    if cfg!(debug_assertions) {
+        "http://localhost:5173"
+    } else {
+        SERVER_URL
+    }
+}
+
 /// Set to true once the window has been restored and shown.
 /// Prevents saving stale state from initial creation events.
 static WINDOW_READY: AtomicBool = AtomicBool::new(false);
 
 /// Dedup external URL opens — on_navigation and on_new_window can both fire for the same URL.
 static LAST_OPENED_URL: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+
+/// Debounce sleep/wake reconnect — Tauri fires RunEvent::Resumed many times per wake.
+static LAST_RESUME: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Domains that Stripe's PaymentElement, Link, hCaptcha, and 3D-Secure need to load inside the webview.
 fn is_stripe_domain(host: &str) -> bool {
@@ -174,7 +186,7 @@ fn main() {
             let window = WebviewWindowBuilder::new(
                 app,
                 "main",
-                WebviewUrl::External(SERVER_URL.parse().unwrap()),
+                WebviewUrl::External(frontend_url().parse().unwrap()),
             )
             .title("Nebo")
             .inner_size(w, h)
@@ -354,17 +366,31 @@ fn main() {
         .expect("error while building Nebo desktop")
         .run(|_app, event| {
             if let tauri::RunEvent::Resumed { .. } = event {
-                tracing::info!("system resumed from sleep, triggering NeboLoop reconnect");
-                // Fire-and-forget POST to the local backend — raw TCP to avoid extra deps.
-                std::thread::spawn(|| {
-                    use std::io::Write;
-                    if let Ok(mut stream) = std::net::TcpStream::connect("127.0.0.1:27895") {
-                        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
-                        let _ = stream.write_all(
-                            b"POST /api/v1/neboloop/reconnect HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
-                        );
+                // Debounce: Tauri fires Resumed many times per wake cycle.
+                // Only reconnect if >5s since last resume event.
+                let should_reconnect = {
+                    let mut last = LAST_RESUME.lock().unwrap();
+                    let now = Instant::now();
+                    if last.map_or(true, |t| now.duration_since(t).as_secs() >= 5) {
+                        *last = Some(now);
+                        true
+                    } else {
+                        false
                     }
-                });
+                };
+                if should_reconnect {
+                    tracing::info!("system resumed from sleep, triggering NeboLoop reconnect");
+                    // Fire-and-forget POST to the local backend — raw TCP to avoid extra deps.
+                    std::thread::spawn(|| {
+                        use std::io::Write;
+                        if let Ok(mut stream) = std::net::TcpStream::connect("127.0.0.1:27895") {
+                            let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
+                            let _ = stream.write_all(
+                                b"POST /api/v1/neboloop/reconnect HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+                            );
+                        }
+                    });
+                }
             }
         });
 }

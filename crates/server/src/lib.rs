@@ -38,7 +38,7 @@ use axum::Router;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use config::Config;
 use handlers::ws::ClientHub;
@@ -453,6 +453,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let mut policy = tools::Policy::new();
     policy.level = tools::PolicyLevel::Full;
     policy.ask_mode = tools::AskMode::Off;
+    // Migrate data directory from old platform-specific paths to ~/.nebo/ (one-time)
+    migration::migrate_data_dir();
+
     let data_dir = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     let tool_registry = Arc::new(tools::Registry::new(policy));
@@ -513,13 +516,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let _ = std::fs::create_dir_all(&user_plugins_dir);
     let plugin_store = Arc::new(napp::plugin::PluginStore::new(plugins_dir, user_plugins_dir, None));
 
-    // Initialize skill loader (bundled + extracted dirs from nebo/skills/ + loose files from user/skills/)
-    let bundled_skills_dir = config::bundled_skills_dir().unwrap_or_else(|_| data_dir.join("bundled").join("skills"));
+    // Initialize skill loader (embedded bundled + marketplace nebo/skills/ + user/skills/)
     let installed_skills_dir = data_dir.join("nebo").join("skills");
     let user_skills_dir = data_dir.join("user").join("skills");
-    let _ = std::fs::create_dir_all(&bundled_skills_dir);
     let skill_loader = Arc::new(tools::skills::Loader::new(
-        bundled_skills_dir,
         installed_skills_dir,
         user_skills_dir,
     ).with_plugin_store(plugin_store.clone()));
@@ -904,11 +904,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
     ))).await;
 
-    // Create agent loader — filesystem content scanner for nebo/agents/ and user/agents/
+    // Create agent loader — embedded bundled + nebo/agents/ + user/agents/
     let agent_loader = Arc::new(napp::AgentLoader::new(
         data_dir.join("nebo").join("agents"),
         data_dir.join("user").join("agents"),
-    ));
+    ).with_bundled(tools::skills::bundled::BUNDLED_AGENTS));
     agent_loader.load_all().await;
     let (_watcher_handle, agent_fs_rx) = agent_loader.watch();
     tool_registry.set_agent_loader(agent_loader.clone());
@@ -971,6 +971,24 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 sync_agent_workflows(&store, &agent_id_for_bindings, config);
             }
         }
+        // Filesystem is the source of truth. Remove any DB agent not on the filesystem.
+        let fs_ids: std::collections::HashSet<String> = fs_agents.iter()
+            .map(|a| a.id.clone().unwrap_or_else(|| a.agent_def.name.clone()))
+            .collect();
+        if let Ok(db_agents) = store.list_agents(1000, 0) {
+            let mut removed = 0usize;
+            for db_agent in &db_agents {
+                if !fs_ids.contains(&db_agent.id) {
+                    let _ = store.delete_agent(&db_agent.id);
+                    removed += 1;
+                    info!(id = %db_agent.id, name = %db_agent.name, "removed orphan agent from DB");
+                }
+            }
+            if removed > 0 {
+                info!(removed, "cleaned up orphan agents from DB");
+            }
+        }
+
         if synced > 0 || created > 0 {
             info!(synced, created, "synced agent content from filesystem to DB");
         }
@@ -1627,7 +1645,7 @@ async fn handle_agent_fs_events(
 fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent::AgentConfig) {
     for (binding_name, binding) in &config.workflows {
         let (trigger_type, trigger_config) = match &binding.trigger {
-            napp::agent::AgentTrigger::Schedule { cron } => ("schedule", tools::PersonaTool::normalize_cron(cron)),
+            napp::agent::AgentTrigger::Schedule { cron, .. } => ("schedule", tools::PersonaTool::normalize_cron(cron)),
             napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                 let cfg = match window {
                     Some(w) => format!("{}|{}", interval, w),
@@ -1652,9 +1670,11 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
         let inputs_json = if binding.inputs.is_empty() { None } else { serde_json::to_string(&binding.inputs).ok() };
         let desc = if binding.description.is_empty() { None } else { Some(binding.description.as_str()) };
         let activities_json = if binding.activities.is_empty() { None } else { serde_json::to_string(&binding.activities).ok() };
+        let connections_json = if binding.connections.is_empty() { None } else { serde_json::to_string(&binding.connections).ok() };
         let _ = store.upsert_agent_workflow(
             agent_id, binding_name, trigger_type, &trigger_config,
             desc, inputs_json.as_deref(), binding.emit.as_deref(), activities_json.as_deref(),
+            connections_json.as_deref(),
         );
     }
 }

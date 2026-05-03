@@ -38,7 +38,7 @@ impl LoopbackPlugin {
 
         match handler {
             None => warn!("loopback: no handler set, dropping message"),
-            Some(h) if !subscribed => {
+            Some(_) if !subscribed => {
                 warn!(topic = msg.topic.as_str(), "loopback: not subscribed to topic, dropping message");
             }
             Some(h) => h(msg),

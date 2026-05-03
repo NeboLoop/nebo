@@ -1,0 +1,263 @@
+{
+  "inputs": [
+    {
+      "key": "default_depth",
+      "label": "Default investigation depth",
+      "description": "How thorough investigations should be by default. You can always override per-request.",
+      "type": "select",
+      "required": false,
+      "options": [
+        { "value": "quick", "label": "Quick profile (2-3 min)" },
+        { "value": "standard", "label": "Standard background (5-10 min)" },
+        { "value": "deep", "label": "Deep investigation (10-20 min)" }
+      ],
+      "default": "standard"
+    },
+    {
+      "key": "industry_context",
+      "label": "Your industry",
+      "description": "Your industry for contextual relevance when investigating companies or people in your space",
+      "type": "text",
+      "required": false,
+      "placeholder": "Real estate"
+    },
+    {
+      "key": "watchlist",
+      "label": "Watchlist",
+      "description": "People, companies, or domains to monitor for new public information, one per line",
+      "type": "textarea",
+      "required": false,
+      "placeholder": "Jane Doe (competitor CEO)\nacme-corp.com\nPending deal: Project Alpha"
+    }
+  ],
+  "workflows": {
+    "full-investigation": {
+      "trigger": { "type": "manual" },
+      "description": "Complete background investigation: OSINT sweep, cross-referencing, dossier-grade report with confidence grades",
+      "activities": [
+        {
+          "id": "scope-subject",
+          "intent": "Define the investigation subject and establish search parameters",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Clarify the subject: person, company, domain, or claim",
+            "For people: establish full name, known aliases, location, and any known affiliations",
+            "For companies: establish legal name, jurisdiction, and known principals",
+            "Define what the user needs to know and why — this shapes the investigation priorities",
+            "Identify disambiguation risks (common names, similar entities) and note resolution strategy"
+          ],
+          "token_budget": { "max": 2000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        },
+        {
+          "id": "osint-sweep",
+          "intent": "Systematic open-source intelligence gathering across all public sources",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0",
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Search for the subject across web, news, social media, corporate registries, and domain records",
+            "For people: professional profiles, published content, news mentions, corporate officer listings, court records",
+            "For companies: incorporation records, registered agents, officers, related entities, press, regulatory filings",
+            "Capture full source metadata for every finding: URL, date, publication, author",
+            "Record negative results — sources checked that returned nothing are still findings"
+          ],
+          "token_budget": { "max": 4000 },
+          "on_error": { "retry": 2, "fallback": "notify_owner" }
+        },
+        {
+          "id": "cross-reference",
+          "intent": "Verify findings across independent sources and flag discrepancies",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0",
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Cross-reference every major finding against at least one independent source",
+            "Flag discrepancies between sources — dates that don't match, titles that differ, claims that contradict",
+            "Check the subject's own claims (LinkedIn, website, bios) against independent verification",
+            "Look for what the subject didn't mention — gaps in timelines, missing affiliations, unexplained transitions",
+            "Assign confidence grades: Confirmed (2+ independent sources), Likely (1 credible source), Unverified (claim only), Contradicted (sources disagree)"
+          ],
+          "token_budget": { "max": 3000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        },
+        {
+          "id": "compile-dossier",
+          "intent": "Produce a structured investigation report with sourced findings and confidence grades",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Structure the report: Subject Summary, Key Findings, Digital Footprint, Corporate History, Red Flags, Open Questions",
+            "Every finding includes its confidence grade and source citation",
+            "Red Flags section: discrepancies, gaps, contradictions, or concerning patterns",
+            "Open Questions section: what remains unknown and specific steps to resolve each",
+            "Executive summary at the top: one paragraph verdict with the most important findings"
+          ],
+          "token_budget": { "max": 3000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 12000 }
+    },
+    "quick-check": {
+      "trigger": { "type": "manual" },
+      "description": "Fast background check: key facts, red flag scan, and confidence assessment in under 3 minutes",
+      "activities": [
+        {
+          "id": "rapid-lookup",
+          "intent": "Quickly gather the most important public information about the subject",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0",
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Identify the subject type (person, company, domain) and run targeted searches",
+            "For people: current role, company, LinkedIn, recent news, any red flags in first-page results",
+            "For companies: incorporation status, principals, website, recent press, any regulatory issues",
+            "Prioritize speed — check the 5 most valuable sources, not every possible source"
+          ],
+          "token_budget": { "max": 2000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        },
+        {
+          "id": "quick-report",
+          "intent": "Deliver a concise profile with key facts, red flags, and what needs deeper digging",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Write a concise profile: who they are, what they do, what stands out",
+            "Flag any red flags or inconsistencies found in the quick check",
+            "Note what a deeper investigation would cover that this quick check did not",
+            "Include confidence grades on all findings"
+          ],
+          "token_budget": { "max": 2000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 4000 }
+    },
+    "watchlist-monitor": {
+      "trigger": {
+        "type": "heartbeat",
+        "interval": "12h"
+      },
+      "description": "Monitor watchlist subjects for new public information — alerts only when something surfaces",
+      "activities": [
+        {
+          "id": "scan-watchlist",
+          "intent": "Check each watchlist subject for new public information since last scan",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0",
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Read the user's watchlist from inputs",
+            "For each subject, search for new mentions, filings, press, or changes since the last scan",
+            "Apply significance filter — only flag genuinely new information, not repeated coverage",
+            "Compare against last-known state to detect real changes"
+          ],
+          "token_budget": { "max": 3000 },
+          "on_error": { "retry": 1, "fallback": "skip" }
+        },
+        {
+          "id": "alert-changes",
+          "intent": "Notify the user only if significant new information was found on a watchlist subject",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "If no significant developments found, exit silently",
+            "If new information found, write a brief alert: what changed, for which subject, source, and why it matters",
+            "Assign confidence grade to the new finding"
+          ],
+          "token_budget": { "max": 1500 },
+          "on_error": { "retry": 1, "fallback": "skip" }
+        }
+      ],
+      "budget": { "total_per_run": 5000 },
+      "emit": "pi.watchlist.alert"
+    },
+    "verify-claim": {
+      "trigger": { "type": "manual" },
+      "description": "Verify a specific claim, credential, or statement against public records and sources",
+      "activities": [
+        {
+          "id": "decompose-claim",
+          "intent": "Break the claim into verifiable components",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Parse the claim into individual verifiable assertions",
+            "For credentials: identify the issuing body, expected public records, and verification endpoints",
+            "For factual claims: identify what evidence would confirm or contradict each assertion",
+            "Prioritize the most consequential assertions first"
+          ],
+          "token_budget": { "max": 1500 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        },
+        {
+          "id": "verify",
+          "intent": "Check each assertion against independent public sources",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0",
+            "@nebo/skills/web-scraper@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "For each assertion, search for confirming and disconfirming evidence",
+            "Check official registries, public databases, and credible publications",
+            "Note the strongest evidence for and against each assertion",
+            "Record full source citations"
+          ],
+          "token_budget": { "max": 3000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        },
+        {
+          "id": "verdict",
+          "intent": "Deliver a clear verdict on the claim with supporting evidence",
+          "skills": [
+            "@nebo/skills/deep-research@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "For each assertion: Confirmed, Likely True, Unverified, Likely False, or Contradicted",
+            "Overall claim verdict with explanation",
+            "Key evidence for and against, with citations",
+            "What would change the verdict — what additional evidence would be decisive"
+          ],
+          "token_budget": { "max": 2000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 7000 }
+    }
+  },
+  "skills": [
+    "@nebo/skills/deep-research@^1.0.0",
+    "@nebo/skills/web-scraper@^1.0.0"
+  ],
+  "pricing": { "model": "monthly_fixed", "cost": 0.0 },
+  "defaults": {
+    "timezone": "user_local",
+    "configurable": [
+      "inputs.watchlist",
+      "workflows.watchlist-monitor.trigger.interval"
+    ]
+  }
+}

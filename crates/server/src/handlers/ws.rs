@@ -1045,19 +1045,27 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     let send_task = tokio::spawn(async move {
         while let Some(req) = request_rx.recv().await {
             let msg = if req.is_batch {
-                serde_json::json!({
+                let mut m = serde_json::json!({
                     "type": "execute_batch",
                     "id": req.id,
                     "actions": req.args["actions"],
                     "stop_on_error": req.args["stop_on_error"],
-                })
+                });
+                if let Some(ref sid) = req.session_id {
+                    m["session_id"] = serde_json::Value::String(sid.clone());
+                }
+                m
             } else {
-                serde_json::json!({
+                let mut m = serde_json::json!({
                     "type": "execute_tool",
                     "id": req.id,
                     "tool": req.tool,
                     "args": req.args,
-                })
+                });
+                if let Some(ref sid) = req.session_id {
+                    m["session_id"] = serde_json::Value::String(sid.clone());
+                }
+                m
             };
             if ws_tx
                 .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))

@@ -588,6 +588,12 @@ async fn run_loop(
     let mut output_recovery_attempts = 0usize;
     let mut continuation_steering: Option<String> = None;
     let mut consecutive_error_iterations = 0usize;
+    let mut post_tool_empty_nudges = 0usize;
+    let mut empty_content_retries = 0usize;
+    const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
+    let mut turn_exit_reason = "unknown".to_string();
+    let mut final_iteration = 0usize;
+    let mut last_model_name = String::new();
     // Deferred tools that have been activated (keyword-matched or first-called)
     let mut activated_deferred: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -792,10 +798,13 @@ async fn run_loop(
     // The full skill body is now in active_skill_template (agent-declared skills)
     // or loaded on-demand via the skill tool.
     let skill_catalog = if let Some(loader) = skill_loader {
-        loader.compact_catalog().await
+        crate::sanitize::sanitize_for_prompt(&loader.compact_catalog().await)
     } else {
         String::new()
     };
+
+    // Load workspace context file (.nebo.md or NEBO.md) — walk up from CWD to git root or home.
+    let context_file = load_context_file();
 
     let static_system = if system_prompt.is_empty() {
         let pctx = prompt::PromptContext {
@@ -811,6 +820,7 @@ async fn run_loop(
             active_agent: active_agent_body,
             plugin_inventory,
             research_prompt: None,
+            context_file,
         };
         prompt::build_static(&pctx)
     } else {
@@ -854,6 +864,7 @@ async fn run_loop(
     let hard_ceiling = max_iterations.max(EXTENDED_MAX_ITERATIONS);
 
     for iteration in 1..=hard_ceiling {
+        final_iteration = iteration;
         // Update progress counter for external observers (RunRegistry dashboard)
         if let Some(p) = progress {
             p.iteration_count.store(iteration as u32, std::sync::atomic::Ordering::Relaxed);
@@ -864,7 +875,7 @@ async fn run_loop(
             return Ok(());
         }
 
-        // Adaptive iteration limit: extend past default only if making genuine progress
+        // Adaptive iteration limit: extend past default only if making genuine progress.
         if iteration > max_iterations && iteration <= hard_ceiling {
             if consecutive_error_iterations >= 2
                 || steering::should_force_break(&steering::Context {
@@ -886,6 +897,7 @@ async fn run_loop(
                     provider_id: String::new(),
                 }).is_some()
             {
+                turn_exit_reason = "adaptive_limit_no_progress".to_string();
                 info!(session_id, iteration, "adaptive limit: stopping, no progress");
                 break;
             }
@@ -982,6 +994,18 @@ async fn run_loop(
             let context_window = model_ctx.unwrap_or(DEFAULT_CONTEXT_TOKEN_LIMIT);
             ContextThresholds::from_context_window(context_window, state.prompt_overhead)
         });
+
+        // Pre-compaction memory flush: extract facts from ALL messages before
+        // the sliding window evicts them. Only fires when new compactions have
+        // occurred and the conversation is large enough to warrant it.
+        if !skip_memory {
+            if crate::memory_flush::should_run_memory_flush(&store, session_id, thresholds.auto_compact) {
+                let prov = prefer_non_gateway(&providers.read().await);
+                if let Some(prov) = prov {
+                    crate::memory_flush::run_memory_flush(prov.as_ref(), &store, session_id, &memory_user_id).await;
+                }
+            }
+        }
 
         // Apply sliding window — token-only threshold (no message count limit).
         // auto_compact is ~80% of effective context window, so eviction only
@@ -1128,6 +1152,7 @@ async fn run_loop(
         } else {
             selector::parse_model_id(&selected_model)
         };
+        last_model_name = selected_model_name.to_string();
 
         // Generate steering directives (provider_id needed for skip rules)
         let steering_ctx = steering::Context {
@@ -2043,6 +2068,10 @@ async fn run_loop(
                 hooks.do_action("agent.turn", payload).await;
             }
 
+            // Reset post-tool nudge flag after successful tool execution
+            // so it can fire again if the model goes empty on a later tool round.
+            post_tool_empty_nudges = 0;
+
             // Continue loop — LLM needs to respond to tool results
             continue;
         }
@@ -2085,7 +2114,51 @@ async fn run_loop(
             }
         }
 
-        // No tool calls — check if we should auto-continue.
+        // No tool calls — handle empty responses before checking auto-continuation.
+        // Matches Hermes: post-tool nudge → empty retries → auto-continue → break.
+        if assistant_content.trim().is_empty() {
+            // Post-tool empty response nudge: model returned empty after tool results.
+            // Append assistant("(empty)") + user(nudge) to keep message sequence valid,
+            // then continue. One-shot: only fires once per tool round.
+            let prior_was_tool = sessions.get_messages(session_id)
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .take(5)
+                .any(|m| m.role == "tool");
+            if prior_was_tool && post_tool_empty_nudges < 1 {
+                post_tool_empty_nudges += 1;
+                warn!(iteration, session_id, "empty response after tool calls — nudging model to continue");
+                // Append empty assistant + user nudge to maintain valid message sequence
+                let _ = sessions.append_message(session_id, "assistant", "(empty)", None, None, None);
+                let _ = sessions.append_message(
+                    session_id, "user",
+                    "You just executed tool calls but returned an empty response. \
+                     Please process the tool results above and continue with the task.",
+                    None, None, None,
+                );
+                continue;
+            }
+
+            // Empty response retry: retry up to 3 times before giving up.
+            if empty_content_retries < MAX_EMPTY_CONTENT_RETRIES {
+                empty_content_retries += 1;
+                warn!(iteration, session_id, retry = empty_content_retries, "empty response — retrying");
+                continue;
+            }
+
+            // Exhausted retries — output "(empty)" and break.
+            turn_exit_reason = "empty_response_exhausted".to_string();
+            warn!(iteration, session_id, "empty response after {} retries — giving up", MAX_EMPTY_CONTENT_RETRIES);
+            let _ = sessions.append_message(session_id, "assistant", "(empty)", None, None, None);
+            let _ = tx.send(StreamEvent::text("(empty)".to_string())).await;
+            break;
+        }
+
+        // Reset retry counters on successful non-empty content
+        empty_content_retries = 0;
+
+        // Check if we should auto-continue.
         //
         // Philosophy (aligned with Claude Code / OpenClaw / Hermes): the primary
         // continuation signal is the presence of tool_use blocks, NOT pattern
@@ -2153,10 +2226,84 @@ async fn run_loop(
             hooks.do_action("agent.turn", payload).await;
         }
 
-        // Conversation turn complete
-        info!(iteration, session_id, "agentic loop complete");
+        // Conversation turn complete — normal exit with text response
+        turn_exit_reason = format!("text_response(stop_reason={:?})", stop_reason);
+        info!(iteration, session_id, exit_reason = %turn_exit_reason, "agentic loop complete");
         break;
     }
+
+    // Post-loop: budget exhaustion summary request (matches Hermes _handle_max_iterations).
+    // If the loop exited because we hit max_iterations without a final text response,
+    // make ONE more API call with tools stripped to get a summary.
+    if final_iteration >= max_iterations && !turn_exit_reason.starts_with("text_response") {
+        // Only request summary if the last message is a tool result (mid-task exit)
+        let last_msg_is_tool = sessions.get_messages(session_id)
+            .unwrap_or_default()
+            .last()
+            .map(|m| m.role == "tool")
+            .unwrap_or(false);
+        if last_msg_is_tool {
+            turn_exit_reason = format!("max_iterations_reached({}/{})", final_iteration, max_iterations);
+            info!(session_id, exit_reason = %turn_exit_reason, "budget exhausted — requesting summary");
+
+            // Append a user message requesting summary, then make one toolless API call
+            let _ = sessions.append_message(
+                session_id, "user",
+                "You've reached the maximum number of tool-calling iterations allowed. \
+                 Please provide a final response summarizing what you've found and accomplished so far, \
+                 without calling any more tools.",
+                None, None, None,
+            );
+
+            // Pick first available provider for the summary call
+            let prov_lock = providers.read().await;
+            if let Some(summary_provider) = prov_lock.first() {
+                let summary_messages = convert_messages(
+                    &sessions.get_messages(session_id).unwrap_or_default(),
+                );
+
+                let summary_req = ChatRequest {
+                    messages: summary_messages,
+                    tools: vec![], // No tools — text-only response
+                    max_tokens: 4096,
+                    temperature: 0.7,
+                    system: static_system.clone(),
+                    static_system: static_system.clone(),
+                    model: last_model_name.clone(),
+                    enable_thinking: false,
+                    metadata: sticky_metadata.clone(),
+                    cache_breakpoints: vec![],
+                    cancel_token: Some(cancel_token.clone()),
+                };
+
+                if let Ok(mut rx) = summary_provider.stream(&summary_req).await {
+                    let mut summary_text = String::new();
+                    while let Some(event) = rx.recv().await {
+                        match event.event_type {
+                            ai::StreamEventType::Text => {
+                                let _ = tx.send(StreamEvent::text(event.text.clone())).await;
+                                summary_text.push_str(&event.text);
+                            }
+                            ai::StreamEventType::Done | ai::StreamEventType::Error => break,
+                            _ => {}
+                        }
+                    }
+                    if !summary_text.is_empty() {
+                        let _ = sessions.append_message(session_id, "assistant", &summary_text, None, None, None);
+                    }
+                }
+            }
+        }
+    }
+
+    // Turn exit diagnostic (matches Hermes _turn_exit_reason logging)
+    info!(
+        session_id,
+        exit_reason = %turn_exit_reason,
+        iterations = final_iteration,
+        max_iterations,
+        "turn ended"
+    );
 
     // Debounced memory extraction: only runs after 5s idle per session.
     // Extract from last exchange only (last user msg + assistant response + tool
@@ -2200,7 +2347,62 @@ async fn run_loop(
         }
     }
 
+    // Background personality synthesis: if enough style observations exist,
+    // synthesize a personality directive. Runs at most once per run (spawned
+    // as a background task so it doesn't block the response).
+    if !skip_memory {
+        let store_clone = store.clone();
+        let providers_clone = providers.clone();
+        let uid = memory_user_id.clone();
+        let conc = concurrency.clone();
+        tokio::spawn(async move {
+            let _permit = conc.acquire_llm_permit().await;
+            let prov = prefer_non_gateway(&providers_clone.read().await);
+            if let Some(prov) = prov {
+                crate::personality::synthesize_directive(&store_clone, prov.as_ref(), &uid).await;
+            }
+        });
+    }
+
     Ok(())
+}
+
+/// Load workspace context from `.nebo.md` or `NEBO.md`.
+/// Walks up from CWD to git root (or home dir), returns the first match.
+fn load_context_file() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let mut dir = cwd.as_path();
+
+    loop {
+        for name in &[".nebo.md", "NEBO.md"] {
+            let path = dir.join(name);
+            if path.is_file() {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        let sanitized = crate::sanitize::sanitize_for_prompt(&content);
+                        debug!(path = %path.display(), "loaded workspace context file");
+                        return Some(sanitized);
+                    }
+                    Err(e) => {
+                        warn!(path = %path.display(), error = %e, "failed to read context file");
+                    }
+                }
+            }
+        }
+
+        // Stop at git root
+        if dir.join(".git").exists() {
+            break;
+        }
+
+        // Walk up
+        match dir.parent() {
+            Some(parent) if parent != dir => dir = parent,
+            _ => break,
+        }
+    }
+
+    None
 }
 
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte

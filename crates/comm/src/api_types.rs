@@ -155,6 +155,18 @@ pub struct SkillItem {
     pub is_installed: bool,
     #[serde(default)]
     pub status: String,
+    /// Display price label (e.g. "Get", "Free", "$9.99/mo").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<String>,
+    /// Whether this item is featured in the marketplace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub featured: Option<bool>,
+    /// Install code (e.g. "SKIL-XXXX-XXXX"). Populated from detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// Artifact type: "skill", "agent", "plugin", "connector".
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub artifact_type: Option<String>,
 }
 
 /// Agent detail from `GET /api/v1/agents/{slug}`.
@@ -202,18 +214,58 @@ pub struct SkillDetail {
     /// Secondary markdown content (marketplace description).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_md: Option<String>,
-    /// Artifact type: "skill", "workflow", or "agent".
-    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
-    pub artifact_type: Option<String>,
-    /// Install code (e.g. SKIL-XXXX-XXXX).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
+    // NOTE: `artifact_type` ("type") and `code` are now in SkillItem (flattened here).
     /// Type-specific config (workflow definition JSON for workflows).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_config: Option<serde_json::Value>,
     /// URL to download the sealed .napp archive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_url: Option<String>,
+    /// Extended description (markdown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_desc: Option<String>,
+    /// Feature bullet points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<String>>,
+    /// Tool names provided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    /// Compatible services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub works_with: Option<Vec<String>>,
+    /// Server type for connectors (e.g. "stdio", "sse").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_type: Option<String>,
+    /// Auth type for connectors (e.g. "oauth", "api_key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_type: Option<String>,
+    /// Whether this item requires authentication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_auth: Option<bool>,
+    /// Rating distribution { "5": count, "4": count, ... }.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_distribution: Option<serde_json::Value>,
+    /// Developer info (name, website, support, launched).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub developer: Option<serde_json::Value>,
+    /// Pricing tiers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<Vec<serde_json::Value>>,
+    /// Required skill dependencies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_skills: Option<Vec<serde_json::Value>>,
+    /// Required plugin dependencies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_plugins: Option<Vec<serde_json::Value>>,
+    /// Agents that use this item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_by: Option<Vec<serde_json::Value>>,
+    /// Supported platforms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms: Option<Vec<String>>,
+    /// Screenshots with title/desc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshots: Option<Vec<serde_json::Value>>,
 }
 
 /// Paginated list response for GET /api/v1/skills.

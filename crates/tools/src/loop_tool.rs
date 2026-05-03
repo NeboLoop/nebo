@@ -319,8 +319,6 @@ impl DynTool for LoopTool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_tool_metadata() {
         // Can't test without a comm plugin, just verify struct exists

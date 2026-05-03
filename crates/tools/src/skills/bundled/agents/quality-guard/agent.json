@@ -1,0 +1,357 @@
+{
+  "inputs": [
+    {
+      "type": "path",
+      "required": false,
+      "description": "Project directory to monitor for changes",
+      "key": "project_dir"
+    },
+    {
+      "type": "text",
+      "required": false,
+      "placeholder": "npm test",
+      "description": "Command to run tests",
+      "key": "test_command"
+    },
+    {
+      "type": "text",
+      "required": false,
+      "placeholder": "https://staging.yoursite.com",
+      "description": "URL to check after deployment",
+      "key": "deploy_url"
+    }
+  ],
+  "workflows": {
+    "verify-change": {
+      "trigger": {
+        "type": "event",
+        "sources": [
+          "code.changed"
+        ]
+      },
+      "description": "Runs relevant tests, checks for regressions, and verifies the change actually works",
+      "inputs": {},
+      "activities": [
+        {
+          "id": "run-tests",
+          "intent": "Run the test suite to confirm all existing tests still pass after the change",
+          "skills": [
+            "@nebo/skills/tdd@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Identify which tests are relevant to the changed code",
+            "Run the full test suite",
+            "Flag any test failures or new warnings"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "check-regressions",
+          "intent": "Verify that existing functionality was not broken by the change",
+          "skills": [
+            "@nebo/skills/verification@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Compare behavior before and after the change for affected areas",
+            "Check edge cases and boundary conditions related to the change",
+            "Verify no unintended side effects in dependent code"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "verify-works",
+          "intent": "Confirm the change accomplishes what it was supposed to do",
+          "skills": [
+            "@nebo/skills/verification@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Review the intent of the change against the actual result",
+            "Test the happy path end-to-end",
+            "Document evidence that the change works as expected"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 6000
+      }
+    },
+    "pre-deploy-check": {
+      "trigger": {
+        "type": "manual"
+      },
+      "description": "Full verification suite before any deployment \u2014 tests, build, integration checks, and final sign-off",
+      "inputs": {},
+      "activities": [
+        {
+          "id": "full-test-suite",
+          "intent": "Run the complete test suite and verify all tests pass",
+          "skills": [
+            "@nebo/skills/tdd@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Run all unit tests",
+            "Run all integration tests",
+            "Verify test coverage meets minimum thresholds"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "build-verification",
+          "intent": "Confirm the project builds cleanly with no errors or warnings",
+          "skills": [
+            "@nebo/skills/verification@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Run a clean build from scratch",
+            "Check for build warnings that could indicate problems",
+            "Verify all dependencies resolve correctly"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "integration-check",
+          "intent": "Verify integrations and external dependencies are functioning",
+          "skills": [
+            "@nebo/skills/verification@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Check API endpoints respond correctly",
+            "Verify database migrations are up to date",
+            "Confirm environment configuration is correct for the target environment"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "final-sign-off",
+          "intent": "Produce a deploy readiness report with pass/fail status and any risks",
+          "skills": [
+            "@nebo/skills/verification@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Summarize all test results and build status",
+            "List any known risks or caveats",
+            "Provide a clear go/no-go recommendation with evidence"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 8000
+      }
+    },
+    "debug-issue": {
+      "trigger": {
+        "type": "manual"
+      },
+      "description": "Systematic 4-phase debugging: investigate, hypothesize, test, verify",
+      "inputs": {},
+      "activities": [
+        {
+          "id": "investigate",
+          "intent": "Reproduce the issue and gather all available evidence",
+          "skills": [
+            "@nebo/skills/systematic-debugging@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Reproduce the reported issue with specific steps",
+            "Collect error messages, logs, and stack traces",
+            "Identify the scope \u2014 what works, what does not, when it started"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "hypothesize",
+          "intent": "Form ranked hypotheses about the root cause based on evidence",
+          "skills": [
+            "@nebo/skills/systematic-debugging@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "List all possible causes based on the evidence collected",
+            "Rank hypotheses by likelihood using available data",
+            "Identify the simplest test to confirm or rule out each hypothesis"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "test-hypotheses",
+          "intent": "Systematically test each hypothesis starting with the most likely",
+          "skills": [
+            "@nebo/skills/systematic-debugging@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Test the most likely hypothesis first",
+            "Record results \u2014 confirmed or ruled out",
+            "If ruled out, move to the next hypothesis",
+            "Once root cause is confirmed, implement the fix"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "verify-fix",
+          "intent": "Confirm the fix resolves the issue without introducing new problems",
+          "skills": [
+            "@nebo/skills/systematic-debugging@^1.0.0",
+            "@nebo/skills/verification@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Verify the original issue is resolved",
+            "Run related tests to confirm no regressions",
+            "Add a test that would catch this issue if it recurs",
+            "Document the root cause and fix for future reference"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 8000
+      }
+    },
+    "post-deploy-monitor": {
+      "trigger": {
+        "type": "event",
+        "sources": [
+          "deploy.complete"
+        ]
+      },
+      "description": "Monitors for errors after deployment and alerts if something breaks",
+      "inputs": {},
+      "activities": [
+        {
+          "id": "health-check",
+          "intent": "Verify the deployment is healthy and core functionality works",
+          "skills": [
+            "@nebo/skills/verification@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Check that the application is running and responding",
+            "Verify core user flows work end-to-end",
+            "Monitor error logs for new or increased error rates"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        },
+        {
+          "id": "error-scan",
+          "intent": "Scan for new errors, exceptions, or performance degradation introduced by the deployment",
+          "skills": [
+            "@nebo/skills/systematic-debugging@^1.0.0"
+          ],
+          "model": "nebo-1",
+          "steps": [
+            "Compare error rates before and after deployment",
+            "Check for new error types that did not exist before",
+            "Monitor response times for significant changes",
+            "If errors found, collect evidence and prepare a diagnostic summary"
+          ],
+          "token_budget": {
+            "max": 2000
+          },
+          "on_error": {
+            "retry": 1,
+            "fallback": "notify_owner"
+          }
+        }
+      ],
+      "budget": {
+        "total_per_run": 4000
+      },
+      "emit": "deploy.issue"
+    }
+  },
+  "skills": [
+    "@nebo/skills/tdd@^1.0.0",
+    "@nebo/skills/verification@^1.0.0",
+    "@nebo/skills/systematic-debugging@^1.0.0"
+  ],
+  "pricing": {
+    "model": "monthly_fixed",
+    "cost": 0.0
+  },
+  "defaults": {
+    "timezone": "user_local"
+  }
+}

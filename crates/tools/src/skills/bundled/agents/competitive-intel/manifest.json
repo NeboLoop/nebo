@@ -1,0 +1,9 @@
+{
+  "id": "competitive-intel",
+  "name": "Competitive Intel",
+  "version": "1.0.0",
+  "type": "agent",
+  "description": "Knows your competitors better than they know themselves. Reports changes that matter, ignores noise.",
+  "author": "nebo",
+  "tags": ["competitive", "intelligence", "analysis", "strategy"]
+}

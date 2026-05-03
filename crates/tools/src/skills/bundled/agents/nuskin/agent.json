@@ -1,0 +1,488 @@
+{
+  "inputs": [
+    {
+      "key": "distributor_name",
+      "label": "Your name",
+      "description": "Your name as a NuSkin Brand Affiliate",
+      "type": "text",
+      "required": true,
+      "placeholder": "Jane Smith"
+    },
+    {
+      "key": "nuskin_rank",
+      "label": "Current NuSkin rank",
+      "description": "Your current rank in the NuSkin Sales Performance Plan",
+      "type": "select",
+      "required": false,
+      "options": [
+        { "value": "brand_affiliate", "label": "Brand Affiliate" },
+        { "value": "brand_representative", "label": "Brand Representative" },
+        { "value": "brand_partner", "label": "Brand Partner" },
+        { "value": "brand_director", "label": "Brand Director" },
+        { "value": "senior_brand_director", "label": "Senior Brand Director" },
+        { "value": "executive_brand_director", "label": "Executive Brand Director" },
+        { "value": "brand_executive", "label": "Brand Executive" }
+      ],
+      "default": "brand_affiliate"
+    },
+    {
+      "key": "upline_name",
+      "label": "Upline/mentor name",
+      "description": "Your upline or mentor's name — used in edification and three-party introductions",
+      "type": "text",
+      "required": false,
+      "placeholder": "Sarah Johnson"
+    },
+    {
+      "key": "upline_story",
+      "label": "Upline credentials & story",
+      "description": "Your upline's background, achievements, and personal NuSkin story",
+      "type": "textarea",
+      "required": false,
+      "placeholder": "Sarah was a teacher for 15 years. Started NuSkin 5 years ago after falling in love with the LumiSpa. Reached Brand Director in 18 months. Now leads a team of 150+ and coaches from home."
+    },
+    {
+      "key": "personal_product_story",
+      "label": "Your product story",
+      "description": "Your personal experience with NuSkin products — what you use, what results you've seen, why you love them",
+      "type": "textarea",
+      "required": false,
+      "placeholder": "I started with the LumiSpa and noticed my skin texture improve in 2 weeks. Then I added ageLOC Future Serum and TR90. My energy is through the roof and people keep asking what I'm doing differently."
+    },
+    {
+      "key": "user_style",
+      "label": "Your messaging style",
+      "description": "How do you normally text or message? Describe your style so outreach drafts sound like you.",
+      "type": "textarea",
+      "required": false,
+      "placeholder": "I use exclamation marks a lot. I text in lowercase. I start with 'hey girl' or 'hey'. I use emojis moderately. I never sign off formally."
+    },
+    {
+      "key": "contact_sources",
+      "label": "Contact sources",
+      "description": "Where to harvest contacts from when building your list",
+      "type": "select",
+      "required": false,
+      "options": [
+        { "value": "phone", "label": "Phone contacts only" },
+        { "value": "phone,gmail", "label": "Phone + Gmail" },
+        { "value": "phone,gmail,csv", "label": "Phone + Gmail + CSV import" }
+      ],
+      "default": "phone"
+    },
+    {
+      "key": "csv_path",
+      "label": "CSV contact file path",
+      "description": "Path to a CSV file with additional contacts (only needed if contact sources includes CSV)",
+      "type": "text",
+      "required": false,
+      "placeholder": "~/Downloads/contacts.csv"
+    },
+    {
+      "key": "monthly_volume_goal",
+      "label": "Monthly volume goal",
+      "description": "Your monthly GSV target for rank advancement",
+      "type": "text",
+      "required": false,
+      "default": "3000",
+      "placeholder": "3000"
+    },
+    {
+      "key": "morning_time",
+      "label": "Morning briefing time",
+      "description": "When to deliver your daily briefing (24h format)",
+      "type": "text",
+      "required": false,
+      "default": "07:00",
+      "placeholder": "07:00"
+    },
+    {
+      "key": "evening_time",
+      "label": "Evening wrap-up time",
+      "description": "When to deliver your daily recap (24h format)",
+      "type": "text",
+      "required": false,
+      "default": "20:00",
+      "placeholder": "20:00"
+    }
+  ],
+  "workflows": {
+    "trigger-watcher": {
+      "trigger": {
+        "type": "watch",
+        "plugin": "nuskin",
+        "command": "social watch",
+        "event": "social.triggered",
+        "restart_delay_secs": 5
+      },
+      "description": "Watch for life-change and product-interest triggers and alert with prioritized recommendations",
+      "activities": [
+        {
+          "id": "process-trigger",
+          "intent": "Analyze the triggered contact's signal, determine urgency and match to product or business conversation track",
+          "skills": ["nuskin-social", "nuskin-outreach", "nuskin-products-knowledge"],
+          "model": "nebo-1",
+          "steps": [
+            "Read the trigger event from _event_payload — extract contact_id, name, signal_type, confidence, evidence, relationship_score, prospect_type",
+            "Classify signal: product-interest (skincare_interest, wellness_journey, device_curiosity, aging_concern, health_goal, product_review) → product conversation track. Life-change or business-interest (job_loss, financial, searching, side_hustle_interest, income_dissatisfaction) → business conversation track",
+            "For product signals: match to specific NuSkin product category (ageLOC skincare, Pharmanex, devices)",
+            "For business signals: determine emotional phase (shock/processing/adaptation) and recommended timing",
+            "Cross-reference with relationship_score and prospect_type for approach recommendation"
+          ],
+          "token_budget": { "max": 2000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        },
+        {
+          "id": "notify-user",
+          "intent": "Format a concise alert with the recommended next step",
+          "skills": ["nuskin-outreach"],
+          "model": "nebo-1",
+          "steps": [
+            "Lead with the person and signal: '[Name] just [human-readable description]'",
+            "Include: signal type, confidence, prospect type, and recommended conversation track (product vs business)",
+            "For product signals: suggest specific product to lead with",
+            "For business signals: state recommended timing based on emotional phase",
+            "End with: 'Want me to draft the outreach?' or 'Want me to pull up product recommendations?'"
+          ],
+          "token_budget": { "max": 1500 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 4000 },
+      "emit": "nuskin.trigger.detected"
+    },
+    "morning-briefing": {
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 7 * * 1-6"
+      },
+      "description": "Daily morning action plan: triggers, volume progress, follow-ups due, IPAs for today",
+      "activities": [
+        {
+          "id": "overnight-triggers",
+          "intent": "Check for contacts that triggered overnight",
+          "skills": ["nuskin-social"],
+          "model": "nebo-1",
+          "steps": [
+            "Check for recent nuskin.trigger.detected events",
+            "For each triggered contact: name, signal type, product match or business approach, recommended action",
+            "Rank by priority: product-interest with high confidence first, then life-change triggers in Processing phase"
+          ],
+          "token_budget": { "max": 2000 },
+          "on_error": { "retry": 1, "fallback": "skip" }
+        },
+        {
+          "id": "compile-briefing",
+          "intent": "Compile scannable morning briefing with today's action plan",
+          "skills": ["nuskin-business-building", "nuskin-comp"],
+          "model": "nebo-1",
+          "steps": [
+            "Structure: Hot Leads > Follow-Ups Due > Volume Progress > Today's IPAs",
+            "Include 5-2-1 targets: 5 contacts to reach out to, 2 demos/presentations to do, 1 follow-up to close",
+            "If volume data available, show progress toward monthly GSV goal",
+            "Keep it scannable — bold names, bullet actions",
+            "If nothing happened overnight: 'Quiet night. No new triggers.'",
+            "End with the single most important action for today"
+          ],
+          "token_budget": { "max": 2000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 5000 },
+      "emit": "nuskin.morning.complete"
+    },
+    "evening-wrap": {
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 20 * * 1-6"
+      },
+      "description": "Daily evening recap: what was accomplished, tomorrow preview",
+      "activities": [
+        {
+          "id": "recap",
+          "intent": "Summarize today's activity and set up tomorrow",
+          "skills": ["nuskin-business-building"],
+          "model": "nebo-1",
+          "steps": [
+            "Summarize IPAs completed today (contacts made, demos given, follow-ups done)",
+            "Note any new customers enrolled or affiliates onboarded",
+            "Preview tomorrow: pending follow-ups, scheduled demos, volume targets",
+            "Celebrate wins — even small ones (first contact of the day counts)",
+            "Keep it brief — 3-5 bullet points max"
+          ],
+          "token_budget": { "max": 1500 },
+          "on_error": { "retry": 1, "fallback": "skip" }
+        }
+      ],
+      "budget": { "total_per_run": 2000 }
+    },
+    "build-list": {
+      "trigger": { "type": "manual" },
+      "description": "Harvest contacts, pull communication history, score with NuSkin prospect types",
+      "activities": [
+        {
+          "id": "harvest",
+          "intent": "Harvest contacts from the user's configured sources",
+          "skills": ["nuskin-contacts"],
+          "model": "nebo-1",
+          "steps": [
+            "Read contact_sources and csv_path from inputs",
+            "Run: $NUSKIN_BIN contacts harvest --sources <contact_sources> --output /tmp/nuskin-contacts.json",
+            "If sources include csv and csv_path is set, add: --csv <csv_path>",
+            "Report the count: 'Harvested [N] contacts from [sources]'"
+          ],
+          "token_budget": { "max": 2000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        },
+        {
+          "id": "pull-history",
+          "intent": "Pre-fetch communication history for all harvested contacts",
+          "skills": ["nuskin-comms"],
+          "model": "nebo-1",
+          "steps": [
+            "Create history output directory: mkdir -p /tmp/nuskin-history",
+            "Read the harvested contacts from /tmp/nuskin-contacts.json",
+            "For each contact, run: $NUSKIN_BIN comms history --contact-id <id> --contact-email <first_email> --contact-phone <first_phone> --days 365 --output /tmp/nuskin-history/<id>.json",
+            "Use whichever identifiers are available. Skip contacts with no email and no phone.",
+            "Report: 'Pulled comms history for [N] of [total] contacts'"
+          ],
+          "token_budget": { "max": 2000 },
+          "on_error": { "retry": 1, "fallback": "skip" }
+        },
+        {
+          "id": "score",
+          "intent": "Score contacts with NuSkin prospect type matching",
+          "skills": ["nuskin-contacts"],
+          "model": "nebo-1",
+          "steps": [
+            "Run: $NUSKIN_BIN contacts score --raw --input /tmp/nuskin-contacts.json --history-dir /tmp/nuskin-history --format json",
+            "Analyze raw metrics to assign nuanced scores and prospect types",
+            "Present top 10 contacts with name, score, prospect type, and recommended approach",
+            "Highlight: product-lovers (lead with ageLOC/devices), business-builders (lead with opportunity), device-buyers (lead with tech), health-seekers (lead with Pharmanex)",
+            "Suggest starting point: 'I'd start with [Name] — [reason based on their prospect type and signals]'"
+          ],
+          "token_budget": { "max": 4000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 10000 }
+    },
+    "research-contact": {
+      "trigger": { "type": "manual" },
+      "description": "Deep-dive on a specific contact: history, social scan, product/approach matching",
+      "activities": [
+        {
+          "id": "pull-history",
+          "intent": "Read communication history for the contact",
+          "skills": ["nuskin-comms"],
+          "model": "nebo-1",
+          "steps": [
+            "Identify the contact by name, email, phone, or contact ID",
+            "Run: $NUSKIN_BIN comms history --contact-<identifier> <value> --days 365",
+            "Extract: last conversation, relationship tone, life signals, product interest signals"
+          ],
+          "token_budget": { "max": 2500 },
+          "on_error": { "retry": 1, "fallback": "skip" }
+        },
+        {
+          "id": "social-scan",
+          "intent": "Browse public social profiles and detect signals",
+          "skills": ["nuskin-social", "@neboloop/skills/web-scraper@^1.0.0"],
+          "model": "nebo-1",
+          "steps": [
+            "For each platform (LinkedIn, Facebook, Instagram):",
+            "  1. Navigate: web(action: 'navigate', url: '<profile_url>')",
+            "  2. Read: web(action: 'read_page')",
+            "  3. Analyze: echo '<text>' | $NUSKIN_BIN social analyze --contact-id <id> --platform <platform>",
+            "Collect all signals (life-change + NuSkin product-interest)"
+          ],
+          "token_budget": { "max": 4000 },
+          "on_error": { "retry": 1, "fallback": "skip" }
+        },
+        {
+          "id": "build-profile",
+          "intent": "Build complete prospect profile with NuSkin-specific approach recommendation",
+          "skills": ["nuskin-products-knowledge", "nuskin-outreach"],
+          "model": "nebo-1",
+          "steps": [
+            "Compile: relationship score, active signals, prospect type, last conversation",
+            "Determine conversation track: product or business",
+            "For product track: recommend specific products to lead with based on their signals",
+            "For business track: recommend approach timing and edification angle",
+            "Suggest outreach channel and message template type",
+            "End with: 'Ready to draft the outreach message?'"
+          ],
+          "token_budget": { "max": 3000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 10000 }
+    },
+    "draft-outreach": {
+      "trigger": { "type": "manual" },
+      "description": "Draft a personalized NuSkin-compliant outreach message",
+      "activities": [
+        {
+          "id": "gather-context",
+          "intent": "Pull contact profile and determine conversation track",
+          "skills": ["nuskin-comms", "nuskin-social"],
+          "model": "nebo-1",
+          "steps": [
+            "Look up the contact's profile data",
+            "Identify: recency score, signals, prospect type, preferred channel",
+            "Read the user's messaging style from user_style input",
+            "Determine: product conversation or business conversation track"
+          ],
+          "token_budget": { "max": 2500 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        },
+        {
+          "id": "compose",
+          "intent": "Draft the message following NuSkin outreach rules",
+          "skills": ["nuskin-outreach", "nuskin-policies"],
+          "model": "nebo-1",
+          "steps": [
+            "Draft using hook/bridge/close structure",
+            "For product track: reference their specific interest naturally, offer to share/demo",
+            "For business track: lead with empathy, share personal story, plant the seed",
+            "Match the user's voice from user_style input",
+            "Enforce compliance: no health claims, no income claims, no pressure, no links in first message",
+            "Run checklist: sounds like user? specific to contact? zero compliance violations? right length for channel?",
+            "Present draft with recommended channel and timing",
+            "Ask: 'Want me to adjust anything?'"
+          ],
+          "token_budget": { "max": 3000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 6000 }
+    },
+    "product-consult": {
+      "trigger": { "type": "manual" },
+      "description": "Product recommendations for a customer or prospect based on their needs",
+      "activities": [
+        {
+          "id": "consult",
+          "intent": "Recommend NuSkin products based on the customer's specific needs",
+          "skills": ["nuskin-products", "nuskin-products-knowledge", "nuskin-skincare"],
+          "model": "nebo-1",
+          "steps": [
+            "Ask about or infer: skin type, health goals, budget, current routine",
+            "Run: $NUSKIN_BIN products recommend --skin-type <type> --health-goal <goal> --budget <tier>",
+            "Present top recommendations with match reasons",
+            "Build a regimen if skincare (cleanser → treatment → moisturize → protect)",
+            "Suggest device pairing if applicable (LumiSpa for cleansing, Boost for treatment, Prysm for therapy)",
+            "Include inside-out recommendations (topical + supplements) when relevant",
+            "Note total price and SV for the recommended bundle",
+            "Add compliance reminder: share as personal recommendation, not medical advice"
+          ],
+          "token_budget": { "max": 3000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 4000 }
+    },
+    "comp-plan-check": {
+      "trigger": { "type": "manual" },
+      "description": "Check rank progress, bonus projections, and team structure",
+      "activities": [
+        {
+          "id": "calculate",
+          "intent": "Project bonuses and show gap to next rank",
+          "skills": ["nuskin-comp", "nuskin-comp-plan"],
+          "model": "nebo-1",
+          "steps": [
+            "Ask for or use stored values: current DCSV, GSV, active legs",
+            "Run: $NUSKIN_BIN comp calculate --dcsv <n> --gsv <n> --active-legs <n>",
+            "Present: current rank, bonus breakdown, total estimated, gap to next rank",
+            "Suggest specific actions to close the gap (more customers, more enrollments, activate a leg)",
+            "If close to rank advancement, highlight urgency and specific steps needed"
+          ],
+          "token_budget": { "max": 2500 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 3000 }
+    },
+    "training-session": {
+      "trigger": { "type": "manual" },
+      "description": "Interactive NuSkin business building training",
+      "activities": [
+        {
+          "id": "train",
+          "intent": "Deliver interactive training on the requested topic",
+          "skills": ["nuskin-business-building", "nuskin-onboarding", "nuskin-products-knowledge", "nuskin-skincare", "nuskin-comp-plan"],
+          "model": "nebo-1",
+          "steps": [
+            "Ask what the user wants to train on (or use context to determine):",
+            "  - Product knowledge (ageLOC science, device demos, supplement stacks)",
+            "  - Prospecting (5-2-1 formula, contact management, signal detection)",
+            "  - Presenting (product demos, three-party calls, business presentations)",
+            "  - Team building (duplication, leadership development, rank strategy)",
+            "  - Comp plan (bonuses, ranks, volume types, advancement)",
+            "  - Onboarding (new affiliate checklist, first 30/60/90 days)",
+            "Deliver training in bite-sized interactive format",
+            "Include practice scenarios when applicable",
+            "End with 1-2 action items to apply the training today"
+          ],
+          "token_budget": { "max": 4000 },
+          "on_error": { "retry": 1, "fallback": "notify_owner" }
+        }
+      ],
+      "budget": { "total_per_run": 5000 }
+    },
+    "progress-tracker": {
+      "trigger": {
+        "type": "heartbeat",
+        "interval": "4h",
+        "window": "08:00-20:00"
+      },
+      "description": "Periodic volume and IPA tracking, milestone alerts",
+      "activities": [
+        {
+          "id": "check-progress",
+          "intent": "Check volume progress and alert on milestones or needed actions",
+          "skills": ["nuskin-comp", "nuskin-business-building"],
+          "model": "nebo-1",
+          "steps": [
+            "Check current volume metrics if available",
+            "Flag if approaching rank advancement threshold (within 80% of next rank requirement)",
+            "Check IPA completion: have they done their 5-2-1 today?",
+            "Check follow-up sequences: any overdue or at 3-attempt limit?",
+            "If nothing needs attention, exit silently",
+            "Only surface what needs action NOW"
+          ],
+          "token_budget": { "max": 2000 },
+          "on_error": { "retry": 1, "fallback": "skip" }
+        }
+      ],
+      "budget": { "total_per_run": 2500 }
+    }
+  },
+  "requires": {
+    "plugins": ["nuskin"]
+  },
+  "skills": [
+    "@neboloop/skills/web-scraper@^1.0.0"
+  ],
+  "pricing": {
+    "model": "monthly_fixed",
+    "cost": 0.0
+  },
+  "defaults": {
+    "timezone": "user_local",
+    "configurable": [
+      "inputs.distributor_name",
+      "inputs.nuskin_rank",
+      "inputs.upline_name",
+      "inputs.upline_story",
+      "inputs.personal_product_story",
+      "inputs.user_style",
+      "inputs.contact_sources",
+      "inputs.csv_path",
+      "inputs.monthly_volume_goal",
+      "workflows.morning-briefing.trigger.cron",
+      "workflows.evening-wrap.trigger.cron"
+    ]
+  }
+}

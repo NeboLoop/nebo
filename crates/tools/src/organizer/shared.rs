@@ -269,6 +269,7 @@ pub async fn run_powershell(script: &str) -> ToolResult {
 }
 
 /// Check if a binary is available on PATH.
+#[allow(dead_code)] // Used on Linux
 pub fn which_exists(cmd: &str) -> bool {
     which::which(cmd).is_ok()
 }

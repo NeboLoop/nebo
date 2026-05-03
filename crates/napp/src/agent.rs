@@ -155,6 +155,18 @@ fn default_input_type() -> String {
     "text".to_string()
 }
 
+/// An edge connecting two nodes in the workflow graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowConnection {
+    /// Source node ID, `"__trigger__"`, or `"__emit__"`.
+    pub from: String,
+    /// Target node ID or `"__emit__"`.
+    pub to: String,
+    /// Branch label for condition/loop nodes: `"True"`, `"False"`, `"Each item"`, `"Done"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
 /// An inline workflow bound to an agent with its trigger.
 ///
 /// Activities, budget, and inputs are defined directly in agent.json.
@@ -172,6 +184,9 @@ pub struct WorkflowBinding {
     /// Inline activities (the procedure). Empty = chat-only binding.
     #[serde(default)]
     pub activities: Vec<AgentActivity>,
+    /// Edges connecting activities (for the visual workflow builder).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<WorkflowConnection>,
     /// Budget constraints for the entire workflow run.
     #[serde(default)]
     pub budget: AgentBudget,
@@ -221,6 +236,9 @@ impl WorkflowBinding {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentActivity {
     pub id: String,
+    /// Activity type: custom, research, email, notify, code, condition, loop, wait, agent, connector, http, transform.
+    #[serde(rename = "type", default)]
+    pub activity_type: String,
     pub intent: String,
     #[serde(default)]
     pub skills: Vec<String>,
@@ -232,6 +250,8 @@ pub struct AgentActivity {
     pub model: String,
     #[serde(default)]
     pub steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
     #[serde(default)]
     pub token_budget: AgentTokenBudget,
     #[serde(default)]
@@ -303,7 +323,14 @@ pub struct AgentBudget {
 pub enum AgentTrigger {
     /// Cron-based, predictable schedule.
     #[serde(rename = "schedule")]
-    Schedule { cron: String },
+    Schedule {
+        /// Cron expression (e.g. "0 8 * * *").
+        #[serde(default)]
+        cron: String,
+        /// Human-readable schedule description (e.g. "8:00 AM daily").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schedule: Option<String>,
+    },
     /// Recurring interval within a time window.
     #[serde(rename = "heartbeat")]
     Heartbeat {
@@ -313,7 +340,10 @@ pub enum AgentTrigger {
     },
     /// Event-driven, fires when something in the world changes.
     #[serde(rename = "event")]
-    Event { sources: Vec<String> },
+    Event {
+        #[serde(default)]
+        sources: Vec<String>,
+    },
     /// Watch trigger — spawns a plugin process that emits NDJSON to stdout.
     /// Each line triggers a workflow run with the parsed JSON as `_watch_payload`.
     /// When `event` is set, NDJSON output also auto-emits into the EventBus
@@ -395,10 +425,8 @@ pub fn parse_agent_config(json_str: &str) -> Result<AgentConfig, NappError> {
     }
 
     // Normalize options: NeboLoop may send plain strings instead of {value, label} objects
-    for field in &mut config.inputs {
-        // Options are already typed as Vec<AgentInputOption> — if they parsed, they're fine.
-        // Plain string arrays would fail serde, so they're handled by the caller.
-    }
+    // Options normalization: NeboLoop may send plain strings instead of {value, label} objects.
+    // AgentInputOption serde already handles this — plain strings fail serde and are handled by the caller.
 
     validate_agent_config(&config)?;
     Ok(config)

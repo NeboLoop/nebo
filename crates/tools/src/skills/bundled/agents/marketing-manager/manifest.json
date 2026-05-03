@@ -1,0 +1,9 @@
+{
+  "id": "marketing-manager",
+  "name": "Marketing Manager",
+  "version": "1.0.0",
+  "type": "agent",
+  "description": "Your always-on CMO. Writes copy, audits pages, runs campaigns, reports results — on autopilot.",
+  "author": "nebo",
+  "tags": ["marketing", "growth", "conversion", "seo", "content"]
+}

@@ -37,6 +37,17 @@ pub fn sanitize_memory_value(value: &str) -> String {
     }
 }
 
+/// Sanitize text before injecting into the system prompt.
+/// Returns the original text if safe, or a blocked notice if injection is detected.
+pub fn sanitize_for_prompt(text: &str) -> String {
+    if detect_prompt_injection(text) {
+        tracing::warn!("Prompt injection detected, content blocked");
+        "[Content blocked: potential prompt injection detected]".to_string()
+    } else {
+        text.to_string()
+    }
+}
+
 /// Detect prompt injection attempts in text.
 /// Returns true if suspicious patterns are found.
 pub fn detect_prompt_injection(text: &str) -> bool {

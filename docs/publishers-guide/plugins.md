@@ -312,7 +312,7 @@ If a multiplexed line has no `event` field, the declared event name is used as f
 
 ### Agent Watch Triggers
 
-Agents consume plugin events by declaring a watch trigger with an `event` field in `agent.json`:
+Agents consume plugin events by declaring a watch trigger with `event` and `command` in `agent.json`. Always provide both — `event` enables EventBus auto-emission, `command` is the fallback if the event isn't found in the manifest:
 
 ```json
 {
@@ -321,6 +321,7 @@ Agents consume plugin events by declaring a watch trigger with an `event` field 
       "type": "watch",
       "plugin": "gws",
       "event": "email.new",
+      "command": "gmail +watch --format ndjson",
       "restart_delay_secs": 5
     },
     "description": "React to new emails",
@@ -329,7 +330,7 @@ Agents consume plugin events by declaring a watch trigger with an `event` field 
 }
 ```
 
-When `event` is set, the watch command is resolved from the plugin's manifest — no need to hardcode CLI args in the agent config. The `{{key}}` placeholders in the manifest command are substituted from the agent's input values.
+When `event` is set, the runtime first attempts to resolve the CLI command from the plugin's manifest. If the event is not found (plugin not installed, manifest missing the event, etc.), the `command` field is used instead. Without either, the watcher is silently skipped. The `{{key}}` placeholders in the command are substituted from the agent's input values.
 
 Watch triggers with `event` set but no activities are also valid. They auto-emit into the EventBus without running any inline workflow, allowing other agents to subscribe to the events.
 

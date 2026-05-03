@@ -632,6 +632,15 @@ impl A2UIManager {
         path: Option<&str>,
         value: serde_json::Value,
     ) -> Result<(), types::NeboError> {
+        // Unwrap string-encoded JSON: the tool schema types `value` as string,
+        // so agents may pass `"[{\"name\":\"Test\"}]"` instead of an actual array.
+        let value = match &value {
+            serde_json::Value::String(s) => {
+                serde_json::from_str::<serde_json::Value>(s).unwrap_or(value)
+            }
+            _ => value,
+        };
+
         let mut builder = a2ui_core::message::UpdateDataModelBuilder::new(surface_id);
         if let Some(p) = path {
             builder = builder.path(p);
@@ -640,16 +649,26 @@ impl A2UIManager {
         let serialized = serde_json::to_value(&msg)
             .map_err(|e| types::NeboError::Internal(format!("a2ui serialize: {e}")))?;
 
-        // Update in-memory data model
-        {
+        // Update in-memory data model — merge at path if specified
+        let merged_model = {
             let mut surfaces = self.surfaces.write().await;
             if let Some(state) = surfaces.get_mut(surface_id) {
-                state.data_model = Some(value.clone());
+                let merged = if let Some(p) = path {
+                    let mut model = state.data_model.clone().unwrap_or(json!({}));
+                    set_at_pointer(&mut model, p, value.clone());
+                    model
+                } else {
+                    value.clone()
+                };
+                state.data_model = Some(merged.clone());
+                merged
+            } else {
+                value.clone()
             }
-        }
+        };
 
-        // Persist data model (store the raw value, not the full protocol message)
-        if let Ok(json_str) = serde_json::to_string(&value) {
+        // Persist the full merged model (not just the pathed value)
+        if let Ok(json_str) = serde_json::to_string(&merged_model) {
             if let Err(e) = self
                 .store
                 .update_a2ui_surface_data_model(surface_id, &json_str)
@@ -932,6 +951,56 @@ impl A2UIManager {
 }
 
 // ---------------------------------------------------------------------------
+// JSON Pointer helpers
+// ---------------------------------------------------------------------------
+
+/// Set a value at a JSON Pointer path (RFC 6901), creating intermediate objects as needed.
+///
+/// Example: `set_at_pointer(&mut root, "/contacts/active", json!([...]))` will set
+/// `root["contacts"]["active"]` to the value, creating `contacts` if it doesn't exist.
+fn set_at_pointer(root: &mut serde_json::Value, pointer: &str, value: serde_json::Value) {
+    let parts: Vec<&str> = pointer
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if parts.is_empty() {
+        // Empty path = replace root
+        *root = value;
+        return;
+    }
+
+    let mut current = root;
+    for (i, key) in parts.iter().enumerate() {
+        if i == parts.len() - 1 {
+            // Last segment — set the value
+            if let Some(obj) = current.as_object_mut() {
+                obj.insert((*key).to_string(), value);
+            } else {
+                // Current node isn't an object — replace with one containing the key
+                let mut obj = serde_json::Map::new();
+                obj.insert((*key).to_string(), value);
+                *current = serde_json::Value::Object(obj);
+            }
+            return;
+        }
+
+        // Intermediate segment — descend or create
+        if !current.get(*key).is_some_and(|v| v.is_object()) {
+            if let Some(obj) = current.as_object_mut() {
+                obj.insert((*key).to_string(), json!({}));
+            } else {
+                let mut obj = serde_json::Map::new();
+                obj.insert((*key).to_string(), json!({}));
+                *current = serde_json::Value::Object(obj);
+            }
+        }
+        current = current.get_mut(*key).unwrap();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // A2UIHost trait impl — bridges tools::A2UIHost → A2UIManager
 // ---------------------------------------------------------------------------
 
@@ -1030,5 +1099,50 @@ impl tools::a2ui_tool::A2UIHost for A2UIManager {
                 .await
                 .map_err(|e| e.to_string())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_at_pointer_creates_nested_path() {
+        let mut root = json!({"contacts": {"active": [], "dormant": []}});
+        set_at_pointer(&mut root, "/contacts/active", json!([{"name": "Test"}]));
+        assert_eq!(root["contacts"]["active"], json!([{"name": "Test"}]));
+        // Sibling path should be preserved
+        assert_eq!(root["contacts"]["dormant"], json!([]));
+    }
+
+    #[test]
+    fn test_set_at_pointer_sequential_updates_preserve_siblings() {
+        let mut root = json!({"contacts": {"active": [], "in_window": [], "dormant": []}});
+        set_at_pointer(&mut root, "/contacts/active", json!([{"name": "A"}]));
+        set_at_pointer(&mut root, "/contacts/dormant", json!([{"name": "B"}]));
+        assert_eq!(root["contacts"]["active"], json!([{"name": "A"}]));
+        assert_eq!(root["contacts"]["dormant"], json!([{"name": "B"}]));
+        assert_eq!(root["contacts"]["in_window"], json!([]));
+    }
+
+    #[test]
+    fn test_set_at_pointer_creates_intermediate_objects() {
+        let mut root = json!({});
+        set_at_pointer(&mut root, "/a/b/c", json!("deep"));
+        assert_eq!(root["a"]["b"]["c"], json!("deep"));
+    }
+
+    #[test]
+    fn test_set_at_pointer_empty_path_replaces_root() {
+        let mut root = json!({"old": true});
+        set_at_pointer(&mut root, "", json!({"new": true}));
+        assert_eq!(root, json!({"new": true}));
+    }
+
+    #[test]
+    fn test_set_at_pointer_single_key() {
+        let mut root = json!({"x": 1});
+        set_at_pointer(&mut root, "/y", json!(2));
+        assert_eq!(root, json!({"x": 1, "y": 2}));
     }
 }

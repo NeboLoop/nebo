@@ -412,12 +412,27 @@ pub async fn get_agent(
     let (yaml_str, persona_body) = napp::agent::split_frontmatter(&agent.agent_md).unwrap_or_default();
     let persona_properties = parse_persona_properties(&yaml_str);
 
+    // Extract model and skills from frontmatter for V2 frontend
+    let frontmatter_val: serde_json::Value = if !agent.frontmatter.is_empty() {
+        serde_json::from_str(&agent.frontmatter).unwrap_or_default()
+    } else {
+        serde_json::Value::Null
+    };
+    let model = frontmatter_val.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    let skills: Vec<&str> = frontmatter_val.get("skills")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+
     Ok(Json(serde_json::json!({
         "agent": agent,
         "version": version,
         "inputFields": input_fields,
         "personaProperties": persona_properties,
         "personaBody": persona_body,
+        "persona": persona_body,
+        "model": model,
+        "skills": skills,
         "views": views,
     })))
 }
@@ -654,7 +669,7 @@ pub async fn process_agent_bindings(
 
     for (binding_name, binding) in &config.workflows {
         let (trigger_type, trigger_config) = match &binding.trigger {
-            napp::agent::AgentTrigger::Schedule { cron } => ("schedule", tools::PersonaTool::normalize_cron(cron)),
+            napp::agent::AgentTrigger::Schedule { cron, .. } => ("schedule", tools::PersonaTool::normalize_cron(cron)),
             napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                 let cfg = match window {
                     Some(w) => format!("{}|{}", interval, w),
@@ -695,6 +710,12 @@ pub async fn process_agent_bindings(
             serde_json::to_string(&binding.activities).ok()
         };
 
+        let connections_json = if binding.connections.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&binding.connections).ok()
+        };
+
         if let Err(e) = state.store.upsert_agent_workflow(
             agent_id,
             binding_name,
@@ -704,6 +725,7 @@ pub async fn process_agent_bindings(
             inputs_json.as_deref(),
             binding.emit.as_deref(),
             activities_json.as_deref(),
+            connections_json.as_deref(),
         ) {
             warn!(agent = agent_id, binding = %binding_name, error = %e, "failed to upsert agent workflow");
             report.push(serde_json::json!({
@@ -947,6 +969,9 @@ fn parse_interval_secs(s: &str) -> i64 {
 }
 
 /// GET /agents/{id}/workflows — returns workflow bindings for an agent.
+///
+/// Returns a map keyed by binding_name with structured trigger objects
+/// and full activity/connection data for the V2 workflow builder.
 pub async fn list_agent_workflows(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -959,10 +984,128 @@ pub async fn list_agent_workflows(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     let workflows = state.store.list_agent_workflows(&id).map_err(to_error_response)?;
+
+    // Build a map keyed by binding_name with structured trigger
+    let mut wf_map = serde_json::Map::new();
+    for wf in &workflows {
+        let trigger = reconstruct_trigger(&wf.trigger_type, &wf.trigger_config);
+        let mut entry = serde_json::json!({
+            "trigger": trigger,
+            "description": wf.description,
+            "isActive": wf.is_active != 0,
+            "lastFired": wf.last_fired,
+            "emit": wf.emit,
+            "activities": wf.activities,
+            "connections": wf.connections,
+        });
+        if let Some(inputs_str) = &wf.inputs {
+            if let Ok(inputs) = serde_json::from_str::<serde_json::Value>(inputs_str) {
+                entry["inputs"] = inputs;
+            }
+        }
+        wf_map.insert(wf.binding_name.clone(), entry);
+    }
+
     Ok(Json(serde_json::json!({
-        "workflows": workflows,
+        "workflows": wf_map,
         "count": workflows.len(),
     })))
+}
+
+/// Reconstruct a structured trigger JSON from the flat trigger_type + trigger_config
+/// stored in the DB, matching the V2 frontend's expected trigger shape.
+fn reconstruct_trigger(trigger_type: &str, trigger_config: &str) -> serde_json::Value {
+    match trigger_type {
+        "schedule" => serde_json::json!({
+            "type": "schedule",
+            "cron": trigger_config,
+            "schedule": cron_to_human_readable(trigger_config),
+        }),
+        "heartbeat" => {
+            let parts: Vec<&str> = trigger_config.splitn(2, '|').collect();
+            let interval = parts.first().unwrap_or(&"");
+            let window = parts.get(1);
+            let mut t = serde_json::json!({
+                "type": "heartbeat",
+                "interval": interval,
+            });
+            if let Some(w) = window {
+                if let Some((start, end)) = w.split_once('-') {
+                    t["window"] = serde_json::json!({ "start": start, "end": end });
+                }
+            }
+            t
+        }
+        "event" => {
+            let sources: Vec<&str> = trigger_config.split(',').filter(|s| !s.is_empty()).collect();
+            serde_json::json!({
+                "type": "event",
+                "sources": sources,
+            })
+        }
+        "watch" => {
+            // trigger_config is JSON for watch triggers
+            if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(trigger_config) {
+                let mut t = serde_json::json!({ "type": "watch" });
+                if let Some(obj) = cfg.as_object() {
+                    for (k, v) in obj {
+                        t[k] = v.clone();
+                    }
+                }
+                t
+            } else {
+                serde_json::json!({ "type": "watch" })
+            }
+        }
+        "manual" => serde_json::json!({ "type": "manual" }),
+        _ => serde_json::json!({ "type": trigger_type }),
+    }
+}
+
+/// Convert a cron expression to a human-readable schedule string.
+fn cron_to_human_readable(cron: &str) -> String {
+    let parts: Vec<&str> = cron.split_whitespace().collect();
+    if parts.len() < 5 {
+        return cron.to_string();
+    }
+    let (minute, hour, _dom, _month, dow) = (parts[0], parts[1], parts[2], parts[3], parts[4]);
+
+    // Parse time
+    let time_str = if let (Ok(h), Ok(m)) = (hour.parse::<u32>(), minute.parse::<u32>()) {
+        let (h12, ampm) = if h == 0 {
+            (12, "AM")
+        } else if h < 12 {
+            (h, "AM")
+        } else if h == 12 {
+            (12, "PM")
+        } else {
+            (h - 12, "PM")
+        };
+        if m == 0 {
+            format!("{}:00 {}", h12, ampm)
+        } else {
+            format!("{}:{:02} {}", h12, m, ampm)
+        }
+    } else {
+        return cron.to_string();
+    };
+
+    // Parse day-of-week
+    let day_str = match dow {
+        "*" => "daily",
+        "1-5" | "MON-FRI" => "weekdays",
+        "0,6" | "SAT,SUN" => "weekends",
+        "1" | "MON" => "Monday",
+        "2" | "TUE" => "Tuesday",
+        "3" | "WED" => "Wednesday",
+        "4" | "THU" => "Thursday",
+        "5" | "FRI" => "Friday",
+        "6" | "SAT" => "Saturday",
+        "0" | "7" | "SUN" => "Sunday",
+        _ => return format!("{} ({})", time_str, cron),
+    };
+
+    format!("{} {}", time_str, day_str)
 }
 
 /// POST /agents/{id}/check-update — check if a newer version is available on NeboLoop.
@@ -1357,6 +1500,7 @@ pub async fn duplicate_agent(
     let source_workflows = state.store.list_agent_workflows(&id).map_err(to_error_response)?;
     for wf in &source_workflows {
         let activities_str = wf.activities.as_ref().map(|v| v.to_string());
+        let connections_str = wf.connections.as_ref().map(|v| v.to_string());
         let _ = state.store.upsert_agent_workflow(
             &new_id,
             &wf.binding_name,
@@ -1366,6 +1510,7 @@ pub async fn duplicate_agent(
             wf.inputs.as_deref(),
             wf.emit.as_deref(),
             activities_str.as_deref(),
+            connections_str.as_deref(),
         );
     }
 
@@ -1643,9 +1788,11 @@ pub async fn create_agent_workflow(
     let inputs_json = body.get("inputs").and_then(|v| serde_json::to_string(v).ok());
     let emit_val = body.get("emit").and_then(|v| v.as_str());
     let activities_json = body.get("activities").and_then(|v| serde_json::to_string(v).ok());
+    let connections_json = body.get("connections").and_then(|v| serde_json::to_string(v).ok());
     state.store.upsert_agent_workflow(
         &id, binding_name, trigger_type, &trigger_config_flat,
         desc, inputs_json.as_deref(), emit_val, activities_json.as_deref(),
+        connections_json.as_deref(),
     ).map_err(to_error_response)?;
 
     // Register triggers
@@ -1729,9 +1876,11 @@ pub async fn update_agent_workflow(
     let inputs_json = fm["workflows"][&binding_name].get("inputs").and_then(|v| serde_json::to_string(v).ok());
     let emit_val = fm["workflows"][&binding_name].get("emit").and_then(|v| v.as_str());
     let activities_json = fm["workflows"][&binding_name].get("activities").and_then(|v| serde_json::to_string(v).ok());
+    let connections_json = fm["workflows"][&binding_name].get("connections").and_then(|v| serde_json::to_string(v).ok());
     state.store.upsert_agent_workflow(
         &id, &binding_name, new_trigger_type, &trigger_config_flat,
         desc, inputs_json.as_deref(), emit_val, activities_json.as_deref(),
+        connections_json.as_deref(),
     ).map_err(to_error_response)?;
 
     // If trigger type changed, unregister old triggers first
@@ -2026,12 +2175,60 @@ pub async fn list_agent_chats(
         }
     }
 
-    let total = chats.len();
+    // Enrich chats with name, preview, updatedAt (relative), and messages count
+    let now = chrono::Utc::now().timestamp();
+    let enriched: Vec<serde_json::Value> = chats.iter().map(|chat| {
+        let msg_count = state.store.count_chat_messages(&chat.id).unwrap_or(0);
+        // Get last message for preview
+        let preview = state.store
+            .get_chat_messages_budgeted(&chat.id, 200, None)
+            .ok()
+            .and_then(|msgs| msgs.last().map(|m| {
+                let content = m.content.chars().take(120).collect::<String>();
+                if m.content.len() > 120 { format!("{}...", content) } else { content }
+            }))
+            .unwrap_or_default();
+        let updated_at_relative = format_relative_time(chat.updated_at, now);
+        serde_json::json!({
+            "id": chat.id,
+            "name": chat.title,
+            "title": chat.title,
+            "preview": preview,
+            "updatedAt": updated_at_relative,
+            "messages": msg_count,
+            "createdAt": chat.created_at,
+            "updatedAtEpoch": chat.updated_at,
+            "sessionName": chat.session_name,
+        })
+    }).collect();
+
+    let total = enriched.len();
     Ok(Json(serde_json::json!({
-        "chats": chats,
+        "chats": enriched,
         "activeChatId": active_chat_id,
         "total": total,
     })))
+}
+
+/// Format an epoch timestamp as a relative time string.
+fn format_relative_time(epoch: i64, now: i64) -> String {
+    let diff = now - epoch;
+    if diff < 60 {
+        "just now".to_string()
+    } else if diff < 3600 {
+        let mins = diff / 60;
+        format!("{}m ago", mins)
+    } else if diff < 86400 {
+        let hours = diff / 3600;
+        format!("{}h ago", hours)
+    } else if diff < 604800 {
+        let days = diff / 86400;
+        format!("{}d ago", days)
+    } else {
+        chrono::DateTime::from_timestamp(epoch, 0)
+            .map(|dt| dt.format("%b %d").to_string())
+            .unwrap_or_default()
+    }
 }
 
 /// POST /api/v1/agents/{id}/chats — create a new chat under the agent's session.

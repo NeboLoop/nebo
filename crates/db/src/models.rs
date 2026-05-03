@@ -627,6 +627,9 @@ pub struct AgentWorkflow {
     #[serde(skip_deserializing)]
     pub activities: Option<serde_json::Value>,
     pub last_fired: Option<String>,
+    /// JSON array of workflow connections (edges between activities for the visual builder).
+    #[serde(skip_deserializing)]
+    pub connections: Option<serde_json::Value>,
 }
 
 // ── Emit Sources ──

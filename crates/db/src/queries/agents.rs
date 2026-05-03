@@ -177,21 +177,23 @@ impl Store {
         inputs: Option<&str>,
         emit: Option<&str>,
         activities: Option<&str>,
+        connections: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO agent_workflows (agent_id, binding_name,
-                    trigger_type, trigger_config, description, inputs, emit, activities)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    trigger_type, trigger_config, description, inputs, emit, activities, connections)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(agent_id, binding_name) DO UPDATE SET
                 trigger_type = excluded.trigger_type,
                 trigger_config = excluded.trigger_config,
                 description = excluded.description,
                 inputs = excluded.inputs,
                 emit = excluded.emit,
-                activities = excluded.activities",
+                activities = excluded.activities,
+                connections = excluded.connections",
             params![agent_id, binding_name,
-                    trigger_type, trigger_config, description, inputs, emit, activities],
+                    trigger_type, trigger_config, description, inputs, emit, activities, connections],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -202,7 +204,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT id, agent_id, binding_name,
-                        trigger_type, trigger_config, description, inputs, is_active, emit, activities, last_fired
+                        trigger_type, trigger_config, description, inputs, is_active, emit, activities, last_fired, connections
                  FROM agent_workflows WHERE agent_id = ?1",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -280,7 +282,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT aw.id, aw.agent_id, aw.binding_name,
-                        aw.trigger_type, aw.trigger_config, aw.description, aw.inputs, aw.is_active, aw.emit, aw.activities, aw.last_fired
+                        aw.trigger_type, aw.trigger_config, aw.description, aw.inputs, aw.is_active, aw.emit, aw.activities, aw.last_fired, aw.connections
                  FROM agent_workflows aw
                  JOIN agents a ON aw.agent_id = a.id
                  WHERE aw.trigger_type = 'event' AND aw.is_active = 1 AND a.is_enabled = 1",
@@ -400,6 +402,8 @@ impl Store {
 fn row_to_agent_workflow(row: &rusqlite::Row) -> rusqlite::Result<AgentWorkflow> {
     let activities_str: Option<String> = row.get(9)?;
     let activities = activities_str.and_then(|s| serde_json::from_str(&s).ok());
+    let connections_str: Option<String> = row.get(11)?;
+    let connections = connections_str.and_then(|s| serde_json::from_str(&s).ok());
     Ok(AgentWorkflow {
         id: row.get(0)?,
         agent_id: row.get(1)?,
@@ -412,6 +416,7 @@ fn row_to_agent_workflow(row: &rusqlite::Row) -> rusqlite::Result<AgentWorkflow>
         emit: row.get(8)?,
         activities,
         last_fired: row.get(10)?,
+        connections,
     })
 }
 
