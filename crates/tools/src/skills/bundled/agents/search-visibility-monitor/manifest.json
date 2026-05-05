@@ -1,9 +1,0 @@
-{
-  "id": "search-visibility-monitor",
-  "name": "Search Visibility Monitor",
-  "version": "1.0.0",
-  "type": "agent",
-  "description": "Track where your brand appears across Google, ChatGPT, Perplexity, and Gemini — one dashboard for all of modern search",
-  "author": "nebo",
-  "tags": ["seo", "ai-search", "visibility", "monitoring", "competitive-intel"]
-}

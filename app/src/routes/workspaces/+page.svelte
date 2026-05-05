@@ -10,6 +10,8 @@
   import type { Agent } from '$lib/api/nebo';
   const sidebarCollapsed = sidebarCollapsedFor('workspaces');
 
+  const COLOR_CYCLE = Object.keys(AGENT_COLORS_MAP);
+
   let allAgents = $state<{ id: string; name: string; initial: string; color: string; role: string; status: string }[]>([]);
   let chatMessages = $state<any[]>([]);
 
@@ -18,13 +20,13 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listAgents();
       if (resp?.agents?.length) {
-        allAgents = resp.agents.map((a: Agent) => ({
+        allAgents = resp.agents.map((a: Agent, i: number) => ({
           id: a.id,
           name: a.name,
           role: a.description || '',
           initial: a.name.charAt(0).toUpperCase(),
           status: a.isEnabled ? 'online' : 'paused',
-          color: 'teal',
+          color: COLOR_CYCLE[i % COLOR_CYCLE.length],
         }));
       }
     } catch { /* keep mock data */ }

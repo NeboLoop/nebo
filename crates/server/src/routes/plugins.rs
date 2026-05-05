@@ -12,4 +12,7 @@ pub fn routes() -> Router<AppState> {
         .route("/plugins/{slug}/auth/login", axum::routing::post(handlers::plugins::auth_login))
         .route("/plugins/{slug}/auth/logout", axum::routing::post(handlers::plugins::auth_logout))
         .route("/plugins/{slug}/auth/status", axum::routing::get(handlers::plugins::auth_status))
+        .route("/plugins/{slug}/config", axum::routing::get(handlers::plugins::get_plugin_config).put(handlers::plugins::set_plugin_config))
+        .route("/plugins/{slug}/diagnostics", axum::routing::get(handlers::plugins::get_diagnostics))
+        .route("/plugins/{slug}/api/{*path}", axum::routing::any(handlers::plugins::proxy_plugin_route))
 }

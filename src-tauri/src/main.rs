@@ -12,7 +12,7 @@ use tauri::{
     LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 const SERVER_URL: &str = "http://localhost:27895";
 
@@ -140,10 +140,32 @@ fn main() {
 
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+    // Terminal layer (with ANSI colors)
+    let env_filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let stdout_layer = fmt::layer().with_filter(env_filter());
+
+    // File layer (append to ~/.nebo/logs/nebo.log)
+    let file_layer = config::data_dir()
+        .ok()
+        .and_then(|dir| {
+            let log_dir = dir.join("logs");
+            std::fs::create_dir_all(&log_dir).ok()?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_dir.join("nebo.log"))
+                .ok()?;
+            Some(
+                fmt::layer()
+                    .with_writer(Mutex::new(file))
+                    .with_ansi(false)
+                    .with_filter(env_filter()),
+            )
+        });
+
+    tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(file_layer)
         .init();
 
     let mut cfg = config::Config::load_embedded().expect("failed to load config");

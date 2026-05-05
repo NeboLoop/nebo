@@ -23,6 +23,7 @@ mod store;
 mod tasks;
 mod update;
 mod user;
+mod voice;
 mod workflows;
 
 use axum::Router;
@@ -58,6 +59,7 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .merge(plugins::routes())
         .merge(store::routes())
         .merge(entity_config::routes())
+        .merge(voice::routes())
         .merge(user::public_routes())
         .merge(self::codes_and_deps());
 

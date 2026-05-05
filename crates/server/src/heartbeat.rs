@@ -194,6 +194,8 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             entity_config: Some(resolved.clone()),
             images: vec![],
             entity_name: String::new(),
+            origin_agent_id: None,
+            mention_context: None,
         };
 
         run_chat(state, config).await;

@@ -78,6 +78,15 @@ pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, Na
     Ok(payload.to_vec())
 }
 
+/// Verify and unwrap a .napp envelope using the embedded NeboLoop public key.
+///
+/// Convenience wrapper around `unwrap_napp` + `builtin_verifying_key()` for
+/// verifying first-party bundled `.napp` files without network access.
+pub fn unwrap_napp_builtin(data: &[u8]) -> Result<Vec<u8>, NappError> {
+    let key = crate::signing::builtin_verifying_key()?;
+    unwrap_napp(data, &key)
+}
+
 /// Allowed file names in a .napp archive.
 const ALLOWED_FILES: &[&str] = &[
     "manifest.json",

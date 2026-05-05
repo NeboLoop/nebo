@@ -102,55 +102,57 @@ fn skills_dir() -> Result<std::path::PathBuf, (axum::http::StatusCode, Json<type
 pub async fn list_extensions(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
-    let skills: Vec<serde_json::Value> = state
-        .skill_loader
-        .list()
-        .await
-        .into_iter()
-        .map(|s| {
-            let mut info = serde_json::json!({
-                "name": s.name,
-                "enabled": s.enabled,
-                "source": s.source,
-            });
-            if !s.description.is_empty() {
-                info["description"] = serde_json::json!(s.description);
-            }
-            if !s.version.is_empty() {
-                info["version"] = serde_json::json!(s.version);
-            }
-            if !s.triggers.is_empty() {
-                info["triggers"] = serde_json::json!(s.triggers);
-            }
-            if let Some(ref path) = s.source_path {
-                info["path"] = serde_json::json!(path.to_string_lossy());
-            }
-            // Include secret declarations so the UI knows what needs configuring
-            let declarations = s.secrets();
-            if !declarations.is_empty() {
-                let stored = state.store.list_skill_secrets(&s.name).unwrap_or_default();
-                let stored_keys: std::collections::HashSet<String> =
-                    stored.into_iter().map(|(k, _)| k).collect();
-                let secrets: Vec<serde_json::Value> = declarations
-                    .iter()
-                    .map(|d| {
-                        serde_json::json!({
-                            "key": d.key,
-                            "label": d.label,
-                            "hint": d.hint,
-                            "required": d.required,
-                            "configured": stored_keys.contains(&d.key),
+    let summaries = state.skill_loader.list_summaries().await;
+    let mut skills: Vec<serde_json::Value> = Vec::with_capacity(summaries.len());
+
+    for s in &summaries {
+        let mut info = serde_json::json!({
+            "name": s.name,
+            "enabled": s.enabled,
+            "source": s.source,
+        });
+        if !s.description.is_empty() {
+            info["description"] = serde_json::json!(s.description);
+        }
+        if !s.version.is_empty() {
+            info["version"] = serde_json::json!(s.version);
+        }
+        if !s.triggers.is_empty() {
+            info["triggers"] = serde_json::json!(s.triggers);
+        }
+        if let Some(ref path) = s.source_path {
+            info["path"] = serde_json::json!(path.to_string_lossy());
+        }
+        // Lazy-load full skill only for those that declare secrets
+        if s.has_secrets {
+            if let Some(full) = state.skill_loader.get(&s.name).await {
+                let declarations = full.secrets();
+                if !declarations.is_empty() {
+                    let stored = state.store.list_skill_secrets(&s.name).unwrap_or_default();
+                    let stored_keys: std::collections::HashSet<String> =
+                        stored.into_iter().map(|(k, _)| k).collect();
+                    let secrets: Vec<serde_json::Value> = declarations
+                        .iter()
+                        .map(|d| {
+                            serde_json::json!({
+                                "key": d.key,
+                                "label": d.label,
+                                "hint": d.hint,
+                                "required": d.required,
+                                "configured": stored_keys.contains(&d.key),
+                            })
                         })
-                    })
-                    .collect();
-                info["secrets"] = serde_json::json!(secrets);
-                info["needsConfiguration"] = serde_json::json!(
-                    declarations.iter().any(|d| d.required && !stored_keys.contains(&d.key))
-                );
+                        .collect();
+                    info["secrets"] = serde_json::json!(secrets);
+                    info["needsConfiguration"] = serde_json::json!(
+                        declarations.iter().any(|d| d.required && !stored_keys.contains(&d.key))
+                    );
+                }
             }
-            info
-        })
-        .collect();
+        }
+        skills.push(info);
+    }
+
     Ok(Json(serde_json::json!({"extensions": skills})))
 }
 

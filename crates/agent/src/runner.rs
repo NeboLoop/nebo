@@ -113,6 +113,9 @@ pub struct RunRequest {
     /// When set, the runner updates these atomics during run_loop() so
     /// external observers can see live iteration/tool counts.
     pub progress: Option<RunProgress>,
+    /// Injected as a system-role message after the user prompt — visible to the
+    /// LLM but not rendered in the frontend. Used for @mention routing context.
+    pub mention_context: Option<String>,
 }
 
 /// Shared atomic counters for live run progress reporting.
@@ -347,6 +350,13 @@ impl Runner {
                 warn!(session_id = %session_id, error = %e, "failed to append user message");
                 ProviderError::Request(format!("failed to store message: {}", e))
             })?;
+
+            // Inject @mention routing context as an invisible system message
+            if let Some(ref ctx) = req.mention_context {
+                let _ = self.sessions.append_message(
+                    &session_id, "system", ctx, None, None, None,
+                );
+            }
         }
 
         // Create result channel
@@ -1830,7 +1840,30 @@ async fn run_loop(
                     }
                 }
             }
+            // Apply tool.pre_execute filter hooks — may block individual tools.
+            let mut blocked_results: Vec<Option<(ai::ToolCall, ToolResult)>> = vec![None; tool_calls.len()];
+            let has_pre_hook = hooks.has_subscribers("tool.pre_execute");
+            if has_pre_hook {
+                for (idx, tc) in tool_calls.iter().enumerate() {
+                    let payload = serde_json::to_vec(&crate::hooks::ToolPreExecutePayload {
+                        tool_name: tc.name.clone(),
+                        input: tc.input.clone(),
+                        session_id: session_id.to_string(),
+                    }).unwrap_or_default();
+                    let (result, _handled) = hooks.apply_filter("tool.pre_execute", payload).await;
+                    if let Ok(resp) = serde_json::from_slice::<crate::hooks::ToolPreExecuteResponse>(&result) {
+                        if resp.blocked {
+                            let msg = resp.blocked_message.unwrap_or_else(|| "Blocked by plugin hook".into());
+                            blocked_results[idx] = Some((tc.clone(), ToolResult::error(msg)));
+                        }
+                    }
+                }
+            }
+
             for (idx, tc) in tool_calls.iter().enumerate() {
+                if blocked_results[idx].is_some() {
+                    continue; // skip blocked tools
+                }
                 let tools = tools.clone();
                 let ctx = ctx.clone();
                 let tc = tc.clone();
@@ -1897,6 +1930,45 @@ async fn run_loop(
                     })
                     .await;
                 results[idx] = Some((tc, result));
+            }
+
+            // Inject blocked tool results (from pre_execute hooks).
+            for (idx, blocked) in blocked_results.into_iter().enumerate() {
+                if let Some((tc, result)) = blocked {
+                    let _ = tx
+                        .send(StreamEvent {
+                            event_type: StreamEventType::ToolResult,
+                            text: result.content.clone(),
+                            tool_call: Some(ai::ToolCall {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                                input: serde_json::Value::Null,
+                            }),
+                            error: Some(result.content.clone()),
+                            usage: None,
+                            rate_limit: None,
+                            widgets: None,
+                            provider_metadata: None,
+                            stop_reason: None,
+                        })
+                        .await;
+                    results[idx] = Some((tc, result));
+                }
+            }
+
+            // Fire tool.post_execute action hooks for completed tools.
+            if hooks.has_subscribers("tool.post_execute") {
+                for entry in &results {
+                    if let Some((tc, result)) = entry {
+                        let payload = serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
+                            tool_name: tc.name.clone(),
+                            result: result.content.clone(),
+                            is_error: result.is_error,
+                            session_id: session_id.to_string(),
+                        }).unwrap_or_default();
+                        hooks.do_action("tool.post_execute", payload).await;
+                    }
+                }
             }
 
             // Sidecar vision verification — only for providers that can't include
@@ -2631,6 +2703,7 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
                                 tool_calls: None,
                                 tool_results: Some(single_tr),
                                 token_estimate: msg.token_estimate,
+                                html: None,
                             },
                         );
                     }
@@ -2683,6 +2756,7 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
                                     tool_calls: None,
                                     tool_results: Some(synthetic.to_string()),
                                     token_estimate: Some(0),
+                                    html: None,
                                 });
                             }
                         }
@@ -2957,6 +3031,7 @@ mod tests {
                 tool_calls: None,
                 tool_results: None,
                 token_estimate: None,
+                html: None,
             },
             ChatMessage {
                 id: "2".into(),
@@ -2969,6 +3044,7 @@ mod tests {
                 tool_calls: None,
                 tool_results: None,
                 token_estimate: None,
+                html: None,
             },
         ];
 
@@ -3004,6 +3080,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         }
     }
 

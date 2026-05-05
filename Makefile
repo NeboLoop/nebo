@@ -21,7 +21,7 @@ else
     ARCH = $(UNAME_M)
 endif
 
-.PHONY: help dev build build-desktop test clean seed-plugins release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
+.PHONY: help dev build build-desktop test clean seed-plugins bundle-napps plugin-status release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -37,6 +37,7 @@ help:
 	@echo "  make test           - Run all tests"
 	@echo "  make clean          - Clean build artifacts"
 	@echo "  make seed-plugins   - Copy plugin binaries from sibling repos"
+	@echo "  make plugin-status  - Show build/bundle status of all 14 plugins"
 	@echo ""
 	@echo "Desktop (macOS):"
 	@echo "  make app-bundle     - Re-sign Tauri .app with Developer ID"
@@ -69,7 +70,7 @@ build:
 	@echo "Building headless CLI binary..."
 	cargo build --release -p nebo-cli
 
-build-desktop:
+build-desktop: bundle-napps
 	@echo "Building Tauri desktop app..."
 	@cd app && pnpm build
 	cargo tauri build
@@ -113,9 +114,39 @@ seed-plugins:
 		cp "$$manifest" "$$dst/plugin.json"; \
 		cp "$$binary" "$$dst/$$binary_name"; \
 		chmod +x "$$dst/$$binary_name"; \
-		echo "  OK   $$slug $$version → $$dst"; \
+		if [ -d "$$src/skills" ]; then \
+			rm -rf "$$dst/skills"; \
+			cp -R "$$src/skills" "$$dst/skills"; \
+			skill_count=$$(ls "$$dst/skills" 2>/dev/null | wc -l | tr -d ' '); \
+			echo "  OK   $$slug $$version → $$dst ($$skill_count skills)"; \
+		else \
+			echo "  OK   $$slug $$version → $$dst"; \
+		fi; \
 	done
 	@echo "Done. Restart Nebo to pick up plugins."
+
+# Show build/bundle status of all 14 bundled plugins.
+plugin-status:
+	@scripts/publish-plugins.sh status
+
+# ─── Bundled .napp Files ─────────────────────────────────────────────────────
+
+BUNDLED_NAPPS_DIR = src-tauri/bundled-napps
+
+# Download signed .napp files from NeboLoop CDN into the Tauri bundle.
+# Skills and agents are platform-agnostic. Plugins are per-platform.
+# Override NEBOLOOP_CDN_URL if using a staging environment.
+NEBOLOOP_CDN_URL ?= https://cdn.neboloop.com
+
+bundle-napps:
+	@echo "Preparing bundled .napp directory..."
+	@mkdir -p $(BUNDLED_NAPPS_DIR)/{skills,agents,plugins}
+	@echo "Place signed .napp files in $(BUNDLED_NAPPS_DIR)/{skills,agents,plugins}/"
+	@echo "  Skills/agents: platform-agnostic (one .napp per artifact)"
+	@echo "  Plugins: platform-specific (download for target arch)"
+	@echo ""
+	@echo "Current contents:"
+	@find $(BUNDLED_NAPPS_DIR) -name "*.napp" -type f 2>/dev/null | sort || echo "  (none)"
 
 # ─── Release Targets ────────────────────────────────────────────────────────
 

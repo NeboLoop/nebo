@@ -1057,6 +1057,7 @@ mod tests {
             tool_calls: tool_calls.map(String::from),
             tool_results: None,
             token_estimate: None,
+            html: None,
         }
     }
 

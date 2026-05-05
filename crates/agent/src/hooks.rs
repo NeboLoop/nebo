@@ -98,3 +98,33 @@ pub struct ShouldContinueResponse {
 fn default_true() -> bool {
     true
 }
+
+/// Payload for `tool.pre_execute` filter hook.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ToolPreExecutePayload {
+    pub tool_name: String,
+    pub input: serde_json::Value,
+    pub session_id: String,
+}
+
+/// Response from `tool.pre_execute` filter hook.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ToolPreExecuteResponse {
+    /// If true, skip tool execution and return `blocked_message` as an error.
+    #[serde(default)]
+    pub blocked: bool,
+    #[serde(default)]
+    pub blocked_message: Option<String>,
+    /// Optionally modified input to pass to the tool.
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
+}
+
+/// Payload for `tool.post_execute` action hook.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ToolPostExecutePayload {
+    pub tool_name: String,
+    pub result: String,
+    pub is_error: bool,
+    pub session_id: String,
+}

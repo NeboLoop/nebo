@@ -4,8 +4,18 @@ use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use serde::Deserialize;
 
+use crate::chat_dispatch::md_to_html;
 use crate::state::AppState;
 use super::{to_error_response, HandlerResult};
+
+/// Enrich assistant messages with server-rendered HTML from their markdown content.
+fn enrich_with_html(messages: &mut [db::models::ChatMessage]) {
+    for msg in messages.iter_mut() {
+        if msg.role == "assistant" && !msg.content.is_empty() {
+            msg.html = Some(md_to_html(&msg.content));
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ListChatsQuery {
@@ -333,6 +343,7 @@ pub async fn get_companion_chat(
         .get_chat_messages_budgeted(&active_chat_id, query.max_chars, None)
         .unwrap_or_default();
     build_message_metadata(&mut messages);
+    enrich_with_html(&mut messages);
     let total = state.store.count_chat_messages(&active_chat_id).unwrap_or(messages.len() as i64);
 
     Ok(Json(serde_json::json!({
@@ -494,6 +505,7 @@ pub async fn get_chat_history_by_day(
         .get_chat_messages_by_day(&active_chat_id, &day)
         .map_err(to_error_response)?;
     build_message_metadata(&mut messages);
+    enrich_with_html(&mut messages);
 
     Ok(Json(serde_json::json!({"messages": messages})))
 }
@@ -553,6 +565,7 @@ pub async fn get_chat_messages(
         .get_chat_messages_budgeted(&resolved_id, query.max_chars, query.before.as_deref())
         .map_err(to_error_response)?;
     build_message_metadata(&mut messages);
+    enrich_with_html(&mut messages);
     let total = state.store.count_chat_messages(&resolved_id).unwrap_or(messages.len() as i64);
     Ok(Json(serde_json::json!({"messages": messages, "totalMessages": total})))
 }

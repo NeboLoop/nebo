@@ -69,6 +69,27 @@ pub enum SkillSource {
     User,
 }
 
+/// Lightweight view of a skill for list/search/catalog operations.
+///
+/// Avoids cloning heavy fields (metadata HashMap, plugins Vec, requires Vec, etc.)
+/// that list/discover consumers never read.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub enabled: bool,
+    pub source: SkillSource,
+    pub triggers: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub source_path: Option<PathBuf>,
+    pub base_dir: Option<PathBuf>,
+    pub priority: i32,
+    /// True if the skill declares secrets in metadata.
+    pub has_secrets: bool,
+    pub degraded: Option<String>,
+}
+
 /// A skill parsed from a SKILL.md file with YAML frontmatter.
 ///
 /// Implements the Agent Skills standard (https://skill.md) plus Nebo extensions.
@@ -147,6 +168,24 @@ fn default_version() -> String {
 }
 
 impl Skill {
+    /// Create a lightweight summary for list/search operations.
+    pub fn to_summary(&self) -> SkillSummary {
+        SkillSummary {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            version: self.version.clone(),
+            enabled: self.enabled,
+            source: self.source,
+            triggers: self.triggers.clone(),
+            capabilities: self.capabilities.clone(),
+            source_path: self.source_path.clone(),
+            base_dir: self.base_dir.clone(),
+            priority: self.priority,
+            has_secrets: self.metadata.contains_key("secrets"),
+            degraded: self.degraded.clone(),
+        }
+    }
+
     /// Validate that required fields are present and conform to the Agent Skills standard.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.is_empty() {
@@ -338,7 +377,7 @@ pub fn split_frontmatter(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     ))
 }
 
-/// Parse a SKILL.md file into a Skill struct.
+/// Parse a SKILL.md file into a Skill struct (frontmatter + body).
 pub fn parse_skill_md(data: &[u8]) -> Result<Skill, String> {
     let (frontmatter, body) = split_frontmatter(data)?;
 
@@ -346,6 +385,22 @@ pub fn parse_skill_md(data: &[u8]) -> Result<Skill, String> {
         serde_yaml::from_slice(&frontmatter).map_err(|e| format!("YAML parse error: {}", e))?;
 
     skill.template = String::from_utf8_lossy(&body).to_string();
+    skill.validate()?;
+    Ok(skill)
+}
+
+/// Parse only the YAML frontmatter of a SKILL.md file, skipping the body.
+///
+/// Returns a Skill with an empty template. Use this for metadata-only loading
+/// (search, list, catalog) where the template body is not needed. The template
+/// can be loaded lazily via `Loader::get()` when actually required.
+pub fn parse_skill_frontmatter(data: &[u8]) -> Result<Skill, String> {
+    let (frontmatter, _body) = split_frontmatter(data)?;
+
+    let skill: Skill =
+        serde_yaml::from_slice(&frontmatter).map_err(|e| format!("YAML parse error: {}", e))?;
+
+    // template stays as default empty string (from #[serde(skip)])
     skill.validate()?;
     Ok(skill)
 }

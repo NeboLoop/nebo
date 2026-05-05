@@ -293,6 +293,148 @@ impl Default for HookDispatcher {
     }
 }
 
+// ── Plugin Hook Caller ──────────────────────────────────────────────
+
+use std::path::PathBuf;
+use std::process::Stdio;
+
+/// Subprocess-backed hook caller for .napp plugins.
+///
+/// Spawns the plugin binary with a hook subcommand, writes JSON payload to stdin,
+/// reads JSON from stdout. Exit 0 = success.
+pub struct PluginHookCaller {
+    binary_path: PathBuf,
+    command: String,
+    plugin_slug: String,
+    timeout: Duration,
+}
+
+impl PluginHookCaller {
+    pub fn new(binary_path: PathBuf, command: String, plugin_slug: String, timeout: Duration) -> Self {
+        Self { binary_path, command, plugin_slug, timeout }
+    }
+
+    async fn spawn_and_communicate(&self, _hook: &str, payload: Vec<u8>) -> Result<Vec<u8>, String> {
+        let args: Vec<&str> = self.command.split_whitespace().collect();
+        let mut cmd = tokio::process::Command::new(&self.binary_path);
+        cmd.args(&args);
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().map_err(|e| {
+            format!("plugin '{}' hook spawn failed: {}", self.plugin_slug, e)
+        })?;
+
+        // Write payload to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(&payload).await;
+            drop(stdin);
+        }
+
+        // Wait with timeout
+        let output = tokio::time::timeout(self.timeout, child.wait_with_output())
+            .await
+            .map_err(|_| format!("plugin '{}' hook timed out", self.plugin_slug))?
+            .map_err(|e| format!("plugin '{}' hook wait failed: {}", self.plugin_slug, e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "plugin '{}' hook exited {}: {}",
+                self.plugin_slug,
+                output.status,
+                stderr.trim()
+            ));
+        }
+
+        Ok(output.stdout)
+    }
+}
+
+#[async_trait::async_trait]
+impl HookCaller for PluginHookCaller {
+    async fn call_filter(&self, hook: &str, payload: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
+        let stdout = self.spawn_and_communicate(hook, payload).await?;
+        // Parse response: { "payload": ..., "handled": bool }
+        // If the output is valid JSON with "handled", use it. Otherwise treat as passthrough.
+        if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&stdout) {
+            let handled = resp.get("handled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let out_payload = if let Some(p) = resp.get("payload") {
+                serde_json::to_vec(p).unwrap_or(stdout)
+            } else {
+                stdout
+            };
+            Ok((out_payload, handled))
+        } else {
+            Ok((stdout, false))
+        }
+    }
+
+    async fn call_action(&self, hook: &str, payload: Vec<u8>) -> Result<(), String> {
+        self.spawn_and_communicate(hook, payload).await?;
+        Ok(())
+    }
+}
+
+/// Register all hooks declared in a plugin manifest.
+///
+/// Returns the number of hooks registered.
+pub fn register_plugin_hooks(
+    manifest: &crate::plugin::PluginManifest,
+    binary_path: &std::path::Path,
+    dispatcher: &HookDispatcher,
+) -> usize {
+    let caps = match &manifest.capabilities {
+        Some(c) => c,
+        None => return 0,
+    };
+
+    let mut count = 0;
+    for hook_def in &caps.hooks {
+        if !VALID_HOOKS.contains(&hook_def.hook.as_str()) {
+            warn!(
+                plugin = %manifest.slug,
+                hook = %hook_def.hook,
+                "skipping unknown hook"
+            );
+            continue;
+        }
+
+        let hook_type = if hook_def.hook_type == "filter" {
+            HookType::Filter
+        } else {
+            HookType::Action
+        };
+
+        let caller = Arc::new(PluginHookCaller::new(
+            binary_path.to_path_buf(),
+            hook_def.command.clone(),
+            manifest.slug.clone(),
+            Duration::from_millis(hook_def.timeout_ms),
+        ));
+
+        dispatcher.register(
+            &hook_def.hook,
+            &manifest.slug,
+            hook_type,
+            hook_def.priority,
+            caller,
+        );
+
+        info!(
+            plugin = %manifest.slug,
+            hook = %hook_def.hook,
+            hook_type = ?hook_type,
+            priority = hook_def.priority,
+            "registered plugin hook"
+        );
+        count += 1;
+    }
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

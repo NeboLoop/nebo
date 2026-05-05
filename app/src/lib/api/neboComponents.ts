@@ -94,6 +94,17 @@ export interface AgentWorkflow {
 	connections?: unknown
 }
 
+export interface AgentInputField {
+	key: string
+	label: string
+	description?: string
+	type: 'text' | 'textarea' | 'number' | 'select' | 'checkbox' | 'radio' | 'path' | 'file'
+	required?: boolean
+	default?: unknown
+	placeholder?: string
+	options?: Array<{ value: string; label: string }>
+}
+
 export interface AgentWorkflowStats {
 	totalRuns: number
 	completed: number

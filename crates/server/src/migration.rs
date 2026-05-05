@@ -438,6 +438,235 @@ pub fn migrate_data_dir() {
     }
 }
 
+// ── Phase 6: Seed bundled .napp files from app resources ──────────
+
+/// Seed `.napp` files from app bundle resources into the data directory.
+///
+/// On desktop installs, the app bundle ships with pre-signed `.napp` files in
+/// `bundled-napps/{skills,agents,plugins}/`. This function copies them into the
+/// writable data directory so Phase 3 extraction (and plugin install) can process
+/// them.
+///
+/// Marker: `.bundled-<app_version>` — re-runs on app upgrade so new bundled
+/// content is seeded.
+pub fn seed_bundled_napps(data_dir: &Path) {
+    let app_version = env!("CARGO_PKG_VERSION");
+    let marker = data_dir.join(format!(".bundled-{}", app_version));
+    if marker.exists() {
+        return;
+    }
+
+    let resources_dir = match config::bundled_napps_dir() {
+        Some(d) => d,
+        None => {
+            // No bundled resources (dev/CLI mode) — write marker and return
+            let _ = std::fs::write(&marker, "no-resources");
+            return;
+        }
+    };
+
+    info!(dir = %resources_dir.display(), "seeding bundled .napp files");
+
+    let nebo_dir = data_dir.join("nebo");
+    let mut count = 0usize;
+
+    // Skills and agents: copy .napp files → nebo/{skills,agents}/
+    // Phase 3 (migrate_napp_extraction) handles the actual extraction.
+    for artifact_type in &["skills", "agents"] {
+        let src_dir = resources_dir.join(artifact_type);
+        if !src_dir.is_dir() {
+            continue;
+        }
+        let dest_dir = nebo_dir.join(artifact_type);
+        let _ = std::fs::create_dir_all(&dest_dir);
+        count += seed_napp_files(&src_dir, &dest_dir);
+    }
+
+    // Plugins: verify envelope + extract directly to nebo/plugins/<slug>/<version>/
+    let plugins_src = resources_dir.join("plugins");
+    if plugins_src.is_dir() {
+        count += seed_plugin_napps(&plugins_src, &nebo_dir.join("plugins"));
+    }
+
+    if count > 0 {
+        info!(count, "seeded bundled .napp files");
+
+        // Remove the Phase 3 extraction marker so newly seeded .napp files
+        // get extracted on this startup.
+        let extraction_marker = data_dir.join(EXTRACTION_MARKER);
+        if extraction_marker.exists() {
+            let _ = std::fs::remove_file(&extraction_marker);
+            info!("cleared extraction marker — Phase 3 will re-run for new .napp files");
+        }
+    }
+
+    if let Err(e) = std::fs::write(&marker, "seeded") {
+        warn!(error = %e, "failed to write bundled seed marker");
+    }
+}
+
+/// Copy .napp files from `src_dir` to `dest_dir`, preserving subdirectory structure.
+/// Skips files that already exist at the destination.
+fn seed_napp_files(src_dir: &Path, dest_dir: &Path) -> usize {
+    seed_napp_files_recursive(src_dir, dest_dir, src_dir)
+}
+
+fn seed_napp_files_recursive(dir: &Path, dest_base: &Path, src_base: &Path) -> usize {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            count += seed_napp_files_recursive(&path, dest_base, src_base);
+        } else if path.extension().is_some_and(|ext| ext == "napp") {
+            // Preserve relative path structure
+            let rel = match path.strip_prefix(src_base) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let dest = dest_base.join(rel);
+            if dest.exists() {
+                continue;
+            }
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::copy(&path, &dest) {
+                Ok(_) => {
+                    info!(src = %path.display(), dest = %dest.display(), "seeded .napp");
+                    count += 1;
+                }
+                Err(e) => {
+                    warn!(src = %path.display(), error = %e, "failed to seed .napp file");
+                }
+            }
+        }
+    }
+    count
+}
+
+/// Seed plugin .napp files: verify envelope, extract to nebo/plugins/<slug>/<version>/.
+///
+/// Plugins use a different directory layout than skills/agents, so we can't
+/// just copy the .napp and let Phase 3 handle it. Instead we:
+/// 1. Verify the .napp envelope with the embedded NeboLoop public key
+/// 2. Read plugin.json from the tar.gz to get slug + version
+/// 3. Skip if nebo/plugins/<slug>/<version>/ already exists
+/// 4. Store the .napp and extract alongside
+fn seed_plugin_napps(src_dir: &Path, plugins_dest: &Path) -> usize {
+    let entries = match std::fs::read_dir(src_dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.extension().is_some_and(|ext| ext == "napp") {
+            continue;
+        }
+
+        match seed_single_plugin(&path, plugins_dest) {
+            Ok(true) => count += 1,
+            Ok(false) => {} // skipped (already exists)
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "failed to seed bundled plugin");
+            }
+        }
+    }
+    count
+}
+
+/// Seed a single plugin .napp. Returns Ok(true) if installed, Ok(false) if skipped.
+fn seed_single_plugin(
+    napp_path: &Path,
+    plugins_dest: &Path,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let data = std::fs::read(napp_path)?;
+
+    // Verify envelope (magic + SHA256 + ED25519 with embedded key)
+    let payload = napp::napp::unwrap_napp_builtin(&data)?;
+
+    // Read plugin.json from tar.gz to get slug + version
+    let (slug, version) = napp::reader::read_plugin_identity_from_tar_gz(&payload)?;
+
+    // Skip if already installed
+    let version_dir = plugins_dest.join(&slug).join(&version);
+    if version_dir.exists() {
+        return Ok(false);
+    }
+
+    // Store .napp and extract alongside
+    let plugin_dir = plugins_dest.join(&slug);
+    std::fs::create_dir_all(&plugin_dir)?;
+
+    let dest_napp = plugin_dir.join(format!("{}.napp", version));
+    std::fs::write(&dest_napp, &data)?;
+
+    // extract_napp_alongside: <slug>/<version>.napp → <slug>/<version>/
+    napp::reader::extract_napp_alongside(&dest_napp)?;
+
+    // Set +x on any binary in the extracted dir
+    set_executable_in_dir(&version_dir);
+
+    info!(
+        plugin = slug,
+        version = version,
+        path = %version_dir.display(),
+        "seeded bundled plugin"
+    );
+
+    Ok(true)
+}
+
+/// Set +x on executables in a directory (plugin binaries).
+#[cfg(unix)]
+fn set_executable_in_dir(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        // Skip metadata files
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.ends_with(".json") || name_str.ends_with(".md") {
+            continue;
+        }
+        // Check if it's a native binary (ELF/Mach-O/PE)
+        if let Ok(data) = std::fs::read(&path) {
+            if data.len() >= 4 {
+                let is_native = data.starts_with(&[0x7f, 0x45, 0x4c, 0x46]) // ELF
+                    || data.starts_with(&[0xfe, 0xed, 0xfa, 0xce])          // Mach-O 32
+                    || data.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])          // Mach-O 64
+                    || data.starts_with(&[0xce, 0xfa, 0xed, 0xfe])          // Mach-O 32 (swapped)
+                    || data.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])          // Mach-O 64 (swapped)
+                    || data.starts_with(&[0xca, 0xfe, 0xba, 0xbe])          // Universal
+                    || data.starts_with(&[0x4d, 0x5a]);                     // PE
+                if is_native {
+                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn set_executable_in_dir(_dir: &Path) {
+    // No-op on Windows — executables don't need +x
+}
+
 /// Recursively copy a directory.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
@@ -527,5 +756,60 @@ mod tests {
         // Second run — should be skipped
         migrate_if_needed(data_dir);
         assert!(!data_dir.join("user").join("skills").join("new.yaml").exists());
+    }
+
+    #[test]
+    fn test_seed_napp_files_copies_with_structure() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(src.join("@acme")).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+
+        // Create test .napp files
+        std::fs::write(src.join("skill-a.napp"), b"fake-napp-a").unwrap();
+        std::fs::write(src.join("@acme").join("skill-b.napp"), b"fake-napp-b").unwrap();
+
+        let count = seed_napp_files(&src, &dest);
+        assert_eq!(count, 2);
+        assert!(dest.join("skill-a.napp").exists());
+        assert!(dest.join("@acme").join("skill-b.napp").exists());
+    }
+
+    #[test]
+    fn test_seed_napp_files_skips_existing() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+
+        // Pre-existing file at destination
+        std::fs::write(dest.join("existing.napp"), b"original").unwrap();
+        std::fs::write(src.join("existing.napp"), b"newer").unwrap();
+        std::fs::write(src.join("new.napp"), b"new-content").unwrap();
+
+        let count = seed_napp_files(&src, &dest);
+        assert_eq!(count, 1); // Only new.napp
+
+        // existing.napp should NOT be overwritten
+        let content = std::fs::read_to_string(dest.join("existing.napp")).unwrap();
+        assert_eq!(content, "original");
+    }
+
+    #[test]
+    fn test_seed_bundled_marker_per_version() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path();
+        std::fs::create_dir_all(data_dir.join("nebo").join("skills")).unwrap();
+
+        // seed_bundled_napps writes marker based on CARGO_PKG_VERSION
+        seed_bundled_napps(data_dir);
+
+        let marker = data_dir.join(format!(".bundled-{}", env!("CARGO_PKG_VERSION")));
+        assert!(marker.exists());
+
+        // Second call is a no-op (marker exists)
+        seed_bundled_napps(data_dir);
     }
 }

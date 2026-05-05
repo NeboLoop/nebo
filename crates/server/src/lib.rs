@@ -12,6 +12,8 @@ pub mod run_registry;
 pub mod workflow_manager;
 mod heartbeat;
 mod migration;
+mod plugin_commands;
+mod plugin_provider;
 mod scheduler;
 mod spa;
 mod state;
@@ -38,7 +40,7 @@ use axum::Router;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use config::Config;
 use handlers::ws::ClientHub;
@@ -447,7 +449,30 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     );
 
     // Build AI providers from database auth profiles + active CLI providers
-    let providers = build_providers(&store, &cfg, Some(&cli_statuses));
+    let mut providers = build_providers(&store, &cfg, Some(&cli_statuses));
+
+    // Append plugin-provided AI providers (e.g., openrouter, local model servers)
+    {
+        let installed = plugin_store.list_installed();
+        let mut seen = std::collections::HashSet::new();
+        for (slug, _version, _path, _source) in &installed {
+            if !seen.insert(slug.clone()) {
+                continue;
+            }
+            if let Some(manifest) = plugin_store.get_manifest(slug) {
+                if let Some(ref caps) = manifest.capabilities {
+                    for pdef in &caps.providers {
+                        if let Some(binary) = plugin_store.resolve(slug, "*") {
+                            providers.push(Arc::new(plugin_provider::PluginProvider::new(
+                                pdef, slug, binary, plugin_store.clone(),
+                            )));
+                            info!(plugin = %slug, provider = %pdef.id, "registered plugin provider");
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Build tool registry with default tools
     let mut policy = tools::Policy::new();
@@ -506,7 +531,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Run one-time migration from old layout to nebo/user split
     migration::migrate_if_needed(&data_dir);
 
+    // Seed bundled .napp files from app resources (re-runs on app version upgrade)
+    migration::seed_bundled_napps(&data_dir);
+
     // Extract sealed .napp archives to sibling directories (one-time)
+    // Must run AFTER seeding so newly seeded .napp files are picked up.
     migration::migrate_napp_extraction(&data_dir);
 
     // Initialize plugin store for shared binary management
@@ -1136,10 +1165,33 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         personal_loop_id: Arc::new(tokio::sync::RwLock::new(None)),
         channel_providers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         a2ui: a2ui_manager,
+        voice: Arc::new(voice::VoicePipeline::new(voice::VoicePipelineConfig::default())),
     };
 
     // Wire RunRegistry into the tool-layer run querier (late binding via OnceLock)
     let _ = run_querier_handle.set(Box::new(state.run_registry.clone()));
+
+    // Register structured tools + hooks for all installed plugins (startup recovery).
+    {
+        let installed = state.plugin_store.list_installed();
+        let mut seen = std::collections::HashSet::new();
+        for (slug, _version, _path, _source) in &installed {
+            if !seen.insert(slug.clone()) {
+                continue;
+            }
+            // Structured tools
+            tools::plugin_tool::register_plugin_tools(&state.tools, &state.plugin_store, slug, Some(&state.store)).await;
+            // Hooks
+            if let Some(manifest) = state.plugin_store.get_manifest(slug) {
+                if let Some(binary) = state.plugin_store.resolve(slug, "*") {
+                    let count = napp::register_plugin_hooks(&manifest, &binary, &state.hooks);
+                    if count > 0 {
+                        info!(plugin = %slug, hooks = count, "registered plugin hooks at startup");
+                    }
+                }
+            }
+        }
+    }
 
     // Replace comm message handler with full version that routes chat/DM to agent runner
     {
@@ -1386,6 +1438,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let app = Router::new()
         .route("/ws", axum::routing::get(handlers::ws::client_ws_handler))
         .route("/ws/extension", axum::routing::get(handlers::ws::extension_ws_handler))
+        .route("/ws/voice/dictation", axum::routing::get(handlers::voice::dictation_ws_handler))
+        .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
         .merge(http_routes)
         .layer(axum::middleware::from_fn(middleware::security_headers))
         .layer(cors_layer())
@@ -1867,6 +1921,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             entity_config,
             images: vec![],
             entity_name: agent_name.clone(),
+            origin_agent_id: None,
+            mention_context: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -1997,6 +2053,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 entity_config,
                 images: vec![],
                 entity_name: agent_name.clone(),
+                origin_agent_id: None,
+                mention_context: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;
@@ -2070,6 +2128,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             entity_config,
             images: vec![],
             entity_name: String::new(),
+            origin_agent_id: None,
+            mention_context: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;

@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { AGENT_ID_MAP, AGENT_ID_REVERSE, AGENTS } from '$lib/data.js';
+import { ensureAgentColor } from '$lib/tokens.js';
 
 // ─── Types ───────────────────────────────────────────────────────────
 export type EventKind = 'sched' | 'event' | 'user';
@@ -180,6 +181,7 @@ function ensureAgent(agentId: string, name?: string, role?: string): string | nu
       role: role || '',
     });
   }
+  ensureAgentColor(shortId);
   return shortId;
 }
 
@@ -219,16 +221,19 @@ export async function loadScheduleFromAPI(): Promise<void> {
     const workflowPromises = agentIds.map(async (agentId) => {
       try {
         const resp = await api.listAgentWorkflows(agentId);
-        if (!resp?.workflows?.length) return;
+        const workflowMap = resp?.workflows;
+        if (!workflowMap || typeof workflowMap !== 'object') return;
+        const entries = Object.entries(workflowMap);
+        if (entries.length === 0) return;
         const agentShort = AGENT_ID_MAP[agentId];
         if (!agentShort) return;
 
-        for (const wf of resp.workflows) {
-          if (!wf.isActive) continue;
-          const triggerType = wf.triggerType || 'manual';
-          let triggerConfig: any = {};
-          try { triggerConfig = typeof wf.triggerConfig === 'string' ? JSON.parse(wf.triggerConfig) : wf.triggerConfig || {}; } catch {}
-          const wfId = wf.bindingName || wf.workflowRef || String(wf.id);
+        for (const [bindingName, wfData] of entries) {
+          const wf = wfData as any;
+          if (wf.isActive === false) continue;
+          const trigger = wf.trigger || {};
+          const triggerType = trigger.type || 'manual';
+          const wfId = bindingName;
 
           // Estimate duration from run history
           const runKey = `${agentId}:${wfId}`;
@@ -237,16 +242,13 @@ export async function loadScheduleFromAPI(): Promise<void> {
           if (runs.length > 0) {
             const durations = runs.map((r: any) => {
               if (r.duration) return parseDurationString(r.duration);
-              if (r.started_at && r.completed_at) {
-                return (new Date(r.completed_at).getTime() - new Date(r.started_at).getTime()) / 3600000;
-              }
               return 0;
             }).filter((d: number) => d > 0);
             if (durations.length) dur = Math.max(0.25, durations.reduce((a: number, b: number) => a + b, 0) / durations.length);
           }
 
           if (triggerType === 'schedule') {
-            const schedule = triggerConfig.schedule || triggerConfig.cron || '';
+            const schedule = trigger.schedule || trigger.cron || '';
             const parsed = parseScheduleString(schedule);
             if (!parsed) continue;
             apiItems.push({
@@ -258,8 +260,8 @@ export async function loadScheduleFromAPI(): Promise<void> {
               recurrence: recurrenceLabel(parsed.days),
             });
           } else if (triggerType === 'heartbeat') {
-            const interval = triggerConfig.interval || '15m';
-            const window = triggerConfig.window;
+            const interval = trigger.interval || '15m';
+            const window = trigger.window;
             const hours = expandHeartbeat(interval, window);
             const days = [1, 2, 3, 4, 5, 6, 7];
             for (let i = 0; i < hours.length; i++) {
@@ -273,7 +275,6 @@ export async function loadScheduleFromAPI(): Promise<void> {
               });
             }
           }
-          // Event-triggered workflows show up via run history (buildEventRunItems still works from cache)
         }
       } catch { /* skip agent */ }
     });
@@ -294,8 +295,8 @@ export async function loadScheduleFromAPI(): Promise<void> {
       if (isScheduled) continue;
 
       for (const run of runs as any[]) {
-        const startedAt = run.started_at || run.startedAt || '';
-        const timeMatch = startedAt.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+        const dateStr = run.date || '';
+        const timeMatch = dateStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
         let fractionalHour = 9; // default
         if (timeMatch) {
           let h = parseInt(timeMatch[1]);
@@ -306,22 +307,22 @@ export async function loadScheduleFromAPI(): Promise<void> {
           fractionalHour = h + m / 60;
         }
         const runDur = run.duration ? parseDurationString(run.duration) : 0.25;
-        const days = dateStringToDays(startedAt);
+        const days = dateStringToDays(dateStr);
         if (!days.length) continue;
 
         eventItems.push({
           id: `ev:${agentFull}:${wfId}:${run.id}`,
           agent: agentShort, agentFull,
-          kind: 'event', label: (run as any).workflow_name || wfId,
+          kind: 'event', label: run.name || wfId,
           days, hour: fractionalHour, dur: Math.max(0.25, runDur),
           end: fractionalHour + Math.max(0.25, runDur),
           workflowId: wfId, triggerType: 'event',
           run: {
             id: run.id, status: run.status === 'completed' ? 'success' : run.status,
             actualDuration: run.duration || '',
-            startedAt: run.started_at || run.startedAt || '',
-            completedAt: run.completed_at || run.completedAt || '',
-            tokens: run.tokens || (run.total_tokens_used ? { input: run.total_tokens_used, output: 0 } : undefined),
+            startedAt: dateStr,
+            completedAt: '',
+            tokens: run.tokens,
             activities: run.activities,
           },
         });
@@ -406,10 +407,10 @@ export function attachRunData(items: CalendarItem[]): CalendarItem[] {
           ...item,
           run: {
             id: latest.id,
-            status: latest.status,
-            actualDuration: latest.duration,
-            startedAt: latest.startedAt,
-            completedAt: latest.completedAt,
+            status: latest.status === 'completed' ? 'success' : latest.status,
+            actualDuration: latest.duration || '',
+            startedAt: latest.date || '',
+            completedAt: '',
             tokens: latest.tokens,
             activities: latest.activities,
           },
@@ -437,13 +438,12 @@ export function runsPerWeek(agentShort: string, userItems: CalendarItem[] = []):
 
 /** Agents that have schedule items (for sidebar). */
 export function getScheduleAgents(userItems: CalendarItem[] = []): string[] {
-  const agents = new Set<string>();
+  const agentIds = new Set<string>();
   for (const item of getAllItems(userItems)) {
-    agents.add(item.agent);
+    agentIds.add(item.agent);
   }
-  // Return in the standard display order
-  const order = ['ops', 'res', 'soc', 'mkt', 'cod', 'tst', 'ast', 'wrt'];
-  return order.filter(id => agents.has(id));
+  // Return in discovery order (order agents were added to AGENTS array)
+  return AGENTS.filter(a => agentIds.has(a.id)).map(a => a.id);
 }
 
 /** Snap an hour to the nearest 15-minute increment. */

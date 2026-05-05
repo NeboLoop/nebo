@@ -1,76 +1,74 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { listStoreProducts } from '$lib/api/index';
-  import { installedIds } from '$lib/stores/marketplace.js';
-  import Star from 'lucide-svelte/icons/star';
-  import Download from 'lucide-svelte/icons/download';
+	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
+	import { Sparkles } from 'lucide-svelte';
+	import SectionFeaturedPair from '$lib/components/marketplace/sections/SectionFeaturedPair.svelte';
+	import SectionTopRanked from '$lib/components/marketplace/sections/SectionTopRanked.svelte';
+	import SectionListGrid from '$lib/components/marketplace/sections/SectionListGrid.svelte';
+	import webapi from '$lib/api/gocliRequest';
+	import { type AppItem, toAppItem } from '$lib/types/marketplace';
+	import { slugify } from '$lib/data/categories';
 
-  const iconColors = [
-    'bg-primary/15 text-primary',
-    'bg-accent/15 text-accent',
-    'bg-success/15 text-success',
-    'bg-warning/15 text-warning',
-    'bg-error/15 text-error',
-    'bg-info/15 text-info',
-    'bg-secondary/15 text-secondary',
-  ];
-  function getIconColor(id: string) {
-    let hash = 0;
-    for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
-    return iconColors[Math.abs(hash) % iconColors.length];
-  }
-  function getInitials(name: string) {
-    return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
-  }
+	let loading = $state(true);
+	let allAgents: AppItem[] = $state([]);
+	let featured: AppItem[] = $state([]);
 
-  let agents = $state<{ id: string; name: string; desc: string; category: string; rating: number; installs: number; featured: boolean; price: string; code: string }[]>([]);
+	onMount(async () => {
+		try {
+			const [productsRes, featuredRes] = await Promise.all([
+				webapi.get<any>('/api/v1/store/products', { type: 'agent', pageSize: 100 }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/featured', { type: 'agent' }).catch(() => ({ apps: [] }))
+			]);
 
-  onMount(async () => {
-    try {
-      const res = await listStoreProducts({ type: 'agent' });
-      if (res?.apps?.length) {
-        agents = res.apps.map((a: Record<string, unknown>) => ({
-          id: a.id, name: a.name, desc: a.description || '',
-          category: a.category || '', rating: a.rating || 0,
-          installs: a.installCount || 0, featured: a.featured ?? false,
-          price: a.price || 'Get', code: a.code || '',
-        }));
-      }
-    } catch {}
-  });
+			const agents = productsRes.skills || [];
+			allAgents = agents.map((r: any, i: number) => toAppItem({ ...r, type: 'agent' }, i));
+			featured = (featuredRes.apps || []).map((a: any, i: number) => toAppItem({ ...a, type: a.type || 'agent' }, i));
+		} catch { /* ignore */ }
+		loading = false;
+	});
+
+	const categories = $derived([...new Set(allAgents.map(r => r.category).filter(Boolean))]);
+	const byCategory = $derived(
+		categories.map(cat => ({
+			name: cat,
+			items: allAgents.filter(r => r.category === cat)
+		})).filter(g => g.items.length > 0)
+	);
 </script>
 
-<svelte:head><title>Agents - Marketplace - Nebo</title></svelte:head>
+<div class="max-w-7xl mx-auto">
+{#if loading}
+	<div class="flex justify-center py-16">
+		<span class="loading loading-spinner loading-md text-primary"></span>
+	</div>
+{:else}
+	<!-- Featured -->
+	<SectionFeaturedPair items={featured} label={$t('marketplace.agentsPage.featuredAgent')} />
 
-<div class="p-6 max-w-[960px]">
-  <div class="mb-5">
-    <div class="text-base font-semibold mb-1">Agents</div>
-    <div class="text-xs text-base-content/50">Pre-built agents with specialized capabilities for your team.</div>
-  </div>
+	<!-- Description -->
+	<div class="px-6 py-6 border-b border-base-content/10 max-w-2xl">
+		<h2 class="font-display text-lg font-bold mb-2">{$t('marketplace.agentsPage.aboutAgents')}</h2>
+		<p class="text-base text-base-content/80 leading-relaxed">{$t('marketplace.agentsPage.aboutAgentsDesc')}</p>
+	</div>
 
-  <div class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3">
-    {#each agents as agent}
-      <a href="/marketplace/agents/{agent.id}" class="p-4 rounded-xl border border-base-300 bg-base-100 cursor-pointer hover:shadow-md hover:border-base-content/20 transition-all block group">
-        <div class="w-11 h-11 rounded-xl {getIconColor(agent.id)} grid place-items-center text-sm font-bold mb-3">
-          {getInitials(agent.name)}
-        </div>
-        <div class="text-sm font-semibold mb-0.5 group-hover:text-primary transition-colors">{agent.name}</div>
-        <div class="text-xs text-base-content/60 leading-snug mb-3 line-clamp-2">{agent.desc}</div>
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-1.5">
-            <Star class="w-3 h-3 text-warning fill-warning" />
-            <span class="text-xs font-medium">{agent.rating}</span>
-            <span class="text-xs text-base-content/40 ml-0.5">{agent.installs.toLocaleString()}</span>
-          </div>
-          {#if $installedIds.has(agent.id)}
-            <span class="text-xs font-medium text-success">Installed</span>
-          {:else if agent.price === 'Get'}
-            <span class="text-xs font-medium text-primary">Free</span>
-          {:else}
-            <span class="text-xs text-base-content/50">{agent.price}</span>
-          {/if}
-        </div>
-      </a>
-    {/each}
-  </div>
+	<!-- Top Agents -->
+	{#if allAgents.length > 0}
+		<SectionTopRanked title={$t('marketplace.agentsPage.topAgents')} items={allAgents.slice(0, 21)} />
+	{:else}
+		<div class="px-6 py-6">
+			<h2 class="font-display text-lg font-bold mb-4">{$t('marketplace.agentsPage.topAgents')}</h2>
+			<div class="flex flex-col items-center justify-center py-12 text-center">
+				<Sparkles class="w-10 h-10 text-base-content/40 mb-3" />
+				<p class="text-base text-base-content/80">{$t('marketplace.agentsPage.noAgents')}</p>
+			</div>
+		</div>
+	{/if}
+
+	<!-- Browse by Category -->
+	{#each byCategory as group}
+		<div class="border-t border-base-content/10">
+			<SectionListGrid title={group.name} seeAllHref="/marketplace/categories/{slugify(group.name)}" items={group.items} />
+		</div>
+	{/each}
+{/if}
 </div>

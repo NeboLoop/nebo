@@ -456,6 +456,9 @@ async fn install_plugin(
                     tools::plugin_tool::PluginTool::new(state.plugin_store.clone())
                 )).await;
             }
+
+            // Register structured tools from plugin capabilities manifest
+            tools::plugin_tool::register_plugin_tools(&state.tools, &state.plugin_store, &slug, Some(&state.store)).await;
         }
         Err(e) => {
             state.skill_loader.resume_watcher();
@@ -463,8 +466,16 @@ async fn install_plugin(
         }
     }
 
-    // Plugins don't have child dependencies
-    Ok(vec![])
+    // Extract child plugin dependencies from manifest
+    let child_deps = state.plugin_store.get_dependencies(&slug)
+        .into_iter()
+        .filter(|d| !d.optional)
+        .map(|d| DepRef {
+            dep_type: DepType::Plugin,
+            reference: d.name,
+        })
+        .collect();
+    Ok(child_deps)
 }
 
 // ── Dep Extraction ──────────────────────────────────────────────────

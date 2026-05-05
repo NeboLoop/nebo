@@ -20,11 +20,13 @@ You can use both patterns. A skill can embed a binary AND declare plugin depende
 ## How It Works
 
 1. Publisher uploads a native binary to NeboLoop for each platform
-2. Publisher creates a skill with `plugins:` in SKILL.md frontmatter
-3. User installs the skill (via marketplace or `SKIL-XXXX-XXXX` code)
+2. Publisher creates a skill with `plugins:` in SKILL.md frontmatter (or another plugin with `dependencies:` in plugin.json)
+3. User installs the skill or plugin (via marketplace or install code)
 4. Nebo detects the plugin dependency and downloads the binary silently
-5. Binary is stored locally at `<data_dir>/nebo/plugins/<slug>/<version>/`
-6. Skill scripts access the binary via `{SLUG}_BIN` environment variable
+5. If the plugin declares its own `dependencies[]`, those are installed recursively
+6. Binary is stored locally at `<data_dir>/nebo/plugins/<slug>/<version>/`
+7. Skill scripts and dependent plugins access the binary via `{SLUG}_BIN` environment variable
+8. If the plugin declares `capabilities.tools[]`, typed tools are registered for the agent
 
 ```
 User installs skill → SKILL.md declares plugins: [{name: "gws", version: ">=1.2.0"}]
@@ -159,7 +161,9 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
   "signingKeyId": "key-001",
   "envVar": "",
   "auth": { ... },
-  "events": [ ... ]
+  "events": [ ... ],
+  "dependencies": [ ... ],
+  "capabilities": { ... }
 }
 ```
 
@@ -178,6 +182,8 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
 | `envVar` | string | No | Custom env var name override. If empty, defaults to `{SLUG}_BIN` |
 | `auth` | object | No | Authentication configuration. See [Authentication](#authentication) |
 | `events` | array | No | Event declarations. See [Plugin Events](#plugin-events) |
+| `dependencies` | array | No | Plugin-to-plugin dependencies. See [Plugin Dependencies](#plugin-to-plugin-dependencies) |
+| `capabilities` | object | No | Structured capability declarations. See [Structured Capabilities](#structured-capabilities) |
 
 ### PlatformBinary
 
@@ -356,6 +362,255 @@ Response format:
   ],
   "total": 1
 }
+```
+
+---
+
+## Plugin-to-Plugin Dependencies
+
+Plugins can depend on other plugins. For example, `digest` needs `ffmpeg` for media extraction, and `nebo-office` may need `nebo-pdf` for shared rendering.
+
+Declare dependencies in your `plugin.json`:
+
+```json
+{
+  "slug": "digest",
+  "version": "1.2.0",
+  "dependencies": [
+    { "name": "ffmpeg", "version": ">=5.0.0" },
+    { "name": "imagemagick", "version": "*", "optional": true }
+  ]
+}
+```
+
+### Dependency Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Dependency plugin slug |
+| `version` | string | `"*"` | Semver version range (same syntax as skill plugin deps) |
+| `optional` | bool | `false` | If true, the parent plugin installs even without this dep |
+
+### How It Works
+
+1. User installs your plugin (via `PLUG-XXXX-XXXX` code or as a skill dependency)
+2. Nebo reads your manifest's `dependencies[]` field
+3. Each required dependency is resolved and installed recursively (same cascade as skill→plugin deps)
+4. Your plugin binary receives dependency binaries as environment variables: `{DEP_SLUG}_BIN`
+
+```
+digest installs → reads dependencies: [{name: "ffmpeg"}]
+  → installs ffmpeg → digest runs with DIGEST_BIN + FFMPEG_BIN
+```
+
+### Cycle Protection
+
+The dependency cascade uses a visited set. If plugin A depends on B and B depends on A, the second install is skipped (already visited). No infinite loops.
+
+### Accessing Dependency Binaries
+
+Your plugin binary receives its own binary path as `{SLUG}_BIN` and each dependency binary as `{DEP_SLUG}_BIN`:
+
+```bash
+#!/bin/bash
+# digest plugin — uses ffmpeg for media processing
+$FFMPEG_BIN -i "$INPUT" -f wav - | process_audio
+```
+
+---
+
+## Structured Capabilities
+
+Plugins can declare structured capabilities in their manifest. These are richer than the generic `plugin` tool — they give the agent typed tools with schemas, and prepare for future hook/command/route/provider integration.
+
+### Tools
+
+Declare tools in `capabilities.tools[]`. Each tool becomes a typed, schema-validated tool available to the agent:
+
+```json
+{
+  "capabilities": {
+    "tools": [
+      {
+        "name": "gws.gmail.triage",
+        "description": "Triage Gmail inbox — categorize, prioritize, and draft responses",
+        "command": "gmail +triage",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "limit": { "type": "integer", "description": "Max emails to triage" },
+            "label": { "type": "string", "description": "Gmail label filter" }
+          }
+        },
+        "approval": true,
+        "timeoutSeconds": 120
+      }
+    ]
+  }
+}
+```
+
+#### Tool Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Tool name exposed to the agent (e.g., `"gws.gmail.triage"`) |
+| `description` | string | required | Description for the model to understand when to use this tool |
+| `command` | string | required | CLI args appended to the plugin binary (e.g., `"gmail +triage"`) |
+| `inputSchema` | object | generic object | JSON Schema for typed input validation |
+| `approval` | bool | `true` | Whether this tool requires user approval before execution |
+| `timeoutSeconds` | number | `120` | Maximum execution time in seconds |
+
+#### How Typed Tools Work
+
+1. Plugin installs → Nebo reads `capabilities.tools[]`
+2. Each tool definition is registered as a `PluginCommandTool` in the tool registry (same mechanism as MCP proxy tools)
+3. Agent sees the tool with its schema and description
+4. On execution: Nebo resolves the plugin binary, runs `<binary> <command>` with input as JSON on stdin, returns stdout
+5. Plugin removal → tools are unregistered
+
+The generic `plugin(resource, action, command)` tool still works alongside structured tools — it's the fallback for commands not declared in capabilities.
+
+### Hooks (Manifest Ready)
+
+Declare lifecycle hooks your plugin wants to subscribe to:
+
+```json
+{
+  "capabilities": {
+    "hooks": [
+      {
+        "hook": "tool.pre_execute",
+        "hookType": "filter",
+        "priority": 50,
+        "command": "hooks tool-pre-execute",
+        "timeoutMs": 500
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `hook` | string | required | Hook point name (e.g., `"tool.pre_execute"`) |
+| `hookType` | string | `"action"` | `"filter"` (can modify payload) or `"action"` (fire-and-forget) |
+| `priority` | number | `100` | Lower runs first |
+| `command` | string | required | CLI subcommand for the hook handler |
+| `timeoutMs` | number | `500` | Timeout in milliseconds |
+
+> **Note:** Hook declarations are stored in the manifest but the runtime bridge (`PluginHookCaller`) is not yet implemented. This will be completed in a future release.
+
+### Commands (Manifest Ready)
+
+Declare slash commands or app commands:
+
+```json
+{
+  "capabilities": {
+    "commands": [
+      {
+        "name": "/gmail",
+        "description": "Quick access to Gmail operations",
+        "command": "gmail",
+        "slash": true
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Command name (e.g., `"/gmail"`) |
+| `description` | string | required | Human-readable description |
+| `command` | string | required | CLI subcommand to execute |
+| `slash` | bool | `false` | Register as a slash command in chat |
+
+### Routes (Manifest Ready)
+
+Declare HTTP routes your plugin handles (e.g., OAuth callbacks):
+
+```json
+{
+  "capabilities": {
+    "routes": [
+      {
+        "path": "/gws/oauth/callback",
+        "method": "GET",
+        "command": "auth callback",
+        "auth": "public"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | string | required | Route path |
+| `method` | string | required | HTTP method (GET, POST, etc.) |
+| `command` | string | required | CLI subcommand that handles the request |
+| `auth` | string | `"jwt"` | `"public"` or `"jwt"` |
+
+### Providers (Manifest Ready)
+
+Declare AI provider adapters (for custom model backends):
+
+```json
+{
+  "capabilities": {
+    "providers": [
+      {
+        "id": "openrouter",
+        "displayName": "OpenRouter",
+        "providerType": "model",
+        "modelsCommand": "models list",
+        "chatCommand": "chat stream",
+        "authCommand": "auth setup"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | string | required | Provider ID |
+| `displayName` | string | required | Display name |
+| `providerType` | string | required | `"model"`, `"speech"`, `"image"`, etc. |
+| `modelsCommand` | string | required | CLI subcommand to list available models (JSON output) |
+| `chatCommand` | string | required | CLI subcommand for streaming chat (NDJSON on stdout) |
+| `authCommand` | string | — | CLI subcommand for auth setup |
+
+---
+
+## Manifest Validation
+
+Nebo validates `plugin.json` during installation. Invalid manifests are rejected before the binary is written to disk.
+
+### Validation Rules
+
+| Field | Rule |
+|-------|------|
+| `slug` | Required. Lowercase alphanumeric + hyphens only. No leading/trailing hyphens. Max 64 characters. |
+| `version` | Required. Must be valid semver (e.g., `"1.2.3"`, not `"latest"`). |
+| `platforms` | At least one platform entry required. |
+| `binaryName` | No path separators (`/`, `\`). No `..`. Cannot be empty. |
+| `auth.commands.login` | Must be non-empty if `auth` is present. |
+| `events[].name` | Must be non-empty. No path separators. |
+| `events[].command` | Must be non-empty. |
+
+### Common Validation Errors
+
+```
+"slug is required"
+"slug 'My Plugin!' contains invalid characters — use lowercase alphanumeric and hyphens"
+"slug must not start or end with a hyphen"
+"version 'latest' is not valid semver"
+"platforms must have at least one entry"
+"binary_name '../evil' contains path separator"
+"auth.commands.login must be non-empty when auth is present"
 ```
 
 ---
@@ -662,6 +917,54 @@ Same scoping and version resolution rules as skills. See [Packaging](packaging.m
       "command": "calendar +watch --format ndjson",
       "multiplexed": true
     }
-  ]
+  ],
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "version": ">=5.0.0"
+    }
+  ],
+  "capabilities": {
+    "tools": [
+      {
+        "name": "gws.gmail.triage",
+        "description": "Triage Gmail inbox — categorize, prioritize, and draft responses",
+        "command": "gmail +triage",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "limit": { "type": "integer", "description": "Max emails to process" },
+            "label": { "type": "string", "description": "Gmail label to filter" }
+          }
+        },
+        "approval": true,
+        "timeoutSeconds": 120
+      },
+      {
+        "name": "gws.calendar.create",
+        "description": "Create a Google Calendar event",
+        "command": "calendar +create",
+        "approval": true,
+        "timeoutSeconds": 30
+      }
+    ],
+    "hooks": [
+      {
+        "hook": "tool.pre_execute",
+        "hookType": "filter",
+        "priority": 50,
+        "command": "hooks tool-pre-execute",
+        "timeoutMs": 500
+      }
+    ],
+    "commands": [
+      {
+        "name": "/gmail",
+        "description": "Quick access to Gmail operations",
+        "command": "gmail",
+        "slash": true
+      }
+    ]
+  }
 }
 ```

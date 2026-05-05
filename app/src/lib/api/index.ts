@@ -39,13 +39,12 @@ export interface TranscribeResponse {
 }
 
 export async function transcribeAudio(audioBlob: Blob): Promise<TranscribeResponse> {
-	const formData = new FormData();
-	formData.append('audio', audioBlob, 'recording.webm');
-
 	const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
 	const token = typeof window !== 'undefined' ? localStorage.getItem('nebo_token') : null;
 
-	const headers: Record<string, string> = {};
+	const headers: Record<string, string> = {
+		'Content-Type': audioBlob.type || 'audio/webm'
+	};
 	if (token) {
 		headers['Authorization'] = `Bearer ${token}`;
 	}
@@ -54,7 +53,7 @@ export async function transcribeAudio(audioBlob: Blob): Promise<TranscribeRespon
 		method: 'POST',
 		credentials: 'include',
 		headers,
-		body: formData
+		body: audioBlob
 	});
 
 	if (!response.ok) {

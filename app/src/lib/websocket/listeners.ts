@@ -79,6 +79,15 @@ export function attachWebSocketListeners(): void {
     })
   );
 
+  // --- Ask requests (interactive prompts) ---
+  unsubs.push(
+    ws.on('ask_request', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:ask_request', { detail: data }));
+      }
+    })
+  );
+
   // --- Run status updates ---
   unsubs.push(
     ws.on('run_update', (data: any) => {

@@ -1,9 +1,0 @@
-{
-  "id": "daily-briefer",
-  "name": "Daily Briefer",
-  "version": "1.0.0",
-  "type": "agent",
-  "description": "Every morning: what happened overnight, what's on your calendar, what needs your attention — all in 60 seconds",
-  "author": "nebo",
-  "tags": ["briefing", "news", "research", "productivity", "morning-routine"]
-}

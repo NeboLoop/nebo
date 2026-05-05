@@ -15,8 +15,8 @@ pub mod version;
 pub use manifest::{Manifest, ManifestSignature, QualifiedName};
 pub use registry::{Registry, RegistryConfig};
 pub use runtime::{Process, Runtime};
-pub use signing::{SigningKeyProvider, RevocationChecker};
-pub use hooks::{HookDispatcher, HookCaller, HookType};
+pub use signing::{SigningKeyProvider, RevocationChecker, builtin_verifying_key};
+pub use hooks::{HookDispatcher, HookCaller, HookType, register_plugin_hooks};
 pub use agent_loader::{AgentLoader, LoadedAgent, AgentSource, AgentFsEvent};
 
 use serde::{Deserialize, Serialize};
@@ -51,6 +51,8 @@ pub enum NappError {
     PluginPlatformUnavailable { plugin: String, platform: String },
     #[error("plugin download failed: {0}")]
     PluginDownloadFailed(String),
+    #[error("plugin manifest validation failed: {0}")]
+    PluginValidation(String),
     #[error("{0}")]
     Other(String),
 }

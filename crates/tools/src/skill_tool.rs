@@ -117,7 +117,7 @@ impl DynTool for SkillTool {
 
             match domain_input.action.as_str() {
                 "catalog" | "list" => {
-                    let skills = self.loader.list().await;
+                    let skills = self.loader.list_summaries().await;
                     if skills.is_empty() {
                         ToolResult::ok("No skills installed. Create one with skill(action: \"create\", name: \"my-skill\", content: \"...\")")
                     } else {
@@ -139,13 +139,7 @@ impl DynTool for SkillTool {
                                 } else {
                                     format!(" [caps: {}]", s.capabilities.join(", "))
                                 };
-                                let resource_count = s.list_resources().map(|r| r.len()).unwrap_or(0);
-                                let resources = if resource_count > 0 {
-                                    format!(" ({} resource files)", resource_count)
-                                } else {
-                                    String::new()
-                                };
-                                format!("- {} [{}|{}] — {}{}{}{}", s.name, status, source_label, s.description, caps, resources, triggers)
+                                format!("- {} [{}|{}] — {}{}{}", s.name, status, source_label, s.description, caps, triggers)
                             })
                             .collect();
                         ToolResult::ok(format!(
@@ -160,7 +154,7 @@ impl DynTool for SkillTool {
                     if query.is_empty() {
                         return ToolResult::error("query is required — describe what you're trying to do");
                     }
-                    let matches = self.loader.discover(query).await;
+                    let matches = self.loader.discover_summaries(query).await;
                     if matches.is_empty() {
                         ToolResult::ok(format!("No skills match \"{}\". Try a different query or check the catalog.", query))
                     } else {
@@ -458,9 +452,7 @@ impl DynTool for SkillTool {
                     ToolResult::ok(format!("Deleted skill '{}'", name))
                 }
                 "featured" => {
-                    // Return featured skills from the marketplace
-                    // For now, filter installed skills that are enabled and have high capability counts
-                    let skills = self.loader.list().await;
+                    let skills = self.loader.list_summaries().await;
                     let featured: Vec<_> = skills.iter()
                         .filter(|s| s.enabled && !s.capabilities.is_empty())
                         .take(10)
@@ -475,8 +467,7 @@ impl DynTool for SkillTool {
                     }
                 }
                 "popular" => {
-                    // Return most-used skills (sorted by those that have triggers or capabilities)
-                    let skills = self.loader.list().await;
+                    let skills = self.loader.list_summaries().await;
                     let mut popular: Vec<_> = skills.iter()
                         .filter(|s| s.enabled)
                         .collect();

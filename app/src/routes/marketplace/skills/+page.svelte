@@ -1,75 +1,81 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { listStoreProducts } from '$lib/api/index';
-  import { installedIds } from '$lib/stores/marketplace.js';
-  import Star from 'lucide-svelte/icons/star';
+	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
+	import { Sparkles } from 'lucide-svelte';
+	import SectionEditorial from '$lib/components/marketplace/sections/SectionEditorial.svelte';
+	import SectionTopRanked from '$lib/components/marketplace/sections/SectionTopRanked.svelte';
+	import SectionListGrid from '$lib/components/marketplace/sections/SectionListGrid.svelte';
+	import webapi from '$lib/api/gocliRequest';
+	import { type AppItem, toAppItem } from '$lib/types/marketplace';
+	import { slugify } from '$lib/data/categories';
 
-  const iconColors = [
-    'bg-primary/15 text-primary',
-    'bg-accent/15 text-accent',
-    'bg-success/15 text-success',
-    'bg-warning/15 text-warning',
-    'bg-error/15 text-error',
-    'bg-info/15 text-info',
-    'bg-secondary/15 text-secondary',
-  ];
-  function getIconColor(id: string) {
-    let hash = 0;
-    for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
-    return iconColors[Math.abs(hash) % iconColors.length];
-  }
-  function getInitials(name: string) {
-    return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
-  }
+	let loading = $state(true);
+	let allSkills: AppItem[] = $state([]);
+	let topSkills: AppItem[] = $state([]);
+	let featured: AppItem[] = $state([]);
 
-  let skills = $state<{ id: string; name: string; desc: string; category: string; rating: number; installs: number; featured: boolean; price: string; code: string }[]>([]);
+	onMount(async () => {
+		try {
+			const [productsRes, topRes, featuredRes] = await Promise.all([
+				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/products/top', { pageSize: 100 }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/featured', { type: 'skill' }).catch(() => ({ apps: [] }))
+			]);
 
-  onMount(async () => {
-    try {
-      const res = await listStoreProducts({ type: 'skill' });
-      if (res?.apps?.length) {
-        skills = res.apps.map((a: Record<string, unknown>) => ({
-          id: a.id, name: a.name, desc: a.description || '',
-          category: a.category || '', rating: a.rating || 0,
-          installs: a.installCount || 0, featured: a.featured ?? false,
-          price: a.price || 'Get', code: a.code || '',
-        }));
-      }
-    } catch {}
-  });
+			const skills = productsRes.skills || [];
+			const top = topRes.skills || [];
+
+			allSkills = skills.map((s: any, i: number) => toAppItem(s, i));
+			topSkills = top.map((s: any, i: number) => toAppItem(s, i));
+			featured = (featuredRes.apps || []).map((a: any, i: number) => toAppItem({ ...a, type: a.type || 'skill' }, i));
+		} catch { /* ignore */ }
+		loading = false;
+	});
+
+	const categories = $derived([...new Set(allSkills.map(s => s.category).filter(Boolean))]);
+	const byCategory = $derived(
+		categories.map(cat => ({
+			name: cat,
+			items: allSkills.filter(s => s.category === cat)
+		})).filter(g => g.items.length > 0)
+	);
 </script>
 
-<svelte:head><title>Skills - Marketplace - Nebo</title></svelte:head>
+<div class="max-w-7xl mx-auto">
+{#if loading}
+	<div class="flex justify-center py-16">
+		<span class="loading loading-spinner loading-md text-primary"></span>
+	</div>
+{:else}
+	<!-- Featured -->
+	<SectionEditorial items={featured} />
 
-<div class="p-6 max-w-[960px]">
-  <div class="mb-5">
-    <div class="text-base font-semibold mb-1">Skills</div>
-    <div class="text-xs text-base-content/50">Add new capabilities to your agents with installable skills.</div>
-  </div>
+	<!-- Description -->
+	<div class="px-6 py-6 border-b border-base-content/10 max-w-2xl">
+		<h2 class="font-display text-lg font-bold mb-2">{$t('marketplace.skillsPage.aboutSkills')}</h2>
+		<p class="text-base text-base-content/80 leading-relaxed">{$t('marketplace.skillsPage.aboutSkillsDesc')}</p>
+	</div>
 
-  <div class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3">
-    {#each skills as skill}
-      <a href="/marketplace/skills/{skill.id}" class="p-4 rounded-xl border border-base-300 bg-base-100 cursor-pointer hover:shadow-md hover:border-base-content/20 transition-all block group">
-        <div class="w-11 h-11 rounded-xl {getIconColor(skill.id)} grid place-items-center text-sm font-bold mb-3">
-          {getInitials(skill.name)}
-        </div>
-        <div class="text-sm font-semibold mb-0.5 group-hover:text-primary transition-colors">{skill.name}</div>
-        <div class="text-xs text-base-content/60 leading-snug mb-3 line-clamp-2">{skill.desc}</div>
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-1.5">
-            <Star class="w-3 h-3 text-warning fill-warning" />
-            <span class="text-xs font-medium">{skill.rating}</span>
-            <span class="text-xs text-base-content/40 ml-0.5">{skill.installs.toLocaleString()}</span>
-          </div>
-          {#if $installedIds.has(skill.id)}
-            <span class="text-xs font-medium text-success">Installed</span>
-          {:else if skill.price === 'Get'}
-            <span class="text-xs font-medium text-primary">Free</span>
-          {:else}
-            <span class="text-xs text-base-content/50">{skill.price}</span>
-          {/if}
-        </div>
-      </a>
-    {/each}
-  </div>
+	<!-- Top Skills -->
+	{#if topSkills.length > 0}
+		<SectionTopRanked title={$t('marketplace.skillsPage.topSkills')} items={topSkills} />
+	{:else if allSkills.length > 0}
+		<SectionTopRanked title={$t('marketplace.skillsPage.topSkills')} items={allSkills.slice(0, 21)} />
+	{:else}
+		<div class="px-6 py-6">
+			<h2 class="font-display text-lg font-bold mb-4">{$t('marketplace.skillsPage.topSkills')}</h2>
+			<div class="flex flex-col items-center justify-center py-12 text-center">
+				<Sparkles class="w-10 h-10 text-base-content/40 mb-3" />
+				<p class="text-base text-base-content/80">{$t('marketplace.skillsPage.noSkills')}</p>
+			</div>
+		</div>
+	{/if}
+
+	<!-- Browse by Category -->
+	{#each byCategory as group}
+		<div class="border-t border-base-content/10">
+			<SectionListGrid title={group.name} seeAllHref="/marketplace/categories/{slugify(group.name)}" items={group.items} />
+		</div>
+	{/each}
+{/if}
 </div>

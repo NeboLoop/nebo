@@ -632,6 +632,56 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
             );
             info!(code, plugin = %name, artifact_id = %artifact_id, path = %path.display(), "installed plugin");
 
+            // Persist plugin to DB registry for querying, enable/disable, diagnostics.
+            let manifest_hash = platform_binary.sha256.clone();
+            let sig_status = if platform_binary.signature.is_empty() { "unverified" } else { "verified" };
+            if let Err(e) = state.store.upsert_installed_plugin(
+                &slug,
+                &name,
+                &version,
+                &detail.author,
+                &path.display().to_string(),
+                &manifest_hash,
+                sig_status,
+            ) {
+                warn!(plugin = %slug, error = %e, "failed to upsert plugin into DB registry");
+            }
+
+            // Cascade plugin-to-plugin dependencies (e.g., digest → ffmpeg).
+            if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
+                if !manifest.dependencies.is_empty() {
+                    let ps = plugin_store.clone();
+                    if let Ok(api2) = build_api_client(state) {
+                        let api2 = std::sync::Arc::new(api2);
+                        match ps.ensure_deps(&manifest, |dep_slug, _dep_version| {
+                            let api_inner = api2.clone();
+                            async move {
+                                let platform = napp::plugin::current_platform_key();
+                                let m = api_inner.get_plugin(&dep_slug, &platform).await
+                                    .map_err(|e| napp::NappError::PluginDownloadFailed(e.to_string()))?;
+                                let url = m.platforms.get(&platform)
+                                    .map(|pb| pb.download_url.clone())
+                                    .ok_or_else(|| napp::NappError::PluginDownloadFailed(
+                                        format!("dep {} has no binary for {}", dep_slug, platform),
+                                    ))?;
+                                let data = api_inner.download_napp(&url).await
+                                    .map_err(|e| napp::NappError::PluginDownloadFailed(e.to_string()))?;
+                                Ok((m, data))
+                            }
+                        }).await {
+                            Ok(installed) => {
+                                for dep_slug in &installed {
+                                    info!(plugin = %slug, dep = %dep_slug, "installed dependency plugin");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(plugin = %slug, error = %e, "failed to install plugin dependencies");
+                            }
+                        }
+                    }
+                }
+            }
+
             // Check if plugin requires authentication
             if let Some(auth) = state.plugin_store.get_manifest(&slug).and_then(|m| m.auth) {
                 state.hub.broadcast(
@@ -667,6 +717,19 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         state.tools.register(Box::new(
             tools::plugin_tool::PluginTool::new(plugin_store.clone())
         )).await;
+    }
+
+    // Register structured tools from plugin capabilities manifest
+    tools::plugin_tool::register_plugin_tools(&state.tools, &plugin_store, &slug, Some(&state.store)).await;
+
+    // Register plugin hooks with the hook dispatcher
+    if let Some(manifest) = plugin_store.get_manifest(&slug) {
+        if let Some(binary) = plugin_store.resolve(&slug, "*") {
+            let count = napp::register_plugin_hooks(&manifest, &binary, &state.hooks);
+            if count > 0 {
+                info!(plugin = %slug, hooks = count, "registered plugin hooks");
+            }
+        }
     }
 
     Ok(CodeHandlerResult {

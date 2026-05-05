@@ -1,9 +1,0 @@
-{
-  "id": "research-analyst",
-  "name": "Research Analyst",
-  "version": "1.0.0",
-  "type": "agent",
-  "description": "Deep research on any topic. Cites sources, cross-references facts, delivers polished reports.",
-  "author": "nebo",
-  "tags": ["research", "analysis", "reports", "citations"]
-}

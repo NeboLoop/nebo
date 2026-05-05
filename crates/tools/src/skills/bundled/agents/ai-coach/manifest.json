@@ -1,9 +1,0 @@
-{
-  "id": "ai-coach",
-  "name": "AI Coach",
-  "version": "1.0.0",
-  "type": "agent",
-  "description": "Teaches you how to get better results from Nebo. The more you learn, the more powerful it gets.",
-  "author": "nebo",
-  "tags": ["education", "coaching", "onboarding", "productivity"]
-}

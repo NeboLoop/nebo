@@ -1,9 +1,0 @@
-{
-  "id": "chief-of-staff",
-  "name": "Chief of Staff",
-  "version": "1.0.0",
-  "type": "agent",
-  "description": "Never be blindsided again — morning briefing, day monitoring, evening wrap",
-  "author": "nebo",
-  "tags": ["productivity", "briefing", "management"]
-}

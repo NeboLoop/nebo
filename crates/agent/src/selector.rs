@@ -510,6 +510,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         };
         assert_eq!(selector.classify_task(&[msg]).as_str(), "code");
     }
@@ -621,6 +622,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         };
 
         let selected = selector.select(&[msg]);
@@ -690,6 +692,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         };
 
         let selected = selector.select(&[msg]);

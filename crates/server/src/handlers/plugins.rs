@@ -19,11 +19,21 @@ use types::NeboError;
 /// GET /plugins
 ///
 /// Lists all installed plugins, deduped by slug (highest version wins).
-/// Enriches each entry with manifest data (name, description, author, auth info).
+/// Enriches each entry with manifest data (name, description, author, auth info)
+/// and DB fields (enabled, signatureStatus) when available.
 pub async fn list_plugins(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
     let installed = state.plugin_store.list_installed();
+
+    // Build DB lookup for enrichment (enabled, signature_status).
+    let db_plugins: HashMap<String, db::models::PluginRegistry> = state
+        .store
+        .list_installed_plugins()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| (p.slug.clone(), p))
+        .collect();
 
     // Dedup by slug — list_installed sorts by slug asc, version desc,
     // so first occurrence per slug is the highest version.
@@ -49,6 +59,10 @@ pub async fn list_plugins(
             .map(|e| e.len())
             .unwrap_or(0);
 
+        let db_row = db_plugins.get(slug.as_str());
+        let enabled = db_row.map(|r| r.is_enabled != 0).unwrap_or(true);
+        let sig_status = db_row.map(|r| r.signature_status.as_str()).unwrap_or("unverified");
+
         plugins.push(serde_json::json!({
             "slug": slug,
             "version": version.to_string(),
@@ -60,6 +74,8 @@ pub async fn list_plugins(
             "hasEvents": event_count > 0,
             "eventCount": event_count,
             "source": source,
+            "enabled": enabled,
+            "signatureStatus": sig_status,
         }));
     }
 
@@ -334,7 +350,7 @@ pub async fn auth_logout(
 
 /// DELETE /plugins/{slug}
 ///
-/// Removes a plugin and all its versions from disk.
+/// Removes a plugin and all its versions from disk and DB registry.
 pub async fn remove_plugin(
     State(state): State<AppState>,
     Path(slug): Path<String>,
@@ -343,6 +359,14 @@ pub async fn remove_plugin(
         .plugin_store
         .remove(&slug)
         .map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?;
+
+    // Remove from DB registry (best-effort — disk removal is the critical path).
+    if let Err(e) = state.store.delete_installed_plugin(&slug) {
+        warn!(plugin = %slug, error = %e, "failed to delete plugin from DB registry");
+    }
+
+    // Unregister any hooks this plugin had registered.
+    state.hooks.unregister_app(&slug);
 
     info!(plugin = %slug, "plugin removed via settings");
     Ok(Json(serde_json::json!({ "message": "Plugin removed" })))
@@ -489,6 +513,217 @@ pub async fn list_plugin_events(
         "events": events,
         "total": total,
     })))
+}
+
+/// GET /plugins/{slug}/config
+///
+/// Returns the plugin's config schema merged with stored values.
+/// Secret values are redacted in the response.
+pub async fn get_plugin_config(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let manifest = state
+        .plugin_store
+        .get_manifest(&slug)
+        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+
+    let schema = manifest
+        .capabilities
+        .as_ref()
+        .map(|c| &c.config_schema[..])
+        .unwrap_or(&[]);
+
+    let stored = state
+        .store
+        .list_plugin_settings_by_slug(&slug)
+        .unwrap_or_default();
+
+    let stored_map: HashMap<String, (String, bool)> = stored
+        .into_iter()
+        .map(|s| (s.setting_key, (s.setting_value, s.is_secret != 0)))
+        .collect();
+
+    let fields: Vec<serde_json::Value> = schema
+        .iter()
+        .map(|field| {
+            let (value, is_secret) = stored_map
+                .get(&field.key)
+                .cloned()
+                .unwrap_or_else(|| (field.default.clone().unwrap_or_default(), field.secret));
+            let display_value = if is_secret && !value.is_empty() {
+                "********".to_string()
+            } else {
+                value
+            };
+            serde_json::json!({
+                "key": field.key,
+                "label": field.label,
+                "description": field.description,
+                "fieldType": field.field_type,
+                "default": field.default,
+                "required": field.required,
+                "secret": field.secret,
+                "options": field.options,
+                "value": display_value,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "plugin": slug,
+        "config": fields,
+    })))
+}
+
+/// PUT /plugins/{slug}/config
+///
+/// Replaces all config values for a plugin. Validates against the schema.
+pub async fn set_plugin_config(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Json(body): Json<HashMap<String, String>>,
+) -> HandlerResult<serde_json::Value> {
+    let manifest = state
+        .plugin_store
+        .get_manifest(&slug)
+        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+
+    let schema = manifest
+        .capabilities
+        .as_ref()
+        .map(|c| &c.config_schema[..])
+        .unwrap_or(&[]);
+
+    // Validate required fields
+    for field in schema {
+        if field.required && !body.contains_key(&field.key) {
+            return Err(to_error_response(NeboError::Validation(
+                format!("missing required config field: {}", field.key),
+            )));
+        }
+    }
+
+    let schema_map: HashMap<&str, &napp::plugin::PluginConfigField> = schema
+        .iter()
+        .map(|f| (f.key.as_str(), f))
+        .collect();
+
+    // Store each value (only keys declared in schema)
+    for (key, value) in &body {
+        let field = match schema_map.get(key.as_str()) {
+            Some(f) => f,
+            None => continue, // ignore unknown keys
+        };
+        if let Err(e) = state.store.upsert_plugin_setting_by_slug(&slug, key, value, field.secret) {
+            warn!(plugin = %slug, key = %key, error = %e, "failed to save plugin config");
+            return Err(to_error_response(NeboError::Internal(e.to_string())));
+        }
+    }
+
+    info!(plugin = %slug, keys = body.len(), "updated plugin config");
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// GET /plugins/{slug}/diagnostics
+///
+/// Returns the diagnostic timeline for a plugin (install, verification, runtime events).
+pub async fn get_diagnostics(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let diags = state.plugin_store.get_diagnostics(&slug);
+    let entries: Vec<serde_json::Value> = diags
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "level": d.level,
+                "phase": d.phase,
+                "message": d.message,
+                "timestamp": d.timestamp,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "plugin": slug,
+        "diagnostics": entries,
+        "total": entries.len(),
+    })))
+}
+
+/// ANY /plugins/{slug}/api/{*path}
+///
+/// Proxy handler for plugin-declared HTTP routes (e.g., OAuth callbacks, webhooks).
+/// Matches the request path and method against the plugin's `capabilities.routes[]`.
+pub async fn proxy_plugin_route(
+    State(state): State<AppState>,
+    Path((slug, path)): Path<(String, String)>,
+    method: axum::http::Method,
+    body: axum::body::Bytes,
+) -> HandlerResult<serde_json::Value> {
+    let manifest = state
+        .plugin_store
+        .get_manifest(&slug)
+        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+
+    let caps = manifest.capabilities.as_ref()
+        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+
+    // Find matching route by path and method
+    let route_def = caps.routes.iter().find(|r| {
+        let r_path = r.path.trim_start_matches('/');
+        r_path == path && r.method.eq_ignore_ascii_case(method.as_str())
+    }).ok_or_else(|| to_error_response(NeboError::NotFound))?;
+
+    let binary = state.plugin_store.resolve(&slug, "*")
+        .ok_or_else(|| to_error_response(NeboError::Internal("plugin binary not found".into())))?;
+
+    let args: Vec<&str> = route_def.command.split_whitespace().collect();
+    let mut cmd = tokio::process::Command::new(&binary);
+    cmd.args(&args);
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.env("PATH", state.plugin_store.path_with_plugins());
+
+    // Auth env vars
+    if let Some((_bin, auth)) = state.plugin_store.get_auth_info(&slug) {
+        for (k, v) in &auth.env {
+            cmd.env(k, v);
+        }
+    }
+
+    let mut child = cmd.spawn()
+        .map_err(|e| to_error_response(NeboError::Internal(format!("spawn: {}", e))))?;
+
+    // Write request body to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(&body).await;
+        drop(stdin);
+    }
+
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        child.wait_with_output(),
+    ).await
+        .map_err(|_| to_error_response(NeboError::Internal("route handler timed out".into())))?
+        .map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Try to parse as JSON, otherwise return as raw text
+        match serde_json::from_str::<serde_json::Value>(&stdout) {
+            Ok(json) => Ok(Json(json)),
+            Err(_) => Ok(Json(serde_json::json!({ "output": stdout.trim() }))),
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(to_error_response(NeboError::Internal(
+            format!("route handler failed: {}", stderr.trim()),
+        )))
+    }
 }
 
 /// Open an OAuth URL: broadcast it to the frontend via WebSocket so the

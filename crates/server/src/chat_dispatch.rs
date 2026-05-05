@@ -21,6 +21,19 @@ use tools::Origin;
 use crate::run_registry::RegisterParams;
 use crate::state::AppState;
 
+/// Convert markdown to HTML using pulldown-cmark.
+/// Used for assistant messages so the frontend can render with `{@html}`.
+pub fn md_to_html(md: &str) -> String {
+    use pulldown_cmark::{Options, Parser, html};
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_TABLES);
+    let parser = Parser::new_ext(md, opts);
+    let mut html_output = String::new();
+    html::push_html(&mut html_output, parser);
+    html_output
+}
+
 /// Configuration for a chat run — decorators that customize behavior
 /// without changing the underlying execution flow.
 pub struct ChatConfig {
@@ -42,6 +55,13 @@ pub struct ChatConfig {
     pub images: Vec<ai::ImageContent>,
     /// Display name for the entity (agent name or "Nebo"). Used in RunRegistry.
     pub entity_name: String,
+    /// For @mention routing: the agent that originated the mention.
+    /// When set, all WS broadcast payloads include "originAgentId" so the
+    /// frontend can route delegate events back to the originating thread.
+    pub origin_agent_id: Option<String>,
+    /// Injected as a system-role message after the user prompt — visible to the
+    /// LLM but not rendered in the frontend. Used for @mention routing context.
+    pub mention_context: Option<String>,
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -110,16 +130,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         parent_run_id: None,
     }).await;
 
-    // Broadcast chat_created so frontend can track new conversations
-    hub.broadcast(
-        "chat_created",
-        serde_json::json!({
-            "session_id": sid,
-            "channel": config.channel,
-            "agentId": agent_id,
-        }),
-    );
-
     // Destructure config fields before moving into closure
     let prompt = config.prompt;
     let system = config.system;
@@ -129,10 +139,41 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let comm_reply = config.comm_reply;
     let entity_cfg = config.entity_config;
     let images = config.images;
+    let origin_agent_id = config.origin_agent_id;
+    let mention_context = config.mention_context;
+
+    // Broadcast chat_created so frontend can track new conversations
+    {
+        let mut created_payload = serde_json::json!({
+            "session_id": sid,
+            "channel": channel,
+            "agentId": agent_id,
+        });
+        if let Some(ref oid) = origin_agent_id {
+            created_payload["originAgentId"] = serde_json::Value::String(oid.clone());
+        }
+        hub.broadcast("chat_created", created_payload);
+    }
 
     let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
         // RunHandle auto-unregisters from RunRegistry on drop (panic-safe).
         let _run_handle = run_handle;
+
+        // Helper: build a WS broadcast payload with session_id, agentId, and
+        // optional originAgentId (for @mention delegate routing).
+        macro_rules! ws_payload {
+            ($($key:tt : $val:expr),* $(,)?) => {{
+                let mut v = serde_json::json!({
+                    "session_id": sid,
+                    "agentId": agent_id,
+                    $($key: $val),*
+                });
+                if let Some(ref oid) = origin_agent_id {
+                    v["originAgentId"] = serde_json::Value::String(oid.clone());
+                }
+                v
+            }};
+        }
 
         // Extract per-entity overrides from resolved config
         let (permissions, resource_grants, model_preference, personality_snippet) =
@@ -174,6 +215,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             presence_tracker: Some(presence_tracker.clone()),
             proactive_inbox: Some(proactive_inbox.clone()),
             progress: Some(progress),
+            mention_context,
             ..Default::default()
         };
 
@@ -182,7 +224,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 let mut full_response = String::new();
                 let mut text_buffer = String::new();
                 let mut last_flush = tokio::time::Instant::now();
-                const COALESCE_MS: u64 = 75;
+                const COALESCE_MS: u64 = 50;
 
                 // Comm streaming: send chunks to NeboLoop as they arrive.
                 // Timer starts on first token, not loop init (LLM latency would
@@ -199,17 +241,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         _ = cancel_token.cancelled() => {
                             // Flush remaining buffer before cancellation
                             if !text_buffer.is_empty() {
-                                hub.broadcast("chat_stream", serde_json::json!({
-                                    "session_id": sid,
+                                hub.broadcast("chat_stream", ws_payload!(
                                     "content": &text_buffer,
-                                    "agentId": agent_id,
-                                }));
+                                    "html": md_to_html(&full_response),
+                                ));
                                 text_buffer.clear();
                             }
-                            hub.broadcast("chat_cancelled", serde_json::json!({
-                                "session_id": sid,
-                                "agentId": agent_id,
-                            }));
+                            hub.broadcast("chat_cancelled", ws_payload!());
                             break;
                         }
                         ev = rx.recv() => match ev {
@@ -226,11 +264,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             full_response.push_str(&event.text);
                             text_buffer.push_str(&event.text);
                             if last_flush.elapsed().as_millis() as u64 >= COALESCE_MS {
-                                hub.broadcast("chat_stream", serde_json::json!({
-                                    "session_id": sid,
+                                hub.broadcast("chat_stream", ws_payload!(
                                     "content": &text_buffer,
-                                    "agentId": agent_id,
-                                }));
+                                    "html": md_to_html(&full_response),
+                                ));
                                 text_buffer.clear();
                                 last_flush = tokio::time::Instant::now();
                             }
@@ -276,31 +313,26 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                         }
                         StreamEventType::Thinking => {
-                            hub.broadcast("thinking", serde_json::json!({
-                                "session_id": sid,
+                            hub.broadcast("thinking", ws_payload!(
                                 "content": event.text,
-                                "agentId": agent_id,
-                            }));
+                            ));
                         }
                         StreamEventType::ToolCall => {
                             // Flush pending text before tool event to prevent fragmentation
                             if !text_buffer.is_empty() {
-                                hub.broadcast("chat_stream", serde_json::json!({
-                                    "session_id": sid,
+                                hub.broadcast("chat_stream", ws_payload!(
                                     "content": &text_buffer,
-                                    "agentId": agent_id,
-                                }));
+                                    "html": md_to_html(&full_response),
+                                ));
                                 text_buffer.clear();
                                 last_flush = tokio::time::Instant::now();
                             }
                             if let Some(ref tc) = event.tool_call {
-                                hub.broadcast("tool_start", serde_json::json!({
-                                    "session_id": sid,
+                                hub.broadcast("tool_start", ws_payload!(
                                     "tool_id": tc.id,
                                     "tool": tc.name,
                                     "input": tc.input,
-                                    "agentId": agent_id,
-                                }));
+                                ));
                             }
                         }
                         StreamEventType::ToolResult => {
@@ -308,21 +340,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 .map(|tc| tc.name.as_str()).unwrap_or("");
                             let tool_id = event.tool_call.as_ref()
                                 .map(|tc| tc.id.as_str()).unwrap_or("");
-                            hub.broadcast("tool_result", serde_json::json!({
-                                "session_id": sid,
+                            hub.broadcast("tool_result", ws_payload!(
                                 "tool_id": tool_id,
                                 "tool_name": tool_name,
                                 "result": event.text,
                                 "is_error": event.error.is_some(),
-                                "agentId": agent_id,
-                            }));
+                            ));
                         }
                         StreamEventType::Error => {
-                            hub.broadcast("chat_error", serde_json::json!({
-                                "session_id": sid,
+                            hub.broadcast("chat_error", ws_payload!(
                                 "error": event.error.unwrap_or_default(),
-                                "agentId": agent_id,
-                            }));
+                            ));
                         }
                         StreamEventType::Usage => {
                             if let Some(ref usage) = event.usage {
@@ -402,18 +430,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // If the runner forwarded a quota warning (text is non-empty),
                             // broadcast to the frontend so it can show a warning banner.
                             if !event.text.is_empty() {
-                                hub.broadcast("quota_warning", serde_json::json!({
-                                    "session_id": sid,
+                                hub.broadcast("quota_warning", ws_payload!(
                                     "message": event.text,
-                                    "agentId": agent_id,
-                                }));
+                                ));
                             }
                         }
                         StreamEventType::SubagentStart => {
-                            let mut payload = serde_json::json!({
-                                "session_id": sid,
-                                "agentId": agent_id,
-                            });
+                            let mut payload = ws_payload!();
                             if let Some(ref w) = event.widgets {
                                 for (k, v) in w.as_object().into_iter().flatten() {
                                     payload[k] = v.clone();
@@ -422,10 +445,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             hub.broadcast("subagent_start", payload);
                         }
                         StreamEventType::SubagentProgress => {
-                            let mut payload = serde_json::json!({
-                                "session_id": sid,
-                                "agentId": agent_id,
-                            });
+                            let mut payload = ws_payload!();
                             if let Some(ref w) = event.widgets {
                                 for (k, v) in w.as_object().into_iter().flatten() {
                                     payload[k] = v.clone();
@@ -434,10 +454,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             hub.broadcast("subagent_progress", payload);
                         }
                         StreamEventType::SubagentComplete => {
-                            let mut payload = serde_json::json!({
-                                "session_id": sid,
-                                "agentId": agent_id,
-                            });
+                            let mut payload = ws_payload!();
                             if let Some(ref w) = event.widgets {
                                 for (k, v) in w.as_object().into_iter().flatten() {
                                     payload[k] = v.clone();
@@ -451,12 +468,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
                 // Flush any remaining coalesced text
                 if !text_buffer.is_empty() {
-                    hub.broadcast("chat_stream", serde_json::json!({
-                        "session_id": sid,
+                    hub.broadcast("chat_stream", ws_payload!(
                         "content": &text_buffer,
-                        "agentId": agent_id,
-                    }));
+                    ));
                 }
+
+                // Render HTML before comm reply (which may move full_response)
+                let html = if !full_response.is_empty() {
+                    Some(md_to_html(&full_response))
+                } else {
+                    None
+                };
 
                 // Send final comm reply — flush remaining stream buffer + complete message
                 if let Some(reply_config) = &comm_reply {
@@ -535,10 +557,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 }
 
                 // Always send chat_complete
-                hub.broadcast("chat_complete", serde_json::json!({
-                    "session_id": sid,
-                    "agentId": agent_id,
-                }));
+                hub.broadcast("chat_complete", ws_payload!(
+                    "html": html,
+                ));
 
                 // Auto-generate a descriptive chat title in the background
                 let title_runner = runner.clone();
@@ -554,15 +575,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             }
             Err(e) => {
                 warn!(error = %e, "agent run failed");
-                hub.broadcast("chat_error", serde_json::json!({
-                    "session_id": sid,
+                hub.broadcast("chat_error", ws_payload!(
                     "error": e.to_string(),
-                    "agentId": agent_id,
-                }));
-                hub.broadcast("chat_complete", serde_json::json!({
-                    "session_id": sid,
-                    "agentId": agent_id,
-                }));
+                ));
+                hub.broadcast("chat_complete", ws_payload!());
             }
         }
 

@@ -557,6 +557,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             entity_config,
                                             images: vec![],
                                             entity_name: String::new(),
+                                            origin_agent_id: None,
+                                            mention_context: None,
                                         };
 
                                         run_chat(&state_clone, config).await;
@@ -826,6 +828,22 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         return;
     }
 
+    // Intercept plugin slash commands (e.g., "/gmail triage")
+    if prompt.starts_with('/') {
+        if let Some(result) = crate::plugin_commands::try_dispatch(state, &prompt, &session_id).await {
+            // Stream the plugin output as a chat response
+            state.hub.broadcast("chat_stream", serde_json::json!({
+                "session_id": &session_id,
+                "content": &result,
+            }));
+            state.hub.broadcast("chat_complete", serde_json::json!({
+                "session_id": &session_id,
+            }));
+            return;
+        }
+        // Not a plugin command — fall through to normal agent processing
+    }
+
     // Extract images from file paths in the prompt (drag/drop, paste)
     let (prompt, images) = extract_images_from_prompt(&prompt);
     if !images.is_empty() {
@@ -950,23 +968,242 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         }
     }
 
+    // Parse @mentions BEFORE primary chat so we can give the primary agent awareness
+    let mentioned = parse_mention_tokens(&prompt, &agent_id);
+
+    // Build routing context for the primary agent (injected as invisible system message)
+    let mention_context = if !mentioned.is_empty() {
+        let mut names: Vec<String> = Vec::new();
+        for mid in &mentioned {
+            let name = state.store.get_agent(mid)
+                .ok()
+                .flatten()
+                .map(|a| a.name)
+                .unwrap_or_else(|| mid.clone());
+            names.push(format!("@{}", name));
+        }
+        let roster = names.join(", ");
+        Some(format!(
+            "{} {} been @mentioned and will respond separately in this thread. \
+            Do not answer on their behalf — focus on your own response to the user.",
+            roster,
+            if names.len() == 1 { "has" } else { "have" },
+        ))
+    } else {
+        None
+    };
+
     let config = ChatConfig {
         session_key,
-        prompt,
+        prompt: prompt.clone(),
         system,
-        user_id,
-        channel,
+        user_id: user_id.clone(),
+        channel: channel.clone(),
         origin: Origin::User,
-        agent_id,
+        agent_id: agent_id.clone(),
         cancel_token: CancellationToken::new(),
         lane: lanes::MAIN.to_string(),
         comm_reply,
         entity_config,
         images,
         entity_name: String::new(), // resolved from agent_registry in run_chat
+        origin_agent_id: None,
+        mention_context,
     };
 
     run_chat(state, config).await;
+
+    // Fork async chats to each @mentioned agent
+    if !mentioned.is_empty() {
+        let state = state.clone();
+        tokio::spawn(async move {
+            for mid in mentioned {
+                fork_mention_chat(&state, &mid, &prompt, &user_id, &channel, &agent_id).await;
+            }
+        });
+    }
+}
+
+/// Extract unique agent IDs from `<@agent-id>` tokens in the prompt.
+/// Deduplicates and excludes `exclude_agent_id` (the primary agent).
+fn parse_mention_tokens(prompt: &str, exclude_agent_id: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut ids = Vec::new();
+    let bytes = prompt.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'<' && bytes[i + 1] == b'@' {
+            let start = i + 2;
+            if let Some(end) = prompt[start..].find('>') {
+                let id = &prompt[start..start + end];
+                if !id.is_empty()
+                    && id != exclude_agent_id
+                    && id.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
+                    && seen.insert(id.to_string())
+                {
+                    ids.push(id.to_string());
+                }
+                i = start + end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    ids
+}
+
+/// Dispatch an async chat to a mentioned agent.
+/// Uses the mentioned agent's own session for history isolation,
+/// but broadcasts WS events with `origin_agent_id` so the frontend
+/// routes them to the mentioning agent's thread.
+async fn fork_mention_chat(
+    state: &AppState,
+    mentioned_id: &str,
+    prompt: &str,
+    user_id: &str,
+    channel: &str,
+    origin_agent_id: &str,
+) {
+    use crate::chat_dispatch::{ChatConfig, run_chat};
+
+    // Auto-activate the mentioned agent if needed
+    let needs_activation = !state.agent_registry.read().await.contains_key(mentioned_id);
+    if needs_activation {
+        match state.store.get_agent(mentioned_id) {
+            Ok(Some(agent)) => {
+                let config = if !agent.frontmatter.is_empty() {
+                    napp::agent::parse_agent_config(&agent.frontmatter).ok()
+                } else {
+                    None
+                };
+                let active = tools::ActiveAgent {
+                    agent_id: agent.id.clone(),
+                    name: agent.name.clone(),
+                    agent_md: agent.agent_md.clone(),
+                    config,
+                    channel_id: None,
+                    degraded: None,
+                };
+                state.agent_registry.write().await.insert(agent.id.clone(), active);
+                state.store.set_agent_enabled(mentioned_id, true).ok();
+                state.agent_workers.start_agent(mentioned_id, &agent.name).await;
+                info!(agent_id = %mentioned_id, "auto-activated mentioned agent for @mention");
+            }
+            _ => {
+                warn!(agent_id = %mentioned_id, "mentioned agent not found, skipping");
+                return;
+            }
+        }
+    }
+
+    let session_key = agent::keyparser::build_agent_session_key(mentioned_id, channel);
+    let entity_config = crate::entity_config::resolve_for_chat(
+        &state.store, "agent", mentioned_id,
+    );
+
+    let contextualized = format!(
+        "[You were @mentioned in a conversation. Respond helpfully.]\n\n{}",
+        prompt,
+    );
+
+    let delegate_session_key = session_key.clone();
+    let chat_config = ChatConfig {
+        session_key,
+        prompt: contextualized,
+        system: String::new(),
+        user_id: user_id.to_string(),
+        channel: channel.to_string(),
+        origin: Origin::User,
+        agent_id: mentioned_id.to_string(),
+        cancel_token: CancellationToken::new(),
+        lane: lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config,
+        images: vec![],
+        entity_name: String::new(),
+        origin_agent_id: Some(origin_agent_id.to_string()),
+        mention_context: None,
+    };
+
+    run_chat(state, chat_config).await;
+
+    // Inject the delegate's response back into the primary agent's session
+    // so the primary agent has context about what the mentioned agent said.
+    inject_delegate_response(state, mentioned_id, &delegate_session_key, origin_agent_id, channel);
+}
+
+/// After a mentioned agent completes, read its last assistant message and
+/// inject it into the primary agent's session as context.
+fn inject_delegate_response(
+    state: &AppState,
+    mentioned_id: &str,
+    delegate_session_key: &str,
+    origin_agent_id: &str,
+    channel: &str,
+) {
+    let sessions = state.runner.sessions();
+
+    // Read the delegate's last assistant message
+    let delegate_response = match sessions.resolve_session_id_by_key(delegate_session_key) {
+        Ok(session_id) => {
+            match sessions.get_messages(&session_id) {
+                Ok(msgs) => {
+                    // Find the last assistant message
+                    msgs.into_iter()
+                        .rev()
+                        .find(|m| m.role == "assistant")
+                        .map(|m| m.content)
+                }
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    };
+
+    let response_text = match delegate_response {
+        Some(ref text) if !text.is_empty() => text.as_str(),
+        _ => {
+            debug!(mentioned_id = %mentioned_id, "no delegate response to inject");
+            return;
+        }
+    };
+
+    // Look up the mentioned agent's display name
+    let agent_name = state.store.get_agent(mentioned_id)
+        .ok()
+        .flatten()
+        .map(|a| a.name)
+        .unwrap_or_else(|| mentioned_id.to_string());
+
+    // Build the primary agent's session key
+    let primary_session_key = agent::keyparser::build_agent_session_key(origin_agent_id, channel);
+
+    // Inject as a system-context message in the primary agent's session
+    let injection = format!(
+        "[Response from @{} ({})]\n{}",
+        mentioned_id, agent_name, response_text,
+    );
+
+    match sessions.resolve_session_id_by_key(&primary_session_key) {
+        Ok(session_id) => {
+            match sessions.append_message(&session_id, "system", &injection, None, None, None) {
+                Ok(_) => {
+                    info!(
+                        mentioned = %mentioned_id,
+                        primary = %origin_agent_id,
+                        len = response_text.len(),
+                        "injected delegate response into primary session"
+                    );
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to inject delegate response");
+                }
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, primary = %origin_agent_id, "failed to resolve primary session for response injection");
+        }
+    }
 }
 
 /// GET /api/v1/agent/ws — Agent WebSocket endpoint for agent-to-server communication.

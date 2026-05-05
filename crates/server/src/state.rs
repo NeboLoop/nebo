@@ -106,4 +106,6 @@ pub struct AppState {
     pub channel_providers: Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn ChannelProvider>>>>,
     /// A2UI surface manager — surface lifecycle, broadcasting, persistence
     pub a2ui: Arc<A2UIManager>,
+    /// Local voice pipeline (Piper TTS, whisper.cpp STT) — initialized at startup
+    pub voice: Arc<voice::VoicePipeline>,
 }

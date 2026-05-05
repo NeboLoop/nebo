@@ -245,6 +245,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         }
     }
 

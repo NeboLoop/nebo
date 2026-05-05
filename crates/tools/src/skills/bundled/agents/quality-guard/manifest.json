@@ -1,9 +1,0 @@
-{
-  "id": "quality-guard",
-  "name": "Quality Guard",
-  "version": "1.0.0",
-  "type": "agent",
-  "description": "Nothing ships without proof it works. Tests everything, trusts nothing.",
-  "author": "nebo",
-  "tags": ["testing", "quality", "debugging", "verification"]
-}

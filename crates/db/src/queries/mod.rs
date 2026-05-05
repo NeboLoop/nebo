@@ -19,3 +19,4 @@ mod agents;
 mod entity_config;
 mod commander;
 mod a2ui_surfaces;
+mod plugins;

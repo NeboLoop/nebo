@@ -1,9 +1,0 @@
-{
-  "id": "content-strategist",
-  "name": "Content Strategist",
-  "version": "1.0.0",
-  "type": "agent",
-  "description": "Turns your expertise into content that ranks, converts, and builds authority. Thinks in content systems, not individual posts.",
-  "author": "nebo",
-  "tags": ["content", "strategy", "seo", "writing"]
-}

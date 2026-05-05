@@ -1,9 +1,0 @@
-{
-  "id": "builder",
-  "name": "Builder",
-  "version": "1.0.0",
-  "type": "agent",
-  "description": "Systematically builds all NeboLoop marketplace skills and agents from plans and reference materials",
-  "author": "nebo",
-  "tags": ["internal", "builder", "automation"]
-}

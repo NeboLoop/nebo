@@ -249,6 +249,7 @@ pub fn micro_compact(
             tool_calls: msg.tool_calls.clone(),
             tool_results: compacted_results,
             token_estimate: Some(10),
+            html: None,
         };
         tokens_saved += old_tokens.saturating_sub(10);
     }
@@ -363,6 +364,7 @@ pub fn time_based_micro_compact(
             tool_calls: msg.tool_calls.clone(),
             tool_results: compacted_results,
             token_estimate: Some(2),
+            html: None,
         };
         tokens_saved += old_tokens.saturating_sub(2);
     }
@@ -612,6 +614,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         }
     }
 
@@ -673,6 +676,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         }
     }
 
@@ -720,6 +724,7 @@ mod tests {
                 "is_error": false
             }]).to_string()),
             token_estimate: None,
+            html: None,
         }
     }
 
@@ -735,6 +740,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         }
     }
 

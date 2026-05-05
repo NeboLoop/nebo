@@ -548,6 +548,7 @@ fn row_to_chat_message(row: &rusqlite::Row) -> rusqlite::Result<ChatMessage> {
         tool_calls: row.get("tool_calls")?,
         tool_results: row.get("tool_results")?,
         token_estimate: row.get("token_estimate")?,
+        html: None,
     })
 }
 

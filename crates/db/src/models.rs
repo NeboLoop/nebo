@@ -166,6 +166,9 @@ pub struct ChatMessage {
     pub tool_calls: Option<String>,
     pub tool_results: Option<String>,
     pub token_estimate: Option<i64>,
+    /// Server-rendered HTML from markdown content. Output-only — not stored in DB.
+    #[serde(skip_deserializing, default)]
+    pub html: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -444,6 +447,19 @@ pub struct PluginRegistry {
     pub metadata: String,
     pub created_at: i64,
     pub updated_at: i64,
+    // .napp-specific fields (migration 0083)
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub binary_path: String,
+    #[serde(default)]
+    pub manifest_hash: String,
+    #[serde(default)]
+    pub signature_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

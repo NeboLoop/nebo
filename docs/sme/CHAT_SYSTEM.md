@@ -5,7 +5,7 @@ frontend WebSocket through agent runner and back, including all data structures,
 streaming events, session management, lane concurrency, DB schema, codes system,
 NeboLoop comm integration, and frontend rendering.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-03-26
+**Status:** Current (Rust implementation) | **Last updated:** 2026-05-04
 
 ---
 
@@ -31,6 +31,10 @@ NeboLoop comm integration, and frontend rendering.
 18. [File Attachment & Drag-and-Drop](#18-file-attachment--drag-and-drop)
 19. [Known Issues and Fixes](#19-known-issues-and-fixes)
 20. [Ask Widget System](#20-ask-widget-system)
+21. [RunRegistry](#21-runregistry)
+22. [ConcurrencyController](#22-concurrencycontroller)
+23. [Orchestrator (Sub-Agents)](#23-orchestrator-sub-agents)
+24. [@Mention Routing](#24-mention-routing)
 
 ---
 
@@ -49,6 +53,7 @@ WebSocketClient  ──WS──>  handle_client_ws()
                                 │     calls run_chat()
                                 │
                             run_chat()  (chat_dispatch.rs)
+                                │  ├─ registers in RunRegistry (global visibility)
                                 │  ├─ wraps in LaneTask
                                 │  ├─ enqueues on LaneManager
                                 │  └─ lane pump spawns task
@@ -60,7 +65,7 @@ WebSocketClient  ──WS──>  handle_client_ws()
                                 │                    ├─ spawn run_loop() task
                                 │                    └─ return mpsc::Receiver<StreamEvent>
                                 │
-                                │  run_loop() (agentic loop, up to 100 iterations)
+                                │  run_loop() (agentic loop, up to 200 iterations)
                                 │     ├─ load & sanitize messages
                                 │     ├─ sliding window + pruning
                                 │     ├─ build system prompt (static + STRAP + dynamic + model identity)
@@ -75,11 +80,12 @@ WebSocketClient  ──WS──>  handle_client_ws()
                                 │
                             event loop in run_chat():
                                 │  reads StreamEvents from rx
-                                │  broadcasts each to ClientHub
+                                │  broadcasts each to ClientHub (50ms text coalescing)
+                                │  chat_stream includes server-rendered HTML (pulldown-cmark)
                                 │
 ClientHub.broadcast() ──> all connected WS clients
   │
-  ├─ "chat_stream"      (text chunks)
+  ├─ "chat_stream"      (text chunks + HTML, 50ms coalesced)
   ├─ "thinking"          (thinking blocks)
   ├─ "tool_start"        (tool invocation)
   ├─ "tool_result"       (tool output)
@@ -87,13 +93,14 @@ ClientHub.broadcast() ──> all connected WS clients
   ├─ "usage"             (token counts)
   ├─ "approval_request"  (tool approval gate)
   ├─ "ask_request"       (interactive question)
-  ├─ "chat_complete"     (terminal event)
+  ├─ "chat_complete"     (terminal event, includes HTML)
   ├─ "chat_cancelled"    (user cancel)
   │
   │  Additional lifecycle/status events (not from runner):
   ├─ "connected"         (WS handshake welcome)
   ├─ "chat_ack"          (message accepted)
   ├─ "chat_created"      (run started)
+  ├─ "chat_title_updated" (auto-generated title)
   ├─ "quota_warning"     (Janus usage >80%)
   ├─ "stream_status"     (running/idle probe reply)
   ├─ "session_reset"     (session reset result)
@@ -102,6 +109,9 @@ ClientHub.broadcast() ──> all connected WS clients
   ├─ "code_result"       (marketplace code outcome)
   ├─ "dep_installed"     (dependency cascade step)
   ├─ "dep_cascade_complete" (dependency cascade done)
+  ├─ "subagent_start"    (sub-agent spawned)
+  ├─ "subagent_progress" (sub-agent update)
+  ├─ "subagent_complete" (sub-agent done)
   ├─ "tool_quarantined"  (tool disabled at runtime)
   └─ "tool_error"        (tool registration error)
 ```
@@ -109,8 +119,7 @@ ClientHub.broadcast() ──> all connected WS clients
 ### Design Principle
 
 **ONE entry point for all chat.** WebSocket, REST, and NeboLoop comm messages all
-build a `ChatConfig` and call `run_chat()`. No separate code paths. This is
-CODE_AUDITOR Rule 8.1 compliant — no competing pathways.
+build a `ChatConfig` and call `run_chat()`. No separate code paths.
 
 ---
 
@@ -143,16 +152,15 @@ pub struct HubEvent {
 
 | Type | Fields | Behavior |
 |------|--------|----------|
-| `"chat"` | `session_id`, `prompt`, `system`, `user_id`, `channel`, `agent_id` | Dispatches to `dispatch_chat()` |
-| `"cancel"` | `session_id` | Cancels active run via CancellationToken |
+| `"chat"` | `session_id`, `prompt`, `system`, `user_id`, `channel`, `agent_id`, `message_id` | Dispatches to `dispatch_chat()` |
+| `"cancel"` | `run_id`, `entity_id`, `session_id` | Cancels by run_id, entity_id, or session_id; if no match, cancels ALL runs |
+| `"cancel_all"` | — | Emergency stop all active runs |
 | `"auth"` / `"connect"` | optional `token` | Responds with `auth_ok` |
 | `"ping"` | — | Responds with `pong` |
-| `"session_reset"` | `session_id` | Clears session messages and counters |
-| `"session_compact"` | `session_id` | Triggers conversation compaction/summarization |
-| `"check_stream"` | `session_id` | Returns `stream_status` (running/idle) |
+| `"session_reset"` | `session_id` | Rotates chat (creates new conversation), broadcasts new chat ID |
+| `"session_compact"` | `session_id` | Spawns async summarization task (calls LLM, clears old messages) |
 | `"approval_response"` | `request_id`, `approved` | Resolves pending tool approval oneshot |
 | `"ask_response"` | `request_id`, `value` | Resolves pending ask request oneshot |
-| `"request_introduction"` | `session_id` | Stub: sends `chat_complete` immediately |
 
 ### Connection Lifecycle
 
@@ -170,23 +178,11 @@ pub struct HubEvent {
 - Forwards `execute_tool` requests to extension, receives `tool_response` results
 - Split into two async tasks (send + recv), select! for completion
 
-### ActiveRuns
+### Stale Run Cleanup
 
-```rust
-pub struct ActiveRun {
-    pub token: CancellationToken,
-    pub started_at: std::time::Instant,
-}
-
-pub type ActiveRuns = Arc<Mutex<HashMap<String, ActiveRun>>>;
-```
-Tracks which session_ids have active agent runs (with their cancellation token and
-start time). Used by `cancel` WS message to cooperatively stop the agentic loop.
-
-A background cleanup task (spawned per-connection) polls every 60s and expires runs
-older than **600 seconds (10 minutes)** — cancelling their token and removing them
-from the map. This prevents stale entries from accumulating if a run completes without
-proper cleanup.
+A background task (spawned per-connection) polls every 60s and cancels runs in the
+RunRegistry older than **600 seconds (10 minutes)**. This prevents stale entries from
+accumulating if a run completes without proper cleanup.
 
 ### Message Idempotency
 
@@ -206,17 +202,20 @@ this image?"`. The extracted images are passed via `ChatConfig.images` → `RunR
 ### dispatch_chat()
 
 Thin wrapper that extracts fields from WS JSON, intercepts marketplace codes,
-builds `ChatConfig`, and calls `run_chat()`:
+builds `ChatConfig`, and calls `run_chat()`. Also handles @mention routing (see §24):
 
 ```rust
-async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: ActiveRuns) {
+async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     // 1. Extract session_id, prompt, system, user_id, channel, agent_id from data
-    // 2. Intercept marketplace codes (NEBO/SKIL/WORK/AGNT/LOOP-XXXX-XXXX)
+    // 2. Intercept marketplace codes (NEBO/SKIL/WORK/AGNT/LOOP/PLUG-XXXX-XXXX)
     // 3. Reject empty prompts
     // 4. Build session_key: if agent_id set, use build_agent_session_key()
     // 5. Resolve entity_config via resolve_for_chat() (per-entity overrides)
-    // 6. Build ChatConfig with lane=MAIN, origin=User, entity_config
-    // 7. Call run_chat(state, config, Some(active_runs))
+    // 6. Parse @mention tokens: parse_mention_tokens(&prompt, &agent_id)
+    // 7. Build mention_context if mentions found (invisible system msg)
+    // 8. Build ChatConfig with lane=MAIN, origin=User, entity_config, mention_context
+    // 9. Call run_chat(state, config) for primary agent
+    // 10. Fork async chats for each mentioned agent via tokio::spawn
 }
 ```
 
@@ -242,9 +241,13 @@ pub struct ChatConfig {
     pub comm_reply: Option<CommReplyConfig>,  // reply-back config for NeboLoop
     pub entity_config: Option<ResolvedEntityConfig>,  // per-entity overrides (see §15)
     pub images: Vec<ai::ImageContent>,  // base64-encoded image attachments
+    pub entity_name: String,      // display name for RunRegistry
+    pub origin_agent_id: Option<String>,  // for @mention routing (see §24)
+    pub mention_context: Option<String>,  // invisible system msg for primary agent (see §24)
 }
 
 pub struct CommReplyConfig {
+    pub provider: String,         // "neboloop" or future: "slack"
     pub topic: String,            // "chat" or "dm"
     pub conversation_id: String,  // NeboLoop conversation thread
 }
@@ -261,30 +264,36 @@ pub struct CommReplyConfig {
 
 ### run_chat() Flow
 
-1. Clone hub, runner, janus_usage from AppState
-2. Resolve agent display name for comm replies
-3. Track cancel token in ActiveRuns (if provided)
-4. Broadcast `"chat_created"` event
-5. Build `LaneTask` via `make_task()` containing:
+1. Resolve agent display name from registry or DB
+2. Register in global `RunRegistry` (for visibility/cancellation)
+3. Broadcast `"chat_created"` event
+4. Build `LaneTask` via `make_task()` containing:
    a. Construct `RunRequest` from ChatConfig fields
    b. Extract per-entity overrides from `entity_config` into RunRequest (permissions, resource_grants, model_preference, personality_snippet)
-   c. Call `runner.run(req)` → get `mpsc::Receiver<StreamEvent>`
-   c. Loop receiving StreamEvents, broadcasting each:
-      - `Text` → `"chat_stream"` + accumulate `full_response`
-      - `Thinking` → `"thinking"`
-      - `ToolCall` → `"tool_start"`
-      - `ToolResult` → `"tool_result"`
+   c. Set `progress` counters (RunProgress with run_id, AtomicU32 for iterations/tools, current_tool Mutex)
+   d. Call `runner.run(req)` → get `mpsc::Receiver<StreamEvent>`
+   e. Loop receiving StreamEvents, broadcasting each:
+      - `Text` → coalesced into 50ms batches, broadcast `"chat_stream"` with `content` + `html` (server-rendered via `md_to_html()`) + accumulate `full_response`
+      - `Thinking` → `"thinking"` (immediate)
+      - `ToolCall` → flush pending text, broadcast `"tool_start"`
+      - `ToolResult` → `"tool_result"` (with error flag)
       - `Error` → `"chat_error"`
       - `Usage` → `"usage"`
       - `ApprovalRequest` → `"approval_request"`
       - `AskRequest` → `"ask_request"` (with optional widgets)
-      - `RateLimit` → update `janus_usage` in-memory + broadcast `"quota_warning"` if text present
-      - `Done` → no-op
-   d. If `comm_reply` configured: stream chunks during reception (500ms coalesced), then send final message via `comm_manager.send()` (dedup: skips final if chunks were already streamed)
-   e. Always broadcast `"chat_complete"` at end
-   f. On error: broadcast `"chat_error"` then `"chat_complete"`
-   g. Clean up ActiveRuns entry
-6. Enqueue task via `state.lanes.enqueue_async(&lane, lane_task)`
+      - `RateLimit` → update `janus_usage` in-memory + broadcast `"quota_warning"` if text present (once per run)
+      - `Done` → no-op (handled by loop exit)
+   f. If `comm_reply` configured: stream chunks during reception (500ms coalesced), then send final message via `send_to_channel()` (dedup: skips final if chunks were already streamed)
+   g. Always broadcast `"chat_complete"` with rendered HTML at end
+   h. On error: broadcast `"chat_error"` then `"chat_complete"`
+5. Enqueue task via `state.lanes.enqueue_async(&lane, lane_task)`
+6. Background: auto-generates chat title if default ("New Chat", etc.) via cheapest provider
+
+### Helper Functions
+
+- `md_to_html(md: &str) -> String` — converts markdown to HTML via pulldown-cmark (tables + strikethrough)
+- `send_to_channel(provider, comm_manager, channel_providers, msg) -> Result` — routes CommMessage to correct provider (neboloop fast path, or lookup in registry)
+- `generate_chat_title_if_needed()` — spawned async, non-fatal on error, calls cheapest provider with transcript snippet
 
 ---
 
@@ -296,11 +305,14 @@ pub struct CommReplyConfig {
 
 ```rust
 const DEFAULT_MAX_ITERATIONS: usize = 100;
+const EXTENDED_MAX_ITERATIONS: usize = 200;     // with genuine progress
 const DEFAULT_CONTEXT_TOKEN_LIMIT: usize = 80_000;
 const MAX_TRANSIENT_RETRIES: usize = 10;
 const MAX_RETRYABLE_RETRIES: usize = 5;
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
-const MAX_AUTO_CONTINUATIONS: usize = 3;
+const MAX_AUTO_CONTINUATIONS_DEFAULT: usize = 5;
+const MAX_AUTO_CONTINUATIONS_CEILING: usize = 50;
+const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
 ```
 
 ### Data Structures
@@ -325,7 +337,19 @@ pub struct RunRequest {
     pub model_preference: Option<String>,                 // fuzzy model name
     pub personality_snippet: Option<String>,               // prepended to system prompt
     pub images: Vec<ai::ImageContent>,                    // base64-encoded image attachments
-    pub allowed_paths: Vec<String>,                       // restrict file writes/shell to these dirs (empty = unrestricted)
+    pub allowed_paths: Vec<String>,                       // restrict file writes/shell (empty = unrestricted)
+    pub presence_tracker: Option<Arc<PresenceTracker>>,
+    pub proactive_inbox: Option<Arc<ProactiveInbox>>,
+    pub min_iterations: usize,
+    pub prompt_mode: PromptMode,
+    pub progress: Option<RunProgress>,
+}
+
+pub struct RunProgress {
+    pub run_id: String,
+    pub iteration_count: Arc<AtomicU32>,
+    pub tool_call_count: Arc<AtomicU32>,
+    pub current_tool: Arc<Mutex<String>>,
 }
 
 struct RunState {
@@ -342,12 +366,13 @@ pub struct Runner {
     tools: Arc<Registry>,
     store: Arc<Store>,
     selector: Arc<ModelSelector>,
-    _steering: steering::Pipeline,          // steering generator pipeline (unused directly, held for lifetime)
+    _steering: steering::Pipeline,
     concurrency: Arc<ConcurrencyController>,
     hooks: Arc<napp::HookDispatcher>,
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
-    role_registry: tools::AgentRegistry,
+    agent_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
+    ask_channels: Option<AskChannels>,
 }
 ```
 
@@ -355,21 +380,27 @@ pub struct Runner {
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new()` | `(store, tools, providers, selector, concurrency, hooks, mcp_context, role_registry, skill_loader) -> Self` | Constructor |
+| `new()` | `(store, tools, providers, selector, concurrency, hooks, mcp_context, agent_registry, skill_loader) -> Self` | Constructor |
 | `run()` | `(&self, RunRequest) -> Result<mpsc::Receiver<StreamEvent>, ProviderError>` | Main entry: spawns agentic loop, returns event stream |
 | `chat()` | `(&self, &str) -> Result<String, ProviderError>` | One-shot convenience (no tools, no session) |
 | `reload_providers()` | `(&self, Vec<Arc<dyn Provider>>)` | Hot-swap provider list |
+| `set_ask_channels()` | `(self, AskChannels) -> Self` | Builder method |
 | `sessions()` | `(&self) -> &SessionManager` | Accessor |
 | `store()` | `(&self) -> &Arc<Store>` | Accessor |
+| `selector()` | `(&self) -> &ModelSelector` | Accessor |
+| `providers()` | `(&self) -> Arc<RwLock<Vec<Arc<dyn Provider>>>>` | Clones Arc |
 | `provider_count()` | `(&self) -> usize` | Non-blocking count |
 
 ### run() Method Flow
 
 1. Validate providers exist (else error: "No AI providers configured")
 2. Get or create session via `SessionManager`
-3. Append user message to session (propagates error if fails)
-4. Create `mpsc::channel(100)` for streaming events
-5. Clone all shared state for spawned task
+3. Handle large input (>threshold) via sidecar summarization:
+   - Saves full content to disk (`<data_dir>/large_inputs/`)
+   - Calls cheapest provider to summarize
+   - Replaces prompt with summary + file reference in metadata
+4. Append user message to session (propagates error if fails)
+5. Create `mpsc::channel(100)` for streaming events
 6. Resolve fuzzy model override (e.g., "sonnet" → "anthropic/claude-sonnet-4")
 7. Derive channel from session key via keyparser
 8. Set MCP context for CLI provider tool calls
@@ -381,23 +412,24 @@ pub struct Runner {
 Per-iteration:
 
 1. **Cancellation check** — bail if token cancelled
-2. **Hook: `agent.should_continue`** — apps can dynamically stop
+2. **Hook: `agent.should_continue`** — plugins can dynamically stop
 3. **Load messages** — `sessions.get_messages()`, then `sanitize_message_order()`
 4. **Sliding window** — `pruning::apply_sliding_window()`, evicts old messages
-5. **Rolling summary** — build if messages evicted
+5. **Rolling summary** — build LLM summary if messages evicted (first eviction only)
 6. **Prompt overhead** — computed on first iteration (system tokens + tool schema tokens + 4000 buffer)
 7. **Context thresholds** — `ContextThresholds::from_context_window()`
 8. **Micro-compact** — shrink tool results if near threshold
-9. **Tool filtering** — `tool_filter::filter_tools_with_context()` returns filtered tools + active contexts
-10. **Steering** — 13 generators (IdentityGuard, ChannelAdapter, ToolNudge, DateTimeRefresh, MemoryNudge, TaskParameterNudge, ObjectiveTaskNudge, PendingTaskAction, TaskProgress, ActiveObjectiveReminder, LoopDetector, ProgressNudge, JanusQuotaWarning) + hook: `steering.generate`
-11. **Build system prompt** — `static_system + STRAP section + tools_list + dynamic_suffix + model_identity`
-    - **Model identity branding**: Janus/nebo-* models get "you are Nebo, NOT Claude/GPT/Gemini" directive; others get standard `provider/model` line
-12. **Hook: `message.pre_send`** — apps can modify system prompt
-13. **Model selection** — override or `selector.select()` + thinking mode
-14. **Build ChatRequest** — messages + tools + system + model
-15. **Acquire LLM permit** — `concurrency.acquire_llm_permit()`
-16. **Provider selection** — match by ID or round-robin with fallback
-17. **`provider.stream()`** — returns EventReceiver
+9. **Time-based micro-compact** — clear stale results after 5+ min inactivity
+10. **Tool filtering** — `tool_filter::filter_tools_with_context()` returns tools + active contexts
+11. **Steering** — 13 generators (see §4.2) + hook: `steering.generate`
+12. **Build system prompt** — `static_system + STRAP section + tools_list + dynamic_suffix + model_identity`
+    - **Model identity branding**: Janus/nebo-* models get "you are Nebo, NOT Claude/GPT/Gemini" directive
+13. **Hook: `message.pre_send`** — plugins can modify system prompt
+14. **Model selection** — override or `selector.select()` + thinking mode
+15. **Build ChatRequest** — messages + tools + system + model
+16. **Acquire LLM permit** — `concurrency.acquire_llm_permit()`
+17. **Provider selection** — match by ID or round-robin with fallback
+18. **`provider.stream()`** — returns EventReceiver
 
 #### Stream Processing
 
@@ -407,7 +439,6 @@ Per-iteration:
 - `Error` — capture stream_error (don't forward yet)
 - `Usage` — track input tokens, forward
 - `RateLimit` — report to concurrency controller
-- `Done` / `ToolResult` / `ApprovalRequest` / `AskRequest` — handled at runner level only
 
 #### Error Handling (3 layers)
 
@@ -417,29 +448,165 @@ Per-iteration:
 
 #### After Stream
 
-- **Hook: `message.post_receive`** — apps modify response text
+- **Hook: `message.post_receive`** — plugins modify response text
 - **Save assistant message** with tool_calls JSON + content block order metadata
 - **Hook: `session.message_append`** — notification
 - **CLI providers** — if `provider.handles_tools()`, skip runner tool loop
 - **Tool execution** — parallel via `FuturesUnordered`:
-  - Acquire tool permit per call
+  - Acquire tool permit per call (max 8 parallel tools via ConcurrencyController)
   - 300s timeout per tool
+  - Hook: `tool.pre_execute` (can block/modify input)
   - Results collected and forwarded as `StreamEventType::ToolResult`
-  - Sidecar vision verification for browser screenshots
+  - Hook: `tool.post_execute` (notification)
   - Results saved in deterministic order
 - **Hook: `agent.turn`** — notification after tool execution
+- **Update RunProgress** — increment iteration_count, tool_call_count atomics
 - If tool calls present: `continue` loop (LLM needs to respond to results)
 
 #### Auto-Continuation
 
 If no tool calls but `active_task` is set and response `looks_like_continuation_pause()`:
 - Inject synthetic user message: `<system>Continue with your current objective...</system>`
-- Up to `MAX_AUTO_CONTINUATIONS` (3) times
+- Up to `MAX_AUTO_CONTINUATIONS_DEFAULT` (5) times, ceiling of 50 for work tasks
+
+#### Output Recovery
+
+If response is truncated due to max_tokens (detected via usage):
+- Up to `MAX_OUTPUT_RECOVERY_ATTEMPTS` (3) retries
+- Injects "continue from where you left off" as synthetic user message
+
+#### Extended Iterations
+
+Default max iterations is 100, but extends to 200 if genuine progress is detected
+(tool calls being made, not stuck in a loop).
 
 #### Post-Loop
 
 - Debounced memory extraction (5s idle per session)
 - Extract facts via LLM, store in memory DB
+
+### 4.2 Steering System
+
+**File:** `crates/agent/src/steering.rs`
+
+13 generators run each iteration, producing `SteeringDirective` structs (label, content, priority 0–10):
+
+| # | Generator | Condition | Behavior |
+|---|-----------|-----------|----------|
+| 1 | **IdentityGuard** | `iteration >= 8 && iteration % 8 == 0` | Re-affirm agent identity every 8 turns |
+| 2 | **ChannelAdapter** | Always | Adapt output format: DM (concise), CLI (plain text), Voice (1–2 sentences) |
+| 3 | **ToolNudge** | `iteration >= 5 && turns_since_tool_use >= 5 && active_task` | Nudge toward tool use when idle |
+| 4 | **PendingTaskAction** | `iteration >= 2 && active_task && last_response_text_only` | Force action on active task |
+| 5 | **OutputDiscipline** | `iteration >= 1 && last_response > 300 chars` | Suppress verbose narration (non-Claude) |
+| 6 | **NarrationSuppressor** | `iteration >= 1 && any narrating_turn >= 1` | "STOP narrating tool calls" (non-Claude) |
+| 7 | **RepetitionDetector** | `iteration >= 3 && recent_texts_share_40%_trigrams` | Catch restating same info (non-Claude) |
+| 8 | **LoopDetector** | Budget-based only | 70%: caution, 90%: critical warning, 100%: must stop |
+| 9 | **ErrorRecovery** | `consecutive_errors >= 3` | Soft advisory: "try a different approach" |
+| 10 | **PresenceAwareness** | `iteration >= 2 && user_presence set` | Adapt to user focus: unfocused="work autonomously", returned="summarize progress" |
+| 11 | **ContextPressure** | `iteration >= 15 && iteration % 15 == 0` | "Context window filling; summarize instead of quoting" |
+| 12 | **JanusQuotaWarning** | `quota_warning set && !is_ollama` | Warn about budget consumption |
+| 13 | **AskToolNudge** | `last_response_has_question? && !is_claude` | "Use ask tool for user input, not plain text" |
+
+**Provider-aware skipping:**
+- Claude (direct Anthropic): Skips NarrationSuppressor, OutputDiscipline, RepetitionDetector, AskToolNudge
+- Ollama: Skips JanusQuotaWarning
+
+**Force break logic:** Only hard-stops on `user_requested_stop && iteration > 2`. Everything
+else (errors, loops) handled by iteration budget only — aggressive circuit breakers kill
+legitimate work.
+
+### 4.3 Prompt Assembly
+
+**File:** `crates/agent/src/prompt.rs`
+
+Two-phase build: static prefix (cacheable) + dynamic suffix (per-iteration).
+
+**Static prefix (8 sections):**
+1. Identity & Personality — "You are {agent_name}, a personal AI companion..."
+2. Capabilities Overview — "Your tools: {tool_list}"
+3. Core Behavior — "You are a goal-driven agent... Use tools to make progress..."
+4. STRAP Documentation — Context-injected docs for active tools
+5. Tool Usage Discipline — "Always validate file paths. Never guess..."
+6. Channel Adaptation — Channel-specific guidance
+7. Communication Etiquette — "Be concise. No narration..."
+8. Model-Specific Guidance — Provider-specific instructions
+
+**Dynamic suffix (per-iteration):**
+- Provider guidance, active task, work tasks
+- Formatted steering directives
+- Proactive context (inbox results)
+- Tool docs cache (survives eviction)
+- User timezone
+
+**Cache boundary:** `<!-- CACHE_BOUNDARY -->` marker separates static from semi-dynamic
+content, enabling prompt caching providers to cache the prefix separately.
+
+```rust
+pub enum PromptMode {
+    Full,      // All sections: memory, steering, STRAP docs, etiquette
+    Minimal,   // Identity + capabilities + behavior core only (for sub-agents)
+}
+```
+
+### 4.4 Pruning & Compaction
+
+**File:** `crates/agent/src/pruning.rs`
+
+Three-tier compaction strategy:
+
+| Tier | Function | Trigger | Behavior |
+|------|----------|---------|----------|
+| Primary | `apply_sliding_window()` | Every iteration | Walk backwards, evict when over 40k tokens or 80 messages; never evict current-run messages |
+| Secondary | `micro_compact()` | Near warning threshold | Trim old tool results to `[trimmed: {tool} result]`; preserve 3 most recent |
+| Tertiary | `time_based_micro_compact()` | 5+ min inactivity gap | Clear stale results (provider cache expired); keep only 1 recent |
+| Fallback | `build_llm_summary()` | First eviction | Generate structured 10-section summary via sidecar LLM |
+
+**Key constants:**
+```rust
+const CHARS_PER_TOKEN: usize = 4;
+const IMAGE_CHAR_ESTIMATE: usize = 8000;
+const MICRO_COMPACT_KEEP_RECENT: usize = 3;
+const MICRO_COMPACT_COUNT_TRIGGER: usize = 4;
+const TIME_BASED_GAP_THRESHOLD_SECS: i64 = 300;  // 5 min
+const MAX_MESSAGE_COUNT: usize = 80;
+pub const DEFAULT_WINDOW_MAX_TOKENS: usize = 40_000;
+```
+
+### 4.5 Model Selection
+
+**File:** `crates/agent/src/selector.rs`
+
+**10-step fallback chain:**
+1. Task routing (check `task_routing["vision"]`)
+2. Task fallbacks (try ordered list)
+3. General routing (`task_routing["general"]`)
+4. Default model
+5. First non-gateway active model
+6. CLI preferred (claude-code, codex-cli, gemini-cli)
+7. Last resort gateway (Janus)
+8. Config default
+
+**Task classification keywords:**
+- Vision: `data:image/`, `"type":"image"`
+- Audio: `data:audio/`, `"type":"audio"`
+- Reasoning: "think through", "analyze", "step by step"
+- Code: "code", "function", "python", "react"
+- General: default
+
+**Failure tracking:** Exponential backoff 5s → 1h per model. Cleared on `clear_failed()`.
+
+### 4.6 Tool Filtering
+
+**File:** `crates/agent/src/tool_filter.rs`
+
+All registered tools are ALWAYS included in the tool definition list. Filtering controls
+which STRAP docs are injected and which deferred tools are activated.
+
+**Context groups** (13): web, event, loop, work, desktop, app, organizer, music, settings, keychain, spotlight, execute, emit
+
+**Deferred tools** (5): loop, work, execute, plugin, publisher — activate on keyword match or explicit call
+
+**Activation logic:** Scans last 5 messages + called_tools for context keywords.
 
 ### Helper Functions
 
@@ -450,28 +617,6 @@ If no tool calls but `active_task` is set and response `looks_like_continuation_
 | `sanitize_message_order()` | Reorders tool results after their assistant, strips orphans |
 | `build_system_prompt()` | Combines custom system with DB context + model identity |
 | `detect_objective()` | Background task classification via LLM |
-
-### Model Identity Branding (`crates/agent/src/prompt.rs`)
-
-The system prompt includes a model identity line that varies by provider:
-
-```rust
-// Janus gateway or nebo-* model names → Nebo branding
-if provider_name == "janus" || model_name.starts_with("nebo-") {
-    "Model: neboloop/{model_name} — you are Nebo, NOT Claude, GPT, Gemini, or any other model."
-}
-// No provider/model → generic
-else if provider_name.is_empty() && model_name.is_empty() {
-    "Model: Nebo AI"
-}
-// Standard provider
-else {
-    "Model: {provider_name}/{model_name}"
-}
-```
-
-This ensures the agent identifies as "Nebo" when routed through Janus or using nebo-1
-(the custom model), preventing it from claiming to be Claude/GPT/Gemini.
 
 ---
 
@@ -525,7 +670,6 @@ conversation under the same session, preserving old messages and session-level p
 - **Empty message rejection**: Skips messages where content, tool_calls, and tool_results are all empty/null
 - **Chat ID resolution**: `resolve_chat_id()` prefers `session.active_chat_id`, falls back to `session.name` (legacy compat), then `"chat-{session_id}"`
 - **Non-destructive reset**: `rotate_chat()` creates a new chat_id, updates `active_chat_id`, resets conversation-scoped counters (message_count, summary, active_task) but preserves session-level preferences (model_override, provider_override)
-- **Compact vs reset**: `clear_current_messages()` stays within the same conversation; `rotate_chat()`/`reset()` creates a new one
 
 ### Session-to-Chat Relationship
 
@@ -561,7 +705,6 @@ Runtime fallback in `get_or_create()` handles sessions missed by the migration.
 
 ```
 agent:<agentId>:<channel>      — Agent-scoped session
-agent:<agentId>:<rest>           — Agent-scoped session
 subagent:<parentId>:<childId>    — Sub-agent session
 acp:<sessionId>                  — ACP session
 <channel>:group:<id>             — Group chat
@@ -586,7 +729,6 @@ pub struct SessionKeyInfo {
     pub is_topic: bool,
     pub parent_key: String,
     pub rest: String,
-    pub agent_id: String,
 }
 ```
 
@@ -642,11 +784,12 @@ CREATE TABLE sessions (
     active_task TEXT,                                -- 0040
     last_summarized_count INTEGER DEFAULT 0,         -- 0043
     work_tasks TEXT,                                 -- 0046
+    active_chat_id TEXT,                             -- 0075 (decoupled from chat_id)
 );
 UNIQUE INDEX ON sessions(name, scope, scope_id);  -- Upsert target
 ```
 
-### Chats Table (migration 0008)
+### Chats Table (migration 0008 + 0075)
 
 ```sql
 CREATE TABLE chats (
@@ -654,10 +797,11 @@ CREATE TABLE chats (
     title TEXT NOT NULL DEFAULT 'New Chat',
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    user_id TEXT                                    -- 0009: companion mode
+    user_id TEXT,                                    -- 0009: companion mode
+    session_name TEXT                                -- 0075: links chat to parent session
 );
 INDEX idx_chats_updated_at ON chats(updated_at DESC);
-UNIQUE ON user_id (for companion chat upsert)
+INDEX idx_chats_session_name ON chats(session_name, updated_at DESC);
 ```
 
 ### Chat Messages Table (migration 0008 + 0045 + 0048)
@@ -677,6 +821,8 @@ CREATE TABLE chat_messages (
     is_compacted INTEGER DEFAULT 0,   -- 0048: compaction flag
     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
 );
+INDEX idx_chat_messages_chat_id ON chat_messages(chat_id);
+INDEX idx_chat_messages_day ON chat_messages(chat_id, day_marker);
 ```
 
 **Critical:** The FK constraint means a `chats` row MUST exist before inserting messages.
@@ -687,12 +833,13 @@ CREATE TABLE chat_messages (
 ```rust
 pub struct Session {
     pub id: String,
-    pub name: Option<String>,          // = session_key = chat_id
+    pub name: Option<String>,          // = session_key
     pub scope: Option<String>,
     pub scope_id: Option<String>,
     pub summary: Option<String>,
     pub token_count: Option<i64>,
     pub message_count: Option<i64>,
+    pub active_chat_id: Option<String>,
     // ... (see db/src/models.rs for all 20+ fields)
 }
 
@@ -702,6 +849,7 @@ pub struct Chat {
     pub created_at: i64,
     pub updated_at: i64,
     pub user_id: Option<String>,
+    pub session_name: Option<String>,
 }
 
 pub struct ChatMessage {
@@ -730,12 +878,16 @@ pub struct ChatMessage {
 - `set_session_model_override()`, `set_session_auth_profile_override()`, `clear_session_overrides()`
 - `get_session_active_task()`, `set_session_active_task()`, `clear_session_active_task()`
 - `get_session_work_tasks()`, `set_session_work_tasks()`
+- `set_session_active_chat_id()`, `list_chats_by_session()`
 
 **Chats** (`crates/db/src/queries/chats.rs`):
 - `create_chat()`, `get_chat()`, `list_chats()`, `count_chats()`
+- `create_chat_for_session()` — creates chat with session_name link
 - `create_chat_message_for_runner()` — auto-creates parent chat row, inserts message with all fields
 - `create_chat_message()` — basic (REST endpoints)
 - `get_chat_messages()`, `get_recent_chat_messages()`, `get_recent_chat_messages_with_tools()`
+- `get_chat_messages_paginated()` — cursor-based (created_at < ?)
+- `get_chat_messages_budgeted()` — fetch by character budget (for context windowing)
 - `find_tool_output()` — search role='tool' messages for a specific tool_call_id
 - `get_or_create_companion_chat()` — upsert by user_id
 - `list_chat_days()` — GROUP BY day_marker
@@ -761,6 +913,12 @@ pub struct LaneTask {
     pub completion_tx: Option<oneshot::Sender<Result<(), String>>>,
 }
 
+struct LaneState {
+    queue: VecDeque<LaneTask>,   // FIFO queue
+    active: usize,               // Currently executing tasks
+    max_concurrent: usize,       // Cap (0 = unlimited)
+}
+
 pub struct LaneManager {
     lanes: HashMap<String, (Arc<Mutex<LaneState>>, Arc<Notify>)>,
     cancel: CancellationToken,
@@ -775,7 +933,7 @@ pub struct LaneManager {
 | `events` | `lanes::EVENTS` | 0 (unlimited) | Event-triggered |
 | `subagent` | `lanes::SUBAGENT` | 0 (unlimited) | Sub-agent tasks |
 | `nested` | `lanes::NESTED` | 0 (unlimited) | Nested calls |
-| `heartbeat` | `lanes::HEARTBEAT` | 0 (unlimited) | Proactive ticks (governed by ConcurrencyController) |
+| `heartbeat` | `lanes::HEARTBEAT` | 0 (unlimited) | Proactive ticks |
 | `comm` | `lanes::COMM` | 0 (unlimited) | NeboLoop messages |
 | `dev` | `lanes::DEV` | 0 (unlimited) | Developer assistant |
 | `desktop` | `lanes::DESKTOP` | 1 | One screen, one mouse |
@@ -801,6 +959,7 @@ Each lane has a `Notify`-driven pump loop:
 2. Lock lane state, check capacity
 3. Pop task from FIFO queue, increment `active` count
 4. Spawn task, on completion: decrement active, re-notify pump
+5. Log warning for stale tasks (waited > `warn_after_ms`)
 
 ### make_task() Helper
 
@@ -843,7 +1002,7 @@ pub struct StreamEvent {
     pub usage: Option<UsageInfo>,
     pub rate_limit: Option<RateLimitMeta>,
     pub widgets: Option<serde_json::Value>,  // AskRequest UI widgets
-    pub provider_metadata: Option<HashMap<String, String>>,  // provider-specific metadata
+    pub provider_metadata: Option<HashMap<String, String>>,
 }
 ```
 
@@ -871,9 +1030,6 @@ pub trait Provider: Send + Sync {
     fn supports_tool_result_images(&self) -> bool { false }
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError>;
 }
-
-pub trait ConnectionResetter: Send + Sync { /* reset provider connections */ }
-pub trait ProfileTracker: Send + Sync { /* track auth profile state */ }
 ```
 
 ### ProviderError
@@ -946,7 +1102,9 @@ pub struct AppState {
     pub runner: Arc<Runner>,                    // Agent runner (sessions, providers, tools)
     pub tools: Arc<Registry>,                   // Tool registry
     pub lanes: Arc<LaneManager>,                // Per-lane task queuing
-    pub comm_manager: Arc<PluginManager>,        // NeboLoop comm plugin
+    pub run_registry: RunRegistry,              // Global run tracking
+    pub comm_manager: Arc<PluginManager>,       // NeboLoop comm plugin
+    pub channel_providers: Arc<RwLock<HashMap<String, Arc<dyn ChannelProvider>>>>,
     pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     pub ask_channels: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
     pub extension_bridge: Arc<browser::ExtensionBridge>,
@@ -954,10 +1112,15 @@ pub struct AppState {
     pub mcp_context: Arc<tokio::sync::Mutex<tools::ToolContext>>,
     pub event_bus: tools::EventBus,
     pub event_dispatcher: Arc<workflow::events::EventDispatcher>,
-    pub role_registry: tools::RoleRegistry,
+    pub agent_registry: Arc<RwLock<AgentRegistry>>,
     pub janus_usage: Arc<tokio::sync::RwLock<Option<JanusUsage>>>,
     pub store: Arc<Store>,
     pub config: Config,
+    pub skill_loader: Arc<Loader>,
+    pub plugin_store: Arc<PluginStore>,
+    pub presence: Arc<PresenceTracker>,
+    pub proactive_inbox: Arc<ProactiveInbox>,
+    pub concurrency: Arc<ConcurrencyController>,
     // ... other non-chat fields
 }
 
@@ -1008,15 +1171,16 @@ NeboLoop Gateway ──WS──> NeboLoopPlugin ──> PluginManager.message_ha
    - Build `ChatConfig` with:
      - `origin: Origin::Comm`
      - `lane: lanes::COMM`
-     - `comm_reply: Some(CommReplyConfig { topic, conversation_id })`
-   - Call `run_chat(&state, config, None)`
+     - `comm_reply: Some(CommReplyConfig { provider: "neboloop", topic, conversation_id })`
+   - Call `run_chat(&state, config)`
    - Emit into event bus for agent triggers
 3. **Other topics**: Emit into event bus + broadcast to frontend as `"comm_message"`
 
 ### Reply Path
 
 When `comm_reply` is set in `ChatConfig`, `run_chat()` accumulates `full_response`
-and after completion sends it back via `comm_manager.send()` as a `CommMessage`.
+and streams chunks during reception (500ms coalesced). Final send via `send_to_channel()`
+with dedup: skips final complete message if chunks were already streamed.
 
 ---
 
@@ -1029,12 +1193,12 @@ and after completion sends it back via `comm_manager.send()` as a `CommMessage`.
 ```
 PREFIX-XXXX-XXXX
 ```
-Where PREFIX is NEBO/SKIL/WORK/AGNT/LOOP and XXXX is 4 Crockford Base32 characters.
+Where PREFIX is NEBO/SKIL/WORK/AGNT/LOOP/PLUG and XXXX is 4 Crockford Base32 characters.
 
 ### Code Types
 
 ```rust
-pub enum CodeType { Nebo, Skill, Work, Agent, Loop }
+pub enum CodeType { Nebo, Skill, Work, Agent, Loop, Plugin }
 ```
 
 ### Detection
@@ -1059,8 +1223,9 @@ if let Some((code_type, code)) = crate::codes::detect_code(&prompt) {
    - **NEBO**: `redeem_nebo_code()` → store bot_id + token → activate NeboLoop
    - **SKILL**: `install_skill()` → persist to filesystem → reload skill loader → cascade deps
    - **WORK**: `install_workflow()` → persist to DB + filesystem → cascade deps
-   - **AGNT**: `install_agent()` → persist to DB + filesystem → auto-activate → cascade deps
+   - **AGNT**: `install_agent()` → clean reinstall (stop worker, remove from registry, unregister workflows, delete from DB) → persist → process workflow bindings → cascade deps → auto-activate (if no auth pending)
    - **LOOP**: `join_loop()` → register membership
+   - **PLUG**: `install_plugin()` → download .napp → install via plugin_store → register structured tools → cascade deps
 3. Broadcast `"code_result"` with success/error + artifact_name + checkout_url
 4. Always broadcast `"chat_complete"` (resets frontend loading state)
 
@@ -1068,6 +1233,15 @@ if let Some((code_type, code)) = crate::codes::detect_code(&prompt) {
 
 If API returns `status == "payment_required"`, the result includes `checkout_url`
 for Stripe checkout redirect.
+
+### Agent Install Special Logic
+
+- Clean reinstall: stops agent worker, removes from registry, unregisters workflows, deletes from DB
+- Cascade resolution for plugins/skills before activation
+- Auth sweep: checks plugins for pending OAuth (broadcasts `agent_auth_required` if needed)
+- Workflow binding processing from typeConfig or DB frontmatter
+- Auto-activation only if no auth required (wizard completes first)
+- NeboLoop registration for owner's personal loop
 
 ### REST Endpoint
 
@@ -1090,6 +1264,7 @@ class WebSocketClient {
     private messageQueue: string[];  // queued while disconnected
     private reconnectAttempts: number;
     private authToken: string | null;
+    private currentPresence: 'focused' | 'unfocused' | 'away';
 }
 ```
 
@@ -1101,120 +1276,111 @@ class WebSocketClient {
 
 **Message format**: `{"type": "...", "data": {...}, "timestamp": "..."}`
 
-### Chat.svelte (`app/src/lib/components/chat/Chat.svelte`)
+**Presence tracking**: Attaches `visibilitychange`, `focus`, `blur` listeners. Sends
+`ws.send('presence', { status })` on change. 5-min timer from `unfocused` → `away`.
 
-Multi-mode component supporting three modes:
+### Event Dispatcher Bridge (`app/src/lib/websocket/listeners.ts`)
 
-```typescript
-interface ChatMode {
-    type: 'companion' | 'channel' | 'agent';
-    channelId?: string;
-    channelName?: string;
-    loopName?: string;
-    agentId?: string;
-    agentName?: string;
-}
+Routes all WebSocket events to window custom events so chat components can listen:
+- WebSocket `chat_stream` → `window.dispatchEvent(new CustomEvent('nebo:chat_stream', {detail: data}))`
+- Similarly for: `tool_start`, `tool_result`, `thinking`, `chat_complete`, `chat_message`, `approval_request`, `ask_request`, `subagent_*`, etc.
+
+### ChatComposer.svelte (`app/src/lib/components/chat/ChatComposer.svelte`)
+
+Rich message input built on **TipTap** (`@tiptap/core`) with these extensions:
+
+- **StarterKit** — basic text editing (headings/codeBlock/horizontalRule/blockquote disabled)
+- **Mention** (`@tiptap/extension-mention`) — `@` autocomplete driven by `suggestion` API, renders styled agent chips via `renderHTML`, produces `<@id>` tokens on serialize
+- **SlashDetector** — custom `Extension.create()`, fires on `onUpdate`, shows `SlashCommandMenu` when text starts with `/` and has no spaces
+- **DictationMark** — custom `Mark.create()`, renders `<span data-dictation class="bg-primary/20 border-b-2 border-primary/60 rounded-sm">`, highlights live-transcribed text
+- **Placeholder** — (via StarterKit) placeholder text when editor is empty
+
+**Dictation integration**:
+- `dictationStore` + `$combinedTranscript` from `$lib/stores/dictation`
+- `composerOwnerId` (UUID) prevents cross-composer interference
+- `buildDictationDoc(before, dictation, after)` — constructs TipTap JSON doc with frozen cursor segments (text before/after cursor preserved, dictation text marked)
+- Live rebuild: `$effect` watches `$combinedTranscript`, rebuilds doc + repositions cursor on every transcript update
+- On dictation stop: strips dictation marks, preserves cursor position
+- **Cmd+D** hotkey toggles dictation (document-level `keydown` listener)
+- **VoiceButton** in toolbar — starts dictation or opens voice conversation overlay
+- **VoiceModeOverlay** — full-screen voice conversation mode (separate from in-editor dictation)
+
+**Draft persistence**:
+- Saves TipTap JSON to `localStorage` key `nebo:draft:{agentId}` on every edit (debounced 300ms)
+- Restores on mount (`restoreDraft()`), clears on send (`clearDraft()`)
+- Flushes pending save on destroy
+
+**Other features**:
+- **File attachments**: Image thumbnails with remove button, file chips with size
+- **Drag-and-drop**: Sets `_composerHandled` flag so ChatPane overlay doesn't interfere
+- **Serialization**: `serializeContent()` walks TipTap JSON tree (`editor.getJSON()`), extracts text + `<@id>` mention tokens + `\n` for paragraphs
+- **IME handling**: `isComposing` state prevents Enter-to-send during CJK composition
+- **Send**: Enter to send (Shift+Enter for newline, suppressed during IME), calls `onsend(text, files, mentions)`
+
+**Props**: `agentName`, `agentId`, `placeholder`, `allAgents`, `onsend`, `onstop`, `isLoading`
+
+### ChatPane.svelte (`app/src/lib/components/chat/ChatPane.svelte`)
+
+Chat display and layout:
+
+- **Message rendering**: Renders user (right-aligned), assistant (left-aligned), thinking (collapsible details), tool (expandable JSON), tool-group (connector lines), ask (interactive widgets), delegate agent identity chips
+- **Message grouping**: `groupedMessages` derived groups consecutive tool messages into `{ type: 'tool-group', tools: [...] }`
+- **Scroll management**: Auto-scroll on new messages (disabled on manual scroll-up), scroll-to-bottom button
+- **Edit/Copy/Redo**: Inline edit for user messages (Ctrl+Enter to save), copy to clipboard, redo from message
+- **Drag-drop overlay**: "Drop files here" visual when dragging files over pane
+- **Mention chips**: Renders `<@id>` in messages as styled span chips with agent avatar/name
+- **Ask widgets**: Renders `AskWidget.svelte` for `type: 'ask'` messages (buttons, select, radio, checkbox, confirm)
+- **Delegate identity**: Renders agent avatar chip above messages from @mentioned agents (`delegateAgentId`/`delegateAgentName`)
+- **Server-rendered HTML**: Uses `msg.html` when available (server-side markdown), falls back to client-side `marked.parse()`
+
+**Props**: `messages`, `agentName`, `agentId`, `headerTitle`, `emptyIcon/Title/Desc`, `allAgents`, `onsend`, `onstop`, `onedit`, `onredo`, `onasksubmit`, `isLoading`
+
+### Thread-Based UI (Routes)
+
+**`[agentId]/threads/+layout.svelte`** — 3-column layout:
+- Col 2 (260px): Thread list sidebar with AgentTabBar, New Thread link, thread rows
+- Col 3 (flex-1): Child route content
+
+**`[agentId]/threads/+page.svelte`** — New thread empty state:
+- ChatPane with empty state, on first send: creates chat via API, sends prompt via WS, navigates to new thread
+
+**`[agentId]/threads/[threadId]/+page.svelte`** — Single thread page:
+- Loads messages via REST API on mount (filters to `user`/`assistant` roles only, hiding `system`)
+- Listens to window custom events (`nebo:chat_stream`, `nebo:thinking`, `nebo:tool_start`, `nebo:tool_result`, `nebo:chat_complete`, `nebo:ask_request`)
+- `streamingContent` — `Record<agentId, rawMarkdown>` for raw text accumulation (per-agent buffers for @mention support)
+- `streamingHtml` — `Record<agentId, serverRenderedHtml>` for display (server-rendered markdown from `data.html`)
+- `pendingTools` — `Map<tool_id, { idx, startTime }>` to match `tool_start` with `tool_result`
+- `isMyEvent(data)` — validates `data.agentId === agentId || data.originAgentId === agentId`
+- `handleAskRequest` — appends `{ type: 'ask', requestId, prompt, widgets }` message on `nebo:ask_request`
+- `handleAskSubmit` — sends WS `ask_response`, updates ask message with chosen response
+- Optimistic UI: user messages added locally before WebSocket send completes
+
+### Message Flow (Frontend)
+
 ```
-
-**Internal message model**:
-```typescript
-interface Message {
-    id: string;
-    role: 'user' | 'assistant' | 'system';
-    content: string;
-    contentHtml?: string;
-    timestamp: Date;
-    toolCalls?: ToolCall[];
-    streaming?: boolean;
-    thinking?: string;
-    contentBlocks?: ContentBlock[];
-    senderName?: string;  // channel mode
-}
-
-interface ContentBlock {
-    type: 'text' | 'tool' | 'image' | 'ask';
-    text?: string;
-    toolCallIndex?: number;
-    imageData?: string;
-    askRequestId?: string;
-    askPrompt?: string;
-    askWidgets?: Array<{type, label?, options?, default?}>;
-    askResponse?: string;
-}
+User types in ChatComposer (TipTap editor)
+  → serializeContent() walks editor.getJSON() → { text, mentions }
+  → onsend(text, files, mentions)
+  ↓
+[+page.svelte].handleSend(text)
+  → optimistically add user message
+  → ws.send('chat', { prompt, agent_id, session_id })
+  ↓
+Backend processes → streams response
+  ↓
+WS messages arrive → listeners.ts → window custom events
+  ↓
+[+page.svelte] event listeners:
+  → nebo:chat_stream → accumulate raw in streamingContent[agentId], store HTML in streamingHtml[agentId]
+  → nebo:thinking → add thinking message
+  → nebo:tool_start → flush pending text, add tool message, track in pendingTools
+  → nebo:tool_result → update tool status/duration/response
+  → nebo:ask_request → add { type: 'ask', requestId, prompt, widgets } message
+  → nebo:chat_complete → finalize streamed content, clear loading
+  ↓
+displayMessages derived: [...messages, ...streaming extra from streamingHtml]
+  → ChatPane renders (uses msg.html for server-rendered markdown, falls back to marked.parse())
 ```
-
-**WebSocket event subscriptions (companion/agent)**:
-- `chat_stream` — append text to streaming message
-- `chat_complete` — finalize message, drain queue, extract memories
-- `chat_response` — single complete response
-- `tool_start` — add running tool card
-- `tool_result` — update tool card status
-- `image` — inline image block
-- `thinking` — thinking block content
-- `error` — error display
-- `approval_request` — show ApprovalModal
-- `stream_status` — idle/running check
-- `chat_cancelled` — cancel loading state
-- `ask_request` — interactive question with widgets
-- `code_processing` — marketplace code status
-- `code_result` — code install result
-- `dep_installed` / `dep_cascade_complete` — dependency installation
-
-**Sending a message (companion/agent)**:
-```typescript
-ws.send('chat', {
-    session_id: chatId,
-    prompt: text,
-    user_id: '',
-    channel: 'web',
-    agent_id: mode.agentId || ''  // agent isolation
-});
-```
-
-**Features**:
-- Virtual scroll (top-truncation, 20-message window, load-more)
-- Message grouping by message role + tool presence
-- Draft persistence in localStorage
-- Message queue during loading (queued messages shown as pills)
-- Stream staleness detection (10min timeout)
-- Voice: TTS output, full-duplex voice sessions, wake word
-- File drag-and-drop (inserts paths into input)
-- Code processing UI (marketplace code status messages)
-
-**Feature parity (companion & agent)**:
-The following MessageGroup props apply to both companion and agent modes (`isCompanion || isAgent`):
-- `isStreaming` — pulsing indicator on the last assistant message during streaming
-- `onViewToolOutput` — click tool card to open ToolOutputSidebar
-- `onAskSubmit` — interactive ask/question widget responses
-
-**Empty state**:
-- **Companion**: Bot icon + "Your AI Companion" heading + 4 suggestion buttons (read README, list files, web search, debug)
-- **Agent**: Agent initial avatar (first letter, primary color) + agent name heading + agent description (fetched via `getAgent()` on mount, falls back to generic text) + 2 suggestion buttons ("What can you help me with?", "Give me a brief introduction")
-- **Channel**: Plain "No messages yet" text
-
-### ChatInput.svelte
-
-- Autoresizing textarea (max 200px)
-- Enter to send, Shift+Enter for newline
-- Up arrow recalls last queued message
-- File attachment via native dialog or HTML input
-- Voice conversation toggle (full-duplex waveform visualizer)
-- Send/Stop button (switches based on isLoading)
-- New session button
-- Queued message pills with cancel
-
-### EntityConfigPanel.svelte (`app/src/lib/components/chat/EntityConfigPanel.svelte`)
-
-Per-entity configuration UI with 5 sections:
-
-1. **Heartbeat** — toggle, interval (5min→24hr), time window, content textarea
-2. **Permissions** (7 categories) — Web Search, Desktop Control, File System, Shell Commands, Memory Access, Calendar, Email — each: Inherit/Allow/Deny
-3. **Resource Access** — Screen Access, Browser Access — each: Inherit/Allow/Deny
-4. **Model** — text input for model preference (fuzzy resolved)
-5. **Personality** — textarea for personality snippet
-
-Each field shows inherited vs overridden state via `config.overrides` map. Null values
-clear overrides (inherit from defaults). Auto-saves on blur/change.
 
 ### Frontend API (`app/src/lib/api/nebo.ts`)
 
@@ -1301,13 +1467,6 @@ CREATE TABLE entity_config (
 );
 ```
 
-### Mutations (`upsert_entity_config()`)
-
-- Patch-based: only fields in the patch are updated
-- NULL values clear overrides (inherit from defaults)
-- Handles booleans, strings, numbers, JSON objects/arrays
-- Seed: `"main"` entity row created at migration time
-
 ### Integration with Chat Pipeline
 
 1. `dispatch_chat()` calls `resolve_for_chat()` → sets `ChatConfig.entity_config`
@@ -1327,12 +1486,12 @@ CREATE TABLE entity_config (
 
 ## 16. End-to-End Event Flow
 
-### User types "Hello" in companion chat:
+### User types "Hello" in agent thread:
 
-1. **Frontend**: `Chat.svelte` calls `ws.send('chat', {session_id: chatId, prompt: 'Hello', channel: 'web'})`
+1. **Frontend**: `[threadId]/+page.svelte` calls `ws.send('chat', {session_id: threadId, prompt: 'Hello', agent_id, channel: 'web'})`
 2. **WS Handler**: `handle_client_ws()` receives `type: "chat"`, calls `dispatch_chat()`
 3. **dispatch_chat()**: Checks `detect_code("Hello")` → None. Builds `ChatConfig`, calls `run_chat()`
-4. **run_chat()**: Tracks in ActiveRuns, broadcasts `"chat_created"`, creates LaneTask, enqueues on `"main"` lane
+4. **run_chat()**: Registers in RunRegistry, broadcasts `"chat_created"`, creates LaneTask, enqueues on `"main"` lane
 5. **Lane pump**: Picks up task, spawns it
 6. **Runner.run()**: Creates session, appends user message (auto-creates `chats` row), spawns `run_loop()`
 7. **run_loop() iteration 1**:
@@ -1341,11 +1500,11 @@ CREATE TABLE entity_config (
    - Selects model, acquires LLM permit
    - `provider.stream()` → receives Text events
    - Forwards each Text event to tx channel
-8. **run_chat() event loop**: Receives Text events, broadcasts `"chat_stream"` to hub
-9. **Frontend**: `handleChatStream()` appends text to streaming message, scrolls
+8. **run_chat() event loop**: Receives Text events, coalesces into 75ms batches, broadcasts `"chat_stream"` to hub
+9. **Frontend**: listeners.ts dispatches `nebo:chat_stream` custom event → `[threadId]/+page.svelte` accumulates in `streamingMap`
 10. **run_loop()**: Stream ends, saves assistant message, no tool calls → breaks
-11. **run_chat()**: Broadcasts `"chat_complete"`, cleans up ActiveRuns
-12. **Frontend**: `handleChatComplete()` finalizes message, sets `isLoading = false`
+11. **run_chat()**: Renders markdown→HTML, broadcasts `"chat_complete"`, RunHandle drops (auto-unregisters)
+12. **Frontend**: `nebo:chat_complete` handler finalizes message, sets `isLoading = false`
 
 ### User sends marketplace code "SKIL-RFBM-XCYT":
 
@@ -1357,14 +1516,19 @@ CREATE TABLE entity_config (
 6. Broadcasts `"chat_complete"`
 7. **Frontend**: Shows code processing/result UI, resets loading state
 
-### User sends message to agent "Researcher":
+### User sends message to agent with tool calls:
 
-1. **Frontend**: `ws.send('chat', {session_id: 'agent:35672fb4:web', prompt: 'Hello', agent_id: '35672fb4', channel: 'web'})`
-2. **dispatch_chat()**: agent_id is set → `session_key = build_agent_session_key(agent_id, "web")` = `"agent:35672fb4:web"`
-3. **run_chat()**: Same as companion but `session_key = "agent:35672fb4:web"`, `agent_id = "35672fb4"`
-4. **Runner.run()**: Creates session with `name = "agent:35672fb4:web"`, auto-creates `chats` row with same ID
-5. **run_loop()**: Resolves agent from `agent_registry`, injects AGENT.md into system prompt, uses agent's declared tools
-6. Rest of flow identical to companion chat
+1. Same flow through steps 1–7
+2. **run_loop() iteration 1**: Stream returns text + tool_calls
+   - Saves assistant message with tool_calls JSON
+   - Executes tools in parallel (max 8 via tool_semaphore)
+   - Saves tool results
+   - Tool calls present → continues to iteration 2
+3. **run_loop() iteration 2**: Loads updated messages (includes tool results)
+   - LLM generates final response (text only, no more tool calls)
+   - Saves assistant message
+   - No tool calls → breaks
+4. **run_chat()**: Final `"chat_complete"` broadcast
 
 ---
 
@@ -1376,51 +1540,20 @@ CREATE TABLE entity_config (
 
 Slash commands are intercepted **before** a message reaches the agent. When the user
 types `/` in the chat input, a floating autocomplete menu appears above the textarea.
-On submit, `parseSlashCommand()` detects the command and `executeSlashCommand()` either
-handles it locally (returns `true`) or falls through to the agent (returns `false`).
 
 ```
 User types "/"
      │
-     ├─ ChatInput.svelte: detects prefix, shows SlashCommandMenu
+     ├─ ChatComposer.svelte: detects prefix, shows SlashCommandMenu
      │   └─ Arrow keys navigate, Tab/Enter selects, Escape closes
      │
 User submits (Enter)
      │
-     ├─ Chat.svelte: parseSlashCommand(prompt)
-     │   └─ returns { command, args } or null
+     ├─ parseSlashCommand(prompt) → { command, args } or null
      │
      ├─ executeSlashCommand(command, args, ctx)
      │   ├─ returns true  → handled locally (system message shown)
      │   └─ returns false → sent to agent as normal chat message
-```
-
-### Data Structures
-
-```typescript
-interface SlashCommand {
-    name: string;           // command name (without "/")
-    description: string;    // shown in autocomplete menu
-    category: 'session' | 'model' | 'info' | 'agent';
-    args?: string;          // hint string (e.g., "[name]", "<query>", "on|off")
-    argOptions?: string[];  // fixed options for validation
-    executeLocal: boolean;  // true = handled in frontend, false = sent to agent
-}
-
-interface CommandContext {
-    messages: Message[];
-    chatId: string;
-    isLoading: boolean;
-    onNewSession: () => void;
-    onCancel: () => void;
-    onToggleDuplex: (() => void) | undefined;
-    addSystemMessage: (content: string) => void;
-    clearMessages: () => void;
-    setVerboseMode: (on: boolean) => void;
-    setThinkingLevel: (level: string) => void;
-    toggleFocusMode: () => void;
-    wsSend: (type: string, data?: Record<string, unknown>) => void;
-}
 ```
 
 ### Command Reference
@@ -1429,157 +1562,79 @@ interface CommandContext {
 
 | Command | Args | Execution | Description |
 |---------|------|-----------|-------------|
-| `/new` | — | Local | Start a new chat session (calls `onNewSession`) |
-| `/reset` | — | Local | Reset current session (sends `session_reset` WS message, clears messages + counters) |
+| `/new` | — | Local | Start a new chat session |
+| `/reset` | — | Local | Reset current session (rotates chat) |
 | `/clear` | — | Local | Clear chat display only (messages still in DB) |
-| `/stop` | — | Local | Cancel active generation (calls `onCancel` if `isLoading`) |
-| `/focus` | — | Local | Toggle sidebar visibility (focus mode) |
-| `/compact` | — | Local | Force context compaction (sends `session_reset` — currently equivalent to `/reset`) |
+| `/stop` | — | Local | Cancel active generation |
+| `/focus` | — | Local | Toggle sidebar visibility |
+| `/compact` | — | Local | Force context compaction |
 
 #### Model Commands
 
 | Command | Args | Execution | Description |
 |---------|------|-----------|-------------|
-| `/model` | — | Local | List all available models by provider, with aliases |
-| `/model` | `<name>` | Agent | Switch model (sent to agent for fuzzy resolution, e.g., "sonnet", "gpt4") |
-| `/think` | `off\|low\|medium\|high` | Local | Set extended thinking mode level |
-| `/verbose` | `on\|off` | Local | Toggle verbose tool output detail in chat |
+| `/model` | — | Local | List all available models |
+| `/model` | `<name>` | Agent | Switch model (fuzzy resolution) |
+| `/think` | `off\|low\|medium\|high` | Local | Set extended thinking level |
+| `/verbose` | `on\|off` | Local | Toggle verbose tool output |
 
 #### Info Commands
 
 | Command | Args | Execution | Description |
 |---------|------|-----------|-------------|
-| `/help` | — | Local | Show all slash commands grouped by category |
-| `/status` | — | Local | Show agent connection status, uptime, and lane summary (calls `getSimpleAgentStatus` + `getLanes` APIs) |
-| `/usage` | — | Local | Show Janus token usage: session + weekly quotas with percentages (calls `neboLoopJanusUsage` API) |
-| `/export` | — | Local | Export current chat as Markdown file (browser download) |
-| `/lanes` | — | Local | Show lane concurrency status for all 8 lanes (calls `getLanes` API) |
-| `/search` | `<query>` | Local | Search chat message history via LIKE query (calls `searchChatMessages` API, shows top 10 results) |
+| `/help` | — | Local | Show all slash commands |
+| `/status` | — | Local | Agent connection status + lane summary |
+| `/usage` | — | Local | Janus token usage quotas |
+| `/export` | — | Local | Export chat as Markdown file |
+| `/lanes` | — | Local | Lane concurrency status |
+| `/search` | `<query>` | Local | Search chat message history |
 
 #### Agent Commands
 
 | Command | Args | Execution | Description |
 |---------|------|-----------|-------------|
-| `/skill` | `<name>` | Agent | Activate a skill by name (always sent to agent) |
-| `/memory` | — | Local | List stored memories (top 15, calls `listMemories` API) |
-| `/memory` | `<query>` | Local | Search memories by keyword (top 10, calls `searchMemories` API) |
-| `/heartbeat` | — | Local | Show current heartbeat configuration (calls `getHeartbeat` API) |
-| `/heartbeat` | `wake` | Agent | Trigger an immediate heartbeat (sent to agent) |
-| `/advisors` | — | Local | List all configured advisors with roles and priority (calls `listAdvisors` API) |
-| `/voice` | — | Local | Toggle full-duplex voice conversation (calls `onToggleDuplex`) |
-| `/personality` | — | Local | Show current personality configuration (calls `getPersonality` API) |
-| `/wake` | `[reason]` | Agent | Trigger immediate heartbeat with optional reason (always sent to agent) |
-
-### Menu Behavior
-
-- **Trigger**: Typing `/` as the first character shows the menu
-- **Filtering**: Prefix match on command name as user types (e.g., `/mo` shows `/model`, `/memory`)
-- **Navigation**: Arrow Up/Down to select, Tab or Enter to confirm, Escape to dismiss
-- **Auto-execute**: Commands with no args execute immediately on selection from the menu
-- **Args mode**: Commands with args insert `/<name> ` (with trailing space) and close the menu, letting the user type the argument
-- **Grouping**: Menu items grouped by category (Session → Model → Info → Agent)
-- **Category sort**: Results sorted by category order, not alphabetically
-
-### Execution Flow Details
-
-**Local commands** (`executeLocal: true`): Handled entirely in the frontend. Most call REST APIs to fetch data and display it as a system message. No WS chat message is sent.
-
-**Agent commands** (`executeLocal: false`, or local handler returns `false`): The original `/command args` text is sent to the agent as a normal user message via the standard WS `chat` flow. The agent sees the raw text and processes it.
-
-**Dual-mode commands**: Some commands behave differently based on args:
-- `/model` (no args) → local: lists models. `/model sonnet` → agent: switches model.
-- `/heartbeat` (no args) → local: shows config. `/heartbeat wake` → agent: triggers beat.
+| `/skill` | `<name>` | Agent | Activate a skill by name |
+| `/memory` | — / `<query>` | Local | List or search stored memories |
+| `/heartbeat` | — / `wake` | Local/Agent | Show config or trigger immediate heartbeat |
+| `/advisors` | — | Local | List configured advisors |
+| `/voice` | — | Local | Toggle full-duplex voice conversation |
+| `/personality` | — | Local | Show current personality config |
+| `/wake` | `[reason]` | Agent | Trigger immediate heartbeat |
 
 ---
 
 ## 18. File Attachment & Drag-and-Drop
 
-**Files:** `app/src/lib/components/chat/Chat.svelte`, `app/src/lib/components/chat/ChatInput.svelte`, `src-tauri/src/main.rs`, `crates/server/src/handlers/files.rs`
-
-### Purpose
-
-Insert file paths into the chat input so the agent can work with files on the local filesystem. Files are NOT uploaded — only their absolute paths are inserted as text into the textarea.
+**Files:** `app/src/lib/components/chat/ChatComposer.svelte`, `app/src/lib/components/chat/ChatPane.svelte`, `src-tauri/src/main.rs`
 
 ### Two Entry Points
 
 | Method | UI Element | Behavior |
 |--------|-----------|----------|
 | **Drag-and-drop** | Anywhere on the window | Tauri intercepts OS-level drag, inserts full path via `eval()` |
-| **+ button** | Plus button in input actions row | Opens native file dialog via `rfd`, inserts selected paths |
+| **+ button** | Attachment button in composer | Opens native file dialog or HTML input |
 
 ### Drag-and-Drop Architecture
 
-Tauri v2 intercepts OS-level file drags at the native layer (`dragDropEnabled: true` by default). This means **browser `ondrop` events never fire** for external file drags in the Tauri webview. The solution uses two layers:
+**Tauri mode:** `on_window_event` catches `WindowEvent::DragDrop`, serializes file paths as JSON,
+calls global JS functions via `WebviewWindow::eval()`:
+- `window.__NEBO_DRAG_ENTER__()` — show overlay
+- `window.__NEBO_DRAG_LEAVE__()` — hide overlay
+- `window.__NEBO_INSERT_FILES__(paths)` — insert file paths into composer
 
-**Layer 1 — Rust `on_window_event` (src-tauri/src/main.rs):**
-Catches `WindowEvent::DragDrop`, serializes file paths as JSON, and calls global JS functions via `WebviewWindow::eval()`.
+**Browser fallback:** Standard HTML5 drag events. Only filenames available (browser security).
 
-```rust
-WindowEvent::DragDrop(event) => {
-    if let Some(wv) = window.app_handle().get_webview_window(window.label()) {
-        match event {
-            DragDropEvent::Enter { .. } => wv.eval("if(window.__NEBO_DRAG_ENTER__)..."),
-            DragDropEvent::Leave       => wv.eval("if(window.__NEBO_DRAG_LEAVE__)..."),
-            DragDropEvent::Drop { paths, .. } => {
-                let json = serde_json::to_string(&paths)?;
-                wv.eval(&format!("if(window.__NEBO_INSERT_FILES__)window.__NEBO_INSERT_FILES__({json})"));
-            }
-        }
-    }
-}
-```
+### ChatComposer Attachment Handling
 
-**Layer 2 — Svelte global functions (Chat.svelte `onMount`):**
-Registers `window.__NEBO_INSERT_FILES__`, `__NEBO_DRAG_ENTER__`, `__NEBO_DRAG_LEAVE__` synchronously at mount time. On drop, appends paths directly to the `inputValue` state variable with a trailing space for continued typing.
-
-```typescript
-(window as any).__NEBO_INSERT_FILES__ = (paths: string[]) => {
-    isDraggingOver = false;
-    if (paths?.length) {
-        const joined = paths.join(' ');
-        inputValue = inputValue.trim() ? `${inputValue.trimEnd()} ${joined} ` : `${joined} `;
-    }
-};
-```
-
-Cleanup in `onDestroy` deletes the globals to prevent stale references.
-
-**Browser fallback (web mode):** Standard HTML5 `ondragenter`/`ondragleave`/`ondrop` handlers remain on the chat container for browser-only mode. These use `ChatInput.extractFilePaths()` which falls through a priority chain: `File.path` (Electron) → `text/uri-list` file:// URIs → `text/plain` paths → `file.name` fallback. Browsers never expose full filesystem paths (security), so only filenames are available — users should use the `+` button instead.
-
-### Key Implementation Details
-
-- **`eval()` requires `WebviewWindow`**: In `on_window_event`, the callback receives `&tauri::Window` which does NOT have `eval()`. Must call `window.app_handle().get_webview_window(window.label())` to get the `WebviewWindow`.
-- **Globals must register synchronously**: The `@tauri-apps/api` `onDragDropEvent()` requires IPC, which can hang for external URLs (`WebviewUrl::External`). Global functions must be registered BEFORE any async Tauri API calls in `onMount` to avoid a race condition.
-- **`__TAURI_INTERNALS__` IS injected for external URLs**: Despite common belief, Tauri v2 unconditionally injects the IPC bridge init scripts (see `tauri-2.10.2/src/manager/webview.rs:160-175`). The `remote.urls` capability (`capabilities/default.json`) grants IPC permission from `http://localhost:*`.
-- **`dragDropEnabled: true` is the default**: No config change needed. Only set it to `false` if you want HTML5 drag events instead (breaks file path access).
+- `addFiles(files)` — generates preview URLs for images, stores in `attachments` array
+- `removeAttachment(id)` — removes from array, revokes blob URL
+- Image files get thumbnail previews; other files show as chips with size
+- Files included in `onsend()` callback for the backend to process
 
 ### + Button (Native File Picker)
 
-The `+` button calls `POST /api/v1/files/pick` which opens a native file dialog via `rfd`
-on the server. Since the Nebo server always runs locally, this works in both Tauri and
-browser mode.
-
-```
-Frontend                          Server
-────────                          ──────
-+ button click
-  → api.pickFiles()
-  → POST /api/v1/files/pick       → rfd::FileDialog::new().pick_files()
-                                   → native OS file picker opens
-                                   → user selects files
-  ← { paths: ["/full/path/..."] } ← returns selected paths
-  → insertFilePaths(paths)
-```
-
-Fallback: If the server API fails (headless mode), falls back to HTML `<input type="file">`
-which only provides filenames (browser security limitation).
-
-### REST Endpoints
-
-| Method | Path | Handler | Description |
-|--------|------|---------|-------------|
-| `POST` | `/api/v1/files/pick` | `files::pick_files` | Open native file dialog, return selected paths |
-| `POST` | `/api/v1/files/browse` | `files::browse` | List directory contents (used by file browser UI) |
+`POST /api/v1/files/pick` opens a native file dialog via `rfd` on the server.
+Returns `{ paths: ["/full/path/..."] }`. Fallback: HTML `<input type="file">`.
 
 ---
 
@@ -1588,159 +1643,474 @@ which only provides filenames (browser security limitation).
 ### FK Constraint on chat_messages (Fixed 2026-03-12)
 
 **Problem:** `chat_messages.chat_id` has a `FOREIGN KEY` referencing `chats.id`, and
-`PRAGMA foreign_keys = ON` is set on every connection. Companion chat works because
-`get_or_create_companion_chat()` creates the `chats` row. Agent/channel sessions had
-no equivalent, causing `FOREIGN KEY constraint failed` on `INSERT INTO chat_messages`.
-
-**Root cause:** `runner.run()` only warned on `append_message` failure and continued,
-leading to `run_loop()` finding zero messages and returning "No messages in session".
+`PRAGMA foreign_keys = ON` is set on every connection. Agent/channel sessions had
+no equivalent of companion chat upsert, causing `FOREIGN KEY constraint failed`.
 
 **Fix:**
 1. `create_chat_message_for_runner()` now does `INSERT OR IGNORE INTO chats` before inserting the message
 2. `runner.run()` now propagates `append_message` errors via `?` instead of just warning
 
-### Session Key = Chat ID Coupling
+### Session Key = Chat ID Coupling (Resolved via 0075)
 
-The system uses `session_key` as both the session name AND the `chat_id` for message
-storage. This coupling means:
-- Changing a session key format requires migrating existing messages
-- The session key must be a valid identifier (no special characters beyond what's already used)
-- Frontend must know the exact session key format to load history (e.g., `agent:<id>:web`)
+**Problem:** The system used `session_key` as both the session name AND the `chat_id`.
+
+**Fix:** Migration 0075 decoupled sessions from chats via `active_chat_id` column on sessions
+and `session_name` column on chats. Sessions can now have multiple chats. Runtime fallback
+handles legacy sessions with `active_chat_id = session.name`.
 
 ---
 
 ## 20. Ask Widget System
 
 Interactive user-prompt mechanism that lets tools block execution and wait for structured
-user input via the chat UI. Tools call `ctx.ask_user()`, which renders a widget in the
-conversation, blocks until the user responds, and returns the selection as a string.
+user input via the chat UI. The `bot(resource: "ask")` tool calls `ctx.ask_user()`, which
+renders a widget in the conversation, blocks until the user responds, and returns the
+selection as a string.
 
 ### Architecture
 
 ```
-Tool calls ctx.ask_user(prompt, widgets)
+Agent calls bot(resource: "ask", action: "confirm", text: "Continue?", options: [...])
   │
-  ├─ Creates oneshot channel (resp_tx, resp_rx)
-  ├─ Inserts resp_tx into shared ask_channels (keyed by request_id)
-  ├─ Emits StreamEvent::ask_request via stream_tx
-  │     ↓
-  │   chat_dispatch.rs → hub.broadcast("ask_request", payload)
-  │     ↓
-  │   Frontend Chat.svelte → handleAskRequest() → renders AskWidget contentBlock
-  │     ↓
-  │   User interacts → handleAskSubmit(requestId, value)
-  │     ↓
-  │   WebSocket "ask_response" → ws.rs handler
-  │     ↓
-  │   ask_channels.lock().remove(&request_id) → resp_tx.send(value)
-  │     ↓
-  └─ resp_rx.await.ok() → returns Some(value) to tool
+  ├─ bot_tool.rs handle_ask(input, ctx)
+  │   ├─ Maps action to widget type (confirm→confirm, select→buttons/select, prompt→buttons)
+  │   ├─ select uses "select" dropdown if >5 options, else "buttons"
+  │   └─ Calls ctx.ask_user(text, widgets)
+  │
+  ├─ origin.rs ToolContext::ask_user()
+  │   ├─ Creates oneshot channel (resp_tx, resp_rx)
+  │   ├─ Inserts resp_tx into shared ask_channels (keyed by UUID request_id)
+  │   ├─ Emits StreamEvent::ask_request via stream_tx
+  │   └─ Blocks on resp_rx.await.ok()
+  │         ↓
+  │   chat_dispatch.rs → hub.broadcast("ask_request", {request_id, prompt, widgets})
+  │         ↓
+  │   listeners.ts → window.dispatchEvent('nebo:ask_request', data)
+  │         ↓
+  │   +page.svelte handleAskRequest() → appends { type: 'ask', ... } message
+  │         ↓
+  │   ChatPane → renders AskWidget.svelte (buttons/select/radio/checkbox/confirm)
+  │         ↓
+  │   User interacts → handleAskSubmit()
+  │     → ws.send('ask_response', { request_id, value })
+  │     → updates ask message with response badge
+  │         ↓
+  │   ws.rs handler → ask_channels.lock().remove(&request_id) → resp_tx.send(value)
+  │         ↓
+  └─ resp_rx returns Some(value) → handle_ask() returns ToolResult::ok({response: value})
+     → Agent continues with user's choice
 ```
 
-### Key Types and Functions
+### Tool Interface
 
-**`ToolContext::ask_user(prompt, widgets) -> Option<String>`** (`crates/tools/src/origin.rs`)
-- Creates a UUID request_id, oneshot channel pair
-- Inserts sender into `ask_channels` (shared Arc<Mutex<HashMap>>)
-- Emits `StreamEvent::ask_request` via `stream_tx`
-- Awaits receiver — blocks until user responds or channel drops
-- Returns `None` if `stream_tx` or `ask_channels` are not configured
-
-**`AskChannels` type** (`crates/tools/src/origin.rs`)
-```rust
-pub type AskChannels = Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>;
 ```
-
-**`StreamEvent::ask_request()`** (`crates/ai/src/types.rs:211-227`)
-- `question_id` stored in the `error` field (field reuse)
-- `prompt` stored in the `text` field
-- `widgets` stored in the `metadata` field as JSON
+bot(resource: "ask", action: "confirm", text: "Proceed?", options: ["Yes", "No"])
+bot(resource: "ask", action: "select", text: "Pick a calendar", options: ["Work", "Personal", "Family"])
+bot(resource: "ask", action: "prompt", text: "What time works?", options: ["9 AM", "10 AM", "11 AM"])
+```
 
 ### Widget Types
-
-The frontend `AskWidget.svelte` supports 5 widget types:
 
 | Type | UI Element | Return Value |
 |------|-----------|-------------|
 | `buttons` | Horizontal button row | Label of clicked button |
-| `select` | Dropdown menu | Selected option string |
-| `confirm` | Yes/Cancel buttons | `"yes"` or `"cancel"` |
-| `radio` | Radio button group | Selected option string |
+| `select` | Dropdown menu + OK button | Selected option string |
+| `confirm` | Yes/No buttons (default) | Label of clicked button |
+| `radio` | Radio button group + Submit | Selected option string |
 | `checkbox` | Checkbox list + Submit button | Comma-separated selected options |
 
-Widget JSON format (array of widget definitions):
+Widget JSON format:
 ```json
-[{
-  "type": "checkbox",
-  "label": "Pick items",
-  "options": ["Option A", "Option B", "Option C"]
-}]
+[{"type": "checkbox", "label": "Pick items", "options": ["Option A", "Option B"]}]
 ```
+
+### Frontend Component: AskWidget.svelte
+
+**File:** `app/src/lib/components/chat/AskWidget.svelte` (ported from app-v1)
+
+- **Props**: `requestId`, `prompt`, `widgets`, `response?`, `disabled?`, `onSubmit`
+- **States**: Once answered → shows response as `badge badge-primary` badges
+- **Disabled**: When `disabled` and not answered → shows "Skipped" ghost badge
+- **Svelte 5**: Uses `$props()`, `$state()`, `$derived()`, all DaisyUI/Tailwind classes
 
 ### Threading Through the Stack
 
 `ask_channels` is created in `crates/server/src/lib.rs` and threaded to both:
-1. **Runner** — via `Runner::set_ask_channels()` builder → stored on Runner struct → passed
-   as param to `run_loop()` → injected into `ToolContext` for each tool call
+1. **Runner** — via `Runner::set_ask_channels()` builder → stored on Runner struct → passed to `run_loop()` → injected into `ToolContext`
 2. **AppState** — stored as `state.ask_channels` for the WS handler to resolve responses
 
-### Frontend Flow
+### Edge Cases
 
-**`Chat.svelte`** — `handleAskRequest(data)` (line ~1694):
-- Sets `pendingAskRequest = true`
-- Appends an AskWidget contentBlock to the currently streaming message
-
-**`Chat.svelte`** — `handleAskSubmit(requestId, value)` (line ~1720):
-- Sends `"ask_response"` WS event with `{request_id, value}`
-- Updates the contentBlock to show a submitted badge
-
-**`AskWidget.svelte`** — Self-contained component:
-- Renders the appropriate widget type based on `widget.type`
-- Dispatches `submit` event with the user's selection
-- Shows disabled state after submission
-
-### WS Handler
-
-**`ws.rs:450-462`** — Handles incoming `"ask_response"` messages:
-```rust
-"ask_response" => {
-    let request_id = payload["request_id"].as_str();
-    let value = payload["value"].as_str();
-    if let Some(tx) = state.ask_channels.lock().await.remove(request_id) {
-        let _ = tx.send(value.to_string());
-    }
-}
-```
+- **No UI connected** (CLI mode): `stream_tx`/`ask_channels` are `None` → `ask_user()` returns `None` → tool returns error
+- **User navigates away**: Oneshot sender drops → `resp_rx.await` returns `Err` → returns `None` → tool error
+- **Multiple asks**: Each gets unique `request_id`, renders as separate AskWidget messages
+- **Widget disabled after chat completes**: `disabled={!isLoading}` in ChatPane
 
 ### Key Files
 
 | File | Role |
 |------|------|
+| `crates/tools/src/bot_tool.rs` | `handle_ask(input, ctx)` — maps action to widget, calls `ctx.ask_user()` |
 | `crates/tools/src/origin.rs` | `AskChannels` type, `ToolContext::ask_user()` |
-| `crates/ai/src/types.rs:211` | `StreamEvent::ask_request()` constructor |
+| `crates/ai/src/types.rs` | `StreamEvent::ask_request()` constructor |
 | `crates/agent/src/runner.rs` | Threads `ask_channels` into `run_loop()` → `ToolContext` |
 | `crates/server/src/lib.rs` | Creates shared `ask_channels`, passes to Runner + AppState |
-| `crates/server/src/state.rs` | `AppState.ask_channels` field |
 | `crates/server/src/handlers/ws.rs` | WS handler resolves `ask_response` → oneshot |
 | `crates/server/src/chat_dispatch.rs` | Broadcasts `ask_request` stream events |
-| `app/src/lib/components/chat/AskWidget.svelte` | Widget renderer (5 types) |
-| `app/src/lib/components/chat/Chat.svelte` | `handleAskRequest()` + `handleAskSubmit()` |
+| `app/src/lib/components/chat/AskWidget.svelte` | Interactive widget UI (5 types) |
+| `app/src/lib/websocket/listeners.ts` | `ask_request` → `nebo:ask_request` bridge |
+| `app/src/routes/[agentId]/threads/[threadId]/+page.svelte` | `handleAskRequest`, `handleAskSubmit` |
+| `app/src/lib/components/chat/ChatPane.svelte` | Renders AskWidget for `type: 'ask'` messages |
 
-### Usage Example (Calendar Configure)
+---
+
+## 21. RunRegistry
+
+**File:** `crates/server/src/run_registry.rs`
+
+### Purpose
+
+Global tracking of all active agent runs for visibility, progress monitoring, and cascading cancellation.
+
+### Core Structs
 
 ```rust
-// In organizer/macos.rs handle_calendar "configure" action:
-let widgets = serde_json::json!([{
-    "type": "checkbox",
-    "label": "Calendars",
-    "options": all_calendar_names,
-}]);
+pub struct RunEntry {
+    pub run_id: String,                              // UUID
+    pub session_key: String,
+    pub entity_id: String,                           // Agent ID or "main"
+    pub entity_name: String,                         // Display name
+    pub origin: String,                              // "ws", "cron", "comm", "system"
+    pub channel: String,
+    pub cancel_token: CancellationToken,
+    pub started_at: Instant,
+    pub last_activity: Arc<AtomicU64>,               // Unix timestamp for stale detection
+    pub iteration_count: Arc<AtomicU32>,
+    pub tool_call_count: Arc<AtomicU32>,
+    pub current_tool: Arc<Mutex<String>>,
+    pub parent_run_id: Option<String>,               // For parent-child hierarchies
+}
 
-match ctx.ask_user("Select which calendars to track:", widgets).await {
-    Some(response) => {
-        let selected: Vec<String> = response.split(", ").map(|s| s.to_string()).collect();
-        save_calendar_prefs(&selected)?;
-    }
-    None => { /* cancelled or disconnected */ }
+pub struct RunHandle {
+    registry: Arc<RunRegistryInner>,
+    pub run_id: String,
+    pub last_activity: Arc<AtomicU64>,
+    pub iteration_count: Arc<AtomicU32>,
+    pub tool_call_count: Arc<AtomicU32>,
+    pub current_tool: Arc<Mutex<String>>,
+    pub cancel_token: CancellationToken,
+}
+// Auto-unregisters on drop (panic-safe)
+
+pub struct RunSnapshot {
+    pub run_id: String,
+    pub session_key: String,
+    pub entity_id: String,
+    pub entity_name: String,
+    pub origin: String,
+    pub channel: String,
+    pub iteration_count: u32,
+    pub tool_call_count: u32,
+    pub current_tool: String,
+    pub elapsed_secs: u64,
+    pub parent_run_id: Option<String>,
+    pub child_count: usize,
 }
 ```
+
+### Public API
+
+| Method | Description |
+|--------|-------------|
+| `register(params) -> RunHandle` | Register run, get live counters |
+| `list_all() -> Vec<RunSnapshot>` | All runs (dashboard) |
+| `list_top_level() -> Vec<RunSnapshot>` | Parent runs only |
+| `list_children(parent_id) -> Vec<RunSnapshot>` | Direct children |
+| `get(run_id) -> Option<RunSnapshot>` | Single run lookup |
+| `find_by_session(key) -> Option<RunSnapshot>` | Find by session |
+| `find_by_entity(id) -> Vec<RunSnapshot>` | All runs for entity |
+| `active_count() -> usize` | Count active runs |
+| `cancel(run_id) -> bool` | Cancel specific run |
+| `cancel_by_session(key) -> bool` | Cancel by session |
+| `cancel_by_entity(id) -> usize` | Cancel all for entity |
+| `cancel_all() -> usize` | Emergency kill all |
+| `is_session_active(key) -> bool` | Check if active |
+| `cleanup_stale(max_idle_secs) -> usize` | Remove stale runs |
+
+### RunHandle Usage
+
+```rust
+let handle = registry.register(params).await;
+handle.inc_iteration();      // Update iteration counter
+handle.start_tool("web");    // Set current_tool
+handle.finish_tool();        // Clear current_tool
+handle.touch();              // Update last_activity
+drop(handle);                // Auto-unregisters
+```
+
+### Authorization
+
+Main agent sees all runs; persona agents see only their own runs and descendants.
+
+---
+
+## 22. ConcurrencyController
+
+**File:** `crates/agent/src/concurrency.rs`
+
+### Purpose
+
+Adaptive dynamic semaphore controlling global LLM concurrency based on machine resources and rate limit feedback.
+
+### Core Struct
+
+```rust
+pub struct ConcurrencyController {
+    llm_semaphore: Arc<Semaphore>,                  // Dynamic semaphore for LLM calls
+    effective_permits: AtomicUsize,                 // Live permit count
+    held_back: Mutex<Vec<OwnedSemaphorePermit>>,   // Permits held to reduce concurrency
+    min_permits: usize,                             // Floor: 2
+    ceiling: AtomicUsize,                           // Ceiling: adjusted by monitor
+    backpressure: AtomicBool,                       // Rate limit flag
+    tool_semaphore: Arc<Semaphore>,                 // Parallel tool execution cap (8)
+}
+```
+
+### Initialization
+
+```rust
+let cpu_cores = std::thread::available_parallelism().unwrap_or(4);
+let initial = (cpu_cores * 2).min(20);  // 2–20 permits based on CPU
+```
+
+### Public API
+
+| Method | Description |
+|--------|-------------|
+| `acquire_llm_permit()` | Acquire permit before LLM call (blocks if at capacity) |
+| `acquire_tool_permit()` | Acquire permit for parallel tool execution (cap: 8) |
+| `report_success(meta)` | Clear backpressure, release held permits if headroom |
+| `report_rate_limit(retry_after)` | Set backpressure, hold 50% of permits |
+| `set_ceiling(n)` | Adjust ceiling (called by resource monitor) |
+| `is_backpressured() -> bool` | Whether rate limited |
+| `effective_permits() -> usize` | Current live permits |
+
+### Adaptive Behavior
+
+**Rate limit response (429):**
+1. Set `backpressure = true`
+2. Hold 50% of effective permits (`to_hold = effective_permits / 2`)
+3. Reduces effective permits down to `min_permits` (2)
+4. Future LLM calls block until success reported
+
+**Success response:**
+1. Clear backpressure
+2. Release held permits if rate limit headers show remaining headroom (> 5 requests)
+
+### Resource Monitor
+
+Spawned as background task, polls every 30s:
+- **Available memory**: `available_mb / 200` (e.g., 8GB = 40 permits)
+- **CPU load**: If load > cores, scale down by `cores / load` (min 0.3x)
+- **Result**: Ceiling ranges 2–50, dynamically adjusted
+
+---
+
+## 23. Orchestrator (Sub-Agents)
+
+**File:** `crates/agent/src/orchestrator.rs`
+
+### Purpose
+
+Spawns and manages sub-agent tasks (blocking or fire-and-forget), supports DAG-based
+task decomposition with reactive scheduling.
+
+### Core Structs
+
+```rust
+struct ActiveAgent {
+    task_id: String,
+    description: String,
+    status: String,
+    cancel: CancellationToken,
+}
+
+pub struct Orchestrator {
+    runner: Arc<Runner>,
+    store: Arc<Store>,
+    concurrency: Arc<ConcurrencyController>,
+    active: Arc<RwLock<HashMap<String, ActiveAgent>>>,
+    lanes: Option<Arc<LaneManager>>,
+}
+```
+
+### Sub-Agent Lifecycle
+
+1. **Spawn Request**: Creates unique task ID (`sa-{uuid}`), session key (`subagent:{parent}:{task_id}`), derives cancellation token from parent (cascading)
+2. **Two Modes**:
+   - **Blocking (wait=true)**: Runs to completion, returns result synchronously
+   - **Fire-and-forget (wait=false)**: Spawns background task, returns immediately
+3. **DAG Execution**: Decomposes task → builds TaskGraph → validates for cycles → reactive scheduling (starts tasks when deps complete) → collects dependency context (max 4000 chars per dep) → returns aggregated result
+
+### Integration
+
+Sub-agents call `runner.run()` with a `PromptMode::Minimal` to reduce system prompt overhead.
+They inherit the parent's cancellation token (child_token), so cancelling the parent cascades.
+
+---
+
+## 24. @Mention Routing
+
+**Files:** `crates/server/src/handlers/ws.rs`, `crates/server/src/chat_dispatch.rs`
+
+### Purpose
+
+Users can @mention sibling agents in messages (e.g., `Tell <@social-media-manager> to draft a post`).
+The frontend serializes these as `<@agent-id>` tokens. The backend parses these tokens, forks async
+chat runs to each mentioned agent, and routes their responses back to the originating thread.
+
+### Architecture
+
+```
+User sends: "Tell <@social-media-manager> to draft a post"
+  │
+  ├─ dispatch_chat() in ws.rs:
+  │   1. parse_mention_tokens() extracts ["social-media-manager"]
+  │   2. Builds mention_context: "@Social Media Manager has been @mentioned and will
+  │      respond separately in this thread. Do not answer on their behalf."
+  │   3. Primary agent's ChatConfig gets mention_context (injected as system-role msg)
+  │   4. run_chat() for primary agent (unchanged behavior)
+  │   5. tokio::spawn → fork_mention_chat() for each mentioned agent
+  │
+  ├─ fork_mention_chat():
+  │   1. Auto-activates agent if not in registry
+  │   2. Creates isolated session: agent:<mentioned_id>:<channel>
+  │   3. Prepends context: "[You were @mentioned in a conversation. Respond helpfully.]"
+  │   4. Sets origin_agent_id = primary agent's ID
+  │   5. Calls run_chat() → all WS broadcasts include "originAgentId"
+  │   6. On completion: inject_delegate_response() into primary agent's session
+  │
+  └─ Frontend routing:
+      isMyEvent(data) accepts data.agentId === myId OR data.originAgentId === myId
+      Per-agent streaming buffers prevent text mixing
+      Delegate messages render with agent identity chip (avatar + name)
+```
+
+### Key Functions
+
+**`parse_mention_tokens(prompt, exclude_agent_id) -> Vec<String>`**
+- Byte-level parser finds `<@...>` tokens
+- Deduplicates via HashSet
+- Excludes the primary agent (no self-mention)
+- Validates: alphanumeric + `.` + `_` + `-`
+
+**`fork_mention_chat(state, mentioned_id, prompt, user_id, channel, origin_agent_id)`**
+- Auto-activates if agent not in registry (same pattern as dispatch_chat)
+- Creates own session key (isolated conversation history)
+- Passes `origin_agent_id` on ChatConfig so all WS events carry routing info
+
+**`inject_delegate_response(state, mentioned_id, origin_agent_id, channel)`**
+- Reads last assistant message from delegate's session
+- Injects as **"system"** role message into primary agent's session:
+  `[Response from @{id} ({name})]\n{content}`
+- Hidden from frontend (loadMessages filters to user/assistant only)
+
+### WS Payload Extension
+
+All broadcasts in `run_chat()` use the `ws_payload!` macro, which conditionally adds
+`"originAgentId"` when `origin_agent_id` is `Some(...)`:
+
+```rust
+macro_rules! ws_payload {
+    ($($key:tt : $val:expr),*) => {{
+        let mut v = json!({ "session_id": sid, "agentId": agent_id, $($key: $val),* });
+        if let Some(ref oid) = origin_agent_id {
+            v["originAgentId"] = Value::String(oid.clone());
+        }
+        v
+    }};
+}
+```
+
+### Frontend Per-Agent Streaming
+
+**File:** `app/src/routes/[agentId]/threads/[threadId]/+page.svelte`
+
+Two parallel maps handle concurrent streaming from primary + delegate agents:
+- `streamingContent: Record<agentId, rawMarkdown>` — raw text for persistence
+- `streamingHtml: Record<agentId, html>` — server-rendered HTML for display
+
+`displayMessages` derived appends transient streaming entries per agent, tagged with
+`delegateAgentId` / `delegateAgentName` when the streamer is not the primary agent.
+
+### ChatConfig Fields
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `origin_agent_id` | `Option<String>` | Set on delegate forks; primary agent's ID. All WS payloads include `originAgentId` |
+| `mention_context` | `Option<String>` | Invisible system-role msg for primary agent listing who was @mentioned |
+
+### RunRequest Field
+
+`mention_context: Option<String>` — injected as `"system"` role message after user message
+in `Runner::run()`. Visible to LLM, invisible to frontend.
+
+### Edge Cases
+
+- **Self-mention**: `parse_mention_tokens` excludes the primary agent — no duplicate
+- **Duplicate mentions**: HashSet dedup — one fork per unique agent
+- **Agent not found**: `fork_mention_chat` logs warning and skips — no crash
+- **Mentioned agent fails**: Error broadcasts with `originAgentId`, primary unaffected (separate tokio task)
+- **Multiple mentions**: Each fork runs concurrently; per-agent buffers prevent text mixing
+- **Loading state**: `isLoading` only clears when PRIMARY agent completes, not delegates
+- **Page reload**: Delegate messages are in their own sessions — only primary agent's messages load. Full persistence is future work
+
+### Not a Competing Pathway
+
+@Mention routing is distinct from other inter-agent communication:
+
+| Mechanism | Trigger | Target | Response Path |
+|-----------|---------|--------|---------------|
+| **@Mention** | `<@id>` in user message | Named local agent | Same thread (via `originAgentId`) |
+| **Spawn/Orchestrate** | Tool call `bot(resource: "task")` | Anonymous sub-agent | Parent's tool result |
+| **Loop DM** | Tool call `loop(resource: "dm")` | Remote agent via NeboLoop | Separate conversation |
+
+---
+
+## Appendix: Initialization Order
+
+```rust
+// In crates/server/src/lib.rs:
+let lanes = Arc::new(LaneManager::new());
+lanes.start_pumps();
+
+let concurrency = Arc::new(ConcurrencyController::new());
+concurrency::spawn_monitor(concurrency.clone());
+
+let runner = Arc::new(Runner::new(
+    store, tools, providers, selector, concurrency,
+    hooks, mcp_context, agent_registry, skill_loader,
+).set_ask_channels(ask_channels));
+
+let run_registry = RunRegistry::new();
+
+// AppState wires everything together
+```
+
+### Hook System Summary
+
+10 hook points wired (1 not):
+
+| Hook | Type | When | Wired? |
+|------|------|------|--------|
+| `steering.generate` | Filter | Before steering pipeline | Yes |
+| `message.pre_send` | Filter | Before LLM call | Yes |
+| `message.post_receive` | Filter | After LLM response | Yes |
+| `session.message_append` | Action | After message saved | Yes |
+| `agent.turn` | Action | End of agentic loop turn | Yes |
+| `agent.should_continue` | Filter | Before continuing loop | Yes |
+| `tool.pre_execute` | Filter | Before tool execution | Yes |
+| `tool.post_execute` | Action | After tool execution | Yes |
+| `memory.extract` | Action | After message append | Yes |
+| `prompt.assemble` | Filter | During prompt building | Yes |
+| `response.stream` | Action | During streaming | **NOT WIRED** |

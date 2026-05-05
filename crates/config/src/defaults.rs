@@ -167,6 +167,30 @@ pub fn user_artifact_path(artifact_type: &str, name: &str) -> Result<PathBuf, Ne
     Ok(user_dir()?.join(artifact_type).join(name))
 }
 
+// ── Bundled Resources ─────────────────────────────────────────────
+
+/// Returns the path to bundled `.napp` files inside the app bundle.
+///
+/// - macOS:   `<exe_dir>/../Resources/bundled-napps/`
+/// - Windows: `<exe_dir>/resources/bundled-napps/`
+/// - Linux:   `<exe_dir>/../resources/bundled-napps/`
+///
+/// Returns `None` if the directory doesn't exist (dev/CLI mode).
+pub fn bundled_napps_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+
+    let dir = if cfg!(target_os = "macos") {
+        // Nebo.app/Contents/MacOS/nebo → Nebo.app/Contents/Resources/bundled-napps/
+        exe_dir.join("../Resources/bundled-napps")
+    } else {
+        // Linux/Windows: <exe_dir>/resources/bundled-napps/
+        exe_dir.join("resources/bundled-napps")
+    };
+
+    if dir.is_dir() { Some(dir) } else { None }
+}
+
 /// Checks if the setup has been marked as complete.
 pub fn is_setup_complete() -> Result<bool, NeboError> {
     let dir = data_dir()?;

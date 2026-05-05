@@ -269,6 +269,45 @@ fn has_marker(dir: &Path, marker_file: &str) -> bool {
     false
 }
 
+/// Read plugin slug + version from a `plugin.json` entry inside a tar.gz payload.
+///
+/// Used during bundled plugin seeding to identify the plugin before extraction.
+pub fn read_plugin_identity_from_tar_gz(payload: &[u8]) -> Result<(String, String), NappError> {
+    let gz = GzDecoder::new(payload);
+    let mut archive = Archive::new(gz);
+
+    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+        let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| NappError::Extraction(e.to_string()))?
+            .to_path_buf();
+        let name = path.to_string_lossy();
+        let normalized = name.trim_start_matches("./");
+
+        if normalized == "plugin.json" {
+            let mut content = String::new();
+            entry
+                .read_to_string(&mut content)
+                .map_err(|e| NappError::Extraction(e.to_string()))?;
+
+            #[derive(serde::Deserialize)]
+            struct PluginIdentity {
+                slug: String,
+                version: String,
+            }
+
+            let id: PluginIdentity = serde_json::from_str(&content)
+                .map_err(|e| NappError::Extraction(format!("invalid plugin.json: {}", e)))?;
+            return Ok((id.slug, id.version));
+        }
+    }
+
+    Err(NappError::NotFound(
+        "plugin.json not found in .napp archive".into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

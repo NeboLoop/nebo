@@ -15,22 +15,10 @@
   const agentStatus = $derived(ctx.agentStatus(ctx.agentId));
   const selectedThread = $derived($page.params.threadId || '');
 
-  let chatPaneRef = $state<{ focusComposer: () => void } | null>(null);
-
-  // Auto-focus chat input when user starts typing
-  function handleGlobalKeydown(e: KeyboardEvent) {
-    if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
-    if (e.ctrlKey || e.metaKey || e.altKey || e.key.length > 1) return;
-    if (document.querySelector('[data-modal-open]')) return;
-    chatPaneRef?.focusComposer();
-  }
-
   function selectThread(id: string) {
     goto(`/${agentId}/threads/${id}`, { replaceState: true, keepFocus: true });
   }
 </script>
-
-<svelte:window onkeydown={handleGlobalKeydown} />
 
 <!-- Column 2: Thread list -->
 <div class="w-[260px] min-w-[260px] border-r border-base-content/10 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.06)] relative shrink-0 flex flex-col bg-base-200/50">

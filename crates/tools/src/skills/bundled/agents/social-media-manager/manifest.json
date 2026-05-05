@@ -1,9 +1,0 @@
-{
-  "id": "social-media-manager",
-  "name": "Social Media Manager",
-  "version": "1.0.0",
-  "type": "agent",
-  "description": "Monitor mentions, create content, schedule posts — across X, LinkedIn, and Instagram. Your always-on social team.",
-  "author": "nebo",
-  "tags": ["social-media", "content", "monitoring", "engagement", "automation"]
-}

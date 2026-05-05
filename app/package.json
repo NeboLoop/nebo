@@ -25,8 +25,15 @@
 	},
 	"dependencies": {
 		"@dagrejs/dagre": "^3.0.0",
+		"@tiptap/core": "^3.22.5",
+		"@tiptap/extension-mention": "^3.22.5",
+		"@tiptap/extension-placeholder": "^3.22.5",
+		"@tiptap/pm": "^3.22.5",
+		"@tiptap/starter-kit": "^3.22.5",
+		"@tiptap/suggestion": "^3.22.5",
 		"daisyui": "^5.5.19",
 		"lucide-svelte": "^1.0.1",
+		"marked": "^18.0.3",
 		"svelte-i18n": "^4.0.1"
 	}
 }

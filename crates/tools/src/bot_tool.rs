@@ -925,7 +925,7 @@ impl AgentTool {
         }
     }
 
-    async fn handle_ask(&self, input: &serde_json::Value) -> ToolResult {
+    async fn handle_ask(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("prompt");
         match action {
             "prompt" | "confirm" | "select" => {
@@ -933,17 +933,33 @@ impl AgentTool {
                 if text.is_empty() {
                     return ToolResult::error("text is required for ask operations");
                 }
-                // In a web context, the frontend would render this as a UI prompt.
-                // Here we log it and return the question as a structured response
-                // that the frontend can intercept.
                 let options = input.get("options").cloned().unwrap_or(serde_json::json!([]));
-                ToolResult::ok(serde_json::json!({
-                    "type": "ask",
-                    "action": action,
-                    "text": text,
+
+                // Build widget definition from action type
+                let widget_type = match action {
+                    "confirm" => "confirm",
+                    "select" => {
+                        if options.as_array().map_or(0, |a| a.len()) > 5 {
+                            "select"
+                        } else {
+                            "buttons"
+                        }
+                    }
+                    _ => "buttons",
+                };
+                let widgets = serde_json::json!([{
+                    "type": widget_type,
                     "options": options,
-                    "awaitingResponse": true,
-                }).to_string())
+                }]);
+
+                match ctx.ask_user(text, widgets).await {
+                    Some(response) => ToolResult::ok(serde_json::json!({
+                        "response": response,
+                    }).to_string()),
+                    None => ToolResult::error(
+                        "Ask prompt not supported in this context (no UI connected)",
+                    ),
+                }
             }
             _ => ToolResult::error(format!(
                 "Unknown ask action: {}. Available: prompt, confirm, select",
@@ -1223,7 +1239,7 @@ impl DynTool for AgentTool {
                 "session" => self.handle_session(&input, ctx).await,
                 "context" => self.handle_context(&input, ctx).await,
                 "advisors" => self.handle_advisors(&input).await,
-                "ask" => self.handle_ask(&input).await,
+                "ask" => self.handle_ask(&input, ctx).await,
                 "runs" => self.handle_runs(&input, ctx).await,
                 "research" => self.handle_research(&input, ctx).await,
                 other => ToolResult::error(format!(

@@ -27,7 +27,7 @@ export const N = {
 
 // Per-agent hue palette (Apple Calendar style) — uses CSS vars from app.css.
 // Per-agent hue palette — agents loaded from API, colors assigned by short ID.
-export const AGENT_COLORS = {
+export const AGENT_COLORS: Record<string, { fillClass: string; dotClass: string; edgeClass: string; textClass: string; checkboxClass: string; edgeVar: string; fillVar: string }> = {
   ops: { fillClass: 'bg-[var(--agent-mint-bg)]',  dotClass: 'bg-[var(--agent-mint-ink)]',  edgeClass: 'border-[var(--agent-mint-ink)]',  textClass: 'text-[var(--agent-mint-ink)]',  checkboxClass: 'checkbox-accent',   edgeVar: 'var(--agent-mint-ink)',  fillVar: 'var(--agent-mint-bg)' },
   res: { fillClass: 'bg-[var(--agent-green-bg)]', dotClass: 'bg-[var(--agent-green-ink)]', edgeClass: 'border-[var(--agent-green-ink)]', textClass: 'text-[var(--agent-green-ink)]', checkboxClass: 'checkbox-success',  edgeVar: 'var(--agent-green-ink)', fillVar: 'var(--agent-green-bg)' },
   soc: { fillClass: 'bg-[var(--agent-rose-bg)]',  dotClass: 'bg-[var(--agent-rose-ink)]',  edgeClass: 'border-[var(--agent-rose-ink)]',  textClass: 'text-[var(--agent-rose-ink)]',  checkboxClass: 'checkbox-error',    edgeVar: 'var(--agent-rose-ink)',  fillVar: 'var(--agent-rose-bg)' },
@@ -35,6 +35,34 @@ export const AGENT_COLORS = {
   cod: { fillClass: 'bg-[var(--agent-sky-bg)]',   dotClass: 'bg-[var(--agent-sky-ink)]',   edgeClass: 'border-[var(--agent-sky-ink)]',   textClass: 'text-[var(--agent-sky-ink)]',   checkboxClass: 'checkbox-info',     edgeVar: 'var(--agent-sky-ink)',   fillVar: 'var(--agent-sky-bg)' },
   tst: { fillClass: 'bg-[var(--agent-slate-bg)]', dotClass: 'bg-[var(--agent-slate-ink)]', edgeClass: 'border-[var(--agent-slate-ink)]', textClass: 'text-[var(--agent-slate-ink)]', checkboxClass: 'checkbox-neutral',  edgeVar: 'var(--agent-slate-ink)', fillVar: 'var(--agent-slate-bg)' },
 };
+
+// Color cycle for dynamically loaded agents
+const CALENDAR_COLOR_ORDER = ['violet', 'green', 'sky', 'amber', 'rose', 'mint', 'slate', 'peach', 'lilac'];
+const CHECKBOX_CYCLE = ['checkbox-primary', 'checkbox-success', 'checkbox-info', 'checkbox-warning', 'checkbox-error', 'checkbox-accent', 'checkbox-neutral', 'checkbox-secondary', 'checkbox-primary'];
+let _colorIndex = 0;
+
+function extractVar(cls: string): string {
+  const match = cls.match(/\[(var\([^)]+\))\]/);
+  return match ? match[1] : '';
+}
+
+/** Ensure a short agent ID has a color entry in AGENT_COLORS. */
+export function ensureAgentColor(shortId: string): void {
+  if (AGENT_COLORS[shortId]) return;
+  const colorName = CALENDAR_COLOR_ORDER[_colorIndex % CALENDAR_COLOR_ORDER.length];
+  const cbClass = CHECKBOX_CYCLE[_colorIndex % CHECKBOX_CYCLE.length];
+  _colorIndex++;
+  const base = AGENT_COLORS_MAP[colorName];
+  AGENT_COLORS[shortId] = {
+    fillClass: base.bgClass,
+    dotClass: base.inkClass.replace('text-', 'bg-'),
+    edgeClass: base.borderClass,
+    textClass: base.inkClass,
+    checkboxClass: cbClass,
+    edgeVar: extractVar(base.borderClass) || base.borderClass,
+    fillVar: extractVar(base.bgClass) || base.bgClass,
+  };
+}
 
 // Agent color map by color name (used for agent avatar backgrounds)
 export const AGENT_COLORS_MAP: Record<string, { bgClass: string; inkClass: string; borderClass: string }> = {

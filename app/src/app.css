@@ -83,6 +83,18 @@
   @keyframes blink {
     50% { opacity: 0; }
   }
+
+  @keyframes nebo-think {
+    0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+    40% { opacity: 1; transform: scale(1); }
+  }
+}
+
+/* Contenteditable placeholder */
+[contenteditable][data-placeholder]:empty::before {
+  content: attr(data-placeholder);
+  @apply text-base-content/50;
+  pointer-events: none;
 }
 
 /* ===== Agent Color Palette ===== */
@@ -209,4 +221,50 @@
 
 .command-palette-footer {
   @apply flex items-center gap-4 px-4 py-2 text-sm text-base-content/60 border-t border-base-content/10;
+}
+
+/* ===== Marketplace Buttons (Apple App Store pill style) ===== */
+.btn-market {
+  @apply text-sm font-bold rounded-full inline-flex items-center justify-center min-w-[64px] h-7 px-4 transition-all duration-150 cursor-pointer;
+}
+.btn-market-get {
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  color: var(--color-primary);
+  @apply font-bold;
+}
+.btn-market-get:hover {
+  background: color-mix(in srgb, var(--color-primary) 25%, transparent);
+}
+.btn-market-installed {
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  color: var(--color-primary);
+}
+.btn-market-installed:hover {
+  background: color-mix(in srgb, var(--color-error) 15%, transparent);
+  color: var(--color-error);
+}
+.btn-market-update {
+  background: color-mix(in srgb, var(--color-secondary) 15%, transparent);
+  color: var(--color-secondary);
+}
+.btn-market-update:hover {
+  background: color-mix(in srgb, var(--color-secondary) 25%, transparent);
+}
+
+/* ===== Scrollbar Hide ===== */
+.scrollbar-hide {
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+
+/* Voice recording pulse */
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.voice-pulse {
+  animation: voice-pulse 1.5s ease-in-out infinite;
 }

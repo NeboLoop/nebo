@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use super::skill::{parse_skill_md, Skill, SkillSource};
+use super::skill::{SkillSummary, parse_skill_frontmatter, Skill, SkillSource, split_frontmatter};
 
 /// Manages loading, caching, and hot-reloading of skills from embedded
 /// (bundled), sealed .napp archives (nebo/skills/) and loose files (user/skills/).
@@ -22,16 +22,32 @@ pub struct Loader {
     /// When true, the filesystem watcher skips reload events.
     /// Set during plugin/skill extraction to prevent premature reloads.
     watcher_paused: Arc<AtomicBool>,
+    /// Raw content of bundled skills for lazy template loading.
+    /// Keyed by skill name, value is the full SKILL.md content from include_str!().
+    bundled_raw: HashMap<String, &'static str>,
+    /// Pre-built compact catalog string, rebuilt on load_all() / watcher reload.
+    /// Names-only format (like Claude Code's deferred tool listing).
+    cached_catalog: Arc<RwLock<String>>,
 }
 
 impl Loader {
     pub fn new(installed_dir: PathBuf, user_dir: PathBuf) -> Self {
+        // Pre-index bundled skill content for lazy template loading.
+        let mut bundled_raw = HashMap::new();
+        for (_key, content) in super::bundled::BUNDLED_SKILLS {
+            if let Ok(skill) = parse_skill_frontmatter(content.as_bytes()) {
+                bundled_raw.insert(skill.name, *content);
+            }
+        }
+
         Self {
             user_dir,
             installed_dir,
             skills: Arc::new(RwLock::new(HashMap::new())),
             plugin_store: None,
             watcher_paused: Arc::new(AtomicBool::new(false)),
+            bundled_raw,
+            cached_catalog: Arc::new(RwLock::new(String::new())),
         }
     }
 
@@ -57,9 +73,9 @@ impl Loader {
     pub async fn load_all(&self) -> usize {
         let mut loaded = HashMap::new();
 
-        // 1. Load embedded bundled skills (compiled into the binary)
+        // 1. Load embedded bundled skills (frontmatter only — template loaded lazily via get())
         for (name, content) in super::bundled::BUNDLED_SKILLS {
-            match parse_skill_md(content.as_bytes()) {
+            match parse_skill_frontmatter(content.as_bytes()) {
                 Ok(mut skill) => {
                     skill.enabled = true;
                     skill.source = SkillSource::Installed;
@@ -152,14 +168,40 @@ impl Loader {
         verify_dependencies(&mut loaded, self.plugin_store.as_deref());
 
         let count = loaded.len();
+        // Rebuild cached catalog before storing (names-only, like Claude Code deferred tools)
+        let catalog = build_catalog_string(&loaded);
         *self.skills.write().await = loaded;
+        *self.cached_catalog.write().await = catalog;
         info!(count, installed_dir = %self.installed_dir.display(), user_dir = %self.user_dir.display(), "loaded skills");
         count
     }
 
-    /// Get a skill by name.
+    /// Get a skill by name, lazily loading the template body if needed.
     pub async fn get(&self, name: &str) -> Option<Skill> {
-        self.skills.read().await.get(name).cloned()
+        let mut skill = self.skills.read().await.get(name).cloned()?;
+        if skill.template.is_empty() {
+            self.load_template(&mut skill);
+        }
+        Some(skill)
+    }
+
+    /// Populate the template body from disk (source_path) or bundled content.
+    fn load_template(&self, skill: &mut Skill) {
+        // Try source_path first (filesystem skills: installed, plugin-embedded, user)
+        if let Some(ref path) = skill.source_path {
+            if let Ok(data) = std::fs::read(path) {
+                if let Ok((_fm, body)) = split_frontmatter(&data) {
+                    skill.template = String::from_utf8_lossy(&body).to_string();
+                    return;
+                }
+            }
+        }
+        // Try bundled content (compiled into binary)
+        if let Some(content) = self.bundled_raw.get(&skill.name) {
+            if let Ok((_fm, body)) = split_frontmatter(content.as_bytes()) {
+                skill.template = String::from_utf8_lossy(&body).to_string();
+            }
+        }
     }
 
     /// List all loaded skills.
@@ -187,31 +229,50 @@ impl Loader {
         matches.into_iter().cloned().collect()
     }
 
-    /// Build a compact skill catalog for the system prompt.
-    /// Lists all enabled skills with 1-line descriptions (name: description).
-    /// This replaces the old keyword-triggered skill hints.
+    /// Return the pre-built compact skill catalog for the system prompt.
+    /// Names-only format (rebuilt on load_all / watcher reload).
     pub async fn compact_catalog(&self) -> String {
+        self.cached_catalog.read().await.clone()
+    }
+
+    /// List lightweight summaries of all loaded skills.
+    pub async fn list_summaries(&self) -> Vec<SkillSummary> {
         let skills = self.skills.read().await;
-        let mut entries: Vec<String> = skills
+        let mut list: Vec<SkillSummary> = skills.values().map(|s| s.to_summary()).collect();
+        list.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        list
+    }
+
+    /// Search skills by query, returning lightweight summaries.
+    pub async fn discover_summaries(&self, query: &str) -> Vec<SkillSummary> {
+        let skills = self.skills.read().await;
+        let query_lower = query.to_lowercase();
+        let mut matches: Vec<(usize, SkillSummary)> = skills
             .values()
             .filter(|s| s.enabled)
-            .map(|s| {
-                let desc = if s.description.len() > 200 {
-                    format!("{}...", &s.description[..197])
+            .filter_map(|s| {
+                let name_match = s.name.to_lowercase().contains(&query_lower);
+                let desc_match = s.description.to_lowercase().contains(&query_lower);
+                let trigger_match = s
+                    .triggers
+                    .iter()
+                    .any(|t| t.to_lowercase().contains(&query_lower));
+                if name_match || desc_match || trigger_match {
+                    let score = if name_match { 3 } else { 0 }
+                        + if trigger_match { 2 } else { 0 }
+                        + if desc_match { 1 } else { 0 };
+                    Some((score, s.to_summary()))
                 } else {
-                    s.description.clone()
-                };
-                format!("- {}: {}", s.name, desc)
+                    None
+                }
             })
             .collect();
-        entries.sort();
-        if entries.is_empty() {
-            return String::new();
-        }
-        format!(
-            "## Available Skills\n{}\n\nTo use a skill, call: skill(action: \"help\", name: \"<skill_name>\") to see full instructions, then follow them.",
-            entries.join("\n")
-        )
+        matches.sort_by(|a, b| b.0.cmp(&a.0));
+        matches.into_iter().map(|(_, s)| s).collect()
     }
 
     /// Search skills by query (name or description match).
@@ -271,6 +332,7 @@ impl Loader {
         let user_dir = self.user_dir.clone();
         let installed_dir = self.installed_dir.clone();
         let skills = self.skills.clone();
+        let cached_catalog = self.cached_catalog.clone();
         let plugin_store = self.plugin_store.clone();
         let watcher_paused = self.watcher_paused.clone();
         let plugins_dir = plugin_store.as_ref().map(|ps| ps.plugins_dir().to_path_buf());
@@ -381,9 +443,9 @@ impl Loader {
                         debug!("skills directory changed, reloading");
                         let mut loaded = HashMap::new();
 
-                        // Reload embedded bundled skills (compiled into binary)
+                        // Reload embedded bundled skills (frontmatter only)
                         for (name, content) in super::bundled::BUNDLED_SKILLS {
-                            match parse_skill_md(content.as_bytes()) {
+                            match parse_skill_frontmatter(content.as_bytes()) {
                                 Ok(mut skill) => {
                                     skill.enabled = true;
                                     skill.source = SkillSource::Installed;
@@ -469,7 +531,9 @@ impl Loader {
                         verify_dependencies(&mut loaded, plugin_store.as_deref());
 
                         let count = loaded.len();
+                        let catalog = build_catalog_string(&loaded);
                         *skills.write().await = loaded;
+                        *cached_catalog.write().await = catalog;
                         info!(count, "reloaded skills after filesystem change");
                     }
                     Err(e) => {
@@ -512,6 +576,29 @@ impl Loader {
         );
         super::expand::expand_variables(&skill.template, &ctx)
     }
+}
+
+/// Build a names-only catalog string for the system prompt.
+///
+/// Like Claude Code's deferred tool listing: just skill names, comma-separated.
+/// The model uses skill(action: "discover") or skill(action: "help") for details.
+fn build_catalog_string(skills: &HashMap<String, Skill>) -> String {
+    let mut names: Vec<&str> = skills
+        .values()
+        .filter(|s| s.enabled)
+        .map(|s| s.name.as_str())
+        .collect();
+    names.sort_unstable();
+
+    if names.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "## Available Skills ({} installed)\n{}\n\nUse skill(action: \"discover\", query: \"...\") to find relevant skills.\nUse skill(action: \"help\", name: \"...\") for full instructions.",
+        names.len(),
+        names.join(", ")
+    )
 }
 
 /// Write a skill file to a directory as `{name}/SKILL.md` per Agent Skills spec.
@@ -560,7 +647,7 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
             None => return,
         };
         match std::fs::read(&md_path) {
-            Ok(data) => match parse_skill_md(&data) {
+            Ok(data) => match parse_skill_frontmatter(&data) {
                 Ok(mut skill) => {
                     skill.enabled = true;
                     skill.source = source;
@@ -618,7 +705,7 @@ fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
             };
 
             match std::fs::read(&md_path) {
-                Ok(data) => match parse_skill_md(&data) {
+                Ok(data) => match parse_skill_frontmatter(&data) {
                     Ok(mut skill) => {
                         skill.enabled = enabled;
                         skill.source_path = Some(md_path);

@@ -663,6 +663,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         }
     }
 
@@ -874,6 +875,7 @@ mod tests {
     fn make_assistant_with_tools(content: &str, tool_calls_json: &str) -> ChatMessage {
         ChatMessage {
             tool_calls: Some(tool_calls_json.to_string()),
+            html: None,
             ..make_msg("assistant", content)
         }
     }

@@ -1585,6 +1585,8 @@ pub async fn chat_with_agent(
         entity_config,
         images: vec![],
         entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context: None,
     };
 
     crate::chat_dispatch::run_chat(&state, config).await;

@@ -58,6 +58,15 @@ pub struct PluginManifest {
     /// Optional event capabilities — events this plugin can produce via watch processes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<Vec<PluginEventDef>>,
+    /// Plugin-to-plugin dependencies (e.g., digest depends on ffmpeg).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<PluginDependency>,
+    /// Structured capability declarations (tools, hooks, commands, routes, providers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<PluginCapabilities>,
+    /// Optional permissions manifest — declares env access, network, and timeout caps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<PluginPermissions>,
 }
 
 /// Authentication configuration for a plugin binary.
@@ -121,6 +130,201 @@ pub struct PluginEventDef {
     pub multiplexed: bool,
 }
 
+/// A plugin-to-plugin dependency declared in plugin.json.
+///
+/// Same shape as the skill `PluginDependency` in the tools crate, using the
+/// same JSON field names so both skill YAML and plugin.json parse identically.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginDependency {
+    /// Dependency plugin slug.
+    pub name: String,
+    /// Semver version range. Defaults to `"*"`.
+    #[serde(default = "default_dep_version")]
+    pub version: String,
+    /// If true, the parent plugin loads even without this dep.
+    #[serde(default)]
+    pub optional: bool,
+}
+
+fn default_dep_version() -> String {
+    "*".to_string()
+}
+
+// ── Structured Capabilities (Phase 1) ───────────────────────────────
+
+/// Structured capability declarations for a plugin.
+///
+/// Plugins can declare tools, hooks, commands, routes, and providers
+/// in their manifest. All are executed out-of-process via the plugin binary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCapabilities {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<PluginToolDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<PluginHookDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<PluginCommandDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<PluginRouteDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<PluginProviderDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_schema: Vec<PluginConfigField>,
+}
+
+/// A configuration field declared by a plugin.
+///
+/// Rendered as a settings form in the UI. Values stored in `plugin_settings`,
+/// injected as env vars on plugin execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginConfigField {
+    /// Env var name (e.g., "MAX_RESULTS").
+    pub key: String,
+    /// Display label.
+    pub label: String,
+    /// Help text.
+    #[serde(default)]
+    pub description: String,
+    /// Field type: "string", "number", "boolean", "select".
+    #[serde(default = "default_string_type")]
+    pub field_type: String,
+    /// Default value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Whether the field must be set.
+    #[serde(default)]
+    pub required: bool,
+    /// If true, stored encrypted via is_secret in plugin_settings.
+    #[serde(default)]
+    pub secret: bool,
+    /// Options for "select" type fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
+}
+
+fn default_string_type() -> String { "string".to_string() }
+
+/// Permissions manifest for a plugin.
+///
+/// Declares what env vars the plugin may read, whether it needs network access,
+/// and the maximum execution timeout. Enforced at tool execution time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginPermissions {
+    /// Env vars the plugin is allowed to read. Empty = all allowed.
+    #[serde(default)]
+    pub env_allow: Vec<String>,
+    /// Env vars always stripped before execution.
+    #[serde(default)]
+    pub env_deny: Vec<String>,
+    /// Whether the plugin needs network access (informational for now).
+    #[serde(default)]
+    pub network: bool,
+    /// Maximum timeout in seconds for any tool execution. Default: 300.
+    #[serde(default = "default_max_timeout")]
+    pub max_timeout_seconds: u64,
+}
+
+fn default_max_timeout() -> u64 { 300 }
+
+/// A structured tool exposed by a plugin, backed by a CLI subcommand.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginToolDef {
+    /// Tool name as exposed to the agent (e.g., "gws.gmail.triage").
+    pub name: String,
+    /// Human-readable description for the model.
+    pub description: String,
+    /// CLI arguments passed to the plugin binary (e.g., "gmail +triage").
+    pub command: String,
+    /// JSON Schema for typed input. If absent, a generic object schema is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
+    /// Whether this tool requires user approval before execution.
+    #[serde(default = "default_true")]
+    pub approval: bool,
+    /// Maximum execution time in seconds.
+    #[serde(default = "default_120")]
+    pub timeout_seconds: u64,
+}
+
+/// A lifecycle hook contributed by a plugin, executed out-of-process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginHookDef {
+    /// Hook point name (must be in VALID_HOOKS).
+    pub hook: String,
+    /// "filter" (can modify payload) or "action" (fire-and-forget). Default: "action".
+    #[serde(default = "default_action")]
+    pub hook_type: String,
+    /// Priority — lower runs first. Default: 100.
+    #[serde(default = "default_priority")]
+    pub priority: i32,
+    /// CLI subcommand for the hook handler.
+    pub command: String,
+    /// Timeout in milliseconds. Default: 500.
+    #[serde(default = "default_500")]
+    pub timeout_ms: u64,
+}
+
+/// A slash/app command contributed by a plugin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCommandDef {
+    /// Command name (e.g., "/gmail" or "gmail").
+    pub name: String,
+    /// Human-readable description.
+    pub description: String,
+    /// CLI subcommand to execute.
+    pub command: String,
+    /// If true, register as a slash command in chat.
+    #[serde(default)]
+    pub slash: bool,
+}
+
+/// An HTTP route contributed by a plugin, proxied through the catch-all handler.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRouteDef {
+    /// Route path (e.g., "/gws/oauth/callback").
+    pub path: String,
+    /// HTTP method (GET, POST, etc.).
+    pub method: String,
+    /// CLI subcommand that handles the request.
+    pub command: String,
+    /// Auth requirement: "public" or "jwt". Default: "jwt".
+    #[serde(default = "default_jwt")]
+    pub auth: String,
+}
+
+/// A provider adapter contributed by a plugin (model, speech, image, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginProviderDef {
+    /// Provider ID (e.g., "openrouter").
+    pub id: String,
+    /// Display name.
+    pub display_name: String,
+    /// Provider type: "model", "speech", "image", etc.
+    pub provider_type: String,
+    /// CLI subcommand to list available models (JSON output).
+    pub models_command: String,
+    /// CLI subcommand for streaming chat (NDJSON on stdout).
+    pub chat_command: String,
+    /// CLI subcommand for auth setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_command: Option<String>,
+}
+
+fn default_true() -> bool { true }
+fn default_120() -> u64 { 120 }
+fn default_500() -> u64 { 500 }
+fn default_action() -> String { "action".to_string() }
+fn default_priority() -> i32 { 100 }
+fn default_jwt() -> String { "jwt".to_string() }
+
 /// Binary artifact for a specific platform.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -135,6 +339,112 @@ pub struct PlatformBinary {
     pub size: u64,
     /// Download URL for the binary.
     pub download_url: String,
+}
+
+// ── Validation ──────────────────────────────────────────────────────
+
+fn is_valid_slug_char(c: char) -> bool {
+    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
+}
+
+impl PluginManifest {
+    /// Validate manifest fields beyond serde deserialization.
+    ///
+    /// Checks slug format, semver validity, platform entries, binary name safety,
+    /// and auth/event field consistency. Same slug rules as `Skill::validate()`.
+    pub fn validate(&self) -> Result<(), NappError> {
+        // Slug: non-empty, lowercase alphanumeric + hyphens, no leading/trailing hyphens, max 64
+        if self.slug.is_empty() {
+            return Err(NappError::PluginValidation("slug is required".into()));
+        }
+        if self.slug.len() > 64 {
+            return Err(NappError::PluginValidation(format!(
+                "slug exceeds 64 characters: {}", self.slug.len()
+            )));
+        }
+        if self.slug.starts_with('-') || self.slug.ends_with('-') {
+            return Err(NappError::PluginValidation(
+                "slug must not start or end with a hyphen".into(),
+            ));
+        }
+        if self.slug.contains("--") {
+            return Err(NappError::PluginValidation(
+                "slug must not contain consecutive hyphens".into(),
+            ));
+        }
+        if !self.slug.chars().all(is_valid_slug_char) {
+            return Err(NappError::PluginValidation(
+                "slug must contain only lowercase letters, digits, and hyphens".into(),
+            ));
+        }
+
+        // Version: valid semver
+        if semver::Version::parse(&self.version).is_err() {
+            return Err(NappError::PluginValidation(format!(
+                "invalid semver version: '{}'", self.version
+            )));
+        }
+
+        // Platforms: at least one entry
+        if self.platforms.is_empty() {
+            return Err(NappError::PluginValidation(
+                "at least one platform entry is required".into(),
+            ));
+        }
+
+        // Binary names: no path separators, no "..", no empty
+        for (platform_key, pb) in &self.platforms {
+            if pb.binary_name.is_empty() {
+                return Err(NappError::PluginValidation(format!(
+                    "binary_name is empty for platform '{}'", platform_key
+                )));
+            }
+            if pb.binary_name.contains('/') || pb.binary_name.contains('\\') {
+                return Err(NappError::PluginValidation(format!(
+                    "binary_name contains path separator for platform '{}': '{}'",
+                    platform_key, pb.binary_name
+                )));
+            }
+            if pb.binary_name.contains("..") {
+                return Err(NappError::PluginValidation(format!(
+                    "binary_name contains path traversal for platform '{}': '{}'",
+                    platform_key, pb.binary_name
+                )));
+            }
+        }
+
+        // Auth: login command must be non-empty if auth is present
+        if let Some(ref auth) = self.auth {
+            if auth.commands.login.is_empty() {
+                return Err(NappError::PluginValidation(
+                    "auth.commands.login is required when auth is declared".into(),
+                ));
+            }
+        }
+
+        // Events: name and command must be non-empty, name must not contain path separators
+        if let Some(ref events) = self.events {
+            for event in events {
+                if event.name.is_empty() {
+                    return Err(NappError::PluginValidation(
+                        "event name is required".into(),
+                    ));
+                }
+                if event.name.contains('/') || event.name.contains('\\') {
+                    return Err(NappError::PluginValidation(format!(
+                        "event name contains path separator: '{}'", event.name
+                    )));
+                }
+                if event.command.is_empty() {
+                    return Err(NappError::PluginValidation(format!(
+                        "event command is required for event '{}'", event.name
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 // ── PluginStore ─────────────────────────────────────────────────────
@@ -156,6 +466,18 @@ pub struct PluginStore {
     manifests: Arc<tokio::sync::RwLock<HashMap<String, PluginManifest>>>,
     /// Prevents concurrent downloads of the same plugin slug.
     downloading: Arc<tokio::sync::Mutex<HashSet<String>>>,
+    /// In-memory diagnostic log for plugin health tracking.
+    diagnostics: Arc<std::sync::RwLock<Vec<PluginDiagnostic>>>,
+}
+
+/// A diagnostic entry for plugin health tracking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginDiagnostic {
+    pub slug: String,
+    pub level: String,
+    pub phase: String,
+    pub message: String,
+    pub timestamp: i64,
 }
 
 impl PluginStore {
@@ -166,7 +488,37 @@ impl PluginStore {
             signing_key,
             manifests: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             downloading: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
+            diagnostics: Arc::new(std::sync::RwLock::new(Vec::new())),
         }
+    }
+
+    /// Record a diagnostic event for a plugin.
+    pub fn record_diagnostic(&self, slug: &str, level: &str, phase: &str, message: &str) {
+        let diag = PluginDiagnostic {
+            slug: slug.to_string(),
+            level: level.to_string(),
+            phase: phase.to_string(),
+            message: message.to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+        };
+        if let Ok(mut diags) = self.diagnostics.write() {
+            // Cap at 1000 entries to prevent unbounded growth
+            if diags.len() >= 1000 {
+                diags.drain(..100);
+            }
+            diags.push(diag);
+        }
+    }
+
+    /// Get diagnostics for a specific plugin.
+    pub fn get_diagnostics(&self, slug: &str) -> Vec<PluginDiagnostic> {
+        self.diagnostics
+            .read()
+            .map(|d| d.iter().filter(|e| e.slug == slug).cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Root directory for installed (marketplace) plugin storage.
@@ -330,6 +682,9 @@ impl PluginStore {
         let (manifest, binary_data) =
             download_fn(slug.to_string(), platform.clone()).await?;
 
+        // Validate manifest before proceeding
+        manifest.validate()?;
+
         // Find the platform binary entry
         let platform_binary = manifest
             .platforms
@@ -474,7 +829,7 @@ impl PluginStore {
         }
 
         // Extract alongside: <slug>/<version>.napp → <slug>/<version>/
-        let extract_dir = crate::reader::extract_napp_alongside(&napp_path)?;
+        let mut extract_dir = crate::reader::extract_napp_alongside(&napp_path)?;
         info!(plugin = slug, dir = %extract_dir.display(), "extracted .napp");
 
         // Read plugin.json from extracted dir (plugin-specific metadata)
@@ -491,6 +846,52 @@ impl PluginStore {
         } else {
             None
         };
+
+        // Validate manifest if present
+        if let Some(ref pm) = plugin_manifest {
+            pm.validate()?;
+        }
+
+        // Resolve effective version: use manifest version when caller passed a
+        // non-semver placeholder like "latest". This ensures the on-disk directory
+        // is named with the real semver so `resolve()` can find it.
+        let effective_version = if let Some(ref pm) = plugin_manifest {
+            if semver::Version::parse(version).is_err() && semver::Version::parse(&pm.version).is_ok() {
+                pm.version.clone()
+            } else {
+                version.to_string()
+            }
+        } else {
+            version.to_string()
+        };
+
+        // Rename .napp and extracted dir if the effective version differs from the
+        // caller-supplied version (e.g., "latest" → "1.2.0").
+        if effective_version != version {
+            let new_napp_path = plugin_dir.join(format!("{effective_version}.napp"));
+            let new_extract_dir = plugin_dir.join(&effective_version);
+
+            // Remove target dir if it already exists (re-install of same version)
+            if new_extract_dir.exists() {
+                std::fs::remove_dir_all(&new_extract_dir)?;
+            }
+
+            std::fs::rename(&extract_dir, &new_extract_dir)?;
+            std::fs::rename(&napp_path, &new_napp_path)?;
+
+            // Clean up the old placeholder dir if extract left it empty
+            if version_dir.exists() {
+                let _ = std::fs::remove_dir_all(&version_dir);
+            }
+
+            extract_dir = new_extract_dir;
+            info!(
+                plugin = slug,
+                from = %version,
+                to = %effective_version,
+                "resolved version from manifest"
+            );
+        }
 
         // Find binary and make executable
         let binary_path = self
@@ -515,7 +916,8 @@ impl PluginStore {
                 let actual_hash = hex::encode(hasher.finalize());
                 if actual_hash != pb.sha256 {
                     let _ = std::fs::remove_dir_all(&extract_dir);
-                    let _ = std::fs::remove_file(&napp_path);
+                    let _ = std::fs::remove_file(&plugin_dir.join(format!("{effective_version}.napp")));
+                    self.record_diagnostic(slug, "error", "verify", "SHA256 mismatch");
                     return Err(NappError::PluginDownloadFailed(format!(
                         "SHA256 mismatch for plugin '{}': expected {}, got {}",
                         slug, pb.sha256, actual_hash
@@ -552,18 +954,20 @@ impl PluginStore {
                 }
             }
 
-            // Cache manifest in memory
-            let cache_key = format!("{}:{}", slug, version);
+            // Cache manifest in memory using the effective (real) version
+            let cache_key = format!("{}:{}", slug, effective_version);
             let mut manifests = self.manifests.write().await;
             manifests.insert(cache_key, pm.clone());
         }
 
         info!(
             plugin = slug,
-            version = %version,
+            version = %effective_version,
             path = %binary_path.display(),
             "installed plugin from .napp"
         );
+
+        self.record_diagnostic(slug, "info", "install", &format!("installed v{}", effective_version));
 
         Ok(binary_path)
     }
@@ -864,6 +1268,58 @@ impl PluginStore {
         let manifest = self.get_manifest(slug)?;
         let auth = manifest.auth?;
         Some((binary_path, auth))
+    }
+
+    /// Get plugin-to-plugin dependencies from the manifest.
+    pub fn get_dependencies(&self, slug: &str) -> Vec<PluginDependency> {
+        self.get_manifest(slug)
+            .map(|m| m.dependencies)
+            .unwrap_or_default()
+    }
+
+    /// Ensure all non-optional plugin dependencies are installed.
+    ///
+    /// Iterates `manifest.dependencies`, resolves each, and calls the provided
+    /// download function for any that are missing. Returns the slugs that were
+    /// actually installed (not those already present).
+    pub async fn ensure_deps<F, Fut>(
+        &self,
+        manifest: &PluginManifest,
+        download_fn: F,
+    ) -> Result<Vec<String>, NappError>
+    where
+        F: Fn(String, String) -> Fut + Clone,
+        Fut: std::future::Future<Output = Result<(PluginManifest, Vec<u8>), NappError>>,
+    {
+        let mut installed = Vec::new();
+        for dep in &manifest.dependencies {
+            if dep.optional {
+                continue;
+            }
+            // Already resolved locally? Skip.
+            if self.resolve(&dep.name, &dep.version).is_some() {
+                continue;
+            }
+            info!(
+                parent = %manifest.slug,
+                dep = %dep.name,
+                version = %dep.version,
+                "installing plugin dependency"
+            );
+            match self.ensure(&dep.name, &dep.version, download_fn.clone()).await {
+                Ok(_) => installed.push(dep.name.clone()),
+                Err(e) => {
+                    warn!(
+                        parent = %manifest.slug,
+                        dep = %dep.name,
+                        error = %e,
+                        "failed to install plugin dependency"
+                    );
+                    return Err(e);
+                }
+            }
+        }
+        Ok(installed)
     }
 
     /// Get event definitions for a plugin, if declared in its manifest.
@@ -1186,6 +1642,8 @@ mod tests {
             env_var: String::new(),
             auth: None,
             events: None,
+            dependencies: vec![],
+            capabilities: None,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
@@ -1311,5 +1769,365 @@ mod tests {
         assert_eq!(event.command, "gmail +watch");
         assert!(event.description.is_empty());
         assert!(!event.multiplexed);
+    }
+
+    // ── Validation Tests ────────────────────────────────────────────
+
+    fn make_valid_manifest() -> PluginManifest {
+        PluginManifest {
+            id: "uuid-1234".into(),
+            slug: "gws".into(),
+            name: "Google Workspace".into(),
+            version: "1.2.0".into(),
+            description: "CLI for Google Workspace".into(),
+            author: "neboloop".into(),
+            platforms: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "darwin-arm64".into(),
+                    PlatformBinary {
+                        binary_name: "gws".into(),
+                        sha256: "abc123".into(),
+                        signature: "sig==".into(),
+                        size: 1024,
+                        download_url: "https://cdn.neboloop.com/gws".into(),
+                    },
+                );
+                m
+            },
+            signing_key_id: String::new(),
+            env_var: String::new(),
+            auth: None,
+            events: None,
+            dependencies: vec![],
+            capabilities: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_good_manifest() {
+        let m = make_valid_manifest();
+        assert!(m.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_empty_slug() {
+        let mut m = make_valid_manifest();
+        m.slug = String::new();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_uppercase_slug() {
+        let mut m = make_valid_manifest();
+        m.slug = "GWS".into();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_leading_hyphen_slug() {
+        let mut m = make_valid_manifest();
+        m.slug = "-gws".into();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_trailing_hyphen_slug() {
+        let mut m = make_valid_manifest();
+        m.slug = "gws-".into();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_consecutive_hyphens_slug() {
+        let mut m = make_valid_manifest();
+        m.slug = "gws--cli".into();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_semver() {
+        let mut m = make_valid_manifest();
+        m.version = "latest".into();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_platforms() {
+        let mut m = make_valid_manifest();
+        m.platforms.clear();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_binary_name_path_traversal() {
+        let mut m = make_valid_manifest();
+        m.platforms.get_mut("darwin-arm64").unwrap().binary_name = "../evil".into();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_binary_name_path_separator() {
+        let mut m = make_valid_manifest();
+        m.platforms.get_mut("darwin-arm64").unwrap().binary_name = "bin/gws".into();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_binary_name_empty() {
+        let mut m = make_valid_manifest();
+        m.platforms.get_mut("darwin-arm64").unwrap().binary_name = String::new();
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_auth_empty_login() {
+        let mut m = make_valid_manifest();
+        m.auth = Some(PluginAuth {
+            auth_type: "oauth_cli".into(),
+            env: HashMap::new(),
+            commands: PluginAuthCommands {
+                login: String::new(),
+                status: None,
+                logout: None,
+            },
+            label: String::new(),
+            description: String::new(),
+        });
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_event_empty_name() {
+        let mut m = make_valid_manifest();
+        m.events = Some(vec![PluginEventDef {
+            name: String::new(),
+            description: String::new(),
+            command: "watch".into(),
+            multiplexed: false,
+        }]);
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_event_name_with_path_separator() {
+        let mut m = make_valid_manifest();
+        m.events = Some(vec![PluginEventDef {
+            name: "../hack".into(),
+            description: String::new(),
+            command: "watch".into(),
+            multiplexed: false,
+        }]);
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_event_empty_command() {
+        let mut m = make_valid_manifest();
+        m.events = Some(vec![PluginEventDef {
+            name: "email.new".into(),
+            description: String::new(),
+            command: String::new(),
+            multiplexed: false,
+        }]);
+        assert!(m.validate().is_err());
+    }
+
+    // ── Dependency Tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_manifest_with_dependencies() {
+        let json = r#"{
+            "id": "uuid-1234",
+            "slug": "digest",
+            "name": "Digest",
+            "version": "1.2.0",
+            "platforms": {
+                "darwin-arm64": {
+                    "binaryName": "digest",
+                    "sha256": "abc",
+                    "signature": "sig",
+                    "size": 1024,
+                    "downloadUrl": "https://cdn.neboloop.com/digest"
+                }
+            },
+            "dependencies": [
+                { "name": "ffmpeg", "version": ">=5.0.0" },
+                { "name": "nebo-pdf", "optional": true }
+            ]
+        }"#;
+
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.dependencies.len(), 2);
+        assert_eq!(parsed.dependencies[0].name, "ffmpeg");
+        assert_eq!(parsed.dependencies[0].version, ">=5.0.0");
+        assert!(!parsed.dependencies[0].optional);
+        assert_eq!(parsed.dependencies[1].name, "nebo-pdf");
+        assert_eq!(parsed.dependencies[1].version, "*");
+        assert!(parsed.dependencies[1].optional);
+    }
+
+    #[test]
+    fn test_manifest_without_dependencies_backward_compat() {
+        let json = r#"{
+            "id": "uuid-1234",
+            "slug": "ffmpeg",
+            "name": "ffmpeg",
+            "version": "5.0.0",
+            "platforms": {}
+        }"#;
+
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        assert!(parsed.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_validate_manifest_with_dependencies() {
+        let mut m = make_valid_manifest();
+        m.dependencies = vec![
+            PluginDependency {
+                name: "ffmpeg".into(),
+                version: ">=5.0.0".into(),
+                optional: false,
+            },
+        ];
+        assert!(m.validate().is_ok());
+    }
+
+    // ── Capabilities Tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_manifest_without_capabilities_backward_compat() {
+        let json = r#"{
+            "id": "uuid-1234",
+            "slug": "gws",
+            "name": "gws",
+            "version": "1.0.0",
+            "platforms": {}
+        }"#;
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        assert!(parsed.capabilities.is_none());
+    }
+
+    #[test]
+    fn test_manifest_with_capabilities_tools() {
+        let json = r#"{
+            "id": "uuid-1234",
+            "slug": "gws",
+            "name": "Google Workspace",
+            "version": "1.3.0",
+            "platforms": {},
+            "capabilities": {
+                "tools": [
+                    {
+                        "name": "gws.gmail.triage",
+                        "description": "Triage recent Gmail messages.",
+                        "command": "gmail +triage",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "max": { "type": "integer", "default": 5 }
+                            }
+                        },
+                        "timeoutSeconds": 180
+                    }
+                ]
+            }
+        }"#;
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        let caps = parsed.capabilities.unwrap();
+        assert_eq!(caps.tools.len(), 1);
+        assert_eq!(caps.tools[0].name, "gws.gmail.triage");
+        assert_eq!(caps.tools[0].command, "gmail +triage");
+        assert!(caps.tools[0].approval); // default true
+        assert_eq!(caps.tools[0].timeout_seconds, 180);
+        assert!(caps.tools[0].input_schema.is_some());
+    }
+
+    #[test]
+    fn test_manifest_with_capabilities_hooks() {
+        let json = r#"{
+            "id": "uuid-1234",
+            "slug": "audit",
+            "name": "Audit Plugin",
+            "version": "1.0.0",
+            "platforms": {},
+            "capabilities": {
+                "hooks": [
+                    {
+                        "hook": "tool.pre_execute",
+                        "hookType": "filter",
+                        "priority": 50,
+                        "command": "hooks tool-pre-execute",
+                        "timeoutMs": 1000
+                    }
+                ]
+            }
+        }"#;
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        let caps = parsed.capabilities.unwrap();
+        assert_eq!(caps.hooks.len(), 1);
+        assert_eq!(caps.hooks[0].hook, "tool.pre_execute");
+        assert_eq!(caps.hooks[0].hook_type, "filter");
+        assert_eq!(caps.hooks[0].priority, 50);
+        assert_eq!(caps.hooks[0].timeout_ms, 1000);
+    }
+
+    #[test]
+    fn test_manifest_with_capabilities_providers() {
+        let json = r#"{
+            "id": "uuid-1234",
+            "slug": "openrouter",
+            "name": "OpenRouter",
+            "version": "1.0.0",
+            "platforms": {},
+            "capabilities": {
+                "providers": [
+                    {
+                        "id": "openrouter",
+                        "displayName": "OpenRouter",
+                        "providerType": "model",
+                        "modelsCommand": "provider models",
+                        "chatCommand": "provider chat"
+                    }
+                ]
+            }
+        }"#;
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        let caps = parsed.capabilities.unwrap();
+        assert_eq!(caps.providers.len(), 1);
+        assert_eq!(caps.providers[0].id, "openrouter");
+        assert_eq!(caps.providers[0].provider_type, "model");
+    }
+
+    #[test]
+    fn test_capabilities_serde_round_trip() {
+        let caps = PluginCapabilities {
+            tools: vec![PluginToolDef {
+                name: "test.tool".into(),
+                description: "A test tool".into(),
+                command: "run test".into(),
+                input_schema: None,
+                approval: true,
+                timeout_seconds: 60,
+            }],
+            hooks: vec![],
+            commands: vec![PluginCommandDef {
+                name: "/test".into(),
+                description: "A test command".into(),
+                command: "test cmd".into(),
+                slash: true,
+            }],
+            routes: vec![],
+            providers: vec![],
+        };
+
+        let json = serde_json::to_string(&caps).unwrap();
+        let parsed: PluginCapabilities = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tools.len(), 1);
+        assert_eq!(parsed.commands.len(), 1);
+        assert!(parsed.hooks.is_empty());
+        assert!(parsed.routes.is_empty());
+        assert!(parsed.providers.is_empty());
     }
 }

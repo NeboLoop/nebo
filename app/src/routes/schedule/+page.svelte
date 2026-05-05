@@ -34,19 +34,18 @@
     canvasWorkflowsData = {};
     try {
       const resp = await api.listAgentWorkflows(agentFull);
-      const workflows = resp?.workflows as Record<string, unknown>[] | undefined;
-      if (workflows?.length) {
+      const workflowMap = resp?.workflows;
+      if (workflowMap && typeof workflowMap === 'object' && !Array.isArray(workflowMap)) {
         const wfs: Record<string, Record<string, unknown>> = {};
-        for (const wf of workflows) {
-          const name = String(wf.bindingName || wf.workflowRef || wf.id || '');
-          let triggerConfig: Record<string, unknown> = {};
-          try { triggerConfig = typeof wf.triggerConfig === 'string' ? JSON.parse(wf.triggerConfig) : (wf.triggerConfig as Record<string, unknown>) || {}; } catch {}
+        for (const [name, wfRaw] of Object.entries(workflowMap)) {
+          const wf = wfRaw as Record<string, unknown>;
           wfs[name] = {
-            trigger: { type: wf.triggerType, ...triggerConfig },
+            trigger: (wf.trigger as Record<string, unknown>) || {},
             description: wf.description || name,
             isActive: wf.isActive,
             emit: wf.emit,
             activities: (wf.activities as unknown[]) || [],
+            connections: (wf.connections as unknown[]) || [],
           };
         }
         canvasWorkflowsData = wfs;

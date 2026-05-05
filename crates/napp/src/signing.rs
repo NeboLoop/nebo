@@ -7,6 +7,18 @@ use tracing::{info, warn};
 
 use crate::NappError;
 
+/// NeboLoop's ED25519 public key, embedded at compile time for offline verification.
+///
+/// Used to verify `.napp` envelopes from bundled resources when the network
+/// may not be available (first launch, air-gapped installs).
+pub const NEBOLOOP_PUBLIC_KEY: &[u8; 32] = include_bytes!("../neboloop_public_key.bin");
+
+/// Build a `VerifyingKey` from the embedded NeboLoop public key.
+pub fn builtin_verifying_key() -> Result<VerifyingKey, NappError> {
+    VerifyingKey::from_bytes(NEBOLOOP_PUBLIC_KEY)
+        .map_err(|e| NappError::Signing(format!("invalid embedded public key: {}", e)))
+}
+
 /// Cached ED25519 public key from NeboLoop.
 pub struct SigningKeyProvider {
     neboloop_url: String,
