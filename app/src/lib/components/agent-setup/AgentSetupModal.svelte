@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { installStoreProduct, listAgents, activateAgent, getAgent, updateAgentInputs, listAgentWorkflows, updateAgentWorkflow } from '$lib/api/nebo';
+	import { installStoreProduct, listAgents, activateAgent, getAgent, updateAgentInputs, getAgentWorkflows, updateAgentWorkflow, pluginAuthLogin } from '$lib/api/nebo';
 	import type { AgentInputField, AgentWorkflow } from '$lib/api/neboComponents';
 	import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
-	import { X } from 'lucide-svelte';
+	import { X, KeyRound } from 'lucide-svelte';
+	import { onMount, onDestroy } from 'svelte';
 
 	let {
 		appId,
@@ -22,7 +23,7 @@
 		onCancel: () => void;
 	} = $props();
 
-	type Step = 'inputs' | 'schedule' | 'installing' | 'done';
+	type Step = 'inputs' | 'auth' | 'schedule' | 'installing' | 'done';
 	let step = $state<Step>('inputs');
 	let error = $state('');
 
@@ -32,6 +33,14 @@
 	let workflows = $state<AgentWorkflow[]>([]);
 
 	let scheduleOverrides = $state<Record<string, string>>({});
+
+	// Plugin auth state
+	interface PluginAuthEntry { slug: string; label: string; description: string; }
+	let authQueue = $state<PluginAuthEntry[]>([]);
+	let authIndex = $state(0);
+	let authInProgress = $state(false);
+
+	const currentAuthPlugin = $derived(authQueue[authIndex]);
 
 	if (Array.isArray(inputs)) {
 		inputFields = inputs.map((f: any) => ({
@@ -53,7 +62,7 @@
 	}
 
 	const hasInputFields = $derived(inputFields.length > 0);
-	const hasSchedules = $derived(workflows.some(w =>
+	const hasSchedules = $derived(Array.isArray(workflows) && workflows.some(w =>
 		w.isActive && (w.triggerType === 'schedule' || w.triggerType === 'heartbeat')
 	));
 
@@ -68,6 +77,40 @@
 		{ value: '8h', label: 'Every 8 hours' },
 		{ value: '24h', label: 'Every 24 hours' },
 	];
+
+	// WS event listeners for auth flow
+	function handleAuthComplete(e: CustomEvent) {
+		const data = e.detail;
+		if (!currentAuthPlugin || data?.plugin !== currentAuthPlugin.slug) return;
+		authInProgress = false;
+		advanceAuth();
+	}
+
+	function handleAuthError(e: CustomEvent) {
+		const data = e.detail;
+		if (!currentAuthPlugin || data?.plugin !== currentAuthPlugin.slug) return;
+		authInProgress = false;
+		error = data?.error || 'Authentication failed';
+	}
+
+	function handleAuthUrl(e: CustomEvent) {
+		const data = e.detail;
+		if (data?.url) {
+			window.open(data.url, '_blank');
+		}
+	}
+
+	onMount(() => {
+		window.addEventListener('nebo:plugin_auth_complete', handleAuthComplete as EventListener);
+		window.addEventListener('nebo:plugin_auth_error', handleAuthError as EventListener);
+		window.addEventListener('nebo:plugin_auth_url', handleAuthUrl as EventListener);
+	});
+
+	onDestroy(() => {
+		window.removeEventListener('nebo:plugin_auth_complete', handleAuthComplete as EventListener);
+		window.removeEventListener('nebo:plugin_auth_error', handleAuthError as EventListener);
+		window.removeEventListener('nebo:plugin_auth_url', handleAuthUrl as EventListener);
+	});
 
 	function summarizeTrigger(wf: AgentWorkflow): string {
 		if (wf.triggerType === 'heartbeat') {
@@ -105,23 +148,34 @@
 				agentId = matchedAgent.id;
 			}
 
+			let pluginsNeedingAuth: PluginAuthEntry[] = [];
+
 			try {
-				const agentRes = await getAgent(agentId);
+				const agentRes = await getAgent(agentId) as any;
 				if (agentRes?.inputFields) {
-					inputFields = agentRes.inputFields;
+					inputFields = agentRes.inputFields as AgentInputField[];
+				}
+				if (Array.isArray(agentRes?.pluginsNeedingAuth)) {
+					pluginsNeedingAuth = agentRes.pluginsNeedingAuth as PluginAuthEntry[];
 				}
 			} catch { /* ignore */ }
 
 			try {
-				const wfRes = await listAgentWorkflows(agentId);
-				workflows = wfRes?.workflows || [];
+				const wfRes = await getAgentWorkflows(agentId);
+				const wfList = (wfRes as any)?.workflows;
+				workflows = Array.isArray(wfList) ? wfList as AgentWorkflow[] : [];
 			} catch { /* ignore */ }
 
 			if (Object.keys(inputValues).length > 0) {
 				await updateAgentInputs(agentId, inputValues).catch(() => {});
 			}
 
-			if (hasSchedules) {
+			// Check if plugins need auth before proceeding
+			if (pluginsNeedingAuth.length > 0) {
+				authQueue = pluginsNeedingAuth;
+				authIndex = 0;
+				step = 'auth';
+			} else if (hasSchedules) {
 				step = 'schedule';
 			} else {
 				await finalize();
@@ -130,6 +184,36 @@
 			error = e?.error || e?.message || 'Failed to install agent';
 			step = 'inputs';
 		}
+	}
+
+	async function startAuth() {
+		if (!currentAuthPlugin) return;
+		authInProgress = true;
+		error = '';
+		try {
+			await pluginAuthLogin(currentAuthPlugin.slug);
+		} catch (e: any) {
+			authInProgress = false;
+			error = e?.error || e?.message || 'Failed to start authentication';
+		}
+	}
+
+	function advanceAuth() {
+		if (authIndex + 1 < authQueue.length) {
+			authIndex++;
+			error = '';
+		} else {
+			// All auth done — proceed to next step
+			if (hasSchedules) {
+				step = 'schedule';
+			} else {
+				finalize();
+			}
+		}
+	}
+
+	function skipAuth() {
+		advanceAuth();
 	}
 
 	async function handleScheduleDone() {
@@ -179,6 +263,62 @@
 				</svg>
 				<p class="text-base font-medium mt-4">{agentName} is ready!</p>
 				<p class="text-sm text-base-content/70 mt-1">Your agent is now active and working.</p>
+			</div>
+
+		{:else if step === 'auth'}
+			<div class="flex items-center justify-between px-6 pt-6 pb-2">
+				<div></div>
+				<button type="button" class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors" onclick={onCancel} aria-label="Close">
+					<X class="w-4 h-4 text-base-content/70" />
+				</button>
+			</div>
+
+			<div class="px-6 pb-6 overflow-y-auto">
+				<div class="text-center mb-6">
+					<div class="w-12 h-12 rounded-full bg-primary/15 flex items-center justify-center mx-auto mb-4">
+						<KeyRound class="w-6 h-6 text-primary" />
+					</div>
+					<h2 class="font-display text-xl font-bold">Connect account</h2>
+					{#if authQueue.length > 1}
+						<p class="text-xs text-base-content/50 mt-1">Step {authIndex + 1} of {authQueue.length}</p>
+					{/if}
+				</div>
+
+				{#if error}
+					<div class="text-sm text-error bg-error/10 rounded-lg px-3 py-2 mb-4">{error}</div>
+				{/if}
+
+				{#if currentAuthPlugin}
+					<div class="rounded-xl border border-base-content/10 p-4 mb-6">
+						<p class="text-sm font-medium">{currentAuthPlugin.label || currentAuthPlugin.slug}</p>
+						{#if currentAuthPlugin.description}
+							<p class="text-xs text-base-content/70 mt-1">{currentAuthPlugin.description}</p>
+						{/if}
+					</div>
+				{/if}
+
+				{#if authInProgress}
+					<div class="flex flex-col items-center py-4 mb-6">
+						<span class="loading loading-spinner loading-md text-primary"></span>
+						<p class="text-sm text-base-content/70 mt-3">Waiting for authorization...</p>
+						<p class="text-xs text-base-content/50 mt-1">Complete the sign-in in your browser, then return here.</p>
+					</div>
+
+					<div class="flex justify-center">
+						<button type="button" class="text-sm text-base-content/50 hover:text-base-content/70 transition-colors" onclick={() => { authInProgress = false; }}>
+							Cancel
+						</button>
+					</div>
+				{:else}
+					<div class="flex gap-3">
+						<button type="button" class="flex-1 h-11 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors" onclick={skipAuth}>
+							Skip
+						</button>
+						<button type="button" class="flex-1 h-11 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all" onclick={startAuth}>
+							Connect {currentAuthPlugin?.label || 'Account'}
+						</button>
+					</div>
+				{/if}
 			</div>
 
 		{:else if step === 'schedule'}

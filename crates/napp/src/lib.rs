@@ -4,6 +4,7 @@ pub mod napp;
 pub mod plugin;
 pub mod reader;
 pub mod registry;
+pub mod sealed;
 pub mod agent;
 pub mod agent_loader;
 pub mod runtime;

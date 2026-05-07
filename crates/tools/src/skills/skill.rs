@@ -157,6 +157,12 @@ pub struct Skill {
     /// Root directory of the skill (parent of SKILL.md).
     #[serde(skip)]
     pub base_dir: Option<PathBuf>,
+    /// Path to the sealed .napp archive (for paid content read in memory).
+    #[serde(skip)]
+    pub napp_path: Option<PathBuf>,
+    /// License key for reading from sealed .napp (kept in memory only).
+    #[serde(skip)]
+    pub license_key: Option<[u8; 32]>,
 }
 
 fn default_source() -> SkillSource {
@@ -265,7 +271,22 @@ impl Skill {
     }
 
     /// List resource files (not SKILL.md itself).
+    ///
+    /// For sealed skills, lists entries from the encrypted .napp archive in memory,
+    /// filtering out SKILL.md and metadata files. For free skills, walks the
+    /// extracted directory on disk.
     pub fn list_resources(&self) -> Result<Vec<String>, String> {
+        // Sealed .napp: list from archive in memory
+        if let (Some(napp_path), Some(key)) = (&self.napp_path, &self.license_key) {
+            let entries = napp::reader::list_sealed_napp_entries(napp_path, key)
+                .map_err(|e| format!("failed to list sealed resources: {}", e))?;
+            return Ok(entries
+                .into_iter()
+                .filter(|name| !is_metadata_entry(name))
+                .collect());
+        }
+
+        // Free content: walk extracted directory
         if let Some(ref base_dir) = self.base_dir {
             let mut resources = Vec::new();
             walk_resources(base_dir, base_dir, &mut resources);
@@ -277,11 +298,22 @@ impl Skill {
 
     /// Read a resource file by relative path.
     /// Path traversal (`..`) is rejected.
+    ///
+    /// For sealed skills, reads from the encrypted .napp archive in memory
+    /// (plaintext never touches disk). For free skills, reads from the
+    /// extracted directory on disk.
     pub fn read_resource(&self, relative_path: &str) -> Result<Vec<u8>, String> {
         if relative_path.contains("..") {
             return Err("path traversal not allowed".into());
         }
 
+        // Sealed .napp: read from archive in memory
+        if let (Some(napp_path), Some(key)) = (&self.napp_path, &self.license_key) {
+            return napp::reader::read_sealed_napp_entry(napp_path, relative_path, key)
+                .map_err(|e| format!("failed to read sealed resource: {}", e));
+        }
+
+        // Free content: read from extracted directory
         if let Some(ref base_dir) = self.base_dir {
             let full = base_dir.join(relative_path);
             // Guard against symlink escapes
@@ -294,6 +326,11 @@ impl Skill {
         }
     }
 
+    /// Whether this skill's content is sealed (paid, encrypted at rest).
+    pub fn is_sealed(&self) -> bool {
+        self.napp_path.is_some() && self.license_key.is_some()
+    }
+
     /// Check if a message matches any of this skill's triggers (case-insensitive substring).
     pub fn matches_trigger(&self, message: &str) -> bool {
         if self.triggers.is_empty() {
@@ -303,6 +340,39 @@ impl Skill {
         self.triggers
             .iter()
             .any(|t| msg_lower.contains(&t.to_lowercase()))
+    }
+}
+
+/// Recursively walk a directory collecting only executable paths (scripts/, bin/, binary).
+///
+/// Used by `ExecuteTool::extract_resources()` for sealed skills: only copy
+/// executables to the temp dir — SKILL.md, references/, assets/ stay sealed.
+pub fn walk_resources_filtered(base: &Path, dir: &Path, out: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            // Only recurse into executable directories
+            if matches!(name_str.as_ref(), "scripts" | "bin") {
+                walk_resources_filtered(base, &path, out);
+            }
+        } else if let Ok(rel) = path.strip_prefix(base) {
+            let rel_str = rel.to_string_lossy().to_string();
+            // Only include executables
+            if rel_str == "binary" || rel_str == "app"
+                || rel_str.starts_with("scripts/") || rel_str.starts_with("bin/")
+            {
+                out.push(rel_str);
+            }
+        }
     }
 }
 
@@ -330,6 +400,15 @@ fn walk_resources(base: &Path, dir: &Path, out: &mut Vec<String>) {
             out.push(rel.to_string_lossy().to_string());
         }
     }
+}
+
+/// Check if a tar entry name is metadata/packaging (should be excluded from resource listings).
+fn is_metadata_entry(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower == "skill.md"
+        || lower == "manifest.json"
+        || lower == "signatures.json"
+        || lower.starts_with('.')
 }
 
 /// Get the current platform name matching the Go convention.
@@ -494,6 +573,8 @@ You are a research specialist. When activated, focus on:
             source_path: None,
             source: SkillSource::User,
             base_dir: None,
+            napp_path: None,
+            license_key: None,
         };
         assert!(skill.validate().is_err());
         skill.name = "test".into();

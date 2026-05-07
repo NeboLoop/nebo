@@ -47,10 +47,11 @@
 
   type AgentInfo = { id: string; name: string; color?: string; initial?: string; role?: string; status?: string };
 
-  let { messages = [], agentName = 'Agent', agentId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onsend, onstop, onedit, onredo, onasksubmit, isLoading = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onsend, onstop, onedit, onredo, onasksubmit, isLoading = false }: {
     messages?: Message[];
     agentName?: string;
     agentId?: string;
+    threadId?: string;
     headerTitle?: string;
     headerRight?: string;
     placeholder?: string;
@@ -662,6 +663,7 @@
     <ChatComposer
       {agentName}
       {agentId}
+      {threadId}
       {placeholder}
       {allAgents}
       {onsend}

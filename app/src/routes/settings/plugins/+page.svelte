@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
 
   let plugins = $state<{ id: string; name: string; desc: string; hasAuth: boolean; type: string }[]>([]);
+  let authStatuses = $state<Record<string, 'connected' | 'disconnected' | 'connecting'>>({});
 
   onMount(async () => {
     try {
@@ -15,27 +16,57 @@
           hasAuth: !!(p.hasAuth ?? p.has_auth ?? false),
           type: 'plugin' as const,
         }));
+
+        // Fetch actual auth status for each plugin that has auth
+        for (const plugin of plugins) {
+          if (!plugin.hasAuth) continue;
+          try {
+            const status = await api.pluginAuthStatus(plugin.id) as any;
+            authStatuses[plugin.id] = status?.authenticated ? 'connected' : 'disconnected';
+          } catch {
+            authStatuses[plugin.id] = 'disconnected';
+          }
+        }
       }
     } catch {}
+
+    // Listen for WS auth events
+    window.addEventListener('nebo:plugin_auth_complete', handleAuthComplete as EventListener);
+    window.addEventListener('nebo:plugin_auth_error', handleAuthError as EventListener);
+    window.addEventListener('nebo:plugin_auth_url', handleAuthUrl as EventListener);
   });
+
+  onDestroy(() => {
+    window.removeEventListener('nebo:plugin_auth_complete', handleAuthComplete as EventListener);
+    window.removeEventListener('nebo:plugin_auth_error', handleAuthError as EventListener);
+    window.removeEventListener('nebo:plugin_auth_url', handleAuthUrl as EventListener);
+  });
+
+  function handleAuthComplete(e: CustomEvent) {
+    const plugin = e.detail?.plugin;
+    if (plugin) authStatuses[plugin] = 'connected';
+  }
+
+  function handleAuthError(e: CustomEvent) {
+    const plugin = e.detail?.plugin;
+    if (plugin) authStatuses[plugin] = 'disconnected';
+  }
+
+  function handleAuthUrl(e: CustomEvent) {
+    const url = e.detail?.url;
+    if (url) window.open(url, '_blank');
+  }
 
   const installedPlugins = $derived(plugins);
-
-  let authStatuses = $state<Record<string, 'connected' | 'disconnected' | 'connecting'>>({
-    p1: 'connected',
-    p2: 'connected',
-    p4: 'disconnected',
-    p7: 'disconnected',
-  });
 
   async function connectPlugin(id: string) {
     authStatuses[id] = 'connecting';
     try {
       const api = await import('$lib/api/nebo');
-      await api.authLogin(id);
-      authStatuses[id] = 'connected';
+      await api.pluginAuthLogin(id);
+      // Don't set connected here — wait for plugin_auth_complete WS event
     } catch {
-      setTimeout(() => { authStatuses[id] = 'connected'; }, 1500);
+      authStatuses[id] = 'disconnected';
     }
   }
 
@@ -43,7 +74,7 @@
     authStatuses[id] = 'disconnected';
     try {
       const api = await import('$lib/api/nebo');
-      await api.authLogout(id);
+      await api.pluginAuthLogout(id);
     } catch { /* local state already updated */ }
   }
 </script>

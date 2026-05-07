@@ -442,12 +442,14 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
     })
 }
 
-/// Scan installed (nebo/) agents directory for extracted agent directories.
+/// Scan installed (nebo/) agents directory for extracted agent directories
+/// and sealed .napp archives.
 pub fn scan_installed_agents(dir: &Path) -> Vec<LoadedAgent> {
     let mut agents = Vec::new();
     if !dir.exists() {
         return agents;
     }
+    // Load from extracted directories (free content)
     crate::reader::walk_for_marker(dir, "AGENT.md", &mut |agent_dir| {
         match load_from_dir(agent_dir, AgentSource::Installed) {
             Ok(agent) => agents.push(agent),
@@ -457,6 +459,174 @@ pub fn scan_installed_agents(dir: &Path) -> Vec<LoadedAgent> {
         }
     });
     agents
+}
+
+/// Scan for sealed .napp agent archives and load their content in memory.
+///
+/// Finds .napp files without a sibling AGENT.md directory (sealed content).
+/// Reads AGENT.md, agent.json, manifest.json, views.json, and theme.css from
+/// the encrypted archive using the provided license key. Plaintext never touches disk.
+pub fn scan_sealed_agents(
+    dir: &Path,
+    license_keys: &std::collections::HashMap<String, [u8; 32]>,
+) -> Vec<LoadedAgent> {
+    let mut agents = Vec::new();
+    if !dir.exists() {
+        return agents;
+    }
+    scan_sealed_agents_recursive(dir, license_keys, &mut agents);
+    agents
+}
+
+fn scan_sealed_agents_recursive(
+    dir: &Path,
+    license_keys: &std::collections::HashMap<String, [u8; 32]>,
+    out: &mut Vec<LoadedAgent>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_sealed_agents_recursive(&path, license_keys, out);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("napp") {
+            continue;
+        }
+
+        // Skip if sibling extracted directory has AGENT.md (free content)
+        let sibling = path.with_extension("");
+        if sibling.is_dir() && sibling.join("AGENT.md").exists() {
+            continue;
+        }
+
+        // Read artifact_id from partially-extracted manifest.json
+        let artifact_id = if sibling.is_dir() {
+            let manifest = sibling.join("manifest.json");
+            if manifest.exists() {
+                std::fs::read_to_string(&manifest)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| v["id"].as_str().map(String::from))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let artifact_id = match artifact_id {
+            Some(id) => id,
+            None => continue,
+        };
+
+        let license_key = match license_keys.get(&artifact_id) {
+            Some(k) => k,
+            None => {
+                debug!(path = %path.display(), artifact_id, "sealed agent: no license key, skipping");
+                continue;
+            }
+        };
+
+        match load_from_sealed_napp(&path, license_key) {
+            Ok(agent) => out.push(agent),
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "failed to load sealed agent");
+            }
+        }
+    }
+}
+
+/// Load an agent from a sealed .napp archive (decrypted in memory only).
+fn load_from_sealed_napp(
+    napp_path: &Path,
+    license_key: &[u8; 32],
+) -> Result<LoadedAgent, NappError> {
+    let agent_md_raw = crate::reader::read_sealed_napp_entry_string(napp_path, "AGENT.md", license_key)?;
+    let mut agent_def = parse_agent(&agent_md_raw)?;
+
+    if agent_def.name.is_empty() {
+        if let Some(stem) = napp_path.file_stem().and_then(|n| n.to_str()) {
+            agent_def.name = stem.to_string();
+        }
+    }
+
+    let (config, frontmatter) = match crate::reader::read_sealed_napp_entry_string(napp_path, "agent.json", license_key) {
+        Ok(json) => {
+            let cfg = parse_agent_config(&json)?;
+            (Some(cfg), json)
+        }
+        Err(NappError::NotFound(_)) => (None, String::new()),
+        Err(e) => return Err(e),
+    };
+
+    let (version, id, manifest_name) = match crate::reader::read_sealed_napp_entry_string(napp_path, "manifest.json", license_key) {
+        Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+            Ok(v) => (
+                v["version"].as_str().map(String::from),
+                v["id"].as_str().map(String::from),
+                v["name"].as_str().map(String::from),
+            ),
+            Err(_) => (None, None, None),
+        },
+        // manifest.json may have been partially extracted — try sibling dir
+        Err(NappError::NotFound(_)) => {
+            let sibling = napp_path.with_extension("");
+            if sibling.is_dir() {
+                let manifest = sibling.join("manifest.json");
+                if manifest.exists() {
+                    std::fs::read_to_string(&manifest)
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .map(|v| (
+                            v["version"].as_str().map(String::from),
+                            v["id"].as_str().map(String::from),
+                            v["name"].as_str().map(String::from),
+                        ))
+                        .unwrap_or((None, None, None))
+                } else {
+                    (None, None, None)
+                }
+            } else {
+                (None, None, None)
+            }
+        }
+        Err(_) => (None, None, None),
+    };
+
+    if let Some(ref mname) = manifest_name {
+        if !mname.is_empty() && !mname.contains('@') && !mname.contains('/') {
+            agent_def.name = mname.clone();
+        }
+    }
+
+    let description = agent_def.description.clone();
+
+    // Read optional views.json and theme.css from sealed archive
+    let views = crate::reader::read_sealed_napp_entry_string(napp_path, "views.json", license_key)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+
+    let theme_css = crate::reader::read_sealed_napp_entry_string(napp_path, "theme.css", license_key).ok();
+
+    Ok(LoadedAgent {
+        agent_def,
+        config,
+        source: AgentSource::Installed,
+        napp_path: Some(napp_path.to_path_buf()),
+        source_path: napp_path.to_path_buf(),
+        version,
+        agent_md: agent_md_raw,
+        frontmatter,
+        description,
+        id,
+        views,
+        theme_css,
+    })
 }
 
 /// Scan user agents directory for loose agent directories.

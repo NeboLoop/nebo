@@ -189,6 +189,52 @@ export function attachWebSocketListeners(): void {
     );
   }
 
+  // --- Task item updates (per-step workflow progress) ---
+  unsubs.push(
+    ws.on('task_updated', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:task_updated', { detail: data }));
+      }
+    })
+  );
+
+  // --- A2UI data model updates ---
+  unsubs.push(
+    ws.on('a2ui_update_data_model', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:a2ui_data', { detail: data }));
+      }
+    })
+  );
+
+  unsubs.push(
+    ws.on('a2ui_action_status', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:a2ui_action_status', { detail: data }));
+      }
+    })
+  );
+
+  // --- Plugin auth lifecycle ---
+  for (const evt of ['plugin_auth_started', 'plugin_auth_url', 'plugin_auth_complete', 'plugin_auth_error', 'agent_auth_required'] as const) {
+    unsubs.push(
+      ws.on(evt, (data: any) => {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent(`nebo:${evt}`, { detail: data }));
+        }
+      })
+    );
+  }
+
+  // --- Plan changed ---
+  unsubs.push(
+    ws.on('plan_changed', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:plan_changed', { detail: data }));
+      }
+    })
+  );
+
   // --- System events ---
   unsubs.push(
     ws.on('system_event', (data: any) => {

@@ -106,6 +106,8 @@ pub async fn auth_login(
     let hub = state.hub.clone();
     let slug_owned = slug.clone();
     let plugin_path = state.plugin_store.path_with_plugins();
+    let store_for_restart = state.store.clone();
+    let workers_for_restart = state.agent_workers.clone();
 
     info!(plugin = %slug, "starting plugin auth login");
 
@@ -273,6 +275,37 @@ pub async fn auth_login(
                     "plugin_auth_complete",
                     serde_json::json!({ "plugin": &slug_owned }),
                 );
+
+                // Restart agent workers that depend on this plugin
+                let store_r = store_for_restart.clone();
+                let workers_r = workers_for_restart.clone();
+                let slug_r = slug_owned.clone();
+                tokio::spawn(async move {
+                    if let Ok(agents) = store_r.list_agents(1000, 0) {
+                        for agent in &agents {
+                            if agent.is_enabled == 0 {
+                                continue;
+                            }
+                            if let Ok(bindings) = store_r.list_agent_workflows(&agent.id) {
+                                let uses_plugin = bindings.iter().any(|b| {
+                                    b.trigger_type == "watch"
+                                        && b.trigger_config.contains(&slug_r)
+                                });
+                                if uses_plugin {
+                                    let notif_id =
+                                        format!("auth-required:{}:{}", agent.id, slug_r);
+                                    let _ = store_r.delete_notification(&notif_id, "");
+                                    info!(
+                                        agent = %agent.id,
+                                        plugin = %slug_r,
+                                        "restarting agent worker after plugin auth"
+                                    );
+                                    workers_r.start_agent(&agent.id, &agent.name).await;
+                                }
+                            }
+                        }
+                    }
+                });
             }
             Ok(_status) => {
                 let error = if all_stderr.trim().is_empty() {

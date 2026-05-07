@@ -84,6 +84,8 @@ impl Pipeline {
             Box::new(PresenceAwareness),
             Box::new(ContextPressure),
             Box::new(JanusQuotaWarning),
+            Box::new(TaskTrackingNudge),
+            Box::new(TaskCompletionNudge),
             Box::new(AskToolNudge),
         ];
 
@@ -601,7 +603,85 @@ impl Generator for ErrorRecovery {
     }
 }
 
-// 15. Ask Tool Nudge — steer the LLM to use the interactive ask widget instead of plain-text questions
+// 15. Task Tracking Nudge — steer the LLM to break complex requests into tracked tasks
+struct TaskTrackingNudge;
+impl Generator for TaskTrackingNudge {
+    fn name(&self) -> &str { "task_tracking_nudge" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        // Only fire on first iteration (when user just sent a request)
+        if ctx.iteration != 1 {
+            return vec![];
+        }
+        // Don't fire if tasks already exist (LLM already tracking)
+        if !ctx.work_tasks.is_empty() {
+            return vec![];
+        }
+
+        // Detect multi-step complexity in the user prompt
+        let lower = ctx.user_prompt.to_lowercase();
+        let complexity_signals = [
+            "and then", "after that", "first", "next", "finally",
+            "step 1", "step 2", "1.", "2.", "3.",
+            "multiple", "each", "all of", "every",
+            "research", "compare", "analyze", "plan",
+            "set up", "configure", "build", "create a",
+            "organize", "clean up", "migrate",
+        ];
+        let signal_count = complexity_signals.iter()
+            .filter(|s| lower.contains(*s))
+            .count();
+
+        // Also check message length as a proxy for complexity
+        let is_long = ctx.user_prompt.len() > 200;
+
+        if signal_count < 2 && !is_long {
+            return vec![];
+        }
+
+        vec![SteeringDirective {
+            label: "Task Tracking".to_string(),
+            content: "This looks like a multi-step request. Break it into trackable tasks so the user \
+                     can see your progress:\n\
+                     1. Create tasks: bot(resource: \"task\", action: \"create\", subject: \"...\")\n\
+                     2. Update as you work: bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
+                     3. Mark complete with output: bot(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
+                     Create all tasks upfront, then work through them one at a time."
+                .to_string(),
+            priority: 6,
+        }]
+    }
+}
+
+// 16. Task Completion Nudge — remind to update tasks when work is being done but tasks aren't progressing
+struct TaskCompletionNudge;
+impl Generator for TaskCompletionNudge {
+    fn name(&self) -> &str { "task_completion_nudge" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        // Only fire if there ARE tasks and tools are being used
+        if ctx.work_tasks.is_empty() || ctx.iteration < 3 {
+            return vec![];
+        }
+        // Check: all tasks still pending despite tool usage
+        let all_pending = ctx.work_tasks.iter().all(|t| t.status == "pending");
+        let has_tool_use = count_turns_since_any_tool_use(&ctx.messages) == 0;
+
+        if all_pending && has_tool_use {
+            vec![SteeringDirective {
+                label: "Task Progress".to_string(),
+                content: "You have tasks but none are marked in_progress or completed. \
+                         Update task status as you work: \
+                         bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\") \
+                         before starting, then status: \"completed\" with output when done."
+                    .to_string(),
+                priority: 5,
+            }]
+        } else {
+            vec![]
+        }
+    }
+}
+
+// 17. Ask Tool Nudge — steer the LLM to use the interactive ask widget instead of plain-text questions
 struct AskToolNudge;
 impl Generator for AskToolNudge {
     fn name(&self) -> &str { "ask_tool_nudge" }

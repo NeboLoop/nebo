@@ -269,6 +269,179 @@ fn has_marker(dir: &Path, marker_file: &str) -> bool {
     false
 }
 
+// ── Sealed .napp readers ─────────────────────────────────────────────────
+
+/// Read a single entry from a sealed .napp file by name.
+///
+/// Decrypts the .napp envelope in memory, reads the entry from the inner
+/// tar.gz, and returns the content. Plaintext never touches disk.
+pub fn read_sealed_napp_entry(
+    napp_path: &Path,
+    entry_name: &str,
+    license_key: &[u8; 32],
+) -> Result<Vec<u8>, NappError> {
+    let targz = unseal_napp_to_targz(napp_path, license_key)?;
+    read_entry_from_targz_bytes(&targz, entry_name, napp_path)
+}
+
+/// Read a single entry from a sealed .napp file as a UTF-8 string.
+pub fn read_sealed_napp_entry_string(
+    napp_path: &Path,
+    entry_name: &str,
+    license_key: &[u8; 32],
+) -> Result<String, NappError> {
+    let bytes = read_sealed_napp_entry(napp_path, entry_name, license_key)?;
+    String::from_utf8(bytes)
+        .map_err(|e| NappError::Extraction(format!("invalid UTF-8 in {}: {}", entry_name, e)))
+}
+
+/// List all entry names in a sealed .napp file.
+pub fn list_sealed_napp_entries(
+    napp_path: &Path,
+    license_key: &[u8; 32],
+) -> Result<Vec<String>, NappError> {
+    let targz = unseal_napp_to_targz(napp_path, license_key)?;
+    list_entries_from_targz_bytes(&targz)
+}
+
+/// Partially extract a sealed .napp — executables + metadata only, IP stays sealed.
+///
+/// Extracts `scripts/*`, `bin/*`, root `binary`, `manifest.json`, `plugin.json`,
+/// and `signatures.json` to a sibling directory. SKILL.md, references/, assets/
+/// stay inside the sealed .napp and are read in memory at runtime.
+///
+/// Returns the extraction directory path, or None if nothing was extracted.
+pub fn partial_extract_sealed_napp(
+    napp_path: &Path,
+    license_key: &[u8; 32],
+) -> Result<Option<PathBuf>, NappError> {
+    let targz = unseal_napp_to_targz(napp_path, license_key)?;
+    let dest_dir = napp_path.with_extension("");
+
+    let gz = GzDecoder::new(targz.as_slice());
+    let mut archive = Archive::new(gz);
+    let mut extracted_any = false;
+
+    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+        let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
+        let path = entry.path().map_err(|e| NappError::Extraction(e.to_string()))?;
+        let normalized = path.to_string_lossy().trim_start_matches("./").to_string();
+
+        if normalized.is_empty() || entry.header().entry_type().is_dir() {
+            continue;
+        }
+
+        // Only extract executables and metadata
+        if !is_partial_extract_entry(&normalized) {
+            continue;
+        }
+
+        let dest_path = dest_dir.join(&normalized);
+        if let Some(parent) = dest_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mut content = Vec::new();
+        entry.read_to_end(&mut content)
+            .map_err(|e| NappError::Extraction(e.to_string()))?;
+        std::fs::write(&dest_path, &content)?;
+
+        // Set +x only on actual executables, not metadata files
+        #[cfg(unix)]
+        if is_executable_entry(&normalized) {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dest_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+
+        extracted_any = true;
+    }
+
+    if extracted_any {
+        Ok(Some(dest_dir))
+    } else {
+        Ok(None)
+    }
+}
+
+// ── Internal helpers ─────────────────────────────────────────────────────
+
+/// Unseal a .napp file: verify envelope → decrypt → return plain tar.gz bytes.
+fn unseal_napp_to_targz(napp_path: &Path, license_key: &[u8; 32]) -> Result<Vec<u8>, NappError> {
+    let data = std::fs::read(napp_path)?;
+    let sealed_payload = crate::napp::unwrap_napp_builtin(&data)?;
+    crate::sealed::unseal_payload(&sealed_payload, license_key)
+}
+
+/// Read a single entry from an in-memory tar.gz byte slice.
+fn read_entry_from_targz_bytes(
+    targz: &[u8],
+    entry_name: &str,
+    source: &Path,
+) -> Result<Vec<u8>, NappError> {
+    let gz = GzDecoder::new(targz);
+    let mut archive = Archive::new(gz);
+    let target = entry_name.trim_start_matches("./");
+
+    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+        let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
+        let path = entry.path().map_err(|e| NappError::Extraction(e.to_string()))?;
+        let normalized = path.to_string_lossy().trim_start_matches("./").to_string();
+
+        if normalized == target {
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content)
+                .map_err(|e| NappError::Extraction(e.to_string()))?;
+            return Ok(content);
+        }
+    }
+
+    Err(NappError::NotFound(format!(
+        "{} not found in {}",
+        entry_name,
+        source.display()
+    )))
+}
+
+/// List all entry names from an in-memory tar.gz byte slice.
+fn list_entries_from_targz_bytes(targz: &[u8]) -> Result<Vec<String>, NappError> {
+    let gz = GzDecoder::new(targz);
+    let mut archive = Archive::new(gz);
+    let mut entries = Vec::new();
+
+    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+        let entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
+        let path = entry.path().map_err(|e| NappError::Extraction(e.to_string()))?;
+        let normalized = path.to_string_lossy().trim_start_matches("./").to_string();
+        if !normalized.is_empty() {
+            entries.push(normalized);
+        }
+    }
+
+    Ok(entries)
+}
+
+/// Check if a tar entry name is an executable (needs +x permission).
+fn is_executable_entry(name: &str) -> bool {
+    name == "binary"
+        || name == "app"
+        || name.starts_with("scripts/")
+        || name.starts_with("bin/")
+}
+
+/// Check if a tar entry should be extracted during partial extraction.
+/// Includes executables (not readable IP) and metadata (needed for discovery).
+fn is_partial_extract_entry(name: &str) -> bool {
+    // Executables — compiled code, not readable IP
+    name == "binary"
+        || name == "app"
+        || name.starts_with("scripts/")
+        || name.starts_with("bin/")
+        // Metadata — needed for discovery and artifact_id lookup
+        || name == "manifest.json"
+        || name == "plugin.json"
+        || name == "signatures.json"
+}
+
 /// Read plugin slug + version from a `plugin.json` entry inside a tar.gz payload.
 ///
 /// Used during bundled plugin seeding to identify the plugin before extraction.

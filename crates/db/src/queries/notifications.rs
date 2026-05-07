@@ -123,6 +123,28 @@ impl Store {
         Ok(())
     }
 
+    /// Insert a notification only if one with the same `id` doesn't already exist.
+    /// Uses `INSERT OR IGNORE` (notifications.id is PRIMARY KEY) for deduplication.
+    pub fn create_notification_if_not_exists(
+        &self,
+        id: &str,
+        user_id: &str,
+        notification_type: &str,
+        title: &str,
+        body: Option<&str>,
+        action_url: Option<&str>,
+        icon: Option<&str>,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO notifications (id, user_id, type, title, body, action_url, icon, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s', 'now'))",
+            params![id, user_id, notification_type, title, body, action_url, icon],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn delete_old_notifications(&self, before: i64) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(

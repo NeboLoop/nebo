@@ -1,176 +1,296 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import Check from 'lucide-svelte/icons/check';
   import ArrowRight from 'lucide-svelte/icons/arrow-right';
   import ArrowLeft from 'lucide-svelte/icons/arrow-left';
   import Zap from 'lucide-svelte/icons/zap';
+  import * as api from '$lib/api/nebo';
+  import type {
+    NeboLoopAccountStatusResponse,
+    BillingPriceInfo
+  } from '$lib/api/neboComponents';
+  import Spinner from '$lib/components/ui/Spinner.svelte';
 
-  interface Plan { id: string; name: string; price: number | null; priceYearly: number | null; features: string[]; current?: boolean; popular?: boolean; description: string }
-
-  let plans = $state<Plan[]>([]);
+  let isLoading = $state(true);
+  let status = $state<NeboLoopAccountStatusResponse | null>(null);
+  let allPrices = $state<BillingPriceInfo[]>([]);
+  let subscription = $state<{ plan: string; subscriptions: any[] } | null>(null);
   let billingInterval = $state<'month' | 'year'>('month');
+  let boostSelections = $state<Record<string, boolean>>({});
+
   let step = $state<'plans' | 'checkout'>('plans');
-  let selectedPlan = $state<Plan | null>(null);
   let checkoutLoading = $state(false);
+  let checkoutError = $state('');
 
-  const currentPlan = 'pro';
+  let selectedPrice = $state<BillingPriceInfo | null>(null);
+  let selectedBoost = $state<BillingPriceInfo | null>(null);
 
-  const includedFeatures = [
-    'Runs on your machine',
-    'Your data stays local',
-    'Skills & roles marketplace',
-    'Desktop automation',
-    'MCP integrations',
-    'Memory system'
-  ];
+  let embeddedCheckout = $state<any>(null);
 
-  onMount(async () => {
-    try {
-      const api = await import('$lib/api/nebo');
-      const res = await api.billingPrices() as Record<string, unknown> | null;
-      const prices = res?.prices as Record<string, unknown>[] | undefined;
-      if (prices?.length) {
-        plans = prices.map((p: Record<string, unknown>) => ({
-          id: String(p.id || p.slug || ''),
-          name: String(p.name || ''),
-          price: Number(p.priceMonthly ?? p.price ?? 0),
-          priceYearly: Number(p.priceYearly ?? p.priceAnnual ?? 0),
-          features: (p.features as string[]) ?? [],
-          current: !!(p.current ?? false),
-          popular: !!(p.popular ?? false),
-          description: String(p.description ?? ''),
-        }));
-      }
-    } catch { /* keep mock data */ }
+  const currentPlan = $derived((subscription?.plan || status?.plan || 'free').toLowerCase());
+
+  const visiblePrices = $derived(
+    allPrices
+      .filter((p) => p.category === 'personal' && p.interval === billingInterval)
+      .sort((a, b) => a.displayOrder - b.displayOrder)
+  );
+  const boostPrices = $derived(allPrices.filter((p) => p.category === 'boost'));
+  const popularIndex = $derived(Math.floor(visiblePrices.length / 2));
+
+  function getBoostPrice(id: string | undefined): BillingPriceInfo | undefined {
+    if (!id) return undefined;
+    return boostPrices.find((p) => p.id === id);
+  }
+
+  onMount(() => {
+    (async () => {
+      try {
+        status = await api.neboLoopAccountStatus();
+        if (status?.connected) {
+          const [pricesResp, subResp] = await Promise.allSettled([
+            api.neboLoopBillingPrices(),
+            api.neboLoopBillingSubscription()
+          ]);
+          if (pricesResp.status === 'fulfilled') allPrices = pricesResp.value?.prices || [];
+          if (subResp.status === 'fulfilled') subscription = subResp.value;
+        }
+      } catch { status = null; }
+      finally { isLoading = false; }
+    })();
+
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.plan && status) status = { ...status, plan: detail.plan };
+    };
+    window.addEventListener('nebo:plan_changed', handler);
+    return () => window.removeEventListener('nebo:plan_changed', handler);
   });
 
-  async function selectPlan(plan: Plan) {
-    selectedPlan = plan;
+  onDestroy(() => {
+    if (embeddedCheckout) {
+      embeddedCheckout.destroy();
+      embeddedCheckout = null;
+    }
+  });
+
+  function fmt(cents: number, currency = 'usd'): string {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 0 }).format(cents / 100);
+  }
+
+  async function selectPlan(price: BillingPriceInfo) {
+    selectedPrice = price;
+    selectedBoost = boostSelections[price.id] ? getBoostPrice(price.boostPriceId) || null : null;
     step = 'checkout';
     checkoutLoading = true;
+    checkoutError = '';
+
     try {
-      const api = await import('$lib/api/nebo');
-      const res = await api.billingCheckout({ priceIds: [plan.id], mode: 'embedded' }) as Record<string, unknown> | null;
-      if (res?.url && typeof res.url === 'string') {
-        window.location.href = res.url;
-        return;
+      if (!(window as any).Stripe) {
+        await new Promise<void>((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://js.stripe.com/v3/';
+          s.onload = () => resolve();
+          s.onerror = () => reject(new Error('Failed to load Stripe'));
+          document.head.appendChild(s);
+        });
       }
-    } catch { /* fall through to placeholder */ }
-    checkoutLoading = false;
+
+      const priceIds = [price.stripePriceId];
+      if (selectedBoost) priceIds.push(selectedBoost.stripePriceId);
+
+      const resp = await fetch('/api/v1/neboloop/billing/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ priceIds, uiMode: 'embedded' })
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to create checkout session');
+      }
+
+      const data = await resp.json();
+
+      if (!data.clientSecret) {
+        throw new Error('Missing clientSecret from checkout response');
+      }
+
+      const stripe = (window as any).Stripe(data.publishableKey);
+
+      embeddedCheckout = await stripe.initEmbeddedCheckout({
+        clientSecret: data.clientSecret,
+        onComplete: () => {
+          if (embeddedCheckout) {
+            embeddedCheckout.destroy();
+            embeddedCheckout = null;
+          }
+          goto('/');
+        }
+      });
+
+      await new Promise(r => setTimeout(r, 50));
+      const container = document.getElementById('stripe-checkout');
+      if (container) {
+        embeddedCheckout.mount(container);
+      }
+    } catch (e: any) {
+      checkoutError = e?.message || 'Something went wrong.';
+    } finally {
+      checkoutLoading = false;
+    }
   }
 
   function goBack() {
+    if (embeddedCheckout) {
+      embeddedCheckout.destroy();
+      embeddedCheckout = null;
+    }
     step = 'plans';
-    selectedPlan = null;
+    selectedPrice = null;
+    selectedBoost = null;
+    checkoutError = '';
   }
+
+  const includedFeatures = ['Runs on your machine', 'Your data stays local', 'Skills & roles marketplace', 'Desktop automation', 'MCP integrations', 'Memory system'];
 </script>
 
 <svelte:head><title>Choose your plan - Nebo</title></svelte:head>
 
-{#if step === 'plans'}
+{#if isLoading}
+  <div class="flex items-center justify-center gap-3 py-24">
+    <Spinner size={20} />
+    <span class="text-sm text-base-content/70">Loading plans...</span>
+  </div>
+{:else if !status?.connected}
+  <div class="text-center py-24">
+    <h1 class="text-2xl font-bold text-base-content mb-2">Connect NeboLoop</h1>
+    <p class="text-xs text-base-content/70 mb-6">Connect your NeboLoop account to view plans and upgrade.</p>
+    <a href="/settings/account" class="inline-flex h-9 px-4 items-center rounded-xl bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all">Go to Account</a>
+  </div>
+
+{:else if step === 'plans'}
   <div class="space-y-8">
     <div class="text-center">
       <h1 class="text-3xl font-bold tracking-tight text-base-content">Plans that grow with you</h1>
       <p class="text-xs text-base-content/50 max-w-md mx-auto mt-2">AI that runs on your machine. Pick a plan, get instant access.</p>
     </div>
 
-    <!-- Billing interval toggle -->
     <div class="flex justify-center">
       <div class="inline-flex rounded-full bg-base-200/80 p-1">
         <button
           onclick={() => (billingInterval = 'month')}
           class="px-6 py-2 rounded-full text-sm font-semibold transition-all cursor-pointer bg-transparent border-none {billingInterval === 'month' ? 'bg-base-100 text-base-content shadow-sm' : 'text-base-content/40 hover:text-base-content/60'}"
-        >
-          Monthly
-        </button>
+        >Monthly</button>
         <button
           onclick={() => (billingInterval = 'year')}
           class="px-6 py-2 rounded-full text-sm font-semibold transition-all cursor-pointer bg-transparent border-none {billingInterval === 'year' ? 'bg-base-100 text-base-content shadow-sm' : 'text-base-content/40 hover:text-base-content/60'}"
         >
           Annual
-          <span class="ml-1 text-sm font-bold text-success">Save 17%</span>
+          <span class="ml-1 text-xs font-bold text-success">Save 17%</span>
         </button>
       </div>
     </div>
 
-    <!-- Plan cards -->
-    <div class="grid sm:grid-cols-3 gap-5">
-      {#each plans.filter(p => p.id !== 'enterprise') as plan, i}
-        {@const isCurrent = plan.id === currentPlan}
-        {@const isPopular = plan.popular}
-        {@const price = billingInterval === 'year' ? plan.priceYearly : plan.price}
+    {#if visiblePrices.length > 0}
+      <div class="grid sm:grid-cols-3 gap-5">
+        {#each visiblePrices as price, i (price.id)}
+          {@const boost = getBoostPrice(price.boostPriceId)}
+          {@const boostChecked = boostSelections[price.id] || false}
+          {@const isPopular = i === popularIndex}
+          {@const isCurrent = price.nickname === currentPlan}
 
-        <div class="relative rounded-2xl border p-6 flex flex-col transition-all {isPopular ? 'bg-primary/5 border-primary/30 ring-1 ring-primary/20 scale-[1.02]' : 'bg-base-200/50 border-base-content/10 hover:border-base-content/20'}">
-          {#if isPopular}
-            <div class="absolute -top-3 left-1/2 -translate-x-1/2">
-              <span class="px-3 py-1 rounded-full bg-primary text-primary-content text-sm font-bold shadow-sm">Most popular</span>
-            </div>
-          {/if}
-          {#if isCurrent}
-            <div class="absolute -top-3 right-4">
-              <span class="px-3 py-1 rounded-full bg-base-content/10 text-base-content/60 text-sm font-bold">Current</span>
-            </div>
-          {/if}
-
-          <h3 class="text-xl font-bold text-base-content {isPopular ? 'mt-1' : ''}">{plan.name}</h3>
-          {#if plan.description}
-            <p class="text-xs text-base-content/50 mt-1">{plan.description}</p>
-          {/if}
-
-          <div class="mt-5 mb-5">
-            {#if price === 0}
-              <span class="text-4xl font-bold text-base-content tracking-tight">Free</span>
-            {:else if price !== null}
-              <span class="text-4xl font-bold text-base-content tracking-tight">${price}</span>
-              <span class="text-sm text-base-content/40 ml-1">/mo</span>
-              {#if billingInterval === 'year' && plan.price}
-                <p class="text-sm text-base-content/40 mt-1">${Math.round(plan.price * 12 * 0.83)} billed annually</p>
-              {/if}
+          <div class="relative rounded-2xl border p-6 flex flex-col transition-all {isPopular ? 'bg-primary/5 border-primary/30 ring-1 ring-primary/20 scale-[1.02]' : 'bg-base-200/50 border-base-content/10 hover:border-base-content/20'}">
+            {#if isPopular}
+              <div class="absolute -top-3 left-1/2 -translate-x-1/2">
+                <span class="px-3 py-1 rounded-full bg-primary text-primary-content text-xs font-bold shadow-sm">Most popular</span>
+              </div>
             {/if}
-          </div>
+            {#if isCurrent}
+              <div class="absolute -top-3 right-4">
+                <span class="px-3 py-1 rounded-full bg-base-content/10 text-base-content/60 text-xs font-bold">Current</span>
+              </div>
+            {/if}
 
-          <ul class="space-y-2.5 mb-5 flex-1">
-            {#each plan.features as feature}
-              <li class="flex items-start gap-2 text-sm text-base-content/70">
-                <Check class="w-4 h-4 shrink-0 mt-0.5 {isPopular ? 'text-primary' : 'text-base-content/30'}" />
-                {feature}
-              </li>
-            {/each}
-          </ul>
+            <h3 class="text-xl font-bold text-base-content {isPopular ? 'mt-1' : ''}">{price.displayName || price.nickname}</h3>
+            {#if price.description}
+              <p class="text-xs text-base-content/50 mt-1">{price.description}</p>
+            {/if}
 
-          {#if isCurrent}
-            <button disabled class="w-full h-11 rounded-xl text-sm font-bold bg-base-content/10 text-base-content/40 cursor-not-allowed">
-              Current plan
-            </button>
-          {:else}
-            <button
-              onclick={() => selectPlan(plan)}
-              class="w-full h-11 flex items-center justify-center gap-2 rounded-xl text-sm font-bold transition-all mt-auto cursor-pointer border-none {isPopular ? 'bg-primary text-primary-content hover:brightness-110 shadow-md shadow-primary/20' : 'bg-primary text-primary-content hover:brightness-110'}"
-            >
-              Get started <ArrowRight class="w-4 h-4" />
-            </button>
-          {/if}
-        </div>
-      {/each}
-    </div>
+            <div class="mt-5 mb-5">
+              {#if price.interval === 'year'}
+                <span class="text-4xl font-bold text-base-content tracking-tight">{fmt(Math.round(price.amountCents / 12), price.currency)}</span>
+                <span class="text-sm text-base-content/40 ml-1">/mo</span>
+                <p class="text-xs text-base-content/40 mt-1">{fmt(price.amountCents, price.currency)} billed annually</p>
+              {:else}
+                <span class="text-4xl font-bold text-base-content tracking-tight">{fmt(price.amountCents, price.currency)}</span>
+                <span class="text-sm text-base-content/40 ml-1">/mo</span>
+              {/if}
+            </div>
 
-    <!-- Every plan includes -->
-    <div class="rounded-2xl bg-base-200/30 border border-base-content/5 p-6">
-      <h2 class="text-sm font-bold text-base-content/30 uppercase tracking-widest mb-4">Every plan includes</h2>
-      <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {#each includedFeatures as feature}
-          <div class="flex items-center gap-2 text-xs text-base-content/50">
-            <Check class="w-4 h-4 text-primary/60 shrink-0" />
-            {feature}
+            {#if price.features && price.features.length > 0}
+              <ul class="space-y-2.5 mb-5 flex-1">
+                {#each price.features as feature}
+                  <li class="flex items-start gap-2 text-sm text-base-content/70">
+                    <Check class="w-4 h-4 shrink-0 mt-0.5 {isPopular ? 'text-primary' : 'text-base-content/30'}" />
+                    {feature}
+                  </li>
+                {/each}
+              </ul>
+            {:else}<div class="flex-1"></div>{/if}
+
+            {#if boost}
+              <label class="flex items-start gap-2.5 mb-5 p-3 rounded-xl border cursor-pointer select-none group transition-all {boostChecked ? 'bg-accent/10 border-accent/30' : 'bg-base-content/3 border-transparent hover:border-base-content/10'}">
+                <input type="checkbox" class="checkbox checkbox-sm checkbox-warning mt-0.5" checked={boostChecked} onchange={() => (boostSelections[price.id] = !boostChecked)} />
+                <div class="flex-1">
+                  <div class="flex items-center gap-1.5">
+                    <Zap class="w-3.5 h-3.5 text-accent" />
+                    <span class="text-xs font-bold text-base-content uppercase tracking-wide">Advanced Compute</span>
+                  </div>
+                  <p class="text-xs text-base-content/50 mt-1">{boost.description || '3x access to frontier models.'}</p>
+                  <p class="text-xs font-bold text-accent mt-1">
+                    {#if boost.interval === 'year'}
+                      +{fmt(Math.round(boost.amountCents / 12), boost.currency)}/mo ({fmt(boost.amountCents, boost.currency)}/yr)
+                    {:else}
+                      +{fmt(boost.amountCents, boost.currency)}/mo
+                    {/if}
+                  </p>
+                </div>
+              </label>
+            {/if}
+
+            {#if isCurrent}
+              <button disabled class="w-full h-11 rounded-xl text-sm font-bold bg-base-content/10 text-base-content/40 cursor-not-allowed">Current plan</button>
+            {:else}
+              <button
+                onclick={() => selectPlan(price)}
+                class="w-full h-11 flex items-center justify-center gap-2 rounded-xl text-sm font-bold transition-all mt-auto cursor-pointer border-none {isPopular ? 'bg-primary text-primary-content hover:brightness-110 shadow-md shadow-primary/20' : 'bg-primary text-primary-content hover:brightness-110'}"
+              >
+                Get started <ArrowRight class="w-4 h-4" />
+              </button>
+            {/if}
           </div>
         {/each}
       </div>
-    </div>
+    {/if}
+
+    <section class="pt-4 pb-6">
+      <div class="rounded-2xl bg-base-200/30 border border-base-content/5 p-6">
+        <h2 class="text-xs font-bold text-base-content/30 uppercase tracking-widest mb-4">Every plan includes</h2>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {#each includedFeatures as feature}
+            <div class="flex items-center gap-2 text-xs text-base-content/50">
+              <Check class="w-4 h-4 text-primary/60 shrink-0" />
+              {feature}
+            </div>
+          {/each}
+        </div>
+      </div>
+    </section>
   </div>
 
 {:else if step === 'checkout'}
-  <!-- Stripe Embedded Checkout step -->
   <div class="max-w-2xl mx-auto space-y-4">
     <button
       onclick={goBack}
@@ -179,20 +299,19 @@
       <ArrowLeft class="w-4 h-4" /> Back to plans
     </button>
 
-    {#if checkoutLoading}
-      <div class="flex items-center justify-center gap-3 py-24">
-        <span class="loading loading-spinner loading-md text-primary"></span>
-        <span class="text-xs text-base-content/70">Loading checkout...</span>
-      </div>
-    {:else}
-      <!-- Stripe mounts its full checkout experience here -->
-      <div id="stripe-checkout" class="min-h-[400px] rounded-2xl border border-base-content/10 bg-base-200/50 flex items-center justify-center">
-        <div class="text-center">
-          <Zap class="w-8 h-8 text-primary mx-auto mb-3" />
-          <p class="text-sm font-semibold text-base-content mb-1">Upgrade to {selectedPlan?.name}</p>
-          <p class="text-xs text-base-content/50">Stripe Embedded Checkout mounts here when connected to the backend.</p>
-        </div>
+    {#if checkoutError}
+      <div class="rounded-xl bg-error/10 border border-error/20 p-3">
+        <p class="text-sm text-error">{checkoutError}</p>
       </div>
     {/if}
+
+    {#if checkoutLoading}
+      <div class="flex items-center justify-center gap-3 py-24">
+        <Spinner size={20} />
+        <span class="text-xs text-base-content/70">Loading checkout...</span>
+      </div>
+    {/if}
+
+    <div id="stripe-checkout"></div>
   </div>
 {/if}

@@ -9,9 +9,12 @@
   import Toast from '$lib/components/Toast.svelte';
   import NotificationBell from '$lib/components/NotificationBell.svelte';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
+  import UpgradeSuccessModal from '$lib/components/UpgradeSuccessModal.svelte';
   let { children } = $props();
 
   let showCommandPalette = $state(false);
+  let showUpgradeSuccess = $state(false);
+  let upgradedPlan = $state('');
 
   // Check onboarding status and initialize WebSocket on mount
   onMount(() => {
@@ -34,8 +37,19 @@
       }
     });
 
+    // Listen for plan_changed events to show upgrade success modal
+    const handlePlanChanged = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.plan) {
+        upgradedPlan = detail.plan;
+        showUpgradeSuccess = true;
+      }
+    };
+    window.addEventListener('nebo:plan_changed', handlePlanChanged);
+
     return () => {
       unsub();
+      window.removeEventListener('nebo:plan_changed', handlePlanChanged);
       import('$lib/websocket/listeners').then(({ detachWebSocketListeners }) => {
         detachWebSocketListeners();
       });
@@ -91,42 +105,61 @@
     return '';
   });
 
-  const isSettings = $derived($page.url.pathname.startsWith('/settings'));
+  const isMinimalChrome = $derived(
+    $page.url.pathname.startsWith('/settings') ||
+    $page.url.pathname.startsWith('/workspace/')
+  );
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} oncontextmenu={handleContextMenu} />
 
-<div class="flex flex-col h-screen">
-  {#if !isSettings}
-    <header class="h-14 border-b border-base-300 bg-base-100 flex items-center px-4 shrink-0">
-      <a href="/" class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-4">
-        <div class="w-5 h-5 rounded bg-primary text-primary-content flex items-center justify-center font-mono text-sm font-bold">N</div>
-        Nebo
-      </a>
-      <nav class="flex items-center h-full gap-1">
-        {#each sections as s}
-          <a
-            href={s.path}
-            class="px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors {activeSection === s.id
-              ? 'border-primary text-base-content'
-              : 'border-transparent text-base-content/70 hover:text-base-content'}"
-          >{s.label}</a>
-        {/each}
-      </nav>
-      <div class="flex-1"></div>
-      <button
-        onclick={() => (showCommandPalette = true)}
-        class="flex items-center h-8 w-48 rounded-field px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
-      >
-        <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200">&#x2318;K</span>
-        <span class="text-base-content/70">Search or run...</span>
-      </button>
-      <NotificationBell />
-    </header>
-  {/if}
-  <div class="flex-1 flex min-h-0">
-    {@render children()}
+{#if !$onboardingChecked}
+  <div class="h-dvh flex items-center justify-center bg-base-100">
+    <span class="loading loading-spinner loading-lg"></span>
   </div>
-</div>
+{:else if $page.url.pathname.startsWith('/onboarding')}
+  {@render children()}
+{:else}
+  <div class="flex flex-col h-screen">
+    {#if !isMinimalChrome}
+      <header class="h-14 border-b border-base-300 bg-base-100 flex items-center px-4 shrink-0">
+        <a href="/" class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-4">
+          <div class="w-5 h-5 rounded bg-primary text-primary-content flex items-center justify-center font-mono text-sm font-bold">N</div>
+          Nebo
+        </a>
+        <nav class="flex items-center h-full gap-1">
+          {#each sections as s}
+            <a
+              href={s.path}
+              class="px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors {activeSection === s.id
+                ? 'border-primary text-base-content'
+                : 'border-transparent text-base-content/70 hover:text-base-content'}"
+            >{s.label}</a>
+          {/each}
+        </nav>
+        <div class="flex-1"></div>
+        <button
+          onclick={() => (showCommandPalette = true)}
+          class="flex items-center h-8 w-48 rounded-field px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
+        >
+          <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200">&#x2318;K</span>
+          <span class="text-base-content/70">Search or run...</span>
+        </button>
+        <NotificationBell />
+      </header>
+    {/if}
+    <div class="flex-1 flex min-h-0">
+      {@render children()}
+    </div>
+  </div>
+{/if}
 <Toast />
 <CommandPalette bind:show={showCommandPalette} />
+<UpgradeSuccessModal
+  bind:show={showUpgradeSuccess}
+  plan={upgradedPlan}
+  onclose={() => {
+    showUpgradeSuccess = false;
+    if ($page.url.pathname.startsWith('/upgrade')) goto('/');
+  }}
+/>

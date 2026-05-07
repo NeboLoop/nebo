@@ -588,6 +588,15 @@ impl WorkflowManager for WorkflowManagerImpl {
                 merged
             };
 
+            // Dedup: skip if the same agent+binding already has a running workflow
+            if let Some(ref detail) = trigger_detail {
+                let binding_name = detail.split(':').next().unwrap_or(detail);
+                let workflow_id = format!("agent:{}", agent_id);
+                if let Ok(true) = self.store.has_running_run(&workflow_id, binding_name) {
+                    return Err(format!("skipped: binding '{}' already has a running workflow", binding_name));
+                }
+            }
+
             // Create run record using agent_id for tracking
             let run_id = uuid::Uuid::new_v4().to_string();
             let session_key = format!("agent-{}-{}", agent_id, run_id);
@@ -719,7 +728,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None
                 };
 
-                // Create progress channel for live activity updates
+                // Create progress channel for live activity + task updates
                 let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<workflow::WorkflowProgress>();
                 {
                     let hub = hub.clone();
@@ -728,17 +737,32 @@ impl WorkflowManager for WorkflowManagerImpl {
                     let binding = binding_name.clone();
                     tokio::spawn(async move {
                         while let Some(progress) = progress_rx.recv().await {
-                            hub.broadcast(
-                                "workflow_activity_update",
-                                serde_json::json!({
-                                    "agentId": agent_id_for_progress,
-                                    "runId": run_id,
-                                    "bindingName": binding,
-                                    "activityId": progress.activity_id,
-                                    "step": progress.activity_index + 1,
-                                    "totalSteps": progress.total_activities,
-                                }),
-                            );
+                            match progress {
+                                workflow::WorkflowProgress::ActivityStarted { activity_id, activity_index, total_activities } => {
+                                    hub.broadcast(
+                                        "workflow_activity_update",
+                                        serde_json::json!({
+                                            "agentId": agent_id_for_progress,
+                                            "runId": run_id,
+                                            "bindingName": binding,
+                                            "activityId": activity_id,
+                                            "step": activity_index + 1,
+                                            "totalSteps": total_activities,
+                                        }),
+                                    );
+                                }
+                                workflow::WorkflowProgress::TaskUpdated { list_id, task_id, seq, status } => {
+                                    hub.broadcast(
+                                        "task_updated",
+                                        serde_json::json!({
+                                            "listId": list_id,
+                                            "taskId": task_id,
+                                            "seq": seq,
+                                            "status": status,
+                                        }),
+                                    );
+                                }
+                            }
                         }
                     });
                 }

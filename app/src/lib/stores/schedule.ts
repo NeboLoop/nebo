@@ -47,22 +47,64 @@ export function parseScheduleString(schedule: string): { hour: number; days: num
 
   // Parse time component: "8:00 AM" or "3:00 PM"
   const timeMatch = s.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-  if (!timeMatch) return null;
-  let hour = parseInt(timeMatch[1]);
-  const min = parseInt(timeMatch[2]);
-  const ampm = timeMatch[3].toUpperCase();
-  if (ampm === 'PM' && hour !== 12) hour += 12;
-  if (ampm === 'AM' && hour === 12) hour = 0;
-  const fractionalHour = hour + min / 60;
+  if (timeMatch) {
+    let hour = parseInt(timeMatch[1]);
+    const min = parseInt(timeMatch[2]);
+    const ampm = timeMatch[3].toUpperCase();
+    if (ampm === 'PM' && hour !== 12) hour += 12;
+    if (ampm === 'AM' && hour === 12) hour = 0;
+    const fractionalHour = hour + min / 60;
 
-  // Parse day/recurrence component
-  const lower = s.toLowerCase();
-  for (const [key, dayNums] of Object.entries(DAY_MAP)) {
-    if (lower.includes(key)) return { hour: fractionalHour, days: dayNums };
+    // Parse day/recurrence component
+    const lower = s.toLowerCase();
+    for (const [key, dayNums] of Object.entries(DAY_MAP)) {
+      if (lower.includes(key)) return { hour: fractionalHour, days: dayNums };
+    }
+
+    // Default: daily if no day specified
+    return { hour: fractionalHour, days: [1, 2, 3, 4, 5, 6, 7] };
   }
 
-  // Default: daily if no day specified
-  return { hour: fractionalHour, days: [1, 2, 3, 4, 5, 6, 7] };
+  // Fallback: parse raw cron expression (5/6/7-field)
+  const fields = s.split(/\s+/);
+  if (fields.length >= 5) {
+    // 7-field: sec min hour dom month dow year
+    // 6-field: sec min hour dom month dow
+    // 5-field: min hour dom month dow
+    const offset = fields.length >= 6 ? 1 : 0;
+    const cronMin = parseInt(fields[offset]);
+    const cronHour = parseInt(fields[offset + 1]);
+    const cronDow = fields[offset + 4] ?? '*';
+    if (!isNaN(cronHour) && !isNaN(cronMin)) {
+      const fractionalHour = cronHour + cronMin / 60;
+      const days = parseCronDow(cronDow);
+      return { hour: fractionalHour, days };
+    }
+  }
+
+  return null;
+}
+
+/** Parse cron day-of-week field to ISO weekday array (Mon=1..Sun=7). */
+function parseCronDow(dow: string): number[] {
+  if (dow === '*') return [1, 2, 3, 4, 5, 6, 7];
+  // Cron uses 0=Sun or 7=Sun, 1=Mon..6=Sat
+  const cronToIso: Record<number, number> = { 0: 7, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7 };
+  const result = new Set<number>();
+  for (const part of dow.split(',')) {
+    const range = part.split('-');
+    if (range.length === 2) {
+      const start = parseInt(range[0]);
+      const end = parseInt(range[1]);
+      if (!isNaN(start) && !isNaN(end)) {
+        for (let i = start; i <= end; i++) result.add(cronToIso[i] ?? i);
+      }
+    } else {
+      const n = parseInt(part);
+      if (!isNaN(n)) result.add(cronToIso[n] ?? n);
+    }
+  }
+  return result.size > 0 ? [...result].sort() : [1, 2, 3, 4, 5, 6, 7];
 }
 
 // ─── Duration Estimation ─────────────────────────────────────────────
@@ -220,7 +262,7 @@ export async function loadScheduleFromAPI(): Promise<void> {
     const apiItems: CalendarItem[] = [];
     const workflowPromises = agentIds.map(async (agentId) => {
       try {
-        const resp = await api.listAgentWorkflows(agentId);
+        const resp = await api.getAgentWorkflows(agentId);
         const workflowMap = resp?.workflows;
         if (!workflowMap || typeof workflowMap !== 'object') return;
         const entries = Object.entries(workflowMap);
@@ -331,6 +373,10 @@ export async function loadScheduleFromAPI(): Promise<void> {
     if (eventItems.length) {
       _eventRunItems = eventItems;
     }
+
+    // Force reactive update — _scheduledItems and _eventRunItems are non-reactive
+    // module variables, so $derived blocks won't re-evaluate without this.
+    userScheduleItems.update(items => [...items]);
   } catch { /* keep empty state */ }
 }
 

@@ -6,7 +6,7 @@
 //! - Marker file `.migrated-v2` prevents re-running.
 
 use std::path::Path;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const MIGRATION_MARKER: &str = ".migrated-v2";
 
@@ -195,6 +195,10 @@ pub fn migrate_napp_extraction(data_dir: &Path) {
 }
 
 /// Walk a directory tree and extract every .napp file alongside itself.
+///
+/// Skips sealed .napp files (paid content) — those are read in memory at runtime
+/// and never fully extracted to disk. Detection: after unwrapping the envelope,
+/// if the payload does NOT start with gzip magic bytes, it's sealed.
 fn extract_napps_recursive(dir: &Path) -> usize {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -207,6 +211,11 @@ fn extract_napps_recursive(dir: &Path) -> usize {
         if path.is_dir() {
             count += extract_napps_recursive(&path);
         } else if path.extension().is_some_and(|ext| ext == "napp") {
+            // Check if this .napp is sealed (encrypted) — skip if so
+            if is_sealed_napp(&path) {
+                debug!(path = %path.display(), "skipping sealed .napp (paid content)");
+                continue;
+            }
             match napp::reader::extract_napp_alongside(&path) {
                 Ok(_) => count += 1,
                 Err(e) => {
@@ -216,6 +225,21 @@ fn extract_napps_recursive(dir: &Path) -> usize {
         }
     }
     count
+}
+
+/// Check if a .napp file contains a sealed (encrypted) payload.
+///
+/// Reads the file, unwraps the envelope (verifies signature), then checks
+/// if the inner payload starts with gzip magic bytes. If not, it's sealed.
+fn is_sealed_napp(path: &Path) -> bool {
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    match napp::napp::unwrap_napp_builtin(&data) {
+        Ok(payload) => napp::sealed::is_sealed(&payload),
+        Err(_) => false, // Can't unwrap — let extract_napp_alongside handle the error
+    }
 }
 
 // ── Phase 4: Rename roles/ → agents/ and ROLE.md → AGENT.md ─────────

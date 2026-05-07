@@ -241,7 +241,7 @@
   }
 
   onMount(async () => {
-    loadMessages();
+    // loadMessages() is handled by $effect on threadId — no need to call here
     window.addEventListener('nebo:chat_stream', handleChatStream);
     window.addEventListener('nebo:chat_complete', handleChatComplete);
     window.addEventListener('nebo:chat_message', handleChatMessage);
@@ -377,6 +377,7 @@
   messages={displayMessages}
   agentName={agent?.name ?? 'Agent'}
   agentId={agentId}
+  {threadId}
   headerTitle={thread?.name ?? 'Thread'}
   headerRight="Creations"
   {allAgents}

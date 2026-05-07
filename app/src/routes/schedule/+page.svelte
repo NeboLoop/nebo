@@ -33,7 +33,7 @@
     canvasAgentFull = agentFull;
     canvasWorkflowsData = {};
     try {
-      const resp = await api.listAgentWorkflows(agentFull);
+      const resp = await api.getAgentWorkflows(agentFull);
       const workflowMap = resp?.workflows;
       if (workflowMap && typeof workflowMap === 'object' && !Array.isArray(workflowMap)) {
         const wfs: Record<string, Record<string, unknown>> = {};

@@ -7,7 +7,7 @@
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.listTools();
+      const resp = await api.listMCPTools();
       if (resp?.tools?.length) {
         skills = (resp.tools as Record<string, unknown>[]).map((t) => ({
           name: t.name as string,

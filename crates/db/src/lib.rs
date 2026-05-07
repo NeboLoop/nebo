@@ -7,6 +7,7 @@ mod store;
 mod queries;
 
 pub use pool::create_pool;
+pub use queries::LicenseKeyRow;
 pub use store::Store;
 
 /// Extension trait to convert `rusqlite::Error::QueryReturnedNoRows` into `Ok(None)`.

@@ -19,8 +19,8 @@
     try {
       const api = await import('$lib/api/nebo');
       const [intResp, regResp] = await Promise.all([
-        api.listIntegrations(),
-        api.listRegistry(),
+        api.listMCPIntegrations(),
+        api.listMCPServerRegistry(),
       ]);
       if (intResp?.integrations?.length) {
         integrations = intResp.integrations.map((i: McpIntegration) => ({
@@ -138,7 +138,7 @@
     closeAddModal();
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.createIntegration({
+      const resp = await api.createMCPIntegration({
         name,
         serverUrl: newServerUrl,
         authType: newAuthType,
@@ -158,9 +158,9 @@
       const api = await import('$lib/api/nebo');
       const item = integrations.find(i => i.id === id);
       if (item?.isEnabled) {
-        await api.connectIntegration(id);
+        await api.connectMCPIntegration(id);
       } else {
-        await api.updateIntegration(id, { isEnabled: false });
+        await api.updateMCPIntegration({ isEnabled: false }, id);
       }
     } catch { /* local state already updated */ }
   }
@@ -169,7 +169,7 @@
     integrations = integrations.filter(i => i.id !== id);
     try {
       const api = await import('$lib/api/nebo');
-      await api.deleteIntegration(id);
+      await api.deleteMCPIntegration(id);
     } catch { /* local state already updated */ }
   }
 

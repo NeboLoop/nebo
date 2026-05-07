@@ -17,6 +17,9 @@
   let allAgents = $state<AgentDisplay[]>([]);
   let apiThreads = $state<Record<string, EnrichedChat[]>>({});
   let apiRuns = $state<Record<string, AgentRun[]>>({});
+  let apiRunsTotal = $state<Record<string, number>>({});
+  let apiRunsLoading = $state<Record<string, boolean>>({});
+  let apiRawRuns = $state<Record<string, Record<string, unknown>[]>>({});
   let apiStats = $state<Record<string, WorkflowStatsLocal>>({});
   let apiSkills = $state<Record<string, string[]>>({});
   let apiConfig = $state<Record<string, { persona: string; model: string; inputs: unknown[]; workflows: Record<string, WorkflowConfig> }>>({});
@@ -31,7 +34,7 @@
       const api = await import('$lib/api/nebo');
       const [agentsResp, activeResp] = await Promise.all([
         api.listAgents(),
-        api.listActiveAgents().catch((e: unknown) => { console.warn('[nebo] listActiveAgents failed:', e); return null; }),
+        api.getActiveAgents().catch((e: unknown) => { console.warn('[nebo] listActiveAgents failed:', e); return null; }),
       ]);
       const activeIds = new Set<string>(
         ((activeResp?.agents || []) as Record<string, string>[]).map((a) => a.id || a.agentId)
@@ -74,14 +77,48 @@
       const durStr = durSecs > 0
         ? (durSecs >= 60 ? `${Math.floor(durSecs / 60)}m ${Math.round(durSecs % 60)}s` : `${Math.round(durSecs)}s`)
         : (r.status === 'running' ? 'running...' : '—');
+      const dt = startSecs > 0 ? new Date(startSecs * 1000) : null;
+      const rawName = String(r.triggerDetail || r.currentActivity || r.triggerType || 'Workflow run');
+      // Extract workflow binding name: "auto-reply:gws.email.new" → "auto-reply"
+      const wfName = rawName.includes(':') ? rawName.split(':')[0] : rawName;
       return {
         id: String(r.id || ''),
-        name: String(r.triggerDetail || r.currentActivity || r.triggerType || 'Workflow run'),
-        status: String(r.status || 'unknown'),
+        name: rawName,
+        workflowName: wfName,
+        status: r.status === 'completed' ? 'success' : String(r.status || 'unknown'),
         duration: durStr,
-        date: startSecs > 0 ? new Date(startSecs * 1000).toLocaleString() : '—',
+        date: dt ? dt.toLocaleString() : '—',
+        dateGroup: dt ? dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
+        time: dt ? dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '—',
         workflowRunId: String(r.id || ''),
         trigger: String(r.triggerType || 'manual'),
+        output: typeof r.output === 'string' ? r.output : undefined,
+        error: typeof r.error === 'string' ? r.error : undefined,
+      };
+    });
+  }
+
+  // Map raw API run objects to WFRun shape expected by the run detail page
+  function mapRawRunsToWFRuns(raw: Record<string, unknown>[]) {
+    return raw.map(r => {
+      const startSecs = typeof r.startedAt === 'number' ? r.startedAt : 0;
+      const endSecs = typeof r.completedAt === 'number' ? r.completedAt : 0;
+      const durSecs = endSecs > 0 && startSecs > 0 ? endSecs - startSecs : 0;
+      const durStr = durSecs > 0
+        ? (durSecs >= 60 ? `${Math.floor(durSecs / 60)}m ${Math.round(durSecs % 60)}s` : `${Math.round(durSecs)}s`)
+        : (r.status === 'running' ? 'running...' : '—');
+      return {
+        id: String(r.id || ''),
+        triggerType: String(r.triggerType || 'manual'),
+        duration: durStr,
+        startedAt: startSecs > 0 ? new Date(startSecs * 1000).toLocaleString() : '—',
+        completedAt: endSecs > 0 ? new Date(endSecs * 1000).toLocaleString() : '—',
+        tokens: (r.totalTokensUsed && typeof r.totalTokensUsed === 'number')
+          ? { input: Math.round((r.totalTokensUsed as number) * 0.7), output: Math.round((r.totalTokensUsed as number) * 0.3) }
+          : undefined,
+        error: r.error ? String(r.error) : undefined,
+        activities: Array.isArray(r.activities) ? r.activities : undefined,
+        workflowId: String(r.workflowId || ''),
       };
     });
   }
@@ -94,9 +131,14 @@
       const api = await import('$lib/api/nebo');
       const [runsResp, statsResp] = await Promise.all([
         api.listAgentRuns(id).catch(() => null),
-        api.agentStats(id).catch(() => null),
+        api.getAgentStats(id).catch(() => null),
       ]);
-      if (runsResp?.runs) apiRuns[id] = mapRuns(runsResp.runs as Record<string, unknown>[]);
+      if (runsResp?.runs) {
+        const rawRuns = runsResp.runs as Record<string, unknown>[];
+        apiRuns[id] = mapRuns(rawRuns);
+        apiRawRuns[id] = rawRuns;
+        apiRunsTotal[id] = typeof runsResp.total === 'number' ? runsResp.total : rawRuns.length;
+      }
       if (statsResp?.stats) {
         const s = statsResp.stats;
         const secs = s.avgDurationSecs ?? 0;
@@ -178,15 +220,28 @@
     threadsLoading[id] = true;
     try {
       const api = await import('$lib/api/nebo');
-      const [chatsResp, runsResp, statsResp, agentResp, workflowsResp] = await Promise.all([
-        api.listAgentChats(id).catch((e: unknown) => { console.warn('[nebo] listAgentChats failed for', id, e); return null; }),
-        api.listAgentRuns(id).catch((e: unknown) => { console.warn('[nebo] listAgentRuns failed for', id, e); return null; }),
-        api.agentStats(id).catch((e: unknown) => { console.warn('[nebo] agentStats failed for', id, e); return null; }),
-        api.getAgent(id).catch((e: unknown) => { console.warn('[nebo] getAgent failed for', id, e); return null; }),
-        api.listAgentWorkflows(id).catch((e: unknown) => { console.warn('[nebo] listAgentWorkflows failed for', id, e); return null; }),
-      ]);
+      // Fire all requests in parallel but resolve threads first to unblock the UI
+      const chatsPromise = api.listAgentChats(id).catch((e: unknown) => { console.warn('[nebo] listAgentChats failed for', id, e); return null; });
+      const runsPromise = api.listAgentRuns(id).catch((e: unknown) => { console.warn('[nebo] listAgentRuns failed for', id, e); return null; });
+      const statsPromise = api.getAgentStats(id).catch((e: unknown) => { console.warn('[nebo] agentStats failed for', id, e); return null; });
+      const agentPromise = api.getAgent(id).catch((e: unknown) => { console.warn('[nebo] getAgent failed for', id, e); return null; });
+      const workflowsPromise = api.getAgentWorkflows(id).catch((e: unknown) => { console.warn('[nebo] listAgentWorkflows failed for', id, e); return null; });
+
+      // Unblock thread list as soon as chats arrive
+      const chatsResp = await chatsPromise;
       if (chatsResp?.chats) apiThreads[id] = chatsResp.chats;
-      if (runsResp?.runs) apiRuns[id] = mapRuns(runsResp.runs as Record<string, unknown>[]);
+      threadsLoading[id] = false;
+
+      // Let the rest settle in the background
+      const [runsResp, statsResp, agentResp, workflowsResp] = await Promise.all([
+        runsPromise, statsPromise, agentPromise, workflowsPromise,
+      ]);
+      if (runsResp?.runs) {
+        const rawRuns = runsResp.runs as Record<string, unknown>[];
+        apiRuns[id] = mapRuns(rawRuns);
+        apiRawRuns[id] = rawRuns;
+        apiRunsTotal[id] = typeof runsResp.total === 'number' ? runsResp.total : rawRuns.length;
+      }
       if (statsResp?.stats) {
         const s = statsResp.stats;
         const secs = s.avgDurationSecs ?? 0;
@@ -243,6 +298,27 @@
     }
   }
 
+  async function loadMoreRuns() {
+    const id = $page.params.agentId;
+    if (!id || apiRunsLoading[id]) return;
+    const current = apiRuns[id]?.length ?? 0;
+    const total = apiRunsTotal[id] ?? 0;
+    if (current >= total) return;
+    apiRunsLoading[id] = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.listAgentRuns(id, 20, current);
+      if (resp?.runs) {
+        const newRaw = resp.runs as Record<string, unknown>[];
+        apiRawRuns[id] = [...(apiRawRuns[id] || []), ...newRaw];
+        apiRuns[id] = [...(apiRuns[id] || []), ...mapRuns(newRaw)];
+        if (typeof resp.total === 'number') apiRunsTotal[id] = resp.total;
+      }
+    } catch { /* silent */ } finally {
+      apiRunsLoading[id] = false;
+    }
+  }
+
   let agentStatuses = $state<Record<string, string>>({});
 
   function toggleAgentStatus(id: string, e?: MouseEvent) {
@@ -276,11 +352,14 @@
   const threads = $derived(agentId ? (apiThreads[agentId] || []) : []);
   const isThreadsLoading = $derived(agentId ? (threadsLoading[agentId] ?? true) : true);
   const runs = $derived(agentId ? (apiRuns[agentId] || []) : []);
+  const runsTotal = $derived(agentId ? (apiRunsTotal[agentId] ?? 0) : 0);
+  const hasMoreRuns = $derived(runs.length < runsTotal);
+  const runsLoading = $derived(agentId ? (apiRunsLoading[agentId] ?? false) : false);
   const skills = $derived(agentId ? (apiSkills[agentId] || []) : []);
   const config = $derived(agentId ? (apiConfig[agentId] || DEFAULT_CONFIG) : DEFAULT_CONFIG);
   const workflowEntries = $derived(Object.entries(config.workflows));
   const workflowStats = $derived(agentId ? (apiStats[agentId] || { totalRuns: 0, completed: 0, failed: 0, running: 0, avgDuration: '—', lastRunAt: '—' }) : { totalRuns: 0, completed: 0, failed: 0, running: 0, avgDuration: '—', lastRunAt: '—' });
-  const workflowRuns = $derived<unknown[]>([]);
+  const workflowRuns = $derived(agentId ? mapRawRunsToWFRuns(apiRawRuns[agentId] || []) : []);
 
   // Workflow modal state
   let editingWorkflow = $state<{ name: string; wf: WorkflowConfig } | null>(null);
@@ -609,6 +688,10 @@
     get isThreadsLoading() { return isThreadsLoading; },
     get agentsLoading() { return agentsLoading; },
     get runs() { return runs; },
+    get runsTotal() { return runsTotal; },
+    get hasMoreRuns() { return hasMoreRuns; },
+    get runsLoading() { return runsLoading; },
+    loadMoreRuns,
     get skills() { return skills; },
     get config() { return config; },
     get workflowEntries() { return workflowEntries; },

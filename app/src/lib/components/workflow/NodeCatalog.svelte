@@ -18,7 +18,7 @@
 	onMount(async () => {
 		try {
 			const [mcpRes, agentsRes] = await Promise.all([
-				nebo.listIntegrations(),
+				nebo.listMCPIntegrations(),
 				nebo.listAgents(),
 			]);
 			// Rebuild catalog with dynamic connectors and agents

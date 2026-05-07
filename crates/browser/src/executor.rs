@@ -131,6 +131,11 @@ impl ActionExecutor {
         ).await
     }
 
+    /// Send a fire-and-forget command to the extension (e.g., show_indicators, hide_indicators).
+    pub async fn send_command(&self, command: &str, session_id: Option<&str>) {
+        self.bridge.send_command(command, session_id).await;
+    }
+
     /// Navigate to a URL then read the page — stops on nav error.
     pub async fn navigate_and_read(
         &self,

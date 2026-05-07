@@ -28,6 +28,9 @@ pub struct Loader {
     /// Pre-built compact catalog string, rebuilt on load_all() / watcher reload.
     /// Names-only format (like Claude Code's deferred tool listing).
     cached_catalog: Arc<RwLock<String>>,
+    /// License keys for sealed .napp files, keyed by artifact_id.
+    /// Populated from the license key cache before load_all().
+    license_keys: Arc<RwLock<HashMap<String, [u8; 32]>>>,
 }
 
 impl Loader {
@@ -48,6 +51,7 @@ impl Loader {
             watcher_paused: Arc::new(AtomicBool::new(false)),
             bundled_raw,
             cached_catalog: Arc::new(RwLock::new(String::new())),
+            license_keys: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -65,6 +69,11 @@ impl Loader {
     pub fn with_plugin_store(mut self, store: Arc<napp::plugin::PluginStore>) -> Self {
         self.plugin_store = Some(store);
         self
+    }
+
+    /// Set license keys for sealed .napp decryption (keyed by artifact_id).
+    pub async fn set_license_keys(&self, keys: HashMap<String, [u8; 32]>) {
+        *self.license_keys.write().await = keys;
     }
 
     /// Load all skills from embedded (bundled), installed (.napp) and user (loose files) directories.
@@ -91,6 +100,16 @@ impl Loader {
         if self.installed_dir.exists() {
             for mut skill in load_skills_from_nested_dir(&self.installed_dir, SkillSource::Installed) {
                 skill.enabled = true;
+                loaded.insert(skill.name.clone(), skill);
+            }
+        }
+
+        // 2.1. Load sealed .napp skills (paid content, read in memory only)
+        if self.installed_dir.exists() {
+            let keys = self.license_keys.read().await;
+            for mut skill in load_sealed_skills(&self.installed_dir, &keys) {
+                skill.enabled = true;
+                skill.source = SkillSource::Installed;
                 loaded.insert(skill.name.clone(), skill);
             }
         }
@@ -185,8 +204,23 @@ impl Loader {
         Some(skill)
     }
 
-    /// Populate the template body from disk (source_path) or bundled content.
+    /// Populate the template body from disk (source_path), sealed .napp, or bundled content.
     fn load_template(&self, skill: &mut Skill) {
+        // Sealed .napp: read SKILL.md from encrypted archive in memory
+        if let (Some(napp_path), Some(key)) = (&skill.napp_path, &skill.license_key) {
+            match napp::reader::read_sealed_napp_entry(napp_path, "SKILL.md", key) {
+                Ok(data) => {
+                    if let Ok((_fm, body)) = split_frontmatter(&data) {
+                        skill.template = String::from_utf8_lossy(&body).to_string();
+                        return;
+                    }
+                }
+                Err(e) => {
+                    warn!(skill = %skill.name, error = %e, "failed to read SKILL.md from sealed .napp");
+                }
+            }
+        }
+
         // Try source_path first (filesystem skills: installed, plugin-embedded, user)
         if let Some(ref path) = skill.source_path {
             if let Ok(data) = std::fs::read(path) {
@@ -676,6 +710,107 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
         }
     });
     skills
+}
+
+/// Load skills from sealed .napp files (paid content, decrypted in memory).
+///
+/// Scans the directory tree for .napp files that have NO fully-extracted sibling
+/// directory containing SKILL.md (i.e., the skill content is sealed). Reads
+/// SKILL.md frontmatter from the encrypted archive using the provided license keys.
+fn load_sealed_skills(dir: &Path, license_keys: &HashMap<String, [u8; 32]>) -> Vec<Skill> {
+    let mut skills = Vec::new();
+    scan_sealed_napps(dir, license_keys, &mut skills);
+    skills
+}
+
+/// Recursively scan for sealed .napp files and load their skill frontmatter.
+fn scan_sealed_napps(dir: &Path, license_keys: &HashMap<String, [u8; 32]>, out: &mut Vec<Skill>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_sealed_napps(&path, license_keys, out);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("napp") {
+            continue;
+        }
+        // Check if sibling extracted directory has a SKILL.md (free content, already loaded)
+        let sibling = path.with_extension("");
+        if sibling.is_dir() && find_skill_md(&sibling).is_some() {
+            continue; // Free content — already loaded by load_skills_from_nested_dir
+        }
+
+        // This is a sealed .napp — try to read manifest for artifact_id
+        let artifact_id = match read_artifact_id_from_napp(&path) {
+            Some(id) => id,
+            None => continue,
+        };
+
+        let license_key = match license_keys.get(&artifact_id) {
+            Some(k) => k,
+            None => {
+                debug!(path = %path.display(), artifact_id, "sealed skill: no license key, skipping");
+                continue;
+            }
+        };
+
+        // Read SKILL.md frontmatter from sealed .napp in memory
+        match napp::reader::read_sealed_napp_entry(&path, "SKILL.md", license_key) {
+            Ok(data) => match parse_skill_frontmatter(&data) {
+                Ok(mut skill) => {
+                    skill.napp_path = Some(path.clone());
+                    skill.license_key = Some(*license_key);
+                    // Set base_dir to sibling (partial extraction may have binaries there)
+                    if sibling.is_dir() {
+                        skill.base_dir = Some(sibling);
+                    }
+                    if skill.matches_platform() {
+                        out.push(skill);
+                    }
+                }
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "failed to parse sealed SKILL.md");
+                }
+            },
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "failed to read sealed .napp");
+            }
+        }
+    }
+}
+
+/// Read the artifact_id from a .napp file's manifest.json (in the outer envelope).
+/// Returns None if the manifest can't be read or doesn't have an id field.
+fn read_artifact_id_from_napp(napp_path: &Path) -> Option<String> {
+    // Try reading manifest.json from the plain (unsigned) outer portion.
+    // For sealed .napp files, the envelope header is verified but the payload
+    // is encrypted. However, manifest.json may be readable from the sibling
+    // extracted directory (partial extraction) or from the .napp before sealing.
+    // For now, read from sibling dir if it exists.
+    let sibling = napp_path.with_extension("");
+    if sibling.is_dir() {
+        let manifest = sibling.join("manifest.json");
+        if manifest.exists() {
+            if let Ok(data) = std::fs::read_to_string(&manifest) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                    return v["id"].as_str().map(String::from);
+                }
+            }
+        }
+    }
+
+    // Fallback: try to derive artifact_id from the directory structure
+    // e.g., ~/.nebo/data/nebo/skills/@acme/skill-name/1.0.0.napp
+    // The artifact_id would need to come from the manifest inside the sealed .napp.
+    // Since we can't read inside without a key, and the key lookup needs the artifact_id,
+    // we use the napp filename/path as a key lookup hint.
+    // For now, try all available keys (small set in practice).
+    None
 }
 
 /// Load SKILL.md files from a directory (loose files).

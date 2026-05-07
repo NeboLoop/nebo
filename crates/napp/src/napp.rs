@@ -87,6 +87,15 @@ pub fn unwrap_napp_builtin(data: &[u8]) -> Result<Vec<u8>, NappError> {
     unwrap_napp(data, &key)
 }
 
+/// Verify envelope and unseal: unwrap .napp header → decrypt AES-256-GCM → return plain tar.gz.
+///
+/// Full pipeline for sealed .napp files. Returns the decrypted tar.gz payload
+/// that can be parsed in memory. Uses the embedded NeboLoop public key.
+pub fn unwrap_sealed_napp(data: &[u8], license_key: &[u8; 32]) -> Result<Vec<u8>, NappError> {
+    let sealed_payload = unwrap_napp_builtin(data)?;
+    crate::sealed::unseal_payload(&sealed_payload, license_key)
+}
+
 /// Allowed file names in a .napp archive.
 const ALLOWED_FILES: &[&str] = &[
     "manifest.json",

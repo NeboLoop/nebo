@@ -63,6 +63,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
 
     // Spawn periodic cleanup of stale runs in the global registry (10 min expiry).
     let cleanup_registry = state.run_registry.clone();
+    let cleanup_bridge = state.extension_bridge.clone();
     let cleanup_token = CancellationToken::new();
     let cleanup_token_clone = cleanup_token.clone();
     tokio::spawn(async move {
@@ -71,9 +72,13 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
             tokio::select! {
                 _ = cleanup_token_clone.cancelled() => break,
                 _ = interval.tick() => {
-                    let cleaned = cleanup_registry.cleanup_stale(600).await;
-                    if cleaned > 0 {
-                        warn!(cleaned, "expired stale runs from global registry");
+                    let stale_sessions = cleanup_registry.cleanup_stale(600).await;
+                    if !stale_sessions.is_empty() {
+                        warn!(cleaned = stale_sessions.len(), "expired stale runs from global registry");
+                        // Clean up browser tab groups for expired sessions
+                        for sk in &stale_sessions {
+                            cleanup_bridge.send_command("hide_indicators", Some(sk)).await;
+                        }
                     }
                 }
             }
@@ -1281,7 +1286,14 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     // Task 1: Read tool requests from this connection's channel → send to WS
     let send_task = tokio::spawn(async move {
         while let Some(req) = request_rx.recv().await {
-            let msg = if req.is_batch {
+            let msg = if req.is_command {
+                // Fire-and-forget command (show_indicators, hide_indicators)
+                let mut m = serde_json::json!({ "type": req.tool });
+                if let Some(ref sid) = req.session_id {
+                    m["session_id"] = serde_json::Value::String(sid.clone());
+                }
+                m
+            } else if req.is_batch {
                 let mut m = serde_json::json!({
                     "type": "execute_batch",
                     "id": req.id,

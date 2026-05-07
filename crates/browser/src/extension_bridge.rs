@@ -27,6 +27,10 @@ pub struct ToolRequest {
     /// the actions array and options.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_batch: bool,
+    /// If true, this is a fire-and-forget command (show_indicators, hide_indicators).
+    /// No response is expected — the WS handler serializes it as `{ "type": tool }`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_command: bool,
     /// Session/agent identifier — extension uses this to scope tab groups per agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -221,6 +225,7 @@ impl ExtensionBridge {
             tool: tool.to_string(),
             args: args.clone(),
             is_batch: false,
+            is_command: false,
             session_id: session_id.map(|s| s.to_string()),
         };
 
@@ -315,6 +320,7 @@ impl ExtensionBridge {
                 "stop_on_error": opts.stop_on_error,
             }),
             is_batch: true,
+            is_command: false,
             session_id: session_id.map(|s| s.to_string()),
         };
 
@@ -374,6 +380,26 @@ impl ExtensionBridge {
             let _ = tx.send(result);
         } else {
             debug!(id, "no pending request for tool result");
+        }
+    }
+
+    /// Send a fire-and-forget command to the extension (e.g., show_indicators, hide_indicators).
+    /// Broadcasts to all active connections. No response is expected.
+    pub async fn send_command(&self, command: &str, session_id: Option<&str>) {
+        let conns = self.connections.lock().await;
+        if conns.is_empty() {
+            return;
+        }
+        let request = ToolRequest {
+            id: 0,
+            tool: command.to_string(),
+            args: serde_json::Value::Null,
+            is_batch: false,
+            is_command: true,
+            session_id: session_id.map(|s| s.to_string()),
+        };
+        for conn in conns.values() {
+            let _ = conn.tx.send(request.clone()).await;
         }
     }
 }

@@ -310,6 +310,20 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Check if there is already a running workflow run for the given workflow_id
+    /// whose trigger_detail starts with the given binding name.
+    pub fn has_running_run(&self, workflow_id: &str, binding_prefix: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let pattern = format!("{}:%", binding_prefix);
+        conn.query_row(
+            "SELECT COUNT(*) > 0 FROM workflow_runs
+             WHERE workflow_id = ?1 AND status = 'running' AND trigger_detail LIKE ?2",
+            params![workflow_id, pattern],
+            |row| row.get(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn count_workflow_runs(&self, workflow_id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(

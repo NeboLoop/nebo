@@ -168,6 +168,34 @@ fn main() {
         .with(file_layer)
         .init();
 
+    // Install panic hook so panics are logged before the process dies
+    std::panic::set_hook(Box::new(|info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".into());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Box<dyn Any>".into()
+        };
+        tracing::error!(location = %location, "PANIC: {}", payload);
+        eprintln!("PANIC at {}: {}", location, payload);
+        // Also write to crash log in case tracing is broken
+        if let Ok(dir) = config::data_dir() {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("logs/nebo-crash.log"))
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "PANIC at {}: {}", location, payload)
+                });
+        }
+    }));
+
     let mut cfg = config::Config::load_embedded().expect("failed to load config");
     let settings = config::load_settings().expect("failed to load settings");
     cfg.auth.access_secret = settings.access_secret;
@@ -178,10 +206,15 @@ fn main() {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
         rt.block_on(async {
-            if let Err(e) = server::run(cfg, true).await {
-                tracing::error!("Server error: {e}");
+            tracing::info!("starting Nebo server thread");
+            match server::run(cfg, true).await {
+                Ok(()) => tracing::info!("server shut down cleanly"),
+                Err(e) => tracing::error!("server exited with error: {e}"),
             }
         });
+        // Server exited (SIGTERM/Ctrl+C) — exit the whole process so the Tauri window closes too
+        tracing::info!("server thread exited, terminating process");
+        std::process::exit(0);
     });
 
     wait_for_server();

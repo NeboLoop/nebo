@@ -15,7 +15,7 @@ export async function loadInstalledItems(): Promise<void> {
     const api = await import('$lib/api/nebo');
     const [plugins, tools] = await Promise.all([
       api.listPlugins().catch(() => null),
-      api.listTools().catch(() => null),
+      api.listMCPTools().catch(() => null),
     ]);
     const items: InstalledItem[] = [];
     if (plugins?.plugins?.length) {

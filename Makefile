@@ -21,7 +21,7 @@ else
     ARCH = $(UNAME_M)
 endif
 
-.PHONY: help dev build build-desktop test clean seed-plugins bundle-napps plugin-status release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test clean seed-plugins bundle-napps plugin-status release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -31,7 +31,8 @@ help:
 	@echo "  make gen            - Generate TS API client from Rust routes"
 	@echo ""
 	@echo "Development:"
-	@echo "  make dev            - Hot reload headless server (cargo watch)"
+	@echo "  make dev            - Hot reload desktop (cargo tauri dev)"
+	@echo "  make run            - Build + run CLI once (no file watching)"
 	@echo "  make build          - Build headless CLI binary"
 	@echo "  make build-desktop  - Build Tauri desktop app"
 	@echo "  make test           - Run all tests"
@@ -63,8 +64,30 @@ dev:
 	@echo "Starting Nebo (Tauri + Vite)..."
 	@echo "  Vite HMR for frontend, Tauri watch for backend"
 	@echo "  Proxy errors during Rust build are normal — Tauri window waits for build."
+	@echo "  NOTE: File changes trigger restart — use 'make run' to test workflows."
+	@echo "  Ctrl-C to stop all processes."
 	@echo ""
-	cargo tauri dev
+	@bash -c '\
+		cleanup() { \
+			kill -- -$$ 2>/dev/null; \
+			lsof -ti :5173 -ti :27895 2>/dev/null | xargs kill -9 2>/dev/null; \
+			pkill -9 -f "cargo-tauri" 2>/dev/null; \
+			pkill -9 -f "rustc.*nebo" 2>/dev/null; \
+			pkill -9 -f "target/debug/nebo" 2>/dev/null; \
+			pkill -9 -f "target/release/nebo" 2>/dev/null; \
+			exit 0; \
+		}; \
+		trap cleanup INT TERM; \
+		set -m; \
+		cargo tauri dev & wait'
+
+# Full Tauri app + Vite HMR, but NO Rust file watching — safe for workflow testing
+run:
+	@echo "Starting Nebo (Tauri + Vite, no Rust hot-reload)..."
+	@echo "  Frontend HMR works. Rust backend won't restart on file changes."
+	@echo "  Use this when testing workflows/agents."
+	@echo ""
+	cargo tauri dev --no-watch
 
 build:
 	@echo "Building headless CLI binary..."

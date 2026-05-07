@@ -1644,6 +1644,7 @@ mod tests {
             events: None,
             dependencies: vec![],
             capabilities: None,
+            permissions: None,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
@@ -1801,6 +1802,7 @@ mod tests {
             events: None,
             dependencies: vec![],
             capabilities: None,
+            permissions: None,
         }
     }
 
@@ -2120,6 +2122,7 @@ mod tests {
             }],
             routes: vec![],
             providers: vec![],
+            config_schema: vec![],
         };
 
         let json = serde_json::to_string(&caps).unwrap();

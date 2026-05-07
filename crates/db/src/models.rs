@@ -399,6 +399,12 @@ pub struct PendingTask {
     pub completed_at: Option<i64>,
     pub parent_task_id: Option<String>,
     pub output: Option<String>,
+    // Tracking columns (task_type = 'tracking')
+    pub list_id: Option<String>,
+    pub seq: Option<i64>,
+    pub tokens_input: Option<i64>,
+    pub tokens_output: Option<i64>,
+    pub metadata: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

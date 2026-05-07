@@ -177,11 +177,35 @@ impl ExecuteTool {
         }
     }
 
-    /// Extract ALL skill resources into a temp directory for multi-file support.
+    /// Extract skill resources into a temp directory for multi-file support.
+    ///
+    /// For sealed skills: only copies executables (from partial extraction on disk).
+    /// IP (SKILL.md, references/) stays sealed and is never written to the temp dir.
+    /// For free skills: copies all resources as before.
     fn extract_resources(
         skill: &crate::skills::Skill,
         tmp_dir: &Path,
     ) -> Result<(), String> {
+        if skill.is_sealed() {
+            // Sealed: only copy executables from base_dir (partial extraction)
+            if let Some(ref base_dir) = skill.base_dir {
+                let mut resources = Vec::new();
+                crate::skills::walk_resources_filtered(base_dir, base_dir, &mut resources);
+                for rel_path in &resources {
+                    let src = base_dir.join(rel_path);
+                    let dest = tmp_dir.join(rel_path);
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("failed to create dir {}: {}", parent.display(), e))?;
+                    }
+                    std::fs::copy(&src, &dest)
+                        .map_err(|e| format!("failed to copy {}: {}", rel_path, e))?;
+                }
+            }
+            return Ok(());
+        }
+
+        // Free content: copy all resources
         let resources = skill.list_resources()?;
         for rel_path in &resources {
             let data = skill.read_resource(rel_path)?;

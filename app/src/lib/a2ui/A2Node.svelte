@@ -8,6 +8,8 @@
   import A2Card from './components/A2Card.svelte';
   import A2Divider from './components/A2Divider.svelte';
   import A2Icon from './components/A2Icon.svelte';
+  import A2Image from './components/A2Image.svelte';
+  import A2Tabs from './components/A2Tabs.svelte';
 
   let { def, rootData, scopeData, components, onaction }: {
     def: A2UIComponentDef;
@@ -118,6 +120,18 @@
     {/if}
   </A2Card>
 
+{:else if def.component === 'tabs'}
+  {@const tabDefs = (p.tabs as { id: string; label: string }[]) || []}
+  <A2Tabs tabs={tabDefs} activeTab={tabDefs[0]?.id || ''}>
+    {#snippet children(activeTabId)}
+      {#each staticChildren as child}
+        {#if child.id === activeTabId}
+          <svelte:self def={child} {rootData} {scopeData} {components} {onaction} />
+        {/if}
+      {/each}
+    {/snippet}
+  </A2Tabs>
+
 {:else if def.component === 'divider'}
   <A2Divider />
 
@@ -125,6 +139,14 @@
   <A2Icon
     name={resolveProp(p.name)}
     size={p.size ? Number(p.size) : undefined}
+    class={resolveProp(p.class)}
+  />
+
+{:else if def.component === 'image'}
+  <A2Image
+    url={resolveProp(p.url)}
+    description={resolveProp(p.description)}
+    fit={resolveProp(p.fit) || undefined}
     class={resolveProp(p.class)}
   />
 

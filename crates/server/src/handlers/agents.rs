@@ -424,6 +424,9 @@ pub async fn get_agent(
         .map(|arr| arr.iter().filter_map(|s| s.as_str()).collect())
         .unwrap_or_default();
 
+    // Check installed plugins for pending auth — lets frontend show OAuth wizard
+    let plugins_needing_auth = check_plugins_auth_status(&state).await;
+
     Ok(Json(serde_json::json!({
         "agent": agent,
         "version": version,
@@ -434,6 +437,7 @@ pub async fn get_agent(
         "model": model,
         "skills": skills,
         "views": views,
+        "pluginsNeedingAuth": plugins_needing_auth,
     })))
 }
 
@@ -1063,12 +1067,20 @@ fn reconstruct_trigger(trigger_type: &str, trigger_config: &str) -> serde_json::
 }
 
 /// Convert a cron expression to a human-readable schedule string.
+/// Handles 5-field (minute hour dom month dow), 6-field, and
+/// 7-field (second minute hour dom month dow year) formats.
 fn cron_to_human_readable(cron: &str) -> String {
     let parts: Vec<&str> = cron.split_whitespace().collect();
     if parts.len() < 5 {
         return cron.to_string();
     }
-    let (minute, hour, _dom, _month, dow) = (parts[0], parts[1], parts[2], parts[3], parts[4]);
+    // 7-field: second minute hour dom month dow year
+    // 6-field: second minute hour dom month dow  (normalize_cron sometimes)
+    // 5-field: minute hour dom month dow
+    let (minute, hour, _dom, _month, dow) = match parts.len() {
+        7 | 6 => (parts[1], parts[2], parts[3], parts[4], parts[5]),
+        _ => (parts[0], parts[1], parts[2], parts[3], parts[4]),
+    };
 
     // Parse time
     let time_str = if let (Ok(h), Ok(m)) = (hour.parse::<u32>(), minute.parse::<u32>()) {
@@ -2110,6 +2122,34 @@ pub async fn get_agent_nav(
     Ok(axum::Json(serde_json::json!(items)))
 }
 
+/// Check all installed plugins for pending auth requirements.
+/// Returns a list of plugins that have auth config but aren't authenticated yet.
+async fn check_plugins_auth_status(state: &AppState) -> Vec<serde_json::Value> {
+    let mut needs_auth = Vec::new();
+    let installed = state.plugin_store.list_installed();
+    let mut seen = std::collections::HashSet::new();
+    for (slug, _, _, _) in &installed {
+        if !seen.insert(slug.clone()) {
+            continue;
+        }
+        match super::plugins::check_plugin_auth(&state.plugin_store, slug).await {
+            Some(false) => {
+                if let Some(manifest) = state.plugin_store.get_manifest(slug) {
+                    if let Some(auth) = &manifest.auth {
+                        needs_auth.push(serde_json::json!({
+                            "slug": slug,
+                            "label": auth.label,
+                            "description": auth.description,
+                        }));
+                    }
+                }
+            }
+            _ => {} // authenticated or no auth config
+        }
+    }
+    needs_auth
+}
+
 /// Look up an agent's views.json content.
 ///
 /// Tries two sources:
@@ -2151,7 +2191,6 @@ pub async fn list_agent_chats(
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
     let session_key = agent::keyparser::build_agent_session_key(&id, "web");
-    let mut chats = state.store.list_chats_by_session(&session_key).unwrap_or_default();
 
     // Resolve active chat_id from session (if session exists).
     let active_chat_id = state.runner.sessions()
@@ -2160,9 +2199,14 @@ pub async fn list_agent_chats(
         .map(|sid| state.runner.sessions().active_chat_id(&sid))
         .unwrap_or_default();
 
+    // Single query: get all chats with message count + last message preview.
+    let mut enriched_chats = state.store
+        .list_chats_by_session_enriched(&session_key)
+        .unwrap_or_default();
+
     // Backfill: legacy agent chats store messages under the session key as chat_id
     // but have no `chats` row. If we found no chats but messages exist, create the row.
-    if chats.is_empty() {
+    if enriched_chats.is_empty() {
         let legacy_chat_id = if active_chat_id.is_empty() { &session_key } else { &active_chat_id };
         let msg_count = state.store.count_chat_messages(legacy_chat_id).unwrap_or(0);
         if msg_count > 0 {
@@ -2172,24 +2216,19 @@ pub async fn list_agent_chats(
                 "Chat 1",
                 None,
             ) {
-                chats.push(chat);
+                enriched_chats.push((chat, msg_count, String::new()));
             }
         }
     }
 
-    // Enrich chats with name, preview, updatedAt (relative), and messages count
+    // Format response
     let now = chrono::Utc::now().timestamp();
-    let enriched: Vec<serde_json::Value> = chats.iter().map(|chat| {
-        let msg_count = state.store.count_chat_messages(&chat.id).unwrap_or(0);
-        // Get last message for preview
-        let preview = state.store
-            .get_chat_messages_budgeted(&chat.id, 200, None)
-            .ok()
-            .and_then(|msgs| msgs.last().map(|m| {
-                let content = m.content.chars().take(120).collect::<String>();
-                if m.content.len() > 120 { format!("{}...", content) } else { content }
-            }))
-            .unwrap_or_default();
+    let enriched: Vec<serde_json::Value> = enriched_chats.iter().map(|(chat, msg_count, last_content)| {
+        let preview = if last_content.len() > 120 {
+            format!("{}...", last_content.chars().take(120).collect::<String>())
+        } else {
+            last_content.clone()
+        };
         let updated_at_relative = format_relative_time(chat.updated_at, now);
         serde_json::json!({
             "id": chat.id,

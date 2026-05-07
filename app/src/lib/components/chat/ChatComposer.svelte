@@ -25,9 +25,10 @@
 
   type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string };
 
-  let { agentName = 'Agent', agentId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false }: {
+  let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false }: {
     agentName?: string;
     agentId?: string;
+    threadId?: string;
     placeholder?: string;
     allAgents?: AgentInfo[];
     onsend?: (text: string, files: AttachedFile[], mentions?: MentionRef[]) => void;
@@ -71,7 +72,7 @@
   // Draft persistence (Phase 6)
   let draftSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let hasHydrated = $state(false);
-  const draftKey = $derived(agentId ? `nebo:draft:${agentId}` : '');
+  const draftKey = $derived(agentId ? `nebo:draft:${agentId}:${threadId || 'new'}` : '');
 
   function saveDraft() {
     if (!editor || !draftKey) return;
@@ -99,6 +100,27 @@
     } catch { /* ignore corrupt drafts */ }
     hasHydrated = true;
   }
+
+  // Swap drafts when agent/thread changes
+  let prevDraftKey = '';
+  $effect(() => {
+    const newKey = draftKey;
+    if (prevDraftKey && prevDraftKey !== newKey && editor) {
+      // Flush pending save timer
+      if (draftSaveTimer) { clearTimeout(draftSaveTimer); draftSaveTimer = null; }
+      // Save current content under the OLD key
+      if (!editor.isEmpty) {
+        localStorage.setItem(prevDraftKey, JSON.stringify(editor.getJSON()));
+      } else {
+        localStorage.removeItem(prevDraftKey);
+      }
+      // Clear editor and restore from new key
+      editor.commands.clearContent();
+      editorIsEmpty = true;
+      restoreDraft();
+    }
+    prevDraftKey = newKey;
+  });
 
   function clearDraft() {
     if (draftKey) localStorage.removeItem(draftKey);

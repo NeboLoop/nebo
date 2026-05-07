@@ -7,7 +7,7 @@
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.getProfile() as { profile?: Record<string, unknown> } | null;
+      const resp = await api.getAgentProfile() as { profile?: Record<string, unknown> } | null;
       if (resp?.profile) {
         const p = resp.profile;
         user = {
@@ -23,7 +23,7 @@
         user.email = userResp.email || user.email;
         user.name = user.name || userResp.name;
       }
-      const status = await api.accountStatus() as { connected?: boolean } | null;
+      const status = await api.neboLoopAccountStatus() as { connected?: boolean } | null;
       if (status) {
         connected = !!status.connected;
       }
@@ -33,7 +33,7 @@
   async function disconnect() {
     try {
       const api = await import('$lib/api/nebo');
-      await api.accountDisconnect();
+      await api.neboLoopDisconnect();
       connected = false;
     } catch { /* ignore */ }
   }
@@ -44,7 +44,7 @@
       const api = await import('$lib/api/nebo');
       const pw = prompt('Enter your password to confirm deletion:');
       if (!pw) return;
-      await api.deleteAccount();
+      await api.deleteAccount({ password: pw });
     } catch { /* ignore */ }
   }
 </script>

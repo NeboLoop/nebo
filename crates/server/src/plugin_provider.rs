@@ -11,7 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::warn;
 
 use ai::{ChatRequest, EventReceiver, Provider, ProviderError, StreamEvent, StreamEventType, ToolCall, UsageInfo};
 
@@ -49,6 +49,10 @@ impl PluginProvider {
 impl Provider for PluginProvider {
     fn id(&self) -> &str {
         &self.provider_id
+    }
+
+    fn display_name(&self) -> &str {
+        &self.display_name
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {

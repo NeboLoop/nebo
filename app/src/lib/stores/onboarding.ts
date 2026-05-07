@@ -30,8 +30,8 @@ export async function checkOnboardingStatus(): Promise<boolean> {
     // Backend unreachable — try setup status endpoint
     try {
       const { setupStatus } = await import('$lib/api/nebo');
-      const status = await setupStatus();
-      const complete = !!status.setupComplete;
+      const statusResp = await setupStatus();
+      const complete = !!statusResp.setupComplete;
       onboardingComplete.set(complete);
       onboardingChecked.set(true);
       return complete;

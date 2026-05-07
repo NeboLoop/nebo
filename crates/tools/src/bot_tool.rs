@@ -559,61 +559,54 @@ impl AgentTool {
                 if subject.is_empty() {
                     return ToolResult::error("subject is required for task creation");
                 }
-                let details = input["details"].as_str();
+                let description = input["description"].as_str().or_else(|| input["details"].as_str());
+                let list_id = format!("session:{}", ctx.session_id);
 
-                let id = uuid::Uuid::new_v4().to_string();
-                match self.store.create_pending_task(
-                    &id,
-                    "work",
-                    &ctx.session_id,
-                    None,
-                    subject,
-                    None,
-                    details,
-                    None,
-                    0,
-                ) {
+                match self.store.create_task_item(&list_id, subject, description) {
                     Ok(task) => {
-                        self.sync_work_tasks_to_session(&ctx.session_id);
-                        ToolResult::ok(format!("Created task [{}]: {}", task.id, subject))
+                        ToolResult::ok(format!("Task {} created: {}", task.id, subject))
                     }
                     Err(e) => ToolResult::error(format!("Failed to create task: {}", e)),
                 }
             }
             "update" => {
                 let task_id = input["task_id"].as_str().unwrap_or("");
-                let status = input["status"].as_str().unwrap_or("");
-
-                if task_id.is_empty() || status.is_empty() {
-                    return ToolResult::error("task_id and status are required");
+                if task_id.is_empty() {
+                    return ToolResult::error("task_id is required");
                 }
+                let status = input["status"].as_str().unwrap_or("");
+                if status.is_empty() {
+                    return ToolResult::error("status is required (pending, in_progress, completed, failed)");
+                }
+                let output = input["output"].as_str();
+                let error = input["error"].as_str();
 
-                match self.store.update_task_status(task_id, status) {
+                match self.store.update_task_item(task_id, status, output, error, 0, 0) {
                     Ok(_) => {
-                        self.sync_work_tasks_to_session(&ctx.session_id);
-                        ToolResult::ok(format!("Updated task {} to {}", task_id, status))
+                        ToolResult::ok(format!("Task {} updated to {}", task_id, status))
                     }
                     Err(e) => ToolResult::error(format!("Failed to update task: {}", e)),
                 }
             }
             "list" => {
-                match self.store.get_active_and_recent_tasks() {
+                let list_id = format!("session:{}", ctx.session_id);
+                match self.store.list_task_items(&list_id) {
                     Ok(tasks) => {
                         if tasks.is_empty() {
-                            ToolResult::ok("No active tasks.")
+                            ToolResult::ok("No tasks.")
                         } else {
                             let lines: Vec<String> = tasks
                                 .iter()
                                 .map(|t| {
-                                    let desc = t.description.as_deref().unwrap_or(&t.prompt);
                                     let output_hint = if t.status == "completed" && t.output.is_some() {
                                         " [has output]"
                                     } else {
                                         ""
                                     };
+                                    let desc = t.description.as_deref().unwrap_or(&t.prompt);
                                     format!(
-                                        "- [{}] {} — {} ({}){}",
-                                        t.id, desc, t.task_type, t.status, output_hint
+                                        "{} [{}] {}{}",
+                                        t.id, t.status, desc, output_hint
                                     )
                                 })
                                 .collect();
@@ -627,55 +620,46 @@ impl AgentTool {
                     Err(e) => ToolResult::error(format!("Failed to list tasks: {}", e)),
                 }
             }
+            "get" => {
+                let task_id = input["task_id"].as_str().unwrap_or("");
+                if task_id.is_empty() {
+                    return ToolResult::error("task_id is required");
+                }
+                match self.store.get_task_item(task_id) {
+                    Ok(Some(t)) => {
+                        let desc = t.description.as_deref().unwrap_or(&t.prompt);
+                        let mut result = format!(
+                            "Task {}: {}\nStatus: {}\n",
+                            t.id, desc, t.status
+                        );
+                        if let Some(ref output) = t.output {
+                            result.push_str(&format!("Output: {}\n", output));
+                        }
+                        if let Some(ref error) = t.last_error {
+                            result.push_str(&format!("Error: {}\n", error));
+                        }
+                        ToolResult::ok(result)
+                    }
+                    Ok(None) => ToolResult::error(format!("Task {} not found", task_id)),
+                    Err(e) => ToolResult::error(format!("Failed to get task: {}", e)),
+                }
+            }
             "delete" => {
                 let task_id = input["task_id"].as_str().unwrap_or("");
                 if task_id.is_empty() {
                     return ToolResult::error("task_id is required");
                 }
-                match self.store.cancel_task(task_id) {
+                match self.store.update_task_item(task_id, "skipped", None, None, 0, 0) {
                     Ok(_) => {
-                        self.sync_work_tasks_to_session(&ctx.session_id);
-                        ToolResult::ok(format!("Cancelled task: {}", task_id))
+                        ToolResult::ok(format!("Task {} deleted", task_id))
                     }
-                    Err(e) => ToolResult::error(format!("Failed to cancel task: {}", e)),
+                    Err(e) => ToolResult::error(format!("Failed to delete task: {}", e)),
                 }
             }
             _ => ToolResult::error(format!(
-                "Unknown task action: {}. Available: spawn, spawn_parallel, orchestrate, status, cancel, create, update, list, delete",
+                "Unknown task action: {}. Available: spawn, spawn_parallel, orchestrate, status, cancel, create, update, list, get, delete",
                 action
             )),
-        }
-    }
-
-    /// Sync pending_tasks → sessions.work_tasks so the runner/steering can see them.
-    fn sync_work_tasks_to_session(&self, session_id: &str) {
-        match self.store.get_work_tasks_for_session(session_id) {
-            Ok(tasks) => {
-                let json_tasks: Vec<serde_json::Value> = tasks
-                    .iter()
-                    .map(|t| {
-                        let mut obj = serde_json::json!({
-                            "id": t.id,
-                            "subject": t.prompt,
-                            "status": match t.status.as_str() {
-                                "running" => "in_progress",
-                                other => other,
-                            },
-                        });
-                        if let Some(ref desc) = t.description {
-                            obj["details"] = serde_json::Value::String(desc.clone());
-                        }
-                        obj
-                    })
-                    .collect();
-                let json = serde_json::to_string(&json_tasks).unwrap_or_else(|_| "[]".to_string());
-                if let Err(e) = self.store.set_session_work_tasks(session_id, &json) {
-                    warn!(session_id, error = %e, "failed to sync work tasks to session");
-                }
-            }
-            Err(e) => {
-                warn!(session_id, error = %e, "failed to load work tasks for sync");
-            }
         }
     }
 

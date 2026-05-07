@@ -11,7 +11,7 @@
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.getProfile() as { profile?: Record<string, unknown> } | null;
+      const resp = await api.getAgentProfile() as { profile?: Record<string, unknown> } | null;
       if (resp?.profile) {
         const p = resp.profile;
         agentName = String(p.name || '');
@@ -27,7 +27,7 @@
     saving = true;
     try {
       const api = await import('$lib/api/nebo');
-      await api.updateProfile({
+      await api.updateAgentProfile({
         name: agentName || undefined,
         emoji: emoji || undefined,
         role: role || undefined,

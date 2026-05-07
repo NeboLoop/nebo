@@ -20,3 +20,6 @@ mod entity_config;
 mod commander;
 mod a2ui_surfaces;
 mod plugins;
+mod license_keys;
+
+pub use license_keys::LicenseKeyRow;

@@ -673,6 +673,36 @@ impl NeboLoopApi {
         self.fetch_raw(&full_url).await
     }
 
+    // ── Content Protection ─────────────────────────────────────────
+
+    /// Register this bot with NeboLoop for content protection.
+    ///
+    /// Called on startup after authentication. Idempotent — re-registering
+    /// the same bot_id updates last_seen and platform info.
+    pub async fn register_bot(&self, platform: &str, app_version: &str) -> Result<serde_json::Value, CommError> {
+        let body = serde_json::json!({
+            "bot_id": self.bot_id,
+            "platform": platform,
+            "app_version": app_version,
+        });
+        self.do_json(reqwest::Method::POST, "/api/v1/bots", Some(&body)).await
+    }
+
+    /// Fetch license keys for sealed .napp artifacts.
+    ///
+    /// Returns decryption keys for all artifacts this bot is licensed to access.
+    /// Keys are base64-encoded 32-byte AES-256-GCM keys with a TTL.
+    pub async fn fetch_license_keys(
+        &self,
+        artifact_ids: &[String],
+    ) -> Result<LicenseKeysResponse, CommError> {
+        let body = serde_json::json!({
+            "bot_id": self.bot_id,
+            "artifact_ids": artifact_ids,
+        });
+        self.do_json(reqwest::Method::POST, "/api/v1/licenses/keys", Some(&body)).await
+    }
+
     // ── Raw Fetch ───────────────────────────────────────────────────
 
     /// Download raw content from a URL using the client's auth header.

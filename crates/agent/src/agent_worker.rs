@@ -19,6 +19,9 @@ use tools::events::EventBus;
 use tools::workflows::WorkflowManager;
 use workflow::events::{EventDispatcher, EventSubscription};
 
+/// Cross-crate callback for broadcasting WebSocket events from agent workers.
+pub type NotifyFn = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 /// A single autonomous agent worker. Owns all trigger tasks for one agent.
 pub struct AgentWorker {
     pub agent_id: String,
@@ -35,11 +38,12 @@ impl AgentWorker {
     pub fn start(
         agent_id: String,
         name: String,
-        store: &Store,
+        store: Arc<Store>,
         workflow_manager: Arc<dyn WorkflowManager>,
         event_dispatcher: Arc<EventDispatcher>,
         plugin_store: Arc<PluginStore>,
         event_bus: EventBus,
+        notify_fn: Option<NotifyFn>,
     ) -> Self {
         let cancel = CancellationToken::new();
 
@@ -71,7 +75,7 @@ impl AgentWorker {
         };
 
         // Schedule triggers: delegate to existing cron system
-        workflow::triggers::register_agent_triggers(&agent_id, &bindings, store);
+        workflow::triggers::register_agent_triggers(&agent_id, &bindings, &store);
 
         for binding in &bindings {
             // Look up the WorkflowBinding from agent config to get activities
@@ -301,6 +305,8 @@ impl AgentWorker {
                     let ps = plugin_store.clone();
                     let watch_plugin = watch_cfg.plugin.clone();
                     let bus = event_bus.clone();
+                    let watch_store = store.clone();
+                    let watch_notify = notify_fn.clone();
 
                     tokio::spawn(watch_loop(
                         binary_path,
@@ -316,6 +322,8 @@ impl AgentWorker {
                         token,
                         auto_emit,
                         bus,
+                        watch_store,
+                        watch_notify,
                     ));
 
                     info!(
@@ -375,6 +383,7 @@ pub struct AgentWorkerRegistry {
     event_dispatcher: Arc<EventDispatcher>,
     plugin_store: Arc<PluginStore>,
     event_bus: EventBus,
+    notify_fn: Option<NotifyFn>,
 }
 
 impl AgentWorkerRegistry {
@@ -384,6 +393,7 @@ impl AgentWorkerRegistry {
         event_dispatcher: Arc<EventDispatcher>,
         plugin_store: Arc<PluginStore>,
         event_bus: EventBus,
+        notify_fn: Option<NotifyFn>,
     ) -> Self {
         Self {
             workers: RwLock::new(HashMap::new()),
@@ -392,6 +402,7 @@ impl AgentWorkerRegistry {
             event_dispatcher,
             plugin_store,
             event_bus,
+            notify_fn,
         }
     }
 
@@ -408,11 +419,12 @@ impl AgentWorkerRegistry {
         let worker = AgentWorker::start(
             agent_id.to_string(),
             name.to_string(),
-            &self.store,
+            self.store.clone(),
             self.workflow_manager.clone(),
             self.event_dispatcher.clone(),
             self.plugin_store.clone(),
             self.event_bus.clone(),
+            self.notify_fn.clone(),
         );
 
         self.workers.write().await.insert(agent_id.to_string(), worker);
@@ -552,6 +564,8 @@ async fn watch_loop(
     cancel: CancellationToken,
     auto_emit: Option<(String, bool)>,
     event_bus: EventBus,
+    store: Arc<Store>,
+    notify_fn: Option<NotifyFn>,
 ) {
     let mut backoff_secs = cfg.restart_delay_secs;
     let max_backoff_secs = 300; // 5 minutes
@@ -643,10 +657,12 @@ async fn watch_loop(
         let stdout = child.stdout.take().expect("stdout piped");
         let mut lines = BufReader::new(stdout).lines();
 
-        // Spawn a task to log stderr
+        // Spawn a task to log and collect stderr for auth error detection
         let stderr = child.stderr.take();
         let stderr_agent = agent_id.clone();
         let stderr_binding = binding_name.clone();
+        let stderr_collected = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let stderr_buf = stderr_collected.clone();
         let stderr_handle = tokio::spawn(async move {
             if let Some(stderr) = stderr {
                 let mut stderr_lines = BufReader::new(stderr).lines();
@@ -657,6 +673,9 @@ async fn watch_loop(
                         "watch stderr: {}",
                         line
                     );
+                    let mut buf = stderr_buf.lock().await;
+                    buf.push_str(&line);
+                    buf.push('\n');
                 }
             }
         });
@@ -783,10 +802,54 @@ async fn watch_loop(
 
         // Wait for the child to finish
         let _ = child.wait().await;
+        // Give stderr task a moment to flush, then stop it
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         stderr_handle.abort();
 
         if cancel.is_cancelled() {
             break;
+        }
+
+        // Check if the process failed due to a plugin auth error
+        {
+            let stderr_text = stderr_collected.lock().await;
+            if tools::plugin_tool::is_auth_error(&stderr_text) {
+                warn!(
+                    agent = %agent_id,
+                    binding = %binding_name,
+                    plugin = %cfg.plugin,
+                    "watch failed: plugin not authenticated, pausing until auth completes"
+                );
+
+                let notif_id = format!("auth-required:{}:{}", agent_id, cfg.plugin);
+                if let Err(e) = store.create_notification_if_not_exists(
+                    &notif_id,
+                    "",
+                    "warning",
+                    &format!("{} needs authentication", cfg.plugin),
+                    Some(&format!(
+                        "Connect your {} account to enable automated workflows. Go to Settings → Plugins.",
+                        cfg.plugin
+                    )),
+                    Some("/settings/plugins"),
+                    None,
+                ) {
+                    warn!(error = %e, "failed to create auth notification");
+                }
+
+                // Broadcast so notification bell updates in real-time
+                if let Some(ref notify) = notify_fn {
+                    notify("notification", serde_json::json!({
+                        "id": notif_id,
+                        "type": "warning",
+                        "title": format!("{} needs authentication", cfg.plugin),
+                        "body": format!("Connect your {} account to enable automated workflows.", cfg.plugin),
+                        "link": "/settings/plugins",
+                    }));
+                }
+
+                break; // Stop retrying — worker restarted via plugin_auth_complete
+            }
         }
 
         // Only reset backoff if process ran for >30s (not a fast crash)

@@ -63,11 +63,17 @@ export interface WorkflowStatsLocal {
 export interface AgentRun {
 	id: string
 	name: string
+	/** Workflow binding name (e.g., "auto-reply", "day-monitor"). */
+	workflowName: string
 	status: string
 	duration: string
 	date: string
+	dateGroup: string
+	time: string
 	workflowRunId?: string
 	trigger?: string
+	output?: string
+	error?: string
 }
 
 /** Local agent display object (derived from API Agent). */
@@ -90,6 +96,10 @@ export interface AgentPageContext {
 	readonly isThreadsLoading: boolean
 	readonly agentsLoading: boolean
 	readonly runs: AgentRun[]
+	readonly runsTotal: number
+	readonly hasMoreRuns: boolean
+	readonly runsLoading: boolean
+	loadMoreRuns: () => Promise<void>
 	readonly skills: string[]
 	readonly config: { persona: string; model: string; inputs: unknown[]; workflows: Record<string, WorkflowConfig> }
 	readonly workflowEntries: [string, WorkflowConfig][]

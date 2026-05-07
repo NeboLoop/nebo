@@ -23,8 +23,8 @@
     try {
       const api = await import('$lib/api/nebo');
       const [permResp, settingsResp] = await Promise.all([
-        api.getPermissions(),
-        api.getSettings().catch(() => null),
+        api.getToolPermissions(),
+        api.getAgentSettings().catch(() => null),
       ]);
       // Convert ToolPermission[] to a keyed record
       let permObj: Record<string, boolean> = {};

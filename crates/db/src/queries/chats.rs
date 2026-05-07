@@ -419,6 +419,44 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// List all chats belonging to a session with message count and last-message
+    /// preview in a single query (avoids N+1).
+    pub fn list_chats_by_session_enriched(
+        &self,
+        session_name: &str,
+    ) -> Result<Vec<(Chat, i64, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.*,
+                        COALESCE(s.cnt, 0) AS msg_count,
+                        COALESCE(s.last_content, '') AS last_content
+                 FROM chats c
+                 LEFT JOIN (
+                     SELECT m.chat_id,
+                            COUNT(*) AS cnt,
+                            (SELECT m2.content FROM chat_messages m2
+                             WHERE m2.chat_id = m.chat_id
+                             ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1) AS last_content
+                     FROM chat_messages m
+                     GROUP BY m.chat_id
+                 ) s ON s.chat_id = c.id
+                 WHERE c.session_name = ?1
+                 ORDER BY c.updated_at DESC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![session_name], |row| {
+                let chat = row_to_chat(row)?;
+                let msg_count: i64 = row.get("msg_count")?;
+                let last_content: String = row.get("last_content")?;
+                Ok((chat, msg_count, last_content))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// List all chats belonging to a session, newest first.
     pub fn list_chats_by_session(&self, session_name: &str) -> Result<Vec<Chat>, NeboError> {
         let conn = self.conn()?;

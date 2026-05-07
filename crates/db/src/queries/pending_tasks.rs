@@ -185,28 +185,6 @@ impl Store {
         Ok(())
     }
 
-    /// Returns work-type tasks for a specific session (pending, running, completed).
-    /// Used to sync working memory into the session's work_tasks column.
-    pub fn get_work_tasks_for_session(
-        &self,
-        session_key: &str,
-    ) -> Result<Vec<PendingTask>, NeboError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT * FROM pending_tasks
-                 WHERE session_key = ?1 AND task_type = 'work'
-                   AND status IN ('pending', 'running', 'completed')
-                 ORDER BY created_at ASC",
-            )
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![session_key], row_to_pending_task)
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
     /// Returns all pending/running tasks plus recently completed tasks (within the last hour).
     pub fn get_active_and_recent_tasks(&self) -> Result<Vec<PendingTask>, NeboError> {
         let conn = self.conn()?;
@@ -225,6 +203,132 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    // --- Tracking methods (task_type = 'tracking') ---
+
+    /// Seed an entire task list from a slice of step instructions (workflow mode).
+    pub fn seed_task_list(&self, list_id: &str, steps: &[&str]) -> Result<Vec<PendingTask>, NeboError> {
+        let conn = self.conn()?;
+        let mut items = Vec::with_capacity(steps.len());
+        for (i, step) in steps.iter().enumerate() {
+            let seq = (i + 1) as i64;
+            let id = uuid::Uuid::new_v4().to_string();
+            let item = conn
+                .query_row(
+                    "INSERT INTO pending_tasks (id, task_type, status, session_key, prompt, description, list_id, seq, created_at)
+                     VALUES (?1, 'tracking', 'pending', ?2, ?3, ?3, ?2, ?4, unixepoch())
+                     RETURNING *",
+                    params![id, list_id, step, seq],
+                    row_to_pending_task,
+                )
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            items.push(item);
+        }
+        Ok(items)
+    }
+
+    /// Create a single tracking task (general mode — LLM creates dynamically).
+    pub fn create_task_item(
+        &self,
+        list_id: &str,
+        subject: &str,
+        description: Option<&str>,
+    ) -> Result<PendingTask, NeboError> {
+        let conn = self.conn()?;
+        let next_seq: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM pending_tasks WHERE list_id = ?1",
+                params![list_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.query_row(
+            "INSERT INTO pending_tasks (id, task_type, status, session_key, prompt, description, list_id, seq, created_at)
+             VALUES (?1, 'tracking', 'pending', ?2, ?3, ?4, ?2, ?5, unixepoch())
+             RETURNING *",
+            params![id, list_id, subject, description, next_seq],
+            row_to_pending_task,
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Mark a tracking task as in_progress.
+    pub fn start_task_item(&self, id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE pending_tasks SET status = 'in_progress', started_at = unixepoch() WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Update a tracking task's status, output, error, and token counts.
+    pub fn update_task_item(
+        &self,
+        id: &str,
+        status: &str,
+        output: Option<&str>,
+        error: Option<&str>,
+        tokens_in: i64,
+        tokens_out: i64,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE pending_tasks SET
+                status = ?2,
+                output = ?3,
+                last_error = ?4,
+                tokens_input = ?5,
+                tokens_output = ?6,
+                completed_at = CASE WHEN ?2 IN ('completed', 'failed', 'skipped') THEN unixepoch() ELSE completed_at END
+             WHERE id = ?1",
+            params![id, status, output, error, tokens_in, tokens_out],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// List all tracking tasks in a given list, ordered by seq.
+    pub fn list_task_items(&self, list_id: &str) -> Result<Vec<PendingTask>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT * FROM pending_tasks WHERE list_id = ?1 AND task_type = 'tracking' ORDER BY seq ASC")
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![list_id], row_to_pending_task)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Get a single tracking task by ID.
+    pub fn get_task_item(&self, id: &str) -> Result<Option<PendingTask>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT * FROM pending_tasks WHERE id = ?1",
+            params![id],
+            row_to_pending_task,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Delete tracking task lists completed more than N days ago.
+    pub fn cleanup_old_task_lists(&self, days: i64) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM pending_tasks WHERE task_type = 'tracking' AND list_id IN (
+                SELECT DISTINCT list_id FROM pending_tasks WHERE task_type = 'tracking'
+                GROUP BY list_id
+                HAVING MAX(COALESCE(completed_at, created_at)) < unixepoch() - (?1 * 86400)
+            )",
+            params![days],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
     }
 
     pub fn delete_completed_tasks(&self) -> Result<(), NeboError> {
@@ -259,6 +363,11 @@ fn row_to_pending_task(row: &rusqlite::Row) -> rusqlite::Result<PendingTask> {
         completed_at: row.get("completed_at")?,
         parent_task_id: row.get("parent_task_id")?,
         output: row.get("output")?,
+        list_id: row.get("list_id")?,
+        seq: row.get("seq")?,
+        tokens_input: row.get("tokens_input")?,
+        tokens_output: row.get("tokens_output")?,
+        metadata: row.get("metadata")?,
     })
 }
 

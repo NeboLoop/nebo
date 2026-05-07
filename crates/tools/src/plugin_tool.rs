@@ -819,7 +819,7 @@ impl PluginTool {
 
 /// Check if a plugin command failure is due to stale/expired authentication.
 /// Matches common OAuth/auth error patterns in the combined output text.
-fn is_auth_error(output: &str) -> bool {
+pub fn is_auth_error(output: &str) -> bool {
     let lower = output.to_lowercase();
     const PATTERNS: &[&str] = &[
         "unauthorized",

@@ -10,7 +10,7 @@
     try {
       const api = await import('$lib/api/nebo');
       const [statusResp, lanesResp] = await Promise.all([
-        api.getStatus().catch(() => null),
+        api.getSimpleAgentStatus().catch(() => null),
         api.getLanes().catch(() => null),
       ]);
 
@@ -36,7 +36,7 @@
       }
 
       // NeboLoop status
-      const neboStatus = await api.botStatus().catch(() => null) as { connected?: boolean } | null;
+      const neboStatus = await api.neboLoopAccountStatus().catch(() => null) as { connected?: boolean } | null;
       svcList.push({
         name: 'NeboLoop',
         status: neboStatus?.connected ? 'operational' : 'degraded',

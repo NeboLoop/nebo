@@ -419,6 +419,11 @@ export interface PendingTask {
 	completedAt?: number
 	parentTaskId?: string
 	output?: string
+	listId?: string
+	seq?: number
+	tokensInput?: number
+	tokensOutput?: number
+	metadata?: string
 }
 
 export interface PluginRegistry {
@@ -962,6 +967,7 @@ export interface GetProfileResponse {
 export interface GetRunResponse {
 	run: WorkflowRun
 	activities: WorkflowActivityResult[]
+	taskItems: Record<string, PendingTask[]>
 }
 
 export interface GetSessionMessagesResponse {
@@ -1549,6 +1555,125 @@ export interface ToolPermission {
 	action: string
 	allowed: boolean
 }
+
+// ── Billing types (NeboLoop proxy — not auto-generatable) ──
+
+export interface BillingPriceInfo {
+	id: string
+	productName: string
+	displayName: string
+	nickname: string
+	productDisplayName: string
+	productDescription?: string
+	stripePriceId: string
+	amountCents: number
+	currency: string
+	interval: string
+	intervalCount?: number
+	category: string
+	displayOrder: number
+	description?: string
+	features?: string[]
+	boostPriceId?: string
+}
+
+export interface PaymentMethodInfo {
+	id: string
+	type: string
+	brand?: string
+	lastFour?: string
+	expiresAt?: string
+	isDefault: boolean
+	createdAt: string
+}
+
+export interface InvoiceInfo {
+	id: string
+	amountCents: number
+	currency: string
+	description: string
+	status: string
+	hostedUrl?: string
+	pdfUrl?: string
+	receiptUrl?: string
+	createdAt: string
+}
+
+export interface BillingPricesResponse { prices: BillingPriceInfo[] }
+export interface BillingSubscriptionResponse { plan: string; subscriptions: any[] }
+export interface BillingCheckoutResponse { checkoutUrl?: string; clientSecret?: string; publishableKey?: string }
+export interface BillingPortalResponse { portalUrl: string }
+export interface BillingCancelResponse { status: string }
+export interface BillingInvoicesResponse { invoices: InvoiceInfo[] }
+export interface BillingPaymentMethodsResponse { methods: PaymentMethodInfo[] }
+
+// ── Janus usage types ──
+
+export interface NeboLoopJanusWindowUsage {
+	limitCredits: number
+	remainingCredits: number
+	usedCredits: number
+	percentUsed: number
+	resetAt?: string
+}
+
+export interface NeboLoopBudget {
+	freeAvailable: number
+	giftAvailable: number
+	creditsCents: number
+	activePool?: string
+}
+
+export interface NeboLoopJanusUsageResponse {
+	session: NeboLoopJanusWindowUsage
+	weekly: NeboLoopJanusWindowUsage
+	budget?: NeboLoopBudget
+	updatedAt?: string
+}
+
+// ── Account status ──
+
+export interface NeboLoopAccountStatusResponse {
+	connected: boolean
+	janusProvider: boolean
+	profileId?: string
+	ownerId?: string
+	email?: string
+	displayName?: string
+	plan?: string
+}
+
+// ── Referral ──
+
+export interface NeboLoopReferralCodeResponse {
+	referral_code: string
+	referral_link: string
+	token_balance: number
+}
+
+// ── User profile ──
+
+export interface GetUserProfileResponse { profile: UserProfile }
+export interface UpdateUserProfileRequest {
+	displayName?: string
+	bio?: string
+	location?: string
+	timezone?: string
+	occupation?: string
+	interests?: string[]
+	communicationStyle?: string
+	goals?: string
+	context?: string
+	onboardingCompleted?: boolean
+}
+export interface UpdateUserProfileResponse { profile: UserProfile }
+
+// ── Setup ──
+
+export interface SetupStatusResponse { setupComplete: boolean }
+export interface CompleteSetupResponse { success: boolean }
+
+export interface DeleteAccountRequest { password?: string }
 
 // ── WebSocket Event Types ──────────────────────────────────────────
 

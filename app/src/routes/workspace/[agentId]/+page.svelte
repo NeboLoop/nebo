@@ -1,44 +1,29 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/stores';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
-  import { AGENT_VIEWS } from '$lib/a2ui/views/index.js';
-  import type { A2UIView, A2UINavItem } from '$lib/a2ui/types.js';
+  import { transformViewsConfig } from '$lib/a2ui/transform.js';
+  import type { A2UIView, A2UINavItem, A2UIViewsConfig } from '$lib/a2ui/types.js';
   import A2Surface from '$lib/a2ui/A2Surface.svelte';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
-  import type { Agent } from '$lib/api/nebo';
-
-  let allAgents = $state<{ id: string; name: string; initial: string; color: string; role: string; status: string; editable?: boolean }[]>([]);
-  let chatMessages = $state<any[]>([]);
 
   const agentId = $derived($page.params.agentId);
-  const config = $derived(agentId ? AGENT_VIEWS[agentId] : undefined);
-  const agent = $derived(allAgents.find(a => a.id === agentId));
-  const color = $derived(agent ? AGENT_COLORS_MAP[agent.color as keyof typeof AGENT_COLORS_MAP] : null);
 
-  onMount(async () => {
-    try {
-      const api = await import('$lib/api/nebo');
-      const res = await api.listAgents();
-      if (res?.agents?.length) {
-        allAgents = res.agents.map((a: Agent) => ({
-          id: a.id,
-          name: a.name,
-          initial: (a.name || '')[0] || '?',
-          color: 'violet',
-          role: a.description || '',
-          status: a.isEnabled ? 'online' : 'idle',
-          editable: true,
-        }));
-      }
-    } catch { /* keep mock data */ }
-  });
-  const navItems = $derived(config ? (config._nav as A2UINavItem[]) : []);
+  let agentName = $state('');
+  let agentInitial = $state('');
+  let agentColor = $state('teal');
+  let config = $state<A2UIViewsConfig | null>(null);
+  let chatMessages = $state<any[]>([]);
+  let isLoading = $state(false);
+  let streamingContent = $state('');
+
+  const color = $derived(AGENT_COLORS_MAP[agentColor as keyof typeof AGENT_COLORS_MAP] ?? null);
+  const navItems = $derived(config ? config._nav : []);
 
   let activeViewId = $state('');
   let chatOpen = $state(true);
 
-  // Set initial view when agent loads
+  // Set initial view when config loads
   $effect(() => {
     if (navItems.length && !activeViewId) {
       activeViewId = navItems[0].viewId;
@@ -48,6 +33,38 @@
   const currentView = $derived(
     config && activeViewId ? (config[activeViewId] as A2UIView | undefined) : undefined
   );
+
+  // Reactive view data
+  let viewData = $state<Record<string, unknown>>({});
+  $effect(() => {
+    if (currentView) {
+      viewData = { ...currentView.data };
+    }
+  });
+
+  const reactiveView = $derived(
+    currentView ? { ...currentView, data: viewData } : undefined
+  );
+
+  onMount(async () => {
+    try {
+      const api = await import('$lib/api/nebo');
+      const detail = await api.getAgent(agentId);
+      if (!detail) return;
+
+      agentName = detail.agent.name;
+      agentInitial = agentName.charAt(0).toUpperCase();
+
+      if (detail.views) {
+        const views = typeof detail.views === 'string'
+          ? JSON.parse(detail.views)
+          : detail.views;
+        if (views && typeof views === 'object') {
+          config = transformViewsConfig(views as Record<string, unknown>);
+        }
+      }
+    } catch { /* agent not found */ }
+  });
 
   // Chat panel resize
   const CHAT_MIN = 280;
@@ -75,21 +92,128 @@
     window.addEventListener('mouseup', onUp);
   }
 
+  // Wire actions to WebSocket
   function handleAction(name: string, payload?: Record<string, unknown>) {
-    console.log('[A2UI Action]', name, payload);
+    import('$lib/websocket/client').then(({ getWebSocketClient }) => {
+      const ws = getWebSocketClient();
+      ws.send('a2ui_action', {
+        surfaceId: `agent:${agentId}:${activeViewId}`,
+        name,
+        sourceComponentId: '',
+        context: payload ?? { type: 'agent' },
+      });
+    });
   }
+
+  // Wire chat to WebSocket
+  function handleSend(text: string) {
+    chatMessages = [...chatMessages, { type: 'user', content: text }];
+    isLoading = true;
+    streamingContent = '';
+    import('$lib/websocket/client').then(({ getWebSocketClient }) => {
+      getWebSocketClient().send('chat', {
+        session_id: `agent:${agentId}:web`,
+        prompt: text,
+        agent_id: agentId,
+        channel: 'web',
+      });
+    });
+  }
+
+  function handleStop() {
+    import('$lib/websocket/client').then(({ getWebSocketClient }) => {
+      getWebSocketClient().send('cancel', {
+        session_id: `agent:${agentId}:web`,
+      });
+    });
+    isLoading = false;
+  }
+
+  // Listen for WS events
+  const cleanups: (() => void)[] = [];
+
+  onMount(() => {
+    function onChatStream(e: Event) {
+      const data = (e as CustomEvent).detail;
+      if (data.session_id && !data.session_id.includes(agentId)) return;
+      if (data.content || data.chunk || data.text) {
+        streamingContent += data.content || data.chunk || data.text || '';
+        const last = chatMessages[chatMessages.length - 1];
+        if (last?.type === 'assistant') {
+          chatMessages = [...chatMessages.slice(0, -1), { ...last, content: streamingContent }];
+        } else {
+          chatMessages = [...chatMessages, { type: 'assistant', content: streamingContent }];
+        }
+      }
+    }
+
+    function onChatMessage(e: Event) {
+      const data = (e as CustomEvent).detail;
+      if (data.session_id && !data.session_id.includes(agentId)) return;
+      if (data.role === 'assistant' || data.type === 'assistant') {
+        const content = data.content || data.text || '';
+        if (content) {
+          const last = chatMessages[chatMessages.length - 1];
+          if (last?.type === 'assistant') {
+            chatMessages = [...chatMessages.slice(0, -1), { type: 'assistant', content }];
+          } else {
+            chatMessages = [...chatMessages, { type: 'assistant', content }];
+          }
+        }
+        streamingContent = '';
+        isLoading = false;
+      }
+    }
+
+    function onChatComplete() {
+      isLoading = false;
+      streamingContent = '';
+    }
+
+    function onA2UIData(e: Event) {
+      const data = (e as CustomEvent).detail;
+      if (data.path && data.value !== undefined) {
+        const parts = (data.path as string).split('/').filter(Boolean);
+        const updated = { ...viewData };
+        let current: any = updated;
+        for (let i = 0; i < parts.length - 1; i++) {
+          if (current[parts[i]] === undefined) current[parts[i]] = {};
+          current[parts[i]] = { ...current[parts[i]] };
+          current = current[parts[i]];
+        }
+        current[parts[parts.length - 1]] = data.value;
+        viewData = updated;
+      }
+    }
+
+    window.addEventListener('nebo:chat_stream', onChatStream);
+    window.addEventListener('nebo:chat_message', onChatMessage);
+    window.addEventListener('nebo:chat_complete', onChatComplete);
+    window.addEventListener('nebo:a2ui_data', onA2UIData);
+
+    cleanups.push(() => {
+      window.removeEventListener('nebo:chat_stream', onChatStream);
+      window.removeEventListener('nebo:chat_message', onChatMessage);
+      window.removeEventListener('nebo:chat_complete', onChatComplete);
+      window.removeEventListener('nebo:a2ui_data', onA2UIData);
+    });
+  });
+
+  onDestroy(() => {
+    cleanups.forEach(fn => fn());
+  });
 </script>
 
 <svelte:head>
-  <title>{agent?.name ?? 'Workspace'} - Nebo</title>
+  <title>{agentName || 'Workspace'} - Nebo</title>
 </svelte:head>
 
-{#if config && agent && color}
+{#if config && color}
   <div class="h-screen flex flex-col bg-base-100">
     <!-- Nav bar -->
     <div class="flex items-center border-b border-base-content/10 shrink-0 h-[44px] px-4 gap-0.5">
-      <div class="w-6 h-6 rounded-md flex items-center justify-center text-xs font-mono font-semibold mr-2 {color.bgClass} {color.inkClass}">{agent.initial}</div>
-      <span class="text-sm font-semibold mr-4">{agent.name}</span>
+      <div class="w-6 h-6 rounded-md flex items-center justify-center text-xs font-mono font-semibold mr-2 {color.bgClass} {color.inkClass}">{agentInitial}</div>
+      <span class="text-sm font-semibold mr-4">{agentName}</span>
       {#each navItems as nav}
         <button
           class="flex items-center gap-1.5 py-1.5 px-3 rounded-md text-sm cursor-pointer border-none transition-colors {activeViewId === nav.viewId ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)] font-medium text-base-content' : 'bg-transparent hover:bg-base-100/70'}"
@@ -111,8 +235,8 @@
     <!-- A2UI Surface + Chat -->
     <div class="flex-1 flex min-h-0 {chatResizing ? 'select-none' : ''}" bind:this={contentEl}>
       <div class="flex-1 overflow-y-auto p-5 min-w-0">
-        {#if currentView}
-          <A2Surface view={currentView} onaction={handleAction} />
+        {#if reactiveView}
+          <A2Surface view={reactiveView} onaction={handleAction} />
         {/if}
       </div>
       {#if chatOpen}
@@ -137,9 +261,12 @@
         <div class="flex flex-col min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300" style="width: {chatWidth}px">
           <ChatPane
             messages={chatMessages}
-            agentName={agent.name}
-            agentId={agent.id}
-            placeholder="Message {agent.name}..."
+            {agentName}
+            {agentId}
+            placeholder="Message {agentName}..."
+            onsend={(text) => handleSend(text)}
+            onstop={handleStop}
+            {isLoading}
           />
         </div>
       {/if}
@@ -148,8 +275,12 @@
 {:else}
   <div class="h-screen flex items-center justify-center bg-base-100">
     <div class="text-center">
-      <div class="text-base font-semibold mb-1">Agent not found</div>
-      <div class="text-sm text-base-content/70">No workspace views configured for "{agentId}"</div>
+      {#if agentName && !config}
+        <div class="text-base font-semibold mb-1">{agentName}</div>
+        <div class="text-sm text-base-content/70">No workspace views configured</div>
+      {:else}
+        <div class="loading loading-spinner loading-md text-base-content/30"></div>
+      {/if}
     </div>
   </div>
 {/if}

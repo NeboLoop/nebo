@@ -1202,7 +1202,7 @@
 	"GET /workflows/{id}/runs/{runId}": {
 		"fn": "getWorkflowRun",
 		"desc": "Get workflow run",
-		"customBody": "/**\n * @description \"Get workflow run\"\n */\nexport function getWorkflowRun(workflowId: string, runId: string) {\n\treturn webapi.get<{ run: WorkflowRunEntry; activities: ActivityResult[] }>(`/api/v1/workflows/${workflowId}/runs/${runId}`)\n}"
+		"customBody": "/**\n * @description \"Get workflow run detail with activities and task items\"\n */\nexport function getWorkflowRun(workflowId: string, runId: string) {\n\treturn webapi.get<{ run: components.WorkflowRun; activities: components.WorkflowActivityResult[]; taskItems: Record<string, components.PendingTask[]> }>(`/api/v1/workflows/${workflowId}/runs/${runId}`)\n}"
 	},
 	"POST /workflows/{id}/runs/{runId}/cancel": {
 		"fn": "cancelWorkflowRun",

@@ -51,7 +51,7 @@
 
   onMount(async () => {
     try {
-      const res = await api.getPermissions();
+      const res = await api.getToolPermissions();
       let permObj: Record<string, boolean> = {};
       if (res?.permissions?.length) {
         for (const tp of res.permissions) {
@@ -151,7 +151,7 @@
       // Poll every 2 seconds for completion
       neboLoopPollInterval = setInterval(async () => {
         try {
-          const status = await api.oauthStatus({ state: neboLoopPendingState }) as { status?: string; email?: string; error?: string } | null;
+          const status = await api.neboLoopOAuthStatus({ state: neboLoopPendingState }) as { status?: string; email?: string; error?: string } | null;
           if (status?.status === 'complete') {
             cleanupNeboLoopOAuth();
             neboLoopConnected = true;
@@ -187,7 +187,7 @@
     });
 
     try {
-      await api.updatePermissions({ permissions: permObj });
+      await api.updateToolPermissions({ permissions: permObj });
     } catch {
       logger.warn('Failed to save permissions to backend');
     }

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use comm::api::NeboLoopApi;
 use types::NeboError;
@@ -1065,7 +1065,7 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
         serde_json::json!({"commEnabled": true}),
     );
 
-    // Reconcile agents + sync bot identity in background (non-blocking)
+    // Reconcile agents + sync bot identity + refresh license keys in background (non-blocking)
     {
         let st = state.clone();
         tokio::spawn(async move {
@@ -1074,6 +1074,10 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
             }
             // Sync bot identity (name) to NeboLoop
             sync_bot_identity(&st).await;
+            // Refresh content protection license keys for sealed .napp files
+            if let Err(e) = refresh_license_keys(&st).await {
+                warn!(error = %e, "license key refresh failed");
+            }
         });
     }
 
@@ -1346,6 +1350,84 @@ pub(crate) async fn deregister_agent_from_loop(
         .await
         .map_err(|e| NeboError::Internal(format!("deregister agent: {e}")))?;
     info!(agent = %agent_slug, remote_id = %remote.id, loop_id = %personal.loop_id, "deregistered agent from loop");
+    Ok(())
+}
+
+/// Refresh license keys for sealed .napp files from NeboLoop.
+///
+/// Called after NeboLoop connection is established (in activate_neboloop).
+/// Fetches fresh keys for all sealed artifacts, stores them in the DB cache,
+/// and triggers a skill reload so newly unlocked content becomes available.
+pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboError> {
+    use base64::Engine;
+
+    // Collect artifact_ids from installed sealed .napp files
+    let artifact_ids: Vec<String> = state
+        .store
+        .list_license_key_artifact_ids()
+        .unwrap_or_default();
+
+    if artifact_ids.is_empty() {
+        return Ok(());
+    }
+
+    let api = build_api_client(state)?;
+
+    // Register bot (idempotent) before fetching keys
+    let platform = napp::plugin::current_platform_key();
+    let version = env!("CARGO_PKG_VERSION");
+    if let Err(e) = api.register_bot(&platform, version).await {
+        debug!(error = %e, "bot registration failed (non-fatal)");
+    }
+
+    // Fetch fresh license keys
+    let response = api
+        .fetch_license_keys(&artifact_ids)
+        .await
+        .map_err(|e| NeboError::Internal(format!("fetch license keys: {e}")))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut refreshed = 0;
+    for (artifact_id, entry) in &response.keys {
+        // Decode base64 key
+        let key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&entry.key)
+            .map_err(|e| NeboError::Internal(format!("base64 decode: {e}")))?;
+        if key_bytes.len() != 32 {
+            warn!(artifact_id, len = key_bytes.len(), "invalid license key length");
+            continue;
+        }
+
+        // Encrypt with keyring master key before storing
+        let encrypted = auth::credential::encrypt(&entry.key)
+            .map_err(|e| NeboError::Internal(format!("encrypt key: {e}")))?;
+
+        let expires_at = now + entry.ttl;
+        if let Err(e) = state.store.upsert_license_key(
+            artifact_id,
+            "skill", // artifact_type — refined later when we know the type
+            "user",  // scope
+            &encrypted,
+            expires_at as i64,
+        ) {
+            warn!(artifact_id, error = %e, "failed to store license key");
+        } else {
+            refreshed += 1;
+        }
+    }
+
+    if refreshed > 0 {
+        info!(refreshed, total = artifact_ids.len(), "refreshed license keys");
+        // Reload skills to pick up newly unlocked sealed content
+        // The skill loader is accessed via the tool registry
+        // Trigger a reload by touching the watcher (skills will be reloaded)
+        state.hub.broadcast("license_keys_refreshed", serde_json::json!({"count": refreshed}));
+    }
+
     Ok(())
 }
 

@@ -23,10 +23,20 @@ const MAX_ITERATIONS: u32 = 50;
 /// `event_bus` — if provided, an `emit` tool is injected into every activity's tool set.
 /// Progress event emitted during workflow execution.
 #[derive(Debug, Clone)]
-pub struct WorkflowProgress {
-    pub activity_id: String,
-    pub activity_index: usize,
-    pub total_activities: usize,
+pub enum WorkflowProgress {
+    /// Activity-level progress (before each activity starts).
+    ActivityStarted {
+        activity_id: String,
+        activity_index: usize,
+        total_activities: usize,
+    },
+    /// Task-level progress (per-step within an activity).
+    TaskUpdated {
+        list_id: String,
+        task_id: String,
+        seq: i64,
+        status: String,
+    },
 }
 
 pub async fn execute_workflow(
@@ -97,7 +107,7 @@ pub async fn execute_workflow(
 
         // Send progress event
         if let Some(ref tx) = progress_tx {
-            let _ = tx.send(WorkflowProgress {
+            let _ = tx.send(WorkflowProgress::ActivityStarted {
                 activity_id: activity.id.clone(),
                 activity_index: idx,
                 total_activities: activity_count,
@@ -140,6 +150,9 @@ pub async fn execute_workflow(
             &activity_tools,
             skill_content,
             activity_emit,
+            store,
+            &run_id,
+            progress_tx.as_ref(),
         )
         .await
         {
@@ -287,11 +300,14 @@ async fn execute_activity_with_retry(
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
     emit_source: Option<&str>,
+    store: &Arc<Store>,
+    run_id: &str,
+    progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
 ) -> Result<(String, u32), WorkflowError> {
     let max_attempts = activity.on_error.retry.max(1);
 
     for attempt in 0..max_attempts {
-        match execute_activity(activity, prior_context, inputs, provider, tools, skill_content, emit_source).await {
+        match execute_activity(activity, prior_context, inputs, provider, tools, skill_content, emit_source, store, run_id, progress_tx).await {
             Ok(result) => return Ok(result),
             Err(e) if attempt + 1 < max_attempts => {
                 warn!(
@@ -309,6 +325,10 @@ async fn execute_activity_with_retry(
 }
 
 /// Execute a single activity (lean execution path — no steering, no memory).
+///
+/// If the activity has steps, each step is executed as a separate LLM turn within
+/// a shared conversation. Each step's input/output/tokens are tracked in `task_items`.
+/// If no steps, executes as a single intent (backward-compatible).
 pub async fn execute_activity(
     activity: &Activity,
     prior_context: &str,
@@ -317,22 +337,15 @@ pub async fn execute_activity(
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
     emit_source: Option<&str>,
+    store: &Arc<Store>,
+    run_id: &str,
+    progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
 ) -> Result<(String, u32), WorkflowError> {
-    let mut tokens_used: u32 = 0;
-    let mut iterations: u32 = 0;
-    let mut consecutive_all_not_found: u32 = 0;
-    // Track consecutive same-tool calls for loop detection
-    let mut last_tool_name: String = String::new();
-    let mut consecutive_same_tool: u32 = 0;
-
     // Detect if browser tool is available for this activity
     let has_browser = tools.iter().any(|t| t.name() == "web");
-
-    // Build system prompt: skill content + intent + steps (NO steering, NO memory)
     let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
-    let system = build_activity_prompt(activity, prior_context, inputs, skill_content, emit_source, has_browser, &tool_names);
 
-    // Build tool definitions
+    // Build tool definitions (shared across all steps)
     let tool_defs: Vec<ai::ToolDefinition> = tools
         .iter()
         .map(|t| ai::ToolDefinition {
@@ -342,11 +355,131 @@ pub async fn execute_activity(
         })
         .collect();
 
-    let mut messages = vec![ai::Message {
-        role: "user".into(),
-        content: activity.intent.clone(),
-        ..Default::default()
-    }];
+    // If activity has steps, execute per-step. Otherwise, single-turn legacy path.
+    if activity.steps.is_empty() {
+        // No steps — legacy single-turn execution
+        let system = build_activity_prompt(activity, prior_context, inputs, skill_content, emit_source, has_browser, &tool_names);
+        let messages = vec![ai::Message {
+            role: "user".into(),
+            content: activity.intent.clone(),
+            ..Default::default()
+        }];
+        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages).await;
+    }
+
+    // --- Per-step execution ---
+    let list_id = format!("run:{}:{}", run_id, activity.id);
+    let step_strs: Vec<&str> = activity.steps.iter().map(|s| s.as_str()).collect();
+
+    // Seed task_items for all steps
+    let task_items = store.seed_task_list(&list_id, &step_strs)
+        .map_err(|e| WorkflowError::Database(e.to_string()))?;
+
+    // Build system prompt WITHOUT steps (they'll come as individual user messages)
+    let system = build_activity_prompt_no_steps(activity, prior_context, inputs, skill_content, emit_source, has_browser, &tool_names);
+
+    // Shared conversation — messages accumulate across steps
+    let mut messages = Vec::new();
+    let mut total_tokens: u32 = 0;
+    let mut step_outputs: Vec<String> = Vec::new();
+    let total_steps = activity.steps.len();
+
+    for (i, step) in activity.steps.iter().enumerate() {
+        let task_item = &task_items[i];
+        let task_seq = task_item.seq.unwrap_or((i + 1) as i64);
+
+        // Mark in_progress
+        if let Err(e) = store.start_task_item(&task_item.id) {
+            warn!(task_id = %task_item.id, error = %e, "failed to mark task_item in_progress");
+        }
+        if let Some(tx) = progress_tx {
+            let _ = tx.send(WorkflowProgress::TaskUpdated {
+                list_id: list_id.clone(),
+                task_id: task_item.id.clone(),
+                seq: task_seq,
+                status: "in_progress".to_string(),
+            });
+        }
+
+        // Send step as user message
+        let step_msg = format!("Step {}/{}: {}", i + 1, total_steps, step);
+        messages.push(ai::Message {
+            role: "user".into(),
+            content: step_msg,
+            ..Default::default()
+        });
+
+        // Run LLM loop for this step
+        let (step_result, step_tokens) = run_llm_loop(
+            activity, provider, tools, &tool_defs, &system, messages.clone(),
+        ).await.map_err(|e| {
+            // Record failure
+            let _ = store.update_task_item(&task_item.id, "failed", None, Some(&e.to_string()), 0, 0);
+            if let Some(tx) = progress_tx {
+                let _ = tx.send(WorkflowProgress::TaskUpdated {
+                    list_id: list_id.clone(),
+                    task_id: task_item.id.clone(),
+                    seq: task_seq,
+                    status: "failed".to_string(),
+                });
+            }
+            e
+        })?;
+
+        // Append assistant response to conversation for next step's context
+        messages.push(ai::Message {
+            role: "assistant".into(),
+            content: step_result.clone(),
+            ..Default::default()
+        });
+
+        // Record completion
+        total_tokens += step_tokens;
+        let tokens_in = (step_tokens as i64) / 2; // approximate split
+        let tokens_out = step_tokens as i64 - tokens_in;
+        if let Err(e) = store.update_task_item(
+            &task_item.id,
+            "completed",
+            Some(&step_result),
+            None,
+            tokens_in,
+            tokens_out,
+        ) {
+            warn!(task_id = %task_item.id, error = %e, "failed to update task_item completed");
+        }
+        if let Some(tx) = progress_tx {
+            let _ = tx.send(WorkflowProgress::TaskUpdated {
+                list_id: list_id.clone(),
+                task_id: task_item.id.clone(),
+                seq: task_seq,
+                status: "completed".to_string(),
+            });
+        }
+
+        step_outputs.push(step_result);
+    }
+
+    // Final result is the last step's output (or concatenation if needed for prior_context)
+    let final_output = step_outputs.last().cloned().unwrap_or_default();
+    Ok((final_output, total_tokens))
+}
+
+/// Core LLM multi-turn loop extracted from the original execute_activity.
+/// Runs until the LLM produces a response with no tool calls, then returns
+/// the final text response and total tokens used.
+async fn run_llm_loop(
+    activity: &Activity,
+    provider: &dyn ai::Provider,
+    tools: &[&Box<dyn DynTool>],
+    tool_defs: &[ai::ToolDefinition],
+    system: &str,
+    mut messages: Vec<ai::Message>,
+) -> Result<(String, u32), WorkflowError> {
+    let mut tokens_used: u32 = 0;
+    let mut iterations: u32 = 0;
+    let mut consecutive_all_not_found: u32 = 0;
+    let mut last_tool_name: String = String::new();
+    let mut consecutive_same_tool: u32 = 0;
 
     loop {
         if iterations >= MAX_ITERATIONS {
@@ -354,10 +487,10 @@ pub async fn execute_activity(
         }
         let req = ChatRequest {
             messages: messages.clone(),
-            tools: tool_defs.clone(),
+            tools: tool_defs.to_vec(),
             max_tokens: 16384,
             temperature: 0.0,
-            system: system.clone(),
+            system: system.to_string(),
             static_system: String::new(),
             model: activity.model.clone(),
             enable_thinking: false,
@@ -439,8 +572,6 @@ pub async fn execute_activity(
         let ctx = tools::ToolContext::default();
         let mut tool_result_entries = Vec::new();
         for tc in &tool_calls {
-            // Try exact name first, then strip MCP prefix (LLMs sometimes
-            // hallucinate mcp__nebo-agent__<tool> even when given plain names).
             let tool = tools.iter().find(|t| t.name() == tc.name)
                 .or_else(|| {
                     let stripped = strip_mcp_prefix(&tc.name);
@@ -470,8 +601,7 @@ pub async fn execute_activity(
             }));
         }
 
-        // Same-tool loop detection: if the LLM calls the same tool 3+ times
-        // consecutively, inject a steering hint into the conversation.
+        // Same-tool loop detection
         if let Some(first_call) = tool_calls.first() {
             if first_call.name == last_tool_name {
                 consecutive_same_tool += 1;
@@ -481,7 +611,6 @@ pub async fn execute_activity(
             }
         }
         if consecutive_same_tool >= 3 {
-            // Inject a user-role steering message to break the loop
             messages.push(ai::Message {
                 role: "user".into(),
                 content: format!(
@@ -493,8 +622,7 @@ pub async fn execute_activity(
             });
         }
 
-        // Early termination: if ALL tool calls failed with "tool not found" for 3
-        // consecutive iterations, bail instead of looping to MAX_ITERATIONS.
+        // Early termination on repeated tool-not-found
         let all_not_found = tool_result_entries.iter().all(|e| {
             e.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false)
                 && e.get("content")
@@ -523,6 +651,22 @@ pub async fn execute_activity(
 
         iterations += 1;
     }
+}
+
+/// Build the system prompt for a per-step activity (no steps section — steps come as user messages).
+fn build_activity_prompt_no_steps(
+    activity: &Activity,
+    prior_context: &str,
+    inputs: &serde_json::Value,
+    skill_content: Option<&HashMap<String, String>>,
+    emit_source: Option<&str>,
+    has_browser: bool,
+    tool_names: &[String],
+) -> String {
+    // Reuse the full builder but with an activity clone that has empty steps
+    let mut stepless = activity.clone();
+    stepless.steps = vec![];
+    build_activity_prompt(&stepless, prior_context, inputs, skill_content, emit_source, has_browser, tool_names)
 }
 
 /// Build the system prompt for an activity.

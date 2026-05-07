@@ -4,6 +4,13 @@ use crate::domain::DomainInput;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ResourceKind, ToolResult};
 
+/// Threshold in characters above which tool output is spilled to a file.
+/// Matches `large_input.rs` sizing (~2000 tokens at chars/4 heuristic).
+const LARGE_OUTPUT_THRESHOLD: usize = 8_000;
+
+/// Default preview length (chars) included in the compact metadata response.
+const DEFAULT_PREVIEW_CHARS: usize = 1_200;
+
 /// Callback type for broadcasting events to connected WebSocket clients.
 pub type Broadcaster = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
@@ -507,23 +514,38 @@ impl WebTool {
             return ToolResult::error("Browser extension not connected.");
         }
 
-        // Forward devtools actions to the extension
+        // Forward devtools actions to the extension's actual tool names
         let tool_name = match action {
-            "console" => "devtools_console",
-            "source" => "devtools_source",
-            "storage" => "devtools_storage",
-            "dom" => "devtools_dom",
-            "cookies" => "devtools_cookies",
-            "performance" => "devtools_performance",
+            "console" => "read_console_messages",
+            "source" | "storage" | "dom" | "cookies" | "performance" => {
+                return ToolResult::error(format!(
+                    "DevTools action '{}' is not yet available. Use web(action: \"console\") for console logs, \
+                     or web(action: \"read_network_requests\") for network activity.",
+                    action
+                ));
+            }
             _ => {
                 return ToolResult::error(format!(
-                    "Unknown devtools action '{}'. Available: console, source, storage, dom, cookies, performance",
+                    "Unknown devtools action '{}'. Available: console",
                     action
                 ));
             }
         };
 
-        let args = build_extension_args(action, input);
+        // Translate devtools-style params to extension tool params
+        let args = match action {
+            "console" => {
+                let mut a = serde_json::Map::new();
+                // Map "filter" to "pattern" for backward compat
+                if let Some(v) = input.get("filter") { a.insert("pattern".to_string(), v.clone()); }
+                if let Some(v) = input.get("pattern") { a.insert("pattern".to_string(), v.clone()); }
+                if let Some(v) = input.get("onlyErrors") { a.insert("onlyErrors".to_string(), v.clone()); }
+                if let Some(v) = input.get("clear") { a.insert("clear".to_string(), v.clone()); }
+                if let Some(v) = input.get("limit") { a.insert("limit".to_string(), v.clone()); }
+                serde_json::Value::Object(a)
+            }
+            _ => build_extension_args(action, input),
+        };
         match executor.execute(tool_name, &args, Some(session_id)).await {
             Ok(result) => {
                 let text = serde_json::to_string_pretty(&result)
@@ -652,6 +674,10 @@ impl WebTool {
                         if let Ok(retry_result) = executor.execute(tool_name, &retry_args, session_id).await {
                             let page_content = retry_result.get("pageContent").and_then(|v| v.as_str()).unwrap_or("");
                             if !page_content.is_empty() {
+                                let sid = session_id.unwrap_or("default");
+                                if let Some(spilled) = maybe_spill_large_result(page_content, input, sid, action) {
+                                    return spilled;
+                                }
                                 return ToolResult {
                                     content: page_content.to_string(),
                                     is_error: false,
@@ -700,6 +726,18 @@ impl WebTool {
                             }
                         }
                         Err(_) => {} // Snapshot failed — navigate still succeeded
+                    }
+                }
+
+                // Auto-spill large results to file for evaluate, read_page, get_page_text
+                if matches!(action, "evaluate" | "snapshot" | "read_page" | "get_page_text") {
+                    let sid = session_id.unwrap_or("default");
+                    if let Some(spilled) = maybe_spill_large_result(&text_result, input, sid, action) {
+                        return ToolResult {
+                            content: spilled.content,
+                            is_error: false,
+                            image_url: screenshot_b64,
+                        };
                     }
                 }
 
@@ -823,6 +861,19 @@ impl DynTool for WebTool {
                 "expression": {
                     "type": "string",
                     "description": "JavaScript expression for evaluate"
+                },
+                "output": {
+                    "type": "string",
+                    "description": "Output mode for evaluate/read_page/get_page_text: inline (always return full text), artifact (always save to file), auto (save to file if large, default)",
+                    "enum": ["inline", "artifact", "auto"]
+                },
+                "max_inline_chars": {
+                    "type": "integer",
+                    "description": "For auto output mode: inline threshold in chars (default 8000). Results larger than this are saved to file."
+                },
+                "preview_chars": {
+                    "type": "integer",
+                    "description": "For artifact output: chars of preview to include in response (default 1200)"
                 },
                 "depth": {
                     "type": "integer",
@@ -979,6 +1030,16 @@ impl DynTool for WebTool {
             }
 
             let session_id = &ctx.session_id;
+
+            // Signal the extension to show visual indicators for this agent's tab group
+            if matches!(resource.as_str(), "browser" | "search" | "devtools") {
+                if let Some(ref mgr) = self.browser {
+                    if let Some(executor) = mgr.executor() {
+                        executor.send_command("show_indicators", Some(session_id)).await;
+                    }
+                }
+            }
+
             match resource.as_str() {
                 "http" => self.handle_http(&input).await,
                 "search" => self.handle_search(&input, session_id).await,
@@ -990,6 +1051,110 @@ impl DynTool for WebTool {
                 )),
             }
         })
+    }
+}
+
+/// Save large tool output to a file, returning a compact ToolResult with metadata + preview.
+///
+/// Follows the same directory tree and replacement format as `large_input.rs` so the agent
+/// already knows how to read the full content back via `system(resource: "file", action: "read")`.
+fn save_large_result(
+    content: &str,
+    session_id: &str,
+    action: &str,
+    preview_chars: usize,
+) -> ToolResult {
+    let data_dir = match config::data_dir() {
+        Ok(d) => d,
+        Err(_) => return ToolResult::ok(content.to_string()), // fallback: inline
+    };
+
+    let dir = data_dir.join("files").join("large_outputs").join(session_id);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(error = %e, "failed to create large_outputs dir, returning inline");
+        return ToolResult::ok(content.to_string());
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let filename = format!("{}_{}.txt", action, ts);
+    let path = dir.join(&filename);
+
+    if let Err(e) = std::fs::write(&path, content) {
+        tracing::warn!(error = %e, "failed to write large output, returning inline");
+        return ToolResult::ok(content.to_string());
+    }
+
+    let path_str = path.display().to_string();
+    let preview_end = content
+        .char_indices()
+        .nth(preview_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(content.len());
+    let preview = &content[..preview_end];
+    let ellipsis = if preview_end < content.len() { "\n..." } else { "" };
+
+    tracing::info!(
+        path = %path_str,
+        chars = content.len(),
+        action,
+        "large browser output saved to file"
+    );
+
+    ToolResult::ok(format!(
+        "Result saved to file ({} chars). Preview below.\n\n\
+         Path: {}\n\
+         Read full content with: system(resource: \"file\", action: \"read\", path: \"{}\")\n\n\
+         {}{}",
+        content.len(),
+        path_str,
+        path_str,
+        preview,
+        ellipsis,
+    ))
+}
+
+/// If the result exceeds the inline threshold, spill to file and return compact metadata.
+/// Respects `output` mode from input: "inline" (always inline), "artifact" (always file),
+/// "auto" (file if over threshold). Default is "auto" for evaluate/read_page/get_page_text.
+fn maybe_spill_large_result(
+    content: &str,
+    input: &serde_json::Value,
+    session_id: &str,
+    action: &str,
+) -> Option<ToolResult> {
+    let output_mode = input
+        .get("output")
+        .and_then(|v| v.as_str())
+        .unwrap_or("auto");
+
+    match output_mode {
+        "inline" => None, // caller returns content as-is
+        "artifact" => {
+            let preview_chars = input
+                .get("preview_chars")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(DEFAULT_PREVIEW_CHARS as u64) as usize;
+            Some(save_large_result(content, session_id, action, preview_chars))
+        }
+        _ => {
+            // "auto": spill only if over threshold
+            let max_inline = input
+                .get("max_inline_chars")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(LARGE_OUTPUT_THRESHOLD as u64) as usize;
+            if content.len() <= max_inline {
+                None
+            } else {
+                let preview_chars = input
+                    .get("preview_chars")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(DEFAULT_PREVIEW_CHARS as u64) as usize;
+                Some(save_large_result(content, session_id, action, preview_chars))
+            }
+        }
     }
 }
 

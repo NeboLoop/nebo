@@ -1104,10 +1104,18 @@ async fn run_loop(
         let all_tool_defs = tools.list_active(&activated_deferred).await;
         let (tool_defs, active_contexts) = tool_filter::filter_tools_with_context(&all_tool_defs, &window_messages, &called_tools);
 
-        // Parse work tasks for steering
-        let work_tasks_json = sessions.get_work_tasks(session_id).unwrap_or_default();
-        let work_tasks: Vec<steering::WorkTask> = serde_json::from_str(&work_tasks_json)
-            .unwrap_or_default();
+        // Read tracking tasks from pending_tasks (session-scoped list)
+        let task_items_list_id = format!("session:{}", session_id);
+        let work_tasks: Vec<steering::WorkTask> = store.list_task_items(&task_items_list_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| steering::WorkTask {
+                id: t.id.clone(),
+                subject: t.description.unwrap_or(t.prompt),
+                status: t.status,
+                details: None,
+            })
+            .collect();
 
         // Resolve user presence for steering (live from shared tracker)
         let (user_presence, user_just_returned) = if let Some(tracker) = presence_tracker {

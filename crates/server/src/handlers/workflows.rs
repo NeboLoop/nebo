@@ -264,9 +264,25 @@ pub async fn get_run(
         .store
         .list_activity_results(&run_id)
         .map_err(to_error_response)?;
+
+    // Gather task_items for each activity (per-step tracking)
+    let mut task_items_by_activity: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    for act in &activities {
+        let list_id = format!("run:{}:{}", run_id, act.activity_id);
+        if let Ok(items) = state.store.list_task_items(&list_id) {
+            if !items.is_empty() {
+                task_items_by_activity.insert(
+                    act.activity_id.clone(),
+                    serde_json::to_value(&items).unwrap_or_default(),
+                );
+            }
+        }
+    }
+
     Ok(Json(serde_json::json!({
         "run": run,
         "activities": activities,
+        "taskItems": task_items_by_activity,
     })))
 }
 

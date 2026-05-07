@@ -352,27 +352,28 @@ impl RunRegistry {
     }
 
     /// Clean up stale runs that have been idle for too long.
-    pub async fn cleanup_stale(&self, max_idle_secs: u64) -> usize {
+    /// Returns the session keys of cleaned-up runs (for browser tab cleanup).
+    pub async fn cleanup_stale(&self, max_idle_secs: u64) -> Vec<String> {
         let runs = self.inner.runs.read().await;
-        let stale_ids: Vec<String> = runs.values()
+        let stale: Vec<(String, String)> = runs.values()
             .filter(|e| e.idle_secs() > max_idle_secs)
             .map(|e| {
                 e.cancel_token.cancel();
-                e.run_id.clone()
+                (e.run_id.clone(), e.session_key.clone())
             })
             .collect();
         drop(runs);
 
-        if stale_ids.is_empty() {
-            return 0;
+        if stale.is_empty() {
+            return vec![];
         }
 
-        let count = stale_ids.len();
+        let session_keys: Vec<String> = stale.iter().map(|(_, sk)| sk.clone()).collect();
         let mut runs = self.inner.runs.write().await;
-        for id in &stale_ids {
+        for (id, _) in &stale {
             runs.remove(id);
         }
-        count
+        session_keys
     }
 }
 
@@ -696,6 +697,6 @@ mod tests {
         // But the run just started, so idle_secs is 0 — it won't be cleaned up with max_idle=1
         // This just tests the mechanism works without actually waiting
         let cleaned = registry.cleanup_stale(999999).await;
-        assert_eq!(cleaned, 0);
+        assert!(cleaned.is_empty());
     }
 }

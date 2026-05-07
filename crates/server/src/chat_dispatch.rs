@@ -83,6 +83,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let janus_usage = state.janus_usage.clone();
     let presence_tracker = state.presence.clone();
     let proactive_inbox = state.proactive_inbox.clone();
+    let extension_bridge = state.extension_bridge.clone();
     let comm_manager = if config.comm_reply.is_some() {
         Some(state.comm_manager.clone())
     } else {
@@ -581,6 +582,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 hub.broadcast("chat_complete", ws_payload!());
             }
         }
+
+        // Clean up browser tab groups/indicators for this session
+        extension_bridge.send_command("hide_indicators", Some(&sid)).await;
 
         // RunHandle unregisters from RunRegistry on drop (including panics)
         drop(_run_handle);

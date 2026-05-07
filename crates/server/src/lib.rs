@@ -451,29 +451,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Build AI providers from database auth profiles + active CLI providers
     let mut providers = build_providers(&store, &cfg, Some(&cli_statuses));
 
-    // Append plugin-provided AI providers (e.g., openrouter, local model servers)
-    {
-        let installed = plugin_store.list_installed();
-        let mut seen = std::collections::HashSet::new();
-        for (slug, _version, _path, _source) in &installed {
-            if !seen.insert(slug.clone()) {
-                continue;
-            }
-            if let Some(manifest) = plugin_store.get_manifest(slug) {
-                if let Some(ref caps) = manifest.capabilities {
-                    for pdef in &caps.providers {
-                        if let Some(binary) = plugin_store.resolve(slug, "*") {
-                            providers.push(Arc::new(plugin_provider::PluginProvider::new(
-                                pdef, slug, binary, plugin_store.clone(),
-                            )));
-                            info!(plugin = %slug, provider = %pdef.id, "registered plugin provider");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // Build tool registry with default tools
     let mut policy = tools::Policy::new();
     policy.level = tools::PolicyLevel::Full;
@@ -545,6 +522,29 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let _ = std::fs::create_dir_all(&user_plugins_dir);
     let plugin_store = Arc::new(napp::plugin::PluginStore::new(plugins_dir, user_plugins_dir, None));
 
+    // Append plugin-provided AI providers (e.g., openrouter, local model servers)
+    {
+        let installed = plugin_store.list_installed();
+        let mut seen = std::collections::HashSet::new();
+        for (slug, _version, _path, _source) in &installed {
+            if !seen.insert(slug.clone()) {
+                continue;
+            }
+            if let Some(manifest) = plugin_store.get_manifest(slug) {
+                if let Some(ref caps) = manifest.capabilities {
+                    for pdef in &caps.providers {
+                        if let Some(binary) = plugin_store.resolve(slug, "*") {
+                            providers.push(Arc::new(plugin_provider::PluginProvider::new(
+                                pdef, slug, binary, plugin_store.clone(),
+                            )));
+                            info!(plugin = %slug, provider = %pdef.id, "registered plugin provider");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Initialize skill loader (embedded bundled + marketplace nebo/skills/ + user/skills/)
     let installed_skills_dir = data_dir.join("nebo").join("skills");
     let user_skills_dir = data_dir.join("user").join("skills");
@@ -552,6 +552,41 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         installed_skills_dir,
         user_skills_dir,
     ).with_plugin_store(plugin_store.clone()));
+
+    // Load cached license keys from DB for sealed .napp decryption.
+    // Keys were fetched from NeboLoop on a previous startup and cached with TTL.
+    {
+        use base64::Engine;
+        let cached_keys = store.list_license_key_artifact_ids().unwrap_or_default();
+        if !cached_keys.is_empty() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let mut keys = std::collections::HashMap::new();
+            for artifact_id in &cached_keys {
+                if let Ok(Some(row)) = store.get_license_key(artifact_id) {
+                    if row.expires_at > now {
+                        // Decrypt the stored key with keyring master key
+                        if let Ok(plaintext) = auth::credential::decrypt(&row.encrypted_key) {
+                            if let Ok(key_bytes) = base64::engine::general_purpose::STANDARD.decode(&plaintext) {
+                                if key_bytes.len() == 32 {
+                                    let mut key = [0u8; 32];
+                                    key.copy_from_slice(&key_bytes);
+                                    keys.insert(artifact_id.clone(), key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !keys.is_empty() {
+                info!(count = keys.len(), "loaded cached license keys for sealed .napp files");
+                skill_loader.set_license_keys(keys).await;
+            }
+        }
+    }
+
     skill_loader.load_all().await;
     skill_loader.watch();
 
@@ -1024,12 +1059,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     }
 
     // Create agent worker registry — manages autonomous trigger lifecycle for each agent
+    let hub_for_workers = hub.clone();
+    let worker_notify_fn: agent::agent_worker::NotifyFn = Arc::new(move |event_type, payload| {
+        hub_for_workers.broadcast(event_type, payload);
+    });
     let agent_workers = Arc::new(agent::AgentWorkerRegistry::new(
         store.clone(),
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
         event_dispatcher.clone(),
         plugin_store.clone(),
         event_bus.clone(),
+        Some(worker_notify_fn),
     ));
 
     // Start workers for all enabled agents (replaces manual trigger reconciliation)

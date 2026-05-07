@@ -101,10 +101,11 @@ Extension-backed browser automation uses a **four-hop relay chain**. The agent n
    b. Calls ensureAgentTab() to get/create dedicated agent tab
    c. Calls executeTool("navigate", args, tabId)
 8. tools.ts navigate():
-   a. ensureDebuggerAttached(tabId) — attaches CDP 1.3
-   b. chrome.debugger.sendCommand(tabId, "Page.navigate", {url})
-   c. Waits 1000ms for page load
-   d. Returns ok("Navigated to ...")
+   a. Normalizes URL (adds https:// if no protocol)
+   b. Attaches debugger + Page.enable for beforeunload detection
+   c. chrome.tabs.update(tabId, {url}) with beforeunload handling
+   d. waitForTabLoad(tabId) — waits up to 15s for tab status "complete"
+   e. Returns ok("Navigated to ...")
 ```
 
 ### Response (extension → agent)
@@ -176,36 +177,39 @@ The extension maintains dedicated **agent tabs by session** (`agentSessions: Map
 
 | Tool | Method | Mechanism |
 |------|--------|-----------|
-| `navigate` | `chrome.tabs.update` + load wait | Normalizes URL, handles beforeunload, waits for tab load |
+| `navigate` | `chrome.tabs.update` + `waitForTabLoad` (15s) | Normalizes URL (adds https://), handles beforeunload dialogs (force option), supports `back`/`forward` as URL |
 | `read_page` | `chrome.scripting.executeScript` | Calls accessibility tree content script, retries by injecting manually if not loaded |
-| `click` | CDP `Input.dispatchMouseEvent` | Resolves element via WeakRef map, gets bounding rect, dispatches mousePressed + mouseReleased |
-| `double_click` | CDP `Input.dispatchMouseEvent` | Two rapid click sequences |
-| `triple_click` | CDP `Input.dispatchMouseEvent` | Three rapid click sequences (selects all text in a field) |
-| `right_click` | CDP `Input.dispatchMouseEvent` | Click with `button: 2` (context menu) |
-| `hover` | CDP `Input.dispatchMouseEvent` | mouseMoved to element center |
-| `fill` / `form_input` | `chrome.scripting.executeScript` | Sets `.value` + dispatches input/change events |
-| `type` | CDP `Input.dispatchKeyEvent` | Character-by-character keyDown/keyUp |
+| `click` | CDP `Input.dispatchMouseEvent` | Domain drift check, resolves ref via WeakRef (or metadata re-query fallback), CDP `DOM.getContentQuads` for coordinates, mouseMoved (100ms pause) + mousePressed/Released (12ms gap). Supports `ref`, `coordinate`, or `x,y` + `modifiers` |
+| `double_click` | CDP `Input.dispatchMouseEvent` | Two press/release cycles with incrementing clickCount, 100ms between cycles |
+| `triple_click` | CDP `Input.dispatchMouseEvent` | Three press/release cycles (selects entire line/paragraph in a field) |
+| `right_click` | CDP `Input.dispatchMouseEvent` | Click with `button: "right"`, `buttons: 2` (context menu) |
+| `hover` | CDP `Input.dispatchMouseEvent` | Domain drift check, mouseMoved to element center. Supports ref, coordinate, or x,y |
+| `fill` / `form_input` | `chrome.scripting.executeScript` | Domain drift check. Handles: select (option lookup by value/text), checkbox (boolean), radio, date/time, range (numeric), number, text input/textarea (native setter to bypass React/Vue/Angular), contenteditable. WeakRef + metadata fallback for element resolution |
+| `type` | CDP `Input.dispatchKeyEvent` | Domain drift check. Character-by-character keyDown/keyUp with macOS command mapping. Falls back to `Input.insertText` for unmapped characters |
 | `select` | `chrome.scripting.executeScript` | Sets `<select>.value` + dispatches change event |
-| `screenshot` | CDP `Page.captureScreenshot` | Returns base64 PNG |
-| `scroll` | `chrome.scripting.executeScript` | `window.scrollBy(x, y)` |
-| `scroll_to` | `chrome.scripting.executeScript` | Element `.scrollIntoView()` |
-| `press` | CDP `Input.dispatchKeyEvent` | Mapped key names (Enter, Tab, etc.) to CDP key codes, supports chords (cmd+a) and sequences |
+| `screenshot` | CDP `Page.captureScreenshot` | Returns base64 JPEG. Adaptive token optimization: probes viewport + DPR, calculates optimal dimensions within Anthropic token budget (28px/token, max 1568 tokens), CDP capture with clip + scale. Oversized images (>1.4M base64 chars) fall back to Canvas-based resize + quality reduction loop (75% → 10% JPEG) |
+| `scroll` | CDP `Input.dispatchMouseEvent` (mouseWheel) | Primary: CDP mouseWheel at viewport center or provided coordinate, with 5s race timeout. Fallback: `window.scrollBy()` via content script. Direction: up/down/left/right, amount in ticks (100px per tick, default 3 ticks) |
+| `scroll_to` | `chrome.scripting.executeScript` | Element `.scrollIntoView({ behavior: 'instant', block: 'center' })` |
+| `press` | CDP `Input.dispatchKeyEvent` | 50+ key mappings (Enter, Tab, Escape, F1-F12, arrow keys, Home/End, etc.). Supports modifier chords (cmd+a, ctrl+c, shift+enter). macOS: sends NSStandardKeyBindingResponding commands for proper renderer handling |
 | `drag` | CDP `Input.dispatchMouseEvent` | mousePressed at start → mouseMoved to end → mouseReleased |
-| `go_back` | CDP `Page.navigateToHistoryEntry(-1)` | Falls back to `history.back()` |
-| `go_forward` | CDP `Page.navigateToHistoryEntry(1)` | Falls back to `history.forward()` |
-| `wait` | `setTimeout` | Capped at 30s |
-| `evaluate` | CDP `Runtime.evaluate` | Runs arbitrary JS, returns value |
+| `go_back` | `chrome.tabs.goBack(tabId)` | Attaches debugger for beforeunload detection, handles "Leave site?" dialogs |
+| `go_forward` | `chrome.tabs.goForward(tabId)` | Attaches debugger for beforeunload detection, handles "Leave site?" dialogs |
+| `wait` | `setTimeout` | Takes `duration` in seconds (or `ms` in milliseconds). Capped at 30s |
+| `evaluate` | CDP `Runtime.evaluate` | Domain drift check. Runs JS expression with `returnByValue: true, awaitPromise: true` |
 | `new_tab` | `chrome.tabs.create` | Sets the session's tracked agent tab and tab group |
 | `close_tab` | `chrome.tabs.remove` | Clears session tracking when closing that session's agent tab |
 | `list_tabs` | `chrome.tabs.query({})` | Returns all tabs (no agent tab needed) |
-| `devtools_console` | CDP | Browser console logs |
-| `devtools_source` | CDP | Page source |
-| `devtools_storage` | CDP | localStorage/sessionStorage |
-| `devtools_dom` | CDP | DOM inspection |
-| `devtools_cookies` | CDP | Cookie inspection |
-| `devtools_performance` | CDP | Performance metrics |
+| `zoom` | CDP `Page.captureScreenshot` | Takes `region [x0, y0, x1, y1]` — crops and captures a zoomed screenshot of the specified viewport region. Transforms screenshot-space to viewport-space coordinates |
+| `get_page_text` | `chrome.scripting.executeScript` | Extracts page text using semantic selectors (article, main, .content, #content, [role="main"]) for best content. Falls back to body with truncation to `max_chars` (default 50000) |
+| `read_console_messages` | CDP `Runtime.enable` | Lazy-enabled: tracking starts on first call. Returns console logs/errors/exceptions. Supports `onlyErrors`, `pattern` (regex), `limit`, `clear` filters. Capped at 1000 messages per tab |
+| `read_network_requests` | CDP `Network.enable` | Lazy-enabled: tracking starts on first call. Returns requests with URL, method, status. Supports `urlPattern`, `limit`, `clear` filters. Capped at 1000 requests per tab. Domain-scoped (resets on navigation) |
+| `resize_window` | `chrome.windows.update` | Sets window dimensions. Max 7680x4320 (8K limit) |
+| `file_upload` | CDP `DOM.setFileInputFiles` | Domain drift check. Finds file input via ref, marks with data attribute, resolves via CDP DOM query, sets files. Takes `paths` array and `ref` |
+| `find` | `chrome.scripting.executeScript` | Generates full accessibility tree, searches for text matches across element lines. Returns matching lines with ref IDs for subsequent actions |
 
-The current tool surface also includes `zoom`, `get_page_text`, `read_console_messages`, `read_network_requests`, `resize_window`, `file_upload`, and `find`. `execute_batch` runs a sequence of tool actions on the session tab and returns a `batch_response` array.
+**Devtools tools** (mapped by Rust `web_tool.rs`, sent as `devtools_*` tool names): `devtools_console`, `devtools_source`, `devtools_storage`, `devtools_dom`, `devtools_cookies`, `devtools_performance`. **Note:** These tool names are NOT implemented in the extension's `executeTool` switch — the extension has `read_console_messages` and `read_network_requests` instead. Calling devtools actions via the web tool currently returns "Unknown tool" from the extension. This is a known mapping gap.
+
+`execute_batch` runs a sequence of tool actions on the session tab and returns a `batch_response` array.
 
 ### 3.5 Keep-Alive Mechanism
 
@@ -768,14 +772,14 @@ web(action: "navigate", url: "...")
 
 Maps user-facing actions to extension tool names:
 
-| Action | Extension Tool |
-|--------|---------------|
-| `console` | `devtools_console` |
-| `source` | `devtools_source` |
-| `storage` | `devtools_storage` |
-| `dom` | `devtools_dom` |
-| `cookies` | `devtools_cookies` |
-| `performance` | `devtools_performance` |
+| Action | Extension Tool | Status |
+|--------|---------------|--------|
+| `console` | `read_console_messages` | Working. `filter` param translated to `pattern` |
+| `source` | — | Not yet implemented (returns clear error) |
+| `storage` | — | Not yet implemented (returns clear error) |
+| `dom` | — | Not yet implemented (returns clear error) |
+| `cookies` | — | Not yet implemented (returns clear error) |
+| `performance` | — | Not yet implemented (returns clear error) |
 
 ### 16.6 HTTP Resource
 
@@ -946,6 +950,37 @@ page "Hacker News" url="https://news.ycombinator.com"
 - Both elements created lazily on first `show()` call
 - Cleaned up on `beforeunload`
 
+### 18.3 Post-Action Screenshots
+
+Interaction tools (`click`, `double_click`, `triple_click`, `right_click`, `form_input`, `fill`, `type`, `select`, `scroll`, `scroll_to`, `press`, `drag`, `hover`) automatically capture a JPEG screenshot after execution for sidecar vision verification. The screenshot is raced against a 3-second timeout — if the page is re-rendering (e.g., Google Maps after click), the screenshot is silently dropped rather than blocking the tool response.
+
+The result is attached as `{ text: "...", screenshot: { data, format } }` alongside the tool's text output.
+
+### 18.4 Domain Drift Security
+
+Tools that interact with page content (`click`, `hover`, `form_input`, `type`, `evaluate`, `file_upload`) perform a domain drift check before execution. This verifies the tab is still on the same origin as when the action was initiated, preventing the agent from accidentally interacting with a wrong page after redirects or navigation. If the origin has changed, the tool returns a security error.
+
+### 18.5 Element Reference Resolution
+
+The extension uses a two-tier element resolution system:
+
+1. **Primary: WeakRef map** — `window.__neboElementMap[ref_N]` stores `WeakRef<Element>`. Fast O(1) lookup, but refs die when elements are garbage collected (common in SPAs).
+2. **Fallback: Metadata re-query** — `window.__neboElementMeta[ref_N]` stores `{ tag, role, name, href?, type? }`. When WeakRef is dead, re-queries DOM by tag + filters by role/name/href/type. Only used if exactly one match is found (prevents ambiguous clicks).
+3. **Auto-re-snapshot** — If both fail, `resolveRef()` regenerates the accessibility tree and retries once before returning "not found".
+4. **CDP coordinates** — After finding the element, `DOM.getContentQuads` (like Playwright's `_clickablePoint`) is used for accurate coordinates that account for CSS transforms, iframes, and viewport clipping. Falls back to `getBoundingClientRect` center if CDP quads fail.
+
+### 18.6 Beforeunload Dialog Handling
+
+Navigation tools (`navigate`, `go_back`, `go_forward`) use `withBeforeunloadHandling()`:
+
+1. Set policy (`accept` if `force: true`, otherwise `dismiss`) BEFORE running the action
+2. CDP `Page.javascriptDialogOpening` event handler reads the policy and responds
+3. Wait 300ms for potential dialog to fire
+4. Three outcomes:
+   - `none` — no dialog appeared, navigation succeeded
+   - `accepted` — dialog appeared, was accepted (user loses unsaved changes), result includes warning suffix
+   - `blocked` — dialog appeared, was dismissed (page stays, user told to address unsaved state or retry with `force: true`)
+
 ---
 
 ## 19. Native Message Protocol
@@ -1007,9 +1042,12 @@ Convenience constructors: `ok()`, `pong()`, `connected()`, `error_msg()`, `tool_
 | Extension reconnect | 2 seconds | sibling `chrome-extension/src/native.ts` |
 | Extension keep-alive alarm | 24 seconds | sibling `chrome-extension/src/background.ts` |
 | `read_page` cache TTL | 2.5 seconds | `extension_bridge.rs`, `headless_bridge.rs` |
-| Content-script execution timeout | 45 seconds | sibling `chrome-extension/src/tools.ts` |
-| CDP command timeout | 30 seconds | sibling `chrome-extension/src/tools.ts` |
-| Page load wait helper | 15 seconds | sibling `chrome-extension/src/tools.ts` |
+| Debugger attach timeout | **8 seconds** | sibling `chrome-extension/src/tools.ts` (`DEBUGGER_ATTACH_TIMEOUT`) |
+| Content-script execution timeout | 45 seconds | sibling `chrome-extension/src/tools.ts` (`EXECUTE_SCRIPT_TIMEOUT`) |
+| CDP command timeout | 30 seconds | sibling `chrome-extension/src/tools.ts` (`CDP_COMMAND_TIMEOUT`) |
+| Post-action screenshot capture | 3 seconds | sibling `chrome-extension/src/tools.ts` (`capturePostActionScreenshot` race) |
+| Scroll CDP mouseWheel race | 5 seconds | sibling `chrome-extension/src/tools.ts` |
+| Page load wait helper | 15 seconds | sibling `chrome-extension/src/tools.ts` (`waitForTabLoad`) |
 | CDP port wait (Chrome launch) | 15 seconds (200ms poll) | `chrome.rs` |
 | HTTP client timeout | 30 seconds | `web_tool.rs` |
 | Options page connection test | 3 seconds | sibling `chrome-extension/src/options.ts` |
@@ -1087,7 +1125,17 @@ This handles:
 - Multiple browsers running the Nebo extension simultaneously
 - Overlap during reconnection — a new relay can connect before the old one fully disconnects
 
-### 21.3 Server Restart Recovery
+### 21.3 Run Lifecycle Integration
+
+The browser tab lifecycle is wired to the agent run lifecycle:
+
+1. **Run start (browser tool use):** `web_tool.rs` sends `show_indicators` with `session_id` before dispatching browser/search/devtools actions. Idempotent — safe on every call.
+2. **Run completion:** `chat_dispatch.rs` sends `hide_indicators` with `session_id` before dropping the RunHandle. Covers success, error, and cancellation — all paths converge here.
+3. **Stale run cleanup:** The periodic stale-run cleanup task (every 60s, 600s idle threshold) sends `hide_indicators` for each expired session key.
+
+The `ExtensionBridge.send_command()` method broadcasts fire-and-forget commands to all active extension connections. The WS handler serializes these as `{ "type": "<command>", "session_id": "..." }` — exactly the format the extension's `native.ts` expects for `show_indicators` and `hide_indicators`.
+
+### 21.4 Server Restart Recovery
 
 1. Server restarts → WS breaks
 2. Relay's recv task sees WS close → `process::exit(0)`
@@ -1141,6 +1189,10 @@ This is Chrome's error when trying to execute scripts on restricted pages: `chro
 ### 23.8 Default Browser Detection Limited to macOS
 
 The `detect_default_browser()` function only works on macOS (reads LSHandlers). On Linux and Windows, it falls back to "unknown", which means tool requests go to any available connection rather than the user's default browser. Not a problem when only one browser runs the extension.
+
+### 23.9 DevTools Tool Coverage
+
+**Status: Partially fixed.** `web(action: "console")` now correctly maps to the extension's `read_console_messages` tool (previously mapped to nonexistent `devtools_console`). The `filter` param is translated to `pattern` for backward compatibility. Devtools actions `source`, `storage`, `dom`, `cookies`, and `performance` have no extension implementation yet — the Rust side now returns a clear "not yet available" error instead of the previous "Unknown tool" from the extension.
 
 ---
 

@@ -245,16 +245,6 @@ impl SessionManager {
         }
     }
 
-    /// Get work tasks JSON.
-    pub fn get_work_tasks(&self, session_id: &str) -> Result<String, NeboError> {
-        self.store.get_session_work_tasks(session_id)
-    }
-
-    /// Set work tasks JSON.
-    pub fn set_work_tasks(&self, session_id: &str, tasks_json: &str) -> Result<(), NeboError> {
-        self.store.set_session_work_tasks(session_id, tasks_json)
-    }
-
     /// Switch the active chat for a session (updates DB and in-memory cache).
     pub fn set_active_chat(&self, session_id: &str, chat_id: &str) -> Result<(), NeboError> {
         self.store.set_session_active_chat_id(session_id, chat_id)?;

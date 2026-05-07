@@ -826,3 +826,21 @@ pub struct AgentActivateRequest {
     pub description: Option<String>,
 }
 
+// ── Content Protection ──────────────────────────────────────────────
+
+/// A single license key entry returned by the license keys endpoint.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LicenseKeyEntry {
+    /// Base64-encoded 32-byte AES-256-GCM decryption key.
+    pub key: String,
+    /// TTL in seconds (how long to cache this key).
+    pub ttl: u64,
+}
+
+/// Response from `POST /api/v1/licenses/keys`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LicenseKeysResponse {
+    /// Map of artifact_id → license key entry.
+    pub keys: std::collections::HashMap<String, LicenseKeyEntry>,
+}
+

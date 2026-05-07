@@ -300,6 +300,11 @@ pub trait Provider: Send + Sync {
     /// Provider identifier (e.g., "anthropic", "openai", "ollama").
     fn id(&self) -> &str;
 
+    /// Human-readable name for UI display. Defaults to `id()`.
+    fn display_name(&self) -> &str {
+        self.id()
+    }
+
     /// Auth profile ID for usage tracking. Empty for providers without profiles.
     fn profile_id(&self) -> &str {
         ""
@@ -485,6 +490,10 @@ impl ProfiledProvider {
 impl Provider for ProfiledProvider {
     fn id(&self) -> &str {
         self.inner.id()
+    }
+
+    fn display_name(&self) -> &str {
+        self.inner.display_name()
     }
 
     fn profile_id(&self) -> &str {

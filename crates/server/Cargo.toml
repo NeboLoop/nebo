@@ -10,6 +10,7 @@ config = { workspace = true }
 db = { workspace = true }
 auth = { workspace = true }
 ai = { workspace = true }
+async-trait = "0.1"
 agent = { workspace = true }
 tools = { workspace = true }
 axum = { workspace = true }
