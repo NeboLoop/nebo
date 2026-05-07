@@ -23,6 +23,7 @@ pub enum CodeType {
     Agent,
     Loop,
     Plugin,
+    App,
 }
 
 /// Crockford Base32 charset (no I, L, O, U).
@@ -52,6 +53,8 @@ pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
         ("LOOP-", CodeType::Loop)
     } else if upper.starts_with("PLUG-") {
         ("PLUG-", CodeType::Plugin)
+    } else if upper.starts_with("APPX-") {
+        ("APPX-", CodeType::App)
     } else {
         return None;
     };
@@ -95,6 +98,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         CodeType::Agent => ("agent", "Installing agent..."),
         CodeType::Loop => ("loop", "Joining loop..."),
         CodeType::Plugin => ("plugin", "Installing plugin..."),
+        CodeType::App => ("app", "Installing app..."),
     };
 
     state.hub.broadcast(
@@ -114,6 +118,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         CodeType::Agent => handle_agent_code(state, code).await,
         CodeType::Loop => handle_loop_code(state, code).await,
         CodeType::Plugin => handle_plugin_code(state, code).await,
+        CodeType::App => handle_app_code(state, code).await,
     };
 
     match result {
@@ -739,6 +744,42 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     })
 }
 
+async fn handle_app_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+    // Apps use the same install flow as agents — they ARE agents with artifact_type="app"
+    let result = handle_agent_code(state, code).await?;
+
+    // After agent install, mark it as an app and reload to detect UI/binary paths
+    if let Some(ref artifact_id) = result.artifact_id {
+        // The agent was installed by handle_agent_code; now reload from filesystem
+        // to detect app-specific paths (ui/, bin/)
+        state.agent_loader.load_all().await;
+        if let Some(loaded) = state.agent_loader.get_by_name(
+            result.artifact_name.as_deref().unwrap_or("")
+        ).await {
+            if loaded.is_app {
+                let ui_path = loaded.app_ui_path.as_ref().map(|p| p.display().to_string());
+                let bin_path = loaded.app_binary_path.as_ref().map(|p| p.display().to_string());
+                let window_cfg = loaded.app_window_config.as_ref()
+                    .and_then(|w| serde_json::to_string(w).ok());
+                let _ = state.store.set_agent_app_fields(
+                    artifact_id,
+                    true,
+                    ui_path.as_deref(),
+                    bin_path.as_deref(),
+                    window_cfg.as_deref(),
+                );
+            }
+        }
+    }
+
+    Ok(CodeHandlerResult {
+        message: format!("Installed app: {}", result.artifact_name.as_deref().unwrap_or("unknown")),
+        artifact_name: result.artifact_name,
+        artifact_id: result.artifact_id,
+        ..Default::default()
+    })
+}
+
 // ── REST Endpoint ───────────────────────────────────────────────────
 
 /// POST /api/v1/codes — submit a marketplace code via REST.
@@ -779,6 +820,7 @@ pub async fn submit_code(
         CodeType::Agent => handle_agent_code(&state, validated_code).await,
         CodeType::Loop => handle_loop_code(&state, validated_code).await,
         CodeType::Plugin => handle_plugin_code(&state, validated_code).await,
+        CodeType::App => handle_app_code(&state, validated_code).await,
     };
 
     match result {

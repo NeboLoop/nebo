@@ -67,27 +67,26 @@ dev:
 	@echo "  NOTE: File changes trigger restart — use 'make run' to test workflows."
 	@echo "  Ctrl-C to stop all processes."
 	@echo ""
-	@bash -c '\
-		cleanup() { \
-			kill -- -$$ 2>/dev/null; \
-			lsof -ti :5173 -ti :27895 2>/dev/null | xargs kill -9 2>/dev/null; \
-			pkill -9 -f "cargo-tauri" 2>/dev/null; \
-			pkill -9 -f "rustc.*nebo" 2>/dev/null; \
-			pkill -9 -f "target/debug/nebo" 2>/dev/null; \
-			pkill -9 -f "target/release/nebo" 2>/dev/null; \
-			exit 0; \
-		}; \
-		trap cleanup INT TERM; \
-		set -m; \
-		cargo tauri dev & wait'
+	@cargo tauri dev; \
+		lsof -ti :5173 -ti :27895 2>/dev/null | xargs kill -9 2>/dev/null; \
+		pkill -9 -f "cargo-tauri" 2>/dev/null; \
+		pkill -9 -f "target/debug/nebo" 2>/dev/null; \
+		pkill -9 -f "target/release/nebo" 2>/dev/null; \
+		true
 
 # Full Tauri app + Vite HMR, but NO Rust file watching — safe for workflow testing
 run:
 	@echo "Starting Nebo (Tauri + Vite, no Rust hot-reload)..."
 	@echo "  Frontend HMR works. Rust backend won't restart on file changes."
 	@echo "  Use this when testing workflows/agents."
+	@echo "  Ctrl-C to stop all processes."
 	@echo ""
-	cargo tauri dev --no-watch
+	@cargo tauri dev --no-watch; \
+		lsof -ti :5173 -ti :27895 2>/dev/null | xargs kill -9 2>/dev/null; \
+		pkill -9 -f "cargo-tauri" 2>/dev/null; \
+		pkill -9 -f "target/debug/nebo" 2>/dev/null; \
+		pkill -9 -f "target/release/nebo" 2>/dev/null; \
+		true
 
 build:
 	@echo "Building headless CLI binary..."

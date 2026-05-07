@@ -174,6 +174,41 @@ impl Store {
         Ok(())
     }
 
+    /// Ensure a plugin_registry entry exists for a given name (used by app storage).
+    pub fn ensure_plugin_registry_entry(&self, name: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO plugin_registry (id, name, plugin_type, display_name, is_installed)
+             VALUES (?1, ?2, 'app', ?2, 1)",
+            params![name, name],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// List all non-secret settings for a plugin by name.
+    pub fn list_plugin_settings(&self, plugin_name: &str) -> Result<Vec<(String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT ps.setting_key, ps.setting_value FROM plugin_settings ps
+                 JOIN plugin_registry pr ON ps.plugin_id = pr.id
+                 WHERE pr.name = ?1 AND ps.is_secret = 0
+                 ORDER BY ps.setting_key",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![plugin_name], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| NeboError::Database(e.to_string()))?);
+        }
+        Ok(results)
+    }
+
     /// Get a skill secret (decrypted by caller).
     pub fn get_skill_secret(&self, skill_name: &str, key: &str) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;

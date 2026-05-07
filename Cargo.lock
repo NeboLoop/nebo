@@ -4623,6 +4623,7 @@ dependencies = [
  "nebo-mcp",
  "nebo-napp",
  "nebo-notify",
+ "nebo-proto",
  "nebo-tools",
  "nebo-types",
  "nebo-updater",

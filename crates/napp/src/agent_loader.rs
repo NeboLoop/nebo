@@ -55,6 +55,14 @@ pub struct LoadedAgent {
     pub views: Option<serde_json::Value>,
     /// Theme CSS from theme.css (for A2UI workspace styling).
     pub theme_css: Option<String>,
+    /// True if this agent is an app (artifact_type == "app").
+    pub is_app: bool,
+    /// Path to static UI directory (extracted from .napp "ui/" prefix).
+    pub app_ui_path: Option<PathBuf>,
+    /// Path to compiled sidecar binary.
+    pub app_binary_path: Option<PathBuf>,
+    /// Window config from manifest.json.
+    pub app_window_config: Option<crate::manifest::AppWindowConfig>,
 }
 
 /// Events emitted by the filesystem watcher when agent content changes on disk.
@@ -338,6 +346,10 @@ fn load_from_embedded(
         id,
         views: None,
         theme_css: None,
+        is_app: false,
+        app_ui_path: None,
+        app_binary_path: None,
+        app_window_config: None,
     })
 }
 
@@ -374,23 +386,27 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
         }
     };
 
-    // Read version, id, and display name from manifest.json if available
-    let (version, id, manifest_name) = {
+    // Read version, id, display name, and app config from manifest.json if available
+    let (version, id, manifest_name, artifact_type, window_config) = {
         let manifest_path = dir.join("manifest.json");
         if manifest_path.exists() {
-            let parsed = std::fs::read_to_string(&manifest_path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+            let raw = std::fs::read_to_string(&manifest_path).ok();
+            let parsed = raw.as_ref()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+            let manifest_full = raw.as_ref()
+                .and_then(|s| serde_json::from_str::<crate::manifest::Manifest>(s).ok());
             match parsed {
                 Some(v) => (
                     v["version"].as_str().map(String::from),
                     v["id"].as_str().map(String::from),
                     v["name"].as_str().map(String::from),
+                    v["type"].as_str().map(String::from),
+                    manifest_full.and_then(|m| m.window),
                 ),
-                None => (None, None, None),
+                None => (None, None, None, None, None),
             }
         } else {
-            (None, None, None)
+            (None, None, None, None, None)
         }
     };
 
@@ -426,6 +442,37 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
         }
     };
 
+    // Detect app-type agents
+    let is_app = artifact_type.as_deref() == Some("app");
+    let app_ui_path = if is_app {
+        let ui_dir = dir.join("ui");
+        if ui_dir.is_dir() { Some(ui_dir) } else { None }
+    } else {
+        None
+    };
+    let app_binary_path = if is_app {
+        // Look for sidecar binary in bin/ directory
+        let bin_dir = dir.join("bin");
+        if bin_dir.is_dir() {
+            std::fs::read_dir(&bin_dir).ok()
+                .and_then(|mut entries| entries.find_map(|e| {
+                    let p = e.ok()?.path();
+                    if p.is_file() { Some(p) } else { None }
+                }))
+        } else {
+            // Also check for "binary" or "app" directly
+            let binary = dir.join("binary");
+            if binary.exists() {
+                Some(binary)
+            } else {
+                let app_bin = dir.join("app");
+                if app_bin.exists() { Some(app_bin) } else { None }
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(LoadedAgent {
         agent_def,
         config,
@@ -439,6 +486,10 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
         id,
         views,
         theme_css,
+        is_app,
+        app_ui_path,
+        app_binary_path,
+        app_window_config: window_config,
     })
 }
 
@@ -626,6 +677,10 @@ fn load_from_sealed_napp(
         id,
         views,
         theme_css,
+        is_app: false,
+        app_ui_path: None,
+        app_binary_path: None,
+        app_window_config: None,
     })
 }
 

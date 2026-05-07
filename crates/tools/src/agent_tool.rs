@@ -1767,6 +1767,10 @@ impl PersonaTool {
                         id: Some(r.id.clone()),
                         views: None,
                         theme_css: None,
+                        is_app: false,
+                        app_ui_path: None,
+                        app_binary_path: None,
+                        app_window_config: None,
                     });
                 }
             }

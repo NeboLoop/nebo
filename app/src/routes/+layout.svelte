@@ -90,7 +90,7 @@
   const sections = [
     { id: 'agents', path: '/', label: 'Agents' },
     { id: 'schedule', path: '/schedule', label: 'Schedule' },
-    { id: 'workspaces', path: '/workspaces', label: 'Workspaces' },
+    { id: 'apps', path: '/apps', label: 'Apps' },
     { id: 'marketplace', path: '/marketplace', label: 'Marketplace' },
   ];
 
@@ -107,7 +107,7 @@
 
   const isMinimalChrome = $derived(
     $page.url.pathname.startsWith('/settings') ||
-    $page.url.pathname.startsWith('/workspace/')
+    $page.url.pathname.startsWith('/app/')
   );
 </script>
 

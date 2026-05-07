@@ -67,14 +67,16 @@ async fn tick(
             }
         };
 
-        // Check if job is due: find the most recent scheduled time and compare to last_run
+        // Check if job is due: find the most recent scheduled time and compare to last_run.
+        // When last_run is NULL (new job or first run), default to now so we wait for
+        // the next scheduled occurrence instead of firing immediately.
         let last_run_ts = job.last_run.as_deref()
             .and_then(|s| s.parse::<i64>().ok()
                 .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()
                     .map(|dt| dt.and_utc().timestamp())))
-            .unwrap_or(0);
+            .unwrap_or(now.timestamp());
         let last_run = chrono::DateTime::from_timestamp(last_run_ts, 0)
-            .unwrap_or(chrono::DateTime::UNIX_EPOCH);
+            .unwrap_or(now);
 
         // Get the upcoming time from last_run — if it's before now, the job is due
         let next = match schedule.after(&last_run).next() {

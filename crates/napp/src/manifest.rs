@@ -91,6 +91,9 @@ pub struct Manifest {
     pub oauth: Vec<OAuthRequirement>,
     #[serde(default)]
     pub implements: Vec<String>,
+    /// Window configuration for app-type agents.
+    #[serde(default)]
+    pub window: Option<AppWindowConfig>,
 }
 
 fn default_runtime() -> String {
@@ -124,6 +127,40 @@ pub struct OAuthRequirement {
     pub provider: String,
     #[serde(default)]
     pub scopes: Vec<String>,
+}
+
+/// Window configuration for app-type agents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppWindowConfig {
+    #[serde(default = "default_window_width")]
+    pub width: u32,
+    #[serde(default = "default_window_height")]
+    pub height: u32,
+    #[serde(default = "default_true")]
+    pub resizable: bool,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+fn default_window_width() -> u32 {
+    1024
+}
+fn default_window_height() -> u32 {
+    768
+}
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AppWindowConfig {
+    fn default() -> Self {
+        Self {
+            width: 1024,
+            height: 768,
+            resizable: true,
+            title: None,
+        }
+    }
 }
 
 /// Valid capabilities a tool can provide.
@@ -370,6 +407,7 @@ impl Default for Manifest {
             overrides: vec![],
             oauth: vec![],
             implements: vec![],
+            window: None,
         }
     }
 }

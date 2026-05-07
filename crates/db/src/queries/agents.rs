@@ -12,7 +12,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config
                  FROM agents ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -61,7 +61,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              RETURNING id, kind, name, description, agent_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                       napp_path, input_values",
+                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config",
             params![id, kind, name, description, agent_md, frontmatter, pricing_model, pricing_cost],
             row_to_agent,
         )
@@ -122,6 +122,25 @@ impl Store {
         let conn = self.conn()?;
         conn.execute("DELETE FROM agents WHERE id = ?1", params![id])
             .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn set_agent_app_fields(
+        &self,
+        id: &str,
+        is_app: bool,
+        app_ui_path: Option<&str>,
+        app_binary_path: Option<&str>,
+        app_window_config: Option<&str>,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agents SET is_app = ?1, app_ui_path = ?2, app_binary_path = ?3,
+                    app_window_config = ?4, updated_at = unixepoch()
+             WHERE id = ?5",
+            params![is_app as i32, app_ui_path, app_binary_path, app_window_config, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -435,5 +454,9 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         updated_at: row.get(10)?,
         napp_path: row.get(11)?,
         input_values: row.get::<_, Option<String>>(12)?.unwrap_or_else(|| "{}".to_string()),
+        is_app: row.get(13)?,
+        app_ui_path: row.get(14)?,
+        app_binary_path: row.get(15)?,
+        app_window_config: row.get(16)?,
     })
 }

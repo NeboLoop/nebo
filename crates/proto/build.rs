@@ -2,13 +2,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Proto root is 2 levels up from crates/proto/
     let workspace_root = "../..";
 
-    // Only compile the protos we actually use as gRPC clients.
-    // channel.proto and comm.proto have RPCs named "Connect" which conflict
-    // with tonic's generated `connect()` constructor — compile them when needed.
     let protos = &[
         "proto/apps/v0/common.proto",
         "proto/apps/v0/tool.proto",
         "proto/apps/v0/gateway.proto",
+        "proto/apps/v0/ui.proto",
+        "proto/apps/v0/hooks.proto",
+        "proto/apps/v0/schedule.proto",
     ];
 
     // Only rebuild if proto files change

@@ -5,6 +5,7 @@
 //! composes them all under `/api/v1`.
 
 mod agent;
+mod apps;
 mod auth;
 mod chat;
 mod commander;
@@ -60,6 +61,7 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .merge(store::routes())
         .merge(entity_config::routes())
         .merge(voice::routes())
+        .merge(apps::routes())
         .merge(user::public_routes())
         .merge(self::codes_and_deps());
 

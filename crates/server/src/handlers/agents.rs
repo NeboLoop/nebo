@@ -1396,6 +1396,38 @@ pub async fn activate_agent(
     // Start autonomous agent worker (heartbeat, event, schedule triggers)
     state.agent_workers.start_agent(&agent_id, &agent.name).await;
 
+    // Launch sidecar binary for app agents (communicates via gRPC over Unix socket)
+    if agent.is_app.unwrap_or(0) != 0 {
+        if let Some(ref bin_path) = agent.app_binary_path {
+            let bin = std::path::PathBuf::from(bin_path);
+            if bin.exists() {
+                let aid = agent_id.clone();
+                let bp = bin.clone();
+                // Socket path lives next to the napp directory
+                let sock_path = agent.napp_path.as_ref()
+                    .map(|p| format!("{}/{}.sock", p, aid))
+                    .unwrap_or_else(|| format!("/tmp/nebo-app-{}.sock", aid));
+                tokio::spawn(async move {
+                    // Clean stale socket
+                    let _ = std::fs::remove_file(&sock_path);
+                    match tokio::process::Command::new(&bp)
+                        .env("NEBO_APP_ID", &aid)
+                        .env("NEBO_APP_SOCK", &sock_path)
+                        .env("NEBO_BASE_URL", "http://localhost:27895")
+                        .spawn()
+                    {
+                        Ok(_child) => {
+                            tracing::info!(agent = %aid, sock = %sock_path, binary = %bp.display(), "launched app sidecar");
+                        }
+                        Err(e) => {
+                            tracing::warn!(agent = %aid, error = %e, "failed to launch app sidecar");
+                        }
+                    }
+                });
+            }
+        }
+    }
+
     // Register agent in the owner's personal loop (non-blocking)
     {
         let st = state.clone();
@@ -1410,13 +1442,14 @@ pub async fn activate_agent(
 
     state.hub.broadcast(
         "agent_activated",
-        serde_json::json!({ "agentId": agent_id, "name": agent.name }),
+        serde_json::json!({ "agentId": agent_id, "name": agent.name, "isApp": agent.is_app.unwrap_or(0) != 0 }),
     );
 
     Ok(Json(serde_json::json!({
         "agentId": agent_id,
         "name": agent.name,
         "status": "active",
+        "isApp": agent.is_app.unwrap_or(0) != 0,
     })))
 }
 

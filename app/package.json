@@ -25,6 +25,7 @@
 	},
 	"dependencies": {
 		"@dagrejs/dagre": "^3.0.0",
+		"@tauri-apps/api": "^2.11.0",
 		"@tiptap/core": "^3.22.5",
 		"@tiptap/extension-mention": "^3.22.5",
 		"@tiptap/extension-placeholder": "^3.22.5",

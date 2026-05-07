@@ -20,6 +20,7 @@ pub mod workflows;
 pub mod ws;
 pub mod commander;
 pub mod voice;
+pub mod apps;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};

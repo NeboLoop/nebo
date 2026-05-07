@@ -54,6 +54,8 @@ export interface Agent {
 	updatedAt: number
 	nappPath?: string
 	inputValues?: string
+	isApp?: boolean
+	appWindowConfig?: string
 }
 
 export interface AgentProfile {

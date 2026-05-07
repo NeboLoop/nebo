@@ -626,6 +626,17 @@ pub struct Agent {
     /// User-supplied input values as JSON (separate from the schema in frontmatter).
     #[serde(default = "default_input_values")]
     pub input_values: String,
+    /// Whether this agent is an app (has UI + optional sidecar).
+    #[serde(serialize_with = "opt_i64_as_bool", default)]
+    pub is_app: Option<i64>,
+    /// Path to static UI directory for app agents (internal, not exposed to frontend).
+    #[serde(skip_serializing)]
+    pub app_ui_path: Option<String>,
+    /// Path to sidecar binary for app agents (internal, not exposed to frontend).
+    #[serde(skip_serializing)]
+    pub app_binary_path: Option<String>,
+    /// JSON-serialized AppWindowConfig.
+    pub app_window_config: Option<String>,
 }
 
 fn default_input_values() -> String {
