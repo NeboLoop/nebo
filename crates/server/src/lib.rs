@@ -1399,6 +1399,41 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
+    // Launch sidecars for enabled app agents (restore after restart).
+    {
+        if let Ok(agents) = state.store.list_agents(1000, 0) {
+            let mut launched = 0usize;
+            for agent in &agents {
+                if agent.is_enabled == 0 || agent.is_app.unwrap_or(0) == 0 {
+                    continue;
+                }
+                if let Some(tool_dir) = handlers::agents::app_tool_dir(agent) {
+                    let mut lifecycle = app_lifecycle::AppLifecycle::new(
+                        agent.id.clone(),
+                        tool_dir,
+                        state.hub.clone(),
+                    );
+                    match lifecycle.launch().await {
+                        Ok(()) => {
+                            state
+                                .app_lifecycles
+                                .write()
+                                .await
+                                .insert(agent.id.clone(), lifecycle);
+                            launched += 1;
+                        }
+                        Err(e) => {
+                            warn!(agent = %agent.id, error = %e, "failed to launch app sidecar at startup");
+                        }
+                    }
+                }
+            }
+            if launched > 0 {
+                info!(count = launched, "launched app sidecars at startup");
+            }
+        }
+    }
+
     // Replace comm message handler with full version that routes chat/DM to agent runner
     {
         let handler_state = state.clone();
