@@ -4,6 +4,7 @@
   import { AGENTS } from '$lib/data.js';
   import { packLanes } from '$lib/utils.js';
   import { flattenForDate, attachRunData, snapTo15, userScheduleItems } from '$lib/stores/schedule.js';
+  import type { CalendarItem } from '$lib/stores/schedule.js';
   import DayDetailPane from './DayDetailPane.svelte';
 
   let { enabled, selectedDate, onopencanvas }: { enabled: Record<string, boolean>; selectedDate: Date; onopencanvas?: (agentFull: string) => void } = $props();
@@ -22,10 +23,10 @@
 
   const weekday = $derived(selectedDate.getDay() === 0 ? 7 : selectedDate.getDay());
 
-  let selected = $state(null);
+  let selected = $state<string | null>(null);
   let createData = $state<{ hour: number; date: Date } | null>(null);
   let preview = $state<{ agent: string; hour: number; dur: number; label: string } | null>(null);
-  let scrollEl = $state(null);
+  let scrollEl = $state<HTMLDivElement | null>(null);
 
   $effect(() => {
     const interval = setInterval(() => { now = new Date(); }, 60_000);
@@ -42,7 +43,7 @@
 
   const packed = $derived(packLanes(items));
   const rulerMarks = Array.from({ length: 24 }, (_, i) => i);
-  const selectedItem = $derived(selected ? packed.find(p => p._id === selected) : null);
+  const selectedItem = $derived(selected ? packed.find(p => p._id === selected) ?? null : null);
 
   function handleWellClick(e: MouseEvent) {
     if (e.target !== e.currentTarget) return;
@@ -109,6 +110,7 @@
               style="left:calc({leftPct}% + 4px); width:calc({widthPct}% - 8px); top:{top}px; height:{height}px; {isSelected ? `--tw-ring-color:${c.edgeVar}; z-index:20` : `z-index:${zBase}`}"
               title="{a?.name ?? item.agent}: {item.label}"
               onclick={(e) => { e.stopPropagation(); selected = item._id; createData = null; }}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selected = item._id; createData = null; } }}
               role="button"
               tabindex="0"
             >
@@ -121,16 +123,17 @@
 
           <!-- Live preview block while creating -->
           {#if preview}
-            {@const pc = AGENT_COLORS[preview.agent]}
-            {@const pa = AGENTS.find(x => x.id === preview.agent)}
-            {@const pTop = preview.hour * HOUR_PX}
-            {@const pHeight = Math.max(20, preview.dur * HOUR_PX)}
+            {@const pv = preview}
+            {@const pc = AGENT_COLORS[pv.agent]}
+            {@const pa = AGENTS.find(x => x.id === pv.agent)}
+            {@const pTop = pv.hour * HOUR_PX}
+            {@const pHeight = Math.max(20, pv.dur * HOUR_PX)}
             {#if pc}
               <div
                 class="absolute rounded-sm overflow-hidden flex items-start border-l-[3px] border-dashed px-1.5 py-[3px] opacity-70 animate-pulse {pc.fillClass} {pc.edgeClass} {pc.textClass}"
                 style="left:4px; right:4px; top:{pTop}px; height:{pHeight}px; z-index:15"
               >
-                <span class="text-xs font-semibold overflow-hidden text-ellipsis whitespace-nowrap flex-1">{pa?.name ?? preview.agent}: {preview.label}</span>
+                <span class="text-xs font-semibold overflow-hidden text-ellipsis whitespace-nowrap flex-1">{pa?.name ?? pv.agent}: {pv.label}</span>
               </div>
             {/if}
           {/if}

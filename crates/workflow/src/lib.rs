@@ -1,11 +1,11 @@
+pub mod engine;
 pub mod events;
 pub mod loader;
 pub mod parser;
-pub mod engine;
 pub mod triggers;
 
-pub use parser::{WorkflowDef, Activity};
-pub use engine::{execute_workflow, execute_activity, WorkflowProgress};
+pub use engine::{WorkflowProgress, execute_activity, execute_workflow};
+pub use parser::{Activity, WorkflowDef};
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkflowError {

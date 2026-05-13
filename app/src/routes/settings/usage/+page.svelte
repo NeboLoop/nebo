@@ -2,34 +2,69 @@
   import { onMount } from 'svelte';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import * as api from '$lib/api/nebo';
-  import type { NeboLoopJanusUsageResponse, NeboLoopAccountStatusResponse } from '$lib/api/neboComponents';
+  import type { AccountStatusResponse, NeboLoopBillingSubscriptionResponse } from '$lib/api/neboComponents';
   import Spinner from '$lib/components/ui/Spinner.svelte';
+
+  interface UsagePool {
+    resetAt?: string;
+    percentUsed?: number;
+    activePool?: string;
+    freeAvailable?: number;
+    giftAvailable?: number;
+    creditsCents?: number;
+    updatedAt?: string;
+  }
+
+  interface TypedJanusUsage {
+    session: UsagePool | null;
+    weekly: UsagePool | null;
+    budget: UsagePool | null;
+    updatedAt?: string;
+  }
+
+  interface BillingSub {
+    id?: string;
+    stripeSubscriptionId?: string;
+    plan?: string;
+    status?: string;
+    currentPeriodEnd?: string;
+    amountCents?: number;
+    interval?: string;
+  }
 
   let isLoading = $state(true);
   let refreshing = $state(false);
-  let usage = $state<NeboLoopJanusUsageResponse | null>(null);
-  let accountStatus = $state<NeboLoopAccountStatusResponse | null>(null);
-  let subscription = $state<{ plan: string; subscriptions: any[] } | null>(null);
+  let usage = $state<TypedJanusUsage | null>(null);
+  let accountStatus = $state<AccountStatusResponse | null>(null);
+  let subscription = $state<(Omit<NeboLoopBillingSubscriptionResponse, 'subscriptions'> & { subscriptions: BillingSub[] }) | null>(null);
   let connected = $state(false);
 
   const currentPlan = $derived((subscription?.plan || accountStatus?.plan || 'free').toLowerCase());
   const planName = $derived(currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1));
 
   const hasBudget = $derived(
-    usage?.budget && (usage.budget.giftAvailable > 0 || usage.budget.creditsCents > 0 || usage.budget.freeAvailable > 0 || !!usage.budget.activePool)
+    usage?.budget && ((usage.budget.giftAvailable ?? 0) > 0 || (usage.budget.creditsCents ?? 0) > 0 || (usage.budget.freeAvailable ?? 0) > 0 || !!usage.budget.activePool)
   );
 
   onMount(async () => {
     try {
-      accountStatus = await api.neboLoopAccountStatus();
+      accountStatus = (await api.neboLoopAccountStatus()) as AccountStatusResponse;
       connected = accountStatus?.connected || false;
       if (connected) {
         const [usageResp, subResp] = await Promise.allSettled([
           api.neboLoopJanusUsage(),
           api.neboLoopBillingSubscription()
         ]);
-        if (usageResp.status === 'fulfilled') usage = usageResp.value;
-        if (subResp.status === 'fulfilled') subscription = subResp.value;
+        if (usageResp.status === 'fulfilled') {
+          const raw = usageResp.value;
+          usage = {
+            session: raw.session as UsagePool | null,
+            weekly: raw.weekly as UsagePool | null,
+            budget: raw.budget as UsagePool | null,
+            updatedAt: (raw as TypedJanusUsage).updatedAt,
+          };
+        }
+        if (subResp.status === 'fulfilled') subscription = subResp.value as typeof subscription;
       }
     } catch { /* ignore */ }
     isLoading = false;
@@ -39,7 +74,8 @@
     if (refreshing) return;
     refreshing = true;
     try {
-      usage = await api.neboLoopJanusUsageRefresh();
+      const raw = (await api.neboLoopJanusUsageRefresh()) as TypedJanusUsage;
+      usage = raw;
     } catch { /* ignore */ }
     refreshing = false;
   }
@@ -140,12 +176,12 @@
                   <span class="text-xs text-base-content/50 ml-2">{timeUntilReset(usage.session.resetAt)}</span>
                 {/if}
               </div>
-              <span class="text-xs text-base-content/50 font-mono tabular-nums">{usage.session.percentUsed}% used</span>
+              <span class="text-xs text-base-content/50 font-mono tabular-nums">{usage.session.percentUsed ?? 0}% used</span>
             </div>
             <div class="h-2 rounded-full bg-base-content/10 overflow-hidden">
               <div
-                class="h-full rounded-full transition-all {usage.session.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
-                style="width: {Math.min(usage.session.percentUsed, 100)}%"
+                class="h-full rounded-full transition-all {(usage.session.percentUsed ?? 0) > 80 ? 'bg-warning' : 'bg-primary'}"
+                style="width: {Math.min(usage.session.percentUsed ?? 0, 100)}%"
               ></div>
             </div>
           </div>
@@ -160,12 +196,12 @@
                   <span class="text-xs text-base-content/50 ml-2">{timeUntilReset(usage.weekly.resetAt)}</span>
                 {/if}
               </div>
-              <span class="text-xs text-base-content/50 font-mono tabular-nums">{usage.weekly.percentUsed}% used</span>
+              <span class="text-xs text-base-content/50 font-mono tabular-nums">{usage.weekly.percentUsed ?? 0}% used</span>
             </div>
             <div class="h-2 rounded-full bg-base-content/10 overflow-hidden">
               <div
-                class="h-full rounded-full transition-all {usage.weekly.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
-                style="width: {Math.min(usage.weekly.percentUsed, 100)}%"
+                class="h-full rounded-full transition-all {(usage.weekly.percentUsed ?? 0) > 80 ? 'bg-warning' : 'bg-primary'}"
+                style="width: {Math.min(usage.weekly.percentUsed ?? 0, 100)}%"
               ></div>
             </div>
           </div>
@@ -189,20 +225,20 @@
             </div>
           {/if}
           <div class="grid sm:grid-cols-3 gap-4">
-            {#if usage?.budget && usage.budget.freeAvailable > 0}
+            {#if usage?.budget && (usage.budget.freeAvailable ?? 0) > 0}
               <div>
                 <p class="text-xs text-base-content/50">Free pool</p>
-                <p class="text-lg font-bold text-base-content font-mono tabular-nums">{formatDollars(usage.budget.freeAvailable)}</p>
+                <p class="text-lg font-bold text-base-content font-mono tabular-nums">{formatDollars(usage.budget.freeAvailable ?? 0)}</p>
               </div>
             {/if}
             {#if usage?.budget}
               <div>
                 <p class="text-xs text-base-content/50">Gift pool</p>
-                <p class="text-lg font-bold text-base-content font-mono tabular-nums">{formatDollars(usage.budget.giftAvailable)}</p>
+                <p class="text-lg font-bold text-base-content font-mono tabular-nums">{formatDollars(usage.budget.giftAvailable ?? 0)}</p>
               </div>
               <div>
                 <p class="text-xs text-base-content/50">Credits</p>
-                <p class="text-lg font-bold text-base-content font-mono tabular-nums">${(usage.budget.creditsCents / 100).toFixed(2)}</p>
+                <p class="text-lg font-bold text-base-content font-mono tabular-nums">${((usage.budget.creditsCents ?? 0) / 100).toFixed(2)}</p>
               </div>
             {/if}
           </div>

@@ -602,6 +602,12 @@
   export function focus() {
     editor?.commands.focus();
   }
+
+  export function focusAndInsert(char: string) {
+    if (!editor) return;
+    editor.commands.focus();
+    editor.commands.insertContent(char);
+  }
 </script>
 
 <div class="px-6 py-3 shrink-0">
@@ -611,6 +617,7 @@
     ondragover={onComposerDragOver}
     ondragleave={onComposerDragLeave}
     ondrop={onComposerDrop}
+    role="presentation"
   >
     {#if showSlashMenu}
       <SlashCommandMenu
@@ -681,7 +688,8 @@
     {/if}
 
     <!-- TipTap Editor with placeholder overlay -->
-    <div class="relative">
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="relative cursor-text" onclick={() => editor?.commands.focus()}>
       {#if editorIsEmpty && hasHydrated}
         <div class="absolute inset-0 pointer-events-none text-base text-base-content/40 leading-snug">
           {placeholder || `Message ${agentName}...`}

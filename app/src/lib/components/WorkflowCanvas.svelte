@@ -13,6 +13,9 @@
 	let {
 		workflows = {},
 		agentId = '',
+	}: {
+		workflows: Record<string, WorkflowConfig>;
+		agentId: string;
 	} = $props();
 
 	// ── Layout computation
@@ -20,7 +23,7 @@
 		const entries = Object.entries(workflows);
 		const layouts: Array<{
 			name: string;
-			wf: WorkflowConfig & Record<string, unknown>;
+			wf: WorkflowConfig;
 			nodes: LayoutWorkflowNode[];
 			edges: Array<{ from: LayoutWorkflowNode; to: LayoutWorkflowNode; label?: string }>;
 			offsetY: number;
@@ -32,7 +35,7 @@
 				wf.trigger || { type: 'manual' },
 				wf.activities || [],
 				wf.emit,
-				wf.lastRunStatus,
+				undefined,
 				wf.connections,
 			);
 
@@ -69,10 +72,10 @@
 	let selectedWorkflowName = $state<string | null>(null);
 
 	const selectedLayout = $derived(selectedWorkflowName ? allLayouts().find(l => l.name === selectedWorkflowName) : null);
-	const selectedActivity = $derived(() => {
+	const selectedActivity = $derived.by(() => {
 		if (!selectedLayout || !selectedNodeId) return null;
 		const wf = selectedLayout.wf;
-		return wf.activities?.find((a: WorkflowActivity) => a.id === selectedNodeId) || null;
+		return wf.activities?.find((a: WorkflowActivity) => a.id === selectedNodeId) ?? null;
 	});
 	const selectedWf = $derived(selectedLayout?.wf);
 	let expandedSteps = $state<Record<string, boolean>>({});
@@ -369,9 +372,9 @@
 				</div>
 
 				<div class="flex-1 overflow-y-auto p-4">
-					{#if selectedNodeId && selectedActivity()}
+					{#if selectedNodeId && selectedActivity}
 						<!-- Activity detail -->
-						{@const act = selectedActivity()}
+						{@const act = selectedActivity}
 						<div class="mb-4">
 							<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Activity</div>
 							<div class="text-sm font-medium">{act.id}</div>

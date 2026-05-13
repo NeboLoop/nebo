@@ -129,7 +129,7 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 jsonschema = "0.28"
 
 [profile.dev]
-debug = 1
+debug = 0
 split-debuginfo = "unpacked"
 
 [profile.release]

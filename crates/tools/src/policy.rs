@@ -41,10 +41,32 @@ impl Default for AskMode {
 
 /// Commands that never require approval.
 pub const SAFE_BINS: &[&str] = &[
-    "ls", "pwd", "cat", "head", "tail", "grep", "find", "which", "type",
-    "jq", "cut", "sort", "uniq", "wc", "echo", "date", "env", "printenv",
-    "git status", "git log", "git diff", "git branch", "git show",
-    "go version", "node --version", "python --version",
+    "ls",
+    "pwd",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "find",
+    "which",
+    "type",
+    "jq",
+    "cut",
+    "sort",
+    "uniq",
+    "wc",
+    "echo",
+    "date",
+    "env",
+    "printenv",
+    "git status",
+    "git log",
+    "git diff",
+    "git branch",
+    "git show",
+    "go version",
+    "node --version",
+    "python --version",
 ];
 
 /// Policy manages approval for dangerous operations.
@@ -182,12 +204,19 @@ impl Policy {
 /// Check if a command appears dangerous.
 pub fn is_dangerous(cmd: &str) -> bool {
     let dangerous = [
-        "rm -rf", "rm -r", "rmdir",
-        "sudo", "su ",
-        "chmod 777", "chown",
-        "dd ", "mkfs",
-        "> /dev/", ">/dev/",
-        "eval ", "exec ",
+        "rm -rf",
+        "rm -r",
+        "rmdir",
+        "sudo",
+        "su ",
+        "chmod 777",
+        "chown",
+        "dd ",
+        "mkfs",
+        "> /dev/",
+        ">/dev/",
+        "eval ",
+        "exec ",
         ":(){ :|:& };:",
     ];
 
@@ -203,8 +232,11 @@ pub fn is_dangerous(cmd: &str) -> bool {
         let second = parts[1].trim();
         let downloaders = ["curl", "wget"];
         let shells = ["sh", "bash", "zsh", "dash"];
-        if downloaders.iter().any(|d| first.starts_with(d)) &&
-           shells.iter().any(|s| second == *s || second.starts_with(&format!("{} ", s))) {
+        if downloaders.iter().any(|d| first.starts_with(d))
+            && shells
+                .iter()
+                .any(|s| second == *s || second.starts_with(&format!("{} ", s)))
+        {
             return true;
         }
     }

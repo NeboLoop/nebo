@@ -113,7 +113,8 @@ fn decode_wav_to_f32(wav_bytes: &[u8]) -> Result<(u32, Vec<f32>), VoiceError> {
 
     // Parse header fields
     let channels = u16::from_le_bytes([wav_bytes[22], wav_bytes[23]]) as usize;
-    let sample_rate = u32::from_le_bytes([wav_bytes[24], wav_bytes[25], wav_bytes[26], wav_bytes[27]]);
+    let sample_rate =
+        u32::from_le_bytes([wav_bytes[24], wav_bytes[25], wav_bytes[26], wav_bytes[27]]);
     let bits_per_sample = u16::from_le_bytes([wav_bytes[34], wav_bytes[35]]);
 
     // Find "data" sub-chunk
@@ -260,13 +261,8 @@ impl VoicePipeline {
         self.kokoro
             .get_or_try_init(|| async {
                 tracing::info!("loading kokoro TTS model (auto-downloads on first use)");
-                let tts = TTSKoko::new_with_variant(
-                    None,
-                    None,
-                    None,
-                    ModelVariant::V1English,
-                )
-                .await;
+                let tts =
+                    TTSKoko::new_with_variant(None, None, None, ModelVariant::V1English).await;
                 let voices = tts.get_available_voices();
                 tracing::info!(voices = voices.len(), "kokoro TTS loaded");
                 Ok(Arc::new(tts))
@@ -340,7 +336,10 @@ impl VoicePipeline {
         let samples = tokio::task::spawn_blocking(move || {
             kokoro
                 .tts_raw_audio(
-                    &text, "en-us", &voice, speed,
+                    &text,
+                    "en-us",
+                    &voice,
+                    speed,
                     Some(0), // initial_silence
                     false,   // auto_detect_language
                     false,   // force_style
@@ -521,4 +520,3 @@ fn transcribe_samples(
 
     Ok(streaming::clean_transcript(text.trim()))
 }
-

@@ -9,11 +9,14 @@
   const threads = $derived(ctx.threads);
 
   import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   const threadId = $derived($page.params.threadId);
   const thread = $derived(threads.find((t: EnrichedChat) => t.id === threadId));
 
+  // Start loading immediately if navigated from a fresh send (?active=1)
+  const startActive = $page.url.searchParams.get('active') === '1';
   let messages = $state<any[]>([]);
-  let isLoading = $state(false);
+  let isLoading = $state(startActive);
   // Per-agent streaming: raw content for persistence, server-rendered HTML for display
   let streamingContent = $state<Record<string, string>>({});
   let streamingHtml = $state<Record<string, string>>({});
@@ -165,7 +168,7 @@
     const idx = messages.length;
     messages = [...messages, {
       type: 'tool' as const,
-      name: data.tool || 'tool',
+      name: toolDisplayName(data.tool || 'tool', request),
       status: 'running',
       duration: '...',
       request,
@@ -188,7 +191,6 @@
       const updated = [...messages];
       updated[pending.idx] = {
         ...updated[pending.idx],
-        name: data.tool_name || updated[pending.idx].name,
         status: data.is_error ? 'error' : 'success',
         duration,
         response: typeof data.result === 'string' ? data.result : JSON.stringify(data.result, null, 2),
@@ -241,6 +243,11 @@
   }
 
   onMount(async () => {
+    // Clean up ?active=1 query param so refresh doesn't re-trigger loading
+    if (startActive) {
+      goto(`/${agentId}/threads/${threadId}`, { replaceState: true, keepFocus: true, noScroll: true });
+    }
+
     // loadMessages() is handled by $effect on threadId — no need to call here
     window.addEventListener('nebo:chat_stream', handleChatStream);
     window.addEventListener('nebo:chat_complete', handleChatComplete);
@@ -290,15 +297,90 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.getChatMessages(threadId);
       if (resp?.messages?.length) {
-        messages = resp.messages
-          .filter((m: any) => m.role === 'user' || m.role === 'assistant')
-          .map((m: any) => ({
-            id: m.id,
-            type: m.role as 'user' | 'assistant',
-            content: m.content,
-            html: m.html || undefined,
-            time: formatTime(m.createdAt),
-          }));
+        const result: any[] = [];
+        for (const m of resp.messages as any[]) {
+          if (m.role === 'user') {
+            result.push({
+              id: m.id,
+              type: 'user' as const,
+              content: m.content,
+              time: formatTime(m.createdAt),
+            });
+            continue;
+          }
+          if (m.role !== 'assistant') continue;
+
+          // Parse metadata for tool calls and content block ordering
+          let meta: any = null;
+          if (m.metadata) {
+            try { meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata; } catch {}
+          }
+          const toolCalls: any[] = meta?.toolCalls || [];
+          const contentBlocks: any[] = meta?.contentBlocks || [];
+
+          if (toolCalls.length && contentBlocks.length) {
+            // Emit messages in the order defined by contentBlocks
+            for (const block of contentBlocks) {
+              if (block.type === 'text' && (block.text || m.content)) {
+                result.push({
+                  id: m.id,
+                  type: 'assistant' as const,
+                  content: block.text || m.content || '',
+                  html: m.html || undefined,
+                  time: formatTime(m.createdAt),
+                });
+              } else if (block.type === 'tool') {
+                const tc = toolCalls[block.toolCallIndex];
+                if (tc) {
+                  let request: Record<string, unknown> = {};
+                  try { request = typeof tc.input === 'string' ? JSON.parse(tc.input) : (tc.input || {}); } catch {}
+                  result.push({
+                    type: 'tool' as const,
+                    name: toolDisplayName(tc.name || 'tool', request),
+                    status: tc.status === 'error' ? 'error' : 'success',
+                    duration: '',
+                    request,
+                    response: '',
+                  });
+                }
+              }
+            }
+          } else if (toolCalls.length) {
+            // No contentBlocks — emit text (if any) then tools
+            if (m.content) {
+              result.push({
+                id: m.id,
+                type: 'assistant' as const,
+                content: m.content,
+                html: m.html || undefined,
+                time: formatTime(m.createdAt),
+              });
+            }
+            for (const tc of toolCalls) {
+              let request: Record<string, unknown> = {};
+              try { request = typeof tc.input === 'string' ? JSON.parse(tc.input) : (tc.input || {}); } catch {}
+              result.push({
+                type: 'tool' as const,
+                name: tc.name || 'tool',
+                status: tc.status === 'error' ? 'error' : 'success',
+                duration: '',
+                request,
+                response: '',
+              });
+            }
+          } else if (m.content) {
+            // No tool calls — plain assistant message
+            result.push({
+              id: m.id,
+              type: 'assistant' as const,
+              content: m.content,
+              html: m.html || undefined,
+              time: formatTime(m.createdAt),
+            });
+          }
+          // Skip empty assistant messages (no content and no tool calls)
+        }
+        messages = result;
       }
     } catch (e) {
       console.warn('[nebo] Failed to load messages for thread', threadId, e);
@@ -359,6 +441,21 @@
     // Truncate from edited message onward, replace with new content, and resend
     messages = messages.slice(0, msgIndex);
     handleSend(newContent);
+  }
+
+  function toolDisplayName(tool: string, input: Record<string, unknown>): string {
+    const resource = input.resource as string | undefined;
+    const action = input.action as string | undefined;
+    if (tool === 'plugin') {
+      const topic = input.topic as string | undefined;
+      const command = input.command as string | undefined;
+      const cmdPrefix = command?.split(/[\s+]/)[0];
+      return topic || cmdPrefix || resource || 'plugin';
+    }
+    if (tool === 'app' && action && input.app) return `${action} ${input.app}`;
+    if (resource) return resource;
+    if (['event', 'skill'].includes(tool) && action) return action;
+    return tool;
   }
 
   function formatTime(ts: string | number): string {

@@ -156,9 +156,20 @@ impl ModelsConfig {
     }
 
     /// Update a model's settings (active, kind, preferred) and save.
-    pub fn update_model(&mut self, provider: &str, model_id: &str, update: ModelUpdate) -> Result<(), String> {
-        let models = self.providers.get_mut(provider).ok_or("provider not found")?;
-        let model = models.iter_mut().find(|m| m.id == model_id).ok_or("model not found")?;
+    pub fn update_model(
+        &mut self,
+        provider: &str,
+        model_id: &str,
+        update: ModelUpdate,
+    ) -> Result<(), String> {
+        let models = self
+            .providers
+            .get_mut(provider)
+            .ok_or("provider not found")?;
+        let model = models
+            .iter_mut()
+            .find(|m| m.id == model_id)
+            .ok_or("model not found")?;
         if let Some(active) = update.active {
             model.active = Some(active);
         }
@@ -173,7 +184,11 @@ impl ModelsConfig {
 
     /// Set a CLI provider's active state and save.
     pub fn set_cli_provider_active(&mut self, cli_id: &str, active: bool) -> Result<(), String> {
-        let cp = self.cli_providers.iter_mut().find(|c| c.id == cli_id).ok_or("CLI provider not found")?;
+        let cp = self
+            .cli_providers
+            .iter_mut()
+            .find(|c| c.id == cli_id)
+            .ok_or("CLI provider not found")?;
         cp.active = Some(active);
         self.save()
     }
@@ -222,9 +237,9 @@ impl ModelsConfig {
     /// Returns the first default fallback model ID.
     pub fn sidecar_model(&self) -> Option<String> {
         self.defaults.as_ref().and_then(|d| {
-            d.fallbacks.first().map(|spec| {
-                spec.split('/').last().unwrap_or(spec).to_string()
-            })
+            d.fallbacks
+                .first()
+                .map(|spec| spec.split('/').last().unwrap_or(spec).to_string())
         })
     }
 
@@ -247,7 +262,8 @@ impl ModelsConfig {
             if let Ok(data) = fs::read_to_string(&path) {
                 if let Ok(mut cfg) = serde_yaml::from_str::<ModelsConfig>(&data) {
                     // Merge missing sections from embedded defaults
-                    if let Ok(defaults) = serde_yaml::from_str::<ModelsConfig>(EMBEDDED_MODELS_YAML) {
+                    if let Ok(defaults) = serde_yaml::from_str::<ModelsConfig>(EMBEDDED_MODELS_YAML)
+                    {
                         if cfg.cli_providers.is_empty() && !defaults.cli_providers.is_empty() {
                             cfg.cli_providers = defaults.cli_providers;
                         }

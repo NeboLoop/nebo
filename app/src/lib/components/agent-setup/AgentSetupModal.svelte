@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { installStoreProduct, listAgents, activateAgent, getAgent, updateAgentInputs, getAgentWorkflows, updateAgentWorkflow, pluginAuthLogin } from '$lib/api/nebo';
-	import type { AgentInputField, AgentWorkflow } from '$lib/api/neboComponents';
+	import { installStoreProduct, listAgents, activateAgent, getAgent, updateAgentInputs, listAgentWorkflows, updateAgentWorkflow, authLogin } from '$lib/api/nebo';
+	import type { AgentWorkflow } from '$lib/api/neboComponents';
+	import type { AgentInputField } from '$lib/types/agentPage';
 	import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
 	import { X, KeyRound } from 'lucide-svelte';
 	import { onMount, onDestroy } from 'svelte';
@@ -42,24 +43,26 @@
 
 	const currentAuthPlugin = $derived(authQueue[authIndex]);
 
-	if (Array.isArray(inputs)) {
-		inputFields = inputs.map((f: any) => ({
-			key: f.key || f.name || '',
-			label: f.label || (f.name || '').replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
-			description: f.description || '',
-			type: f.type || 'text',
-			required: f.required || false,
-			default: f.default,
-			placeholder: f.placeholder || '',
-			options: Array.isArray(f.options) ? f.options.map((o: any) =>
-			typeof o === 'string' ? { value: o, label: o.replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) } : o
-		) : f.options,
-		}));
-	} else {
-		for (const [key, val] of Object.entries(inputs)) {
-			inputValues[key] = val;
+	$effect(() => {
+		if (Array.isArray(inputs)) {
+			inputFields = inputs.map((f: any) => ({
+				key: f.key || f.name || '',
+				label: f.label || (f.name || '').replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+				description: f.description || '',
+				type: f.type || 'text',
+				required: f.required || false,
+				default: f.default,
+				placeholder: f.placeholder || '',
+				options: Array.isArray(f.options) ? f.options.map((o: any) =>
+				typeof o === 'string' ? { value: o, label: o.replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) } : o
+			) : f.options,
+			}));
+		} else {
+			for (const [key, val] of Object.entries(inputs)) {
+				inputValues[key] = val;
+			}
 		}
-	}
+	});
 
 	const hasInputFields = $derived(inputFields.length > 0);
 	const hasSchedules = $derived(Array.isArray(workflows) && workflows.some(w =>
@@ -134,9 +137,9 @@
 				await installStoreProduct(appId);
 
 				const agentsRes = await listAgents();
-				const allAgents = agentsRes?.agents || [];
+				const allAgents = (agentsRes?.agents || []) as { id: string; name: string }[];
 				const matchedAgent = allAgents.find(
-					(r: any) => r.name?.toLowerCase() === agentName.toLowerCase()
+					(r) => r.name?.toLowerCase() === agentName.toLowerCase()
 				);
 
 				if (!matchedAgent) {
@@ -151,7 +154,7 @@
 			let pluginsNeedingAuth: PluginAuthEntry[] = [];
 
 			try {
-				const agentRes = await getAgent(agentId) as any;
+				const agentRes = await getAgent(agentId);
 				if (agentRes?.inputFields) {
 					inputFields = agentRes.inputFields as AgentInputField[];
 				}
@@ -161,8 +164,8 @@
 			} catch { /* ignore */ }
 
 			try {
-				const wfRes = await getAgentWorkflows(agentId);
-				const wfList = (wfRes as any)?.workflows;
+				const wfRes = await listAgentWorkflows(agentId);
+				const wfList = wfRes?.workflows;
 				workflows = Array.isArray(wfList) ? wfList as AgentWorkflow[] : [];
 			} catch { /* ignore */ }
 
@@ -191,7 +194,7 @@
 		authInProgress = true;
 		error = '';
 		try {
-			await pluginAuthLogin(currentAuthPlugin.slug);
+			await authLogin(currentAuthPlugin.slug);
 		} catch (e: any) {
 			authInProgress = false;
 			error = e?.error || e?.message || 'Failed to start authentication';

@@ -99,7 +99,10 @@ impl BrowserConfig {
             cdp_url: profile.cdp_url.clone(),
             cdp_is_loopback: true,
             driver: profile.driver.clone(),
-            color: profile.color.clone().unwrap_or_else(|| "#6366f1".to_string()),
+            color: profile
+                .color
+                .clone()
+                .unwrap_or_else(|| "#6366f1".to_string()),
             user_data_dir,
         })
     }

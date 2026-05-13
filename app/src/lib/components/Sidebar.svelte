@@ -4,10 +4,12 @@
   import { AGENTS } from '$lib/data.js';
   import { getScheduleAgents, runsPerWeek as storeRunsPerWeek, userScheduleItems } from '$lib/stores/schedule.js';
   import MiniMonth from './MiniMonth.svelte';
+  import type { Agent, Chat } from '$lib/api/neboComponents';
 
   let { activePage = 'home', activeChat = '', enabled = null, onToggleAgent = null, marketplaceTab = '' } = $props();
   let collapsed = $state(false);
   let searchText = $state('');
+  let selectedDate = $state(new Date());
 
   let agents = $state<{ id: string; name: string; initial: string; color: string; role: string; status: string }[]>([]);
   let chats = $state<{ id: string; title: string; agent: string; agentColor: string; updatedAt: string; lastMessage?: string }[]>([]);
@@ -22,7 +24,7 @@
       ]);
 
       if (agentResp?.agents?.length) {
-        agents = agentResp.agents.map(a => ({
+        agents = (agentResp.agents as Agent[]).filter(a => !a.isApp).map(a => ({
           id: a.id,
           name: a.name,
           role: a.description || '',
@@ -38,7 +40,7 @@
           title: c.title,
           agent: '',
           agentColor: 'teal',
-          updatedAt: formatRelativeTime(c.updatedAt),
+          updatedAt: formatRelativeTime(new Date(c.updatedAt * 1000).toISOString()),
         }));
         // Group chats by recency
         try {
@@ -126,12 +128,14 @@
           {@const a = AGENTS.find(x => x.id === id)}
           {@const c = AGENT_COLORS[id]}
           {@const on = enabled[id]}
-          <label class="flex items-center gap-2.5 px-2 py-1.5 rounded-md cursor-pointer text-sm hover:bg-base-content/5 transition-colors {on ? '' : 'opacity-60'}">
-            <input type="checkbox" class="checkbox checkbox-xs {c.edgeClass}" checked={on} onchange={() => onToggleAgent?.(id)} />
-            <span class="flex-1 font-medium">{a.name}</span>
-            <span class="font-mono text-xs">{runsPerWeek(id)}/wk</span>
-            <input type="checkbox" checked={on} onchange={() => onToggleAgent?.(id)} hidden />
-          </label>
+          {#if a}
+            <label class="flex items-center gap-2.5 px-2 py-1.5 rounded-md cursor-pointer text-sm hover:bg-base-content/5 transition-colors {on ? '' : 'opacity-60'}">
+              <input type="checkbox" class="checkbox checkbox-xs {c.edgeClass}" checked={on} onchange={() => onToggleAgent?.(id)} />
+              <span class="flex-1 font-medium">{a.name}</span>
+              <span class="font-mono text-xs">{runsPerWeek(id)}/wk</span>
+              <input type="checkbox" checked={on} onchange={() => onToggleAgent?.(id)} hidden />
+            </label>
+          {/if}
         {/each}
       </div>
 
@@ -237,7 +241,7 @@
   <!-- Bottom: mini month (schedule) or spacer -->
   {#if isSchedule && !collapsed}
     <div class="flex-1"></div>
-    <MiniMonth />
+    <MiniMonth {selectedDate} onselect={(d: Date) => selectedDate = d} />
   {:else}
     <div class="flex-1"></div>
   {/if}

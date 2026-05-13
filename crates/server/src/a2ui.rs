@@ -297,7 +297,10 @@ impl A2UIManager {
     }
 
     /// Set the data binding manager (called after MCP bridge is available).
-    pub async fn set_binding_manager(&self, manager: Arc<crate::a2ui_bindings::DataBindingManager>) {
+    pub async fn set_binding_manager(
+        &self,
+        manager: Arc<crate::a2ui_bindings::DataBindingManager>,
+    ) {
         *self.binding_manager.write().await = Some(manager);
     }
 
@@ -403,14 +406,10 @@ impl A2UIManager {
         }
 
         // Persist to DB
-        if let Err(e) = self.store.upsert_a2ui_surface(
-            &sid,
-            agent_id,
-            view_id,
-            surface_type,
-            None,
-            None,
-        ) {
+        if let Err(e) =
+            self.store
+                .upsert_a2ui_surface(&sid, agent_id, view_id, surface_type, None, None)
+        {
             warn!("failed to persist a2ui surface {}: {}", sid, e);
         }
 
@@ -460,20 +459,25 @@ impl A2UIManager {
                 }
             }
             // Map lowercase/alias component names to PascalCase catalog names
-            if let Some(comp_type) = obj.get("component").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+            if let Some(comp_type) = obj
+                .get("component")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+            {
                 let mapped = match comp_type.as_str() {
                     "text" => "Text",
                     "heading" => {
                         // "heading" → Text with variant derived from "level"
-                        let level = obj.remove("level")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(1);
+                        let level = obj.remove("level").and_then(|v| v.as_u64()).unwrap_or(1);
                         let variant = match level {
-                            1 => "h1", 2 => "h2", 3 => "h3",
-                            4 => "h4", 5 => "h5", _ => "h1",
+                            1 => "h1",
+                            2 => "h2",
+                            3 => "h3",
+                            4 => "h4",
+                            5 => "h5",
+                            _ => "h1",
                         };
-                        obj.entry("variant".to_string())
-                            .or_insert(json!(variant));
+                        obj.entry("variant".to_string()).or_insert(json!(variant));
                         // Rename "content" to "text" if present
                         if let Some(content) = obj.remove("content") {
                             obj.entry("text".to_string()).or_insert(content);
@@ -530,9 +534,12 @@ impl A2UIManager {
                 // but A2UI expects { "event": { "name": "click" } }
                 if let Some(action) = obj.get_mut("action") {
                     if let Some(action_obj) = action.as_object() {
-                        if !action_obj.contains_key("event") || action_obj.get("event").and_then(|e| e.as_str()).is_some() {
+                        if !action_obj.contains_key("event")
+                            || action_obj.get("event").and_then(|e| e.as_str()).is_some()
+                        {
                             // Flat format — convert to nested
-                            let event_name = action_obj.get("event")
+                            let event_name = action_obj
+                                .get("event")
                                 .and_then(|v| v.as_str())
                                 .or_else(|| action_obj.get("name").and_then(|v| v.as_str()))
                                 .unwrap_or("click")
@@ -568,9 +575,9 @@ impl A2UIManager {
         components.extend(extra);
 
         // Ensure root Column exists
-        let has_root = components.iter().any(|c| {
-            c.get("id").and_then(|v| v.as_str()) == Some("root")
-        });
+        let has_root = components
+            .iter()
+            .any(|c| c.get("id").and_then(|v| v.as_str()) == Some("root"));
         if !has_root && !components.is_empty() {
             let child_ids: Vec<serde_json::Value> = components
                 .iter()
@@ -592,8 +599,10 @@ impl A2UIManager {
         surface_id: &str,
         components: Vec<serde_json::Value>,
     ) -> Result<(), types::NeboError> {
-        let components: Vec<serde_json::Value> =
-            components.into_iter().map(Self::normalize_component).collect();
+        let components: Vec<serde_json::Value> = components
+            .into_iter()
+            .map(Self::normalize_component)
+            .collect();
         let components = Self::ensure_root(components);
 
         let msg = a2ui_core::message::UpdateComponentsBuilder::new(surface_id)
@@ -617,7 +626,10 @@ impl A2UIManager {
                 .store
                 .update_a2ui_surface_components(surface_id, &json_str)
             {
-                warn!("failed to persist a2ui components for {}: {}", surface_id, e);
+                warn!(
+                    "failed to persist a2ui components for {}: {}",
+                    surface_id, e
+                );
             }
         }
 
@@ -701,10 +713,7 @@ impl A2UIManager {
             .get("components")
             .and_then(|c| c.as_array())
             .ok_or_else(|| {
-                types::NeboError::Validation(format!(
-                    "view '{}' has no components array",
-                    to_view
-                ))
+                types::NeboError::Validation(format!("view '{}' has no components array", to_view))
             })?;
 
         // Delete the source surface
@@ -813,10 +822,8 @@ impl A2UIManager {
             });
             if let Some(arr) = arr {
                 // Re-normalize in case components were stored in LLM format
-                let normalized: Vec<serde_json::Value> = arr
-                    .into_iter()
-                    .map(Self::normalize_component)
-                    .collect();
+                let normalized: Vec<serde_json::Value> =
+                    arr.into_iter().map(Self::normalize_component).collect();
                 let normalized = Self::ensure_root(normalized);
                 msgs.push(json!({
                     "version": "v0.9",

@@ -110,11 +110,7 @@ async fn ensure_helper() -> Option<PathBuf> {
 
 /// Run the native PIM helper. Returns `None` if native path is unavailable
 /// (caller should fall back to AppleScript).
-pub async fn run_pim(
-    domain: &str,
-    action: &str,
-    args: &[(&str, &str)],
-) -> Option<ToolResult> {
+pub async fn run_pim(domain: &str, action: &str, args: &[(&str, &str)]) -> Option<ToolResult> {
     let helper = ensure_helper().await?;
 
     let mut cmd = tokio::process::Command::new(&helper);
@@ -140,7 +136,9 @@ pub async fn run_pim(
             let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
 
             if stdout.starts_with("ERROR: ") {
-                Some(ToolResult::error(stdout.trim_start_matches("ERROR: ").to_string()))
+                Some(ToolResult::error(
+                    stdout.trim_start_matches("ERROR: ").to_string(),
+                ))
             } else if o.status.success() {
                 Some(ToolResult::ok(stdout))
             } else {

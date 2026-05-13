@@ -32,7 +32,7 @@
 	let fbTitle = $state('');
 	let fbBody = $state('');
 	let submitting = $state(false);
-	let items = $state<FeedbackItem[]>(feedback);
+	let items = $state<FeedbackItem[]>([]);
 
 	$effect(() => {
 		items = feedback;
@@ -94,8 +94,9 @@
 		<div class="rounded-2xl bg-base-content/[0.04] p-4 mb-4">
 			<div class="flex gap-2 mb-3">
 				{#each (['bug', 'feature', 'question'] as const) as t}
+					{@const Icon = typeIcons[t]}
 					<button type="button" onclick={() => fbType = t} class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors {fbType === t ? 'bg-primary/15 text-primary' : 'bg-base-content/5 text-base-content/60 hover:bg-base-content/10'}">
-						<svelte:component this={typeIcons[t]} class="w-3 h-3" />
+						<Icon class="w-3 h-3" />
 						{typeLabels[t]}
 					</button>
 				{/each}
@@ -114,10 +115,11 @@
 	{#if items.length > 0}
 		<div class="space-y-2">
 			{#each items as fb}
+				{@const FbIcon = typeIcons[fb.type] ?? Bug}
 				<div class="rounded-xl bg-base-content/[0.04] p-3.5">
 					<div class="flex items-start gap-3">
 						<div class="w-7 h-7 rounded-lg bg-base-content/5 flex items-center justify-center shrink-0 mt-0.5">
-							<svelte:component this={typeIcons[fb.type] ?? Bug} class="w-3.5 h-3.5 text-base-content/40" />
+							<FbIcon class="w-3.5 h-3.5 text-base-content/40" />
 						</div>
 						<div class="flex-1 min-w-0">
 							<div class="flex items-center gap-2 mb-1">

@@ -127,8 +127,18 @@ mod tests {
     fn test_network_capability_allows_registries() {
         let skill = test_skill(vec!["network"], HashMap::new());
         let config = build_sandbox_config(&skill, Path::new("/tmp/work"));
-        assert!(config.network.allowed_domains.contains(&"pypi.org".to_string()));
-        assert!(config.network.allowed_domains.contains(&"registry.npmjs.org".to_string()));
+        assert!(
+            config
+                .network
+                .allowed_domains
+                .contains(&"pypi.org".to_string())
+        );
+        assert!(
+            config
+                .network
+                .allowed_domains
+                .contains(&"registry.npmjs.org".to_string())
+        );
     }
 
     #[test]
@@ -140,8 +150,18 @@ mod tests {
         );
         let skill = test_skill(vec!["network"], meta);
         let config = build_sandbox_config(&skill, Path::new("/tmp/work"));
-        assert!(config.network.allowed_domains.contains(&"api.example.com".to_string()));
-        assert!(config.network.allowed_domains.contains(&"cdn.example.com".to_string()));
+        assert!(
+            config
+                .network
+                .allowed_domains
+                .contains(&"api.example.com".to_string())
+        );
+        assert!(
+            config
+                .network
+                .allowed_domains
+                .contains(&"cdn.example.com".to_string())
+        );
     }
 
     #[test]
@@ -149,14 +169,24 @@ mod tests {
         let skill = test_skill(vec![], HashMap::new());
         let config = build_sandbox_config(&skill, Path::new("/tmp/work"));
         assert!(config.filesystem.deny_read.contains(&"~/.ssh".to_string()));
-        assert!(config.filesystem.deny_read.contains(&"~/.gnupg".to_string()));
+        assert!(
+            config
+                .filesystem
+                .deny_read
+                .contains(&"~/.gnupg".to_string())
+        );
     }
 
     #[test]
     fn test_work_dir_always_writable() {
         let skill = test_skill(vec![], HashMap::new());
         let config = build_sandbox_config(&skill, Path::new("/tmp/my-work"));
-        assert!(config.filesystem.allow_write.contains(&"/tmp/my-work".to_string()));
+        assert!(
+            config
+                .filesystem
+                .allow_write
+                .contains(&"/tmp/my-work".to_string())
+        );
     }
 
     #[test]

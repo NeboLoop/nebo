@@ -44,7 +44,10 @@ impl QualifiedName {
 
     /// Format as the full qualified string.
     pub fn to_string(&self) -> String {
-        format!("@{}/{}/{}", self.org, self.artifact_type, self.artifact_name)
+        format!(
+            "@{}/{}/{}",
+            self.org, self.artifact_type, self.artifact_name
+        )
     }
 }
 
@@ -55,6 +58,7 @@ impl QualifiedName {
 /// (provides, permissions, implements, etc.) default to empty for non-tool artifacts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
+    #[serde(default)]
     pub id: String,
     pub name: String,
     pub version: String,
@@ -170,11 +174,33 @@ const VALID_CAPABILITIES: &[&str] = &[
 
 /// Valid permission prefixes.
 const VALID_PERMISSION_PREFIXES: &[&str] = &[
-    "network:", "filesystem:", "settings:", "capability:", "memory:",
-    "session:", "context:", "tool:", "shell:", "subagent:", "lane:",
-    "channel:", "comm:", "notification:", "embedding:", "skill:",
-    "advisor:", "model:", "mcp:", "database:", "storage:", "schedule:",
-    "voice:", "browser:", "oauth:", "user:", "hook:",
+    "network:",
+    "filesystem:",
+    "settings:",
+    "capability:",
+    "memory:",
+    "session:",
+    "context:",
+    "tool:",
+    "shell:",
+    "subagent:",
+    "lane:",
+    "channel:",
+    "comm:",
+    "notification:",
+    "embedding:",
+    "skill:",
+    "advisor:",
+    "model:",
+    "mcp:",
+    "database:",
+    "storage:",
+    "schedule:",
+    "voice:",
+    "browser:",
+    "oauth:",
+    "user:",
+    "hook:",
 ];
 
 impl Manifest {
@@ -227,10 +253,7 @@ impl Manifest {
         for cap in &self.provides {
             let base = cap.split(':').next().unwrap_or(cap);
             if base != "tool" && base != "channel" && !VALID_CAPABILITIES.contains(&base) {
-                return Err(NappError::Manifest(format!(
-                    "unknown capability: {}",
-                    cap
-                )));
+                return Err(NappError::Manifest(format!("unknown capability: {}", cap)));
             }
         }
 
@@ -240,10 +263,7 @@ impl Manifest {
                 .iter()
                 .any(|prefix| perm.starts_with(prefix));
             if !valid {
-                return Err(NappError::Manifest(format!(
-                    "unknown permission: {}",
-                    perm
-                )));
+                return Err(NappError::Manifest(format!("unknown permission: {}", perm)));
             }
         }
 
@@ -271,7 +291,9 @@ impl Manifest {
     /// Check if the tool has a specific permission.
     pub fn has_permission(&self, perm: &str) -> bool {
         self.permissions.iter().any(|p| {
-            p == perm || (p.ends_with(':') && perm.starts_with(p)) || p == &format!("{}:*", perm.split(':').next().unwrap_or(""))
+            p == perm
+                || (p.ends_with(':') && perm.starts_with(p))
+                || p == &format!("{}:*", perm.split(':').next().unwrap_or(""))
         })
     }
 

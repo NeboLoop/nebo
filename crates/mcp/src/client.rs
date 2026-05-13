@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use tokio::sync::RwLock;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use crate::crypto::Encryptor;
 use crate::{McpError, McpToolDef, McpToolResult, OAuthMetadata, OAuthTokens, RefreshResult};
@@ -54,10 +54,7 @@ impl McpClient {
                 trimmed.to_string()
             }
         };
-        let well_known = format!(
-            "{}/.well-known/oauth-authorization-server",
-            origin
-        );
+        let well_known = format!("{}/.well-known/oauth-authorization-server", origin);
         let resp = self.http.get(&well_known).send().await?;
         if !resp.status().is_success() {
             return Err(McpError::Auth(format!(
@@ -85,7 +82,9 @@ impl McpClient {
             "MCP tools/list request"
         );
 
-        let mut req = self.http.post(url)
+        let mut req = self
+            .http
+            .post(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
             .json(&json!({
@@ -136,8 +135,7 @@ impl McpClient {
             .cloned()
             .unwrap_or(json!([]));
 
-        let tools: Vec<McpToolDef> = serde_json::from_value(tools_val)
-            .unwrap_or_default();
+        let tools: Vec<McpToolDef> = serde_json::from_value(tools_val).unwrap_or_default();
 
         // Cache in session
         let mut sessions = self.sessions.write().await;
@@ -177,7 +175,9 @@ impl McpClient {
 
         let url = session.server_url.trim_end_matches('/');
 
-        let mut req = self.http.post(url)
+        let mut req = self
+            .http
+            .post(url)
             .header("Content-Type", "application/json")
             .json(&json!({
                 "jsonrpc": "2.0",
@@ -217,8 +217,16 @@ impl McpClient {
         // Check for JSON-RPC error response first
         if let Some(err) = body.get("error") {
             let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
-            let message = err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error");
-            warn!(tool = tool_name, code = code, error = message, "MCP server returned JSON-RPC error");
+            let message = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
+            warn!(
+                tool = tool_name,
+                code = code,
+                error = message,
+                "MCP server returned JSON-RPC error"
+            );
             return Ok(McpToolResult {
                 content: format!("MCP error ({}): {}", code, message),
                 is_error: true,
@@ -244,8 +252,10 @@ impl McpClient {
             text: String,
         }
 
-        let result: CallResult = serde_json::from_value(result_val)
-            .unwrap_or(CallResult { content: vec![], is_error: true });
+        let result: CallResult = serde_json::from_value(result_val).unwrap_or(CallResult {
+            content: vec![],
+            is_error: true,
+        });
 
         let content = result
             .content
@@ -311,7 +321,8 @@ impl McpClient {
             params.push(("client_secret", secret));
         }
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(token_endpoint)
             .form(&params)
             .timeout(Duration::from_secs(15))
@@ -338,7 +349,9 @@ impl McpClient {
             scope: Option<String>,
         }
 
-        let t: TokenResponse = resp.json().await
+        let t: TokenResponse = resp
+            .json()
+            .await
             .map_err(|e| McpError::Auth(format!("decode refresh response: {e}")))?;
 
         Ok(RefreshResult {
@@ -350,11 +363,7 @@ impl McpClient {
     }
 
     /// Update the access token in an existing session (after a refresh).
-    pub async fn update_session_token(
-        &self,
-        integration_id: &str,
-        tokens: OAuthTokens,
-    ) {
+    pub async fn update_session_token(&self, integration_id: &str, tokens: OAuthTokens) {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(integration_id) {
             session.tokens = Some(tokens);
@@ -402,9 +411,7 @@ fn parse_sse_json(text: &str) -> Result<serde_json::Value, McpError> {
                 raw = %text.chars().take(500).collect::<String>(),
                 "no data: line found in SSE response"
             );
-            Err(McpError::Other(
-                "No data found in SSE response".to_string(),
-            ))
+            Err(McpError::Other("No data found in SSE response".to_string()))
         }
     }
 }

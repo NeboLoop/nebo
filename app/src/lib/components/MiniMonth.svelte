@@ -4,8 +4,8 @@
 
   let { selectedDate, onselect } = $props();
 
-  let displayYear = $state(selectedDate.getFullYear());
-  let displayMonth = $state(selectedDate.getMonth());
+  let displayYear = $state(new Date().getFullYear());
+  let displayMonth = $state(new Date().getMonth());
 
   // Sync display when selectedDate changes externally
   $effect(() => {
@@ -36,13 +36,13 @@
     return result;
   });
 
-  function cellKey(cell) {
+  function cellKey(cell: { day: number; offset: number }) {
     const y = displayYear + (displayMonth + cell.offset > 11 ? 1 : displayMonth + cell.offset < 0 ? -1 : 0);
     const m = (displayMonth + cell.offset + 12) % 12;
     return `${y}-${m}-${cell.day}`;
   }
 
-  function selectCell(cell) {
+  function selectCell(cell: { day: number; offset: number }) {
     const m = displayMonth + cell.offset;
     const date = new Date(displayYear, m, cell.day);
     onselect(date);

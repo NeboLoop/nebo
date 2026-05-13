@@ -1,12 +1,16 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for the main window",
-  "windows": ["main", "prompt"],
+  "description": "Default capabilities for the main window and app windows",
+  "windows": ["main", "prompt", "app-*"],
   "remote": {
-    "urls": ["http://localhost:*"]
+    "urls": ["http://localhost:*", "neboapp://*"]
   },
   "permissions": [
     "core:default",
+    "core:window:allow-create",
+    "core:window:allow-set-focus",
+    "core:window:allow-close",
+    "core:webview:allow-create-webview-window",
     "shell:allow-open",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister"

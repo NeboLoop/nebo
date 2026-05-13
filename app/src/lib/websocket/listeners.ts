@@ -6,7 +6,7 @@
  */
 
 import { getWebSocketClient } from './client';
-import { notifications } from '$lib/stores/notifications';
+import { notifications, pushNotification, loadNotifications } from '$lib/stores/notifications';
 import { addToast } from '$lib/stores/toast';
 import { logger } from '$lib/monitoring';
 
@@ -20,6 +20,9 @@ export function attachWebSocketListeners(): void {
   attached = true;
 
   const ws = getWebSocketClient();
+
+  // Bootstrap existing notifications (auth is ready at this point)
+  loadNotifications();
 
   // --- Notifications ---
   unsubs.push(
@@ -188,6 +191,13 @@ export function attachWebSocketListeners(): void {
       })
     );
   }
+
+  // --- Notification created (push directly into store) ---
+  unsubs.push(
+    ws.on('notification_created', (data: any) => {
+      pushNotification(data);
+    })
+  );
 
   // --- Task item updates (per-step workflow progress) ---
   unsubs.push(

@@ -103,7 +103,10 @@ impl ProcessRegistry {
             kill_tx: Some(kill_tx),
         });
 
-        self.running.lock().await.insert(session_id.clone(), session.clone());
+        self.running
+            .lock()
+            .await
+            .insert(session_id.clone(), session.clone());
 
         // Spawn IO handler
         let running = self.running.clone();
@@ -111,7 +114,18 @@ impl ProcessRegistry {
         let sid = session_id.clone();
 
         tokio::spawn(async move {
-            Self::handle_process(child, sid, output, pending_stdout, pending_stderr, stdin_rx, kill_rx, running, finished).await;
+            Self::handle_process(
+                child,
+                sid,
+                output,
+                pending_stdout,
+                pending_stderr,
+                stdin_rx,
+                kill_rx,
+                running,
+                finished,
+            )
+            .await;
         });
 
         Ok(session_id)
@@ -251,15 +265,21 @@ impl ProcessRegistry {
     /// Write data to a session's stdin.
     pub async fn write_stdin(&self, id: &str, data: &[u8]) -> Result<(), String> {
         let running = self.running.lock().await;
-        let sess = running.get(id).ok_or_else(|| format!("session not found: {}", id))?;
+        let sess = running
+            .get(id)
+            .ok_or_else(|| format!("session not found: {}", id))?;
         let tx = sess.stdin_tx.as_ref().ok_or("session stdin closed")?;
-        tx.send(data.to_vec()).await.map_err(|e| format!("write error: {}", e))
+        tx.send(data.to_vec())
+            .await
+            .map_err(|e| format!("write error: {}", e))
     }
 
     /// Kill a running session by sending the kill signal via oneshot channel.
     pub async fn kill_session(&self, id: &str) -> Result<(), String> {
         let mut running = self.running.lock().await;
-        let sess = running.remove(id).ok_or_else(|| format!("session not found: {}", id))?;
+        let sess = running
+            .remove(id)
+            .ok_or_else(|| format!("session not found: {}", id))?;
 
         // We need mutable access to take the kill_tx. Since the session is wrapped in Arc,
         // and we just removed the only reference from the map, we try to unwrap.
@@ -285,7 +305,10 @@ impl Default for ProcessRegistry {
 pub fn shell_command() -> (String, Vec<String>) {
     #[cfg(target_os = "windows")]
     {
-        ("powershell.exe".to_string(), vec!["-NoProfile".to_string(), "-Command".to_string()])
+        (
+            "powershell.exe".to_string(),
+            vec!["-NoProfile".to_string(), "-Command".to_string()],
+        )
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -325,13 +348,27 @@ pub fn hide_window_std(_cmd: &mut std::process::Command) {
 
 /// Environment variables that can be exploited for code injection.
 const DANGEROUS_ENV_VARS: &[&str] = &[
-    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
-    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
-    "IFS", "CDPATH", "BASH_ENV", "ENV", "PROMPT_COMMAND",
-    "SHELLOPTS", "BASHOPTS", "GLOBIGNORE",
-    "PYTHONSTARTUP", "PYTHONPATH",
-    "RUBYOPT", "RUBYLIB",
-    "PERL5OPT", "PERL5LIB", "PERL5DB",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "IFS",
+    "CDPATH",
+    "BASH_ENV",
+    "ENV",
+    "PROMPT_COMMAND",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "GLOBIGNORE",
+    "PYTHONSTARTUP",
+    "PYTHONPATH",
+    "RUBYOPT",
+    "RUBYLIB",
+    "PERL5OPT",
+    "PERL5LIB",
+    "PERL5DB",
     "NODE_OPTIONS",
 ];
 
@@ -345,7 +382,10 @@ pub fn sanitized_env() -> Vec<(String, String)> {
             if dangerous.contains(upper.as_str()) {
                 return false;
             }
-            if upper.starts_with("BASH_FUNC_") || upper.starts_with("LD_") || upper.starts_with("DYLD_") {
+            if upper.starts_with("BASH_FUNC_")
+                || upper.starts_with("LD_")
+                || upper.starts_with("DYLD_")
+            {
                 return false;
             }
             true

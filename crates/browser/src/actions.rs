@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::session::Page;
 use crate::BrowserError;
+use crate::session::Page;
 
 /// Options for navigation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,19 +149,36 @@ pub struct ScreenshotOptions {
 }
 
 /// Resolve the target selector from options (ref takes precedence).
-pub fn resolve_target(page: &Page, r#ref: &Option<String>, selector: &Option<String>) -> Result<String, BrowserError> {
+pub fn resolve_target(
+    page: &Page,
+    r#ref: &Option<String>,
+    selector: &Option<String>,
+) -> Result<String, BrowserError> {
     if let Some(r) = r#ref {
         return Ok(page.resolve_selector(r));
     }
     if let Some(s) = selector {
         return Ok(s.clone());
     }
-    Err(BrowserError::ElementNotFound("no ref or selector provided".into()))
+    Err(BrowserError::ElementNotFound(
+        "no ref or selector provided".into(),
+    ))
 }
 
 /// Interactive roles that get element refs in accessibility snapshots.
 pub const INTERACTIVE_ROLES: &[&str] = &[
-    "button", "link", "textbox", "checkbox", "radio", "combobox",
-    "listbox", "menuitem", "tab", "slider", "spinbutton", "switch",
-    "searchbox", "textarea",
+    "button",
+    "link",
+    "textbox",
+    "checkbox",
+    "radio",
+    "combobox",
+    "listbox",
+    "menuitem",
+    "tab",
+    "slider",
+    "spinbutton",
+    "switch",
+    "searchbox",
+    "textarea",
 ];

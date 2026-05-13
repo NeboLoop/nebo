@@ -140,10 +140,7 @@ pub fn build_domain_schema(cfg: &DomainSchemaConfig) -> serde_json::Value {
             .collect::<Vec<_>>()
             .into(),
     );
-    properties.insert(
-        "action".to_string(),
-        serde_json::Value::Object(action_prop),
-    );
+    properties.insert("action".to_string(), serde_json::Value::Object(action_prop));
 
     // Add field definitions
     for f in &cfg.fields {

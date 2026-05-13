@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::User;
 use crate::Store;
+use crate::models::User;
 use types::NeboError;
 
 impl Store {
@@ -106,7 +106,11 @@ impl Store {
         Ok(count > 0)
     }
 
-    pub fn update_user_password(&self, user_id: &str, password_hash: &str) -> Result<(), NeboError> {
+    pub fn update_user_password(
+        &self,
+        user_id: &str,
+        password_hash: &str,
+    ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE users SET password_hash = ?2, password_reset_token = NULL,

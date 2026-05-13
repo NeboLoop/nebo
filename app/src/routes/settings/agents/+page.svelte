@@ -10,7 +10,7 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listAgents();
       if (resp?.agents?.length) {
-        agents = resp.agents.map((a: Agent) => ({
+        agents = (resp.agents as Agent[]).map((a) => ({
           id: a.id,
           name: a.name,
           role: a.description || '',

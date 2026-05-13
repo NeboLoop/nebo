@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet};
 use chrono::Offset;
+use std::collections::{HashMap, HashSet};
 
 /// Controls how much of the system prompt is assembled.
 #[derive(Debug, Clone, Default)]
@@ -280,7 +280,6 @@ This is a persistent, single conversation. The user talks to you about many diff
 - If the user asks about something new, respond to that. Don't say "before we move on, should I finish X?" — they moved on, so you move on.
 - Context from earlier in the conversation is useful ONLY when the user references it. Don't proactively bring up old topics."#;
 
-
 const SECTION_SYSTEM_ETIQUETTE: &str = r#"## Shared Computer Etiquette
 
 You share this computer with a real person. Be a courteous roommate:
@@ -373,9 +372,12 @@ fn build_model_specific_guidance(provider_name: &str, model_name: &str) -> Strin
         return String::new();
     }
 
-    let is_gpt = lower_model.contains("gpt") || lower_model.contains("codex")
-        || lower_provider == "openai" || lower_provider == "deepseek";
-    let is_gemini = lower_model.contains("gemini") || lower_model.contains("gemma")
+    let is_gpt = lower_model.contains("gpt")
+        || lower_model.contains("codex")
+        || lower_provider == "openai"
+        || lower_provider == "deepseek";
+    let is_gemini = lower_model.contains("gemini")
+        || lower_model.contains("gemma")
         || lower_provider == "google";
 
     // Base enforcement for all non-Claude models (including Janus which may route anywhere)
@@ -449,14 +451,20 @@ pub fn build_strap_section(tool_names: &[String], active_contexts: &[String]) ->
     }
 
     // 3. Connected MCP server tools — group by server name
-    let mcp_tools: Vec<&String> = tool_names.iter().filter(|n| n.starts_with("mcp__")).collect();
+    let mcp_tools: Vec<&String> = tool_names
+        .iter()
+        .filter(|n| n.starts_with("mcp__"))
+        .collect();
     if !mcp_tools.is_empty() {
         // Group tools by server prefix: mcp__monument_sh__comment → "monument_sh"
         let mut servers: HashMap<String, Vec<String>> = HashMap::new();
         for tool_name in &mcp_tools {
             let parts: Vec<&str> = tool_name.splitn(3, "__").collect();
             if parts.len() == 3 {
-                servers.entry(parts[1].to_string()).or_default().push(parts[2].to_string());
+                servers
+                    .entry(parts[1].to_string())
+                    .or_default()
+                    .push(parts[2].to_string());
             }
         }
 
@@ -467,11 +475,19 @@ pub fn build_strap_section(tool_names: &[String], active_contexts: &[String]) ->
 
         for (server, tools) in &servers {
             let display_name = server.replace('_', ".");
-            sb.push_str(&format!("\n### {} (MCP)\nTools: {}\n", display_name, tools.join(", ")));
-            sb.push_str(&format!("Call like: {}(input)\n", mcp_tools.iter()
-                .find(|t| t.contains(server))
-                .map(|t| t.as_str())
-                .unwrap_or("mcp__server__tool")));
+            sb.push_str(&format!(
+                "\n### {} (MCP)\nTools: {}\n",
+                display_name,
+                tools.join(", ")
+            ));
+            sb.push_str(&format!(
+                "Call like: {}(input)\n",
+                mcp_tools
+                    .iter()
+                    .find(|t| t.contains(server))
+                    .map(|t| t.as_str())
+                    .unwrap_or("mcp__server__tool")
+            ));
         }
     }
 
@@ -484,7 +500,14 @@ pub fn build_deferred_listing(stubs: &[(String, String)]) -> String {
     if stubs.is_empty() {
         return String::new();
     }
-    let mut sb = String::from("## Additional Tools (available on demand)\n\nThese tools are available but not loaded yet. If a user's request matches one, just call it — it will activate automatically.\n");
+    let mut sb = String::from(
+        "## Additional Tools (available on demand)\n\n\
+         Call tool_search(query) to discover and activate these tools. Query modes:\n\
+         - select:name — activate a specific tool by exact name\n\
+         - keywords — search by capability (e.g., \"gmail\", \"workflow\")\n\n\
+         You can also just call a deferred tool directly — it will activate automatically.\n\n\
+         Available:\n",
+    );
     for (name, desc) in stubs {
         sb.push_str(&format!("- **{}**: {}\n", name, desc));
     }
@@ -690,7 +713,10 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
 
     // Build model identity line — for Janus gateway, use branded name
     let model_line = if dctx.provider_name == "janus" || dctx.model_name.starts_with("nebo-") {
-        format!("Model: neboloop/{} — you are Nebo, NOT Claude, GPT, Gemini, or any other model. Never claim to be a specific LLM.", dctx.model_name)
+        format!(
+            "Model: neboloop/{} — you are Nebo, NOT Claude, GPT, Gemini, or any other model. Never claim to be a specific LLM.",
+            dctx.model_name
+        )
     } else if dctx.provider_name.is_empty() && dctx.model_name.is_empty() {
         "Model: Nebo AI".to_string()
     } else {
@@ -700,7 +726,10 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     // Compute day-of-week date for system context (uses same timezone logic)
     let full_date_str = if let Some(ref tz_name) = dctx.user_timezone {
         if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
-            chrono::Utc::now().with_timezone(&tz).format("%A, %B %-d, %Y").to_string()
+            chrono::Utc::now()
+                .with_timezone(&tz)
+                .format("%A, %B %-d, %Y")
+                .to_string()
         } else {
             chrono::Local::now().format("%A, %B %-d, %Y").to_string()
         }
@@ -864,10 +893,7 @@ mod tests {
     fn test_strap_header_only_no_core_docs() {
         // Core tool docs moved to tool description() methods — build_strap_section
         // should NOT inject them.
-        let result = build_strap_section(&[
-            "web".to_string(),
-            "agent".to_string(),
-        ], &[]);
+        let result = build_strap_section(&["web".to_string(), "agent".to_string()], &[]);
         assert!(result.contains("STRAP Pattern"));
         // Core tool docs should NOT be present (they're in tool schemas now)
         assert!(!result.contains("### web"));
@@ -969,7 +995,10 @@ mod tests {
     #[test]
     fn test_model_specific_guidance_janus_has_enforcement() {
         let result = build_model_specific_guidance("janus", "nebo-fast");
-        assert!(result.contains("Tool-Use Enforcement"), "Janus should get enforcement (routes to non-Claude models)");
+        assert!(
+            result.contains("Tool-Use Enforcement"),
+            "Janus should get enforcement (routes to non-Claude models)"
+        );
     }
 
     #[test]
@@ -986,7 +1015,10 @@ mod tests {
             ..Default::default()
         };
         let result = build_dynamic_suffix(&dctx);
-        assert!(!result.contains("Tool-Use Enforcement"), "Claude should not get tool-use enforcement");
+        assert!(
+            !result.contains("Tool-Use Enforcement"),
+            "Claude should not get tool-use enforcement"
+        );
     }
 
     #[test]
@@ -997,7 +1029,10 @@ mod tests {
             ..Default::default()
         };
         let result = build_dynamic_suffix(&dctx);
-        assert!(result.contains("Tool-Use Enforcement"), "GPT should get tool-use enforcement in dynamic suffix");
+        assert!(
+            result.contains("Tool-Use Enforcement"),
+            "GPT should get tool-use enforcement in dynamic suffix"
+        );
     }
 
     #[test]
@@ -1008,15 +1043,22 @@ mod tests {
             ..Default::default()
         };
         let result = build_static(&pctx);
-        assert!(result.contains("scan the skills listed below"), "skill preamble should be injected");
-        assert!(result.contains("Available Skills"), "skill catalog should follow preamble");
+        assert!(
+            result.contains("scan the skills listed below"),
+            "skill preamble should be injected"
+        );
+        assert!(
+            result.contains("Available Skills"),
+            "skill catalog should follow preamble"
+        );
     }
 
     #[test]
     fn test_model_aliases_section() {
         let pctx = PromptContext {
             agent_name: "Nebo".to_string(),
-            model_aliases: "- sonnet: anthropic/claude-sonnet-4\n- opus: anthropic/claude-opus-4".to_string(),
+            model_aliases: "- sonnet: anthropic/claude-sonnet-4\n- opus: anthropic/claude-opus-4"
+                .to_string(),
             ..Default::default()
         };
         let result = build_static(&pctx);
@@ -1031,7 +1073,10 @@ mod tests {
             ..Default::default()
         };
         let result = build_static(&pctx);
-        assert!(result.contains(CACHE_BOUNDARY), "static prompt should contain CACHE_BOUNDARY marker");
+        assert!(
+            result.contains(CACHE_BOUNDARY),
+            "static prompt should contain CACHE_BOUNDARY marker"
+        );
     }
 
     #[test]
@@ -1042,13 +1087,25 @@ mod tests {
         };
         let result = build_static(&pctx);
         let offset = cache_boundary_offset(&result);
-        assert!(offset.is_some(), "cache_boundary_offset should find the marker");
+        assert!(
+            offset.is_some(),
+            "cache_boundary_offset should find the marker"
+        );
         let offset = offset.unwrap();
         let prefix = &result[..offset];
-        assert!(prefix.contains("personal AI companion"), "prefix should contain identity");
-        assert!(prefix.contains("Shared Computer Etiquette"), "prefix should contain etiquette");
+        assert!(
+            prefix.contains("personal AI companion"),
+            "prefix should contain identity"
+        );
+        assert!(
+            prefix.contains("Shared Computer Etiquette"),
+            "prefix should contain etiquette"
+        );
         let suffix = &result[offset..];
-        assert!(!suffix.contains("personal AI companion"), "suffix should not repeat identity");
+        assert!(
+            !suffix.contains("personal AI companion"),
+            "suffix should not repeat identity"
+        );
     }
 
     #[test]
@@ -1066,7 +1123,10 @@ mod tests {
         let result = build_static(&pctx);
         let offset = cache_boundary_offset(&result).unwrap();
         let suffix = &result[offset..];
-        assert!(suffix.contains("test_skill"), "skill catalog should be after cache boundary");
+        assert!(
+            suffix.contains("test_skill"),
+            "skill catalog should be after cache boundary"
+        );
     }
 
     #[test]
@@ -1079,7 +1139,10 @@ mod tests {
         let result = build_static(&pctx);
         let offset = cache_boundary_offset(&result).unwrap();
         let suffix = &result[offset..];
-        assert!(suffix.contains("Model Switching"), "model aliases should be after cache boundary");
+        assert!(
+            suffix.contains("Model Switching"),
+            "model aliases should be after cache boundary"
+        );
     }
 
     #[test]
@@ -1107,13 +1170,34 @@ mod tests {
         };
         let result = build_static(&pctx);
         // Minimal mode drops these sections
-        assert!(!result.contains("Executing actions with care"), "should drop SECTION_COMM_STYLE");
-        assert!(!result.contains("Inline Media"), "should drop SECTION_MEDIA");
-        assert!(!result.contains("persistent memory"), "should drop SECTION_MEMORY_DOCS");
-        assert!(!result.contains("Using your tools"), "should drop SECTION_TOOL_GUIDE");
-        assert!(!result.contains("Shared Computer Etiquette"), "should drop SECTION_SYSTEM_ETIQUETTE");
-        assert!(!result.contains("Available Skills"), "should drop skill catalog");
-        assert!(!result.contains("Model Switching"), "should drop model aliases");
+        assert!(
+            !result.contains("Executing actions with care"),
+            "should drop SECTION_COMM_STYLE"
+        );
+        assert!(
+            !result.contains("Inline Media"),
+            "should drop SECTION_MEDIA"
+        );
+        assert!(
+            !result.contains("persistent memory"),
+            "should drop SECTION_MEMORY_DOCS"
+        );
+        assert!(
+            !result.contains("Using your tools"),
+            "should drop SECTION_TOOL_GUIDE"
+        );
+        assert!(
+            !result.contains("Shared Computer Etiquette"),
+            "should drop SECTION_SYSTEM_ETIQUETTE"
+        );
+        assert!(
+            !result.contains("Available Skills"),
+            "should drop skill catalog"
+        );
+        assert!(
+            !result.contains("Model Switching"),
+            "should drop model aliases"
+        );
         assert!(!result.contains("Plugins"), "should drop plugin inventory");
     }
 
@@ -1126,7 +1210,10 @@ mod tests {
             ..Default::default()
         };
         let result = build_static(&pctx);
-        assert!(result.contains("Gmail Skill"), "minimal mode should keep active skill content");
+        assert!(
+            result.contains("Gmail Skill"),
+            "minimal mode should keep active skill content"
+        );
     }
 
     #[test]
@@ -1141,10 +1228,18 @@ mod tests {
             agent_name: "Nebo".to_string(),
             ..Default::default()
         });
-        assert!(minimal.len() < full.len(), "minimal ({}) should be smaller than full ({})", minimal.len(), full.len());
+        assert!(
+            minimal.len() < full.len(),
+            "minimal ({}) should be smaller than full ({})",
+            minimal.len(),
+            full.len()
+        );
         // Should save at least 4k chars (trimmed prompt is more compact)
-        assert!(full.len() - minimal.len() > 4000,
-            "should save >4k chars, saved {} chars", full.len() - minimal.len());
+        assert!(
+            full.len() - minimal.len() > 4000,
+            "should save >4k chars, saved {} chars",
+            full.len() - minimal.len()
+        );
     }
 
     #[test]
@@ -1157,7 +1252,10 @@ mod tests {
     fn test_deferred_listing_has_tools() {
         let stubs = vec![
             ("execute".to_string(), "Script execution engine".to_string()),
-            ("work".to_string(), "Workflow lifecycle management".to_string()),
+            (
+                "work".to_string(),
+                "Workflow lifecycle management".to_string(),
+            ),
         ];
         let result = build_deferred_listing(&stubs);
         assert!(result.contains("Additional Tools"));
@@ -1179,12 +1277,22 @@ mod tests {
             }
             // Split on ". " to get individual sentences within a line
             for sentence in line.split(". ") {
-                let s = sentence.trim().trim_start_matches("- ").trim_start_matches("**").trim();
+                let s = sentence
+                    .trim()
+                    .trim_start_matches("- ")
+                    .trim_start_matches("**")
+                    .trim();
                 let lower = s.to_lowercase();
-                if lower.contains("never") || lower.contains("always") || lower.contains("must")
-                    || lower.contains("do not") || lower.contains("don't") || lower.contains("zero")
-                    || lower.starts_with("use ") || lower.starts_with("keep ")
-                    || lower.starts_with("call ") || lower.starts_with("pick ")
+                if lower.contains("never")
+                    || lower.contains("always")
+                    || lower.contains("must")
+                    || lower.contains("do not")
+                    || lower.contains("don't")
+                    || lower.contains("zero")
+                    || lower.starts_with("use ")
+                    || lower.starts_with("keep ")
+                    || lower.starts_with("call ")
+                    || lower.starts_with("pick ")
                 {
                     instructions.push(normalize_instruction(s));
                 }
@@ -1234,9 +1342,11 @@ mod tests {
             }
         }
 
-        assert!(duplicates.is_empty(),
+        assert!(
+            duplicates.is_empty(),
             "Duplicate instructions found across sections:\n{}",
-            duplicates.join("\n"));
+            duplicates.join("\n")
+        );
     }
 
     #[test]
@@ -1265,10 +1375,15 @@ mod tests {
         for (concept, allowed_sections) in &ownership {
             // Verify concept exists in at least one allowed section
             let found_in_allowed = allowed_sections.iter().any(|allowed| {
-                all_sections.iter().any(|(name, text)| name == allowed && text.contains(concept))
+                all_sections
+                    .iter()
+                    .any(|(name, text)| name == allowed && text.contains(concept))
             });
-            assert!(found_in_allowed,
-                "Concept '{}' missing from all allowed sections {:?}", concept, allowed_sections);
+            assert!(
+                found_in_allowed,
+                "Concept '{}' missing from all allowed sections {:?}",
+                concept, allowed_sections
+            );
 
             // Check it doesn't appear in non-allowed sections
             for (section_name, section_text) in &all_sections {
@@ -1281,8 +1396,11 @@ mod tests {
             }
         }
 
-        assert!(violations.is_empty(),
-            "Concept ownership violations:\n{}", violations.join("\n"));
+        assert!(
+            violations.is_empty(),
+            "Concept ownership violations:\n{}",
+            violations.join("\n")
+        );
     }
 
     #[test]
@@ -1295,8 +1413,11 @@ mod tests {
 
         // "create files" appears in capabilities, tool guide, behavior, and etiquette
         let create_files_count = full_prompt.matches("create files").count();
-        assert!(create_files_count <= 4,
-            "'create files' concept appears {} times — possible duplication", create_files_count);
+        assert!(
+            create_files_count <= 4,
+            "'create files' concept appears {} times — possible duplication",
+            create_files_count
+        );
     }
 
     #[test]
@@ -1316,9 +1437,12 @@ mod tests {
         let total_chars = static_part.len() + dynamic_part.len();
         // Rough estimate: ~4 chars per token
         let estimated_tokens = total_chars / 4;
-        assert!(estimated_tokens < 5000,
+        assert!(
+            estimated_tokens < 5000,
             "Prompt too large: ~{} tokens ({} chars). Budget is 5000 tokens.",
-            estimated_tokens, total_chars);
+            estimated_tokens,
+            total_chars
+        );
     }
 }
 

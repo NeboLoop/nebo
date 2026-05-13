@@ -39,10 +39,7 @@ impl DesktopDaemon {
         }
 
         // Write script + sentinel marker to stdin
-        let payload = format!(
-            "{}\nWrite-Output '{}'\n",
-            script, SENTINEL
-        );
+        let payload = format!("{}\nWrite-Output '{}'\n", script, SENTINEL);
 
         // Write phase — if it fails, clear the process for restart
         {
@@ -64,11 +61,8 @@ impl DesktopDaemon {
         loop {
             let mut line = String::new();
             let proc = guard.as_mut().unwrap();
-            let read_result = tokio::time::timeout_at(
-                deadline,
-                proc.reader.read_line(&mut line),
-            )
-            .await;
+            let read_result =
+                tokio::time::timeout_at(deadline, proc.reader.read_line(&mut line)).await;
 
             match read_result {
                 Ok(Ok(0)) => {

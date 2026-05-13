@@ -1,10 +1,6 @@
 /**
  * nebo.a2ui — bridge between Nebo's WebSocket transport and @a2ui/web_core.
  *
- * This module does NOT depend on @a2ui/web_core directly. Instead, the app
- * creates a MessageProcessor (from @a2ui/web_core) with its chosen catalog
- * (from @a2ui/react, @a2ui/lit, etc.) and passes it to nebo.a2ui.init().
- *
  * The SDK handles:
  * - Receiving A2UI v0.9 messages from the backend WebSocket
  * - Feeding them to the processor via processMessages()
@@ -19,27 +15,14 @@
  *
  *   const processor = new MessageProcessor([basicCatalog]);
  *   nebo.a2ui.init(processor);
- *   nebo.surfaces.connect(); // A2UI messages auto-forwarded
- *
- *   // Listen for new surfaces
- *   processor.onSurfaceCreated((surface) => { ... });
- *
- *   // Render:
- *   <A2uiSurface surface={surface} />
- *
- *   // Send action back to agent:
- *   nebo.a2ui.sendAction(surfaceId, { name: 'submit', context: { ... } });
+ *   nebo.surfaces.connect();
  */
 
-import { getAppId } from './config';
+import type { A2uiMessage, A2uiMessageListWrapper } from '@a2ui/web_core/v0_9';
 
-/**
- * Minimal interface for @a2ui/web_core's MessageProcessor.
- * We only need processMessages() — the app handles everything else
- * (surface creation events, rendering, etc.) through the processor directly.
- */
+/** Structural type for @a2ui/web_core MessageProcessor — matches processMessages signature exactly. */
 export interface A2UIMessageProcessor {
-	processMessages(messages: unknown[]): void;
+	processMessages(messages: A2uiMessage[] | A2uiMessageListWrapper): void;
 }
 
 export class NeboA2UI {
@@ -49,8 +32,6 @@ export class NeboA2UI {
 	/**
 	 * Initialize with a @a2ui/web_core MessageProcessor.
 	 * Call before nebo.surfaces.connect().
-	 *
-	 * @param processor A MessageProcessor created with your chosen catalog.
 	 */
 	init(processor: A2UIMessageProcessor): void {
 		this.processor = processor;
@@ -67,7 +48,7 @@ export class NeboA2UI {
 	_handleMessage(message: unknown): void {
 		if (!this.processor) return;
 		try {
-			this.processor.processMessages([message]);
+			this.processor.processMessages([message as A2uiMessage]);
 		} catch (e) {
 			console.error('[nebo-sdk] A2UI processing error:', e);
 		}
@@ -82,9 +63,6 @@ export class NeboA2UI {
 
 	/**
 	 * Send a v0.9 client action back to the agent.
-	 *
-	 * @param surfaceId The surface the action originated from.
-	 * @param action The action payload (name, sourceComponentId, context, etc.)
 	 */
 	sendAction(surfaceId: string, action: Record<string, unknown>): void {
 		if (!this.sendFn) return;
@@ -106,11 +84,6 @@ export class NeboA2UI {
 
 	/**
 	 * Send a v0.9 client error report back to the agent.
-	 *
-	 * @param surfaceId The surface where the error occurred.
-	 * @param code Error code (e.g., "VALIDATION_FAILED").
-	 * @param message Human-readable error message.
-	 * @param path Optional JSON Pointer to the failed field.
 	 */
 	sendError(surfaceId: string, code: string, message: string, path?: string): void {
 		if (!this.sendFn) return;

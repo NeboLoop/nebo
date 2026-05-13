@@ -1,18 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::io::Read as _;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use tauri::{
+    LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::NewWindowResponse,
-    LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const SERVER_URL: &str = "http://localhost:27895";
 
@@ -50,6 +51,8 @@ fn is_stripe_domain(host: &str) -> bool {
 }
 
 // ── Window state: always stored as logical pixels ──────────────────────
+// All window states (main + app windows) are stored in a single JSON map
+// keyed by window label: { "main": {...}, "app-portfolio": {...}, ... }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct WindowState {
@@ -59,19 +62,40 @@ struct WindowState {
     height: f64,
 }
 
+/// All window states keyed by label.
+type WindowStates = std::collections::HashMap<String, WindowState>;
+
 fn state_path() -> PathBuf {
     config::data_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("window-state.json")
 }
 
-fn load_state() -> Option<WindowState> {
-    let data = std::fs::read_to_string(state_path()).ok()?;
-    let s: WindowState = serde_json::from_str(&data).ok()?;
+fn load_all_states() -> WindowStates {
+    let data = match std::fs::read_to_string(state_path()) {
+        Ok(d) => d,
+        Err(_) => return WindowStates::new(),
+    };
+    // Try new format (map of label → state)
+    if let Ok(map) = serde_json::from_str::<WindowStates>(&data) {
+        return map;
+    }
+    // Migrate old format (single WindowState → map with "main" key)
+    if let Ok(s) = serde_json::from_str::<WindowState>(&data) {
+        let mut map = WindowStates::new();
+        map.insert("main".to_string(), s);
+        return map;
+    }
+    WindowStates::new()
+}
+
+fn load_state(label: &str) -> Option<WindowState> {
+    let map = load_all_states();
+    let s = map.get(label)?;
     if s.width < 400.0 || s.height < 300.0 {
         return None;
     }
-    Some(s)
+    Some(s.clone())
 }
 
 /// Read current window geometry, convert physical → logical, and write to disk.
@@ -102,9 +126,19 @@ fn save_state(window: &tauri::Window) {
         width,
         height,
     };
-    if let Ok(data) = serde_json::to_string(&state) {
+
+    let mut map = load_all_states();
+    map.insert(window.label().to_string(), state);
+    if let Ok(data) = serde_json::to_string(&map) {
         let _ = std::fs::write(state_path(), data);
     }
+}
+
+/// Tauri command: get saved window state for a given label.
+/// Returns { x, y, width, height } or null if no saved state.
+#[tauri::command]
+fn get_window_state(label: String) -> Option<WindowState> {
+    load_state(&label)
 }
 
 /// Open a URL in the system browser, deduplicating rapid repeats of the same URL.
@@ -119,6 +153,93 @@ fn open_external(url: &str) {
     *last = Some((url.to_string(), Instant::now()));
     tracing::info!("Opening external URL in browser: {url}");
     let _ = open::that(url);
+}
+
+// ── neboapp:// protocol helpers ────────────────────────────────────────
+
+/// Resolve the UI directory for an app agent by scanning the filesystem.
+/// Checks user agents first (higher priority), then marketplace agents.
+fn resolve_app_ui_dir(agent_id: &str) -> Option<PathBuf> {
+    let data_dir = config::data_dir().ok()?;
+
+    for sub in &["user/agents", "nebo/agents"] {
+        let agents_dir = data_dir.join(sub);
+        if !agents_dir.is_dir() {
+            continue;
+        }
+
+        // Try exact directory name match
+        let exact = agents_dir.join(agent_id).join("ui");
+        if exact.is_dir() {
+            return Some(exact);
+        }
+
+        // Try case-insensitive directory name match
+        if let Ok(entries) = std::fs::read_dir(&agents_dir) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(agent_id)
+                {
+                    let ui = entry.path().join("ui");
+                    if ui.is_dir() {
+                        return Some(ui);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Generate the bridge script + meta tags injected into every HTML page served
+/// via the neboapp:// protocol. This rewrites neboapp:// URLs to HTTP so that
+/// libraries like HTMX (which use new URL() internally) work correctly.
+/// App-relative API paths are routed to the sidecar at /apps/{id}/api/*.
+fn neboapp_bridge(agent_id: &str) -> String {
+    format!(
+        concat!(
+            r#"<meta name="nebo-app-id" content="{id}">"#,
+            r#"<meta name="nebo-base-url" content="http://127.0.0.1:27895">"#,
+            r#"<meta name="htmx-config" content='{{"selfRequestsOnly":false}}'>"#,
+            r#"<script>(function(){{var api="http://127.0.0.1:27895/apps/{id}/api";"#,
+            r#"function rw(u){{if(typeof u!=="string")return u;"#,
+            r#"var m=u.match(/^neboapp:\/\/[^\/]+(\/.*)/);if(!m)return u;return api+m[1]}}"#,
+            r#"var F=window.fetch;window.fetch=function(i,o){{"#,
+            r#"if(typeof i==="string")i=rw(i);"#,
+            r#"else if(i instanceof Request)i=new Request(rw(i.url),i);"#,
+            r#"return F.call(this,i,o)}};"#,
+            r#"var X=XMLHttpRequest.prototype.open;"#,
+            r#"XMLHttpRequest.prototype.open=function(){{"#,
+            r#"arguments[1]=rw(arguments[1]);return X.apply(this,arguments)}}}})();</script>"#,
+        ),
+        id = agent_id
+    )
+}
+
+/// Simple MIME type detection from file extension.
+fn mime_from_extension(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html" | "htm") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js" | "mjs") => "application/javascript; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
+        Some("wasm") => "application/wasm",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
+        Some("mp4") => "video/mp4",
+        Some("webm") => "video/webm",
+        _ => "application/octet-stream",
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -141,27 +262,26 @@ fn main() {
     dotenvy::dotenv().ok();
 
     // Terminal layer (with ANSI colors)
-    let env_filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter =
+        || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let stdout_layer = fmt::layer().with_filter(env_filter());
 
     // File layer (append to ~/.nebo/logs/nebo.log)
-    let file_layer = config::data_dir()
-        .ok()
-        .and_then(|dir| {
-            let log_dir = dir.join("logs");
-            std::fs::create_dir_all(&log_dir).ok()?;
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_dir.join("nebo.log"))
-                .ok()?;
-            Some(
-                fmt::layer()
-                    .with_writer(Mutex::new(file))
-                    .with_ansi(false)
-                    .with_filter(env_filter()),
-            )
-        });
+    let file_layer = config::data_dir().ok().and_then(|dir| {
+        let log_dir = dir.join("logs");
+        std::fs::create_dir_all(&log_dir).ok()?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("nebo.log"))
+            .ok()?;
+        Some(
+            fmt::layer()
+                .with_writer(Mutex::new(file))
+                .with_ansi(false)
+                .with_filter(env_filter()),
+        )
+    });
 
     tracing_subscriber::registry()
         .with(stdout_layer)
@@ -219,9 +339,10 @@ fn main() {
 
     wait_for_server();
 
-    let saved = load_state();
+    let saved = load_state("main");
 
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![get_window_state])
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -231,6 +352,110 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+        .register_uri_scheme_protocol("neboapp", |_ctx, request| {
+            let uri = request.uri();
+            let agent_id = uri.host().unwrap_or("");
+            let path = uri.path();
+
+            // Resolve the agent's UI directory
+            let ui_dir = match resolve_app_ui_dir(agent_id) {
+                Some(dir) => dir,
+                None => {
+                    return http::Response::builder()
+                        .status(404)
+                        .header("Content-Type", "text/plain")
+                        .body(format!("App not found: {agent_id}").into_bytes())
+                        .unwrap();
+                }
+            };
+
+            // Prevent directory traversal
+            let clean_path = path.trim_start_matches('/');
+            if clean_path.contains("..") {
+                return http::Response::builder()
+                    .status(400)
+                    .header("Content-Type", "text/plain")
+                    .body(b"Bad Request".to_vec())
+                    .unwrap();
+            }
+
+            // Try exact file (empty path → index.html)
+            let file_path = if clean_path.is_empty() {
+                ui_dir.join("index.html")
+            } else {
+                ui_dir.join(clean_path)
+            };
+
+            if file_path.is_file() {
+                if let Ok(data) = std::fs::read(&file_path) {
+                    // For HTML entry pages, inject meta tags so the SDK
+                    // (including older bundled versions) knows the app ID
+                    // and where to send API/WebSocket requests.
+                    let is_html = mime_from_extension(&file_path).starts_with("text/html");
+                    let body = if is_html {
+                        let html = String::from_utf8_lossy(&data);
+                        let bridge = neboapp_bridge(agent_id);
+                        html.replacen("<head>", &format!("<head>{bridge}"), 1)
+                            .into_bytes()
+                    } else {
+                        data
+                    };
+                    return http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", mime_from_extension(&file_path))
+                        .body(body)
+                        .unwrap();
+                }
+            }
+
+            // Not a static file — proxy to the Nebo server.
+            // Try the path as-is first, then fall back to the app's sidecar API.
+            let urls = [
+                format!("http://127.0.0.1:27895{}", path),
+                format!("http://127.0.0.1:27895/apps/{}/api{}", agent_id, path),
+            ];
+            for url in &urls {
+                if let Ok(resp) = ureq::get(url).call() {
+                    let status = resp.status();
+                    if status != 404 {
+                        let content_type = resp
+                            .header("Content-Type")
+                            .unwrap_or("application/octet-stream")
+                            .to_string();
+                        let mut body = Vec::new();
+                        let _ = resp.into_reader().read_to_end(&mut body);
+                        return http::Response::builder()
+                            .status(status)
+                            .header("Content-Type", content_type)
+                            .body(body)
+                            .unwrap();
+                    }
+                }
+            }
+
+            // SPA fallback: if proxy returned 404 or failed, and path has
+            // no file extension, serve index.html for client-side routing.
+            let ext = std::path::Path::new(path).extension();
+            if ext.is_none() || ext.and_then(|e| e.to_str()) == Some("html") {
+                let index = ui_dir.join("index.html");
+                if let Ok(data) = std::fs::read(&index) {
+                    let html = String::from_utf8_lossy(&data);
+                    let bridge = neboapp_bridge(agent_id);
+                    let body = html.replacen("<head>", &format!("<head>{bridge}"), 1);
+                    return http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", "text/html; charset=utf-8")
+                        .body(body.into_bytes())
+                        .unwrap();
+                }
+            }
+
+            http::Response::builder()
+                .status(404)
+                .header("Content-Type", "text/plain")
+                .body(b"Not Found".to_vec())
+                .unwrap()
+        })
         .setup(move |app| {
             // Use saved logical dimensions or defaults
             let (w, h) = saved
@@ -374,11 +599,14 @@ fn main() {
         .on_window_event(|window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
-                    // Hide to tray — the server keeps running in the background.
-                    // Users quit via tray menu "Quit Nebo" or Cmd+Q.
-                    api.prevent_close();
                     save_state(window);
-                    let _ = window.hide();
+                    if window.label() == "main" {
+                        // Hide to tray — the server keeps running in the background.
+                        // Users quit via tray menu "Quit Nebo" or Cmd+Q.
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    // App windows (app-*) close normally — state was saved above.
                 }
                 tauri::WindowEvent::DragDrop(event) => {
                     // Tauri intercepts file drops at the OS level — browser ondrop never fires.
@@ -407,7 +635,11 @@ fn main() {
                     }
                 }
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
-                    if WINDOW_READY.load(Ordering::SeqCst)
+                    // Only save after the main window has been fully initialized.
+                    // App windows are always ready (created by user action).
+                    let ready = window.label() != "main"
+                        || WINDOW_READY.load(Ordering::SeqCst);
+                    if ready
                         && !window.is_minimized().unwrap_or_default()
                         && !window.is_maximized().unwrap_or_default()
                     {
@@ -501,8 +733,8 @@ fn wait_for_server() {
 
 async fn run_native_messaging() -> anyhow::Result<()> {
     use futures::{SinkExt, StreamExt};
-    use tokio::io::AsyncReadExt;
     use std::sync::Arc;
+    use tokio::io::AsyncReadExt;
 
     eprintln!("[nebo-relay] starting native messaging bridge");
 
@@ -659,13 +891,27 @@ fn detect_parent_browser() -> String {
             .args(["-p", &ppid.to_string(), "-o", "comm="])
             .output()
         {
-            let parent = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
-            if parent.contains("brave") { return "brave".into(); }
-            if parent.contains("chrome") { return "chrome".into(); }
-            if parent.contains("firefox") { return "firefox".into(); }
-            if parent.contains("edge") { return "edge".into(); }
-            if parent.contains("arc") { return "arc".into(); }
-            if !parent.is_empty() { return parent; }
+            let parent = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_lowercase();
+            if parent.contains("brave") {
+                return "brave".into();
+            }
+            if parent.contains("chrome") {
+                return "chrome".into();
+            }
+            if parent.contains("firefox") {
+                return "firefox".into();
+            }
+            if parent.contains("edge") {
+                return "edge".into();
+            }
+            if parent.contains("arc") {
+                return "arc".into();
+            }
+            if !parent.is_empty() {
+                return parent;
+            }
         }
     }
     "unknown".into()

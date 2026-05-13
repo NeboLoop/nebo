@@ -271,7 +271,10 @@ impl DynTool for PluginTool {
 
     fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
         // help, services, and events are read-only; exec needs approval
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("exec");
+        let action = input
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("exec");
         action == "exec"
     }
 
@@ -341,7 +344,11 @@ impl PluginTool {
                         "- **{}.{}** — {}{}\n",
                         slug,
                         ev.name,
-                        if ev.description.is_empty() { "(no description)" } else { &ev.description },
+                        if ev.description.is_empty() {
+                            "(no description)"
+                        } else {
+                            &ev.description
+                        },
                         if ev.multiplexed { " [multiplexed]" } else { "" }
                     ));
                 }
@@ -375,10 +382,9 @@ impl PluginTool {
             None => {
                 // Try to suggest similar services
                 let services = self.list_services(slug);
-                let names: Vec<&str> = services.iter()
-                    .map(|(n, _)| {
-                        n.strip_prefix(&format!("{}-", slug)).unwrap_or(n.as_str())
-                    })
+                let names: Vec<&str> = services
+                    .iter()
+                    .map(|(n, _)| n.strip_prefix(&format!("{}-", slug)).unwrap_or(n.as_str()))
                     .collect();
                 ToolResult::error(format!(
                     "No docs found for '{}'. Available services: {}",
@@ -461,7 +467,7 @@ impl PluginTool {
     async fn run_plugin_command(&self, pi: &PluginInput) -> ToolResult {
         if pi.command.is_empty() && pi.args.is_empty() {
             return ToolResult::error(
-                "command is required for exec. Use action: \"services\" to discover available commands."
+                "command is required for exec. Use action: \"services\" to discover available commands.",
             );
         }
 
@@ -549,21 +555,16 @@ impl PluginTool {
             }
         }
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            cmd.output(),
-        )
-        .await;
+        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output()).await;
 
         match result {
             Err(_) => ToolResult::error(format!(
                 "Plugin '{}' command timed out after {}s",
                 pi.resource, timeout_secs
             )),
-            Ok(Err(e)) => ToolResult::error(format!(
-                "Plugin '{}' command failed: {}",
-                pi.resource, e
-            )),
+            Ok(Err(e)) => {
+                ToolResult::error(format!("Plugin '{}' command failed: {}", pi.resource, e))
+            }
             Ok(Ok(output)) => {
                 let mut text = String::new();
 
@@ -767,11 +768,7 @@ impl PluginTool {
                             all.push_str(&chunk);
                             if !opened {
                                 if let Some(url) = extract_url(&all, false) {
-                                    open_auth_url(
-                                        &slug_for_stdout,
-                                        &url,
-                                        &broadcaster_for_stdout,
-                                    );
+                                    open_auth_url(&slug_for_stdout, &url, &broadcaster_for_stdout);
                                     opened = true;
                                 }
                             }
@@ -886,305 +883,6 @@ fn open_auth_url(slug: &str, url: &str, broadcaster: &Option<crate::web_tool::Br
     }
 }
 
-// ── PluginCommandTool (Phase 1C) ────────────────────────────────────
-
-/// A generated tool backed by a single plugin CLI subcommand.
-///
-/// Created from `capabilities.tools[]` entries in plugin.json. Implements
-/// `DynTool` so it can be registered alongside native tools and MCP proxies.
-/// Execution is always out-of-process via the plugin binary.
-pub struct PluginCommandTool {
-    /// Tool name as exposed to the agent (e.g., "gws_gmail_triage").
-    tool_name: String,
-    /// Human-readable description.
-    tool_description: String,
-    /// CLI arguments passed to the plugin binary.
-    command_args: Vec<String>,
-    /// JSON Schema for typed input.
-    input_schema: serde_json::Value,
-    /// Whether this tool requires user approval.
-    approval: bool,
-    /// Timeout in seconds.
-    timeout_seconds: u64,
-    /// Plugin slug — used to resolve binary and deps.
-    plugin_slug: String,
-    /// Shared plugin store for binary resolution.
-    plugin_store: Arc<napp::plugin::PluginStore>,
-    /// Optional DB store for reading plugin config settings.
-    store: Option<Arc<db::Store>>,
-}
-
-impl PluginCommandTool {
-    /// Create from a manifest tool definition and plugin store.
-    pub fn from_def(
-        def: &napp::plugin::PluginToolDef,
-        plugin_slug: &str,
-        plugin_store: Arc<napp::plugin::PluginStore>,
-    ) -> Self {
-        // Normalize tool name: dots → underscores (agent tool names can't have dots)
-        let tool_name = def.name.replace('.', "_");
-
-        let command_args = shlex::split(&def.command).unwrap_or_else(|| {
-            def.command.split_whitespace().map(String::from).collect()
-        });
-
-        let input_schema = def.input_schema.clone().unwrap_or_else(|| {
-            serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": true
-            })
-        });
-
-        Self {
-            tool_name,
-            tool_description: def.description.clone(),
-            command_args,
-            input_schema,
-            approval: def.approval,
-            timeout_seconds: def.timeout_seconds,
-            plugin_slug: plugin_slug.to_string(),
-            plugin_store,
-            store: None,
-        }
-    }
-
-    /// Attach a DB store for reading plugin config settings.
-    pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
-        self.store = Some(store);
-        self
-    }
-}
-
-impl DynTool for PluginCommandTool {
-    fn name(&self) -> &str {
-        &self.tool_name
-    }
-
-    fn description(&self) -> String {
-        self.tool_description.clone()
-    }
-
-    fn schema(&self) -> serde_json::Value {
-        self.input_schema.clone()
-    }
-
-    fn requires_approval(&self) -> bool {
-        self.approval
-    }
-
-    fn execute_dyn<'a>(
-        &'a self,
-        _ctx: &'a ToolContext,
-        input: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
-        Box::pin(async move {
-            // Resolve plugin binary
-            let binary_path = match self.plugin_store.resolve(&self.plugin_slug, "*") {
-                Some(p) => p,
-                None => {
-                    return ToolResult::error(format!(
-                        "Plugin '{}' not found", self.plugin_slug
-                    ));
-                }
-            };
-
-            // Build command args: base args + input as JSON on stdin or as --key value pairs
-            let mut cmd = tokio::process::Command::new(&binary_path);
-            cmd.args(&self.command_args);
-
-            // Pass input as named args (--key value) for object inputs
-            if let Some(obj) = input.as_object() {
-                for (key, value) in obj {
-                    cmd.arg(format!("--{}", key));
-                    match value {
-                        serde_json::Value::String(s) => { cmd.arg(s); }
-                        other => { cmd.arg(other.to_string()); }
-                    };
-                }
-            }
-
-            process::hide_window(&mut cmd);
-            cmd.stdout(Stdio::piped());
-            cmd.stderr(Stdio::piped());
-
-            // Load permissions manifest for env filtering + timeout capping
-            let permissions = self.plugin_store.get_manifest(&self.plugin_slug)
-                .and_then(|m| m.permissions);
-
-            // Clean env + inject sanitized env (filtered by permissions)
-            cmd.env_clear();
-            for (k, v) in process::sanitized_env() {
-                if let Some(ref perms) = permissions {
-                    if perms.env_deny.iter().any(|d| d == &k) {
-                        continue;
-                    }
-                    if !perms.env_allow.is_empty()
-                        && !perms.env_allow.iter().any(|a| a == &k)
-                    {
-                        continue;
-                    }
-                }
-                cmd.env(k, v);
-            }
-
-            // Plugin binary env var
-            cmd.env(
-                napp::plugin::plugin_env_var(&self.plugin_slug),
-                binary_path.to_string_lossy().as_ref(),
-            );
-
-            // Dependency env vars
-            for dep in self.plugin_store.get_dependencies(&self.plugin_slug) {
-                if let Some(dep_path) = self.plugin_store.resolve(&dep.name, &dep.version) {
-                    cmd.env(
-                        napp::plugin::plugin_env_var(&dep.name),
-                        dep_path.to_string_lossy().as_ref(),
-                    );
-                }
-            }
-
-            // Augmented PATH
-            cmd.env("PATH", self.plugin_store.path_with_plugins());
-
-            // Auth env vars
-            if let Some((_bin, auth)) = self.plugin_store.get_auth_info(&self.plugin_slug) {
-                for (k, v) in &auth.env {
-                    cmd.env(k, v);
-                }
-            }
-
-            // Plugin config settings (from DB, injected as env vars)
-            if let Some(ref store) = self.store {
-                if let Ok(settings) = store.list_plugin_settings_by_slug(&self.plugin_slug) {
-                    for s in settings {
-                        cmd.env(&s.setting_key, &s.setting_value);
-                    }
-                }
-            }
-
-            // Cap timeout by permissions manifest
-            let effective_timeout = match &permissions {
-                Some(perms) if perms.max_timeout_seconds > 0 => {
-                    self.timeout_seconds.min(perms.max_timeout_seconds)
-                }
-                _ => self.timeout_seconds,
-            };
-
-            let result = tokio::time::timeout(
-                Duration::from_secs(effective_timeout),
-                cmd.output(),
-            )
-            .await;
-
-            match result {
-                Err(_) => ToolResult::error(format!(
-                    "Plugin tool '{}' timed out after {}s",
-                    self.tool_name, self.timeout_seconds
-                )),
-                Ok(Err(e)) => ToolResult::error(format!(
-                    "Plugin tool '{}' failed: {}", self.tool_name, e
-                )),
-                Ok(Ok(output)) => {
-                    let mut text = String::new();
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    if !stdout.is_empty() {
-                        text.push_str(&stdout);
-                    }
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if !stderr.is_empty() {
-                        if !text.is_empty() {
-                            text.push('\n');
-                        }
-                        text.push_str("STDERR:\n");
-                        text.push_str(&stderr);
-                    }
-
-                    if !output.status.success() {
-                        let code = output.status.code().unwrap_or(-1);
-                        return ToolResult::error(format!(
-                            "Plugin tool '{}' exited with code {}\n{}",
-                            self.tool_name, code, text
-                        ));
-                    }
-
-                    if text.is_empty() {
-                        text = "(no output)".to_string();
-                    }
-
-                    const MAX_OUTPUT: usize = 50000;
-                    if text.len() > MAX_OUTPUT {
-                        text.truncate(MAX_OUTPUT);
-                        text.push_str("\n... (output truncated)");
-                    }
-
-                    ToolResult::ok(text)
-                }
-            }
-        })
-    }
-}
-
-/// Register all structured tools from a plugin's capabilities manifest.
-///
-/// Called after plugin install. Returns the number of tools registered.
-pub async fn register_plugin_tools(
-    registry: &crate::registry::Registry,
-    plugin_store: &Arc<napp::plugin::PluginStore>,
-    slug: &str,
-    store: Option<&Arc<db::Store>>,
-) -> usize {
-    let manifest = match plugin_store.get_manifest(slug) {
-        Some(m) => m,
-        None => return 0,
-    };
-
-    let tools = match manifest.capabilities {
-        Some(ref caps) => &caps.tools,
-        None => return 0,
-    };
-
-    let mut count = 0;
-    for tool_def in tools {
-        let mut tool = PluginCommandTool::from_def(tool_def, slug, plugin_store.clone());
-        if let Some(s) = store {
-            tool = tool.with_store(s.clone());
-        }
-        registry.register(Box::new(tool)).await;
-        count += 1;
-    }
-
-    if count > 0 {
-        tracing::info!(plugin = slug, tools = count, "registered plugin tools");
-    }
-
-    count
-}
-
-/// Unregister all structured tools from a plugin's capabilities manifest.
-///
-/// Called before plugin removal.
-pub async fn unregister_plugin_tools(
-    registry: &crate::registry::Registry,
-    plugin_store: &Arc<napp::plugin::PluginStore>,
-    slug: &str,
-) {
-    let manifest = match plugin_store.get_manifest(slug) {
-        Some(m) => m,
-        None => return,
-    };
-
-    let tools = match manifest.capabilities {
-        Some(ref caps) => &caps.tools,
-        None => return,
-    };
-
-    for tool_def in tools {
-        let tool_name = tool_def.name.replace('.', "_");
-        registry.unregister(&tool_name).await;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1215,7 +913,10 @@ mod tests {
     fn test_extract_url_streaming() {
         // URL followed by more text → extracted
         assert_eq!(
-            extract_url("Visit https://accounts.google.com/o/oauth2 to continue", false),
+            extract_url(
+                "Visit https://accounts.google.com/o/oauth2 to continue",
+                false
+            ),
             Some("https://accounts.google.com/o/oauth2".to_string())
         );
         // URL as last token without trailing whitespace → NOT extracted (still streaming)

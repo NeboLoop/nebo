@@ -65,7 +65,10 @@ pub fn parse_date(s: &str) -> Result<chrono::NaiveDateTime, String> {
         }
     }
 
-    Err(format!("Could not parse date: '{}'. Use YYYY-MM-DD HH:MM, MM/DD/YYYY, 'tomorrow', or 'in N days'", s))
+    Err(format!(
+        "Could not parse date: '{}'. Use YYYY-MM-DD HH:MM, MM/DD/YYYY, 'tomorrow', or 'in N days'",
+        s
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -129,7 +132,9 @@ pub async fn run_osascript(script: &str) -> ToolResult {
         Ok(Err(e)) => ToolResult::error(format!("Failed to run osascript: {}", e)),
         Err(_) => {
             // child is killed on drop via kill_on_drop(true)
-            ToolResult::error("Timed out after 30s. Try specifying a calendar name to narrow the query.")
+            ToolResult::error(
+                "Timed out after 30s. Try specifying a calendar name to narrow the query.",
+            )
         }
     }
 }
@@ -171,9 +176,7 @@ pub async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
             ToolResult::error(msg)
         }
         Ok(Err(e)) => ToolResult::error(format!("Failed to run {}: {}", cmd, e)),
-        Err(_) => {
-            ToolResult::error("Timed out after 30s.")
-        }
+        Err(_) => ToolResult::error("Timed out after 30s."),
     }
 }
 
@@ -262,9 +265,7 @@ pub async fn run_powershell(script: &str) -> ToolResult {
             ToolResult::error(msg)
         }
         Ok(Err(e)) => ToolResult::error(format!("Failed to run PowerShell: {}", e)),
-        Err(_) => {
-            ToolResult::error("Timed out after 30s.")
-        }
+        Err(_) => ToolResult::error("Timed out after 30s."),
     }
 }
 

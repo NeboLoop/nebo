@@ -59,8 +59,8 @@
 
 {#if show}
   <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={handleDeny}></div>
-    <div class="relative w-full max-w-md rounded-2xl bg-base-100 border border-warning/30 shadow-2xl overflow-hidden" onkeydown={handleKeydown}>
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="presentation" onclick={handleDeny} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleDeny(); } }}></div>
+    <div class="relative w-full max-w-md rounded-2xl bg-base-100 border border-warning/30 shadow-2xl overflow-hidden" role="presentation" onkeydown={handleKeydown}>
       <!-- Header -->
       <div class="flex items-center gap-3 px-5 py-4 bg-warning/5 border-b border-warning/20">
         <div class="w-9 h-9 rounded-full bg-warning/15 flex items-center justify-center">

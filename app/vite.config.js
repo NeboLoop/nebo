@@ -31,6 +31,14 @@ export default defineConfig({
 				target: 'http://localhost:27895',
 				changeOrigin: true
 			},
+			'/apps': {
+				target: 'http://localhost:27895',
+				changeOrigin: true
+			},
+			'/sdk': {
+				target: 'http://localhost:27895',
+				changeOrigin: true
+			},
 			'/ws': {
 				target: 'ws://localhost:27895',
 				ws: true,

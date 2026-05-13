@@ -1,9 +1,9 @@
 use axum::extract::State;
 use axum::response::Json;
 
+use super::{HandlerResult, to_error_response};
 use crate::middleware::AuthClaims;
 use crate::state::AppState;
-use super::{to_error_response, HandlerResult};
 
 /// GET /api/v1/user/me
 pub async fn get_current_user(
@@ -76,16 +76,19 @@ pub async fn delete_account(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<AuthClaims>,
 ) -> HandlerResult<serde_json::Value> {
-    state.store.delete_user(&claims.user_id).map_err(to_error_response)?;
+    state
+        .store
+        .delete_user(&claims.user_id)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"success": true})))
 }
 
 /// GET /api/v1/user/me/profile
-pub async fn get_profile(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn get_profile(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let profile = state.store.get_user_profile().map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({ "profile": profile_to_json(profile) })))
+    Ok(Json(
+        serde_json::json!({ "profile": profile_to_json(profile) }),
+    ))
 }
 
 /// PUT /api/v1/user/me/profile
@@ -95,7 +98,10 @@ pub async fn update_profile(
 ) -> HandlerResult<serde_json::Value> {
     // Handle onboardingCompleted separately
     if let Some(completed) = body["onboardingCompleted"].as_bool() {
-        state.store.set_onboarding_completed(completed).map_err(to_error_response)?;
+        state
+            .store
+            .set_onboarding_completed(completed)
+            .map_err(to_error_response)?;
     }
 
     state
@@ -113,7 +119,9 @@ pub async fn update_profile(
         )
         .map_err(to_error_response)?;
     let profile = state.store.get_user_profile().map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({ "profile": profile_to_json(profile) })))
+    Ok(Json(
+        serde_json::json!({ "profile": profile_to_json(profile) }),
+    ))
 }
 
 /// Convert UserProfile to camelCase JSON matching the frontend's expected format.
@@ -142,10 +150,11 @@ fn profile_to_json(profile: Option<db::models::UserProfile>) -> serde_json::Valu
 }
 
 /// GET /api/v1/user/me/preferences
-pub async fn get_preferences(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
-    let prefs = state.store.get_user_preferences().map_err(to_error_response)?;
+pub async fn get_preferences(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let prefs = state
+        .store
+        .get_user_preferences()
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"preferences": prefs})))
 }
 
@@ -164,14 +173,15 @@ pub async fn update_preferences(
             body["inappNotifications"].as_i64().map(|v| v != 0),
         )
         .map_err(to_error_response)?;
-    let prefs = state.store.get_user_preferences().map_err(to_error_response)?;
+    let prefs = state
+        .store
+        .get_user_preferences()
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!(prefs)))
 }
 
 /// GET /api/v1/user/me/permissions
-pub async fn get_permissions(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn get_permissions(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let profile = state.store.get_user_profile().map_err(to_error_response)?;
     let permissions = profile
         .and_then(|p| p.tool_permissions)
@@ -193,9 +203,7 @@ pub async fn update_permissions(
 }
 
 /// POST /api/v1/user/me/accept-terms
-pub async fn accept_terms(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn accept_terms(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     state.store.accept_terms().map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"success": true})))
 }

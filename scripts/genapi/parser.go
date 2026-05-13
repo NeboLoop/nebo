@@ -234,11 +234,13 @@ func scanRoutes(dir string) []Route {
 	return routes
 }
 
-var reRoute = regexp.MustCompile(`\.route\(\s*"([^"]+)"\s*,\s*axum::routing::(get|post|put|delete|patch)\(([^)]+)\)((?:\s*\.\s*(?:get|post|put|delete|patch)\([^)]+\))*)\s*\)`)
+var reRoute = regexp.MustCompile(`\.route\(\s*"([^"]+)"\s*,\s*axum::routing::(get|post|put|delete|patch)\(([^)]+?)\)`)
 
 func parseRoutes(src, sourceFile string) []Route {
 	var routes []Route
-	for _, m := range reRoute.FindAllStringSubmatch(src, -1) {
+	// Collapse newlines so multi-line .route() calls match the regex.
+	collapsed := strings.ReplaceAll(src, "\n", " ")
+	for _, m := range reRoute.FindAllStringSubmatch(collapsed, -1) {
 		routePath := m[1]
 		method := strings.ToUpper(m[2])
 		handler := strings.TrimSpace(m[3])
@@ -249,20 +251,6 @@ func parseRoutes(src, sourceFile string) []Route {
 			Handler: handler,
 			Source:  sourceFile,
 		})
-
-		// Parse chained methods: .post(handler2).put(handler3)
-		chained := m[4]
-		if chained != "" {
-			reChain := regexp.MustCompile(`\.\s*(get|post|put|delete|patch)\(\s*([^)]+)\s*\)`)
-			for _, cm := range reChain.FindAllStringSubmatch(chained, -1) {
-				routes = append(routes, Route{
-					Method:  strings.ToUpper(cm[1]),
-					Path:    routePath,
-					Handler: strings.TrimSpace(cm[2]),
-					Source:  sourceFile,
-				})
-			}
-		}
 	}
 	return routes
 }
@@ -393,7 +381,7 @@ func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruc
 		if keys != nil {
 			// Refine inferred types using variable type info and key-name heuristics.
 			for i := range keys {
-				keys[i].InferredTS = refineType(keys[i], varTypes, structs, funcName)
+				keys[i].InferredTS = refineType(keys[i], varTypes, structs, handlerToFuncName(h.QualifiedName))
 			}
 			h.ResponseKeys = keys
 		}
@@ -807,6 +795,7 @@ func extractBraced(s string) string {
 }
 
 // parseJsonMacroKeys extracts "key": expr pairs from a json!({...}) body.
+// Only extracts top-level keys — skips content nested inside [...] or {...}.
 func parseJsonMacroKeys(content string) []ResponseKey {
 	// Remove outer braces.
 	inner := strings.TrimSpace(content)
@@ -816,21 +805,35 @@ func parseJsonMacroKeys(content string) []ResponseKey {
 	inner = inner[1 : len(inner)-1]
 
 	var keys []ResponseKey
-	// Simple line-by-line parsing of "key": value,
+	// Track nesting depth so we only match top-level "key": value pairs.
+	depth := 0
 	reKV := regexp.MustCompile(`"(\w+)"\s*:\s*(.+?)(?:\s*,\s*$|\s*$)`)
 	for _, line := range strings.Split(inner, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
 			continue
 		}
-		if m := reKV.FindStringSubmatch(trimmed); m != nil {
-			key := m[1]
-			expr := strings.TrimRight(strings.TrimSpace(m[2]), ",")
-			keys = append(keys, ResponseKey{
-				Key:        key,
-				ValueExpr:  expr,
-				InferredTS: inferTSType(expr),
-			})
+		// Update depth BEFORE matching — count openers and closers on this line.
+		// Only match keys at depth 0 (top-level of the json! object).
+		prevDepth := depth
+		for _, ch := range trimmed {
+			switch ch {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+			}
+		}
+		if prevDepth == 0 {
+			if m := reKV.FindStringSubmatch(trimmed); m != nil {
+				key := m[1]
+				expr := strings.TrimRight(strings.TrimSpace(m[2]), ",")
+				keys = append(keys, ResponseKey{
+					Key:        key,
+					ValueExpr:  expr,
+					InferredTS: inferTSType(expr),
+				})
+			}
 		}
 	}
 	return keys

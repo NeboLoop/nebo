@@ -179,6 +179,7 @@
     <div class="command-palette-card">
       <div class="flex items-center gap-3 px-4 py-3.5 border-b border-base-content/10">
         <Search class="w-5 h-5 text-base-content/40 shrink-0" />
+        <!-- svelte-ignore a11y_autofocus -->
         <input
           type="text"
           bind:value={query}
@@ -194,8 +195,8 @@
           <div class="command-palette-category">{group.category}</div>
           {#each group.items as item}
             {@const globalIndex = flatFiltered.indexOf(item)}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
+            <button
+              type="button"
               class="command-palette-item"
               data-selected={globalIndex === selectedIndex}
               onclick={() => activate(item)}
@@ -217,7 +218,7 @@
               {#if item.description}
                 <span class="text-xs text-base-content/50 truncate ml-auto">{item.description}</span>
               {/if}
-            </div>
+            </button>
           {/each}
         {/each}
 

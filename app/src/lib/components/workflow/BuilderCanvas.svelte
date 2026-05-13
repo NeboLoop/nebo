@@ -30,7 +30,7 @@
 		onremoveConnection,
 		ondropNode,
 	}: {
-		workflow: WorkflowConfig & Record<string, unknown>;
+		workflow: WorkflowConfig;
 		workflowName: string;
 		agentId: string;
 		mode: 'view' | 'edit';
@@ -51,7 +51,7 @@
 			workflow.trigger || { type: 'manual' },
 			workflow.activities || [],
 			workflow.emit,
-			workflow.lastRunStatus,
+			undefined,
 			workflow.connections,
 		);
 	});
@@ -181,7 +181,7 @@
 		startMouseX: number; startMouseY: number;
 		startNodeX: number; startNodeY: number;
 	} | null>(null);
-	let hasDragged = false;
+	let hasDragged = $state(false);
 
 	// ── Wire dragging (connection creation)
 	let wireDrag = $state<{
@@ -196,9 +196,7 @@
 
 	function hasCatalogDragType(e: DragEvent): boolean {
 		if (!e.dataTransfer) return false;
-		const types = e.dataTransfer.types;
-		if (typeof types.contains === 'function') return types.contains('application/x-workflow-node');
-		return Array.from(types).includes('application/x-workflow-node');
+		return Array.from(e.dataTransfer.types).includes('application/x-workflow-node');
 	}
 
 	function onCanvasDragOver(e: DragEvent) {
@@ -572,6 +570,7 @@
 						stroke="transparent"
 						stroke-width="16"
 						class="cursor-pointer"
+						role="presentation"
 						style="pointer-events: stroke;"
 						onclick={(e) => handleEdgeClick(e, edge)}
 						oncontextmenu={(e) => handleEdgeContextMenu(e, edge)}
@@ -621,6 +620,7 @@
 						{@const my = (edge.from.y + edge.from.h / 2 + edge.to.y + edge.to.h / 2) / 2}
 						<g
 							class="cursor-pointer"
+							role="presentation"
 							style="pointer-events: all;"
 							onclick={(e) => { e.stopPropagation(); onremoveConnection?.(edge.from.id, edge.to.id); selectedEdgeKey = null; }}
 						>
@@ -739,13 +739,15 @@
 
 			<!-- "+" connector buttons -->
 			{#each plusButtons as btn, bi (`plus-${bi}-${btn.afterNodeId}-${btn.branchLabel ?? ''}`)}
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				{#if btn.branchLabel}
 					<div
 						data-wf-plus
 						class="absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 cursor-pointer group"
 						style="left: {btn.x}px; top: {btn.y}px;"
+						role="button"
+						tabindex="0"
 						onclick={(e) => { e.stopPropagation(); onopenCatalog?.(btn.afterNodeId, btn.branchLabel); }}
+						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onopenCatalog?.(btn.afterNodeId, btn.branchLabel); } }}
 						title="Add {btn.branchLabel} branch"
 					>
 						<div class="w-6 h-6 rounded-full border-2 border-dashed border-base-content/20 bg-base-100 flex items-center justify-center text-base-content/40 text-xs group-hover:border-primary group-hover:text-primary group-hover:bg-primary/5 transition-colors">+</div>
@@ -756,7 +758,10 @@
 						data-wf-plus
 						class="absolute w-7 h-7 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-dashed border-base-content/20 bg-base-100 flex items-center justify-center text-base-content/40 text-sm cursor-pointer hover:border-primary hover:text-primary hover:bg-primary/5 transition-colors"
 						style="left: {btn.x}px; top: {btn.y}px;"
+						role="button"
+						tabindex="0"
 						onclick={(e) => { e.stopPropagation(); onopenCatalog?.(btn.afterNodeId); }}
+						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onopenCatalog?.(btn.afterNodeId); } }}
 						title="Add node"
 					>+</div>
 				{/if}
@@ -766,11 +771,11 @@
 
 	<!-- Context menu -->
 	{#if contextMenu}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="fixed inset-0 z-[80]" onclick={() => contextMenu = null} onmousedown={(e) => e.stopPropagation()}>
+		<div class="fixed inset-0 z-[80]" role="presentation" onclick={() => contextMenu = null} onmousedown={(e) => e.stopPropagation()}>
 			<div
 				class="absolute bg-base-100 border border-base-300 rounded-lg shadow-xl py-1 min-w-[160px] z-[81]"
 				style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+				role="presentation"
 				onclick={(e) => e.stopPropagation()}
 			>
 				{#if contextMenu.edgeFrom && contextMenu.edgeTo}

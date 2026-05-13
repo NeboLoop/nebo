@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Time-based deduplication cache with size limits.
 pub struct DedupeCache {
@@ -58,9 +58,8 @@ impl DedupeCache {
 
         // Enforce max size (LRU: remove oldest)
         if entries.len() > self.max_size {
-            let mut sorted: Vec<(String, Instant)> = entries.iter()
-                .map(|(k, v)| (k.clone(), *v))
-                .collect();
+            let mut sorted: Vec<(String, Instant)> =
+                entries.iter().map(|(k, v)| (k.clone(), *v)).collect();
             sorted.sort_by_key(|(_, ts)| *ts);
 
             let to_remove = entries.len() - self.max_size;
@@ -184,8 +183,10 @@ pub fn parse_error_info(raw: &str) -> Option<ApiErrorInfo> {
         }
     }
 
-    if !info.http_code.is_empty() || !info.error_type.is_empty()
-        || !info.message.is_empty() || !info.request_id.is_empty()
+    if !info.http_code.is_empty()
+        || !info.error_type.is_empty()
+        || !info.message.is_empty()
+        || !info.request_id.is_empty()
     {
         Some(info)
     } else {
@@ -256,7 +257,8 @@ fn stable_stringify(value: &serde_json::Map<String, serde_json::Value>) -> Strin
     let mut keys: Vec<&String> = value.keys().collect();
     keys.sort();
 
-    let parts: Vec<String> = keys.iter()
+    let parts: Vec<String> = keys
+        .iter()
         .map(|k| format!("\"{}\":{}", k, stable_value(&value[*k])))
         .collect();
     format!("{{{}}}", parts.join(","))
@@ -321,7 +323,8 @@ mod tests {
 
     #[test]
     fn test_fingerprint_error() {
-        let payload = r#"{"type":"error","error":{"type":"rate_limit_error","message":"Too many requests"}}"#;
+        let payload =
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"Too many requests"}}"#;
         let fp1 = fingerprint_error(payload);
         let fp2 = fingerprint_error(payload);
         assert!(!fp1.is_empty());

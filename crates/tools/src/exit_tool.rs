@@ -10,15 +10,21 @@ pub const EXIT_SENTINEL: &str = "__WORKFLOW_EXIT__:";
 pub struct ExitTool;
 
 impl ExitTool {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for ExitTool {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DynTool for ExitTool {
-    fn name(&self) -> &str { "exit" }
+    fn name(&self) -> &str {
+        "exit"
+    }
 
     fn description(&self) -> String {
         "Stop this workflow early when there is nothing meaningful to do — \
@@ -27,7 +33,8 @@ impl DynTool for ExitTool {
          Examples:\n  \
          exit(reason: \"No urgent emails found\")\n  \
          exit(reason: \"Nothing new since last check\")\n  \
-         exit(reason: \"Condition not met\")".to_string()
+         exit(reason: \"Condition not met\")"
+            .to_string()
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -43,7 +50,9 @@ impl DynTool for ExitTool {
         })
     }
 
-    fn requires_approval(&self) -> bool { false }
+    fn requires_approval(&self) -> bool {
+        false
+    }
 
     fn execute_dyn<'a>(
         &'a self,

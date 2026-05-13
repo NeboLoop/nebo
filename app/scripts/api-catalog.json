@@ -741,6 +741,11 @@
 		"pathParams": [{ "name": "slug" }],
 		"responseType": "MessageResponse"
 	},
+	"GET /plugins/{slug}/dependents": {
+		"fn": "listPluginDependents",
+		"desc": "List plugin dependents",
+		"customBody": "/**\n * @description \"List plugin dependents\"\n */\nexport function listPluginDependents(slug: string) {\n\treturn webapi.get<{ skills: Array<{ name: string; description: string; type: string }>; agents: Array<{ name: string; description: string; type: string }>; total: number }>(`/api/v1/plugins/${slug}/dependents`)\n}"
+	},
 	"POST /plugins/{slug}/auth/login": {
 		"fn": "pluginAuthLogin",
 		"desc": "Plugin auth login",
@@ -754,8 +759,7 @@
 	"GET /plugins/{slug}/auth/status": {
 		"fn": "pluginAuthStatus",
 		"desc": "Plugin auth status",
-		"pathParams": [{ "name": "slug" }],
-		"responseType": "PluginAuthStatusResponse"
+		"customBody": "/**\n * @description \"Plugin auth status\"\n */\nexport function pluginAuthStatus(slug: string) {\n\treturn webapi.get<{ authenticated: boolean }>(`/api/v1/plugins/${slug}/auth/status`)\n}"
 	},
 	"GET /providers": {
 		"fn": "listAuthProfiles",

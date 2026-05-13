@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use db::Store;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
+use db::Store;
 
 /// PublisherTool manages publishing skills and agents to NeboLoop marketplace.
 pub struct PublisherTool {
@@ -36,11 +36,19 @@ impl PublisherTool {
         }
     }
 
-    async fn publish_agent(&self, api: &comm::api::NeboLoopApi, name: &str, version: &str, visibility: &str) -> ToolResult {
+    async fn publish_agent(
+        &self,
+        api: &comm::api::NeboLoopApi,
+        name: &str,
+        version: &str,
+        visibility: &str,
+    ) -> ToolResult {
         let db_role = match self.store.list_agents(500, 0) {
             Ok(agents) => {
                 let lower = name.to_lowercase();
-                agents.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name)
+                agents
+                    .into_iter()
+                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
             }
             Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
         };
@@ -55,23 +63,55 @@ impl PublisherTool {
             Some(db_role.frontmatter.as_str())
         };
 
-        match api.publish_agent(&db_role.name, &db_role.description, &db_role.agent_md, version, visibility, agent_json).await {
+        match api
+            .publish_agent(
+                &db_role.name,
+                &db_role.description,
+                &db_role.agent_md,
+                version,
+                visibility,
+                agent_json,
+            )
+            .await
+        {
             Ok(result) => {
                 let artifact_id = result["id"].as_str().unwrap_or("unknown");
-                self.maybe_submit(api, artifact_id, version, visibility, &db_role.name, "agent").await
+                self.maybe_submit(
+                    api,
+                    artifact_id,
+                    version,
+                    visibility,
+                    &db_role.name,
+                    "agent",
+                )
+                .await
             }
             Err(e) => ToolResult::error(format!("Publish failed: {}", e)),
         }
     }
 
-    async fn publish_skill(&self, api: &comm::api::NeboLoopApi, name: &str, version: &str, visibility: &str) -> ToolResult {
+    async fn publish_skill(
+        &self,
+        api: &comm::api::NeboLoopApi,
+        name: &str,
+        version: &str,
+        visibility: &str,
+    ) -> ToolResult {
         // Read SKILL.md from filesystem
         let data_dir = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
         // Check user skills first, then installed
         let skill_md_path = [
-            data_dir.join("user").join("skills").join(name).join("SKILL.md"),
-            data_dir.join("nebo").join("skills").join(name).join("SKILL.md"),
+            data_dir
+                .join("user")
+                .join("skills")
+                .join(name)
+                .join("SKILL.md"),
+            data_dir
+                .join("nebo")
+                .join("skills")
+                .join(name)
+                .join("SKILL.md"),
         ];
 
         let (manifest_content, description) = {
@@ -80,12 +120,19 @@ impl PublisherTool {
                 if path.exists() {
                     if let Ok(content) = std::fs::read_to_string(path) {
                         // Extract description from first paragraph
-                        let desc = content.lines()
-                            .skip_while(|l| l.starts_with('#') || l.trim().is_empty() || l.starts_with("---"))
+                        let desc = content
+                            .lines()
+                            .skip_while(|l| {
+                                l.starts_with('#') || l.trim().is_empty() || l.starts_with("---")
+                            })
                             .take_while(|l| !l.trim().is_empty())
                             .collect::<Vec<_>>()
                             .join(" ");
-                        let desc = if desc.len() > 200 { format!("{}...", crate::truncate_str(&desc, 200)) } else { desc };
+                        let desc = if desc.len() > 200 {
+                            format!("{}...", crate::truncate_str(&desc, 200))
+                        } else {
+                            desc
+                        };
                         found = Some((content, desc));
                         break;
                     }
@@ -93,20 +140,37 @@ impl PublisherTool {
             }
             match found {
                 Some(f) => f,
-                None => return ToolResult::error(format!("Skill '{}' not found. Check that SKILL.md exists in the skills directory.", name)),
+                None => {
+                    return ToolResult::error(format!(
+                        "Skill '{}' not found. Check that SKILL.md exists in the skills directory.",
+                        name
+                    ));
+                }
             }
         };
 
-        match api.publish_skill(name, &description, &manifest_content, version, visibility).await {
+        match api
+            .publish_skill(name, &description, &manifest_content, version, visibility)
+            .await
+        {
             Ok(result) => {
                 let artifact_id = result["id"].as_str().unwrap_or("unknown");
-                self.maybe_submit(api, artifact_id, version, visibility, name, "skill").await
+                self.maybe_submit(api, artifact_id, version, visibility, name, "skill")
+                    .await
             }
             Err(e) => ToolResult::error(format!("Publish failed: {}", e)),
         }
     }
 
-    async fn maybe_submit(&self, api: &comm::api::NeboLoopApi, artifact_id: &str, version: &str, visibility: &str, name: &str, artifact_type: &str) -> ToolResult {
+    async fn maybe_submit(
+        &self,
+        api: &comm::api::NeboLoopApi,
+        artifact_id: &str,
+        version: &str,
+        visibility: &str,
+        name: &str,
+        artifact_type: &str,
+    ) -> ToolResult {
         if visibility == "public" {
             match api.submit_for_review(artifact_id, version).await {
                 Ok(_) => ToolResult::ok(format!(
@@ -141,9 +205,15 @@ impl PublisherTool {
 
         let mut out = String::from("## Published Artifacts\n\n");
         for s in &skills {
-            let vis = if s.is_installed { "installed" } else { &s.status };
-            out.push_str(&format!("- **{}** v{} [{}] — {}\n  ID: `{}`\n",
-                s.name, s.version, vis, s.description, s.id));
+            let vis = if s.is_installed {
+                "installed"
+            } else {
+                &s.status
+            };
+            out.push_str(&format!(
+                "- **{}** v{} [{}] — {}\n  ID: `{}`\n",
+                s.name, s.version, vis, s.description, s.id
+            ));
         }
         ToolResult::ok(out)
     }
@@ -160,16 +230,14 @@ impl PublisherTool {
         };
 
         match api.get_skill(id).await {
-            Ok(detail) => {
-                ToolResult::ok(format!(
-                    "**{}** v{}\nStatus: {}\nType: {}\nCode: {}",
-                    detail.item.name,
-                    detail.item.version,
-                    detail.item.status,
-                    detail.item.artifact_type.as_deref().unwrap_or("unknown"),
-                    detail.item.code.as_deref().unwrap_or("none"),
-                ))
-            }
+            Ok(detail) => ToolResult::ok(format!(
+                "**{}** v{}\nStatus: {}\nType: {}\nCode: {}",
+                detail.item.name,
+                detail.item.version,
+                detail.item.status,
+                detail.item.artifact_type.as_deref().unwrap_or("unknown"),
+                detail.item.code.as_deref().unwrap_or("none"),
+            )),
             Err(e) => ToolResult::error(format!("Failed to fetch artifact: {}", e)),
         }
     }
@@ -247,7 +315,8 @@ impl DynTool for PublisherTool {
                 "list" => self.handle_list().await,
                 "status" => self.handle_status(&input).await,
                 _ => ToolResult::error(format!(
-                    "Unknown action '{}'. Available: publish, list, status", action
+                    "Unknown action '{}'. Available: publish, list, status",
+                    action
                 )),
             }
         })

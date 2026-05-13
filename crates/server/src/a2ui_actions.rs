@@ -50,15 +50,33 @@ impl ActionBinding {
 
         Some(Self {
             action_type,
-            server: ctx.get("server").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            tool: ctx.get("tool").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            server: ctx
+                .get("server")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            tool: ctx
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             args: ctx.get("args").cloned(),
-            update_path: ctx.get("update_path").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            view: ctx.get("view").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            update_path: ctx
+                .get("update_path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            view: ctx
+                .get("view")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             params: ctx.get("params").cloned(),
-            path: ctx.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            path: ctx
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             value: ctx.get("value").cloned(),
-            prompt_template: ctx.get("prompt_template").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            prompt_template: ctx
+                .get("prompt_template")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
         })
     }
 
@@ -94,10 +112,7 @@ pub async fn dispatch(
         .filter(|b| b.action_type != "agent") // Only use inline if it's deterministic
         .or_else(|| {
             // Try views.json action bindings
-            let view_id = surface_id
-                .split(':')
-                .nth(2)
-                .unwrap_or("default");
+            let view_id = surface_id.split(':').nth(2).unwrap_or("default");
             views_json.and_then(|v| ActionBinding::from_views_json(v, view_id, action_name))
         });
 
@@ -208,7 +223,13 @@ async fn handle_navigate(
     };
 
     if let Err(e) = a2ui
-        .navigate_view(agent_id, from_view, target_view, binding.params.clone(), views)
+        .navigate_view(
+            agent_id,
+            from_view,
+            target_view,
+            binding.params.clone(),
+            views,
+        )
         .await
     {
         warn!(error = %e, "navigate action failed");
@@ -216,11 +237,7 @@ async fn handle_navigate(
 }
 
 /// Handle update_data action: direct data model update.
-async fn handle_update_data(
-    a2ui: &Arc<A2UIManager>,
-    surface_id: &str,
-    binding: &ActionBinding,
-) {
+async fn handle_update_data(a2ui: &Arc<A2UIManager>, surface_id: &str, binding: &ActionBinding) {
     let path = binding.path.as_deref();
     let value = match &binding.value {
         Some(v) => v.clone(),

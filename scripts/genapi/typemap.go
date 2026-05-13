@@ -131,12 +131,25 @@ func snakeToPascal(s string) string {
 	return strings.Join(parts, "")
 }
 
+// Modules whose name is prepended to the function name to avoid collisions.
+// e.g. handlers::neboloop::account_status → neboLoopAccountStatus
+var prefixedModules = map[string]string{
+	"neboloop": "nebo_loop",
+	"user":     "user",
+}
+
 // handlerToFuncName converts a Rust handler function name to a TS function name.
 // e.g. list_agent_chats → listAgentChats
+// For prefixed modules: handlers::neboloop::account_status → neboLoopAccountStatus
 func handlerToFuncName(handler string) string {
-	// Extract the last segment after ::
 	parts := strings.Split(handler, "::")
 	name := parts[len(parts)-1]
+	if len(parts) >= 2 {
+		module := parts[len(parts)-2]
+		if prefix, ok := prefixedModules[module]; ok {
+			name = prefix + "_" + name
+		}
+	}
 	return snakeToCamel(name)
 }
 

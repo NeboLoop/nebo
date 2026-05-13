@@ -1,16 +1,16 @@
 use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket};
 use axum::extract::WebSocketUpgrade;
+use axum::extract::ws::{Message, WebSocket};
 use axum::http::StatusCode;
 use axum::http::header;
 use axum::response::{IntoResponse, Json, Response};
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use voice::streaming::{StreamingConfig, StreamingTranscriber, TranscriptEvent};
 
-use super::{ApiResult, ApiError};
+use super::{ApiError, ApiResult};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -34,10 +34,7 @@ fn default_speed() -> f32 {
 ///
 /// Accepts a JSON body with `text`, optional `voice` and `speed`.
 /// Returns WAV audio bytes with `Content-Type: audio/wav`.
-pub async fn tts(
-    State(state): State<AppState>,
-    Json(body): Json<TtsBody>,
-) -> Response {
+pub async fn tts(State(state): State<AppState>, Json(body): Json<TtsBody>) -> Response {
     info!(text = %body.text, voice = %body.voice, speed = body.speed, "voice tts request");
 
     let req = voice::TtsRequest {
@@ -92,9 +89,7 @@ pub async fn transcribe(
 /// GET /api/v1/voice/status
 ///
 /// Returns availability of local voice engines.
-pub async fn status(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+pub async fn status(State(state): State<AppState>) -> Json<serde_json::Value> {
     let status = state.voice.status();
     Json(serde_json::json!(status))
 }
@@ -115,10 +110,7 @@ pub async fn status(
 /// - Server → Client: JSON `{"type": "TranscriptText", "text": "..."}`
 /// - Server → Client: JSON `{"type": "TranscriptEndpoint"}`
 /// - Server → Client: JSON `{"type": "Error", "message": "..."}`
-pub async fn dictation_ws_handler(
-    State(state): State<AppState>,
-    ws: WebSocketUpgrade,
-) -> Response {
+pub async fn dictation_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     info!("dictation WebSocket upgrade requested");
     ws.on_upgrade(move |socket| handle_dictation_ws(socket, state))
 }
@@ -149,7 +141,9 @@ async fn handle_dictation_ws(mut socket: WebSocket, state: AppState) {
         Err(e) => {
             let _ = socket
                 .send(Message::Text(
-                    serde_json::json!({"type": "Error", "message": e.to_string()}).to_string().into(),
+                    serde_json::json!({"type": "Error", "message": e.to_string()})
+                        .to_string()
+                        .into(),
                 ))
                 .await;
             return;
@@ -309,7 +303,8 @@ async fn wait_for_start(socket: &mut WebSocket) -> Option<DictationRoute> {
             let _ = socket
                 .send(Message::Text(
                     serde_json::json!({"type": "Error", "message": "timeout waiting for Start"})
-                        .to_string().into(),
+                        .to_string()
+                        .into(),
                 ))
                 .await;
             None
@@ -375,11 +370,8 @@ async fn handle_conversation_ws(socket: WebSocket, state: AppState) {
 
     // Create and start the conversation orchestrator
     let config = voice::conversation::ConversationConfig::default();
-    let orchestrator = voice::conversation::ConversationOrchestrator::new(
-        config,
-        state.voice.clone(),
-        agent_tx,
-    );
+    let orchestrator =
+        voice::conversation::ConversationOrchestrator::new(config, state.voice.clone(), agent_tx);
     let (cmd_tx, event_rx) = orchestrator.start();
 
     // Run the WebSocket bridge (translates between WS messages and orchestrator channels)
@@ -553,7 +545,8 @@ async fn handle_agent_requests(
                     }
                 }
                 if !has_content {
-                    let _ = req.response_tx
+                    let _ = req
+                        .response_tx
                         .send("I'm sorry, I wasn't able to generate a response.".to_string())
                         .await;
                 }
@@ -561,7 +554,8 @@ async fn handle_agent_requests(
             }
             Err(e) => {
                 error!(error = %e, "voice conversation agent run failed");
-                let _ = req.response_tx
+                let _ = req
+                    .response_tx
                     .send(format!("Sorry, I encountered an error: {}", e))
                     .await;
             }

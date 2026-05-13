@@ -188,26 +188,19 @@ async fn handle_shuffle(input: &serde_json::Value) -> ToolResult {
         _ => {
             // Check current state and toggle
             let check = tokio::process::Command::new("osascript")
-                .args([
-                    "-e",
-                    "tell application \"Music\" to return shuffle enabled",
-                ])
+                .args(["-e", "tell application \"Music\" to return shuffle enabled"])
                 .output()
                 .await;
             match check {
                 Ok(out) => {
                     let current = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     if current == "true" {
-                        run_osascript(
-                            "tell application \"Music\" to set shuffle enabled to false",
-                        )
-                        .await;
+                        run_osascript("tell application \"Music\" to set shuffle enabled to false")
+                            .await;
                         ToolResult::ok("Shuffle: OFF")
                     } else if current == "false" {
-                        run_osascript(
-                            "tell application \"Music\" to set shuffle enabled to true",
-                        )
-                        .await;
+                        run_osascript("tell application \"Music\" to set shuffle enabled to true")
+                            .await;
                         ToolResult::ok("Shuffle: ON")
                     } else {
                         ToolResult::ok(format!("Shuffle: {}", current))
@@ -226,7 +219,9 @@ async fn handle_shuffle(input: &serde_json::Value) -> ToolResult {
 #[cfg(target_os = "linux")]
 async fn handle_play() -> ToolResult {
     if !which("playerctl") {
-        return ToolResult::error("playerctl not found. Install playerctl for media control on Linux.");
+        return ToolResult::error(
+            "playerctl not found. Install playerctl for media control on Linux.",
+        );
     }
     run_command("playerctl", &["play"]).await
 }
@@ -234,7 +229,9 @@ async fn handle_play() -> ToolResult {
 #[cfg(target_os = "linux")]
 async fn handle_pause() -> ToolResult {
     if !which("playerctl") {
-        return ToolResult::error("playerctl not found. Install playerctl for media control on Linux.");
+        return ToolResult::error(
+            "playerctl not found. Install playerctl for media control on Linux.",
+        );
     }
     run_command("playerctl", &["pause"]).await
 }
@@ -242,7 +239,9 @@ async fn handle_pause() -> ToolResult {
 #[cfg(target_os = "linux")]
 async fn handle_next() -> ToolResult {
     if !which("playerctl") {
-        return ToolResult::error("playerctl not found. Install playerctl for media control on Linux.");
+        return ToolResult::error(
+            "playerctl not found. Install playerctl for media control on Linux.",
+        );
     }
     run_command("playerctl", &["next"]).await
 }
@@ -250,7 +249,9 @@ async fn handle_next() -> ToolResult {
 #[cfg(target_os = "linux")]
 async fn handle_previous() -> ToolResult {
     if !which("playerctl") {
-        return ToolResult::error("playerctl not found. Install playerctl for media control on Linux.");
+        return ToolResult::error(
+            "playerctl not found. Install playerctl for media control on Linux.",
+        );
     }
     run_command("playerctl", &["previous"]).await
 }
@@ -258,11 +259,17 @@ async fn handle_previous() -> ToolResult {
 #[cfg(target_os = "linux")]
 async fn handle_status() -> ToolResult {
     if !which("playerctl") {
-        return ToolResult::error("playerctl not found. Install playerctl for media control on Linux.");
+        return ToolResult::error(
+            "playerctl not found. Install playerctl for media control on Linux.",
+        );
     }
     run_command(
         "playerctl",
-        &["metadata", "--format", "{{artist}} - {{title}} [{{status}}]"],
+        &[
+            "metadata",
+            "--format",
+            "{{artist}} - {{title}} [{{status}}]",
+        ],
     )
     .await
 }
@@ -275,7 +282,9 @@ async fn handle_search(_query: &str) -> ToolResult {
 #[cfg(target_os = "linux")]
 async fn handle_volume(input: &serde_json::Value) -> ToolResult {
     if !which("playerctl") {
-        return ToolResult::error("playerctl not found. Install playerctl for media control on Linux.");
+        return ToolResult::error(
+            "playerctl not found. Install playerctl for media control on Linux.",
+        );
     }
     match input.get("value") {
         Some(v) if !v.is_null() => {
@@ -295,11 +304,17 @@ async fn handle_playlists() -> ToolResult {
 #[cfg(target_os = "linux")]
 async fn handle_shuffle(input: &serde_json::Value) -> ToolResult {
     if !which("playerctl") {
-        return ToolResult::error("playerctl not found. Install playerctl for media control on Linux.");
+        return ToolResult::error(
+            "playerctl not found. Install playerctl for media control on Linux.",
+        );
     }
     match input.get("value") {
         Some(v) if !v.is_null() => {
-            let enable = if v.as_bool().unwrap_or(true) { "On" } else { "Off" };
+            let enable = if v.as_bool().unwrap_or(true) {
+                "On"
+            } else {
+                "Off"
+            };
             run_command("playerctl", &["shuffle", enable]).await
         }
         _ => {
@@ -374,7 +389,11 @@ async fn run_osascript(script: &str) -> ToolResult {
     {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() { "OK".to_string() } else { text })
+            ToolResult::ok(if text.is_empty() {
+                "OK".to_string()
+            } else {
+                text
+            })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -389,7 +408,11 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() { "OK".to_string() } else { text })
+            ToolResult::ok(if text.is_empty() {
+                "OK".to_string()
+            } else {
+                text
+            })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -397,7 +420,11 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
             ToolResult::error(format!(
                 "{}{}",
                 stdout,
-                if stderr.is_empty() { String::new() } else { format!("\n{}", stderr) }
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stderr)
+                }
             ))
         }
         Err(e) => ToolResult::error(format!("Command '{}' failed: {}", cmd, e)),

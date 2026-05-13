@@ -1,8 +1,8 @@
 #[cfg(target_os = "windows")]
 use crate::desktop_daemon::DesktopDaemon;
 use crate::desktop_snapshot::{
-    self, assign_element_ids, generate_snapshot_id, parse_ax_output, Snapshot, SnapshotStore,
-    UIElement,
+    self, Snapshot, SnapshotStore, UIElement, assign_element_ids, generate_snapshot_id,
+    parse_ax_output,
 };
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
@@ -158,7 +158,9 @@ impl DynTool for DesktopTool {
                     handle_clipboard(action, &input).await
                 }
                 "notification" => handle_notification(action, &input).await,
-                "capture" => handle_capture(action, &input, &self.snapshot_store, &self.ax_cache).await,
+                "capture" => {
+                    handle_capture(action, &input, &self.snapshot_store, &self.ax_cache).await
+                }
                 "ui" => {
                     let _guard = self.input_lock.lock().await;
                     handle_ui(action, &input).await
@@ -271,7 +273,9 @@ async fn handle_window_list() -> ToolResult {
         if which("xdotool") {
             return run_command("xdotool", &["search", "--onlyvisible", "--name", ""]).await;
         }
-        return ToolResult::error("Window list requires wmctrl or xdotool (install with your package manager)");
+        return ToolResult::error(
+            "Window list requires wmctrl or xdotool (install with your package manager)",
+        );
     }
     #[cfg(target_os = "windows")]
     {
@@ -317,12 +321,16 @@ public class Win {{ [DllImport("user32.dll")] public static extern bool SetForeg
 "@
 $p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
 if ($p) {{ [Win]::SetForegroundWindow($p.MainWindowHandle) }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app), escape_powershell(app)
+            escape_powershell(app),
+            escape_powershell(app)
         );
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = app; ToolResult::error("Window focus is not supported on this platform") }
+    {
+        let _ = app;
+        ToolResult::error("Window focus is not supported on this platform")
+    }
 }
 
 async fn handle_window_minimize(app: &str) -> ToolResult {
@@ -357,12 +365,16 @@ public class Win {{ [DllImport("user32.dll")] public static extern bool ShowWind
 "@
 $p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
 if ($p) {{ [Win]::ShowWindow($p.MainWindowHandle, 6) }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app), escape_powershell(app)
+            escape_powershell(app),
+            escape_powershell(app)
         );
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = app; ToolResult::error("Window minimize is not supported on this platform") }
+    {
+        let _ = app;
+        ToolResult::error("Window minimize is not supported on this platform")
+    }
 }
 
 async fn handle_window_maximize(app: &str) -> ToolResult {
@@ -381,7 +393,11 @@ async fn handle_window_maximize(app: &str) -> ToolResult {
     #[cfg(target_os = "linux")]
     {
         if which("wmctrl") {
-            return run_command("wmctrl", &["-r", app, "-b", "add,maximized_vert,maximized_horz"]).await;
+            return run_command(
+                "wmctrl",
+                &["-r", app, "-b", "add,maximized_vert,maximized_horz"],
+            )
+            .await;
         }
         if which("xdotool") {
             let search = run_command_raw("xdotool", &["search", "--name", app]).await;
@@ -404,12 +420,16 @@ public class Win {{ [DllImport("user32.dll")] public static extern bool ShowWind
 "@
 $p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
 if ($p) {{ [Win]::ShowWindow($p.MainWindowHandle, 3) }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app), escape_powershell(app)
+            escape_powershell(app),
+            escape_powershell(app)
         );
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = app; ToolResult::error("Window maximize is not supported on this platform") }
+    {
+        let _ = app;
+        ToolResult::error("Window maximize is not supported on this platform")
+    }
 }
 
 async fn handle_window_resize(app: &str, w: i64, h: i64) -> ToolResult {
@@ -417,7 +437,9 @@ async fn handle_window_resize(app: &str, w: i64, h: i64) -> ToolResult {
     {
         let script = format!(
             "tell application \"System Events\" to set size of first window of process \"{}\" to {{{}, {}}}",
-            escape_applescript(app), w, h
+            escape_applescript(app),
+            w,
+            h
         );
         return run_osascript(&script).await;
     }
@@ -446,12 +468,18 @@ public class Win {{ [DllImport("user32.dll")] public static extern bool MoveWind
 "@
 $p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
 if ($p) {{ [Win]::MoveWindow($p.MainWindowHandle, 0, 0, {}, {}, $true) }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app), w, h, escape_powershell(app)
+            escape_powershell(app),
+            w,
+            h,
+            escape_powershell(app)
         );
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = (app, w, h); ToolResult::error("Window resize is not supported on this platform") }
+    {
+        let _ = (app, w, h);
+        ToolResult::error("Window resize is not supported on this platform")
+    }
 }
 
 async fn handle_window_close(app: &str) -> ToolResult {
@@ -485,12 +513,16 @@ async fn handle_window_close(app: &str) -> ToolResult {
         let script = format!(
             r#"$p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
 if ($p) {{ $p.CloseMainWindow() }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app), escape_powershell(app)
+            escape_powershell(app),
+            escape_powershell(app)
         );
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = app; ToolResult::error("Window close is not supported on this platform") }
+    {
+        let _ = app;
+        ToolResult::error("Window close is not supported on this platform")
+    }
 }
 
 async fn handle_window_move(app: &str, x: i64, y: i64) -> ToolResult {
@@ -498,7 +530,9 @@ async fn handle_window_move(app: &str, x: i64, y: i64) -> ToolResult {
     {
         let script = format!(
             "tell application \"System Events\" to set position of first window of process \"{}\" to {{{}, {}}}",
-            escape_applescript(app), x, y
+            escape_applescript(app),
+            x,
+            y
         );
         return run_osascript(&script).await;
     }
@@ -534,12 +568,18 @@ public class Win {{ [DllImport("user32.dll")] public static extern bool MoveWind
 $p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
 if ($p) {{ $r = New-Object Win+RECT; [Win]::GetWindowRect($p.MainWindowHandle, [ref]$r);
 [Win]::MoveWindow($p.MainWindowHandle, {}, {}, ($r.Right - $r.Left), ($r.Bottom - $r.Top), $true) }} else {{ Write-Error "Window '{}' not found" }}"#,
-            escape_powershell(app), x, y, escape_powershell(app)
+            escape_powershell(app),
+            x,
+            y,
+            escape_powershell(app)
         );
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = (app, x, y); ToolResult::error("Window move is not supported on this platform") }
+    {
+        let _ = (app, x, y);
+        ToolResult::error("Window move is not supported on this platform")
+    }
 }
 
 // --- Input simulation ---
@@ -558,7 +598,9 @@ async fn handle_input(
         let element = if !snapshot_id.is_empty() {
             store.get_element(snapshot_id, element_id)
         } else {
-            store.latest().and_then(|snap| snap.elements.iter().find(|e| e.id == element_id))
+            store
+                .latest()
+                .and_then(|snap| snap.elements.iter().find(|e| e.id == element_id))
         };
 
         match element {
@@ -592,7 +634,10 @@ async fn handle_input(
                     "click" => {
                         let r = input_click(cx, cy).await;
                         ToolResult {
-                            content: format!("Clicked '{}' ({}) at ({},{})", label, element_id, cx, cy),
+                            content: format!(
+                                "Clicked '{}' ({}) at ({},{})",
+                                label, element_id, cx, cy
+                            ),
                             is_error: r.is_error,
                             image_url: None,
                         }
@@ -600,7 +645,10 @@ async fn handle_input(
                     "double_click" => {
                         let r = input_double_click(cx, cy).await;
                         ToolResult {
-                            content: format!("Double-clicked '{}' ({}) at ({},{})", label, element_id, cx, cy),
+                            content: format!(
+                                "Double-clicked '{}' ({}) at ({},{})",
+                                label, element_id, cx, cy
+                            ),
                             is_error: r.is_error,
                             image_url: None,
                         }
@@ -608,7 +656,10 @@ async fn handle_input(
                     "right_click" => {
                         let r = input_right_click(cx, cy).await;
                         ToolResult {
-                            content: format!("Right-clicked '{}' ({}) at ({},{})", label, element_id, cx, cy),
+                            content: format!(
+                                "Right-clicked '{}' ({}) at ({},{})",
+                                label, element_id, cx, cy
+                            ),
                             is_error: r.is_error,
                             image_url: None,
                         }
@@ -616,7 +667,10 @@ async fn handle_input(
                     "move" => {
                         let r = input_move(cx, cy).await;
                         ToolResult {
-                            content: format!("Moved cursor to '{}' ({}) at ({},{})", label, element_id, cx, cy),
+                            content: format!(
+                                "Moved cursor to '{}' ({}) at ({},{})",
+                                label, element_id, cx, cy
+                            ),
                             is_error: r.is_error,
                             image_url: None,
                         }
@@ -632,7 +686,11 @@ async fn handle_input(
                 return ToolResult::error(format!(
                     "Element '{}' not found{}. Use capture(action: \"see\") first to detect elements.",
                     element_id,
-                    if !snapshot_id.is_empty() { format!(" in snapshot '{}'", snapshot_id) } else { String::new() }
+                    if !snapshot_id.is_empty() {
+                        format!(" in snapshot '{}'", snapshot_id)
+                    } else {
+                        String::new()
+                    }
                 ));
             }
         }
@@ -672,7 +730,9 @@ async fn handle_input(
         "hotkey" => {
             let keys = input["keys"].as_str().unwrap_or("");
             if keys.is_empty() {
-                return ToolResult::error("'keys' parameter required for hotkey (e.g. 'command+shift+s')");
+                return ToolResult::error(
+                    "'keys' parameter required for hotkey (e.g. 'command+shift+s')",
+                );
             }
             input_hotkey(keys).await
         }
@@ -726,7 +786,10 @@ async fn input_type(text: &str) -> ToolResult {
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = text; ToolResult::error("Input type is not supported on this platform") }
+    {
+        let _ = text;
+        ToolResult::error("Input type is not supported on this platform")
+    }
 }
 
 async fn input_press(key: &str) -> ToolResult {
@@ -756,7 +819,10 @@ async fn input_press(key: &str) -> ToolResult {
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = key; ToolResult::error("Input press is not supported on this platform") }
+    {
+        let _ = key;
+        ToolResult::error("Input press is not supported on this platform")
+    }
 }
 
 async fn input_click(x: i64, y: i64) -> ToolResult {
@@ -793,7 +859,10 @@ public class Mouse {{
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = (x, y); ToolResult::error("Input click is not supported on this platform") }
+    {
+        let _ = (x, y);
+        ToolResult::error("Input click is not supported on this platform")
+    }
 }
 
 async fn input_double_click(x: i64, y: i64) -> ToolResult {
@@ -831,7 +900,10 @@ Start-Sleep -Milliseconds 50
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = (x, y); ToolResult::error("Double click is not supported on this platform") }
+    {
+        let _ = (x, y);
+        ToolResult::error("Double click is not supported on this platform")
+    }
 }
 
 async fn input_right_click(x: i64, y: i64) -> ToolResult {
@@ -868,7 +940,10 @@ public class Mouse {{
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = (x, y); ToolResult::error("Right click is not supported on this platform") }
+    {
+        let _ = (x, y);
+        ToolResult::error("Right click is not supported on this platform")
+    }
 }
 
 async fn input_hotkey(keys: &str) -> ToolResult {
@@ -894,7 +969,8 @@ async fn input_hotkey(keys: &str) -> ToolResult {
         };
         let script = format!(
             "tell application \"System Events\" to keystroke \"{}\"{}",
-            escape_applescript(key), modifier_str
+            escape_applescript(key),
+            modifier_str
         );
         return run_osascript(&script).await;
     }
@@ -927,7 +1003,10 @@ async fn input_hotkey(keys: &str) -> ToolResult {
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = keys; ToolResult::error("Hotkey is not supported on this platform") }
+    {
+        let _ = keys;
+        ToolResult::error("Hotkey is not supported on this platform")
+    }
 }
 
 async fn input_move(x: i64, y: i64) -> ToolResult {
@@ -958,7 +1037,10 @@ public class Mouse {{ [DllImport("user32.dll")] public static extern bool SetCur
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = (x, y); ToolResult::error("Mouse move is not supported on this platform") }
+    {
+        let _ = (x, y);
+        ToolResult::error("Mouse move is not supported on this platform")
+    }
 }
 
 #[allow(unused_variables)]
@@ -993,7 +1075,10 @@ async fn input_scroll(dx: i64, dy: i64) -> ToolResult {
             if results.is_empty() {
                 return ToolResult::ok("No scroll delta specified");
             }
-            return results.into_iter().last().unwrap_or_else(|| ToolResult::ok("OK"));
+            return results
+                .into_iter()
+                .last()
+                .unwrap_or_else(|| ToolResult::ok("OK"));
         }
         return ToolResult::error("Scroll requires xdotool");
     }
@@ -1010,7 +1095,10 @@ public class Mouse {{ [DllImport("user32.dll")] public static extern void mouse_
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = (dx, dy); ToolResult::error("Scroll is not supported on this platform") }
+    {
+        let _ = (dx, dy);
+        ToolResult::error("Scroll is not supported on this platform")
+    }
 }
 
 async fn input_drag(x: i64, y: i64, x2: i64, y2: i64) -> ToolResult {
@@ -1055,7 +1143,10 @@ Start-Sleep -Milliseconds 50
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = (x, y, x2, y2); ToolResult::error("Drag is not supported on this platform") }
+    {
+        let _ = (x, y, x2, y2);
+        ToolResult::error("Drag is not supported on this platform")
+    }
 }
 
 async fn input_paste() -> ToolResult {
@@ -1173,7 +1264,10 @@ async fn clipboard_write(text: &str) -> ToolResult {
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = text; ToolResult::error("Clipboard is not supported on this platform") }
+    {
+        let _ = text;
+        ToolResult::error("Clipboard is not supported on this platform")
+    }
 }
 
 async fn clipboard_clear() -> ToolResult {
@@ -1261,13 +1355,18 @@ async fn notification_send(title: &str, message: &str) -> ToolResult {
     $n.Visible = $true
     $n.ShowBalloonTip(5000)
 }}"#,
-            escape_powershell(title), escape_powershell(message),
-            escape_powershell(title), escape_powershell(message)
+            escape_powershell(title),
+            escape_powershell(message),
+            escape_powershell(title),
+            escape_powershell(message)
         );
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = (title, message); ToolResult::error("Notifications are not supported on this platform") }
+    {
+        let _ = (title, message);
+        ToolResult::error("Notifications are not supported on this platform")
+    }
 }
 
 async fn notification_alert(title: &str, message: &str) -> ToolResult {
@@ -1298,12 +1397,16 @@ async fn notification_alert(title: &str, message: &str) -> ToolResult {
         let script = format!(
             r#"Add-Type -AssemblyName PresentationFramework
 [System.Windows.MessageBox]::Show('{}', '{}')"#,
-            escape_powershell(message), escape_powershell(title)
+            escape_powershell(message),
+            escape_powershell(title)
         );
         return run_powershell(&script).await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { let _ = (title, message); ToolResult::error("Alert is not supported on this platform") }
+    {
+        let _ = (title, message);
+        ToolResult::error("Alert is not supported on this platform")
+    }
 }
 
 // --- Screen capture ---
@@ -1343,15 +1446,12 @@ async fn capture_see(
     let cache_key = app.to_string();
 
     // Check cache (snapshot-then-release — lock held <1μs)
-    let cached = ax_cache
-        .lock()
-        .ok()
-        .and_then(|guard| {
-            guard
-                .get(&cache_key)
-                .filter(|(_, ts)| ts.elapsed() < Duration::from_secs(2))
-                .map(|(elems, _)| elems.clone())
-        });
+    let cached = ax_cache.lock().ok().and_then(|guard| {
+        guard
+            .get(&cache_key)
+            .filter(|(_, ts)| ts.elapsed() < Duration::from_secs(2))
+            .map(|(elems, _)| elems.clone())
+    });
 
     let mut elements = if let Some(elems) = cached {
         elems
@@ -1372,7 +1472,11 @@ async fn capture_see(
     let snapshot_id = generate_snapshot_id();
     let snapshot = Snapshot {
         id: snapshot_id.clone(),
-        app: if app.is_empty() { None } else { Some(app.to_string()) },
+        app: if app.is_empty() {
+            None
+        } else {
+            Some(app.to_string())
+        },
         created_at: std::time::Instant::now(),
         elements: elements.clone(),
     };
@@ -1538,7 +1642,8 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
             if !app.is_empty() {
                 // Focus the window first, then capture
                 if which("xdotool") {
-                    let _ = run_command("xdotool", &["search", "--name", app, "windowactivate"]).await;
+                    let _ =
+                        run_command("xdotool", &["search", "--name", app, "windowactivate"]).await;
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
                 tokio::process::Command::new("gnome-screenshot")
@@ -1607,15 +1712,13 @@ $bmp.Dispose()"#,
 
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     match result {
-        Ok(output) if output.status.success() => {
-            match tokio::fs::read(&tmp_path).await {
-                Ok(bytes) => {
-                    let _ = tokio::fs::remove_file(&tmp_path).await;
-                    compress_and_encode(&bytes, quality)
-                }
-                Err(e) => ToolResult::error(format!("Failed to read screenshot: {}", e)),
+        Ok(output) if output.status.success() => match tokio::fs::read(&tmp_path).await {
+            Ok(bytes) => {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                compress_and_encode(&bytes, quality)
             }
-        }
+            Err(e) => ToolResult::error(format!("Failed to read screenshot: {}", e)),
+        },
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             ToolResult::error(format!("Screenshot failed: {}", stderr))
@@ -1642,7 +1745,10 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
         let mime = if is_jpeg { "image/jpeg" } else { "image/png" };
         let b64 = base64::engine::general_purpose::STANDARD.encode(img_bytes);
         return ToolResult {
-            content: format!("Screenshot captured (high quality, {} bytes)", img_bytes.len()),
+            content: format!(
+                "Screenshot captured (high quality, {} bytes)",
+                img_bytes.len()
+            ),
             is_error: false,
             image_url: Some(format!("data:{};base64,{}", mime, b64)),
         };
@@ -1655,8 +1761,10 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
 
     let img = match ImageReader::new(Cursor::new(img_bytes))
         .with_guessed_format()
-        .and_then(|r| r.decode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
-    {
+        .and_then(|r| {
+            r.decode()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        }) {
         Ok(img) => img,
         Err(e) => {
             // Fall back to raw bytes if decode fails
@@ -1664,7 +1772,10 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
             tracing::warn!(error = %e, "failed to decode screenshot for compression, returning raw");
             let b64 = base64::engine::general_purpose::STANDARD.encode(img_bytes);
             return ToolResult {
-                content: format!("Screenshot captured ({} bytes, uncompressed)", img_bytes.len()),
+                content: format!(
+                    "Screenshot captured ({} bytes, uncompressed)",
+                    img_bytes.len()
+                ),
                 is_error: false,
                 image_url: Some(format!("data:{};base64,{}", mime, b64)),
             };
@@ -1690,7 +1801,11 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
             ToolResult {
                 content: format!(
                     "Screenshot captured ({}KB → {}KB, {}x{} {}% JPEG)",
-                    original_kb, compressed_kb, img.width(), img.height(), jpeg_quality
+                    original_kb,
+                    compressed_kb,
+                    img.width(),
+                    img.height(),
+                    jpeg_quality
                 ),
                 is_error: false,
                 image_url: Some(format!("data:image/jpeg;base64,{}", b64)),
@@ -1701,7 +1816,10 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
             tracing::warn!(error = %e, "JPEG encode failed, returning raw image");
             let b64 = base64::engine::general_purpose::STANDARD.encode(img_bytes);
             ToolResult {
-                content: format!("Screenshot captured ({} bytes, uncompressed)", img_bytes.len()),
+                content: format!(
+                    "Screenshot captured ({} bytes, uncompressed)",
+                    img_bytes.len()
+                ),
                 is_error: false,
                 image_url: Some(format!("data:{};base64,{}", mime, b64)),
             }
@@ -1745,7 +1863,9 @@ async fn handle_ui(action: &str, input: &serde_json::Value) -> ToolResult {
         }
         "set_value" => {
             if label.is_empty() || value.is_empty() {
-                return ToolResult::error("'label' and 'value' parameters required for ui set_value");
+                return ToolResult::error(
+                    "'label' and 'value' parameters required for ui set_value",
+                );
             }
             ui_set_value(app, label, value).await
         }
@@ -1776,7 +1896,8 @@ async fn ui_tree(app: &str, role: &str) -> ToolResult {
         return uiTree
     end tell
 end tell"#,
-            escape_applescript(app), role_filter
+            escape_applescript(app),
+            role_filter
         );
         return run_osascript(&script).await;
     }
@@ -1813,7 +1934,8 @@ if ($app) {{
         "$($e.Current.ControlType.ProgrammaticName) | $($e.Current.Name) | $($e.Current.AutomationId)"
     }}
 }} else {{ "Application '{}' not found" }}"#,
-            escape_powershell(app), escape_powershell(app)
+            escape_powershell(app),
+            escape_powershell(app)
         );
         return run_powershell(&script).await;
     }
@@ -1858,7 +1980,10 @@ end tell"#,
     #[cfg(target_os = "windows")]
     {
         let cond = if !label.is_empty() {
-            format!("New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, '{}')", escape_powershell(label))
+            format!(
+                "New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, '{}')",
+                escape_powershell(label)
+            )
         } else {
             "[System.Windows.Automation.Condition]::TrueCondition".to_string()
         };
@@ -1894,7 +2019,8 @@ async fn ui_click(app: &str, label: &str) -> ToolResult {
         click (first UI element of window 1 whose name is "{}")
     end tell
 end tell"#,
-            target, escape_applescript(label)
+            target,
+            escape_applescript(label)
         );
         return run_osascript(&script).await;
     }
@@ -1915,7 +2041,9 @@ if ($el) {{
     $pattern.Invoke()
     "Clicked: {}"
 }} else {{ "Element '{}' not found" }}"#,
-            escape_powershell(label), escape_powershell(label), escape_powershell(label)
+            escape_powershell(label),
+            escape_powershell(label),
+            escape_powershell(label)
         );
         return run_powershell(&script).await;
     }
@@ -1938,13 +2066,16 @@ async fn ui_get_value(app: &str, label: &str) -> ToolResult {
         return value of (first UI element of window 1 whose name is "{}")
     end tell
 end tell"#,
-            target, escape_applescript(label)
+            target,
+            escape_applescript(label)
         );
         return run_osascript(&script).await;
     }
     #[cfg(target_os = "linux")]
     {
-        return ToolResult::error("UI get_value on Linux requires AT-SPI2 (not yet fully implemented)");
+        return ToolResult::error(
+            "UI get_value on Linux requires AT-SPI2 (not yet fully implemented)",
+        );
     }
     #[cfg(target_os = "windows")]
     {
@@ -1958,7 +2089,8 @@ if ($el) {{
     try {{ $p = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $p.Current.Value }}
     catch {{ $el.Current.Name }}
 }} else {{ "Element '{}' not found" }}"#,
-            escape_powershell(label), escape_powershell(label)
+            escape_powershell(label),
+            escape_powershell(label)
         );
         return run_powershell(&script).await;
     }
@@ -1981,13 +2113,17 @@ async fn ui_set_value(app: &str, label: &str, value: &str) -> ToolResult {
         set value of (first UI element of window 1 whose name is "{}") to "{}"
     end tell
 end tell"#,
-            target, escape_applescript(label), escape_applescript(value)
+            target,
+            escape_applescript(label),
+            escape_applescript(value)
         );
         return run_osascript(&script).await;
     }
     #[cfg(target_os = "linux")]
     {
-        return ToolResult::error("UI set_value on Linux requires AT-SPI2 (not yet fully implemented)");
+        return ToolResult::error(
+            "UI set_value on Linux requires AT-SPI2 (not yet fully implemented)",
+        );
     }
     #[cfg(target_os = "windows")]
     {
@@ -2002,7 +2138,9 @@ if ($el) {{
     $p.SetValue('{}')
     "Value set"
 }} else {{ "Element '{}' not found" }}"#,
-            escape_powershell(label), escape_powershell(value), escape_powershell(label)
+            escape_powershell(label),
+            escape_powershell(value),
+            escape_powershell(label)
         );
         return run_powershell(&script).await;
     }
@@ -2118,13 +2256,16 @@ public class MenuHelper {{
 "@
 $p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
 if ($p) {{ "Menu bar found for $($p.ProcessName)" }} else {{ "App '{}' not found" }}"#,
-            escape_powershell(app), escape_powershell(app)
+            escape_powershell(app),
+            escape_powershell(app)
         );
         return run_powershell(&script).await;
     }
     #[cfg(target_os = "linux")]
     {
-        return ToolResult::error("Menu bar access is not supported on Linux (most apps use client-side decorations)");
+        return ToolResult::error(
+            "Menu bar access is not supported on Linux (most apps use client-side decorations)",
+        );
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     ToolResult::error("Menu list is not supported on this platform")
@@ -2156,7 +2297,9 @@ end tell"#,
     }
     #[cfg(target_os = "windows")]
     {
-        return ToolResult::error("Menu enumeration on Windows requires UI Automation (use ui tree instead)");
+        return ToolResult::error(
+            "Menu enumeration on Windows requires UI Automation (use ui tree instead)",
+        );
     }
     #[cfg(target_os = "linux")]
     {
@@ -2207,7 +2350,9 @@ end tell"#,
     }
     #[cfg(target_os = "windows")]
     {
-        return ToolResult::error("Menu click on Windows requires UI Automation (use ui click instead)");
+        return ToolResult::error(
+            "Menu click on Windows requires UI Automation (use ui click instead)",
+        );
     }
     #[cfg(target_os = "linux")]
     {
@@ -2416,7 +2561,9 @@ async fn dialog_click(app: &str, name: &str) -> ToolResult {
         end try
     end tell
 end tell"#,
-            target, escape_applescript(name), escape_applescript(name)
+            target,
+            escape_applescript(name),
+            escape_applescript(name)
         );
         return run_osascript(&script).await;
     }
@@ -2430,7 +2577,9 @@ $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.A
 $el = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
 if ($el) {{ $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); "Clicked: {}" }}
 else {{ "Button '{}' not found" }}"#,
-            escape_powershell(name), escape_powershell(name), escape_powershell(name)
+            escape_powershell(name),
+            escape_powershell(name),
+            escape_powershell(name)
         );
         return run_powershell(&script).await;
     }
@@ -2466,8 +2615,11 @@ async fn dialog_fill(app: &str, name: &str, value: &str) -> ToolResult {
         end try
     end tell
 end tell"#,
-            target, field_target, escape_applescript(value),
-            field_target, escape_applescript(value)
+            target,
+            field_target,
+            escape_applescript(value),
+            field_target,
+            escape_applescript(value)
         );
         return run_osascript(&script).await;
     }
@@ -2592,8 +2744,15 @@ async fn space_switch(index: i64) -> ToolResult {
     {
         // Switch to space via keyboard shortcut (Ctrl+number)
         let key_code = match index {
-            1 => "18", 2 => "19", 3 => "20", 4 => "21",
-            5 => "23", 6 => "22", 7 => "26", 8 => "28", 9 => "25",
+            1 => "18",
+            2 => "19",
+            3 => "20",
+            4 => "21",
+            5 => "23",
+            6 => "22",
+            7 => "26",
+            8 => "28",
+            9 => "25",
             _ => return ToolResult::error("Space index must be 1-9"),
         };
         let script = format!(
@@ -2634,7 +2793,7 @@ async fn space_move_window(app: &str, index: i64) -> ToolResult {
     {
         // macOS doesn't have a clean scripting API for moving windows between spaces
         return ToolResult::error(
-            "Moving windows between spaces on macOS requires third-party tools (e.g., yabai)"
+            "Moving windows between spaces on macOS requires third-party tools (e.g., yabai)",
         );
     }
     #[cfg(target_os = "linux")]
@@ -2650,7 +2809,9 @@ async fn space_move_window(app: &str, index: i64) -> ToolResult {
     }
     #[cfg(target_os = "windows")]
     {
-        return ToolResult::error("Moving windows between virtual desktops requires Windows API (not available via PowerShell)");
+        return ToolResult::error(
+            "Moving windows between virtual desktops requires Windows API (not available via PowerShell)",
+        );
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     ToolResult::error("Moving windows between spaces is not supported on this platform")
@@ -2753,10 +2914,7 @@ async fn handle_tts(action: &str, input: &serde_json::Value) -> ToolResult {
             let rate = input["rate"].as_i64().unwrap_or(0);
             tts_speak(text, voice, rate).await
         }
-        _ => ToolResult::error(format!(
-            "Unknown tts action '{}'. Use: speak",
-            action
-        )),
+        _ => ToolResult::error(format!("Unknown tts action '{}'. Use: speak", action)),
     }
 }
 
@@ -2800,12 +2958,17 @@ async fn tts_speak(text: &str, voice: &str, rate: i64) -> ToolResult {
             let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             return run_command("spd-say", &args_ref).await;
         }
-        return ToolResult::error("TTS requires espeak or spd-say (install espeak or speech-dispatcher)");
+        return ToolResult::error(
+            "TTS requires espeak or spd-say (install espeak or speech-dispatcher)",
+        );
     }
     #[cfg(target_os = "windows")]
     {
         let rate_str = if rate > 0 {
-            format!("$synth.Rate = {}\n", (rate as f64 / 30.0).clamp(-10.0, 10.0) as i64)
+            format!(
+                "$synth.Rate = {}\n",
+                (rate as f64 / 30.0).clamp(-10.0, 10.0) as i64
+            )
         } else {
             String::new()
         };
@@ -2818,7 +2981,9 @@ async fn tts_speak(text: &str, voice: &str, rate: i64) -> ToolResult {
             r#"Add-Type -AssemblyName System.Speech
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
 {}{}$synth.Speak('{}')"#,
-            voice_str, rate_str, escape_powershell(text)
+            voice_str,
+            rate_str,
+            escape_powershell(text)
         );
         return run_powershell(&script).await;
     }
@@ -2890,12 +3055,17 @@ async fn dock_is_running(app: &str) -> ToolResult {
         return "{} is not running"
     end if
 end tell"#,
-            escape_applescript(app), escape_applescript(app), escape_applescript(app)
+            escape_applescript(app),
+            escape_applescript(app),
+            escape_applescript(app)
         );
         return run_osascript(&script).await;
     }
     #[cfg(not(target_os = "macos"))]
-    { let _ = app; ToolResult::error("Dock is_running is only available on macOS") }
+    {
+        let _ = app;
+        ToolResult::error("Dock is_running is only available on macOS")
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2965,7 +3135,11 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() { "OK".to_string() } else { text })
+            ToolResult::ok(if text.is_empty() {
+                "OK".to_string()
+            } else {
+                text
+            })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -2973,7 +3147,11 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
             ToolResult::error(format!(
                 "{}{}",
                 stdout,
-                if stderr.is_empty() { String::new() } else { format!("\n{}", stderr) }
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stderr)
+                }
             ))
         }
         Err(e) => ToolResult::error(format!("Command '{}' failed: {}", cmd, e)),
@@ -3002,7 +3180,13 @@ async fn run_powershell(script: &str) -> ToolResult {
     {
         let daemon = ps_daemon();
         match daemon.execute(script, Duration::from_secs(30)).await {
-            Ok(out) => return ToolResult::ok(if out.is_empty() { "OK".to_string() } else { out }),
+            Ok(out) => {
+                return ToolResult::ok(if out.is_empty() {
+                    "OK".to_string()
+                } else {
+                    out
+                });
+            }
             Err(e) => {
                 tracing::debug!(error = %e, "persistent PowerShell failed, falling back to subprocess");
             }
@@ -3175,7 +3359,11 @@ mod tests {
             let ctx = ToolContext::default();
             let input = serde_json::json!({"resource": resource, "action": "nonexistent"});
             let result = tool.execute_dyn(&ctx, input).await;
-            assert!(result.is_error, "Expected error for {}/nonexistent", resource);
+            assert!(
+                result.is_error,
+                "Expected error for {}/nonexistent",
+                resource
+            );
         }
     }
 

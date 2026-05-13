@@ -97,7 +97,11 @@ pub async fn hybrid_search(
                                 ("chunk".to_string(), text.clone(), "unknown".to_string())
                             })
                     } else {
-                        ("session_chunk".to_string(), text.clone(), "session".to_string())
+                        (
+                            "session_chunk".to_string(),
+                            text.clone(),
+                            "session".to_string(),
+                        )
                     };
 
                     SearchResult {
@@ -149,7 +153,11 @@ pub async fn hybrid_search(
                                         .flatten()
                                         .map(|m| (m.key, m.value, m.namespace))
                                         .unwrap_or_else(|| {
-                                            ("chunk".to_string(), text.clone(), "unknown".to_string())
+                                            (
+                                                "chunk".to_string(),
+                                                text.clone(),
+                                                "unknown".to_string(),
+                                            )
                                         })
                                 } else {
                                     (
@@ -184,7 +192,11 @@ pub async fn hybrid_search(
         .into_values()
         .filter(|r| r.score >= config.min_score)
         .collect();
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results.truncate(config.limit);
     results
 }

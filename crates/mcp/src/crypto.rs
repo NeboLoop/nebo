@@ -43,8 +43,8 @@ impl Encryptor {
 
     /// Encrypt plaintext. Returns nonce + ciphertext as a single Vec.
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, McpError> {
-        let cipher = Aes256Gcm::new_from_slice(&self.key)
-            .map_err(|e| McpError::Crypto(e.to_string()))?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&self.key).map_err(|e| McpError::Crypto(e.to_string()))?;
 
         let mut nonce_bytes = [0u8; NONCE_SIZE];
         OsRng.fill_bytes(&mut nonce_bytes);
@@ -66,8 +66,8 @@ impl Encryptor {
             return Err(McpError::Crypto("data too short".into()));
         }
 
-        let cipher = Aes256Gcm::new_from_slice(&self.key)
-            .map_err(|e| McpError::Crypto(e.to_string()))?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&self.key).map_err(|e| McpError::Crypto(e.to_string()))?;
 
         let nonce = Nonce::from_slice(&data[..NONCE_SIZE]);
         let ciphertext = &data[NONCE_SIZE..];

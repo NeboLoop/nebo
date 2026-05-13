@@ -7,15 +7,17 @@
   import Zap from 'lucide-svelte/icons/zap';
   import * as api from '$lib/api/nebo';
   import type {
-    NeboLoopAccountStatusResponse,
-    BillingPriceInfo
+    AccountStatusResponse,
+    BillingPriceInfo,
+    NeboLoopBillingSubscriptionResponse,
+    NeboLoopBillingCheckoutResponse
   } from '$lib/api/neboComponents';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
   let isLoading = $state(true);
-  let status = $state<NeboLoopAccountStatusResponse | null>(null);
+  let status = $state<AccountStatusResponse | null>(null);
   let allPrices = $state<BillingPriceInfo[]>([]);
-  let subscription = $state<{ plan: string; subscriptions: any[] } | null>(null);
+  let subscription = $state<NeboLoopBillingSubscriptionResponse | null>(null);
   let billingInterval = $state<'month' | 'year'>('month');
   let boostSelections = $state<Record<string, boolean>>({});
 
@@ -32,10 +34,10 @@
 
   const visiblePrices = $derived(
     allPrices
-      .filter((p) => p.category === 'personal' && p.interval === billingInterval)
-      .sort((a, b) => a.displayOrder - b.displayOrder)
+      .filter((p) => (p.category ?? '') === 'personal' && p.interval === billingInterval)
+      .sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0))
   );
-  const boostPrices = $derived(allPrices.filter((p) => p.category === 'boost'));
+  const boostPrices = $derived(allPrices.filter((p) => (p.category ?? '') === 'boost'));
   const popularIndex = $derived(Math.floor(visiblePrices.length / 2));
 
   function getBoostPrice(id: string | undefined): BillingPriceInfo | undefined {
@@ -46,7 +48,7 @@
   onMount(() => {
     (async () => {
       try {
-        status = await api.neboLoopAccountStatus();
+        status = (await api.neboLoopAccountStatus()) as AccountStatusResponse;
         if (status?.connected) {
           const [pricesResp, subResp] = await Promise.allSettled([
             api.neboLoopBillingPrices(),
@@ -74,13 +76,13 @@
     }
   });
 
-  function fmt(cents: number, currency = 'usd'): string {
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 0 }).format(cents / 100);
+  function fmt(cents: number, currency?: string): string {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: currency || 'usd', minimumFractionDigits: 0 }).format(cents / 100);
   }
 
   async function selectPlan(price: BillingPriceInfo) {
     selectedPrice = price;
-    selectedBoost = boostSelections[price.id] ? getBoostPrice(price.boostPriceId) || null : null;
+    selectedBoost = boostSelections[price.id ?? ''] ? getBoostPrice(price.boostPriceId) || null : null;
     step = 'checkout';
     checkoutLoading = true;
     checkoutError = '';
@@ -96,22 +98,10 @@
         });
       }
 
-      const priceIds = [price.stripePriceId];
-      if (selectedBoost) priceIds.push(selectedBoost.stripePriceId);
+      const priceIds = [price.stripePriceId ?? ''];
+      if (selectedBoost) priceIds.push(selectedBoost.stripePriceId ?? '');
 
-      const resp = await fetch('/api/v1/neboloop/billing/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ priceIds, uiMode: 'embedded' })
-      });
-
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.error || 'Failed to create checkout session');
-      }
-
-      const data = await resp.json();
+      const data: NeboLoopBillingCheckoutResponse = await api.neboLoopBillingCheckout({ priceIds, uiMode: 'embedded' });
 
       if (!data.clientSecret) {
         throw new Error('Missing clientSecret from checkout response');
@@ -197,7 +187,7 @@
       <div class="grid sm:grid-cols-3 gap-5">
         {#each visiblePrices as price, i (price.id)}
           {@const boost = getBoostPrice(price.boostPriceId)}
-          {@const boostChecked = boostSelections[price.id] || false}
+          {@const boostChecked = boostSelections[price.id ?? ''] || false}
           {@const isPopular = i === popularIndex}
           {@const isCurrent = price.nickname === currentPlan}
 
@@ -220,11 +210,11 @@
 
             <div class="mt-5 mb-5">
               {#if price.interval === 'year'}
-                <span class="text-4xl font-bold text-base-content tracking-tight">{fmt(Math.round(price.amountCents / 12), price.currency)}</span>
+                <span class="text-4xl font-bold text-base-content tracking-tight">{fmt(Math.round((price.amountCents ?? 0) / 12), price.currency)}</span>
                 <span class="text-sm text-base-content/40 ml-1">/mo</span>
-                <p class="text-xs text-base-content/40 mt-1">{fmt(price.amountCents, price.currency)} billed annually</p>
+                <p class="text-xs text-base-content/40 mt-1">{fmt(price.amountCents ?? 0, price.currency)} billed annually</p>
               {:else}
-                <span class="text-4xl font-bold text-base-content tracking-tight">{fmt(price.amountCents, price.currency)}</span>
+                <span class="text-4xl font-bold text-base-content tracking-tight">{fmt(price.amountCents ?? 0, price.currency)}</span>
                 <span class="text-sm text-base-content/40 ml-1">/mo</span>
               {/if}
             </div>
@@ -242,7 +232,7 @@
 
             {#if boost}
               <label class="flex items-start gap-2.5 mb-5 p-3 rounded-xl border cursor-pointer select-none group transition-all {boostChecked ? 'bg-accent/10 border-accent/30' : 'bg-base-content/3 border-transparent hover:border-base-content/10'}">
-                <input type="checkbox" class="checkbox checkbox-sm checkbox-warning mt-0.5" checked={boostChecked} onchange={() => (boostSelections[price.id] = !boostChecked)} />
+                <input type="checkbox" class="checkbox checkbox-sm checkbox-warning mt-0.5" checked={boostChecked} onchange={() => (boostSelections[price.id ?? ''] = !boostChecked)} />
                 <div class="flex-1">
                   <div class="flex items-center gap-1.5">
                     <Zap class="w-3.5 h-3.5 text-accent" />
@@ -251,9 +241,9 @@
                   <p class="text-xs text-base-content/50 mt-1">{boost.description || '3x access to frontier models.'}</p>
                   <p class="text-xs font-bold text-accent mt-1">
                     {#if boost.interval === 'year'}
-                      +{fmt(Math.round(boost.amountCents / 12), boost.currency)}/mo ({fmt(boost.amountCents, boost.currency)}/yr)
+                      +{fmt(Math.round((boost.amountCents ?? 0) / 12), boost.currency)}/mo ({fmt(boost.amountCents ?? 0, boost.currency)}/yr)
                     {:else}
-                      +{fmt(boost.amountCents, boost.currency)}/mo
+                      +{fmt(boost.amountCents ?? 0, boost.currency)}/mo
                     {/if}
                   </p>
                 </div>

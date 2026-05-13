@@ -6,7 +6,7 @@
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.getAgentProfile() as { profile?: Record<string, unknown> } | null;
+      const resp = await api.getProfile() as { profile?: Record<string, unknown> };
       // Agent rules come from the agent profile as a text block
       const profile = resp?.profile;
       if (profile?.agentRules) {

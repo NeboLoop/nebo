@@ -140,10 +140,7 @@ async fn handle_launch(app: &str) -> ToolResult {
 
 #[cfg(target_os = "macos")]
 async fn handle_quit(app: &str) -> ToolResult {
-    let script = format!(
-        "tell application \"{}\" to quit",
-        escape_applescript(app)
-    );
+    let script = format!("tell application \"{}\" to quit", escape_applescript(app));
     run_osascript(&script).await
 }
 
@@ -211,7 +208,11 @@ async fn run_osascript(script: &str) -> ToolResult {
     {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() { "OK".to_string() } else { text })
+            ToolResult::ok(if text.is_empty() {
+                "OK".to_string()
+            } else {
+                text
+            })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -254,9 +255,7 @@ async fn handle_launch(app: &str) -> ToolResult {
         run_command("xdg-open", &[app]).await
     } else {
         // Try launching directly
-        match tokio::process::Command::new(app)
-            .spawn()
-        {
+        match tokio::process::Command::new(app).spawn() {
             Ok(_) => ToolResult::ok(format!("Launched '{}'", app)),
             Err(e) => ToolResult::error(format!("Failed to launch '{}': {}", app, e)),
         }
@@ -309,7 +308,9 @@ async fn handle_quit_all() -> ToolResult {
             _ => ToolResult::error("Failed to list windows via wmctrl"),
         }
     } else {
-        ToolResult::error("quit_all requires wmctrl on Linux (install with: sudo apt install wmctrl)")
+        ToolResult::error(
+            "quit_all requires wmctrl on Linux (install with: sudo apt install wmctrl)",
+        )
     }
 }
 
@@ -357,22 +358,24 @@ async fn handle_hide(app: &str) -> ToolResult {
             _ => ToolResult::error(format!("No window found for '{}'", app)),
         }
     } else {
-        ToolResult::error("Window hiding requires xdotool on Linux (install with: sudo apt install xdotool)")
+        ToolResult::error(
+            "Window hiding requires xdotool on Linux (install with: sudo apt install xdotool)",
+        )
     }
 }
 
 #[cfg(target_os = "linux")]
 async fn handle_info(app: &str) -> ToolResult {
     // Try to find .desktop file and read it
-    let desktop_dirs = [
-        "/usr/share/applications",
-        "/usr/local/share/applications",
-    ];
+    let desktop_dirs = ["/usr/share/applications", "/usr/local/share/applications"];
     let home = std::env::var("HOME").unwrap_or_default();
     let user_desktop = format!("{}/.local/share/applications", home);
 
     let app_lower = app.to_lowercase();
-    for dir in desktop_dirs.iter().chain(std::iter::once(&user_desktop.as_str())) {
+    for dir in desktop_dirs
+        .iter()
+        .chain(std::iter::once(&user_desktop.as_str()))
+    {
         let path = format!("{}/{}.desktop", dir, app_lower);
         if let Ok(content) = tokio::fs::read_to_string(&path).await {
             return ToolResult::ok(content);
@@ -391,7 +394,10 @@ async fn handle_info(app: &str) -> ToolResult {
                 .filter(|l| l.to_lowercase().contains(&app_lower))
                 .collect();
             if matches.is_empty() {
-                ToolResult::error(format!("No info found for '{}'. App may not be running or installed.", app))
+                ToolResult::error(format!(
+                    "No info found for '{}'. App may not be running or installed.",
+                    app
+                ))
             } else {
                 ToolResult::ok(matches.join("\n"))
             }
@@ -527,7 +533,11 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() { "OK".to_string() } else { text })
+            ToolResult::ok(if text.is_empty() {
+                "OK".to_string()
+            } else {
+                text
+            })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -535,7 +545,11 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
             ToolResult::error(format!(
                 "{}{}",
                 stdout,
-                if stderr.is_empty() { String::new() } else { format!("\n{}", stderr) }
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stderr)
+                }
             ))
         }
         Err(e) => ToolResult::error(format!("Command '{}' failed: {}", cmd, e)),
@@ -651,7 +665,11 @@ mod tests {
     #[tokio::test]
     async fn test_frontmost_app() {
         let result = handle_frontmost().await;
-        assert!(!result.is_error, "frontmost should succeed: {}", result.content);
+        assert!(
+            !result.is_error,
+            "frontmost should succeed: {}",
+            result.content
+        );
     }
 
     #[cfg(target_os = "macos")]

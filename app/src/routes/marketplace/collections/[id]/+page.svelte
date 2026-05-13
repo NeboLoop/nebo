@@ -2,12 +2,14 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   interface PrivateOrg { id: string; name: string; initial: string; itemCount: number }
+  type ItemType = 'skill' | 'agent' | 'plugin' | 'connector';
+  interface PoolItem { id: string; name: string; desc: string; type: ItemType; orgId: string; rating?: number; installs?: number }
   const PRIVATE_ORGS: PrivateOrg[] = []; // TODO: load from API when collections endpoint exists
-  const MARKETPLACE_PRIVATE_ITEMS: Record<string, unknown>[] = [];
-  const MARKETPLACE_SKILLS: Record<string, unknown>[] = [];
-  const MARKETPLACE_AGENTS_LIST: Record<string, unknown>[] = [];
-  const MARKETPLACE_PLUGINS: Record<string, unknown>[] = [];
-  const MARKETPLACE_CONNECTORS: Record<string, unknown>[] = [];
+  const MARKETPLACE_PRIVATE_ITEMS: PoolItem[] = [];
+  const MARKETPLACE_SKILLS: PoolItem[] = [];
+  const MARKETPLACE_AGENTS_LIST: PoolItem[] = [];
+  const MARKETPLACE_PLUGINS: PoolItem[] = [];
+  const MARKETPLACE_CONNECTORS: PoolItem[] = [];
   import { installedIds, installItem } from '$lib/stores/marketplace.js';
   import { collections, deleteCollection, addItemToCollection, removeItemFromCollection } from '$lib/stores/collections.js';
   import Package from 'lucide-svelte/icons/package';
@@ -21,7 +23,7 @@
   import Globe from 'lucide-svelte/icons/globe';
   import Lock from 'lucide-svelte/icons/lock';
 
-  const id = $derived($page.params.id);
+  const id = $derived($page.params.id ?? '');
 
   const org = $derived(PRIVATE_ORGS.find(o => o.id === id));
   const collection = $derived($collections.find(c => c.id === id));
@@ -43,7 +45,7 @@
   }
 
   // All items for resolution
-  const allItemPool = $derived([
+  const allItemPool: PoolItem[] = $derived([
     ...MARKETPLACE_PRIVATE_ITEMS,
     ...MARKETPLACE_SKILLS.map(s => ({ ...s, type: 'skill' as const, orgId: '' })),
     ...MARKETPLACE_AGENTS_LIST.map(a => ({ ...a, type: 'agent' as const, orgId: '' })),
@@ -94,7 +96,7 @@
       .slice(0, 8);
   });
 
-  function handleAddItem(item: Record<string, unknown>) {
+  function handleAddItem(item: PoolItem) {
     if (!collection) return;
     addItemToCollection(collection.id, item.id);
   }
@@ -104,7 +106,7 @@
     removeItemFromCollection(collection.id, itemId);
   }
 
-  function getItemPath(item: Record<string, unknown>) {
+  function getItemPath(item: PoolItem) {
     const type = item.type;
     if (type === 'agent') return `/marketplace/agents/${item.id}`;
     if (type === 'skill') return `/marketplace/skills/${item.id}`;

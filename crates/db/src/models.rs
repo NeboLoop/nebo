@@ -724,6 +724,7 @@ pub struct EntityConfig {
     pub multi_chat: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub last_heartbeat_at: Option<String>,
 }
 
 // ── Commander ──────────────────────────────────────────────────────────────

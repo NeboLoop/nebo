@@ -1,8 +1,11 @@
 use rusqlite::params;
 
-use crate::models::{AgentWorkflowStats, Workflow, WorkflowActivityResult, WorkflowRun, WorkflowRunError, WorkflowToolBinding};
-use crate::OptionalExt;
+use crate::{DbErrExt, OptionalExt};
 use crate::Store;
+use crate::models::{
+    AgentWorkflowStats, Workflow, WorkflowActivityResult, WorkflowRun, WorkflowRunError,
+    WorkflowToolBinding,
+};
 use types::NeboError;
 
 impl Store {
@@ -98,8 +101,11 @@ impl Store {
 
     pub fn delete_workflow_runs(&self, workflow_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
-        conn.execute("DELETE FROM workflow_runs WHERE workflow_id = ?1", params![workflow_id])
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM workflow_runs WHERE workflow_id = ?1",
+            params![workflow_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -302,17 +308,21 @@ impl Store {
                  FROM workflow_runs WHERE workflow_id = ?1
                  ORDER BY started_at DESC LIMIT ?2 OFFSET ?3",
             )
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+            .db_err("list_workflow_runs prepare")?;
         let rows = stmt
             .query_map(params![workflow_id, limit, offset], row_to_workflow_run)
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+            .db_err("list_workflow_runs query")?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
+            .db_err("list_workflow_runs collect")
     }
 
     /// Check if there is already a running workflow run for the given workflow_id
     /// whose trigger_detail starts with the given binding name.
-    pub fn has_running_run(&self, workflow_id: &str, binding_prefix: &str) -> Result<bool, NeboError> {
+    pub fn has_running_run(
+        &self,
+        workflow_id: &str,
+        binding_prefix: &str,
+    ) -> Result<bool, NeboError> {
         let conn = self.conn()?;
         let pattern = format!("{}:%", binding_prefix);
         conn.query_row(
@@ -321,7 +331,7 @@ impl Store {
             params![workflow_id, pattern],
             |row| row.get(0),
         )
-        .map_err(|e| NeboError::Database(e.to_string()))
+        .db_err("has_running_run")
     }
 
     pub fn count_workflow_runs(&self, workflow_id: &str) -> Result<i64, NeboError> {
@@ -331,7 +341,7 @@ impl Store {
             params![workflow_id],
             |row| row.get(0),
         )
-        .map_err(|e| NeboError::Database(e.to_string()))
+        .db_err("count_workflow_runs")
     }
 
     pub fn get_workflow_run(&self, id: &str) -> Result<Option<WorkflowRun>, NeboError> {
@@ -377,7 +387,16 @@ impl Store {
             "INSERT INTO workflow_activity_results
              (run_id, activity_id, status, tokens_used, attempts, error, started_at, completed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![run_id, activity_id, status, tokens_used, attempts, error, started_at, completed_at],
+            params![
+                run_id,
+                activity_id,
+                status,
+                tokens_used,
+                attempts,
+                error,
+                started_at,
+                completed_at
+            ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -390,7 +409,7 @@ impl Store {
         conn.query_row(
             "SELECT
                 COUNT(*) AS total_runs,
-                COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
+                COALESCE(SUM(CASE WHEN status IN ('completed', 'exited') THEN 1 ELSE 0 END), 0) AS completed,
                 COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
                 COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0) AS cancelled,
                 COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running,
@@ -519,4 +538,3 @@ fn row_to_workflow_run(row: &rusqlite::Row) -> rusqlite::Result<WorkflowRun> {
         completed_at: row.get(13)?,
     })
 }
-

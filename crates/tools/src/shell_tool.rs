@@ -1,10 +1,10 @@
-use serde::Deserialize;
-use std::process::Stdio;
-use std::sync::Arc;
 use crate::origin::ToolContext;
 use crate::policy::Policy;
 use crate::process::{self, ProcessRegistry};
 use crate::registry::ToolResult;
+use serde::Deserialize;
+use std::process::Stdio;
+use std::sync::Arc;
 
 /// Shell operations: execute commands, manage processes and background sessions.
 pub struct ShellTool {
@@ -40,7 +40,11 @@ struct ShellInput {
 
 impl ShellTool {
     pub fn new(policy: Policy, registry: Arc<ProcessRegistry>) -> Self {
-        Self { _policy: policy, registry, plugin_store: None }
+        Self {
+            _policy: policy,
+            registry,
+            plugin_store: None,
+        }
     }
 
     pub fn with_plugin_store(mut self, ps: Arc<napp::plugin::PluginStore>) -> Self {
@@ -129,11 +133,8 @@ impl ShellTool {
             cmd.env("PATH", ps.path_with_plugins());
         }
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            cmd.output(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
 
         match result {
             Err(_) => ToolResult {
@@ -197,7 +198,11 @@ impl ShellTool {
             .map(|ps| ps.build_env_map())
             .unwrap_or_default();
 
-        match self.registry.spawn_background(&input.command, cwd, &plugin_envs).await {
+        match self
+            .registry
+            .spawn_background(&input.command, cwd, &plugin_envs)
+            .await
+        {
             Ok(session_id) => {
                 // Brief pause to see initial output
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -314,7 +319,11 @@ impl ShellTool {
         #[cfg(unix)]
         {
             use std::process::Command;
-            let sig = if signal.is_empty() { "TERM" } else { signal.trim_start_matches("SIG") };
+            let sig = if signal.is_empty() {
+                "TERM"
+            } else {
+                signal.trim_start_matches("SIG")
+            };
             let result = Command::new("kill")
                 .args([&format!("-{}", sig), &pid.to_string()])
                 .output();

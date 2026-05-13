@@ -4,6 +4,9 @@ type ItemType = 'skill' | 'agent' | 'plugin' | 'connector';
 interface InstalledItem { id: string; name: string; type: ItemType; installed: string }
 interface Dependency { id: string; name: string }
 
+interface PluginListEntry { id: string; slug?: string; name: string }
+interface ToolListEntry { id?: string; name: string }
+
 export const installedItems = writable<InstalledItem[]>([]);
 
 let loaded = false;
@@ -15,16 +18,16 @@ export async function loadInstalledItems(): Promise<void> {
     const api = await import('$lib/api/nebo');
     const [plugins, tools] = await Promise.all([
       api.listPlugins().catch(() => null),
-      api.listMCPTools().catch(() => null),
+      api.listTools().catch(() => null),
     ]);
     const items: InstalledItem[] = [];
     if (plugins?.plugins?.length) {
-      for (const p of plugins.plugins) {
-        items.push({ id: p.id || p.slug, name: p.name, type: 'plugin', installed: '' });
+      for (const p of plugins.plugins as PluginListEntry[]) {
+        items.push({ id: p.id || p.slug || '', name: p.name, type: 'plugin', installed: '' });
       }
     }
     if (tools?.tools?.length) {
-      for (const t of tools.tools) {
+      for (const t of tools.tools as ToolListEntry[]) {
         items.push({ id: t.id || t.name, name: t.name, type: 'skill', installed: '' });
       }
     }
@@ -62,5 +65,5 @@ export function installItem(item: { id: string; name: string; type: ItemType }) 
 export function uninstallItem(id: string) {
   installedItems.update(items => items.filter(i => i.id !== id));
   // Fire-and-forget API call
-  import('$lib/api/nebo').then(api => api.uninstallStoreProduct(id)).catch(() => {});
+  import('$lib/api/nebo').then(api => api.removePlugin(id)).catch(() => {});
 }

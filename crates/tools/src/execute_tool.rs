@@ -182,10 +182,7 @@ impl ExecuteTool {
     /// For sealed skills: only copies executables (from partial extraction on disk).
     /// IP (SKILL.md, references/) stays sealed and is never written to the temp dir.
     /// For free skills: copies all resources as before.
-    fn extract_resources(
-        skill: &crate::skills::Skill,
-        tmp_dir: &Path,
-    ) -> Result<(), String> {
+    fn extract_resources(skill: &crate::skills::Skill, tmp_dir: &Path) -> Result<(), String> {
         if skill.is_sealed() {
             // Sealed: only copy executables from base_dir (partial extraction)
             if let Some(ref base_dir) = skill.base_dir {
@@ -195,8 +192,9 @@ impl ExecuteTool {
                     let src = base_dir.join(rel_path);
                     let dest = tmp_dir.join(rel_path);
                     if let Some(parent) = dest.parent() {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| format!("failed to create dir {}: {}", parent.display(), e))?;
+                        std::fs::create_dir_all(parent).map_err(|e| {
+                            format!("failed to create dir {}: {}", parent.display(), e)
+                        })?;
                     }
                     std::fs::copy(&src, &dest)
                         .map_err(|e| format!("failed to copy {}: {}", rel_path, e))?;
@@ -279,14 +277,16 @@ impl ExecuteTool {
 
         // Try to wrap with sandbox if available
         let final_cmd = if let Some(ref sandbox) = self.sandbox {
-            let sandbox_config =
-                crate::sandbox_policy::build_sandbox_config(skill, tmp_dir.path());
+            let sandbox_config = crate::sandbox_policy::build_sandbox_config(skill, tmp_dir.path());
             match sandbox
                 .wrap_with_sandbox_opts(&base_cmd, None, Some(&sandbox_config))
                 .await
             {
                 Ok(wrapped) => {
-                    debug!("executing with sandbox: {}", &wrapped[..wrapped.len().min(120)]);
+                    debug!(
+                        "executing with sandbox: {}",
+                        &wrapped[..wrapped.len().min(120)]
+                    );
                     wrapped
                 }
                 Err(e) => {
@@ -342,11 +342,8 @@ impl ExecuteTool {
 
         debug!(language, cmd = %final_cmd, "executing script locally");
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            cmd.output(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
 
         // Post-execution sandbox cleanup
         if let Some(ref sandbox) = self.sandbox {
@@ -380,10 +377,7 @@ impl ExecuteTool {
                 }
             }
             Ok(Err(e)) => ToolResult::error(format!("failed to execute script: {}", e)),
-            Err(_) => ToolResult::error(format!(
-                "Script timed out after {} seconds",
-                timeout_secs
-            )),
+            Err(_) => ToolResult::error(format!("Script timed out after {} seconds", timeout_secs)),
         }
     }
 }
@@ -446,7 +440,10 @@ impl DynTool for ExecuteTool {
                 Some(s) if !s.is_empty() => s,
                 _ => return ToolResult::error("script is required"),
             };
-            let args = input.get("args").cloned().unwrap_or(serde_json::json!(null));
+            let args = input
+                .get("args")
+                .cloned()
+                .unwrap_or(serde_json::json!(null));
             let timeout = input["timeout"].as_u64().unwrap_or(30);
 
             // 1. Look up skill
@@ -456,8 +453,7 @@ impl DynTool for ExecuteTool {
             };
 
             // 2. Check for binary execution — bin/ directory or legacy root "binary"
-            let is_bin = script_path == "binary"
-                || script_path.starts_with("bin/");
+            let is_bin = script_path == "binary" || script_path.starts_with("bin/");
             if is_bin {
                 if let Some(ref base_dir) = skill.base_dir {
                     // Try exact path first (e.g. "bin/nebo-office"), then legacy "binary"
@@ -465,7 +461,14 @@ impl DynTool for ExecuteTool {
                     if binary_path.is_file() {
                         debug!(skill = skill_name, path = %binary_path.display(), "executing binary from .napp");
                         return self
-                            .execute_local(&RuntimeKind::Binary, "binary", &skill, script_path, &args, timeout)
+                            .execute_local(
+                                &RuntimeKind::Binary,
+                                "binary",
+                                &skill,
+                                script_path,
+                                &args,
+                                timeout,
+                            )
                             .await;
                     }
                     // Legacy: root-level "binary" entry
@@ -474,7 +477,14 @@ impl DynTool for ExecuteTool {
                         if legacy.is_file() {
                             debug!(skill = skill_name, "executing legacy binary from .napp");
                             return self
-                                .execute_local(&RuntimeKind::Binary, "binary", &skill, "binary", &args, timeout)
+                                .execute_local(
+                                    &RuntimeKind::Binary,
+                                    "binary",
+                                    &skill,
+                                    "binary",
+                                    &args,
+                                    timeout,
+                                )
                                 .await;
                         }
                     }
@@ -492,7 +502,7 @@ impl DynTool for ExecuteTool {
                     return ToolResult::error(format!(
                         "Unsupported script type: {}. Supported: .py, .ts, .js, or 'binary'",
                         script_path
-                    ))
+                    ));
                 }
             };
 
@@ -509,7 +519,11 @@ impl DynTool for ExecuteTool {
             if tier == "pro" || tier == "team" || tier == "enterprise" {
                 // TODO: Wire to POST {janus_url}/v1/execute when Janus endpoint is ready.
                 // For now, return a helpful message.
-                warn!(skill = skill_name, script = script_path, "cloud sandbox not yet available");
+                warn!(
+                    skill = skill_name,
+                    script = script_path,
+                    "cloud sandbox not yet available"
+                );
                 return ToolResult::error(
                     "Cloud sandbox execution is coming soon. \
                      Install the runtime locally to run this script now:\n\

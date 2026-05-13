@@ -101,7 +101,11 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
         Some(a) if !a.is_empty() => a,
         _ => return ToolResult::error("'account' is required for get action"),
     };
-    run_command("security", &["find-generic-password", "-s", service, "-a", account, "-w"]).await
+    run_command(
+        "security",
+        &["find-generic-password", "-s", service, "-a", account, "-w"],
+    )
+    .await
 }
 
 #[cfg(target_os = "macos")]
@@ -129,7 +133,16 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
     };
     run_command(
         "security",
-        &["add-generic-password", "-s", service, "-a", account, "-w", password, "-U"],
+        &[
+            "add-generic-password",
+            "-s",
+            service,
+            "-a",
+            account,
+            "-w",
+            password,
+            "-U",
+        ],
     )
     .await
 }
@@ -144,7 +157,11 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         Some(a) if !a.is_empty() => a,
         _ => return ToolResult::error("'account' is required for delete action"),
     };
-    run_command("security", &["delete-generic-password", "-s", service, "-a", account]).await
+    run_command(
+        "security",
+        &["delete-generic-password", "-s", service, "-a", account],
+    )
+    .await
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -164,7 +181,11 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
     if !which("secret-tool") {
         return ToolResult::error("secret-tool not found (install libsecret-tools)");
     }
-    run_command("secret-tool", &["lookup", "service", service, "account", account]).await
+    run_command(
+        "secret-tool",
+        &["lookup", "service", service, "account", account],
+    )
+    .await
 }
 
 #[cfg(target_os = "linux")]
@@ -209,9 +230,10 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
         .output()
         .await;
     match output {
-        Ok(out) if out.status.success() => {
-            ToolResult::ok(format!("Credential stored for service '{}' account '{}'", service, account))
-        }
+        Ok(out) if out.status.success() => ToolResult::ok(format!(
+            "Credential stored for service '{}' account '{}'",
+            service, account
+        )),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
             ToolResult::error(format!("Failed to store credential: {}", stderr))
@@ -233,7 +255,11 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
     if !which("secret-tool") {
         return ToolResult::error("secret-tool not found (install libsecret-tools)");
     }
-    run_command("secret-tool", &["clear", "service", service, "account", account]).await
+    run_command(
+        "secret-tool",
+        &["clear", "service", service, "account", account],
+    )
+    .await
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -333,7 +359,11 @@ async fn run_osascript(script: &str) -> ToolResult {
     {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() { "OK".to_string() } else { text })
+            ToolResult::ok(if text.is_empty() {
+                "OK".to_string()
+            } else {
+                text
+            })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -347,7 +377,11 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() { "OK".to_string() } else { text })
+            ToolResult::ok(if text.is_empty() {
+                "OK".to_string()
+            } else {
+                text
+            })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -355,7 +389,11 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
             ToolResult::error(format!(
                 "{}{}",
                 stdout,
-                if stderr.is_empty() { String::new() } else { format!("\n{}", stderr) }
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stderr)
+                }
             ))
         }
         Err(e) => ToolResult::error(format!("Command '{}' failed: {}", cmd, e)),

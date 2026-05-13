@@ -116,7 +116,15 @@ impl Pipeline {
 
         for g in &self.generators {
             // Skip narration/discipline generators for direct Claude only — Claude follows system prompt well
-            if is_claude && matches!(g.name(), "narration_suppressor" | "output_discipline" | "repetition_detector" | "ask_tool_nudge") {
+            if is_claude
+                && matches!(
+                    g.name(),
+                    "narration_suppressor"
+                        | "output_discipline"
+                        | "repetition_detector"
+                        | "ask_tool_nudge"
+                )
+            {
                 continue;
             }
             // Skip JanusQuotaWarning for Ollama
@@ -125,9 +133,7 @@ impl Pipeline {
             }
 
             // Panic recovery per generator
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                g.generate(ctx)
-            }));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.generate(ctx)));
 
             match result {
                 Ok(dirs) => {
@@ -165,7 +171,11 @@ fn count_turns_since_any_tool_use(messages: &[ChatMessage]) -> i32 {
     let mut count = 0;
     for msg in messages.iter().rev() {
         if msg.role == "assistant" {
-            if msg.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null") {
+            if msg
+                .tool_calls
+                .as_ref()
+                .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null")
+            {
                 return count;
             }
             if !msg.content.is_empty() {
@@ -182,11 +192,24 @@ fn user_requested_stop(messages: &[ChatMessage]) -> bool {
     // This prevents false positives like "stop submitting the form" or
     // "and stop doing that" which are instructions, not stop commands.
     let exact_commands = [
-        "stop", "stop.", "stop!", "stop it", "stop it.", "stop now",
-        "cancel", "abort", "halt", "quit",
-        "enough", "enough.", "that's enough",
-        "break out", "stop stop",
-        "please stop", "just stop", "ok stop",
+        "stop",
+        "stop.",
+        "stop!",
+        "stop it",
+        "stop it.",
+        "stop now",
+        "cancel",
+        "abort",
+        "halt",
+        "quit",
+        "enough",
+        "enough.",
+        "that's enough",
+        "break out",
+        "stop stop",
+        "please stop",
+        "just stop",
+        "ok stop",
     ];
     // Check last 3 user messages
     let recent_user: Vec<&ChatMessage> = messages
@@ -220,9 +243,7 @@ pub fn should_force_break(ctx: &Context) -> Option<String> {
     // The model is smart enough to self-correct — aggressive circuit breakers
     // kill legitimate browser automation (Google Flights, Amazon, etc.).
     if user_requested_stop(&ctx.messages) && ctx.iteration > 2 {
-        return Some(
-            "Circuit breaker: user requested stop. Halting agent loop.".to_string()
-        );
+        return Some("Circuit breaker: user requested stop. Halting agent loop.".to_string());
     }
 
     None
@@ -233,7 +254,9 @@ pub fn should_force_break(ctx: &Context) -> Option<String> {
 // 1. Identity Guard
 struct IdentityGuard;
 impl Generator for IdentityGuard {
-    fn name(&self) -> &str { "identity_guard" }
+    fn name(&self) -> &str {
+        "identity_guard"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         let turns = count_assistant_turns(&ctx.messages);
         if turns >= 8 && turns % 8 == 0 {
@@ -253,7 +276,9 @@ impl Generator for IdentityGuard {
 // 2. Channel Adapter
 struct ChannelAdapter;
 impl Generator for ChannelAdapter {
-    fn name(&self) -> &str { "channel_adapter" }
+    fn name(&self) -> &str {
+        "channel_adapter"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         let content = match ctx.channel.as_str() {
             "dm" => "Keep responses concise for direct messages. Avoid markdown formatting.",
@@ -272,7 +297,9 @@ impl Generator for ChannelAdapter {
 // 3. Tool Nudge
 struct ToolNudge;
 impl Generator for ToolNudge {
-    fn name(&self) -> &str { "tool_nudge" }
+    fn name(&self) -> &str {
+        "tool_nudge"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if ctx.active_task.is_empty() {
             return vec![];
@@ -296,7 +323,9 @@ impl Generator for ToolNudge {
 // 4. Pending Task Action
 struct PendingTaskAction;
 impl Generator for PendingTaskAction {
-    fn name(&self) -> &str { "pending_task_action" }
+    fn name(&self) -> &str {
+        "pending_task_action"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if ctx.active_task.is_empty() || ctx.iteration < 2 {
             return vec![];
@@ -324,13 +353,18 @@ impl Generator for PendingTaskAction {
 // language ("MUST", "immediately", "not acceptable") targeted at GPT/Codex.
 struct OutputDiscipline;
 impl Generator for OutputDiscipline {
-    fn name(&self) -> &str { "output_discipline" }
+    fn name(&self) -> &str {
+        "output_discipline"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         // Only fire when the last response was excessively long
         if ctx.iteration < 1 {
             return vec![];
         }
-        let last_len = ctx.messages.iter().rev()
+        let last_len = ctx
+            .messages
+            .iter()
+            .rev()
             .find(|m| m.role == "assistant")
             .map(|m| m.content.len())
             .unwrap_or(0);
@@ -355,7 +389,9 @@ impl Generator for OutputDiscipline {
 // 6b. Narration Suppressor — detects text+tool narration pattern
 struct NarrationSuppressor;
 impl Generator for NarrationSuppressor {
-    fn name(&self) -> &str { "narration_suppressor" }
+    fn name(&self) -> &str {
+        "narration_suppressor"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if ctx.iteration < 1 {
             return vec![];
@@ -364,8 +400,12 @@ impl Generator for NarrationSuppressor {
         // Count recent assistant messages that have BOTH text (>50 chars) AND tool calls
         let mut narrating_turns = 0usize;
         for msg in ctx.messages.iter().rev().take(6) {
-            if msg.role != "assistant" { continue; }
-            let has_tool_calls = msg.tool_calls.as_ref()
+            if msg.role != "assistant" {
+                continue;
+            }
+            let has_tool_calls = msg
+                .tool_calls
+                .as_ref()
                 .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
             if has_tool_calls && msg.content.len() > 50 {
                 narrating_turns += 1;
@@ -389,14 +429,19 @@ impl Generator for NarrationSuppressor {
 // 6c. Repetition Detector — catches GPT's habit of restating the same info
 struct RepetitionDetector;
 impl Generator for RepetitionDetector {
-    fn name(&self) -> &str { "repetition_detector" }
+    fn name(&self) -> &str {
+        "repetition_detector"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if ctx.iteration < 3 {
             return vec![];
         }
 
         // Collect recent non-empty assistant text responses
-        let recent_texts: Vec<&str> = ctx.messages.iter().rev()
+        let recent_texts: Vec<&str> = ctx
+            .messages
+            .iter()
+            .rev()
             .filter(|m| m.role == "assistant" && m.content.len() > 100)
             .take(4)
             .map(|m| m.content.as_str())
@@ -415,10 +460,12 @@ impl Generator for RepetitionDetector {
                 continue;
             }
             // Count shared 3-grams
-            let a_trigrams: std::collections::HashSet<String> = a_words.windows(3)
+            let a_trigrams: std::collections::HashSet<String> = a_words
+                .windows(3)
                 .map(|w| w.join(" ").to_lowercase())
                 .collect();
-            let b_trigrams: std::collections::HashSet<String> = b_words.windows(3)
+            let b_trigrams: std::collections::HashSet<String> = b_words
+                .windows(3)
                 .map(|w| w.join(" ").to_lowercase())
                 .collect();
             let shared = a_trigrams.intersection(&b_trigrams).count();
@@ -450,7 +497,9 @@ impl Generator for RepetitionDetector {
 // (legitimate browser work) from web(search, "flights") × 5 (actual loop).
 struct LoopDetector;
 impl Generator for LoopDetector {
-    fn name(&self) -> &str { "loop_detector" }
+    fn name(&self) -> &str {
+        "loop_detector"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         let mut directives = Vec::new();
 
@@ -505,7 +554,9 @@ impl Generator for LoopDetector {
 // 9. Presence Awareness — adapts behavior based on user focus state
 struct PresenceAwareness;
 impl Generator for PresenceAwareness {
-    fn name(&self) -> &str { "presence_awareness" }
+    fn name(&self) -> &str {
+        "presence_awareness"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if ctx.user_presence.is_empty() || ctx.iteration < 2 {
             return vec![];
@@ -515,9 +566,10 @@ impl Generator for PresenceAwareness {
             "unfocused" | "away" => {
                 vec![SteeringDirective {
                     label: "Presence".to_string(),
-                    content: "The user stepped away. Continue working autonomously on active tasks. \
+                    content:
+                        "The user stepped away. Continue working autonomously on active tasks. \
                               Be thorough but concise in your output."
-                        .to_string(),
+                            .to_string(),
                     priority: 4,
                 }]
             }
@@ -538,7 +590,9 @@ impl Generator for PresenceAwareness {
 // 10. Context Pressure
 struct ContextPressure;
 impl Generator for ContextPressure {
-    fn name(&self) -> &str { "context_pressure" }
+    fn name(&self) -> &str {
+        "context_pressure"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         // Fire every 15 iterations starting at 15 as a proxy for high context usage
         if ctx.iteration < 15 || ctx.iteration % 15 != 0 {
@@ -557,7 +611,9 @@ impl Generator for ContextPressure {
 // 12. Janus Quota Warning
 struct JanusQuotaWarning;
 impl Generator for JanusQuotaWarning {
-    fn name(&self) -> &str { "janus_quota_warning" }
+    fn name(&self) -> &str {
+        "janus_quota_warning"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if let Some(ref warning) = ctx.quota_warning {
             if !warning.is_empty() {
@@ -582,7 +638,9 @@ impl Generator for JanusQuotaWarning {
 // (browser timeouts, transient network issues).
 struct ErrorRecovery;
 impl Generator for ErrorRecovery {
-    fn name(&self) -> &str { "error_recovery" }
+    fn name(&self) -> &str {
+        "error_recovery"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         // Don't fire on 1-2 errors — single failures are normal, especially
         // in browser automation (click timeouts, page loading, etc.)
@@ -606,7 +664,9 @@ impl Generator for ErrorRecovery {
 // 15. Task Tracking Nudge — steer the LLM to break complex requests into tracked tasks
 struct TaskTrackingNudge;
 impl Generator for TaskTrackingNudge {
-    fn name(&self) -> &str { "task_tracking_nudge" }
+    fn name(&self) -> &str {
+        "task_tracking_nudge"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         // Only fire on first iteration (when user just sent a request)
         if ctx.iteration != 1 {
@@ -620,14 +680,34 @@ impl Generator for TaskTrackingNudge {
         // Detect multi-step complexity in the user prompt
         let lower = ctx.user_prompt.to_lowercase();
         let complexity_signals = [
-            "and then", "after that", "first", "next", "finally",
-            "step 1", "step 2", "1.", "2.", "3.",
-            "multiple", "each", "all of", "every",
-            "research", "compare", "analyze", "plan",
-            "set up", "configure", "build", "create a",
-            "organize", "clean up", "migrate",
+            "and then",
+            "after that",
+            "first",
+            "next",
+            "finally",
+            "step 1",
+            "step 2",
+            "1.",
+            "2.",
+            "3.",
+            "multiple",
+            "each",
+            "all of",
+            "every",
+            "research",
+            "compare",
+            "analyze",
+            "plan",
+            "set up",
+            "configure",
+            "build",
+            "create a",
+            "organize",
+            "clean up",
+            "migrate",
         ];
-        let signal_count = complexity_signals.iter()
+        let signal_count = complexity_signals
+            .iter()
             .filter(|s| lower.contains(*s))
             .count();
 
@@ -655,7 +735,9 @@ impl Generator for TaskTrackingNudge {
 // 16. Task Completion Nudge — remind to update tasks when work is being done but tasks aren't progressing
 struct TaskCompletionNudge;
 impl Generator for TaskCompletionNudge {
-    fn name(&self) -> &str { "task_completion_nudge" }
+    fn name(&self) -> &str {
+        "task_completion_nudge"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         // Only fire if there ARE tasks and tools are being used
         if ctx.work_tasks.is_empty() || ctx.iteration < 3 {
@@ -684,10 +766,16 @@ impl Generator for TaskCompletionNudge {
 // 17. Ask Tool Nudge — steer the LLM to use the interactive ask widget instead of plain-text questions
 struct AskToolNudge;
 impl Generator for AskToolNudge {
-    fn name(&self) -> &str { "ask_tool_nudge" }
+    fn name(&self) -> &str {
+        "ask_tool_nudge"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         // Find the last assistant message
-        let last_assistant = ctx.messages.iter().rev().find(|m| m.role == "assistant" && !m.content.is_empty());
+        let last_assistant = ctx
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant" && !m.content.is_empty());
         let msg = match last_assistant {
             Some(m) => m,
             None => return vec![],
@@ -704,10 +792,18 @@ impl Generator for AskToolNudge {
         let text = &msg.content;
         let has_question_mark = text.lines().any(|line| line.trim_end().ends_with('?'));
         let lower = text.to_lowercase();
-        let has_choice_phrase = ["which do you prefer", "what would you like", "please choose",
-            "let me know", "would you rather", "which option", "pick one", "choose from"]
-            .iter()
-            .any(|p| lower.contains(p));
+        let has_choice_phrase = [
+            "which do you prefer",
+            "what would you like",
+            "please choose",
+            "let me know",
+            "would you rather",
+            "which option",
+            "pick one",
+            "choose from",
+        ]
+        .iter()
+        .any(|p| lower.contains(p));
 
         if !has_question_mark && !has_choice_phrase {
             return vec![];
@@ -725,7 +821,6 @@ impl Generator for AskToolNudge {
         }]
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -813,10 +908,7 @@ mod tests {
 
     #[test]
     fn test_presence_awareness_away() {
-        let messages = vec![
-            make_msg("user", "hello"),
-            make_msg("assistant", "hi"),
-        ];
+        let messages = vec![make_msg("user", "hello"), make_msg("assistant", "hi")];
         let generator = PresenceAwareness;
         let mut ctx = make_ctx(messages);
         ctx.iteration = 3;
@@ -828,10 +920,7 @@ mod tests {
 
     #[test]
     fn test_presence_awareness_returned() {
-        let messages = vec![
-            make_msg("user", "hello"),
-            make_msg("assistant", "hi"),
-        ];
+        let messages = vec![make_msg("user", "hello"), make_msg("assistant", "hi")];
         let generator = PresenceAwareness;
         let mut ctx = make_ctx(messages);
         ctx.iteration = 3;
@@ -846,14 +935,12 @@ mod tests {
     fn test_pipeline_generates_proactive_context() {
         let pipeline = Pipeline::new();
         let mut ctx = make_ctx(vec![make_msg("user", "hello")]);
-        ctx.proactive_items = vec![
-            crate::proactive::ProactiveItem {
-                source: "heartbeat:gws-email".to_string(),
-                summary: "3 urgent emails from your boss".to_string(),
-                priority: crate::proactive::Priority::Urgent,
-                created_at: 1000,
-            },
-        ];
+        ctx.proactive_items = vec![crate::proactive::ProactiveItem {
+            source: "heartbeat:gws-email".to_string(),
+            summary: "3 urgent emails from your boss".to_string(),
+            priority: crate::proactive::Priority::Urgent,
+            created_at: 1000,
+        }];
         let (_, proactive) = pipeline.generate(&ctx);
         assert_eq!(proactive.len(), 1);
         assert!(proactive[0].contains("3 urgent emails"));
@@ -893,16 +980,16 @@ mod tests {
         let mut ctx = make_ctx(messages);
         ctx.iteration = 3;
         let result = should_force_break(&ctx);
-        assert!(result.is_some(), "user stop should force break even with zero errors");
+        assert!(
+            result.is_some(),
+            "user stop should force break even with zero errors"
+        );
         assert!(result.unwrap().contains("user requested stop"));
     }
 
     #[test]
     fn test_user_stop_no_break_at_iteration_2() {
-        let messages = vec![
-            make_msg("user", "stop"),
-            make_msg("assistant", "ok"),
-        ];
+        let messages = vec![make_msg("user", "stop"), make_msg("assistant", "ok")];
         let mut ctx = make_ctx(messages);
         ctx.iteration = 2;
         let result = should_force_break(&ctx);
@@ -914,9 +1001,15 @@ mod tests {
         // Hermes approach: no hard stops on errors, only budget.
         let mut ctx = make_ctx(vec![]);
         ctx.consecutive_error_iterations = 3;
-        assert!(should_force_break(&ctx).is_none(), "should NOT break on errors");
+        assert!(
+            should_force_break(&ctx).is_none(),
+            "should NOT break on errors"
+        );
         ctx.consecutive_error_iterations = 10;
-        assert!(should_force_break(&ctx).is_none(), "should NOT break even at 10 errors");
+        assert!(
+            should_force_break(&ctx).is_none(),
+            "should NOT break even at 10 errors"
+        );
     }
 
     #[test]
@@ -924,7 +1017,10 @@ mod tests {
         // Hermes approach: no hard stops on same-tool calls, only budget.
         let mut ctx = make_ctx(vec![]);
         ctx.recent_tool_result_hashes = vec![(1, 2, 3), (1, 2, 3), (1, 2, 3), (1, 2, 3)];
-        assert!(should_force_break(&ctx).is_none(), "should NOT break on same-tool calls");
+        assert!(
+            should_force_break(&ctx).is_none(),
+            "should NOT break on same-tool calls"
+        );
     }
 
     #[test]
@@ -933,10 +1029,16 @@ mod tests {
         let mut ctx = make_ctx(vec![]);
 
         ctx.consecutive_error_iterations = 1;
-        assert!(recovery.generate(&ctx).is_empty(), "should NOT fire at 1 error");
+        assert!(
+            recovery.generate(&ctx).is_empty(),
+            "should NOT fire at 1 error"
+        );
 
         ctx.consecutive_error_iterations = 2;
-        assert!(recovery.generate(&ctx).is_empty(), "should NOT fire at 2 errors");
+        assert!(
+            recovery.generate(&ctx).is_empty(),
+            "should NOT fire at 2 errors"
+        );
     }
 
     #[test]
@@ -966,21 +1068,28 @@ mod tests {
         let pipeline = Pipeline::new();
         let mut ctx = make_ctx(vec![
             make_msg("user", "Help me redecorate my living room"),
-            make_msg("assistant", "I can suggest a few options.\nWhich do you prefer?"),
+            make_msg(
+                "assistant",
+                "I can suggest a few options.\nWhich do you prefer?",
+            ),
         ]);
         ctx.iteration = 2;
 
         // OpenAI: should fire
         ctx.provider_id = "openai".to_string();
         let (dirs, _) = pipeline.generate(&ctx);
-        assert!(dirs.iter().any(|d| d.label == "Ask Tool"),
-            "AskToolNudge should fire for OpenAI when assistant asks plain-text question");
+        assert!(
+            dirs.iter().any(|d| d.label == "Ask Tool"),
+            "AskToolNudge should fire for OpenAI when assistant asks plain-text question"
+        );
 
         // Claude: should be skipped
         ctx.provider_id = "anthropic".to_string();
         let (dirs, _) = pipeline.generate(&ctx);
-        assert!(!dirs.iter().any(|d| d.label == "Ask Tool"),
-            "AskToolNudge should be skipped for Claude");
+        assert!(
+            !dirs.iter().any(|d| d.label == "Ask Tool"),
+            "AskToolNudge should be skipped for Claude"
+        );
     }
 
     #[test]
@@ -998,14 +1107,18 @@ mod tests {
         // OpenAI: NarrationSuppressor should fire
         ctx.provider_id = "openai".to_string();
         let (dirs, _) = pipeline.generate(&ctx);
-        assert!(dirs.iter().any(|d| d.label == "Narration"),
-            "NarrationSuppressor should fire for OpenAI when text+tool call detected");
+        assert!(
+            dirs.iter().any(|d| d.label == "Narration"),
+            "NarrationSuppressor should fire for OpenAI when text+tool call detected"
+        );
 
         // Claude: should be skipped
         ctx.provider_id = "anthropic".to_string();
         let (dirs, _) = pipeline.generate(&ctx);
-        assert!(!dirs.iter().any(|d| d.label == "Narration"),
-            "NarrationSuppressor should be skipped for Claude");
+        assert!(
+            !dirs.iter().any(|d| d.label == "Narration"),
+            "NarrationSuppressor should be skipped for Claude"
+        );
     }
 
     #[test]
@@ -1022,14 +1135,18 @@ mod tests {
         // OpenAI: OutputDiscipline should fire
         ctx.provider_id = "openai".to_string();
         let (dirs, _) = pipeline.generate(&ctx);
-        assert!(dirs.iter().any(|d| d.label == "Output Discipline"),
-            "OutputDiscipline should fire for OpenAI when response > 300 chars");
+        assert!(
+            dirs.iter().any(|d| d.label == "Output Discipline"),
+            "OutputDiscipline should fire for OpenAI when response > 300 chars"
+        );
 
         // Claude: should be skipped
         ctx.provider_id = "anthropic".to_string();
         let (dirs, _) = pipeline.generate(&ctx);
-        assert!(!dirs.iter().any(|d| d.label == "Output Discipline"),
-            "OutputDiscipline should be skipped for Claude");
+        assert!(
+            !dirs.iter().any(|d| d.label == "Output Discipline"),
+            "OutputDiscipline should be skipped for Claude"
+        );
     }
 
     #[test]
@@ -1045,7 +1162,11 @@ mod tests {
         ctx.iteration = 3;
 
         let result = generator.generate(&ctx);
-        assert_eq!(result.len(), 1, "PendingTaskAction should fire when active task + text-only response");
+        assert_eq!(
+            result.len(),
+            1,
+            "PendingTaskAction should fire when active task + text-only response"
+        );
         assert_eq!(result[0].label, "Action Required");
     }
 
@@ -1055,8 +1176,10 @@ mod tests {
         let generator = ErrorRecovery;
         let mut ctx = make_ctx(vec![]);
         ctx.consecutive_error_iterations = 1;
-        assert!(generator.generate(&ctx).is_empty(),
-            "ErrorRecovery should NOT fire at 1 error (single failures are normal)");
+        assert!(
+            generator.generate(&ctx).is_empty(),
+            "ErrorRecovery should NOT fire at 1 error (single failures are normal)"
+        );
     }
 
     #[test]
@@ -1067,8 +1190,10 @@ mod tests {
         ctx.recent_tool_result_hashes = vec![(100, 200, 300), (100, 200, 301), (100, 200, 302)];
 
         let result = generator.generate(&ctx);
-        assert!(!result.iter().any(|d| d.label == "Loop Warning"),
-            "LoopDetector should NOT fire on same-tool calls (removed)");
+        assert!(
+            !result.iter().any(|d| d.label == "Loop Warning"),
+            "LoopDetector should NOT fire on same-tool calls (removed)"
+        );
     }
 
     #[test]
@@ -1077,14 +1202,16 @@ mod tests {
         let generator = LoopDetector;
         let mut ctx = make_ctx(vec![]);
         ctx.recent_tool_result_hashes = vec![
-            (1, 2, 10),  // A
-            (3, 4, 20),  // B
-            (1, 2, 11),  // A again
-            (3, 4, 21),  // B again
+            (1, 2, 10), // A
+            (3, 4, 20), // B
+            (1, 2, 11), // A again
+            (3, 4, 21), // B again
         ];
 
         let result = generator.generate(&ctx);
-        assert!(!result.iter().any(|d| d.label == "Ping-Pong"),
-            "LoopDetector should NOT have ping-pong detection (removed)");
+        assert!(
+            !result.iter().any(|d| d.label == "Ping-Pong"),
+            "LoopDetector should NOT have ping-pong detection (removed)"
+        );
     }
 }

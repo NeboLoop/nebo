@@ -36,13 +36,11 @@ pub fn legacy_data_dir() -> Option<PathBuf> {
 /// Creates the data directory if it doesn't exist and returns its path.
 pub fn ensure_data_dir() -> Result<PathBuf, NeboError> {
     let dir = data_dir()?;
-    fs::create_dir_all(&dir).map_err(|e| {
-        NeboError::DataDir(format!("failed to create data directory: {e}"))
-    })?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| NeboError::DataDir(format!("failed to create data directory: {e}")))?;
     // Ensure the data/ subdirectory exists for the database
-    fs::create_dir_all(dir.join("data")).map_err(|e| {
-        NeboError::DataDir(format!("failed to create data/data directory: {e}"))
-    })?;
+    fs::create_dir_all(dir.join("data"))
+        .map_err(|e| NeboError::DataDir(format!("failed to create data/data directory: {e}")))?;
     Ok(dir)
 }
 
@@ -113,13 +111,14 @@ pub fn ensure_artifact_dirs() -> Result<(), NeboError> {
     let data = data_dir()?;
 
     // Ensure data/ for database
-    fs::create_dir_all(data.join("data")).map_err(|e| {
-        NeboError::DataDir(format!("failed to create data/ directory: {e}"))
-    })?;
+    fs::create_dir_all(data.join("data"))
+        .map_err(|e| NeboError::DataDir(format!("failed to create data/ directory: {e}")))?;
 
     // Ensure files/large_inputs directory for large input offloading
     fs::create_dir_all(data.join("files").join("large_inputs")).map_err(|e| {
-        NeboError::DataDir(format!("failed to create files/large_inputs directory: {e}"))
+        NeboError::DataDir(format!(
+            "failed to create files/large_inputs directory: {e}"
+        ))
     })?;
 
     // Create nebo/ and user/ subdirectories

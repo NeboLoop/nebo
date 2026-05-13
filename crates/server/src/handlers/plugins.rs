@@ -4,7 +4,7 @@
 //! auth requirements in their manifest. These handlers run the plugin's own
 //! auth CLI commands and report status via WebSocket events.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use axum::extract::{Path, State};
@@ -12,7 +12,7 @@ use axum::response::Json;
 use tokio::io::AsyncReadExt;
 use tracing::{info, warn};
 
-use super::{to_error_response, HandlerResult};
+use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
 use types::NeboError;
 
@@ -21,9 +21,7 @@ use types::NeboError;
 /// Lists all installed plugins, deduped by slug (highest version wins).
 /// Enriches each entry with manifest data (name, description, author, auth info)
 /// and DB fields (enabled, signatureStatus) when available.
-pub async fn list_plugins(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let installed = state.plugin_store.list_installed();
 
     // Build DB lookup for enrichment (enabled, signature_status).
@@ -39,18 +37,28 @@ pub async fn list_plugins(
     // so first occurrence per slug is the highest version.
     let mut seen = HashMap::new();
     for (slug, version, _binary_path, source) in &installed {
-        seen.entry(slug.clone()).or_insert_with(|| (version.clone(), *source));
+        seen.entry(slug.clone())
+            .or_insert_with(|| (version.clone(), *source));
     }
 
     let mut plugins = Vec::new();
     for (slug, (version, source)) in &seen {
         let manifest = state.plugin_store.get_manifest(slug);
-        let (has_auth, auth_label) = match &manifest {
+        let (has_auth, auth_label, auth_type, auth_env_vars) = match &manifest {
             Some(m) => match &m.auth {
-                Some(auth) => (true, auth.label.clone()),
-                None => (false, String::new()),
+                Some(auth) => {
+                    // Only surface env vars for env-type auth (API keys the user provides).
+                    // OAuth plugins have pre-filled client credentials — users never touch those.
+                    let env_vars: Vec<String> = if auth.auth_type == "env" {
+                        auth.env.keys().cloned().collect()
+                    } else {
+                        Vec::new()
+                    };
+                    (true, auth.label.clone(), auth.auth_type.clone(), env_vars)
+                }
+                None => (false, String::new(), String::new(), Vec::new()),
             },
-            None => (false, String::new()),
+            None => (false, String::new(), String::new(), Vec::new()),
         };
 
         let event_count = manifest
@@ -61,7 +69,9 @@ pub async fn list_plugins(
 
         let db_row = db_plugins.get(slug.as_str());
         let enabled = db_row.map(|r| r.is_enabled != 0).unwrap_or(true);
-        let sig_status = db_row.map(|r| r.signature_status.as_str()).unwrap_or("unverified");
+        let sig_status = db_row
+            .map(|r| r.signature_status.as_str())
+            .unwrap_or("unverified");
 
         plugins.push(serde_json::json!({
             "slug": slug,
@@ -71,6 +81,8 @@ pub async fn list_plugins(
             "author": manifest.as_ref().map(|m| m.author.as_str()).unwrap_or(""),
             "hasAuth": has_auth,
             "authLabel": auth_label,
+            "authType": auth_type,
+            "authEnvVars": auth_env_vars,
             "hasEvents": event_count > 0,
             "eventCount": event_count,
             "source": source,
@@ -80,8 +92,30 @@ pub async fn list_plugins(
     }
 
     plugins.sort_by(|a, b| {
-        a["slug"].as_str().unwrap_or("").cmp(b["slug"].as_str().unwrap_or(""))
+        a["slug"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["slug"].as_str().unwrap_or(""))
     });
+
+    // Enrich with stored API key status for plugins with env vars
+    for plugin in &mut plugins {
+        let slug = plugin["slug"].as_str().unwrap_or("");
+        let env_vars = plugin["authEnvVars"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if !env_vars.is_empty() {
+            let settings = state
+                .store
+                .list_plugin_settings_by_slug(slug)
+                .unwrap_or_default();
+            let all_set = env_vars.iter().all(|var| {
+                settings.iter().any(|s| s.setting_key == *var && !s.setting_value.is_empty())
+            });
+            plugin["authKeysSet"] = serde_json::json!(all_set);
+        }
+    }
 
     let total = plugins.len();
     Ok(Json(serde_json::json!({
@@ -108,6 +142,7 @@ pub async fn auth_login(
     let plugin_path = state.plugin_store.path_with_plugins();
     let store_for_restart = state.store.clone();
     let workers_for_restart = state.agent_workers.clone();
+    let plugin_store_for_auth = state.plugin_store.clone();
 
     info!(plugin = %slug, "starting plugin auth login");
 
@@ -172,17 +207,17 @@ pub async fn auth_login(
                     opened = opened || url_opened_stderr.load(std::sync::atomic::Ordering::Relaxed);
                     let has_candidate = !opened && has_url_candidate(&all);
                     let read_result = if has_candidate {
-                        match tokio::time::timeout(
-                            Duration::from_secs(1),
-                            stream.read(&mut buf),
-                        ).await {
+                        match tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
+                            .await
+                        {
                             Ok(r) => r,
                             Err(_) => {
                                 // Timeout — no more data coming, treat URL as complete.
                                 if !url_opened_stderr.load(std::sync::atomic::Ordering::Relaxed) {
                                     if let Some(url) = extract_url(&all, true) {
                                         open_auth_url(&slug_for_stderr, &url, &hub_for_stderr);
-                                        url_opened_stderr.store(true, std::sync::atomic::Ordering::Relaxed);
+                                        url_opened_stderr
+                                            .store(true, std::sync::atomic::Ordering::Relaxed);
                                         opened = true;
                                     }
                                 }
@@ -198,10 +233,13 @@ pub async fn auth_login(
                             let chunk = String::from_utf8_lossy(&buf[..n]);
                             info!(plugin = %slug_for_stderr, chunk = %chunk, "plugin auth stderr");
                             all.push_str(&chunk);
-                            if !opened && !url_opened_stderr.load(std::sync::atomic::Ordering::Relaxed) {
+                            if !opened
+                                && !url_opened_stderr.load(std::sync::atomic::Ordering::Relaxed)
+                            {
                                 if let Some(url) = extract_url(&all, false) {
                                     open_auth_url(&slug_for_stderr, &url, &hub_for_stderr);
-                                    url_opened_stderr.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    url_opened_stderr
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
                                     opened = true;
                                 }
                             }
@@ -224,16 +262,16 @@ pub async fn auth_login(
                     opened = opened || url_opened_stdout.load(std::sync::atomic::Ordering::Relaxed);
                     let has_candidate = !opened && has_url_candidate(&all);
                     let read_result = if has_candidate {
-                        match tokio::time::timeout(
-                            Duration::from_secs(1),
-                            stream.read(&mut buf),
-                        ).await {
+                        match tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
+                            .await
+                        {
                             Ok(r) => r,
                             Err(_) => {
                                 if !url_opened_stdout.load(std::sync::atomic::Ordering::Relaxed) {
                                     if let Some(url) = extract_url(&all, true) {
                                         open_auth_url(&slug_for_stdout, &url, &hub_for_stdout);
-                                        url_opened_stdout.store(true, std::sync::atomic::Ordering::Relaxed);
+                                        url_opened_stdout
+                                            .store(true, std::sync::atomic::Ordering::Relaxed);
                                         opened = true;
                                     }
                                 }
@@ -249,10 +287,13 @@ pub async fn auth_login(
                             let chunk = String::from_utf8_lossy(&buf[..n]);
                             info!(plugin = %slug_for_stdout, chunk = %chunk, "plugin auth stdout");
                             all.push_str(&chunk);
-                            if !opened && !url_opened_stdout.load(std::sync::atomic::Ordering::Relaxed) {
+                            if !opened
+                                && !url_opened_stdout.load(std::sync::atomic::Ordering::Relaxed)
+                            {
                                 if let Some(url) = extract_url(&all, false) {
                                     open_auth_url(&slug_for_stdout, &url, &hub_for_stdout);
-                                    url_opened_stdout.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    url_opened_stdout
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
                                     opened = true;
                                 }
                             }
@@ -276,6 +317,9 @@ pub async fn auth_login(
                     serde_json::json!({ "plugin": &slug_owned }),
                 );
 
+                // Update in-memory auth cache so getAgent reflects the change instantly
+                plugin_store_for_auth.update_auth_status(&slug_owned).await;
+
                 // Restart agent workers that depend on this plugin
                 let store_r = store_for_restart.clone();
                 let workers_r = workers_for_restart.clone();
@@ -288,19 +332,17 @@ pub async fn auth_login(
                             }
                             if let Ok(bindings) = store_r.list_agent_workflows(&agent.id) {
                                 let uses_plugin = bindings.iter().any(|b| {
-                                    b.trigger_type == "watch"
-                                        && b.trigger_config.contains(&slug_r)
+                                    b.trigger_type == "watch" && b.trigger_config.contains(&slug_r)
                                 });
                                 if uses_plugin {
-                                    let notif_id =
-                                        format!("auth-required:{}:{}", agent.id, slug_r);
+                                    let notif_id = format!("auth-required:{}:{}", agent.id, slug_r);
                                     let _ = store_r.delete_notification(&notif_id, "");
                                     info!(
                                         agent = %agent.id,
                                         plugin = %slug_r,
                                         "restarting agent worker after plugin auth"
                                     );
-                                    workers_r.start_agent(&agent.id, &agent.name).await;
+                                    workers_r.start_agent(&agent.id, &agent.name, None).await;
                                 }
                             }
                         }
@@ -371,13 +413,16 @@ pub async fn auth_logout(
 
     if output.status.success() {
         info!(plugin = %slug, "plugin auth logout succeeded");
+        // Update in-memory auth cache so getAgent reflects the change instantly
+        state.plugin_store.update_auth_status(&slug).await;
         Ok(Json(serde_json::json!({ "success": true })))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         warn!(plugin = %slug, error = %stderr, "plugin auth logout failed");
-        Err(to_error_response(NeboError::Internal(
-            format!("logout failed: {}", stderr),
-        )))
+        Err(to_error_response(NeboError::Internal(format!(
+            "logout failed: {}",
+            stderr
+        ))))
     }
 }
 
@@ -403,6 +448,70 @@ pub async fn remove_plugin(
 
     info!(plugin = %slug, "plugin removed via settings");
     Ok(Json(serde_json::json!({ "message": "Plugin removed" })))
+}
+
+/// GET /plugins/{slug}/dependents
+///
+/// Lists all installed skills and agents that depend on this plugin.
+/// Used by the frontend to determine whether a plugin can be safely removed.
+pub async fn list_dependents(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    // Skills that declare this plugin as a dependency, excluding skills bundled
+    // inside the plugin's own directory (those are part of the plugin itself).
+    let all_skills = state.skill_loader.list().await;
+    let plugin_skills_prefix = format!("/plugins/{}/", slug);
+    let skill_dependents: Vec<serde_json::Value> = all_skills
+        .iter()
+        .filter(|s| s.plugins.iter().any(|p| p.name == slug))
+        .filter(|s| {
+            // Exclude skills whose source_path is inside the plugin directory
+            if let Some(ref path) = s.source_path {
+                !path.to_string_lossy().contains(&plugin_skills_prefix)
+            } else {
+                true
+            }
+        })
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "description": s.description,
+                "type": "skill",
+            })
+        })
+        .collect();
+
+    // Agents that declare this plugin in requires.plugins or use it in a Watch trigger.
+    let all_agents = state.agent_loader.list().await;
+    let agent_dependents: Vec<serde_json::Value> = all_agents
+        .iter()
+        .filter(|a| {
+            if let Some(cfg) = &a.config {
+                let in_requires = cfg.requires.plugins.iter().any(|p| p.contains(&slug));
+                let in_triggers = cfg.workflows.values().any(|w| {
+                    matches!(&w.trigger, napp::agent::AgentTrigger::Watch { plugin, .. } if plugin == &slug)
+                });
+                in_requires || in_triggers
+            } else {
+                false
+            }
+        })
+        .map(|a| {
+            serde_json::json!({
+                "name": a.agent_def.name,
+                "description": a.agent_def.description,
+                "type": "agent",
+            })
+        })
+        .collect();
+
+    let total = skill_dependents.len() + agent_dependents.len();
+    Ok(Json(serde_json::json!({
+        "skills": skill_dependents,
+        "agents": agent_dependents,
+        "total": total,
+    })))
 }
 
 /// Check if a plugin is authenticated.
@@ -441,11 +550,13 @@ pub async fn auth_status(
         .get_auth_info(&slug)
         .ok_or_else(|| to_error_response(NeboError::NotFound))?;
 
-    let status_cmd = auth.commands.status.as_deref().ok_or_else(|| {
-        to_error_response(NeboError::Validation(
-            "plugin has no auth status command".into(),
-        ))
-    })?;
+    let status_cmd = match auth.commands.status.as_deref() {
+        Some(cmd) => cmd,
+        None => {
+            // No status command → plugin doesn't require auth checks
+            return Ok(Json(serde_json::json!({ "authenticated": true })));
+        }
+    };
 
     let args: Vec<&str> = status_cmd.split_whitespace().collect();
     let mut cmd = tokio::process::Command::new(&binary_path);
@@ -506,7 +617,10 @@ pub async fn list_all_plugin_events(
     }
 
     events.sort_by(|a, b| {
-        a["source"].as_str().unwrap_or("").cmp(b["source"].as_str().unwrap_or(""))
+        a["source"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["source"].as_str().unwrap_or(""))
     });
 
     let total = events.len();
@@ -523,10 +637,7 @@ pub async fn list_plugin_events(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let event_defs = state
-        .plugin_store
-        .get_events(&slug)
-        .unwrap_or_default();
+    let event_defs = state.plugin_store.get_events(&slug).unwrap_or_default();
 
     let events: Vec<serde_json::Value> = event_defs
         .iter()
@@ -631,26 +742,42 @@ pub async fn set_plugin_config(
     // Validate required fields
     for field in schema {
         if field.required && !body.contains_key(&field.key) {
-            return Err(to_error_response(NeboError::Validation(
-                format!("missing required config field: {}", field.key),
-            )));
+            return Err(to_error_response(NeboError::Validation(format!(
+                "missing required config field: {}",
+                field.key
+            ))));
         }
     }
 
-    let schema_map: HashMap<&str, &napp::plugin::PluginConfigField> = schema
-        .iter()
-        .map(|f| (f.key.as_str(), f))
-        .collect();
+    // Collect allowed env var keys from auth.env (any auth type)
+    let auth_env_keys: HashSet<&str> = manifest
+        .auth
+        .as_ref()
+        .map(|a| a.env.keys().map(|k| k.as_str()).collect())
+        .unwrap_or_default();
 
-    // Store each value (only keys declared in schema)
+    let schema_map: HashMap<&str, &napp::plugin::PluginConfigField> =
+        schema.iter().map(|f| (f.key.as_str(), f)).collect();
+
+    // Store each value (keys declared in schema OR auth.env)
     for (key, value) in &body {
-        let field = match schema_map.get(key.as_str()) {
-            Some(f) => f,
-            None => continue, // ignore unknown keys
-        };
-        if let Err(e) = state.store.upsert_plugin_setting_by_slug(&slug, key, value, field.secret) {
-            warn!(plugin = %slug, key = %key, error = %e, "failed to save plugin config");
-            return Err(to_error_response(NeboError::Internal(e.to_string())));
+        if let Some(field) = schema_map.get(key.as_str()) {
+            if let Err(e) = state
+                .store
+                .upsert_plugin_setting_by_slug(&slug, key, value, field.secret)
+            {
+                warn!(plugin = %slug, key = %key, error = %e, "failed to save plugin config");
+                return Err(to_error_response(NeboError::Internal(e.to_string())));
+            }
+        } else if auth_env_keys.contains(key.as_str()) {
+            // Auth env vars are always secrets
+            if let Err(e) = state
+                .store
+                .upsert_plugin_setting_by_slug(&slug, key, value, true)
+            {
+                warn!(plugin = %slug, key = %key, error = %e, "failed to save plugin env var");
+                return Err(to_error_response(NeboError::Internal(e.to_string())));
+            }
         }
     }
 
@@ -700,16 +827,24 @@ pub async fn proxy_plugin_route(
         .get_manifest(&slug)
         .ok_or_else(|| to_error_response(NeboError::NotFound))?;
 
-    let caps = manifest.capabilities.as_ref()
+    let caps = manifest
+        .capabilities
+        .as_ref()
         .ok_or_else(|| to_error_response(NeboError::NotFound))?;
 
     // Find matching route by path and method
-    let route_def = caps.routes.iter().find(|r| {
-        let r_path = r.path.trim_start_matches('/');
-        r_path == path && r.method.eq_ignore_ascii_case(method.as_str())
-    }).ok_or_else(|| to_error_response(NeboError::NotFound))?;
+    let route_def = caps
+        .routes
+        .iter()
+        .find(|r| {
+            let r_path = r.path.trim_start_matches('/');
+            r_path == path && r.method.eq_ignore_ascii_case(method.as_str())
+        })
+        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
 
-    let binary = state.plugin_store.resolve(&slug, "*")
+    let binary = state
+        .plugin_store
+        .resolve(&slug, "*")
         .ok_or_else(|| to_error_response(NeboError::Internal("plugin binary not found".into())))?;
 
     let args: Vec<&str> = route_def.command.split_whitespace().collect();
@@ -727,7 +862,8 @@ pub async fn proxy_plugin_route(
         }
     }
 
-    let mut child = cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| to_error_response(NeboError::Internal(format!("spawn: {}", e))))?;
 
     // Write request body to stdin
@@ -737,10 +873,8 @@ pub async fn proxy_plugin_route(
         drop(stdin);
     }
 
-    let output = tokio::time::timeout(
-        Duration::from_secs(30),
-        child.wait_with_output(),
-    ).await
+    let output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+        .await
         .map_err(|_| to_error_response(NeboError::Internal("route handler timed out".into())))?
         .map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?;
 
@@ -753,9 +887,10 @@ pub async fn proxy_plugin_route(
         }
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(to_error_response(NeboError::Internal(
-            format!("route handler failed: {}", stderr.trim()),
-        )))
+        Err(to_error_response(NeboError::Internal(format!(
+            "route handler failed: {}",
+            stderr.trim()
+        ))))
     }
 }
 

@@ -47,7 +47,7 @@ func generateComponents(path string, structs map[string]*RustStruct, handlers ma
 		if len(h.ResponseKeys) == 0 {
 			continue
 		}
-		typeName := handlerToResponseTypeName(h.FuncName)
+		typeName := handlerToResponseTypeName(handlerToFuncName(h.QualifiedName))
 		if seen[typeName] {
 			continue
 		}
@@ -235,7 +235,7 @@ func emitAPIFunction(b *strings.Builder, route Route, funcName string, handlers 
 	responseType := "unknown"
 	h := handlers[route.Handler]
 	if h != nil && len(h.ResponseKeys) > 0 {
-		responseType = "components." + handlerToResponseTypeName(h.FuncName)
+		responseType = "components." + handlerToResponseTypeName(funcName)
 	}
 
 	// Build path params.

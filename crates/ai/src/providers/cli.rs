@@ -279,10 +279,8 @@ impl Provider for CLIProvider {
                             }
                             "content_block_delta" => {
                                 if let Some(delta) = raw.get("delta") {
-                                    let delta_type = delta
-                                        .get("type")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
+                                    let delta_type =
+                                        delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
                                     if delta_type == "input_json_delta" {
                                         if let Some(ref mut tool) = pending_tool {
                                             if let Some(partial) =
@@ -308,8 +306,7 @@ impl Provider for CLIProvider {
                                             if let Some(text) =
                                                 delta.get("thinking").and_then(|v| v.as_str())
                                             {
-                                                let _ =
-                                                    tx.send(StreamEvent::thinking(text)).await;
+                                                let _ = tx.send(StreamEvent::thinking(text)).await;
                                             }
                                         }
                                         continue;
@@ -337,17 +334,13 @@ impl Provider for CLIProvider {
                                 continue;
                             }
                             "result" => {
-                                let subtype = raw
-                                    .get("subtype")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
+                                let subtype =
+                                    raw.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
                                 if subtype == "success" || subtype == "error_max_turns" {
                                     let _ = tx.send(StreamEvent::done()).await;
                                     break;
                                 }
-                                if let Some(result) =
-                                    raw.get("result").and_then(|v| v.as_str())
-                                {
+                                if let Some(result) = raw.get("result").and_then(|v| v.as_str()) {
                                     let _ = tx.send(StreamEvent::text(result)).await;
                                 }
                                 continue;
@@ -360,8 +353,8 @@ impl Provider for CLIProvider {
                                 let _ = tx.send(StreamEvent::error(msg)).await;
                                 continue;
                             }
-                            "message_delta" | "message_stop" | "message_start"
-                            | "ping" | "system" => {
+                            "message_delta" | "message_stop" | "message_start" | "ping"
+                            | "system" => {
                                 continue;
                             }
                             _ => {}
@@ -461,10 +454,8 @@ fn build_prompt_from_messages(messages: &[Message]) -> String {
                         if !content.is_empty() {
                             content.push('\n');
                         }
-                        content.push_str(&format!(
-                            "[Tool Result: {}]\n{}",
-                            r.tool_call_id, r.content
-                        ));
+                        content
+                            .push_str(&format!("[Tool Result: {}]\n{}", r.tool_call_id, r.content));
                     }
                 }
             }
@@ -547,7 +538,11 @@ mod tests {
         let prompt = build_prompt_from_messages(&messages);
         // Should merge into a single [User] block
         let user_count = prompt.matches("[User]").count();
-        assert_eq!(user_count, 1, "Expected 1 [User] block, got {}: {}", user_count, prompt);
+        assert_eq!(
+            user_count, 1,
+            "Expected 1 [User] block, got {}: {}",
+            user_count, prompt
+        );
     }
 
     #[test]

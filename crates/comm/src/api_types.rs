@@ -843,4 +843,3 @@ pub struct LicenseKeysResponse {
     /// Map of artifact_id → license key entry.
     pub keys: std::collections::HashMap<String, LicenseKeyEntry>,
 }
-

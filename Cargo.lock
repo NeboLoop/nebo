@@ -4349,6 +4349,7 @@ dependencies = [
  "anyhow",
  "dotenvy",
  "futures",
+ "http 1.4.0",
  "nebo-config",
  "nebo-server",
  "open",
@@ -4363,6 +4364,7 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tracing",
  "tracing-subscriber",
+ "ureq 2.12.1",
 ]
 
 [[package]]
@@ -4562,6 +4564,7 @@ dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
  "flate2",
+ "futures",
  "hex",
  "hkdf",
  "libc",
@@ -4612,6 +4615,7 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
+ "hyper-util",
  "jsonwebtoken",
  "nebo-agent",
  "nebo-ai",
@@ -4675,6 +4679,7 @@ dependencies = [
  "nebo-notify",
  "nebo-types",
  "notify",
+ "rayon",
  "regex",
  "reqwest 0.12.28",
  "sandbox-runtime",
@@ -4693,6 +4698,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "which 7.0.3",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -9931,6 +9937,12 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
 
 [[package]]
 name = "yada"

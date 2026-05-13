@@ -18,18 +18,15 @@ pub async fn synthesize_directive(
     user_id: &str,
 ) -> Option<String> {
     // Load all style observations
-    let observations = match store.list_memories_by_user_and_namespace(
-        user_id,
-        "tacit/personality/style",
-        200,
-        0,
-    ) {
-        Ok(mems) => mems,
-        Err(e) => {
-            debug!(error = %e, "failed to load style observations");
-            return None;
-        }
-    };
+    let observations =
+        match store.list_memories_by_user_and_namespace(user_id, "tacit/personality/style", 200, 0)
+        {
+            Ok(mems) => mems,
+            Err(e) => {
+                debug!(error = %e, "failed to load style observations");
+                return None;
+            }
+        };
 
     // Also include tacit/personality observations (non-style)
     let personality_obs = store
@@ -83,7 +80,12 @@ pub async fn synthesize_directive(
             continue;
         }
 
-        scored.push((mem.key.clone(), mem.value.clone(), reinforced_count, confidence));
+        scored.push((
+            mem.key.clone(),
+            mem.value.clone(),
+            reinforced_count,
+            confidence,
+        ));
     }
 
     if scored.len() < MIN_OBSERVATIONS {

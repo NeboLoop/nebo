@@ -7,6 +7,10 @@ const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('nebo-
 export const onboardingComplete = writable(stored === 'true');
 export const onboardingChecked = writable(false);
 
+// Backend readiness — false until we get a successful response from the backend.
+export const backendReady = writable(false);
+export const backendChecking = writable(false);
+
 // Sync to localStorage whenever it changes
 onboardingComplete.subscribe(v => {
   if (typeof localStorage !== 'undefined') {
@@ -14,33 +18,63 @@ onboardingComplete.subscribe(v => {
   }
 });
 
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function tryBackendHealth(): Promise<boolean> {
+  try {
+    const resp = await fetch('/health');
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  const poll = async () => {
+    if (await tryBackendHealth()) {
+      pollTimer = null;
+      backendReady.set(true);
+      backendChecking.set(false);
+      checkOnboardingStatus();
+    } else {
+      pollTimer = setTimeout(poll, 2000);
+    }
+  };
+  pollTimer = setTimeout(poll, 2000);
+}
+
+export function retryBackendConnection() {
+  backendChecking.set(true);
+  tryBackendHealth().then(ok => {
+    if (ok) {
+      backendReady.set(true);
+      backendChecking.set(false);
+      checkOnboardingStatus();
+    } else {
+      startPolling();
+    }
+  });
+}
+
 /**
  * Check onboarding status from the backend.
- * Falls back to localStorage if backend is unreachable.
+ * If backend is unreachable, starts polling and shows loading screen.
  */
 export async function checkOnboardingStatus(): Promise<boolean> {
   try {
-    const { getUserProfile } = await import('$lib/api/nebo');
-    const response = await getUserProfile();
-    const complete = !!response.profile?.onboardingCompleted;
+    const { status } = await import('$lib/api/nebo');
+    const statusResp = await status() as { setupComplete?: boolean };
+    const complete = !!statusResp?.setupComplete;
     onboardingComplete.set(complete);
     onboardingChecked.set(true);
+    backendReady.set(true);
     return complete;
   } catch {
-    // Backend unreachable — try setup status endpoint
-    try {
-      const { setupStatus } = await import('$lib/api/nebo');
-      const statusResp = await setupStatus();
-      const complete = !!statusResp.setupComplete;
-      onboardingComplete.set(complete);
-      onboardingChecked.set(true);
-      return complete;
-    } catch {
-      // Both endpoints failed — trust localStorage cache
-      logger.warn('Could not reach backend for onboarding status, using cached value');
-      onboardingChecked.set(true);
-      return get(onboardingComplete);
-    }
+    logger.warn('Could not reach backend for onboarding status');
+    backendReady.set(false);
+    startPolling();
+    return false;
   }
 }
 
@@ -52,10 +86,10 @@ export async function completeOnboarding(): Promise<void> {
   onboardingComplete.set(true);
 
   try {
-    const { updateUserProfile, completeSetup } = await import('$lib/api/nebo');
+    const { userUpdatePreferences, complete } = await import('$lib/api/nebo');
     await Promise.all([
-      updateUserProfile({ onboardingCompleted: true }),
-      completeSetup()
+      userUpdatePreferences({ onboardingCompleted: true }),
+      complete()
     ]);
     logger.info('Onboarding completed on backend');
   } catch (err) {

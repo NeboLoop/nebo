@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use ai::{EmbeddingProvider, Provider};
-use db::models::{ChatMessage, Memory};
 use db::Store;
+use db::models::{ChatMessage, Memory};
 use tracing::{debug, warn};
 
 use crate::chunking;
@@ -105,10 +105,7 @@ pub fn score_memory(mem: &Memory) -> f64 {
             .ok()
             .map(|dt| dt.and_utc().timestamp())
     });
-    let decay = decay_score(
-        mem.access_count.unwrap_or(0),
-        accessed_ts,
-    );
+    let decay = decay_score(mem.access_count.unwrap_or(0), accessed_ts);
     confidence * decay
 }
 
@@ -512,7 +509,11 @@ fn rank_memories(memories: Vec<Memory>, limit: usize) -> Vec<ScoredMemory> {
             ScoredMemory { memory: m, score }
         })
         .collect();
-    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(limit);
     scored
 }
@@ -570,7 +571,11 @@ pub fn load_memory_context(store: &Store, user_id: &str) -> String {
     }
 
     // Final sort by score
-    all_scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    all_scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Format into sections
     let mut context_parts = Vec::new();
@@ -793,7 +798,11 @@ mod tests {
             metadata: Some(r#"{"confidence": 0.5}"#.to_string()),
             created_at: None,
             updated_at: None,
-            accessed_at: Some((chrono::Utc::now() - chrono::Duration::days(90)).format("%Y-%m-%d %H:%M:%S").to_string()),
+            accessed_at: Some(
+                (chrono::Utc::now() - chrono::Duration::days(90))
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string(),
+            ),
             access_count: Some(1),
             user_id: "u1".to_string(),
         };

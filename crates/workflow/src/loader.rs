@@ -67,12 +67,13 @@ pub fn scan_installed_workflows(dir: &Path) -> Vec<LoadedWorkflow> {
     if !dir.exists() {
         return workflows;
     }
-    napp::reader::walk_for_marker(dir, "workflow.json", &mut |wf_dir| {
-        match load_from_dir(wf_dir, WorkflowSource::Installed) {
-            Ok(wf) => workflows.push(wf),
-            Err(e) => {
-                debug!(path = %wf_dir.display(), error = %e, "skipping directory (not a workflow)");
-            }
+    napp::reader::walk_for_marker(dir, "workflow.json", &mut |wf_dir| match load_from_dir(
+        wf_dir,
+        WorkflowSource::Installed,
+    ) {
+        Ok(wf) => workflows.push(wf),
+        Err(e) => {
+            debug!(path = %wf_dir.display(), error = %e, "skipping directory (not a workflow)");
         }
     });
     workflows

@@ -176,9 +176,8 @@ pub async fn download(
 ) -> Result<std::path::PathBuf, UpdateError> {
     let method = detect_install_method();
     let asset = if method == "app_bundle" {
-        bundle_asset_name(tag).ok_or_else(|| {
-            UpdateError::Other("no app bundle available for this platform".into())
-        })?
+        bundle_asset_name(tag)
+            .ok_or_else(|| UpdateError::Other("no app bundle available for this platform".into()))?
     } else {
         asset_name()
     };
@@ -228,10 +227,7 @@ pub async fn download(
 
 /// Verify SHA256 checksum of the downloaded file against checksums.txt from CDN.
 /// Automatically uses the correct asset name (bare binary for direct, DMG/MSI for app_bundle).
-pub async fn verify_checksum(
-    binary_path: &std::path::Path,
-    tag: &str,
-) -> Result<(), UpdateError> {
+pub async fn verify_checksum(binary_path: &std::path::Path, tag: &str) -> Result<(), UpdateError> {
     let method = detect_install_method();
     let asset = if method == "app_bundle" {
         bundle_asset_name(tag).unwrap_or_else(|| asset_name())
@@ -269,9 +265,7 @@ pub async fn verify_checksum(
             }
         })
         .next()
-        .ok_or_else(|| {
-            UpdateError::Other(format!("asset {} not found in checksums.txt", asset))
-        })?;
+        .ok_or_else(|| UpdateError::Other(format!("asset {} not found in checksums.txt", asset)))?;
 
     let data = std::fs::read(binary_path)?;
     let mut hasher = Sha256::new();
@@ -409,27 +403,63 @@ mod tests {
     #[test]
     fn test_asset_name() {
         let name = asset_name();
-        assert!(name.starts_with("nebo-"), "expected nebo- prefix, got {}", name);
+        assert!(
+            name.starts_with("nebo-"),
+            "expected nebo- prefix, got {}",
+            name
+        );
 
         // Verify CDN naming convention: darwin (not macos), arm64/amd64 (not aarch64/x86_64)
-        assert!(!name.contains("macos"), "should use 'darwin' not 'macos': {}", name);
-        assert!(!name.contains("aarch64"), "should use 'arm64' not 'aarch64': {}", name);
-        assert!(!name.contains("x86_64"), "should use 'amd64' not 'x86_64': {}", name);
+        assert!(
+            !name.contains("macos"),
+            "should use 'darwin' not 'macos': {}",
+            name
+        );
+        assert!(
+            !name.contains("aarch64"),
+            "should use 'arm64' not 'aarch64': {}",
+            name
+        );
+        assert!(
+            !name.contains("x86_64"),
+            "should use 'amd64' not 'x86_64': {}",
+            name
+        );
 
         #[cfg(target_os = "macos")]
-        assert!(name.contains("darwin"), "macOS should map to darwin: {}", name);
+        assert!(
+            name.contains("darwin"),
+            "macOS should map to darwin: {}",
+            name
+        );
 
         #[cfg(target_arch = "aarch64")]
-        assert!(name.contains("arm64"), "aarch64 should map to arm64: {}", name);
+        assert!(
+            name.contains("arm64"),
+            "aarch64 should map to arm64: {}",
+            name
+        );
 
         #[cfg(target_arch = "x86_64")]
-        assert!(name.contains("amd64"), "x86_64 should map to amd64: {}", name);
+        assert!(
+            name.contains("amd64"),
+            "x86_64 should map to amd64: {}",
+            name
+        );
 
         #[cfg(target_os = "windows")]
-        assert!(name.ends_with(".exe"), "windows binary should have .exe: {}", name);
+        assert!(
+            name.ends_with(".exe"),
+            "windows binary should have .exe: {}",
+            name
+        );
 
         #[cfg(not(target_os = "windows"))]
-        assert!(!name.ends_with(".exe"), "non-windows binary should not have .exe: {}", name);
+        assert!(
+            !name.ends_with(".exe"),
+            "non-windows binary should not have .exe: {}",
+            name
+        );
     }
 
     #[test]

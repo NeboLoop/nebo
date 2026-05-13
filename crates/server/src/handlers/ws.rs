@@ -2,8 +2,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{State, WebSocketUpgrade};
-use axum::response::Response;
+use axum::extract::{Path, State, WebSocketUpgrade};
+use axum::response::{IntoResponse, Response};
+use futures::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -48,12 +49,186 @@ impl ClientHub {
 }
 
 /// GET /ws — Main client WebSocket endpoint.
-pub async fn client_ws_handler(
+pub async fn client_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    info!("ws upgrade request received");
+    ws.on_upgrade(move |socket| handle_client_ws(socket, state))
+}
+
+/// GET /ws/app/{agent_id} — App frontend WebSocket endpoint.
+pub async fn app_ws_handler(
+    Path(agent_id): Path<String>,
     State(state): State<AppState>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    info!("ws upgrade request received");
-    ws.on_upgrade(move |socket| handle_client_ws(socket, state))
+    match state.store.get_agent(&agent_id) {
+        Ok(Some(agent)) if agent.is_app.unwrap_or(0) != 0 => {
+            ws.on_upgrade(move |socket| handle_app_ws(socket, agent_id, state))
+        }
+        Ok(_) | Err(_) => axum::http::StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState) {
+    info!(agent = %agent_id, "app ws client connected");
+    let mut hub_rx = state.hub.subscribe();
+    let (mut sender, mut receiver) = socket.split();
+
+    let welcome = serde_json::json!({
+        "type": "connected",
+        "data": { "agentId": agent_id },
+    });
+    if sender
+        .send(Message::Text(
+            serde_json::to_string(&welcome).unwrap().into(),
+        ))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            result = hub_rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        let msg = serde_json::json!({
+                            "type": event.event_type,
+                            "data": event.payload,
+                        });
+                        if sender
+                            .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(agent = %agent_id, lagged = n, "app ws client lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            Some(msg) = receiver.next() => {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        handle_app_ws_message(&state, &agent_id, &text).await;
+                    }
+                    Ok(Message::Ping(data)) => {
+                        if sender.send(Message::Pong(data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Message::Close(frame)) => {
+                        debug!(agent = %agent_id, ?frame, "app ws close");
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(agent = %agent_id, error = %e, "app ws error");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            else => break,
+        }
+    }
+    info!(agent = %agent_id, "app ws client disconnected");
+}
+
+async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
+    let parsed = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(v) => v,
+        Err(e) => {
+            debug!(agent = %agent_id, error = %e, "invalid app ws json");
+            return;
+        }
+    };
+    let msg_type = parsed["type"].as_str().unwrap_or("");
+    match msg_type {
+        "a2ui_action" => {
+            let data = &parsed["data"];
+            let surface_id = data["surfaceId"]
+                .as_str()
+                .or_else(|| data["surface_id"].as_str())
+                .or_else(|| data["message"]["action"]["surfaceId"].as_str())
+                .unwrap_or("")
+                .to_string();
+            let action = data["name"]
+                .as_str()
+                .or_else(|| data["message"]["action"]["name"].as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let component_id = data["sourceComponentId"]
+                .as_str()
+                .or_else(|| data["message"]["action"]["sourceComponentId"].as_str())
+                .unwrap_or("")
+                .to_string();
+            let context = data
+                .get("context")
+                .cloned()
+                .or_else(|| {
+                    data.get("message")
+                        .and_then(|m| m.get("action"))
+                        .and_then(|a| a.get("context"))
+                        .cloned()
+                })
+                .unwrap_or(serde_json::Value::Null);
+
+            if surface_id.is_empty() {
+                debug!(agent = %agent_id, "a2ui_action missing surface id");
+                return;
+            }
+
+            let state_clone = state.clone();
+            let agent_id = agent_id.to_string();
+            tokio::spawn(async move {
+                let views_json =
+                    crate::handlers::agents::get_agent_views(&state_clone, &agent_id).await;
+                let handled = crate::a2ui_actions::dispatch(
+                    &state_clone,
+                    &state_clone.a2ui,
+                    &agent_id,
+                    &surface_id,
+                    &action,
+                    &component_id,
+                    &context,
+                    views_json.as_ref(),
+                )
+                .await;
+
+                if !handled {
+                    state_clone.hub.broadcast(
+                        "app_action",
+                        serde_json::json!({
+                            "agentId": agent_id,
+                            "surfaceId": surface_id,
+                            "name": action,
+                            "sourceComponentId": component_id,
+                            "context": context,
+                        }),
+                    );
+                }
+            });
+        }
+        "action" => {
+            state.hub.broadcast(
+                "app_action",
+                serde_json::json!({
+                    "agentId": agent_id,
+                    "name": parsed["name"].clone(),
+                    "data": parsed,
+                }),
+            );
+        }
+        "ping" => {
+            state
+                .hub
+                .broadcast("app_ping", serde_json::json!({ "agentId": agent_id }));
+        }
+        _ => debug!(agent = %agent_id, msg_type, "unhandled app ws message"),
+    }
 }
 
 async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
@@ -746,8 +921,7 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
                     Some("tiff") => "image/tiff",
                     _ => "image/png",
                 };
-                let data =
-                    base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 images.push(ai::ImageContent {
                     media_type: media_type.to_string(),
                     data,
@@ -804,10 +978,7 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
 /// Dispatch a chat message to the agent runner via the unified chat pipeline.
 async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     let data = &msg["data"];
-    let session_id = data["session_id"]
-        .as_str()
-        .unwrap_or("default")
-        .to_string();
+    let session_id = data["session_id"].as_str().unwrap_or("default").to_string();
     let prompt = data["prompt"].as_str().unwrap_or("").to_string();
     let system = data["system"].as_str().unwrap_or("").to_string();
     let user_id = data["user_id"].as_str().unwrap_or("").to_string();
@@ -822,10 +993,13 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     );
 
     // Send ACK immediately so the client knows the message was received
-    state.hub.broadcast("chat_ack", serde_json::json!({
-        "session_id": &session_id,
-        "status": "accepted",
-    }));
+    state.hub.broadcast(
+        "chat_ack",
+        serde_json::json!({
+            "session_id": &session_id,
+            "status": "accepted",
+        }),
+    );
 
     // Intercept marketplace codes before they reach the agent
     if let Some((code_type, code)) = crate::codes::detect_code(&prompt) {
@@ -835,15 +1009,23 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
 
     // Intercept plugin slash commands (e.g., "/gmail triage")
     if prompt.starts_with('/') {
-        if let Some(result) = crate::plugin_commands::try_dispatch(state, &prompt, &session_id).await {
+        if let Some(result) =
+            crate::plugin_commands::try_dispatch(state, &prompt, &session_id).await
+        {
             // Stream the plugin output as a chat response
-            state.hub.broadcast("chat_stream", serde_json::json!({
-                "session_id": &session_id,
-                "content": &result,
-            }));
-            state.hub.broadcast("chat_complete", serde_json::json!({
-                "session_id": &session_id,
-            }));
+            state.hub.broadcast(
+                "chat_stream",
+                serde_json::json!({
+                    "session_id": &session_id,
+                    "content": &result,
+                }),
+            );
+            state.hub.broadcast(
+                "chat_complete",
+                serde_json::json!({
+                    "session_id": &session_id,
+                }),
+            );
             return;
         }
         // Not a plugin command — fall through to normal agent processing
@@ -883,9 +1065,16 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
                     channel_id: None,
                     degraded: None,
                 };
-                state.agent_registry.write().await.insert(agent.id.clone(), active);
+                state
+                    .agent_registry
+                    .write()
+                    .await
+                    .insert(agent.id.clone(), active);
                 state.store.set_agent_enabled(&agent_id, true).ok();
-                state.agent_workers.start_agent(&agent_id, &agent.name).await;
+                state
+                    .agent_workers
+                    .start_agent(&agent_id, &agent.name, None)
+                    .await;
                 state.hub.broadcast(
                     "agent_activated",
                     serde_json::json!({ "agentId": &agent_id, "name": &agent.name }),
@@ -921,7 +1110,9 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             // Custom agent: look up by slug
             let slug = {
                 let registry = state.agent_registry.read().await;
-                registry.get(&agent_id).map(|r| r.name.to_lowercase().replace(' ', "-"))
+                registry
+                    .get(&agent_id)
+                    .map(|r| r.name.to_lowercase().replace(' ', "-"))
             };
             if let Some(slug) = slug {
                 state.comm_manager.agent_space_conv_for_slug(&slug).await
@@ -932,7 +1123,10 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             // Companion (default bot): look up by bot_* slug
             if let Some(bot_id) = config::read_bot_id() {
                 let bot_slug = format!("bot_{}", &bot_id[..bot_id.len().min(12)]);
-                state.comm_manager.agent_space_conv_for_slug(&bot_slug).await
+                state
+                    .comm_manager
+                    .agent_space_conv_for_slug(&bot_slug)
+                    .await
             } else {
                 None
             }
@@ -980,7 +1174,9 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     let mention_context = if !mentioned.is_empty() {
         let mut names: Vec<String> = Vec::new();
         for mid in &mentioned {
-            let name = state.store.get_agent(mid)
+            let name = state
+                .store
+                .get_agent(mid)
                 .ok()
                 .flatten()
                 .map(|a| a.name)
@@ -1043,7 +1239,9 @@ fn parse_mention_tokens(prompt: &str, exclude_agent_id: &str) -> Vec<String> {
                 let id = &prompt[start..start + end];
                 if !id.is_empty()
                     && id != exclude_agent_id
-                    && id.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
+                    && id
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
                     && seen.insert(id.to_string())
                 {
                     ids.push(id.to_string());
@@ -1089,9 +1287,16 @@ async fn fork_mention_chat(
                     channel_id: None,
                     degraded: None,
                 };
-                state.agent_registry.write().await.insert(agent.id.clone(), active);
+                state
+                    .agent_registry
+                    .write()
+                    .await
+                    .insert(agent.id.clone(), active);
                 state.store.set_agent_enabled(mentioned_id, true).ok();
-                state.agent_workers.start_agent(mentioned_id, &agent.name).await;
+                state
+                    .agent_workers
+                    .start_agent(mentioned_id, &agent.name, None)
+                    .await;
                 info!(agent_id = %mentioned_id, "auto-activated mentioned agent for @mention");
             }
             _ => {
@@ -1102,9 +1307,7 @@ async fn fork_mention_chat(
     }
 
     let session_key = agent::keyparser::build_agent_session_key(mentioned_id, channel);
-    let entity_config = crate::entity_config::resolve_for_chat(
-        &state.store, "agent", mentioned_id,
-    );
+    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", mentioned_id);
 
     let contextualized = format!(
         "[You were @mentioned in a conversation. Respond helpfully.]\n\n{}",
@@ -1134,7 +1337,13 @@ async fn fork_mention_chat(
 
     // Inject the delegate's response back into the primary agent's session
     // so the primary agent has context about what the mentioned agent said.
-    inject_delegate_response(state, mentioned_id, &delegate_session_key, origin_agent_id, channel);
+    inject_delegate_response(
+        state,
+        mentioned_id,
+        &delegate_session_key,
+        origin_agent_id,
+        channel,
+    );
 }
 
 /// After a mentioned agent completes, read its last assistant message and
@@ -1174,7 +1383,9 @@ fn inject_delegate_response(
     };
 
     // Look up the mentioned agent's display name
-    let agent_name = state.store.get_agent(mentioned_id)
+    let agent_name = state
+        .store
+        .get_agent(mentioned_id)
         .ok()
         .flatten()
         .map(|a| a.name)
@@ -1212,10 +1423,7 @@ fn inject_delegate_response(
 }
 
 /// GET /api/v1/agent/ws — Agent WebSocket endpoint for agent-to-server communication.
-pub async fn agent_ws_handler(
-    State(state): State<AppState>,
-    ws: WebSocketUpgrade,
-) -> Response {
+pub async fn agent_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     let hub = state.hub.clone();
     ws.on_upgrade(move |socket| handle_agent_ws(socket, hub))
 }
@@ -1227,8 +1435,7 @@ async fn handle_agent_ws(mut socket: WebSocket, hub: Arc<ClientHub>) {
         match socket.recv().await {
             Some(Ok(Message::Text(text))) => {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                    let event_type =
-                        parsed["type"].as_str().unwrap_or("agent_event").to_string();
+                    let event_type = parsed["type"].as_str().unwrap_or("agent_event").to_string();
                     // Forward agent events to client hub
                     hub.broadcast(&event_type, parsed);
                 }
@@ -1253,10 +1460,7 @@ async fn handle_agent_ws(mut socket: WebSocket, hub: Arc<ClientHub>) {
 /// GET /ws/extension — Chrome extension bridge WebSocket endpoint.
 /// The native messaging host process connects here to relay messages
 /// between the Chrome extension and the Nebo agent.
-pub async fn extension_ws_handler(
-    State(state): State<AppState>,
-    ws: WebSocketUpgrade,
-) -> Response {
+pub async fn extension_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     let bridge = state.extension_bridge.clone();
     ws.on_upgrade(move |socket| handle_extension_ws(socket, bridge))
 }
@@ -1337,9 +1541,7 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                         match msg_type {
                             "tool_response" => {
                                 if let Some(id) = parsed["id"].as_i64() {
-                                    let result = if let Some(err) =
-                                        parsed["error"].as_str()
-                                    {
+                                    let result = if let Some(err) = parsed["error"].as_str() {
                                         Err(err.to_string())
                                     } else {
                                         Ok(parsed["result"].clone())

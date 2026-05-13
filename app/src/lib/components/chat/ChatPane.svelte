@@ -43,9 +43,9 @@
     | ToolMsg
     | ToolGroup
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
-    | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string };
+    | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string };
 
-  type AgentInfo = { id: string; name: string; color?: string; initial?: string; role?: string; status?: string };
+  type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string };
 
   let { messages = [], agentName = 'Agent', agentId = '', threadId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onsend, onstop, onedit, onredo, onasksubmit, isLoading = false }: {
     messages?: Message[];
@@ -67,7 +67,7 @@
     isLoading?: boolean;
   } = $props();
 
-  let composerRef = $state<{ focus: () => void; addFiles: (files: File[]) => void } | null>(null);
+  let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
   let creationsTitle = $state('Creations');
   let activeArtifactId = $state<string | null>(null);
@@ -208,7 +208,8 @@
     if ((document.activeElement as HTMLElement)?.isContentEditable) return;
     if (e.ctrlKey || e.metaKey || e.altKey || e.key.length > 1) return;
     if (document.querySelector('[data-modal-open]')) return;
-    composerRef?.focus();
+    e.preventDefault();
+    composerRef?.focusAndInsert(e.key);
   }
 
   export function showCreations(title = 'Creations') {
@@ -310,8 +311,7 @@
   }
 
   // Group consecutive tool messages together, track original indices
-  let originalIndices: number[] = [];
-  const groupedMessages = $derived.by(() => {
+  const groupedResult = $derived.by(() => {
     const groups: Message[] = [];
     const indices: number[] = [];
     let i = 0;
@@ -332,9 +332,10 @@
         i++;
       }
     }
-    originalIndices = indices;
-    return groups;
+    return { groups, indices };
   });
+  const groupedMessages = $derived(groupedResult.groups);
+  const originalIndices = $derived(groupedResult.indices);
 
   // Drag-and-drop handlers
   function handleDragEnter(e: DragEvent) {
@@ -506,66 +507,81 @@
         </details>
 
       {:else if msg.type === 'tool-group'}
+        {@const hasRunning = msg.tools.some((t: ToolMsg) => t.status === 'running')}
+        {@const isOpen = hasRunning || collapsedToolGroups[idx]}
         <div class="max-w-[640px] my-1">
           <button
             class="flex items-center gap-1.5 text-xs text-base-content/50 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/70 transition-colors"
             onclick={() => toggleToolGroup(idx)}
           >
-            <span class="text-xs">Used {msg.tools.length} tool{msg.tools.length !== 1 ? 's' : ''}</span>
-            <span class="text-xs transition-transform {collapsedToolGroups[idx] ? 'rotate-180' : ''}">&darr;</span>
+            {#if hasRunning}
+              <svg width="14" height="14" viewBox="0 0 14 14" class="animate-spin text-primary shrink-0"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="20 14" stroke-linecap="round"/></svg>
+              <span class="text-xs text-base-content/70">Running {msg.tools.length} tool{msg.tools.length !== 1 ? 's' : ''}...</span>
+            {:else}
+              <span class="text-xs">Used {msg.tools.length} tool{msg.tools.length !== 1 ? 's' : ''}</span>
+              <span class="text-xs transition-transform {isOpen ? 'rotate-180' : ''}">&darr;</span>
+            {/if}
           </button>
 
-          {#if collapsedToolGroups[idx]}
+          {#if isOpen}
             <div class="mt-2 ml-1 flex flex-col">
               {#each msg.tools as tool, tidx}
                 {@const resultKey = `${idx}-${tidx}`}
                 {@const isExpanded = expandedResults[resultKey]}
                 <div class="flex items-start gap-2.5">
                   <div class="flex flex-col items-center shrink-0 w-5">
-                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="text-base-content shrink-0">
-                      <path d="M10.5 3.5C10.5 2.67 11.17 2 12 2C12.5 2 13.09 2.24 13.45 2.59L15.41 4.55C15.76 4.91 16 5.5 16 6C16 6.83 15.33 7.5 14.5 7.5C14.16 7.5 13.85 7.38 13.6 7.18L12.18 8.6C12.38 8.85 12.5 9.16 12.5 9.5C12.5 10.33 11.83 11 11 11C10.67 11 10.36 10.88 10.11 10.69L5.69 15.11C5.5 15.3 5.25 15.41 5 15.41C4.75 15.41 4.5 15.3 4.31 15.11L2.89 13.69C2.7 13.5 2.59 13.25 2.59 13C2.59 12.75 2.7 12.5 2.89 12.31L7.31 7.89C7.12 7.64 7 7.33 7 7C7 6.17 7.67 5.5 8.5 5.5C8.84 5.5 9.15 5.62 9.4 5.82L10.82 4.4C10.62 4.15 10.5 3.84 10.5 3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
-                    </svg>
+                    {#if tool.status === 'running'}
+                      <svg width="18" height="18" viewBox="0 0 18 18" class="text-primary shrink-0 animate-spin"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="22 16" stroke-linecap="round"/></svg>
+                    {:else}
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="text-base-content shrink-0">
+                        <path d="M10.5 3.5C10.5 2.67 11.17 2 12 2C12.5 2 13.09 2.24 13.45 2.59L15.41 4.55C15.76 4.91 16 5.5 16 6C16 6.83 15.33 7.5 14.5 7.5C14.16 7.5 13.85 7.38 13.6 7.18L12.18 8.6C12.38 8.85 12.5 9.16 12.5 9.5C12.5 10.33 11.83 11 11 11C10.67 11 10.36 10.88 10.11 10.69L5.69 15.11C5.5 15.3 5.25 15.41 5 15.41C4.75 15.41 4.5 15.3 4.31 15.11L2.89 13.69C2.7 13.5 2.59 13.25 2.59 13C2.59 12.75 2.7 12.5 2.89 12.31L7.31 7.89C7.12 7.64 7 7.33 7 7C7 6.17 7.67 5.5 8.5 5.5C8.84 5.5 9.15 5.62 9.4 5.82L10.82 4.4C10.62 4.15 10.5 3.84 10.5 3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+                      </svg>
+                    {/if}
                     {#if tidx < msg.tools.length - 1 || isExpanded}
                       <div class="w-px flex-1 min-h-[28px] bg-base-300"></div>
                     {/if}
                   </div>
                   <div class="flex-1 min-w-0 pb-3">
-                    <div class="text-xs font-mono">{tool.name}</div>
-                    {#if isExpanded}
-                      <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-hidden">
-                        <div class="px-3.5 pt-3 pb-2">
-                          <div class="text-xs font-semibold mb-1.5">Request</div>
-                          <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{JSON.stringify(tool.request, null, 2)}</pre>
+                    <div class="text-xs font-mono {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.name}{#if tool.status === 'running'}<span class="text-base-content/50 ml-1">running...</span>{/if}</div>
+                    {#if tool.status !== 'running'}
+                      {#if isExpanded}
+                        <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-hidden">
+                          <div class="px-3.5 pt-3 pb-2">
+                            <div class="text-xs font-semibold mb-1.5">Request</div>
+                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{JSON.stringify(tool.request, null, 2)}</pre>
+                          </div>
+                          <div class="px-3.5 pt-2 pb-3 border-t border-base-300">
+                            <div class="text-xs font-semibold mb-1.5">Response</div>
+                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{tool.response}</pre>
+                          </div>
                         </div>
-                        <div class="px-3.5 pt-2 pb-3 border-t border-base-300">
-                          <div class="text-xs font-semibold mb-1.5">Response</div>
-                          <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{tool.response}</pre>
-                        </div>
-                      </div>
-                      <button
-                        class="mt-1.5 py-0.5 px-2 rounded text-xs font-medium bg-base-200 cursor-pointer border-none hover:bg-base-300 transition-colors"
-                        onclick={() => toggleResult(resultKey)}
-                      >Hide</button>
-                    {:else}
-                      <div class="mt-1">
                         <button
-                          class="py-0.5 px-2 rounded text-xs font-medium cursor-pointer border-none transition-colors {tool.status === 'success' ? 'bg-base-200 hover:bg-base-300' : 'bg-error/10 text-error hover:bg-error/20'}"
+                          class="mt-1.5 py-0.5 px-2 rounded text-xs font-medium bg-base-200 cursor-pointer border-none hover:bg-base-300 transition-colors"
                           onclick={() => toggleResult(resultKey)}
-                        >Result</button>
-                      </div>
+                        >Hide</button>
+                      {:else}
+                        <div class="mt-1">
+                          <button
+                            class="py-0.5 px-2 rounded text-xs font-medium cursor-pointer border-none transition-colors {tool.status === 'success' ? 'bg-base-200 hover:bg-base-300' : 'bg-error/10 text-error hover:bg-error/20'}"
+                            onclick={() => toggleResult(resultKey)}
+                          >Result</button>
+                        </div>
+                      {/if}
                     {/if}
                   </div>
                 </div>
               {/each}
-              <div class="flex items-center gap-2.5">
-                <div class="flex items-center justify-center w-5 shrink-0">
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="text-base-content">
-                    <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.2"/>
-                    <path d="M6 9L8.25 11.25L12.25 6.75" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
+              {#if !hasRunning}
+                <div class="flex items-center gap-2.5">
+                  <div class="flex items-center justify-center w-5 shrink-0">
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="text-base-content">
+                      <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.2"/>
+                      <path d="M6 9L8.25 11.25L12.25 6.75" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                  <span class="text-xs">Done</span>
                 </div>
-                <span class="text-xs">Done</span>
-              </div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -676,12 +692,13 @@
 
 <!-- Resize handle + Creations panel -->
 {#if creationsOpen}
-  <!-- Drag handle -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
     class="w-0 shrink-0 cursor-col-resize relative z-10 group"
     onmousedown={startResize}
     role="separator"
     aria-orientation="vertical"
+    tabindex="0"
   >
     <!-- Hover hit area (wider than visible) -->
     <div class="absolute inset-y-0 -left-2 -right-2"></div>

@@ -1,8 +1,8 @@
 use rusqlite::params;
 
-use crate::models::{EmitSource, Agent, AgentWorkflow};
-use crate::OptionalExt;
+use crate::{DbErrExt, OptionalExt};
 use crate::Store;
+use crate::models::{Agent, AgentWorkflow, EmitSource};
 use types::NeboError;
 
 impl Store {
@@ -15,18 +15,18 @@ impl Store {
                         napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config
                  FROM agents ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+            .db_err("list_agents prepare")?;
         let rows = stmt
             .query_map(params![limit, offset], row_to_agent)
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+            .db_err("list_agents query")?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
+            .db_err("list_agents collect")
     }
 
     pub fn count_agents(&self) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))
-            .map_err(|e| NeboError::Database(e.to_string()))
+            .db_err("count_agents")
     }
 
     pub fn get_agent(&self, id: &str) -> Result<Option<Agent>, NeboError> {
@@ -34,13 +34,13 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config
              FROM agents WHERE id = ?1",
             params![id],
             row_to_agent,
         )
         .optional()
-        .map_err(|e| NeboError::Database(e.to_string()))
+        .db_err("get_agent")
     }
 
     pub fn create_agent(
@@ -84,7 +84,15 @@ impl Store {
                     frontmatter = ?4, pricing_model = ?5, pricing_cost = ?6,
                     updated_at = unixepoch()
              WHERE id = ?7",
-            params![name, description, agent_md, frontmatter, pricing_model, pricing_cost, id],
+            params![
+                name,
+                description,
+                agent_md,
+                frontmatter,
+                pricing_model,
+                pricing_cost,
+                id
+            ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -138,7 +146,13 @@ impl Store {
             "UPDATE agents SET is_app = ?1, app_ui_path = ?2, app_binary_path = ?3,
                     app_window_config = ?4, updated_at = unixepoch()
              WHERE id = ?5",
-            params![is_app as i32, app_ui_path, app_binary_path, app_window_config, id],
+            params![
+                is_app as i32,
+                app_ui_path,
+                app_binary_path,
+                app_window_config,
+                id
+            ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -281,7 +295,11 @@ impl Store {
     }
 
     /// Check if an agent workflow is active AND its parent agent is enabled.
-    pub fn is_agent_workflow_active(&self, agent_id: &str, binding_name: &str) -> Result<bool, NeboError> {
+    pub fn is_agent_workflow_active(
+        &self,
+        agent_id: &str,
+        binding_name: &str,
+    ) -> Result<bool, NeboError> {
         let conn = self.conn()?;
         let count: i64 = conn
             .query_row(
@@ -358,10 +376,7 @@ impl Store {
         let conn = self.conn()?;
         let pattern = format!("{}%", prefix);
         let count = conn
-            .execute(
-                "DELETE FROM cron_jobs WHERE name LIKE ?1",
-                params![pattern],
-            )
+            .execute("DELETE FROM cron_jobs WHERE name LIKE ?1", params![pattern])
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(count as i64)
     }
@@ -453,7 +468,9 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         installed_at: row.get(9)?,
         updated_at: row.get(10)?,
         napp_path: row.get(11)?,
-        input_values: row.get::<_, Option<String>>(12)?.unwrap_or_else(|| "{}".to_string()),
+        input_values: row
+            .get::<_, Option<String>>(12)?
+            .unwrap_or_else(|| "{}".to_string()),
         is_app: row.get(13)?,
         app_ui_path: row.get(14)?,
         app_binary_path: row.get(15)?,

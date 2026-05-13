@@ -17,6 +17,128 @@ You can use both patterns. A skill can embed a binary AND declare plugin depende
 
 ---
 
+## What a Plugin Can Do
+
+A plugin is a single native binary that can contribute multiple capabilities simultaneously. What makes a plugin a "connector" vs a "provider" vs a "tool plugin" is determined by which capabilities it declares in its manifest. A single plugin can declare all of them.
+
+| Capability | Manifest Field | What It Does | Runtime |
+|---|---|---|---|
+| **Tools** | `capabilities.tools[]` | Registers typed, schema-validated tools the agent can call | Routed through STRAP `PluginTool` |
+| **Hooks** | `capabilities.hooks[]` | Intercepts lifecycle events (tool execution, messages, memory, prompts) | `HookDispatcher` with circuit breaker |
+| **Commands** | `capabilities.commands[]` | Registers `/slash` commands that bypass the LLM and execute directly | Chat dispatch, 30s timeout |
+| **Routes** | `capabilities.routes[]` | Handles HTTP endpoints (OAuth callbacks, webhooks) | Proxied through catch-all handler |
+| **Providers** | `capabilities.providers[]` | Registers as an AI model provider (LLM, speech, image) | `PluginProvider` with NDJSON streaming |
+| **Config** | `capabilities.configSchema[]` | Declares user-configurable settings rendered as a form in the UI | Values injected as env vars |
+| **Events** | `events[]` | Produces events via long-running watch processes (NDJSON on stdout) | Auto-emitted into EventBus |
+| **Auth** | `auth` | Declares an authentication flow (OAuth, API keys) with login/status/logout | HTTP endpoints + WebSocket events |
+| **Permissions** | `permissions` | Declares env var access, network needs, and max execution timeout | Enforced at exec time |
+
+### Common Plugin Patterns
+
+**Connector plugin** — wraps a SaaS API. Declares `auth` for OAuth/API key login, `tools[]` for API operations, `events[]` for webhook-driven watches, and `configSchema[]` for user settings.
+
+```json
+{
+  "id": "asana",
+  "slug": "asana",
+  "capabilities": {
+    "tools": [
+      { "name": "asana.list-tasks", "description": "List tasks", "command": "tasks list" }
+    ],
+    "configSchema": [
+      { "key": "WORKSPACE_ID", "label": "Workspace", "fieldType": "string", "required": true }
+    ]
+  },
+  "auth": { "type": "oauth_cli", "label": "Asana account", "commands": { "login": "auth login", "status": "doctor" } },
+  "events": [
+    { "name": "task.created", "description": "New task created", "command": "watch tasks" }
+  ]
+}
+```
+
+**Provider plugin** — adds an AI model backend. Declares `providers[]` with commands for listing models and streaming chat.
+
+```json
+{
+  "id": "openrouter",
+  "slug": "openrouter",
+  "capabilities": {
+    "providers": [
+      {
+        "id": "openrouter",
+        "displayName": "OpenRouter",
+        "providerType": "model",
+        "modelsCommand": "models list",
+        "chatCommand": "chat stream",
+        "authCommand": "auth setup"
+      }
+    ]
+  }
+}
+```
+
+**Hook plugin** — intercepts agent lifecycle events. Declares `hooks[]` to filter or observe tool calls, messages, memory, or prompts.
+
+```json
+{
+  "id": "content-filter",
+  "slug": "content-filter",
+  "capabilities": {
+    "hooks": [
+      {
+        "hook": "message.pre_send",
+        "hookType": "filter",
+        "priority": 10,
+        "command": "filter message",
+        "timeoutMs": 200
+      },
+      {
+        "hook": "tool.pre_execute",
+        "hookType": "filter",
+        "priority": 50,
+        "command": "filter tool-input",
+        "timeoutMs": 500
+      }
+    ]
+  }
+}
+```
+
+**Utility plugin** — shared binary that other plugins or skills depend on. No capabilities of its own — just a binary distributed via env var.
+
+```json
+{
+  "id": "ffmpeg",
+  "slug": "ffmpeg",
+  "platforms": {
+    "darwin-arm64": { "binaryName": "ffmpeg", "sha256": "...", "size": 50000000 }
+  }
+}
+```
+
+### Available Hook Points
+
+Plugins can subscribe to these lifecycle hooks. Filter hooks can modify payloads; action hooks are fire-and-forget.
+
+| Hook | Default Type | When |
+|---|---|---|
+| `tool.pre_execute` | filter | Before a tool runs — can modify input or block |
+| `tool.post_execute` | filter | After a tool completes — can modify output |
+| `message.pre_send` | filter | Before user message is sent to the agent |
+| `message.post_receive` | filter | After agent message is received |
+| `memory.pre_store` | filter | Before a memory is persisted |
+| `memory.pre_recall` | filter | Before memories are retrieved |
+| `session.message_append` | action | When a message is added to the session |
+| `prompt.system_sections` | filter | During system prompt generation — can inject sections |
+| `steering.generate` | filter | During steering signal generation |
+| `response.stream` | action | During response streaming |
+| `agent.turn` | action | When an agent turn completes |
+| `agent.should_continue` | filter | Decision point to continue or halt a turn |
+
+Hook circuit breaker: 3 consecutive failures disables the hook, auto-recovery after 5 minutes.
+
+---
+
 ## How It Works
 
 1. Publisher uploads a native binary to NeboLoop for each platform
@@ -136,7 +258,7 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
 
 ```json
 {
-  "id": "plugin-uuid-123",
+  "id": "gws",
   "slug": "gws",
   "name": "Google Workspace CLI",
   "version": "1.2.3",
@@ -171,7 +293,7 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | string | Yes | NeboLoop artifact ID (assigned on create) |
+| `id` | string | **Yes** | Unique identifier — use the plugin's slug (e.g., `"gws"`). For published plugins, NeboLoop may assign its own artifact ID. **Deserialization fails without this field** — the plugin will not be resolvable. |
 | `slug` | string | Yes | URL-safe slug. Must match what skills reference in `plugins[].name` |
 | `name` | string | Yes | Human-readable display name |
 | `version` | string | Yes | Semver version string |
@@ -184,6 +306,8 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
 | `events` | array | No | Event declarations. See [Plugin Events](#plugin-events) |
 | `dependencies` | array | No | Plugin-to-plugin dependencies. See [Plugin Dependencies](#plugin-to-plugin-dependencies) |
 | `capabilities` | object | No | Structured capability declarations. See [Structured Capabilities](#structured-capabilities) |
+
+> **Important:** The `id` field is required for all plugins. Without it, `PluginManifest` deserialization fails and the plugin cannot be resolved. Use the slug as the id (e.g., `"id": "gws"`).
 
 ### PlatformBinary
 
@@ -374,6 +498,7 @@ Declare dependencies in your `plugin.json`:
 
 ```json
 {
+  "id": "digest",
   "slug": "digest",
   "version": "1.2.0",
   "dependencies": [
@@ -464,10 +589,9 @@ Declare tools in `capabilities.tools[]`. Each tool becomes a typed, schema-valid
 #### How Typed Tools Work
 
 1. Plugin installs → Nebo reads `capabilities.tools[]`
-2. Each tool definition is registered as a `PluginCommandTool` in the tool registry (same mechanism as MCP proxy tools)
+2. Tool definitions are routed through the consolidated STRAP `PluginTool`
 3. Agent sees the tool with its schema and description
 4. On execution: Nebo resolves the plugin binary, runs `<binary> <command>` with input as JSON on stdin, returns stdout
-5. Plugin removal → tools are unregistered
 
 The generic `plugin(resource, action, command)` tool still works alongside structured tools — it's the fallback for commands not declared in capabilities.
 
@@ -582,6 +706,81 @@ Declare AI provider adapters (for custom model backends):
 | `modelsCommand` | string | required | CLI subcommand to list available models (JSON output) |
 | `chatCommand` | string | required | CLI subcommand for streaming chat (NDJSON on stdout) |
 | `authCommand` | string | — | CLI subcommand for auth setup |
+
+### Config Schema (User Settings)
+
+Declare user-configurable settings that render as a form in the UI. Values are stored in `plugin_settings` and injected as environment variables on every plugin execution.
+
+```json
+{
+  "capabilities": {
+    "configSchema": [
+      {
+        "key": "WORKSPACE_ID",
+        "label": "Workspace ID",
+        "description": "Your Asana workspace ID",
+        "fieldType": "string",
+        "required": true
+      },
+      {
+        "key": "MAX_RESULTS",
+        "label": "Max Results",
+        "fieldType": "number",
+        "default": "50"
+      },
+      {
+        "key": "API_KEY",
+        "label": "API Key",
+        "fieldType": "string",
+        "required": true,
+        "secret": true
+      },
+      {
+        "key": "LOG_LEVEL",
+        "label": "Log Level",
+        "fieldType": "select",
+        "options": ["debug", "info", "warn", "error"],
+        "default": "info"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `key` | string | required | Env var name injected on execution (e.g., `"MAX_RESULTS"`) |
+| `label` | string | required | Display label in the settings form |
+| `description` | string | `""` | Help text |
+| `fieldType` | string | `"string"` | `"string"`, `"number"`, `"boolean"`, or `"select"` |
+| `default` | string | — | Default value |
+| `required` | bool | `false` | Whether the user must set this field |
+| `secret` | bool | `false` | If true, value is stored encrypted |
+| `options` | string[] | — | Available choices for `"select"` type |
+
+---
+
+## Permissions
+
+Plugins can declare a permissions manifest that controls environment variable access and execution limits.
+
+```json
+{
+  "permissions": {
+    "envAllow": ["HOME", "PATH", "WORKSPACE_ID"],
+    "envDeny": ["AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN"],
+    "network": true,
+    "maxTimeoutSeconds": 600
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `envAllow` | string[] | `[]` (all allowed) | Env vars the plugin may read. Empty means all are allowed. |
+| `envDeny` | string[] | `[]` | Env vars always stripped before execution |
+| `network` | bool | `false` | Whether the plugin needs network access (informational) |
+| `maxTimeoutSeconds` | number | `300` | Maximum timeout in seconds for any tool execution |
 
 ---
 
@@ -785,6 +984,7 @@ To test auth locally, create a `plugin.json` in the version directory with your 
 
 ```json
 {
+  "id": "my-plugin",
   "slug": "my-plugin",
   "name": "My Plugin",
   "version": "0.1.0",
@@ -811,6 +1011,7 @@ Declare events in your local `plugin.json`:
 
 ```json
 {
+  "id": "my-plugin",
   "slug": "my-plugin",
   "name": "My Plugin",
   "version": "0.1.0",
@@ -876,7 +1077,7 @@ Same scoping and version resolution rules as skills. See [Packaging](packaging.m
 
 ```json
 {
-  "id": "abc-123",
+  "id": "gws",
   "slug": "gws",
   "name": "Google Workspace CLI",
   "version": "1.2.3",

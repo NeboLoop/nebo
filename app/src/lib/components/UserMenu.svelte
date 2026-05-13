@@ -11,7 +11,7 @@
   onMount(async () => {
     try {
       const [profileResp, subsResp] = await Promise.all([
-        import('$lib/api/nebo').then(api => api.getAgentProfile()),
+        import('$lib/api/nebo').then(api => api.getProfile()),
         import('$lib/api/nebo').then(api => api.neboLoopBillingSubscription()).catch(() => null)
       ]);
       const profile = (profileResp as { profile?: Record<string, unknown> })?.profile;

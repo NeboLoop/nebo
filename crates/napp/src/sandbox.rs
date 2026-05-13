@@ -16,9 +16,7 @@ const _BLOCKED_ENV_VARS: &[&str] = &[
 ];
 
 /// System environment variables that are allowed through.
-const ALLOWED_SYSTEM_VARS: &[&str] = &[
-    "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ",
-];
+const ALLOWED_SYSTEM_VARS: &[&str] = &["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ"];
 
 /// Build a sanitized environment for an app process.
 pub fn sanitize_env(
@@ -94,7 +92,7 @@ pub fn validate_binary(path: &Path, max_size: u64) -> Result<(), NappError> {
         || magic == [0xce, 0xfa, 0xed, 0xfe]            // Mach-O 32 swapped
         || magic == [0xcf, 0xfa, 0xed, 0xfe]            // Mach-O 64 swapped
         || magic == [0xca, 0xfe, 0xba, 0xbe]            // Universal
-        || magic[..2] == [0x4d, 0x5a];                  // PE
+        || magic[..2] == [0x4d, 0x5a]; // PE
 
     if !is_native {
         if magic[..2] == [0x23, 0x21] {
@@ -113,7 +111,14 @@ mod tests {
 
     #[test]
     fn test_sanitize_env_blocks_secrets() {
-        let env = sanitize_env("app-1", "TestApp", "1.0", "/apps/app-1", "/tmp/app.sock", "/apps/app-1/data");
+        let env = sanitize_env(
+            "app-1",
+            "TestApp",
+            "1.0",
+            "/apps/app-1",
+            "/tmp/app.sock",
+            "/apps/app-1/data",
+        );
 
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
         assert!(keys.contains(&"NEBO_APP_ID"));

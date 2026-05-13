@@ -15,46 +15,60 @@
   import ChevronLeft from 'lucide-svelte/icons/chevron-left';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
 
-  const connectorId = $derived($page.params.id);
+  interface Screenshot { title: string; desc: string }
+  interface Developer { name: string; website: string; support: string; launched: string }
+  interface ReviewItem { user: string; rating: number; text: string; date: string; role: string; duration: string }
 
-  let apiProduct = $state<Record<string, unknown> | null>(null);
-  let apiReviews = $state<Record<string, unknown>[]>([]);
+  interface ConnectorDetail {
+    id: string; name: string; desc: string; category: string; rating: number;
+    installs: number; price: string; code: string; longDesc: string;
+    features: string[]; screenshots: Screenshot[]; tools: string[];
+    worksWith: string[]; platforms: string[]; developer: Developer | null;
+    pricing: unknown; ratingDistribution: Record<string, number> | null;
+    authorVerified: boolean; hasAuth: boolean; serverType: string;
+    authType: string; reviews: ReviewItem[];
+  }
+
+  const connectorId = $derived($page.params.id ?? '');
+
+  let apiProduct = $state<ConnectorDetail | null>(null);
 
   onMount(async () => {
     try {
       const [productRes, reviewsRes] = await Promise.all([
-        getStoreProduct(connectorId),
-        getStoreProductReviews(connectorId),
+        getStoreProduct(connectorId) as Promise<{ app?: Record<string, unknown> } | null>,
+        getStoreProductReviews(connectorId) as Promise<{ reviews?: Record<string, unknown>[] } | null>,
       ]);
       if (productRes?.app) {
-        const a = productRes.app as Record<string, unknown>;
+        const a = productRes.app;
+        const rawScreenshots = (a.screenshots || []) as Array<string | Record<string, unknown>>;
         apiProduct = {
-          id: a.id, name: a.name, desc: a.description || '',
-          category: a.category || '', rating: a.rating || 0,
-          installs: a.installCount || 0, price: a.price || 'Get', code: a.code || '',
-          longDesc: a.longDesc || '', features: a.features || [],
-          screenshots: ((a.screenshots || []) as Record<string, unknown>[]).map((s: Record<string, unknown>) => typeof s === 'string' ? { title: s, desc: '' } : s),
-          tools: a.tools || [], worksWith: a.worksWith || [],
-          platforms: a.platforms || [], developer: a.developer || null,
-          pricing: a.pricing || null, ratingDistribution: a.ratingDistribution || null,
-          authorVerified: (a.author as Record<string, unknown>)?.verified ?? false,
-          hasAuth: a.hasAuth || false, serverType: a.serverType || '',
-          authType: a.authType || '', reviews: [] as Record<string, unknown>[],
+          id: String(a.id ?? ''), name: String(a.name ?? ''), desc: String(a.description ?? ''),
+          category: String(a.category ?? ''), rating: Number(a.rating ?? 0),
+          installs: Number(a.installCount ?? 0), price: String(a.price ?? 'Get'), code: String(a.code ?? ''),
+          longDesc: String(a.longDesc ?? ''), features: (a.features || []) as string[],
+          screenshots: rawScreenshots.map(s => typeof s === 'string' ? { title: s, desc: '' } : { title: String((s as Record<string, unknown>).title ?? ''), desc: String((s as Record<string, unknown>).desc ?? '') }),
+          tools: (a.tools || []) as string[], worksWith: (a.worksWith || []) as string[],
+          platforms: (a.platforms || []) as string[], developer: a.developer ? a.developer as Developer : null,
+          pricing: a.pricing ?? null, ratingDistribution: (a.ratingDistribution as Record<string, number>) ?? null,
+          authorVerified: Boolean((a.author as Record<string, unknown> | undefined)?.verified),
+          hasAuth: Boolean(a.hasAuth), serverType: String(a.serverType ?? ''),
+          authType: String(a.authType ?? ''), reviews: [],
         };
       }
       if (reviewsRes?.reviews?.length) {
-        apiReviews = reviewsRes.reviews.map((r: Record<string, unknown>) => ({
-          user: r.userName || '', rating: r.rating || 0,
-          text: r.body || '', date: r.createdAt || '',
-          role: r.role || '', duration: r.duration || '',
+        const mapped: ReviewItem[] = reviewsRes.reviews.map((r: Record<string, unknown>) => ({
+          user: String(r.userName ?? ''), rating: Number(r.rating ?? 0),
+          text: String(r.body ?? ''), date: String(r.createdAt ?? ''),
+          role: String(r.role ?? ''), duration: String(r.duration ?? ''),
         }));
-        if (apiProduct) apiProduct.reviews = apiReviews;
+        if (apiProduct) apiProduct.reviews = mapped;
       }
     } catch {}
   });
 
   const detail = $derived(apiProduct);
-  const connector = $derived(apiProduct || null);
+  const connector = $derived(apiProduct);
   const installed = $derived($installedIds.has(connectorId));
 
   let copied = $state(false);
@@ -73,8 +87,8 @@
     return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
   }
 
-  const totalReviews = $derived(detail?.ratingDistribution ? Object.values(detail.ratingDistribution as Record<string, number>).reduce((a: number, b: number) => a + b, 0) : (detail?.reviews?.length ?? 0));
-  const maxRatingCount = $derived(detail?.ratingDistribution ? Math.max(...Object.values(detail.ratingDistribution as Record<string, number>)) : 1);
+  const totalReviews = $derived(detail?.ratingDistribution ? Object.values(detail.ratingDistribution).reduce((a, b) => a + b, 0) : (detail?.reviews?.length ?? 0));
+  const maxRatingCount = $derived(detail?.ratingDistribution ? Math.max(...Object.values(detail.ratingDistribution)) : 1);
 
   function handleInstall() {
     if (installed) {
@@ -194,7 +208,7 @@
             {#if detail.screenshots.length > 1}
               <div class="flex items-center justify-center gap-1.5">
                 {#each detail.screenshots as _, i}
-                  <button class="w-2 h-2 rounded-full transition-colors cursor-pointer border-none {i === activeScreenshot ? 'bg-primary' : 'bg-base-content/20 hover:bg-base-content/40'}" onclick={() => activeScreenshot = i}></button>
+                  <button class="w-2 h-2 rounded-full transition-colors cursor-pointer border-none {i === activeScreenshot ? 'bg-primary' : 'bg-base-content/20 hover:bg-base-content/40'}" onclick={() => activeScreenshot = i} aria-label="Go to screenshot {i + 1}"></button>
                 {/each}
               </div>
             {/if}
@@ -240,7 +254,7 @@
                 </div>
                 <div class="flex-1 flex flex-col gap-1">
                   {#each [5, 4, 3, 2, 1] as stars}
-                    {@const count = (detail.ratingDistribution as Record<number, number>)[stars] ?? 0}
+                    {@const count = detail.ratingDistribution?.[String(stars)] ?? 0}
                     <div class="flex items-center gap-2">
                       <span class="text-xs text-base-content/50 w-3 text-right">{stars}</span>
                       <Star class="w-3 h-3 text-warning fill-warning shrink-0" />

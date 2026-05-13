@@ -57,7 +57,7 @@ impl Default for StreamingConfig {
             endpointing_ms: 300,
             utterance_end_ms: 1000,
             max_buffer_samples: 16_000 * 30, // 30 seconds
-            overlap_samples: 16_000,          // 1 second
+            overlap_samples: 16_000,         // 1 second
             language: "en".into(),
         }
     }
@@ -105,11 +105,7 @@ impl StreamingTranscriber {
 
         loop {
             // Wait for audio with a timeout to allow periodic inference
-            let chunk = tokio::time::timeout(
-                Duration::from_millis(100),
-                audio_rx.recv(),
-            )
-            .await;
+            let chunk = tokio::time::timeout(Duration::from_millis(100), audio_rx.recv()).await;
 
             match chunk {
                 Ok(Some(pcm_i16)) => {
@@ -164,7 +160,9 @@ impl StreamingTranscriber {
                         // Determine what's new beyond the confirmed portion
                         let new_portion = diff_transcript(&confirmed_text, &text);
                         if !new_portion.is_empty() {
-                            let _ = event_tx.send(TranscriptEvent::Interim(new_portion.clone())).await;
+                            let _ = event_tx
+                                .send(TranscriptEvent::Interim(new_portion.clone()))
+                                .await;
                         }
                         last_transcript = text;
                     }
@@ -277,10 +275,22 @@ pub fn clean_transcript(text: &str) -> String {
     // Remove bracketed artifacts: [BLANK_AUDIO], [MUSIC], [APPLAUSE], etc.
     let mut result = text.to_string();
     for artifact in &[
-        "[BLANK_AUDIO]", "[MUSIC]", "[APPLAUSE]", "[LAUGHTER]",
-        "[NOISE]", "[SILENCE]", "[INAUDIBLE]", "[SOUND]",
-        "(clicks)", "(clicking)", "(buzzing)", "(static)",
-        "(background noise)", "(laughing)", "(sighing)", "(coughing)",
+        "[BLANK_AUDIO]",
+        "[MUSIC]",
+        "[APPLAUSE]",
+        "[LAUGHTER]",
+        "[NOISE]",
+        "[SILENCE]",
+        "[INAUDIBLE]",
+        "[SOUND]",
+        "(clicks)",
+        "(clicking)",
+        "(buzzing)",
+        "(static)",
+        "(background noise)",
+        "(laughing)",
+        "(sighing)",
+        "(coughing)",
     ] {
         result = result.replace(artifact, "");
     }

@@ -88,7 +88,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -166,14 +166,38 @@ struct LaneConfig {
 /// - `desktop` (max 1): one screen, one mouse, one keyboard — concurrent
 ///   desktop automation would fight over the same physical resources.
 const LANE_CONFIGS: &[LaneConfig] = &[
-    LaneConfig { name: lanes::MAIN, max_concurrent: 0 },
-    LaneConfig { name: lanes::EVENTS, max_concurrent: 0 },
-    LaneConfig { name: lanes::SUBAGENT, max_concurrent: 0 },
-    LaneConfig { name: lanes::NESTED, max_concurrent: 0 },
-    LaneConfig { name: lanes::HEARTBEAT, max_concurrent: 0 },    // multiple roles tick concurrently
-    LaneConfig { name: lanes::COMM, max_concurrent: 0 },
-    LaneConfig { name: lanes::DEV, max_concurrent: 0 },
-    LaneConfig { name: lanes::DESKTOP, max_concurrent: 1 },      // one screen, one mouse
+    LaneConfig {
+        name: lanes::MAIN,
+        max_concurrent: 0,
+    },
+    LaneConfig {
+        name: lanes::EVENTS,
+        max_concurrent: 0,
+    },
+    LaneConfig {
+        name: lanes::SUBAGENT,
+        max_concurrent: 0,
+    },
+    LaneConfig {
+        name: lanes::NESTED,
+        max_concurrent: 0,
+    },
+    LaneConfig {
+        name: lanes::HEARTBEAT,
+        max_concurrent: 0,
+    }, // multiple roles tick concurrently
+    LaneConfig {
+        name: lanes::COMM,
+        max_concurrent: 0,
+    },
+    LaneConfig {
+        name: lanes::DEV,
+        max_concurrent: 0,
+    },
+    LaneConfig {
+        name: lanes::DESKTOP,
+        max_concurrent: 1,
+    }, // one screen, one mouse
 ];
 
 impl LaneManager {
@@ -191,7 +215,10 @@ impl LaneManager {
             };
             lanes.insert(
                 config.name.to_string(),
-                (Arc::new(std::sync::Mutex::new(state)), Arc::new(Notify::new())),
+                (
+                    Arc::new(std::sync::Mutex::new(state)),
+                    Arc::new(Notify::new()),
+                ),
             );
         }
 
@@ -240,7 +267,11 @@ impl LaneManager {
     /// `"main"` fallback) doesn't exist — should never happen in practice.
     ///
     /// Unknown lane names silently fall back to `"main"` with a tracing warning.
-    pub fn enqueue(&self, lane: &str, task: LaneTask) -> Option<oneshot::Receiver<Result<(), String>>> {
+    pub fn enqueue(
+        &self,
+        lane: &str,
+        task: LaneTask,
+    ) -> Option<oneshot::Receiver<Result<(), String>>> {
         let (lane_state, notify) = match self.lanes.get(lane) {
             Some(pair) => pair,
             None => {
@@ -318,11 +349,7 @@ impl LaneManager {
 /// spawning each as a tokio task. Emits a stale-task warning if any task
 /// waited longer than its `warn_after_ms`. On task completion, decrements
 /// `active` and re-notifies the pump for the next queued item.
-async fn pump_lane(
-    name: &str,
-    state: &Arc<std::sync::Mutex<LaneState>>,
-    notify: &Arc<Notify>,
-) {
+async fn pump_lane(name: &str, state: &Arc<std::sync::Mutex<LaneState>>, notify: &Arc<Notify>) {
     loop {
         let task = {
             let mut s = state.lock().unwrap();
@@ -377,7 +404,9 @@ async fn pump_lane(
 
             match &result {
                 Ok(()) => debug!(lane = %lane_name, task_id = %task_id, "lane task completed"),
-                Err(e) => warn!(lane = %lane_name, task_id = %task_id, error = %e, "lane task failed"),
+                Err(e) => {
+                    warn!(lane = %lane_name, task_id = %task_id, error = %e, "lane task failed")
+                }
             }
         });
     }
@@ -465,13 +494,10 @@ mod tests {
         let task = make_task("main", "test task", async { Ok(()) });
         let rx = mgr.enqueue("main", task).unwrap();
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            rx,
-        )
-        .await
-        .expect("timeout")
-        .expect("channel closed");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .expect("timeout")
+            .expect("channel closed");
 
         assert!(result.is_ok());
         mgr.shutdown();
@@ -487,13 +513,10 @@ mod tests {
         });
         let rx = mgr.enqueue("main", task).unwrap();
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            rx,
-        )
-        .await
-        .expect("timeout")
-        .expect("channel closed");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .expect("timeout")
+            .expect("channel closed");
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "test error");
@@ -509,13 +532,10 @@ mod tests {
         let rx = mgr.enqueue("nonexistent", task);
         assert!(rx.is_some());
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            rx.unwrap(),
-        )
-        .await
-        .expect("timeout")
-        .expect("channel closed");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx.unwrap())
+            .await
+            .expect("timeout")
+            .expect("channel closed");
 
         assert!(result.is_ok());
         mgr.shutdown();
@@ -533,13 +553,10 @@ mod tests {
         });
         mgr.enqueue_async("main", task);
 
-        let val = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            rx,
-        )
-        .await
-        .expect("timeout")
-        .expect("channel closed");
+        let val = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .expect("timeout")
+            .expect("channel closed");
 
         assert_eq!(val, 42);
         mgr.shutdown();
@@ -567,13 +584,10 @@ mod tests {
         }
 
         for rx in receivers {
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                rx,
-            )
-            .await
-            .expect("timeout")
-            .expect("channel closed");
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+                .await
+                .expect("timeout")
+                .expect("channel closed");
             assert!(result.is_ok());
         }
 
@@ -619,9 +633,13 @@ mod tests {
         mgr.enqueue_async("subagent", task2);
 
         let v1 = tokio::time::timeout(std::time::Duration::from_secs(2), rx1)
-            .await.expect("timeout").expect("closed");
+            .await
+            .expect("timeout")
+            .expect("closed");
         let v2 = tokio::time::timeout(std::time::Duration::from_secs(2), rx2)
-            .await.expect("timeout").expect("closed");
+            .await
+            .expect("timeout")
+            .expect("closed");
 
         assert_eq!(v1, "main");
         assert_eq!(v2, "subagent");

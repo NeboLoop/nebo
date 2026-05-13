@@ -84,12 +84,12 @@ impl DynTool for SystemTool {
             "properties": {
                 "resource": {
                     "type": "string",
-                    "description": "Resource type: file, shell",
+                    "description": "REQUIRED. The system resource category — determines which actions are available.",
                     "enum": ["file", "shell"]
                 },
                 "action": {
                     "type": "string",
-                    "description": "Action to perform",
+                    "description": "The operation to perform on the selected resource. Never put a resource name here.",
                     "enum": ["read", "write", "edit", "glob", "grep", "exec", "list", "kill", "info", "poll", "log"]
                 },
                 "path": {
@@ -165,7 +165,7 @@ impl DynTool for SystemTool {
                     "description": "Run command in background"
                 }
             },
-            "required": ["action"]
+            "required": ["resource", "action"]
         })
     }
 

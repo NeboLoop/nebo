@@ -122,13 +122,23 @@ pub fn apply_sliding_window(
         window_start = i;
     }
 
+    // Guard: if the loop never assigned window_start (e.g. budget was already
+    // exceeded before any message was kept), clamp to last message so we
+    // don't index out of bounds.
+    if window_start >= messages.len() {
+        window_start = messages.len().saturating_sub(1);
+    }
+
     // Fix tool-pair boundaries: don't split tool_use from tool_result
     while window_start > 0 {
         let msg = &messages[window_start];
         // If first message is a tool result, include preceding assistant message
         if msg.role == "tool"
             || (msg.tool_results.is_some()
-                && msg.tool_results.as_ref().is_some_and(|tr| !tr.is_empty() && tr != "[]"))
+                && msg
+                    .tool_results
+                    .as_ref()
+                    .is_some_and(|tr| !tr.is_empty() && tr != "[]"))
         {
             window_start -= 1;
         } else {
@@ -193,7 +203,13 @@ pub fn micro_compact(
     // strip aggressively regardless of age (Claude Code style).
     let count_triggered = tool_result_indices.len() > MICRO_COMPACT_COUNT_TRIGGER;
     // Age-based floor for the non-triggered path (backward compat).
-    let min_age = if count_triggered { 0 } else if total_tokens < warning_threshold { 6 } else { 3 };
+    let min_age = if count_triggered {
+        0
+    } else if total_tokens < warning_threshold {
+        6
+    } else {
+        3
+    };
 
     for (idx, age, tool_name) in candidates {
         if *age < min_age {
@@ -215,10 +231,8 @@ pub fn micro_compact(
                 let preserved: Vec<serde_json::Value> = results
                     .iter()
                     .map(|r| {
-                        let original_id = r
-                            .get("tool_call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let original_id =
+                            r.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
                         serde_json::json!({
                             "tool_call_id": original_id,
                             "content": trimmed_content,
@@ -228,11 +242,14 @@ pub fn micro_compact(
                     .collect();
                 serde_json::to_string(&preserved).ok()
             } else {
-                Some(serde_json::json!([{
-                    "tool_call_id": "",
-                    "content": trimmed_content,
-                    "is_error": false
-                }]).to_string())
+                Some(
+                    serde_json::json!([{
+                        "tool_call_id": "",
+                        "content": trimmed_content,
+                        "is_error": false
+                    }])
+                    .to_string(),
+                )
             }
         } else {
             None
@@ -300,8 +317,12 @@ pub fn time_based_micro_compact(
     // Collect indices of tool result messages (walking backwards for recency)
     let mut tool_indices: Vec<usize> = Vec::new();
     for (i, msg) in messages.iter().enumerate().rev() {
-        if msg.role == "tool" || (msg.tool_results.is_some()
-            && msg.tool_results.as_ref().is_some_and(|tr| !tr.is_empty() && tr != "[]" && tr != "null"))
+        if msg.role == "tool"
+            || (msg.tool_results.is_some()
+                && msg
+                    .tool_results
+                    .as_ref()
+                    .is_some_and(|tr| !tr.is_empty() && tr != "[]" && tr != "null"))
         {
             tool_indices.push(i);
         }
@@ -330,10 +351,8 @@ pub fn time_based_micro_compact(
                 let preserved: Vec<serde_json::Value> = results
                     .iter()
                     .map(|r| {
-                        let original_id = r
-                            .get("tool_call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let original_id =
+                            r.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
                         serde_json::json!({
                             "tool_call_id": original_id,
                             "content": cleared,
@@ -343,11 +362,14 @@ pub fn time_based_micro_compact(
                     .collect();
                 serde_json::to_string(&preserved).ok()
             } else {
-                Some(serde_json::json!([{
-                    "tool_call_id": "",
-                    "content": cleared,
-                    "is_error": false
-                }]).to_string())
+                Some(
+                    serde_json::json!([{
+                        "tool_call_id": "",
+                        "content": cleared,
+                        "is_error": false
+                    }])
+                    .to_string(),
+                )
             }
         } else {
             None
@@ -382,9 +404,9 @@ pub fn time_based_micro_compact(
 /// Determine trimming order for tool types.
 fn trim_priority(tool_name: &str) -> usize {
     match tool_name {
-        "web" => 0,    // Stale fastest
-        "file" => 1,   // Largest output
-        "shell" => 2,  // Often large
+        "web" => 0,           // Stale fastest
+        "file" => 1,          // Largest output
+        "shell" => 2,         // Often large
         "os" | "system" => 2, // Same as shell
         _ => 3,
     }
@@ -519,7 +541,10 @@ pub async fn build_llm_summary(
     if !active_task.is_empty() {
         user_content.push_str(&format!("## Active Objective\n{}\n\n", active_task));
     }
-    user_content.push_str(&format!("## Conversation Transcript to Summarize\n{}", transcript));
+    user_content.push_str(&format!(
+        "## Conversation Transcript to Summarize\n{}",
+        transcript
+    ));
 
     let system = "\
 You are a conversation compaction engine. Produce a structured summary of the conversation transcript below. \
@@ -718,11 +743,14 @@ mod tests {
             created_at,
             day_marker: None,
             tool_calls: None,
-            tool_results: Some(serde_json::json!([{
-                "tool_call_id": tool_call_id,
-                "content": content,
-                "is_error": false
-            }]).to_string()),
+            tool_results: Some(
+                serde_json::json!([{
+                    "tool_call_id": tool_call_id,
+                    "content": content,
+                    "is_error": false
+                }])
+                .to_string(),
+            ),
             token_estimate: None,
             html: None,
         }
@@ -764,14 +792,14 @@ mod tests {
 
         // Only the most recent tool result (index 6) should keep its content
         // The older two (indices 2, 4) should be cleared
-        let tool_results: Vec<&ChatMessage> = result.iter()
-            .filter(|m| m.role == "tool")
-            .collect();
+        let tool_results: Vec<&ChatMessage> = result.iter().filter(|m| m.role == "tool").collect();
         assert_eq!(tool_results.len(), 3);
 
         // Most recent keeps content
-        assert!(!tool_results[2].content.contains("[cleared]"),
-            "most recent tool result should keep content");
+        assert!(
+            !tool_results[2].content.contains("[cleared]"),
+            "most recent tool result should keep content"
+        );
         // Older ones cleared
         assert_eq!(tool_results[0].content, "[cleared]");
         assert_eq!(tool_results[1].content, "[cleared]");
@@ -805,23 +833,33 @@ mod tests {
         // Create 6 tool results with a custom tool name — exceeds count trigger (4)
         for i in 0..6 {
             let mut assistant = make_old_msg("assistant", "calling tool");
-            assistant.tool_calls = Some(serde_json::json!([{
-                "name": "search_emails",
-                "id": format!("call_{}", i),
-                "input": {}
-            }]).to_string());
+            assistant.tool_calls = Some(
+                serde_json::json!([{
+                    "name": "search_emails",
+                    "id": format!("call_{}", i),
+                    "input": {}
+                }])
+                .to_string(),
+            );
             messages.push(assistant);
             messages.push(make_tool_result_msg(&big, 1000));
         }
 
         let (result, tokens_saved) = micro_compact(&messages, 100_000);
-        assert!(tokens_saved > 0,
-            "non-standard tool results should be compactable (universal filter)");
+        assert!(
+            tokens_saved > 0,
+            "non-standard tool results should be compactable (universal filter)"
+        );
 
         // Should keep 3 most recent, compact older 3
-        let compacted_count = result.iter()
+        let compacted_count = result
+            .iter()
             .filter(|m| m.content.contains("[trimmed:"))
             .count();
-        assert!(compacted_count >= 2, "should compact at least 2 old results, got {}", compacted_count);
+        assert!(
+            compacted_count >= 2,
+            "should compact at least 2 old results, got {}",
+            compacted_count
+        );
     }
 }

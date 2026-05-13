@@ -15,7 +15,10 @@ pub struct SkillTool {
 
 impl SkillTool {
     pub fn new(loader: Arc<Loader>) -> Self {
-        Self { loader, store: None }
+        Self {
+            loader,
+            store: None,
+        }
     }
 
     pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
@@ -119,7 +122,9 @@ impl DynTool for SkillTool {
                 "catalog" | "list" => {
                     let skills = self.loader.list_summaries().await;
                     if skills.is_empty() {
-                        ToolResult::ok("No skills installed. Create one with skill(action: \"create\", name: \"my-skill\", content: \"...\")")
+                        ToolResult::ok(
+                            "No skills installed. Create one with skill(action: \"create\", name: \"my-skill\", content: \"...\")",
+                        )
                     } else {
                         let lines: Vec<String> = skills
                             .iter()
@@ -139,31 +144,38 @@ impl DynTool for SkillTool {
                                 } else {
                                     format!(" [caps: {}]", s.capabilities.join(", "))
                                 };
-                                format!("- {} [{}|{}] — {}{}{}", s.name, status, source_label, s.description, caps, triggers)
+                                format!(
+                                    "- {} [{}|{}] — {}{}{}",
+                                    s.name, status, source_label, s.description, caps, triggers
+                                )
                             })
                             .collect();
-                        ToolResult::ok(format!(
-                            "{} skills:\n{}",
-                            skills.len(),
-                            lines.join("\n")
-                        ))
+                        ToolResult::ok(format!("{} skills:\n{}", skills.len(), lines.join("\n")))
                     }
                 }
                 "discover" => {
                     let query = input["query"].as_str().unwrap_or("");
                     if query.is_empty() {
-                        return ToolResult::error("query is required — describe what you're trying to do");
+                        return ToolResult::error(
+                            "query is required — describe what you're trying to do",
+                        );
                     }
                     let matches = self.loader.discover_summaries(query).await;
                     if matches.is_empty() {
-                        ToolResult::ok(format!("No skills match \"{}\". Try a different query or check the catalog.", query))
+                        ToolResult::ok(format!(
+                            "No skills match \"{}\". Try a different query or check the catalog.",
+                            query
+                        ))
                     } else {
-                        let lines: Vec<String> = matches.iter().take(10).map(|s| {
-                            format!("- **{}** — {}", s.name, s.description)
-                        }).collect();
+                        let lines: Vec<String> = matches
+                            .iter()
+                            .take(10)
+                            .map(|s| format!("- **{}** — {}", s.name, s.description))
+                            .collect();
                         ToolResult::ok(format!(
                             "Skills matching \"{}\":\n{}\n\nTo use a skill, call: skill(action: \"help\", name: \"<name>\") for full instructions.",
-                            query, lines.join("\n")
+                            query,
+                            lines.join("\n")
                         ))
                     }
                 }
@@ -179,10 +191,16 @@ impl DynTool for SkillTool {
                             output.push_str(&format!("**Description:** {}\n", skill.description));
                             output.push_str(&format!("**Version:** {}\n", skill.version));
                             if !skill.triggers.is_empty() {
-                                output.push_str(&format!("**Triggers:** {}\n", skill.triggers.join(", ")));
+                                output.push_str(&format!(
+                                    "**Triggers:** {}\n",
+                                    skill.triggers.join(", ")
+                                ));
                             }
                             if !skill.capabilities.is_empty() {
-                                output.push_str(&format!("**Capabilities:** {}\n", skill.capabilities.join(", ")));
+                                output.push_str(&format!(
+                                    "**Capabilities:** {}\n",
+                                    skill.capabilities.join(", ")
+                                ));
                             }
                             if !skill.template.is_empty() {
                                 output.push_str(&format!("\n---\n\n{}", skill.template));
@@ -190,18 +208,28 @@ impl DynTool for SkillTool {
                             // Append resource info
                             if let Ok(resources) = skill.list_resources() {
                                 if !resources.is_empty() {
-                                    output.push_str(&format!("\n\n---\n\n**Resources:** {} files\n", resources.len()));
+                                    output.push_str(&format!(
+                                        "\n\n---\n\n**Resources:** {} files\n",
+                                        resources.len()
+                                    ));
                                     // Show available subdirectories
                                     let mut dirs: Vec<String> = resources
                                         .iter()
                                         .filter_map(|r| r.split('/').next().map(String::from))
                                         .collect::<std::collections::HashSet<_>>()
                                         .into_iter()
-                                        .filter(|d| resources.iter().any(|r| r.starts_with(&format!("{}/", d))))
+                                        .filter(|d| {
+                                            resources
+                                                .iter()
+                                                .any(|r| r.starts_with(&format!("{}/", d)))
+                                        })
                                         .collect();
                                     dirs.sort();
                                     if !dirs.is_empty() {
-                                        output.push_str(&format!("**Directories:** {}\n", dirs.join(", ")));
+                                        output.push_str(&format!(
+                                            "**Directories:** {}\n",
+                                            dirs.join(", ")
+                                        ));
                                     }
                                     output.push_str("\nUse skill(action: \"browse\", name: \"");
                                     output.push_str(name);
@@ -226,7 +254,9 @@ impl DynTool for SkillTool {
                                 return ToolResult::error(format!("Skill '{}' not found", name));
                             };
                             match std::fs::read_to_string(&path) {
-                                Ok(content) => ToolResult::ok(format!("# Skill: {}\n\n{}", name, content)),
+                                Ok(content) => {
+                                    ToolResult::ok(format!("# Skill: {}\n\n{}", name, content))
+                                }
                                 Err(e) => ToolResult::error(format!("Failed to read skill: {}", e)),
                             }
                         }
@@ -252,22 +282,31 @@ impl DynTool for SkillTool {
                                 }
                                 if resources.is_empty() {
                                     if filter_path.is_empty() {
-                                        ToolResult::ok(format!("Skill '{}' has no resource files.", name))
+                                        ToolResult::ok(format!(
+                                            "Skill '{}' has no resource files.",
+                                            name
+                                        ))
                                     } else {
-                                        ToolResult::ok(format!("No resources found in '{}/{}'.", name, filter_path))
+                                        ToolResult::ok(format!(
+                                            "No resources found in '{}/{}'.",
+                                            name, filter_path
+                                        ))
                                     }
                                 } else {
                                     resources.sort();
-                                    let listing: Vec<String> = resources.iter().map(|r| {
-                                        let size = if let Some(ref base) = skill.base_dir {
-                                            std::fs::metadata(base.join(r))
-                                                .map(|m| format!(" ({} bytes)", m.len()))
-                                                .unwrap_or_default()
-                                        } else {
-                                            String::new()
-                                        };
-                                        format!("  {}{}", r, size)
-                                    }).collect();
+                                    let listing: Vec<String> = resources
+                                        .iter()
+                                        .map(|r| {
+                                            let size = if let Some(ref base) = skill.base_dir {
+                                                std::fs::metadata(base.join(r))
+                                                    .map(|m| format!(" ({} bytes)", m.len()))
+                                                    .unwrap_or_default()
+                                            } else {
+                                                String::new()
+                                            };
+                                            format!("  {}{}", r, size)
+                                        })
+                                        .collect();
                                     ToolResult::ok(format!(
                                         "Resources in '{}':\n{}",
                                         name,
@@ -289,12 +328,12 @@ impl DynTool for SkillTool {
 
                     match self.loader.get(name).await {
                         Some(skill) => match skill.read_resource(path) {
-                            Ok(data) => {
-                                match String::from_utf8(data.clone()) {
-                                    Ok(text) => ToolResult::ok(text),
-                                    Err(_) => ToolResult::ok(format!("binary file, {} bytes", data.len())),
+                            Ok(data) => match String::from_utf8(data.clone()) {
+                                Ok(text) => ToolResult::ok(text),
+                                Err(_) => {
+                                    ToolResult::ok(format!("binary file, {} bytes", data.len()))
                                 }
-                            }
+                            },
                             Err(e) => ToolResult::error(e),
                         },
                         None => ToolResult::error(format!("Skill '{}' not found", name)),
@@ -322,7 +361,10 @@ impl DynTool for SkillTool {
                             Err(e) => ToolResult::error(format!("Failed to enable skill: {}", e)),
                         }
                     } else {
-                        ToolResult::error(format!("Skill '{}' not found. Use skill(action: \"catalog\") to list available skills.", name))
+                        ToolResult::error(format!(
+                            "Skill '{}' not found. Use skill(action: \"catalog\") to list available skills.",
+                            name
+                        ))
                     }
                 }
                 "unload" => {
@@ -370,7 +412,10 @@ impl DynTool for SkillTool {
                     let final_content = if content.trim_start().starts_with("---") {
                         content.clone()
                     } else {
-                        format!("---\nname: {}\ndescription: {}\n---\n{}", name, name, content)
+                        format!(
+                            "---\nname: {}\ndescription: {}\n---\n{}",
+                            name, name, content
+                        )
                     };
 
                     let skill_dir = dir.join(name);
@@ -379,7 +424,11 @@ impl DynTool for SkillTool {
                     }
                     let path = skill_dir.join("SKILL.md");
                     match std::fs::write(&path, final_content) {
-                        Ok(_) => ToolResult::ok(format!("Created skill '{}' at {}", name, path.display())),
+                        Ok(_) => ToolResult::ok(format!(
+                            "Created skill '{}' at {}",
+                            name,
+                            path.display()
+                        )),
                         Err(e) => ToolResult::error(format!("Failed to write skill: {}", e)),
                     }
                 }
@@ -402,8 +451,12 @@ impl DynTool for SkillTool {
                         }
                         if let Some(ref path) = skill.source_path {
                             match std::fs::write(path, content) {
-                                Ok(_) => return ToolResult::ok(format!("Updated skill '{}'", name)),
-                                Err(e) => return ToolResult::error(format!("Failed to update: {}", e)),
+                                Ok(_) => {
+                                    return ToolResult::ok(format!("Updated skill '{}'", name));
+                                }
+                                Err(e) => {
+                                    return ToolResult::error(format!("Failed to update: {}", e));
+                                }
                             }
                         }
                     }
@@ -453,30 +506,38 @@ impl DynTool for SkillTool {
                 }
                 "featured" => {
                     let skills = self.loader.list_summaries().await;
-                    let featured: Vec<_> = skills.iter()
+                    let featured: Vec<_> = skills
+                        .iter()
                         .filter(|s| s.enabled && !s.capabilities.is_empty())
                         .take(10)
                         .collect();
                     if featured.is_empty() {
                         ToolResult::ok("No featured skills available.")
                     } else {
-                        let lines: Vec<String> = featured.iter()
-                            .map(|s| format!("- {} — {} [caps: {}]", s.name, s.description, s.capabilities.join(", ")))
+                        let lines: Vec<String> = featured
+                            .iter()
+                            .map(|s| {
+                                format!(
+                                    "- {} — {} [caps: {}]",
+                                    s.name,
+                                    s.description,
+                                    s.capabilities.join(", ")
+                                )
+                            })
                             .collect();
                         ToolResult::ok(format!("Featured skills:\n{}", lines.join("\n")))
                     }
                 }
                 "popular" => {
                     let skills = self.loader.list_summaries().await;
-                    let mut popular: Vec<_> = skills.iter()
-                        .filter(|s| s.enabled)
-                        .collect();
+                    let mut popular: Vec<_> = skills.iter().filter(|s| s.enabled).collect();
                     popular.sort_by(|a, b| b.capabilities.len().cmp(&a.capabilities.len()));
                     let top: Vec<_> = popular.into_iter().take(10).collect();
                     if top.is_empty() {
                         ToolResult::ok("No skills installed.")
                     } else {
-                        let lines: Vec<String> = top.iter()
+                        let lines: Vec<String> = top
+                            .iter()
                             .map(|s| format!("- {} — {}", s.name, s.description))
                             .collect();
                         ToolResult::ok(format!("Popular skills:\n{}", lines.join("\n")))
@@ -493,15 +554,17 @@ impl DynTool for SkillTool {
 
                     let store = match &self.store {
                         Some(s) => s,
-                        None => return ToolResult::error("configure not available — store not configured"),
+                        None => {
+                            return ToolResult::error(
+                                "configure not available — store not configured",
+                            );
+                        }
                     };
 
                     // Validate key name matches a declared secret in the skill
                     if let Some(skill) = self.loader.get(name).await {
                         let declarations = skill.secrets();
-                        if !declarations.is_empty()
-                            && !declarations.iter().any(|d| d.key == key)
-                        {
+                        if !declarations.is_empty() && !declarations.iter().any(|d| d.key == key) {
                             let valid_keys: Vec<&str> =
                                 declarations.iter().map(|d| d.key.as_str()).collect();
                             return ToolResult::error(format!(
@@ -549,12 +612,14 @@ impl DynTool for SkillTool {
 
                     let store = match &self.store {
                         Some(s) => s,
-                        None => return ToolResult::error("secrets not available — store not configured"),
+                        None => {
+                            return ToolResult::error(
+                                "secrets not available — store not configured",
+                            );
+                        }
                     };
 
-                    let stored = store
-                        .list_skill_secrets(name)
-                        .unwrap_or_default();
+                    let stored = store.list_skill_secrets(name).unwrap_or_default();
                     let stored_keys: std::collections::HashSet<&str> =
                         stored.iter().map(|(k, _)| k.as_str()).collect();
 
@@ -591,17 +656,28 @@ impl DynTool for SkillTool {
                 "install" => {
                     let code = input["code"].as_str().unwrap_or("");
                     if code.is_empty() || !code.starts_with("SKIL-") {
-                        return ToolResult::error("'code' is required and must start with SKIL- (e.g. SKIL-XXXX-XXXX)");
+                        return ToolResult::error(
+                            "'code' is required and must start with SKIL- (e.g. SKIL-XXXX-XXXX)",
+                        );
                     }
 
                     let store = match &self.store {
                         Some(s) => s,
-                        None => return ToolResult::error("install not available — store not configured"),
+                        None => {
+                            return ToolResult::error(
+                                "install not available — store not configured",
+                            );
+                        }
                     };
 
                     let api = match crate::build_neboloop_api(store) {
                         Ok(a) => a,
-                        Err(e) => return ToolResult::error(format!("NeboLoop connection required: {}", e)),
+                        Err(e) => {
+                            return ToolResult::error(format!(
+                                "NeboLoop connection required: {}",
+                                e
+                            ));
+                        }
                     };
 
                     match api.install_skill(code).await {
@@ -617,7 +693,9 @@ impl DynTool for SkillTool {
                             let artifact_id = resp.artifact.id.clone();
 
                             // Fetch and persist artifact content
-                            if let Err(e) = crate::persist_skill_from_api(&api, &artifact_id, &name, code).await {
+                            if let Err(e) =
+                                crate::persist_skill_from_api(&api, &artifact_id, &name, code).await
+                            {
                                 tracing::warn!(code, error = %e, "failed to persist skill after install");
                             }
 
@@ -635,7 +713,10 @@ impl DynTool for SkillTool {
                         return ToolResult::error("name is required for reviews");
                     }
                     // Reviews would come from the marketplace API; for now return placeholder
-                    ToolResult::ok(format!("No reviews available for skill '{}'. Reviews are synced from the NeboLoop marketplace.", name))
+                    ToolResult::ok(format!(
+                        "No reviews available for skill '{}'. Reviews are synced from the NeboLoop marketplace.",
+                        name
+                    ))
                 }
                 other => ToolResult::error(format!(
                     "Unknown action: {}. Available: catalog, help, browse, read_resource, load, unload, create, update, delete, install, featured, popular, reviews",

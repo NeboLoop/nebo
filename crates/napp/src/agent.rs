@@ -132,7 +132,10 @@ impl<'de> serde::Deserialize<'de> for AgentInputOption {
                 })
             }
 
-            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<AgentInputOption, M::Error> {
+            fn visit_map<M: de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<AgentInputOption, M::Error> {
                 #[derive(Deserialize)]
                 struct Helper {
                     value: String,
@@ -271,7 +274,9 @@ fn default_agent_token_max() -> u32 {
 
 impl Default for AgentTokenBudget {
     fn default() -> Self {
-        Self { max: default_agent_token_max() }
+        Self {
+            max: default_agent_token_max(),
+        }
     }
 }
 
@@ -284,8 +289,12 @@ pub struct AgentOnError {
     pub fallback: AgentFallback,
 }
 
-fn default_agent_retry() -> u32 { 1 }
-fn default_agent_fallback() -> AgentFallback { AgentFallback::NotifyOwner }
+fn default_agent_retry() -> u32 {
+    1
+}
+fn default_agent_fallback() -> AgentFallback {
+    AgentFallback::NotifyOwner
+}
 
 impl Default for AgentOnError {
     fn default() -> Self {
@@ -397,8 +406,32 @@ pub struct AgentDefaults {
 
 /// Parse an agent.json file into an `AgentConfig`.
 pub fn parse_agent_config(json_str: &str) -> Result<AgentConfig, NappError> {
-    let mut config: AgentConfig = serde_json::from_str(json_str)
-        .map_err(|e| NappError::Manifest(format!("agent.json: {}", e)))?;
+    // Try strict parsing first; on failure, parse leniently by treating workflows
+    // as raw JSON and skipping individual entries that don't match the schema.
+    let mut config: AgentConfig = match serde_json::from_str(json_str) {
+        Ok(c) => c,
+        Err(_) => {
+            // Parse as generic JSON, extract workflows separately
+            let mut raw: serde_json::Value = serde_json::from_str(json_str)
+                .map_err(|e| NappError::Manifest(format!("agent.json: {}", e)))?;
+            // Remove workflows so the rest can parse cleanly
+            let workflows_raw = raw.as_object_mut().and_then(|o| o.remove("workflows"));
+            let mut cfg: AgentConfig = serde_json::from_value(raw)
+                .map_err(|e| NappError::Manifest(format!("agent.json: {}", e)))?;
+            // Try to parse each workflow individually, skipping failures
+            if let Some(serde_json::Value::Object(map)) = workflows_raw {
+                for (key, val) in map {
+                    match serde_json::from_value::<crate::agent::WorkflowBinding>(val) {
+                        Ok(wb) => { cfg.workflows.insert(key, wb); }
+                        Err(e) => {
+                            tracing::warn!(workflow = %key, error = %e, "skipping workflow with invalid schema");
+                        }
+                    }
+                }
+            }
+            cfg
+        }
+    };
 
     // Normalize input fields: NeboLoop uses `name` instead of `key`/`label`
     for field in &mut config.inputs {
@@ -411,7 +444,9 @@ pub fn parse_agent_config(json_str: &str) -> Result<AgentConfig, NappError> {
             let source = field.name.as_deref().unwrap_or(&field.key);
             field.label = source.replace('_', " ").replace('-', " ");
             // Capitalize first letter of each word
-            field.label = field.label.split_whitespace()
+            field.label = field
+                .label
+                .split_whitespace()
                 .map(|w| {
                     let mut c = w.chars();
                     match c.next() {
@@ -527,8 +562,8 @@ pub fn parse_agent(content: &str) -> Result<AgentDef, NappError> {
 
     // Legacy frontmatter format
     let (yaml_str, body) = split_frontmatter(content)?;
-    let mut def: AgentDef =
-        serde_yaml::from_str(&yaml_str).map_err(|e| NappError::Manifest(format!("agent YAML: {}", e)))?;
+    let mut def: AgentDef = serde_yaml::from_str(&yaml_str)
+        .map_err(|e| NappError::Manifest(format!("agent YAML: {}", e)))?;
     def.body = body;
     Ok(def)
 }
@@ -569,7 +604,9 @@ mod tests {
     #[test]
     fn test_qualified_skill_ref_validation() {
         assert!(is_qualified_skill_ref("@nebo/skills/briefing-writer"));
-        assert!(is_qualified_skill_ref("@nebo/skills/briefing-writer@^1.0.0"));
+        assert!(is_qualified_skill_ref(
+            "@nebo/skills/briefing-writer@^1.0.0"
+        ));
         assert!(is_qualified_skill_ref("SKIL-ABCD-1234"));
         assert!(!is_qualified_skill_ref("bad-ref"));
         assert!(!is_qualified_skill_ref("@acme/tools/crm")); // wrong type
@@ -648,7 +685,10 @@ mod tests {
             }
         }"#;
         let config = parse_agent_config(json).unwrap();
-        assert!(matches!(config.workflows["ad-hoc"].trigger, AgentTrigger::Manual));
+        assert!(matches!(
+            config.workflows["ad-hoc"].trigger,
+            AgentTrigger::Manual
+        ));
     }
 
     #[test]
@@ -667,7 +707,12 @@ mod tests {
         let config = parse_agent_config(json).unwrap();
         let binding = &config.workflows["inbox-watcher"];
         match &binding.trigger {
-            AgentTrigger::Watch { plugin, command, event, restart_delay_secs } => {
+            AgentTrigger::Watch {
+                plugin,
+                command,
+                event,
+                restart_delay_secs,
+            } => {
                 assert_eq!(plugin, "gws");
                 assert!(command.contains("gmail +watch"));
                 assert!(event.is_none());
@@ -693,7 +738,12 @@ mod tests {
         let config = parse_agent_config(json).unwrap();
         let binding = &config.workflows["inbox-watcher"];
         match &binding.trigger {
-            AgentTrigger::Watch { plugin, command, event, .. } => {
+            AgentTrigger::Watch {
+                plugin,
+                command,
+                event,
+                ..
+            } => {
                 assert_eq!(plugin, "gws");
                 assert!(command.is_empty()); // resolved at runtime from manifest
                 assert_eq!(event.as_deref(), Some("email.new"));

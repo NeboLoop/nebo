@@ -47,7 +47,11 @@ impl LocalProvider {
     }
 
     /// Parse `<tool_call>...</tool_call>` blocks from model text output.
-    pub(crate) fn extract_tool_calls(&self, response: &str, tools: &[ToolDefinition]) -> Vec<ToolCall> {
+    pub(crate) fn extract_tool_calls(
+        &self,
+        response: &str,
+        tools: &[ToolDefinition],
+    ) -> Vec<ToolCall> {
         if tools.is_empty() {
             return Vec::new();
         }

@@ -186,12 +186,7 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
 
         let delays = [500u64, 2000, 8000];
         for (attempt, delay) in delays.iter().enumerate() {
-            let resp = self
-                .http_client
-                .post(&url)
-                .json(&body)
-                .send()
-                .await;
+            let resp = self.http_client.post(&url).json(&body).send().await;
 
             match resp {
                 Ok(r) => {
@@ -290,7 +285,9 @@ impl EmbeddingProvider for CachedEmbeddingProvider {
 
                 // Store in cache
                 let blob = f32_to_bytes(&embedding);
-                let _ = self.store.insert_cached_embedding(&hash, &blob, &model, dims);
+                let _ = self
+                    .store
+                    .insert_cached_embedding(&hash, &blob, &model, dims);
 
                 results[idx] = embedding;
             }

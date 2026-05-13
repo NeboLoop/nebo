@@ -14,8 +14,7 @@
 	let agents: AppItem[] = $state([]);
 	let catMeta: { name: string; slug: string; emoji: string } | null = $state(null);
 
-	const slug = $derived($page.params.slug);
-	const cat = $derived(catMeta);
+	const slug = $derived($page.params.slug ?? '');
 
 	onMount(async () => {
 		// Fetch category metadata from API
@@ -74,7 +73,7 @@
 </div>
 
 <div class="max-w-7xl mx-auto">
-{#if !cat}
+{#if !catMeta}
 	<div class="flex flex-col items-center justify-center py-20 text-center px-6">
 		<Sparkles class="w-12 h-12 text-base-content/40 mb-4" />
 		<p class="text-lg font-semibold mb-1">{$t('marketplace.categoryNotFound')}</p>
@@ -89,9 +88,9 @@
 	<!-- Hero -->
 	<div class="flex flex-col items-center pt-10 pb-8 px-6 text-center max-w-2xl mx-auto">
 		<div class="w-20 h-20 rounded-3xl bg-base-200/50 border border-base-content/10 flex items-center justify-center mb-5">
-			<span class="text-4xl">{cat.emoji}</span>
+			<span class="text-4xl">{catMeta.emoji}</span>
 		</div>
-		<h1 class="font-display text-2xl font-bold">{cat.name}</h1>
+		<h1 class="font-display text-2xl font-bold">{catMeta.name}</h1>
 		<p class="text-base text-base-content/80 mt-1">{$t('marketplace.itemsAvailable', { values: { count: totalItems } })}</p>
 	</div>
 

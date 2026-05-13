@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getActivityType, ACTIVITY_TYPES, type ActivityType } from '$lib/utils/workflowTypes';
-	import type { WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
+	import type { WorkflowConfig, WorkflowActivity, WorkflowTrigger } from '$lib/types/agentPage';
 
 	let {
 		workflowName = '',
@@ -18,12 +18,12 @@
 		onselectActivity,
 	}: {
 		workflowName: string;
-		workflow: (WorkflowConfig & Record<string, unknown>) | null;
+		workflow: WorkflowConfig | null;
 		selectedNodeId: string | null;
-		activity: (WorkflowActivity & Record<string, unknown>) | null;
+		activity: WorkflowActivity | null;
 		mode: 'view' | 'edit';
-		onupdateActivity?: (field: string, value: unknown) => void;
-		onupdateTrigger?: (trigger: Record<string, unknown>) => void;
+		onupdateActivity?: (field: keyof WorkflowActivity, value: unknown) => void;
+		onupdateTrigger?: (trigger: WorkflowTrigger) => void;
 		onupdateEmit?: (emit: string) => void;
 		onupdateDescription?: (desc: string) => void;
 		onremove?: (nodeId: string) => void;
@@ -109,7 +109,7 @@
 
 	function emitSchedule() {
 		const str = buildScheduleString(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays);
-		onupdateTrigger?.({ ...workflow?.trigger, schedule: str });
+		onupdateTrigger?.({ ...currentTrigger(), schedule: str });
 	}
 
 	// ── Heartbeat editing state
@@ -129,6 +129,11 @@
 	let editingStepText = $state('');
 	let newStepText = $state('');
 	let newSkillText = $state('');
+
+	/** Safe accessor: returns the current trigger or a default with required `type`. */
+	function currentTrigger(): WorkflowTrigger {
+		return workflow?.trigger ?? { type: 'manual' };
+	}
 
 	function updateParam(key: string, value: unknown) {
 		const params = { ...(activity?.params || {}), [key]: value };
@@ -259,12 +264,13 @@
 					<div class="flex flex-col gap-2">
 						{#each activityTypeDef.parameters as param}
 							<div>
-								<label class="text-xs text-base-content/60 mb-0.5 block">{param.label}</label>
+								<label class="text-xs text-base-content/60 mb-0.5 block" for="param-{param.key}">{param.label}</label>
 								{#if param.type === 'select'}
 									{#if isEditable}
 										<select
+											id="param-{param.key}"
 											class="select select-xs select-bordered w-full"
-											value={activity.params?.[param.key] ?? param.default ?? ''}
+											value={String(activity.params?.[param.key] ?? param.default ?? '')}
 											onchange={(e) => updateParam(param.key, (e.target as HTMLSelectElement).value)}
 										>
 											{#each param.options ?? [] as opt}
@@ -277,10 +283,11 @@
 								{:else if param.type === 'textarea'}
 									{#if isEditable}
 										<textarea
+											id="param-{param.key}"
 											class="textarea textarea-xs textarea-bordered w-full resize-none"
 											rows="2"
 											placeholder={param.placeholder}
-											value={activity.params?.[param.key] ?? ''}
+											value={String(activity.params?.[param.key] ?? '')}
 											onchange={(e) => updateParam(param.key, (e.target as HTMLTextAreaElement).value)}
 										></textarea>
 									{:else}
@@ -288,19 +295,21 @@
 									{/if}
 								{:else if param.type === 'toggle'}
 									<input
+										id="param-{param.key}"
 										type="checkbox"
 										class="toggle toggle-xs toggle-primary"
-										checked={activity.params?.[param.key] ?? param.default ?? false}
+										checked={Boolean(activity.params?.[param.key] ?? param.default ?? false)}
 										disabled={!isEditable}
 										onchange={(e) => updateParam(param.key, (e.target as HTMLInputElement).checked)}
 									/>
 								{:else}
 									{#if isEditable}
 										<input
+											id="param-{param.key}"
 											type={param.type === 'number' ? 'number' : 'text'}
 											class="input input-xs input-bordered w-full"
 											placeholder={param.placeholder}
-											value={activity.params?.[param.key] ?? ''}
+											value={String(activity.params?.[param.key] ?? '')}
 											onchange={(e) => updateParam(param.key, (e.target as HTMLInputElement).value)}
 										/>
 									{:else}
@@ -345,10 +354,17 @@
 									}}
 								/>
 							{:else}
-								<span
-									class="text-xs flex-1 {isEditable ? 'cursor-pointer hover:text-primary' : ''}"
-									onclick={() => { if (isEditable) { editingStepIdx = i; editingStepText = step; } }}
-								>{step}</span>
+								{#if isEditable}
+									<span
+										class="text-xs flex-1 cursor-pointer hover:text-primary"
+										role="button"
+										tabindex="0"
+										onclick={() => { editingStepIdx = i; editingStepText = step; }}
+										onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); editingStepIdx = i; editingStepText = step; } }}
+									>{step}</span>
+								{:else}
+									<span class="text-xs flex-1">{step}</span>
+								{/if}
 							{/if}
 							{#if isEditable}
 								<button
@@ -502,11 +518,12 @@
 						<div class="flex flex-col gap-2">
 							<!-- Interval dropdown -->
 							<div>
-								<label class="text-xs text-base-content/60 mb-0.5 block">Every</label>
+								<label class="text-xs text-base-content/60 mb-0.5 block" for="hb-interval">Every</label>
 								<select
+									id="hb-interval"
 									class="select select-xs select-bordered w-full"
 									value={workflow?.trigger?.interval || '30m'}
-									onchange={(e) => onupdateTrigger?.({ ...workflow?.trigger, interval: (e.target as HTMLSelectElement).value })}
+									onchange={(e) => onupdateTrigger?.({ ...currentTrigger(), interval: (e.target as HTMLSelectElement).value })}
 								>
 									{#each INTERVAL_OPTIONS as opt}
 										<option value={opt.value}>{opt.label}</option>
@@ -524,9 +541,9 @@
 										onchange={(e) => {
 											hbWindowEnabled = (e.target as HTMLInputElement).checked;
 											if (!hbWindowEnabled) {
-												onupdateTrigger?.({ ...workflow?.trigger, window: undefined });
+												onupdateTrigger?.({ ...currentTrigger(), window: undefined });
 											} else {
-												onupdateTrigger?.({ ...workflow?.trigger, window: { start: '09:00', end: '18:00' } });
+												onupdateTrigger?.({ ...currentTrigger(), window: { start: '09:00', end: '18:00' } });
 											}
 										}}
 									/>
@@ -539,14 +556,14 @@
 										type="time"
 										class="input input-xs input-bordered flex-1"
 										value={workflow?.trigger?.window?.start || '09:00'}
-										onchange={(e) => onupdateTrigger?.({ ...workflow?.trigger, window: { ...workflow?.trigger?.window, start: (e.target as HTMLInputElement).value } })}
+										onchange={(e) => onupdateTrigger?.({ ...currentTrigger(), window: { ...workflow?.trigger?.window, start: (e.target as HTMLInputElement).value } })}
 									/>
 									<span class="text-xs text-base-content/40">to</span>
 									<input
 										type="time"
 										class="input input-xs input-bordered flex-1"
 										value={workflow?.trigger?.window?.end || '18:00'}
-										onchange={(e) => onupdateTrigger?.({ ...workflow?.trigger, window: { ...workflow?.trigger?.window, end: (e.target as HTMLInputElement).value } })}
+										onchange={(e) => onupdateTrigger?.({ ...currentTrigger(), window: { ...workflow?.trigger?.window, end: (e.target as HTMLInputElement).value } })}
 									/>
 								</div>
 							{/if}
@@ -556,13 +573,14 @@
 					<!-- Event config -->
 					{#if workflow?.trigger?.type === 'event'}
 						<div>
-							<label class="text-xs text-base-content/60 mb-0.5 block">Event sources</label>
+							<label class="text-xs text-base-content/60 mb-0.5 block" for="event-sources">Event sources</label>
 							<input
+								id="event-sources"
 								type="text"
 								class="input input-xs input-bordered w-full font-mono"
 								placeholder="e.g. email.received, workflow.done"
 								value={workflow?.trigger?.event || ''}
-								onchange={(e) => onupdateTrigger?.({ ...workflow?.trigger, event: (e.target as HTMLInputElement).value })}
+								onchange={(e) => onupdateTrigger?.({ ...currentTrigger(), event: (e.target as HTMLInputElement).value })}
 							/>
 							<div class="text-xs text-base-content/40 mt-1">Comma-separated event names. Wildcards supported (e.g. email.*)</div>
 						</div>

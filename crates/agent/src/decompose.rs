@@ -26,10 +26,7 @@ Rules:
 Task: "#;
 
 /// Decompose a complex task into a list of TaskNodes using the LLM.
-pub async fn decompose_task(
-    runner: &Arc<Runner>,
-    prompt: &str,
-) -> Result<Vec<TaskNode>, String> {
+pub async fn decompose_task(runner: &Arc<Runner>, prompt: &str) -> Result<Vec<TaskNode>, String> {
     let full_prompt = format!("{}{}", DECOMPOSE_PROMPT, prompt);
 
     let response = runner
@@ -65,8 +62,13 @@ fn parse_decomposition(response: &str) -> Result<Vec<TaskNode>, String> {
         json_str
     };
 
-    let raw: Vec<RawTask> = serde_json::from_str(json_str)
-        .map_err(|e| format!("Failed to parse decomposition JSON: {} — response: {}", e, &response[..response.len().min(200)]))?;
+    let raw: Vec<RawTask> = serde_json::from_str(json_str).map_err(|e| {
+        format!(
+            "Failed to parse decomposition JSON: {} — response: {}",
+            e,
+            &response[..response.len().min(200)]
+        )
+    })?;
 
     if raw.is_empty() {
         return Err("Decomposition returned empty task list".to_string());

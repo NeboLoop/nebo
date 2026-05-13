@@ -5,12 +5,18 @@
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
+  import AgentSetupModal from '$lib/components/agent-setup/AgentSetupModal.svelte';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   const sidebarCollapsed = sidebarCollapsedFor('agents');
   import { devMode } from '$lib/stores/devmode.js';
   import { ACTIVITY_TYPES, getActivityType, createTypedActivity, isBranchingType, type ActivityType } from '$lib/utils/workflowTypes';
   import { generateLinearConnections, removeConnection, type WorkflowConnection } from '$lib/utils/workflowLayout';
   import type { AgentDisplay, EnrichedChat, AgentRun, WorkflowStatsLocal, WorkflowConfig } from '$lib/types/agentPage';
+  import type { Agent, AgentRunEntry, ActiveAgent, WorkflowRun } from '$lib/api/neboComponents';
+
+  /** Raw run entries from the API — WorkflowRun is the generated type, but the backend
+   *  also populates AgentRunEntry fields. We use a union to cover both shapes. */
+  type RawRunRecord = WorkflowRun & Partial<AgentRunEntry> & Record<string, unknown>;
 
   let { children } = $props();
 
@@ -19,12 +25,18 @@
   let apiRuns = $state<Record<string, AgentRun[]>>({});
   let apiRunsTotal = $state<Record<string, number>>({});
   let apiRunsLoading = $state<Record<string, boolean>>({});
-  let apiRawRuns = $state<Record<string, Record<string, unknown>[]>>({});
+  let apiRawRuns = $state<Record<string, RawRunRecord[]>>({});
   let apiStats = $state<Record<string, WorkflowStatsLocal>>({});
   let apiSkills = $state<Record<string, string[]>>({});
   let apiConfig = $state<Record<string, { persona: string; model: string; inputs: unknown[]; workflows: Record<string, WorkflowConfig> }>>({});
   let agentsLoading = $state(true);
   let threadsLoading = $state<Record<string, boolean>>({});
+
+  // Onboarding modal state
+  let showSetupModal = $state(false);
+  let setupAgentName = $state('');
+  let setupAgentDesc = $state('');
+  let setupInputFields = $state<unknown[]>([]);
 
   const DEFAULT_CONFIG = { persona: '', model: 'claude-sonnet-4-6', inputs: [] as unknown[], workflows: {} as Record<string, WorkflowConfig> };
 
@@ -34,13 +46,15 @@
       const api = await import('$lib/api/nebo');
       const [agentsResp, activeResp] = await Promise.all([
         api.listAgents(),
-        api.getActiveAgents().catch((e: unknown) => { console.warn('[nebo] listActiveAgents failed:', e); return null; }),
+        api.listActiveAgents().catch((e: unknown) => { console.warn('[nebo] listActiveAgents failed:', e); return null; }),
       ]);
+      const activeAgents = (activeResp?.agents || []) as ActiveAgent[];
       const activeIds = new Set<string>(
-        ((activeResp?.agents || []) as Record<string, string>[]).map((a) => a.id || a.agentId)
+        activeAgents.map((a) => a.id || a.agentId)
       );
       if (agentsResp?.agents?.length) {
-        allAgents = agentsResp.agents.map(a => ({
+        const agents = (agentsResp.agents as Agent[]).filter(a => !a.isApp);
+        allAgents = agents.map(a => ({
           id: a.id,
           name: a.name,
           role: a.description || '',
@@ -64,12 +78,12 @@
     try {
       const api = await import('$lib/api/nebo');
       const chatsResp = await api.listAgentChats(id).catch(() => null);
-      if (chatsResp?.chats) apiThreads[id] = chatsResp.chats;
+      if (chatsResp?.chats) apiThreads[id] = chatsResp.chats as EnrichedChat[];
     } catch { /* silent */ }
   }
 
   // Map raw WorkflowRun API objects to the AgentRun shape the UI expects
-  function mapRuns(raw: Record<string, unknown>[]): AgentRun[] {
+  function mapRuns(raw: RawRunRecord[]): AgentRun[] {
     return raw.map(r => {
       const startSecs = typeof r.startedAt === 'number' ? r.startedAt : 0;
       const endSecs = typeof r.completedAt === 'number' ? r.completedAt : 0;
@@ -85,7 +99,7 @@
         id: String(r.id || ''),
         name: rawName,
         workflowName: wfName,
-        status: r.status === 'completed' ? 'success' : String(r.status || 'unknown'),
+        status: r.status === 'completed' ? 'success' : r.status === 'exited' ? 'skipped' : String(r.status || 'unknown'),
         duration: durStr,
         date: dt ? dt.toLocaleString() : '—',
         dateGroup: dt ? dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
@@ -99,7 +113,7 @@
   }
 
   // Map raw API run objects to WFRun shape expected by the run detail page
-  function mapRawRunsToWFRuns(raw: Record<string, unknown>[]) {
+  function mapRawRunsToWFRuns(raw: RawRunRecord[]) {
     return raw.map(r => {
       const startSecs = typeof r.startedAt === 'number' ? r.startedAt : 0;
       const endSecs = typeof r.completedAt === 'number' ? r.completedAt : 0;
@@ -131,10 +145,10 @@
       const api = await import('$lib/api/nebo');
       const [runsResp, statsResp] = await Promise.all([
         api.listAgentRuns(id).catch(() => null),
-        api.getAgentStats(id).catch(() => null),
+        api.agentStats(id).catch(() => null),
       ]);
       if (runsResp?.runs) {
-        const rawRuns = runsResp.runs as Record<string, unknown>[];
+        const rawRuns = runsResp.runs as RawRunRecord[];
         apiRuns[id] = mapRuns(rawRuns);
         apiRawRuns[id] = rawRuns;
         apiRunsTotal[id] = typeof runsResp.total === 'number' ? runsResp.total : rawRuns.length;
@@ -218,18 +232,19 @@
 
   async function loadAgentData(id: string) {
     threadsLoading[id] = true;
+    apiRunsLoading[id] = true;
     try {
       const api = await import('$lib/api/nebo');
       // Fire all requests in parallel but resolve threads first to unblock the UI
       const chatsPromise = api.listAgentChats(id).catch((e: unknown) => { console.warn('[nebo] listAgentChats failed for', id, e); return null; });
       const runsPromise = api.listAgentRuns(id).catch((e: unknown) => { console.warn('[nebo] listAgentRuns failed for', id, e); return null; });
-      const statsPromise = api.getAgentStats(id).catch((e: unknown) => { console.warn('[nebo] agentStats failed for', id, e); return null; });
+      const statsPromise = api.agentStats(id).catch((e: unknown) => { console.warn('[nebo] agentStats failed for', id, e); return null; });
       const agentPromise = api.getAgent(id).catch((e: unknown) => { console.warn('[nebo] getAgent failed for', id, e); return null; });
-      const workflowsPromise = api.getAgentWorkflows(id).catch((e: unknown) => { console.warn('[nebo] listAgentWorkflows failed for', id, e); return null; });
+      const workflowsPromise = api.listAgentWorkflows(id).catch((e: unknown) => { console.warn('[nebo] listAgentWorkflows failed for', id, e); return null; });
 
       // Unblock thread list as soon as chats arrive
       const chatsResp = await chatsPromise;
-      if (chatsResp?.chats) apiThreads[id] = chatsResp.chats;
+      if (chatsResp?.chats) apiThreads[id] = chatsResp.chats as EnrichedChat[];
       threadsLoading[id] = false;
 
       // Let the rest settle in the background
@@ -237,11 +252,12 @@
         runsPromise, statsPromise, agentPromise, workflowsPromise,
       ]);
       if (runsResp?.runs) {
-        const rawRuns = runsResp.runs as Record<string, unknown>[];
+        const rawRuns = runsResp.runs as RawRunRecord[];
         apiRuns[id] = mapRuns(rawRuns);
         apiRawRuns[id] = rawRuns;
         apiRunsTotal[id] = typeof runsResp.total === 'number' ? runsResp.total : rawRuns.length;
       }
+      apiRunsLoading[id] = false;
       if (statsResp?.stats) {
         const s = statsResp.stats;
         const secs = s.avgDurationSecs ?? 0;
@@ -257,13 +273,23 @@
       }
       // Agent config (persona, model, skills, inputs)
       if (agentResp) {
-        const ar = agentResp as Record<string, unknown>;
+        const ar = agentResp;
         apiSkills[id] = Array.isArray(ar.skills) ? ar.skills as string[] : [];
         const persona = typeof ar.personaBody === 'string' ? ar.personaBody : '';
         const model = typeof ar.model === 'string' ? ar.model : (ar.model as Record<string, unknown>)?.id as string ?? 'claude-sonnet-4-6';
         const inputs = Array.isArray(ar.inputFields) ? ar.inputFields : [];
         // Workflows from separate endpoint — merged below
         apiConfig[id] = { persona, model, inputs, workflows: apiConfig[id]?.workflows ?? {} };
+
+        // Auto-trigger onboarding if agent has unconfigured required inputs
+        if (ar.needsSetup) {
+          setupAgentName = ar.displayName || ar.agent?.name || '';
+          setupAgentDesc = ar.agent?.description || '';
+          setupInputFields = Array.isArray(ar.inputFields) ? ar.inputFields : [];
+          showSetupModal = true;
+        } else {
+          showSetupModal = false;
+        }
       }
       // Workflows — backend returns a map keyed by binding name, not an array
       const wfData = workflowsResp?.workflows;
@@ -295,6 +321,7 @@
       console.error('[nebo] Failed to load agent data for', id, e);
     } finally {
       threadsLoading[id] = false;
+      apiRunsLoading[id] = false;
     }
   }
 
@@ -306,10 +333,12 @@
     if (current >= total) return;
     apiRunsLoading[id] = true;
     try {
-      const api = await import('$lib/api/nebo');
-      const resp = await api.listAgentRuns(id, 20, current);
+      const { default: webapi } = await import('$lib/api/gocliRequest');
+      const resp = await webapi.get<import('$lib/api/neboComponents').ListAgentRunsResponse>(
+        `/api/v1/agents/${id}/runs`, { limit: 20, offset: current }
+      );
       if (resp?.runs) {
-        const newRaw = resp.runs as Record<string, unknown>[];
+        const newRaw = resp.runs as RawRunRecord[];
         apiRawRuns[id] = [...(apiRawRuns[id] || []), ...newRaw];
         apiRuns[id] = [...(apiRuns[id] || []), ...mapRuns(newRaw)];
         if (typeof resp.total === 'number') apiRunsTotal[id] = resp.total;
@@ -938,9 +967,10 @@
                     <div class="text-xs text-base-content/70 truncate">{activity.intent}</div>
                   </div>
                   {#if !purchased}
-                    <div class="flex items-center gap-0.5 shrink-0" onclick={(e) => e.stopPropagation()}>
-                      <button class="w-5 h-5 rounded flex items-center justify-center text-xs text-base-content/40 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed" disabled={idx === 0} onclick={() => moveActivity(idx, -1)} title="Move up">&#9650;</button>
-                      <button class="w-5 h-5 rounded flex items-center justify-center text-xs text-base-content/40 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed" disabled={idx === (ew.wf.activities?.length ?? 0) - 1} onclick={() => moveActivity(idx, 1)} title="Move down">&#9660;</button>
+                    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                    <div class="flex items-center gap-0.5 shrink-0" role="group" onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}>
+                      <span class="w-5 h-5 rounded flex items-center justify-center text-xs text-base-content/40 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed {idx === 0 ? 'opacity-30 cursor-not-allowed' : ''}" role="button" tabindex="0" aria-disabled={idx === 0} onclick={() => { if (idx !== 0) moveActivity(idx, -1); }} onkeydown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && idx !== 0) { e.preventDefault(); moveActivity(idx, -1); } }} title="Move up">&#9650;</span>
+                      <span class="w-5 h-5 rounded flex items-center justify-center text-xs text-base-content/40 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed {idx === (ew.wf.activities?.length ?? 0) - 1 ? 'opacity-30 cursor-not-allowed' : ''}" role="button" tabindex="0" aria-disabled={idx === (ew.wf.activities?.length ?? 0) - 1} onclick={() => { if (idx !== (ew.wf.activities?.length ?? 0) - 1) moveActivity(idx, 1); }} onkeydown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && idx !== (ew.wf.activities?.length ?? 0) - 1) { e.preventDefault(); moveActivity(idx, 1); } }} title="Move down">&#9660;</span>
                     </div>
                   {/if}
                   <span class="text-sm transition-transform shrink-0 {expandedActivities[idx] ? 'rotate-90' : ''}">&rsaquo;</span>
@@ -1396,3 +1426,15 @@
 
 <!-- Columns 2+3: rendered by child routes -->
 {@render children()}
+
+{#if showSetupModal}
+  <AgentSetupModal
+    appId=""
+    agentName={setupAgentName}
+    agentDescription={setupAgentDesc}
+    inputs={setupInputFields}
+    existingAgentId={$page.params.agentId}
+    onComplete={(id) => { showSetupModal = false; loadAgentData(id); }}
+    onCancel={() => { showSetupModal = false; }}
+  />
+{/if}

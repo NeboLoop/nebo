@@ -4,6 +4,7 @@
   import MiniMonth from '$lib/components/MiniMonth.svelte';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
+  import type { WorkflowConfig } from '$lib/types/agentPage';
   import { AGENTS, AGENT_ID_MAP } from '$lib/data.js';
   import { AGENT_COLORS } from '$lib/tokens.js';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
@@ -18,7 +19,7 @@
 
   // ── Workflow Canvas Modal ─────────────────────────────────────────
   let canvasAgentFull = $state<string | null>(null);
-  let canvasWorkflowsData = $state<Record<string, Record<string, unknown>>>({});
+  let canvasWorkflowsData = $state<Record<string, WorkflowConfig>>({});
   const showCanvasModal = $derived(!!canvasAgentFull);
 
   const canvasWorkflows = $derived(canvasWorkflowsData);
@@ -33,19 +34,19 @@
     canvasAgentFull = agentFull;
     canvasWorkflowsData = {};
     try {
-      const resp = await api.getAgentWorkflows(agentFull);
+      const resp = await api.listAgentWorkflows(agentFull);
       const workflowMap = resp?.workflows;
       if (workflowMap && typeof workflowMap === 'object' && !Array.isArray(workflowMap)) {
-        const wfs: Record<string, Record<string, unknown>> = {};
+        const wfs: Record<string, WorkflowConfig> = {};
         for (const [name, wfRaw] of Object.entries(workflowMap)) {
           const wf = wfRaw as Record<string, unknown>;
           wfs[name] = {
-            trigger: (wf.trigger as Record<string, unknown>) || {},
-            description: wf.description || name,
-            isActive: wf.isActive,
-            emit: wf.emit,
-            activities: (wf.activities as unknown[]) || [],
-            connections: (wf.connections as unknown[]) || [],
+            trigger: (wf.trigger as WorkflowConfig['trigger']) || undefined,
+            description: (wf.description as string) || name,
+            isActive: wf.isActive as boolean | undefined,
+            emit: wf.emit as string | undefined,
+            activities: (wf.activities as WorkflowConfig['activities']) || [],
+            connections: (wf.connections as WorkflowConfig['connections']) || [],
           };
         }
         canvasWorkflowsData = wfs;
@@ -53,7 +54,7 @@
     } catch {}
   }
 
-  function handleCanvasSave(workflows: Record<string, Record<string, unknown>>) {
+  function handleCanvasSave(workflows: Record<string, WorkflowConfig>) {
     // TODO: persist to backend via API
     canvasWorkflowsData = workflows;
     canvasAgentFull = null;
@@ -153,10 +154,12 @@
 
 <!-- Resize handle -->
 {#if !$sidebarCollapsed}
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
     class="w-0 shrink-0 cursor-col-resize relative z-10 group"
     onmousedown={startSidebarResize}
     role="separator"
+    tabindex="0"
     aria-orientation="vertical"
   >
     <div class="absolute inset-y-0 -left-2 -right-2"></div>

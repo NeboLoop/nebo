@@ -38,18 +38,21 @@ impl AnthropicProvider {
         for msg in &req.messages {
             if msg.role == "assistant"
                 && let Some(ref tc_val) = msg.tool_calls
-                    && let Ok(tcs) = serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone()) {
-                        for tc in &tcs {
-                            all_tool_call_ids.insert(tc.id.clone());
-                        }
-                    }
+                && let Ok(tcs) = serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone())
+            {
+                for tc in &tcs {
+                    all_tool_call_ids.insert(tc.id.clone());
+                }
+            }
             if msg.role == "tool"
                 && let Some(ref tr_val) = msg.tool_results
-                    && let Ok(results) = serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone()) {
-                        for r in &results {
-                            responded_tool_ids.insert(r.tool_call_id.clone());
-                        }
-                    }
+                && let Ok(results) =
+                    serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone())
+            {
+                for r in &results {
+                    responded_tool_ids.insert(r.tool_call_id.clone());
+                }
+            }
         }
 
         for msg in &req.messages {
@@ -69,7 +72,10 @@ impl AnthropicProvider {
                     if let Some(ref images) = msg.images {
                         let mut blocks = Vec::new();
                         if !msg.content.is_empty() {
-                            blocks.push(ContentBlock::Text { text: msg.content.clone(), cache_control: None });
+                            blocks.push(ContentBlock::Text {
+                                text: msg.content.clone(),
+                                cache_control: None,
+                            });
                         }
                         for img in images {
                             blocks.push(ContentBlock::Image {
@@ -96,26 +102,31 @@ impl AnthropicProvider {
                     let mut blocks = Vec::new();
 
                     if !msg.content.is_empty() {
-                        blocks.push(ContentBlock::Text { text: msg.content.clone(), cache_control: None });
+                        blocks.push(ContentBlock::Text {
+                            text: msg.content.clone(),
+                            cache_control: None,
+                        });
                     }
 
                     if let Some(ref tc_val) = msg.tool_calls
-                        && let Ok(tcs) = serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone()) {
-                            for tc in tcs {
-                                if !responded_tool_ids.contains(&tc.id) {
-                                    continue;
-                                }
-                                let input: serde_json::Value = serde_json::from_str(
-                                    &tc.input.to_string()
-                                ).unwrap_or(serde_json::Value::Object(Default::default()));
-                                blocks.push(ContentBlock::ToolUse {
-                                    id: tc.id,
-                                    name: tc.name,
-                                    input,
-                                    cache_control: None,
-                                });
+                        && let Ok(tcs) =
+                            serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone())
+                    {
+                        for tc in tcs {
+                            if !responded_tool_ids.contains(&tc.id) {
+                                continue;
                             }
+                            let input: serde_json::Value =
+                                serde_json::from_str(&tc.input.to_string())
+                                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                            blocks.push(ContentBlock::ToolUse {
+                                id: tc.id,
+                                name: tc.name,
+                                input,
+                                cache_control: None,
+                            });
                         }
+                    }
 
                     if !blocks.is_empty() {
                         messages.push(AnthropicMessage {
@@ -126,41 +137,47 @@ impl AnthropicProvider {
                 }
                 "tool" => {
                     if let Some(ref tr_val) = msg.tool_results
-                        && let Ok(results) = serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone()) {
-                            let mut blocks = Vec::new();
-                            for r in results {
-                                if !all_tool_call_ids.contains(&r.tool_call_id) || !responded_tool_ids.contains(&r.tool_call_id) {
-                                    continue;
-                                }
-                                let content = if let Some(ref image_url) = r.image_url {
-                                    let (media_type, data) = parse_data_url(image_url);
-                                    ToolResultContent::Blocks(vec![
-                                        ToolResultContentBlock::Text { text: r.content.clone() },
-                                        ToolResultContentBlock::Image {
-                                            source: ImageSource {
-                                                source_type: "base64".to_string(),
-                                                media_type,
-                                                data,
-                                            },
+                        && let Ok(results) =
+                            serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone())
+                    {
+                        let mut blocks = Vec::new();
+                        for r in results {
+                            if !all_tool_call_ids.contains(&r.tool_call_id)
+                                || !responded_tool_ids.contains(&r.tool_call_id)
+                            {
+                                continue;
+                            }
+                            let content = if let Some(ref image_url) = r.image_url {
+                                let (media_type, data) = parse_data_url(image_url);
+                                ToolResultContent::Blocks(vec![
+                                    ToolResultContentBlock::Text {
+                                        text: r.content.clone(),
+                                    },
+                                    ToolResultContentBlock::Image {
+                                        source: ImageSource {
+                                            source_type: "base64".to_string(),
+                                            media_type,
+                                            data,
                                         },
-                                    ])
-                                } else {
-                                    ToolResultContent::Text(r.content.clone())
-                                };
-                                blocks.push(ContentBlock::ToolResult {
-                                    tool_use_id: r.tool_call_id,
-                                    content,
-                                    is_error: r.is_error,
-                                    cache_control: None,
-                                });
-                            }
-                            if !blocks.is_empty() {
-                                messages.push(AnthropicMessage {
-                                    role: "user".to_string(),
-                                    content: AnthropicContent::Blocks(blocks),
-                                });
-                            }
+                                    },
+                                ])
+                            } else {
+                                ToolResultContent::Text(r.content.clone())
+                            };
+                            blocks.push(ContentBlock::ToolResult {
+                                tool_use_id: r.tool_call_id,
+                                content,
+                                is_error: r.is_error,
+                                cache_control: None,
+                            });
                         }
+                        if !blocks.is_empty() {
+                            messages.push(AnthropicMessage {
+                                role: "user".to_string(),
+                                content: AnthropicContent::Blocks(blocks),
+                            });
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -170,10 +187,7 @@ impl AnthropicProvider {
     }
 
     /// Handle the SSE stream from Anthropic.
-    async fn handle_stream(
-        response: reqwest::Response,
-        tx: mpsc::Sender<StreamEvent>,
-    ) {
+    async fn handle_stream(response: reqwest::Response, tx: mpsc::Sender<StreamEvent>) {
         let mut current_tool_id = String::new();
         let mut current_tool_name = String::new();
         let mut input_buffer = String::new();
@@ -186,7 +200,9 @@ impl AnthropicProvider {
             let chunk = match chunk_result {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = tx.send(StreamEvent::error(format!("stream read error: {e}"))).await;
+                    let _ = tx
+                        .send(StreamEvent::error(format!("stream read error: {e}")))
+                        .await;
                     return;
                 }
             };
@@ -194,7 +210,9 @@ impl AnthropicProvider {
             let text = match std::str::from_utf8(&chunk) {
                 Ok(t) => t,
                 Err(e) => {
-                    let _ = tx.send(StreamEvent::error(format!("invalid utf8: {e}"))).await;
+                    let _ = tx
+                        .send(StreamEvent::error(format!("invalid utf8: {e}")))
+                        .await;
                     return;
                 }
             };
@@ -220,14 +238,21 @@ impl AnthropicProvider {
                         match event.event_type.as_str() {
                             "message_start" => {
                                 if let Some(msg) = event.message
-                                    && let Some(usage) = msg.usage {
-                                        let _ = tx.send(StreamEvent::usage(UsageInfo {
+                                    && let Some(usage) = msg.usage
+                                {
+                                    let _ = tx
+                                        .send(StreamEvent::usage(UsageInfo {
                                             input_tokens: usage.input_tokens,
                                             output_tokens: usage.output_tokens,
-                                            cache_creation_input_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
-                                            cache_read_input_tokens: usage.cache_read_input_tokens.unwrap_or(0),
-                                        })).await;
-                                    }
+                                            cache_creation_input_tokens: usage
+                                                .cache_creation_input_tokens
+                                                .unwrap_or(0),
+                                            cache_read_input_tokens: usage
+                                                .cache_read_input_tokens
+                                                .unwrap_or(0),
+                                        }))
+                                        .await;
+                                }
                             }
                             "message_delta" => {
                                 if let Some(ref delta) = event.delta {
@@ -236,21 +261,28 @@ impl AnthropicProvider {
                                     }
                                 }
                                 if let Some(usage) = event.usage {
-                                    let _ = tx.send(StreamEvent::usage(UsageInfo {
-                                        input_tokens: usage.input_tokens.unwrap_or(0),
-                                        output_tokens: usage.output_tokens.unwrap_or(0),
-                                        cache_creation_input_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
-                                        cache_read_input_tokens: usage.cache_read_input_tokens.unwrap_or(0),
-                                    })).await;
+                                    let _ = tx
+                                        .send(StreamEvent::usage(UsageInfo {
+                                            input_tokens: usage.input_tokens.unwrap_or(0),
+                                            output_tokens: usage.output_tokens.unwrap_or(0),
+                                            cache_creation_input_tokens: usage
+                                                .cache_creation_input_tokens
+                                                .unwrap_or(0),
+                                            cache_read_input_tokens: usage
+                                                .cache_read_input_tokens
+                                                .unwrap_or(0),
+                                        }))
+                                        .await;
                                 }
                             }
                             "content_block_start" => {
                                 if let Some(block) = event.content_block
-                                    && block.block_type == "tool_use" {
-                                        current_tool_id = block.id.unwrap_or_default();
-                                        current_tool_name = block.name.unwrap_or_default();
-                                        input_buffer.clear();
-                                    }
+                                    && block.block_type == "tool_use"
+                                {
+                                    current_tool_id = block.id.unwrap_or_default();
+                                    current_tool_name = block.name.unwrap_or_default();
+                                    input_buffer.clear();
+                                }
                             }
                             "content_block_delta" => {
                                 if let Some(delta) = event.delta {
@@ -267,7 +299,8 @@ impl AnthropicProvider {
                                         }
                                         "thinking_delta" => {
                                             if let Some(thinking) = delta.thinking {
-                                                let _ = tx.send(StreamEvent::thinking(thinking)).await;
+                                                let _ =
+                                                    tx.send(StreamEvent::thinking(thinking)).await;
                                             }
                                         }
                                         _ => {}
@@ -276,13 +309,17 @@ impl AnthropicProvider {
                             }
                             "content_block_stop" => {
                                 if !current_tool_id.is_empty() {
-                                    let input: serde_json::Value = serde_json::from_str(&input_buffer)
-                                        .unwrap_or(serde_json::Value::Object(Default::default()));
-                                    let _ = tx.send(StreamEvent::tool_call(ToolCall {
-                                        id: std::mem::take(&mut current_tool_id),
-                                        name: std::mem::take(&mut current_tool_name),
-                                        input,
-                                    })).await;
+                                    let input: serde_json::Value = serde_json::from_str(
+                                        &input_buffer,
+                                    )
+                                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                                    let _ = tx
+                                        .send(StreamEvent::tool_call(ToolCall {
+                                            id: std::mem::take(&mut current_tool_id),
+                                            name: std::mem::take(&mut current_tool_name),
+                                            input,
+                                        }))
+                                        .await;
                                     input_buffer.clear();
                                 }
                             }
@@ -295,7 +332,10 @@ impl AnthropicProvider {
                                 return;
                             }
                             "error" => {
-                                let msg = event.error.map(|e| e.message).unwrap_or_else(|| "unknown error".to_string());
+                                let msg = event
+                                    .error
+                                    .map(|e| e.message)
+                                    .unwrap_or_else(|| "unknown error".to_string());
                                 let _ = tx.send(StreamEvent::error(msg)).await;
                                 return;
                             }
@@ -337,13 +377,14 @@ impl Provider for AnthropicProvider {
         true
     }
 
-    async fn stream(
-        &self,
-        req: &ChatRequest,
-    ) -> Result<EventReceiver, ProviderError> {
+    async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         let (mut messages, system_prompt) = self.build_messages(req);
 
-        let model = if req.model.is_empty() { &self.model } else { &req.model };
+        let model = if req.model.is_empty() {
+            &self.model
+        } else {
+            &req.model
+        };
 
         let max_tokens = if req.max_tokens > 0 {
             req.max_tokens
@@ -378,7 +419,9 @@ impl Provider for AnthropicProvider {
                     blocks.push(SystemBlock {
                         text: system_prompt[cursor..bp].to_string(),
                         block_type: "text".to_string(),
-                        cache_control: Some(CacheControl { cache_type: "ephemeral".to_string() }),
+                        cache_control: Some(CacheControl {
+                            cache_type: "ephemeral".to_string(),
+                        }),
                     });
                     cursor = bp;
                 }
@@ -397,20 +440,23 @@ impl Provider for AnthropicProvider {
                     Some(vec![SystemBlock {
                         text: system_prompt,
                         block_type: "text".to_string(),
-                        cache_control: Some(CacheControl { cache_type: "ephemeral".to_string() }),
+                        cache_control: Some(CacheControl {
+                            cache_type: "ephemeral".to_string(),
+                        }),
                     }])
                 } else {
                     Some(blocks)
                 }
-            } else if !req.static_system.is_empty() && system_prompt.starts_with(&req.static_system) {
+            } else if !req.static_system.is_empty() && system_prompt.starts_with(&req.static_system)
+            {
                 let dynamic_suffix = system_prompt.strip_prefix(&req.static_system).unwrap_or("");
-                let mut blocks = vec![
-                    SystemBlock {
-                        text: req.static_system.clone(),
-                        block_type: "text".to_string(),
-                        cache_control: Some(CacheControl { cache_type: "ephemeral".to_string() }),
-                    },
-                ];
+                let mut blocks = vec![SystemBlock {
+                    text: req.static_system.clone(),
+                    block_type: "text".to_string(),
+                    cache_control: Some(CacheControl {
+                        cache_type: "ephemeral".to_string(),
+                    }),
+                }];
                 if !dynamic_suffix.is_empty() {
                     blocks.push(SystemBlock {
                         text: dynamic_suffix.to_string(),
@@ -423,7 +469,9 @@ impl Provider for AnthropicProvider {
                 Some(vec![SystemBlock {
                     text: system_prompt,
                     block_type: "text".to_string(),
-                    cache_control: Some(CacheControl { cache_type: "ephemeral".to_string() }),
+                    cache_control: Some(CacheControl {
+                        cache_type: "ephemeral".to_string(),
+                    }),
                 }])
             }
         } else {
@@ -434,26 +482,34 @@ impl Provider for AnthropicProvider {
         let tools: Option<Vec<AnthropicTool>> = if req.tools.is_empty() {
             None
         } else {
-            let mut tool_list: Vec<AnthropicTool> = req.tools.iter().map(|t| {
-                let schema = t.input_schema.as_object().cloned().unwrap_or_default();
-                AnthropicTool {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    input_schema: AnthropicInputSchema {
-                        schema_type: "object".to_string(),
-                        properties: schema.get("properties").cloned(),
-                        required: schema.get("required").and_then(|v| {
-                            v.as_array().map(|arr| {
-                                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-                            })
-                        }),
-                    },
-                    cache_control: None,
-                }
-            }).collect();
+            let mut tool_list: Vec<AnthropicTool> = req
+                .tools
+                .iter()
+                .map(|t| {
+                    let schema = t.input_schema.as_object().cloned().unwrap_or_default();
+                    AnthropicTool {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        input_schema: AnthropicInputSchema {
+                            schema_type: "object".to_string(),
+                            properties: schema.get("properties").cloned(),
+                            required: schema.get("required").and_then(|v| {
+                                v.as_array().map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(String::from))
+                                        .collect()
+                                })
+                            }),
+                        },
+                        cache_control: None,
+                    }
+                })
+                .collect();
             // Mark the last tool with cache_control for tool definition caching
             if let Some(last) = tool_list.last_mut() {
-                last.cache_control = Some(CacheControl { cache_type: "ephemeral".to_string() });
+                last.cache_control = Some(CacheControl {
+                    cache_type: "ephemeral".to_string(),
+                });
             }
             Some(tool_list)
         };
@@ -465,7 +521,11 @@ impl Provider for AnthropicProvider {
         });
         let tool_cache_count = if tools.as_ref().map_or(false, |t| {
             t.last().map_or(false, |last| last.cache_control.is_some())
-        }) { 1 } else { 0 };
+        }) {
+            1
+        } else {
+            0
+        };
         let message_cache_budget = 4usize.saturating_sub(system_cache_count + tool_cache_count);
 
         if message_cache_budget > 0 {
@@ -473,7 +533,9 @@ impl Provider for AnthropicProvider {
             for i in (0..len).rev().take(message_cache_budget) {
                 if let AnthropicContent::Blocks(ref mut blocks) = messages[i].content {
                     if let Some(last_block) = blocks.last_mut() {
-                        let cc = Some(CacheControl { cache_type: "ephemeral".to_string() });
+                        let cc = Some(CacheControl {
+                            cache_type: "ephemeral".to_string(),
+                        });
                         match last_block {
                             ContentBlock::Text { cache_control, .. } => *cache_control = cc,
                             ContentBlock::Image { cache_control, .. } => *cache_control = cc,
@@ -493,15 +555,24 @@ impl Provider for AnthropicProvider {
             tools,
             stream: true,
             thinking: if req.enable_thinking {
-                Some(ThinkingConfig { thinking_type: "enabled".to_string(), budget_tokens: 10000 })
+                Some(ThinkingConfig {
+                    thinking_type: "enabled".to_string(),
+                    budget_tokens: 10000,
+                })
             } else {
                 None
             },
         };
 
-        info!(model = model, messages = api_req.messages.len(), tools = req.tools.len(), "sending Anthropic request");
+        info!(
+            model = model,
+            messages = api_req.messages.len(),
+            tools = req.tools.len(),
+            "sending Anthropic request"
+        );
 
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")

@@ -367,6 +367,7 @@ Read top to bottom: watcher monitors Gmail. For each email, triage classifies an
 - Each binding must have a `trigger` (required)
 - Either `ref` or `activities` must be present (one defines what runs)
 - Trigger `type` must be one of: `schedule`, `heartbeat`, `event`, `watch`, `manual`
+- **Lenient parsing:** Individual workflow bindings that fail to parse (e.g., invalid trigger format) are skipped with a warning — they do not prevent the agent from loading. The agent still appears in the UI with its remaining valid workflows.
 - Schedule triggers must have a valid 5-field `cron` expression
 - Heartbeat triggers must have a valid `interval` (e.g., `"30m"`, `"1h"`)
 - Event triggers should have at least one entry in `sources`

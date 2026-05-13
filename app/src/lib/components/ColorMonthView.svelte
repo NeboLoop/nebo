@@ -6,7 +6,7 @@
 
   let { enabled, selectedDate } = $props();
 
-  let selected = $state(null);
+  let selected = $state<string | null>(null);
 
   const DOWS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const today = new Date();

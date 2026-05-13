@@ -51,7 +51,7 @@
 
   onMount(async () => {
     try {
-      const res = await api.getToolPermissions();
+      const res = await api.userGetPermissions();
       let permObj: Record<string, boolean> = {};
       if (res?.permissions?.length) {
         for (const tp of res.permissions) {
@@ -101,7 +101,7 @@
   // Accept Terms & Conditions via backend
   async function acceptTerms() {
     try {
-      await api.acceptTerms();
+      await api.userAcceptTerms();
     } catch {
       // Non-blocking — user can still proceed
       logger.warn('Failed to record T&C acceptance on backend');
@@ -113,7 +113,7 @@
   async function saveLocale() {
     localStorage.setItem('nebo_locale', selectedLocale);
     try {
-      await api.updatePreferences({ language: selectedLocale });
+      await api.userUpdatePreferences({ language: selectedLocale });
     } catch {
       logger.warn('Failed to save language preference to backend');
     }
@@ -151,7 +151,7 @@
       // Poll every 2 seconds for completion
       neboLoopPollInterval = setInterval(async () => {
         try {
-          const status = await api.neboLoopOAuthStatus({ state: neboLoopPendingState }) as { status?: string; email?: string; error?: string } | null;
+          const status = await api.neboLoopOauthStatus() as api.OAuthStatusResponse;
           if (status?.status === 'complete') {
             cleanupNeboLoopOAuth();
             neboLoopConnected = true;
@@ -187,7 +187,7 @@
     });
 
     try {
-      await api.updateToolPermissions({ permissions: permObj });
+      await api.userUpdatePermissions({ permissions: permObj });
     } catch {
       logger.warn('Failed to save permissions to backend');
     }
@@ -235,7 +235,7 @@
         <div class="flex-1 min-w-0">
           <div class="text-sm font-medium mb-1">Terms & Privacy</div>
           <p class="text-xs text-base-content/70 leading-relaxed mb-3">
-            Nebo runs AI agents on your machine. Agents can read files, execute commands, and access the web based on the permissions you grant. By continuing, you agree to the <a href="#" class="text-primary underline">Terms of Service</a> and <a href="#" class="text-primary underline">Privacy Policy</a>.
+            Nebo runs AI agents on your machine. Agents can read files, execute commands, and access the web based on the permissions you grant. By continuing, you agree to the <a href="/terms" class="text-primary underline">Terms of Service</a> and <a href="/privacy" class="text-primary underline">Privacy Policy</a>.
           </p>
           <label class="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" bind:checked={tcAccepted} />

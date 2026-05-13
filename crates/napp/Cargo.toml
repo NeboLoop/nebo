@@ -27,6 +27,7 @@ semver = { workspace = true }
 async-trait = "0.1"
 tempfile = "3"
 notify = "7"
+futures = { workspace = true }
 
 [dev-dependencies]
 

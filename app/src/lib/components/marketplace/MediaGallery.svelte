@@ -54,7 +54,7 @@
 
 {#if lightboxUrl}
 	<div class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-		<button type="button" class="absolute inset-0" onclick={closeLightbox}></button>
+		<button type="button" class="absolute inset-0" onclick={closeLightbox} aria-label="Close lightbox"></button>
 		<div class="relative max-w-4xl max-h-[90vh] w-full">
 			{#if lightboxType === 'video'}
 				<!-- svelte-ignore a11y_media_has_caption -->

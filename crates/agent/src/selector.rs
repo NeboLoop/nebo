@@ -190,7 +190,9 @@ impl ModelSelector {
     /// Get formatted model aliases text for system prompt injection.
     pub fn get_aliases_text(&self) -> String {
         let lock = self.fuzzy.read().unwrap();
-        lock.as_ref().map(|f| f.get_aliases_text()).unwrap_or_default()
+        lock.as_ref()
+            .map(|f| f.get_aliases_text())
+            .unwrap_or_default()
     }
 
     /// Inject additional provider models discovered at runtime (e.g., Ollama).
@@ -206,13 +208,13 @@ impl ModelSelector {
         let mut all_models = self.config.provider_models.clone();
         let runtime = self.runtime_models.read().unwrap();
         for (k, v) in runtime.iter() {
-            all_models.entry(k.clone()).or_default().extend(v.iter().cloned());
+            all_models
+                .entry(k.clone())
+                .or_default()
+                .extend(v.iter().cloned());
         }
-        let new_fuzzy = FuzzyMatcher::new(
-            &all_models,
-            user_aliases,
-            &self.config.provider_credentials,
-        );
+        let new_fuzzy =
+            FuzzyMatcher::new(&all_models, user_aliases, &self.config.provider_credentials);
         let mut lock = self.fuzzy.write().unwrap();
         *lock = Some(new_fuzzy);
     }
@@ -231,10 +233,12 @@ impl ModelSelector {
     /// Mark a model as failed with exponential backoff cooldown.
     pub fn mark_failed(&self, model_id: &str) {
         let mut cooldowns = self.cooldowns.write().unwrap();
-        let entry = cooldowns.entry(model_id.to_string()).or_insert(CooldownState {
-            failure_count: 0,
-            cooldown_until: Instant::now(),
-        });
+        let entry = cooldowns
+            .entry(model_id.to_string())
+            .or_insert(CooldownState {
+                failure_count: 0,
+                cooldown_until: Instant::now(),
+            });
         entry.failure_count += 1;
         // Exponential backoff: 5s, 10s, 20s, 40s... capped at 1 hour
         let backoff_secs = std::cmp::min(5 * 2u64.pow(entry.failure_count.saturating_sub(1)), 3600);
@@ -282,7 +286,11 @@ impl ModelSelector {
     pub fn supports_thinking(&self, model_id: &str) -> bool {
         if let Some(info) = self.get_model_info(model_id) {
             let thinking_caps = ["thinking", "reasoning", "extended_thinking"];
-            if info.capabilities.iter().any(|c| thinking_caps.contains(&c.as_str())) {
+            if info
+                .capabilities
+                .iter()
+                .any(|c| thinking_caps.contains(&c.as_str()))
+            {
                 return true;
             }
         }
@@ -298,7 +306,13 @@ impl ModelSelector {
 
         for (provider_id, models) in &self.config.provider_models {
             // Skip providers without credentials
-            if !self.config.provider_credentials.get(provider_id).copied().unwrap_or(false) {
+            if !self
+                .config
+                .provider_credentials
+                .get(provider_id)
+                .copied()
+                .unwrap_or(false)
+            {
                 continue;
             }
             for model in models {
@@ -320,7 +334,10 @@ impl ModelSelector {
         // Fallback: find any model with "cheap" or "fast" kind
         for (provider_id, models) in &self.config.provider_models {
             for model in models {
-                if model.active && (model.kind.contains(&"cheap".to_string()) || model.kind.contains(&"fast".to_string())) {
+                if model.active
+                    && (model.kind.contains(&"cheap".to_string())
+                        || model.kind.contains(&"fast".to_string()))
+                {
                     return format!("{}/{}", provider_id, model.id);
                 }
             }
@@ -332,10 +349,7 @@ impl ModelSelector {
     /// Classify task type from messages.
     pub fn classify_task(&self, messages: &[ChatMessage]) -> TaskType {
         // Get last user message for keyword analysis
-        let last_user = messages
-            .iter()
-            .rev()
-            .find(|m| m.role == "user");
+        let last_user = messages.iter().rev().find(|m| m.role == "user");
 
         let content = match last_user {
             Some(m) => m.content.to_lowercase(),
@@ -343,7 +357,10 @@ impl ModelSelector {
         };
 
         // Check for vision content (image data in the message)
-        if content.contains("data:image/") || content.contains("\"type\":\"image\"") || content.contains("\"type\": \"image\"") {
+        if content.contains("data:image/")
+            || content.contains("\"type\":\"image\"")
+            || content.contains("\"type\": \"image\"")
+        {
             return TaskType::Vision;
         }
 
@@ -354,11 +371,22 @@ impl ModelSelector {
 
         // Reasoning keywords
         let reasoning = [
-            "think through", "analyze", "prove", "step by step",
-            "mathematical proof", "logical reasoning", "derive",
-            "theorem", "hypothesis", "contradict", "paradox",
-            "evaluate the", "compare and contrast", "pros and cons",
-            "trade-offs", "implications",
+            "think through",
+            "analyze",
+            "prove",
+            "step by step",
+            "mathematical proof",
+            "logical reasoning",
+            "derive",
+            "theorem",
+            "hypothesis",
+            "contradict",
+            "paradox",
+            "evaluate the",
+            "compare and contrast",
+            "pros and cons",
+            "trade-offs",
+            "implications",
         ];
         if reasoning.iter().any(|kw| content.contains(kw)) {
             return TaskType::Reasoning;
@@ -366,11 +394,29 @@ impl ModelSelector {
 
         // Code keywords
         let code = [
-            "code", "function", "implement", "refactor", "debug",
-            "python", "javascript", "typescript", "react", "rust",
-            "golang", "java", "swift", "kotlin", "sql", "api",
-            "endpoint", "database", "algorithm", "compile",
-            "syntax", "variable", "class",
+            "code",
+            "function",
+            "implement",
+            "refactor",
+            "debug",
+            "python",
+            "javascript",
+            "typescript",
+            "react",
+            "rust",
+            "golang",
+            "java",
+            "swift",
+            "kotlin",
+            "sql",
+            "api",
+            "endpoint",
+            "database",
+            "algorithm",
+            "compile",
+            "syntax",
+            "variable",
+            "class",
         ];
         if code.iter().any(|kw| content.contains(kw)) {
             return TaskType::Code;
@@ -449,9 +495,9 @@ impl ModelSelector {
 
         // If CLI providers are loaded, return empty so the runner uses
         // index 0 (CLI provider, after reordering) instead of Janus.
-        let has_cli = loaded.iter().any(|p| {
-            p == "claude-code" || p == "codex-cli" || p == "gemini-cli"
-        });
+        let has_cli = loaded
+            .iter()
+            .any(|p| p == "claude-code" || p == "codex-cli" || p == "gemini-cli");
         if has_cli {
             return String::new();
         }
@@ -521,7 +567,10 @@ mod tests {
         selector.mark_failed("anthropic/claude-sonnet-4-5");
         assert!(selector.get_cooldown_remaining("anthropic/claude-sonnet-4-5") > Duration::ZERO);
         selector.clear_failed();
-        assert_eq!(selector.get_cooldown_remaining("anthropic/claude-sonnet-4-5"), Duration::ZERO);
+        assert_eq!(
+            selector.get_cooldown_remaining("anthropic/claude-sonnet-4-5"),
+            Duration::ZERO
+        );
     }
 
     #[test]
@@ -557,9 +606,19 @@ mod tests {
             cli_providers: vec![],
         };
 
-        let routing = ModelRoutingConfig::from_models_config(&models_cfg, &["anthropic".into()], &HashMap::new());
+        let routing = ModelRoutingConfig::from_models_config(
+            &models_cfg,
+            &["anthropic".into()],
+            &HashMap::new(),
+        );
         assert_eq!(routing.default_model, "anthropic/claude-sonnet-4-20250514");
-        assert!(routing.provider_credentials.get("anthropic").copied().unwrap_or(false));
+        assert!(
+            routing
+                .provider_credentials
+                .get("anthropic")
+                .copied()
+                .unwrap_or(false)
+        );
         assert_eq!(routing.provider_models.get("anthropic").unwrap().len(), 1);
     }
 
@@ -627,7 +686,11 @@ mod tests {
 
         let selected = selector.select(&[msg]);
         // Should pick an anthropic model since openai is not loaded
-        assert!(selected.contains("anthropic"), "Expected anthropic model, got: {}", selected);
+        assert!(
+            selected.contains("anthropic"),
+            "Expected anthropic model, got: {}",
+            selected
+        );
     }
 
     #[test]

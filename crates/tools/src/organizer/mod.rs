@@ -2,12 +2,12 @@
 
 mod shared;
 
-#[cfg(target_os = "macos")]
-mod native;
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+mod native;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -36,7 +36,12 @@ pub async fn handle_contacts(_action: &str, _input: &OrganizerInput) -> ToolResu
     ToolResult::error("Contacts is not supported on this platform")
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-pub async fn handle_calendar(_action: &str, _input: &OrganizerInput, _ctx: &crate::origin::ToolContext, _store: Option<&std::sync::Arc<db::Store>>) -> ToolResult {
+pub async fn handle_calendar(
+    _action: &str,
+    _input: &OrganizerInput,
+    _ctx: &crate::origin::ToolContext,
+    _store: Option<&std::sync::Arc<db::Store>>,
+) -> ToolResult {
     ToolResult::error("Calendar is not supported on this platform")
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -249,10 +254,9 @@ mod tests {
 
     #[test]
     fn test_event_name_prefers_title() {
-        let input: OrganizerInput = serde_json::from_str(
-            r#"{"action":"create","title":"From Title","name":"From Name"}"#,
-        )
-        .unwrap();
+        let input: OrganizerInput =
+            serde_json::from_str(r#"{"action":"create","title":"From Title","name":"From Name"}"#)
+                .unwrap();
         assert_eq!(input.event_name(), "From Title");
     }
 

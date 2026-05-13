@@ -119,7 +119,11 @@ fn migrate_tools(data_dir: &Path) {
 
         let dest = new_tools.join(&name);
         if !dest.exists() {
-            if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+            if path
+                .symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+            {
                 // Preserve symlinks (sideloaded tools)
                 if let Ok(target) = std::fs::read_link(&path) {
                     #[cfg(unix)]
@@ -363,7 +367,9 @@ fn rename_role_files_recursive(dir: &Path) -> usize {
                             changed = true;
                         }
                         if let Some(desc) = json.get("description").and_then(|v| v.as_str()) {
-                            let new_desc = desc.replace(" role ", " agent ").replace(" Role ", " Agent ");
+                            let new_desc = desc
+                                .replace(" role ", " agent ")
+                                .replace(" Role ", " Agent ");
                             if new_desc != desc {
                                 json["description"] = serde_json::Value::String(new_desc);
                                 changed = true;
@@ -432,7 +438,11 @@ pub fn migrate_data_dir() {
     }
 
     // Both exist — don't interfere, user may have set up manually
-    if new_dir.exists() && std::fs::read_dir(&new_dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
+    if new_dir.exists()
+        && std::fs::read_dir(&new_dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false)
+    {
         info!("both old and new data dirs exist, skipping migration");
         let _ = std::fs::write(new_dir.join(DATA_DIR_MARKER), "skipped");
         return;
@@ -677,7 +687,7 @@ fn set_executable_in_dir(dir: &Path) {
                     || data.starts_with(&[0xce, 0xfa, 0xed, 0xfe])          // Mach-O 32 (swapped)
                     || data.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])          // Mach-O 64 (swapped)
                     || data.starts_with(&[0xca, 0xfe, 0xba, 0xbe])          // Universal
-                    || data.starts_with(&[0x4d, 0x5a]);                     // PE
+                    || data.starts_with(&[0x4d, 0x5a]); // PE
                 if is_native {
                     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
                 }
@@ -759,7 +769,9 @@ mod tests {
         migrate_skills(data_dir);
 
         // Should keep v1 (doesn't overwrite existing)
-        let content = std::fs::read_to_string(data_dir.join("user").join("skills").join("test.yaml")).unwrap();
+        let content =
+            std::fs::read_to_string(data_dir.join("user").join("skills").join("test.yaml"))
+                .unwrap();
         assert_eq!(content, "v1");
     }
 
@@ -779,7 +791,13 @@ mod tests {
 
         // Second run — should be skipped
         migrate_if_needed(data_dir);
-        assert!(!data_dir.join("user").join("skills").join("new.yaml").exists());
+        assert!(
+            !data_dir
+                .join("user")
+                .join("skills")
+                .join("new.yaml")
+                .exists()
+        );
     }
 
     #[test]

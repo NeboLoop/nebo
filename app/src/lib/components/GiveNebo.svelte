@@ -14,9 +14,14 @@
   let showGiftInfo = $state(false);
   let loaded = $state(false);
 
+  interface ReferralResponse {
+    referral_code: string;
+    referral_link: string;
+  }
+
   onMount(async () => {
     try {
-      const resp = await api.neboLoopReferralCode();
+      const resp = await api.neboLoopReferralCode() as ReferralResponse;
       referralCode = resp.referral_code;
       referralLink = resp.referral_link;
     } catch { /* not connected */ }

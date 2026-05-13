@@ -148,9 +148,12 @@ impl TaskGraph {
 
     /// True when no Pending or Running tasks remain.
     pub fn all_done(&self) -> bool {
-        self.nodes
-            .values()
-            .all(|n| matches!(n.status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled))
+        self.nodes.values().all(|n| {
+            matches!(
+                n.status,
+                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+            )
+        })
     }
 
     /// True if any task has failed.
@@ -370,10 +373,7 @@ mod tests {
 
     #[test]
     fn test_all_done() {
-        let nodes = vec![
-            make_node("1", "A", vec![]),
-            make_node("2", "B", vec!["1"]),
-        ];
+        let nodes = vec![make_node("1", "A", vec![]), make_node("2", "B", vec!["1"])];
         let mut graph = TaskGraph::new(nodes);
 
         assert!(!graph.all_done());
@@ -387,10 +387,7 @@ mod tests {
 
     #[test]
     fn test_has_failures() {
-        let nodes = vec![
-            make_node("1", "A", vec![]),
-            make_node("2", "B", vec![]),
-        ];
+        let nodes = vec![make_node("1", "A", vec![]), make_node("2", "B", vec![])];
         let mut graph = TaskGraph::new(nodes);
 
         assert!(!graph.has_failures());

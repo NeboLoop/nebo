@@ -1,5 +1,5 @@
-use rust_embed::Embed;
 use rusqlite::Connection;
+use rust_embed::Embed;
 use tracing::info;
 
 use types::NeboError;
@@ -14,7 +14,9 @@ use rust_embed::EmbeddedFile;
 
 // Helper to use rust-embed v8 trait methods
 fn iter_files() -> Vec<String> {
-    <Migrations as Embed>::iter().map(|f| f.to_string()).collect()
+    <Migrations as Embed>::iter()
+        .map(|f| f.to_string())
+        .collect()
 }
 
 fn get_file(name: &str) -> Option<EmbeddedFile> {
@@ -65,9 +67,8 @@ pub fn run_migrations(conn: &Connection) -> Result<(), NeboError> {
         }
 
         // Read migration SQL
-        let data = get_file(filename).ok_or_else(|| {
-            NeboError::Migration(format!("migration file not found: {filename}"))
-        })?;
+        let data = get_file(filename)
+            .ok_or_else(|| NeboError::Migration(format!("migration file not found: {filename}")))?;
         let sql = String::from_utf8_lossy(&data.data);
 
         // Extract only the "Up" portion (skip goose Down sections)
@@ -143,11 +144,7 @@ fn reconcile_goose_versions(conn: &Connection) -> Result<(), NeboError> {
 /// Extract the version number from a migration filename.
 /// "0001_initial_schema.sql" -> Some(1)
 fn extract_version(filename: &str) -> Option<i64> {
-    filename
-        .split('_')
-        .next()?
-        .parse::<i64>()
-        .ok()
+    filename.split('_').next()?.parse::<i64>().ok()
 }
 
 /// Extract only the "Up" portion of a goose migration file.

@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
-use crate::signing::SigningKeyProvider;
 use crate::NappError;
+use crate::signing::SigningKeyProvider;
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -84,6 +84,7 @@ pub struct PluginAuth {
     #[serde(default)]
     pub env: HashMap<String, String>,
     /// CLI subcommands (appended to plugin binary path).
+    #[serde(default)]
     pub commands: PluginAuthCommands,
     /// Human-readable label for the auth button (e.g., "Google Account").
     #[serde(default)]
@@ -94,10 +95,11 @@ pub struct PluginAuth {
 }
 
 /// CLI commands for plugin authentication lifecycle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginAuthCommands {
     /// Subcommand to trigger authentication (e.g., "auth login").
+    #[serde(default)]
     pub login: String,
     /// Subcommand to check auth status, must return JSON (e.g., "auth status").
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,7 +206,9 @@ pub struct PluginConfigField {
     pub options: Option<Vec<String>>,
 }
 
-fn default_string_type() -> String { "string".to_string() }
+fn default_string_type() -> String {
+    "string".to_string()
+}
 
 /// Permissions manifest for a plugin.
 ///
@@ -227,7 +231,9 @@ pub struct PluginPermissions {
     pub max_timeout_seconds: u64,
 }
 
-fn default_max_timeout() -> u64 { 300 }
+fn default_max_timeout() -> u64 {
+    300
+}
 
 /// A structured tool exposed by a plugin, backed by a CLI subcommand.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,12 +324,24 @@ pub struct PluginProviderDef {
     pub auth_command: Option<String>,
 }
 
-fn default_true() -> bool { true }
-fn default_120() -> u64 { 120 }
-fn default_500() -> u64 { 500 }
-fn default_action() -> String { "action".to_string() }
-fn default_priority() -> i32 { 100 }
-fn default_jwt() -> String { "jwt".to_string() }
+fn default_true() -> bool {
+    true
+}
+fn default_120() -> u64 {
+    120
+}
+fn default_500() -> u64 {
+    500
+}
+fn default_action() -> String {
+    "action".to_string()
+}
+fn default_priority() -> i32 {
+    100
+}
+fn default_jwt() -> String {
+    "jwt".to_string()
+}
 
 /// Binary artifact for a specific platform.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -359,7 +377,8 @@ impl PluginManifest {
         }
         if self.slug.len() > 64 {
             return Err(NappError::PluginValidation(format!(
-                "slug exceeds 64 characters: {}", self.slug.len()
+                "slug exceeds 64 characters: {}",
+                self.slug.len()
             )));
         }
         if self.slug.starts_with('-') || self.slug.ends_with('-') {
@@ -381,7 +400,8 @@ impl PluginManifest {
         // Version: valid semver
         if semver::Version::parse(&self.version).is_err() {
             return Err(NappError::PluginValidation(format!(
-                "invalid semver version: '{}'", self.version
+                "invalid semver version: '{}'",
+                self.version
             )));
         }
 
@@ -396,7 +416,8 @@ impl PluginManifest {
         for (platform_key, pb) in &self.platforms {
             if pb.binary_name.is_empty() {
                 return Err(NappError::PluginValidation(format!(
-                    "binary_name is empty for platform '{}'", platform_key
+                    "binary_name is empty for platform '{}'",
+                    platform_key
                 )));
             }
             if pb.binary_name.contains('/') || pb.binary_name.contains('\\') {
@@ -413,11 +434,12 @@ impl PluginManifest {
             }
         }
 
-        // Auth: login command must be non-empty if auth is present
+        // Auth: login command must be non-empty for interactive auth types (oauth_cli, etc.)
+        // Env-only auth types (auth_type == "env") use env vars and don't need a login command.
         if let Some(ref auth) = self.auth {
-            if auth.commands.login.is_empty() {
+            if auth.commands.login.is_empty() && auth.auth_type != "env" {
                 return Err(NappError::PluginValidation(
-                    "auth.commands.login is required when auth is declared".into(),
+                    "auth.commands.login is required when auth is declared (unless auth type is 'env')".into(),
                 ));
             }
         }
@@ -426,18 +448,18 @@ impl PluginManifest {
         if let Some(ref events) = self.events {
             for event in events {
                 if event.name.is_empty() {
-                    return Err(NappError::PluginValidation(
-                        "event name is required".into(),
-                    ));
+                    return Err(NappError::PluginValidation("event name is required".into()));
                 }
                 if event.name.contains('/') || event.name.contains('\\') {
                     return Err(NappError::PluginValidation(format!(
-                        "event name contains path separator: '{}'", event.name
+                        "event name contains path separator: '{}'",
+                        event.name
                     )));
                 }
                 if event.command.is_empty() {
                     return Err(NappError::PluginValidation(format!(
-                        "event command is required for event '{}'", event.name
+                        "event command is required for event '{}'",
+                        event.name
                     )));
                 }
             }
@@ -468,6 +490,9 @@ pub struct PluginStore {
     downloading: Arc<tokio::sync::Mutex<HashSet<String>>>,
     /// In-memory diagnostic log for plugin health tracking.
     diagnostics: Arc<std::sync::RwLock<Vec<PluginDiagnostic>>>,
+    /// In-memory auth status per slug: `true` = authenticated, `false` = needs auth.
+    /// Populated once at startup; updated on login/logout events.
+    auth_cache: Arc<tokio::sync::RwLock<HashMap<String, bool>>>,
 }
 
 /// A diagnostic entry for plugin health tracking.
@@ -481,7 +506,11 @@ pub struct PluginDiagnostic {
 }
 
 impl PluginStore {
-    pub fn new(installed_dir: PathBuf, user_dir: PathBuf, signing_key: Option<Arc<SigningKeyProvider>>) -> Self {
+    pub fn new(
+        installed_dir: PathBuf,
+        user_dir: PathBuf,
+        signing_key: Option<Arc<SigningKeyProvider>>,
+    ) -> Self {
         Self {
             installed_dir,
             user_dir,
@@ -489,7 +518,93 @@ impl PluginStore {
             manifests: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             downloading: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             diagnostics: Arc::new(std::sync::RwLock::new(Vec::new())),
+            auth_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
+    }
+
+    // ── Auth cache ──────────────────────────────────────────────────
+
+    /// Populate auth cache at startup: runs auth-status for every plugin that has
+    /// an auth config with a status command, in parallel.
+    pub async fn refresh_auth_cache(&self) {
+        let installed = self.list_installed();
+        let mut seen = HashSet::new();
+
+        // Collect only plugins that have auth + status command
+        let slugs_with_auth: Vec<String> = installed
+            .into_iter()
+            .filter_map(|(slug, _, _, _)| {
+                if !seen.insert(slug.clone()) {
+                    return None;
+                }
+                let manifest = self.get_manifest(&slug)?;
+                let auth = manifest.auth?;
+                auth.commands.status.as_ref()?;
+                Some(slug)
+            })
+            .collect();
+
+        if slugs_with_auth.is_empty() {
+            return;
+        }
+
+        let path_env = self.path_with_plugins();
+        let futures: Vec<_> = slugs_with_auth
+            .iter()
+            .map(|slug| {
+                let slug = slug.clone();
+                let path_env = path_env.clone();
+                let store = self;
+                async move {
+                    let result = run_auth_status_check(store, &slug, &path_env).await;
+                    (slug, result)
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+        let mut cache = self.auth_cache.write().await;
+        for (slug, authed) in results {
+            cache.insert(slug, authed);
+        }
+        info!("auth cache populated: {} plugins checked", cache.len());
+    }
+
+    /// Update a single plugin's auth status (call after login/logout).
+    pub async fn update_auth_status(&self, slug: &str) {
+        let path_env = self.path_with_plugins();
+        let authed = run_auth_status_check(self, slug, &path_env).await;
+        self.auth_cache.write().await.insert(slug.to_string(), authed);
+    }
+
+    /// Check auth status for a single plugin on first access. Caches the result.
+    /// Subsequent calls for the same slug return the cached value immediately.
+    pub async fn check_auth_lazy(&self, slug: &str) -> bool {
+        // Return cached if available
+        if let Some(status) = self.auth_cache.read().await.get(slug) {
+            return *status;
+        }
+        // First access: run the check, cache it
+        let path_env = self.path_with_plugins();
+        let status = run_auth_status_check(self, slug, &path_env).await;
+        self.auth_cache.write().await.insert(slug.to_string(), status);
+        status
+    }
+
+    /// Get plugins that need auth (authenticated = false). Pure in-memory read.
+    pub async fn plugins_needing_auth(&self) -> Vec<(String, PluginAuth)> {
+        let cache = self.auth_cache.read().await;
+        let mut result = Vec::new();
+        for (slug, authed) in cache.iter() {
+            if !authed {
+                if let Some(manifest) = self.get_manifest(slug) {
+                    if let Some(auth) = manifest.auth {
+                        result.push((slug.clone(), auth));
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Record a diagnostic event for a plugin.
@@ -559,6 +674,18 @@ impl PluginStore {
                 Err(_) => return None,
             }
         };
+
+        // Try flat layout first: plugin.json at slug root (dev repos / symlinks)
+        let flat_manifest = slug_dir.join("plugin.json");
+        if flat_manifest.exists() {
+            if let Some((version, binary_path)) =
+                self.try_load_flat_plugin(&slug_dir, &flat_manifest)
+            {
+                if req.as_ref().map_or(true, |r| r.matches(&version)) {
+                    return Some(binary_path);
+                }
+            }
+        }
 
         let mut best: Option<(semver::Version, PathBuf)> = None;
 
@@ -679,20 +806,18 @@ impl PluginStore {
     {
         let platform = current_platform_key();
 
-        let (manifest, binary_data) =
-            download_fn(slug.to_string(), platform.clone()).await?;
+        let (manifest, binary_data) = download_fn(slug.to_string(), platform.clone()).await?;
 
         // Validate manifest before proceeding
         manifest.validate()?;
 
         // Find the platform binary entry
-        let platform_binary = manifest
-            .platforms
-            .get(&platform)
-            .ok_or_else(|| NappError::PluginPlatformUnavailable {
+        let platform_binary = manifest.platforms.get(&platform).ok_or_else(|| {
+            NappError::PluginPlatformUnavailable {
                 plugin: slug.to_string(),
                 platform: platform.clone(),
-            })?;
+            }
+        })?;
 
         // Verify SHA256 hash
         let mut hasher = Sha256::new();
@@ -737,10 +862,7 @@ impl PluginStore {
         }
 
         // Store binary on disk (always in installed_dir — marketplace downloads)
-        let version_dir = self
-            .installed_dir
-            .join(slug)
-            .join(&manifest.version);
+        let version_dir = self.installed_dir.join(slug).join(&manifest.version);
         std::fs::create_dir_all(&version_dir)?;
 
         let binary_path = version_dir.join(&platform_binary.binary_name);
@@ -782,7 +904,12 @@ impl PluginStore {
     /// Stores the .napp archive at `<installed_dir>/<slug>/<version>.napp`, then
     /// extracts alongside (into `<version>/`) — same pattern as agent install.
     /// Reads plugin.json for metadata, verifies binary integrity (SHA256 + ED25519).
-    pub async fn install_from_napp(&self, slug: &str, version: &str, napp_data: &[u8]) -> Result<PathBuf, NappError> {
+    pub async fn install_from_napp(
+        &self,
+        slug: &str,
+        version: &str,
+        napp_data: &[u8],
+    ) -> Result<PathBuf, NappError> {
         // Dedup concurrent installs
         {
             let mut downloading = self.downloading.lock().await;
@@ -814,7 +941,12 @@ impl PluginStore {
     }
 
     /// Inner implementation of .napp-based plugin install.
-    async fn install_from_napp_inner(&self, slug: &str, version: &str, napp_data: &[u8]) -> Result<PathBuf, NappError> {
+    async fn install_from_napp_inner(
+        &self,
+        slug: &str,
+        version: &str,
+        napp_data: &[u8],
+    ) -> Result<PathBuf, NappError> {
         // Store .napp archive alongside version dir (same pattern as agent install)
         let plugin_dir = self.installed_dir.join(slug);
         std::fs::create_dir_all(&plugin_dir)?;
@@ -856,7 +988,9 @@ impl PluginStore {
         // non-semver placeholder like "latest". This ensures the on-disk directory
         // is named with the real semver so `resolve()` can find it.
         let effective_version = if let Some(ref pm) = plugin_manifest {
-            if semver::Version::parse(version).is_err() && semver::Version::parse(&pm.version).is_ok() {
+            if semver::Version::parse(version).is_err()
+                && semver::Version::parse(&pm.version).is_ok()
+            {
                 pm.version.clone()
             } else {
                 version.to_string()
@@ -916,7 +1050,8 @@ impl PluginStore {
                 let actual_hash = hex::encode(hasher.finalize());
                 if actual_hash != pb.sha256 {
                     let _ = std::fs::remove_dir_all(&extract_dir);
-                    let _ = std::fs::remove_file(&plugin_dir.join(format!("{effective_version}.napp")));
+                    let _ =
+                        std::fs::remove_file(&plugin_dir.join(format!("{effective_version}.napp")));
                     self.record_diagnostic(slug, "error", "verify", "SHA256 mismatch");
                     return Err(NappError::PluginDownloadFailed(format!(
                         "SHA256 mismatch for plugin '{}': expected {}, got {}",
@@ -939,12 +1074,14 @@ impl PluginStore {
                             let signature = Signature::from_slice(&sig_bytes).map_err(|e| {
                                 NappError::Signing(format!("invalid plugin signature: {}", e))
                             })?;
-                            verifying_key.verify(&binary_data, &signature).map_err(|_| {
-                                NappError::Signing(format!(
-                                    "plugin '{}' signature verification failed",
-                                    slug
-                                ))
-                            })?;
+                            verifying_key
+                                .verify(&binary_data, &signature)
+                                .map_err(|_| {
+                                    NappError::Signing(format!(
+                                        "plugin '{}' signature verification failed",
+                                        slug
+                                    ))
+                                })?;
                             debug!(plugin = slug, "ED25519 signature verified (.napp)");
                         }
                         Err(e) => {
@@ -967,7 +1104,12 @@ impl PluginStore {
             "installed plugin from .napp"
         );
 
-        self.record_diagnostic(slug, "info", "install", &format!("installed v{}", effective_version));
+        self.record_diagnostic(
+            slug,
+            "info",
+            "install",
+            &format!("installed v{}", effective_version),
+        );
 
         Ok(binary_path)
     }
@@ -1033,6 +1175,10 @@ impl PluginStore {
     }
 
     /// Scan a single root directory for plugins.
+    ///
+    /// Supports two layouts:
+    /// 1. **Versioned** (marketplace): `<root>/<slug>/<version>/plugin.json + binary`
+    /// 2. **Flat** (dev repos / symlinks): `<root>/<slug>/plugin.json + target/release/<binary>`
     fn collect_from_dir(
         &self,
         root: &Path,
@@ -1055,6 +1201,21 @@ impl PluginStore {
                 None => continue,
             };
 
+            // Try flat layout first: plugin.json at slug root (dev repos / symlinks)
+            let flat_manifest = slug_path.join("plugin.json");
+            if flat_manifest.exists() {
+                if let Some((version, binary_path)) =
+                    self.try_load_flat_plugin(&slug_path, &flat_manifest)
+                {
+                    let key = (slug.clone(), version.to_string());
+                    if seen.insert(key) {
+                        results.push((slug, version, binary_path, source));
+                    }
+                    continue; // Flat layout found — skip version subdirectory scan
+                }
+            }
+
+            // Versioned layout: <slug>/<version>/plugin.json + binary
             let version_entries = match std::fs::read_dir(&slug_path) {
                 Ok(e) => e,
                 Err(_) => continue,
@@ -1088,6 +1249,78 @@ impl PluginStore {
                 }
             }
         }
+    }
+
+    /// Try to load a plugin from a flat (dev repo) layout.
+    ///
+    /// Reads version from plugin.json, then looks for the binary in:
+    /// 1. The slug directory itself (via `find_binary_in_version_dir`)
+    /// 2. `target/release/<binary_name>` (Rust dev repos)
+    /// 3. `target/debug/<binary_name>` (Rust dev repos, debug build)
+    fn try_load_flat_plugin(
+        &self,
+        slug_dir: &Path,
+        manifest_path: &Path,
+    ) -> Option<(semver::Version, PathBuf)> {
+        let data = std::fs::read_to_string(manifest_path).ok()?;
+        let manifest: PluginManifest = serde_json::from_str(&data).ok()?;
+        let version = semver::Version::parse(&manifest.version).ok()?;
+        let platform = current_platform_key();
+
+        // Check if parent directory has version subdirs — if so, this isn't flat layout
+        // (it's a versioned layout with plugin.json at the wrong level)
+        if slug_dir
+            .read_dir()
+            .ok()
+            .map(|entries| {
+                entries.flatten().any(|e| {
+                    e.path().is_dir()
+                        && e.file_name()
+                            .to_str()
+                            .and_then(|n| semver::Version::parse(n).ok())
+                            .is_some()
+                })
+            })
+            .unwrap_or(false)
+        {
+            return None; // Has version subdirs — not flat layout
+        }
+
+        let binary_name = manifest
+            .platforms
+            .get(&platform)
+            .map(|pb| pb.binary_name.as_str())
+            .unwrap_or(&manifest.slug);
+
+        // 1. Binary next to plugin.json
+        let direct = slug_dir.join(binary_name);
+        if direct.is_file() {
+            return Some((version, direct));
+        }
+
+        // 2. Rust target/release
+        let release = slug_dir.join("target").join("release").join(binary_name);
+        if release.is_file() {
+            return Some((version, release));
+        }
+
+        // 3. Rust target/debug
+        let debug = slug_dir.join("target").join("debug").join(binary_name);
+        if debug.is_file() {
+            return Some((version, debug));
+        }
+
+        // 4. Fallback: any executable in the slug directory
+        if let Some(binary_path) = self.find_binary_in_version_dir(slug_dir) {
+            return Some((version, binary_path));
+        }
+
+        debug!(
+            slug = %manifest.slug,
+            dir = %slug_dir.display(),
+            "flat plugin found but no binary for platform {platform}"
+        );
+        None
     }
 
     /// Build env var pairs for all installed (non-quarantined) plugins.
@@ -1240,6 +1473,13 @@ impl PluginStore {
             return None;
         }
 
+        // Try flat layout first: plugin.json at slug root (dev repos / symlinks)
+        let flat_manifest = slug_dir.join("plugin.json");
+        if flat_manifest.exists() {
+            let data = std::fs::read_to_string(&flat_manifest).ok()?;
+            return serde_json::from_str(&data).ok();
+        }
+
         // Find the latest version directory
         let mut best: Option<(semver::Version, PathBuf)> = None;
         let entries = std::fs::read_dir(&slug_dir).ok()?;
@@ -1306,7 +1546,10 @@ impl PluginStore {
                 version = %dep.version,
                 "installing plugin dependency"
             );
-            match self.ensure(&dep.name, &dep.version, download_fn.clone()).await {
+            match self
+                .ensure(&dep.name, &dep.version, download_fn.clone())
+                .await
+            {
                 Ok(_) => installed.push(dep.name.clone()),
                 Err(e) => {
                     warn!(
@@ -1384,6 +1627,171 @@ impl PluginStore {
 
         None
     }
+
+    /// Start watching for filesystem changes in plugin directories.
+    ///
+    /// Re-scans on file changes and emits diff events for added/removed plugins.
+    /// Mirrors `AgentLoader::watch()`.
+    pub fn watch(
+        &self,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio::sync::mpsc::Receiver<PluginFsEvent>,
+    ) {
+        let installed_dir = self.installed_dir.clone();
+        let user_dir = self.user_dir.clone();
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<PluginFsEvent>(32);
+
+        // Snapshot current state for diffing
+        let initial: HashMap<String, PathBuf> = self
+            .list_installed()
+            .into_iter()
+            .map(|(slug, _ver, path, _src)| (slug, path))
+            .collect();
+        let prev = Arc::new(tokio::sync::RwLock::new(initial));
+
+        let store_installed_dir = self.installed_dir.clone();
+        let store_user_dir = self.user_dir.clone();
+
+        let handle = tokio::spawn(async move {
+            use notify::{Event, EventKind, RecursiveMode, Watcher};
+            use tokio::sync::mpsc;
+
+            let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(32);
+
+            let mut watcher = match notify::RecommendedWatcher::new(
+                move |res| {
+                    let _ = tx.blocking_send(res);
+                },
+                notify::Config::default()
+                    .with_poll_interval(std::time::Duration::from_secs(2)),
+            ) {
+                Ok(w) => w,
+                Err(e) => {
+                    warn!(error = %e, "failed to create filesystem watcher for plugins");
+                    return;
+                }
+            };
+
+            if user_dir.exists() {
+                if let Err(e) = watcher.watch(&user_dir, RecursiveMode::Recursive) {
+                    warn!(error = %e, dir = %user_dir.display(), "failed to watch user plugins dir");
+                }
+            }
+
+            if installed_dir.exists() {
+                if let Err(e) = watcher.watch(&installed_dir, RecursiveMode::Recursive) {
+                    warn!(error = %e, dir = %installed_dir.display(), "failed to watch installed plugins dir");
+                }
+            }
+
+            let mut last_reload = std::time::Instant::now();
+            let debounce = std::time::Duration::from_secs(2);
+
+            while let Some(result) = rx.recv().await {
+                match result {
+                    Ok(event) => {
+                        let dominated = matches!(
+                            event.kind,
+                            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                        );
+                        if !dominated {
+                            continue;
+                        }
+
+                        let relevant = event.paths.iter().any(|p| {
+                            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            name == "plugin.json"
+                                || name == "PLUGIN.md"
+                                || name.ends_with(".napp")
+                                // New symlink/directory added directly under watched dir
+                                || (matches!(event.kind, EventKind::Create(_))
+                                    && (p.parent() == Some(user_dir.as_path())
+                                        || p.parent() == Some(installed_dir.as_path()))
+                                    && p.is_dir())
+                                // Binary rebuilt in target/release or target/debug
+                                || p.ancestors().any(|a| {
+                                    a.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .map(|n| n == "release" || n == "debug")
+                                        .unwrap_or(false)
+                                })
+                        });
+                        if !relevant {
+                            continue;
+                        }
+
+                        if last_reload.elapsed() < debounce {
+                            continue;
+                        }
+                        last_reload = std::time::Instant::now();
+
+                        debug!("plugins directory changed, re-scanning");
+
+                        // Re-scan both directories using the same logic as list_installed
+                        let tmp_store = PluginStore::new(
+                            store_installed_dir.clone(),
+                            store_user_dir.clone(),
+                            None,
+                        );
+                        let current: HashMap<String, PathBuf> = tmp_store
+                            .list_installed()
+                            .into_iter()
+                            .map(|(slug, _ver, path, _src)| (slug, path))
+                            .collect();
+
+                        // Diff against previous snapshot
+                        {
+                            let old = prev.read().await;
+                            for (slug, path) in &current {
+                                if !old.contains_key(slug) {
+                                    let _ = event_tx
+                                        .send(PluginFsEvent::Added {
+                                            slug: slug.clone(),
+                                            binary_path: path.clone(),
+                                        })
+                                        .await;
+                                } else if old.get(slug) != Some(path) {
+                                    let _ = event_tx
+                                        .send(PluginFsEvent::Changed {
+                                            slug: slug.clone(),
+                                            binary_path: path.clone(),
+                                        })
+                                        .await;
+                                }
+                            }
+                            for slug in old.keys() {
+                                if !current.contains_key(slug) {
+                                    let _ = event_tx
+                                        .send(PluginFsEvent::Removed {
+                                            slug: slug.clone(),
+                                        })
+                                        .await;
+                                }
+                            }
+                        }
+
+                        let count = current.len();
+                        *prev.write().await = current;
+                        info!(count, "re-scanned plugins after filesystem change");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "filesystem watch error (plugins)");
+                    }
+                }
+            }
+        });
+
+        (handle, event_rx)
+    }
+}
+
+/// Filesystem change event emitted by `PluginStore::watch()`.
+#[derive(Debug, Clone)]
+pub enum PluginFsEvent {
+    Added { slug: String, binary_path: PathBuf },
+    Changed { slug: String, binary_path: PathBuf },
+    Removed { slug: String },
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -1409,6 +1817,27 @@ pub fn current_platform_key() -> String {
 /// `gws` → `GWS_BIN`, `my-tool` → `MY_TOOL_BIN`.
 pub fn plugin_env_var(slug: &str) -> String {
     format!("{}_BIN", slug.to_uppercase().replace('-', "_"))
+}
+
+/// Run a single plugin's auth status command. Returns `true` if authenticated.
+async fn run_auth_status_check(store: &PluginStore, slug: &str, path_env: &str) -> bool {
+    let Some((binary_path, auth)) = store.get_auth_info(slug) else {
+        return true; // no auth config → treat as authenticated
+    };
+    let Some(status_cmd) = auth.commands.status.as_deref() else {
+        return true; // no status command → treat as authenticated
+    };
+    let args: Vec<&str> = status_cmd.split_whitespace().collect();
+    let mut cmd = tokio::process::Command::new(&binary_path);
+    cmd.args(&args);
+    cmd.env("PATH", path_env);
+    for (key, value) in &auth.env {
+        cmd.env(key, value);
+    }
+    match cmd.output().await {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -1454,8 +1883,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))
-                .unwrap();
+            std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
         let user_plugins_dir = tmp.path().join("user_plugins");
@@ -1517,8 +1945,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))
-                .unwrap();
+            std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
         // Quarantine it
@@ -1589,8 +2016,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))
-                .unwrap();
+            std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
         let user_plugins_dir = tmp.path().join("user_plugins");
@@ -1633,7 +2059,8 @@ mod tests {
                         sha256: "abc123".into(),
                         signature: "sig==".into(),
                         size: 1024,
-                        download_url: "https://cdn.neboloop.com/plugins/gws/1.2.0/darwin-arm64/gws".into(),
+                        download_url: "https://cdn.neboloop.com/plugins/gws/1.2.0/darwin-arm64/gws"
+                            .into(),
                     },
                 );
                 m
@@ -1986,13 +2413,11 @@ mod tests {
     #[test]
     fn test_validate_manifest_with_dependencies() {
         let mut m = make_valid_manifest();
-        m.dependencies = vec![
-            PluginDependency {
-                name: "ffmpeg".into(),
-                version: ">=5.0.0".into(),
-                optional: false,
-            },
-        ];
+        m.dependencies = vec![PluginDependency {
+            name: "ffmpeg".into(),
+            version: ">=5.0.0".into(),
+            optional: false,
+        }];
         assert!(m.validate().is_ok());
     }
 

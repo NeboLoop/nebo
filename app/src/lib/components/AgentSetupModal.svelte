@@ -55,7 +55,7 @@
 
 {#if show}
   <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={handleClose}></div>
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="presentation" onclick={handleClose} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClose(); } }}></div>
 
     <div class="relative w-full max-w-md rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden">
       <!-- Header -->
@@ -82,8 +82,9 @@
           <div class="flex flex-col gap-3">
             {#each inputs as input, i}
               <div>
-                <label class="text-sm font-medium mb-1 block">{input.label}</label>
+                <label class="text-sm font-medium mb-1 block" for="setup-{input.id}">{input.label}</label>
                 <input
+                  id="setup-{input.id}"
                   type="text"
                   bind:value={inputValues[i]}
                   placeholder={input.placeholder}

@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use tracing::info;
 
+use crate::BrowserError;
 use crate::extension_bridge::{BatchAction, BatchOptions, ExtensionBridge};
 use crate::headless_bridge::HeadlessBridge;
-use crate::BrowserError;
 
 /// Executes browser actions, routing to the best available backend.
 pub struct ActionExecutor {
@@ -61,13 +61,21 @@ impl ActionExecutor {
         session_id: Option<&str>,
     ) -> Result<serde_json::Value, BrowserError> {
         if self.bridge.is_connected() {
-            info!(tool = tool, backend = "extension", "executing browser action");
+            info!(
+                tool = tool,
+                backend = "extension",
+                "executing browser action"
+            );
             self.bridge
                 .execute(tool, args, session_id)
                 .await
                 .map_err(BrowserError::Other)
         } else if let Some(ref headless) = self.headless {
-            info!(tool = tool, backend = "headless", "executing browser action");
+            info!(
+                tool = tool,
+                backend = "headless",
+                "executing browser action"
+            );
             headless
                 .execute(tool, args)
                 .await
@@ -107,12 +115,21 @@ impl ActionExecutor {
     ) -> Result<Vec<Result<serde_json::Value, String>>, BrowserError> {
         self.batch_execute(
             vec![
-                BatchAction { tool: "click".to_string(), args: click_args },
-                BatchAction { tool: "read_page".to_string(), args: serde_json::json!({}) },
+                BatchAction {
+                    tool: "click".to_string(),
+                    args: click_args,
+                },
+                BatchAction {
+                    tool: "read_page".to_string(),
+                    args: serde_json::json!({}),
+                },
             ],
-            BatchOptions { stop_on_error: false },
+            BatchOptions {
+                stop_on_error: false,
+            },
             session_id,
-        ).await
+        )
+        .await
     }
 
     /// Fill a form field then read the page — one round-trip.
@@ -123,12 +140,21 @@ impl ActionExecutor {
     ) -> Result<Vec<Result<serde_json::Value, String>>, BrowserError> {
         self.batch_execute(
             vec![
-                BatchAction { tool: "form_input".to_string(), args: fill_args },
-                BatchAction { tool: "read_page".to_string(), args: serde_json::json!({}) },
+                BatchAction {
+                    tool: "form_input".to_string(),
+                    args: fill_args,
+                },
+                BatchAction {
+                    tool: "read_page".to_string(),
+                    args: serde_json::json!({}),
+                },
             ],
-            BatchOptions { stop_on_error: false },
+            BatchOptions {
+                stop_on_error: false,
+            },
             session_id,
-        ).await
+        )
+        .await
     }
 
     /// Send a fire-and-forget command to the extension (e.g., show_indicators, hide_indicators).
@@ -144,11 +170,20 @@ impl ActionExecutor {
     ) -> Result<Vec<Result<serde_json::Value, String>>, BrowserError> {
         self.batch_execute(
             vec![
-                BatchAction { tool: "navigate".to_string(), args: nav_args },
-                BatchAction { tool: "read_page".to_string(), args: serde_json::json!({}) },
+                BatchAction {
+                    tool: "navigate".to_string(),
+                    args: nav_args,
+                },
+                BatchAction {
+                    tool: "read_page".to_string(),
+                    args: serde_json::json!({}),
+                },
             ],
-            BatchOptions { stop_on_error: true },
+            BatchOptions {
+                stop_on_error: true,
+            },
             session_id,
-        ).await
+        )
+        .await
     }
 }

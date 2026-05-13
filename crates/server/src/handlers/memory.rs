@@ -2,8 +2,8 @@ use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use serde::Deserialize;
 
+use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
-use super::{to_error_response, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
@@ -25,7 +25,9 @@ pub async fn list_memories(
     Query(q): Query<ListQuery>,
 ) -> HandlerResult<serde_json::Value> {
     let memories = if let Some(ref ns) = q.namespace {
-        state.store.list_memories_by_namespace(ns, q.limit, q.offset)
+        state
+            .store
+            .list_memories_by_namespace(ns, q.limit, q.offset)
     } else {
         state.store.list_memories(q.limit, q.offset)
     }
@@ -66,9 +68,7 @@ pub struct SearchQuery {
 }
 
 /// GET /api/v1/memories/stats
-pub async fn get_stats(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn get_stats(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let total = state.store.count_memories().unwrap_or(0);
     let namespaces = state.store.get_distinct_namespaces().unwrap_or_default();
 

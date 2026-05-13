@@ -12,10 +12,7 @@ pub fn send(_title: &str, _body: &str) {
 #[cfg(target_os = "macos")]
 #[allow(dead_code)] // Used when send() is re-enabled with tauri-plugin-notification
 fn send_platform(title: &str, body: &str) -> Result<(), String> {
-    let script = format!(
-        "display notification \"{}\" with title \"{}\"",
-        body, title
-    );
+    let script = format!("display notification \"{}\" with title \"{}\"", body, title);
     Command::new("osascript")
         .args(["-e", &script])
         .output()

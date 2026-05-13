@@ -74,7 +74,10 @@ impl Store {
             .as_secs() as i64;
 
         let deleted = conn
-            .execute("DELETE FROM license_keys WHERE expires_at <= ?1", params![now])
+            .execute(
+                "DELETE FROM license_keys WHERE expires_at <= ?1",
+                params![now],
+            )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(deleted as u64)
     }

@@ -60,6 +60,7 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .merge(plugins::routes())
         .merge(store::routes())
         .merge(entity_config::routes())
+        .merge(notifications::routes())
         .merge(voice::routes())
         .merge(apps::routes())
         .merge(user::public_routes())
@@ -67,7 +68,6 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
 
     // Protected routes (JWT required)
     let protected = user::protected_routes()
-        .merge(notifications::routes())
         .layer(axum::Extension(jwt_secret))
         .layer(axum::middleware::from_fn(middleware::jwt_auth));
 

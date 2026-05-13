@@ -73,11 +73,7 @@ impl SnapshotStore {
     pub fn lookup_element_latest(&self, element_id: &str) -> Option<AnnotatedElement> {
         let store = self.snapshots.read().unwrap();
         let latest = store.values().max_by_key(|s| s.created_at)?;
-        latest
-            .elements
-            .iter()
-            .find(|e| e.id == element_id)
-            .cloned()
+        latest.elements.iter().find(|e| e.id == element_id).cloned()
     }
 
     /// Remove snapshots older than the TTL.

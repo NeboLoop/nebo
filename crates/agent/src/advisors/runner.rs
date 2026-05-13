@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use tracing::{debug, warn};
 
 use ai::{ChatRequest, Message, Provider, StreamEventType};
@@ -86,10 +86,7 @@ impl Runner {
         // Sort by confidence (highest first)
         responses.sort_by(|a, b| b.confidence.cmp(&a.confidence));
 
-        debug!(
-            count = responses.len(),
-            "advisor deliberation complete"
-        );
+        debug!(count = responses.len(), "advisor deliberation complete");
 
         Ok(responses)
     }
@@ -106,7 +103,10 @@ impl Runner {
         );
 
         for response in responses {
-            output.push_str(&format!("### {} ({})\n", response.advisor_name, response.role));
+            output.push_str(&format!(
+                "### {} ({})\n",
+                response.advisor_name, response.role
+            ));
             output.push_str(&response.critique);
             if !response.risks.is_empty() {
                 output.push_str(&format!("\n**Risks:** {}", response.risks));

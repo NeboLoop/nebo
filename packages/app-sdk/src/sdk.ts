@@ -10,6 +10,8 @@ import { agents } from './agents';
 import { janus } from './janus';
 import { surfaces } from './surfaces';
 import { a2ui } from './a2ui';
+import { identity } from './identity';
+import { chat } from './chat';
 
 export class NeboSDK {
   fetch = neboFetch;
@@ -19,6 +21,8 @@ export class NeboSDK {
   janus = janus;
   surfaces = surfaces;
   a2ui = a2ui;
+  identity = identity;
+  chat = chat;
 
   constructor() {
     // Wire: when surfaces receives a2ui_message, forward to a2ui processor

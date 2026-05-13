@@ -48,19 +48,44 @@ export async function loadNotifications(): Promise<void> {
   }
 }
 
+/**
+ * Push a new notification into the store from a WebSocket event payload.
+ * No API call — pure push.
+ */
+export function pushNotification(data: {
+  id: string;
+  type?: string;
+  title: string;
+  body?: string;
+  actionUrl?: string;
+  readAt?: number | null;
+  createdAt?: number;
+}): void {
+  const notif: Notification = {
+    id: data.id,
+    type: (data.type as NotificationType) || 'system',
+    title: data.title,
+    message: data.body || '',
+    time: data.createdAt ? formatRelativeTime(data.createdAt * 1000) : 'just now',
+    read: !!data.readAt,
+    link: data.actionUrl || undefined,
+  };
+  notifications.update(list => [notif, ...list]);
+}
+
 export function markAsRead(id: string) {
   notifications.update(list =>
     list.map(n => n.id === id ? { ...n, read: true } : n)
   );
   // Fire-and-forget API call
-  import('$lib/api/nebo').then(api => api.markNotificationRead(id)).catch(() => {});
+  import('$lib/api/nebo').then(api => api.markRead(id)).catch(() => {});
 }
 
 export function markAllRead() {
   notifications.update(list =>
     list.map(n => ({ ...n, read: true }))
   );
-  import('$lib/api/nebo').then(api => api.markAllNotificationsRead()).catch(() => {});
+  import('$lib/api/nebo').then(api => api.markAllRead()).catch(() => {});
 }
 
 export function removeNotification(id: string) {
@@ -68,7 +93,7 @@ export function removeNotification(id: string) {
   import('$lib/api/nebo').then(api => api.deleteNotification(id)).catch(() => {});
 }
 
-function formatRelativeTime(isoDate: string): string {
+function formatRelativeTime(isoDate: string | number): string {
   try {
     const date = new Date(isoDate);
     const now = Date.now();
@@ -81,6 +106,6 @@ function formatRelativeTime(isoDate: string): string {
     const diffDay = Math.floor(diffHr / 24);
     return `${diffDay} day${diffDay > 1 ? 's' : ''} ago`;
   } catch {
-    return isoDate;
+    return String(isoDate);
   }
 }

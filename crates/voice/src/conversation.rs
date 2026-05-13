@@ -20,8 +20,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
-use crate::streaming::{StreamingConfig, StreamingTranscriber, TranscriptEvent};
 use crate::VoicePipeline;
+use crate::streaming::{StreamingConfig, StreamingTranscriber, TranscriptEvent};
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -177,9 +177,7 @@ impl ConversationOrchestrator {
             }
         };
 
-        let _ = event_tx
-            .send(ConversationEvent::SessionInitialized)
-            .await;
+        let _ = event_tx.send(ConversationEvent::SessionInitialized).await;
 
         let mut phase = Phase::Listening;
         let mut turn: u32 = 0;
@@ -187,8 +185,7 @@ impl ConversationOrchestrator {
         let mut heard_speech = false;
 
         // Create the streaming transcriber
-        let transcriber =
-            StreamingTranscriber::new(ctx.clone(), self.config.streaming.clone());
+        let transcriber = StreamingTranscriber::new(ctx.clone(), self.config.streaming.clone());
         let (audio_tx, mut transcript_rx) = transcriber.start();
 
         tracing::info!("conversation orchestrator started");

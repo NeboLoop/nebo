@@ -13,7 +13,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use ai::{ChatRequest, EventReceiver, Provider, ProviderError, StreamEvent, StreamEventType, ToolCall, UsageInfo};
+use ai::{
+    ChatRequest, EventReceiver, Provider, ProviderError, StreamEvent, StreamEventType, ToolCall,
+    UsageInfo,
+};
 
 /// A provider backed by a plugin binary using NDJSON streaming.
 pub struct PluginProvider {
@@ -32,7 +35,11 @@ impl PluginProvider {
         binary_path: PathBuf,
         plugin_store: Arc<napp::plugin::PluginStore>,
     ) -> Self {
-        let chat_command: Vec<String> = def.chat_command.split_whitespace().map(String::from).collect();
+        let chat_command: Vec<String> = def
+            .chat_command
+            .split_whitespace()
+            .map(String::from)
+            .collect();
 
         Self {
             provider_id: def.id.clone(),
@@ -82,18 +89,18 @@ impl Provider for PluginProvider {
         })?;
 
         // Write ChatRequest JSON to stdin
-        let req_json = serde_json::to_vec(req).map_err(|e| {
-            ProviderError::Request(format!("serialize request: {}", e))
-        })?;
+        let req_json = serde_json::to_vec(req)
+            .map_err(|e| ProviderError::Request(format!("serialize request: {}", e)))?;
 
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(&req_json).await;
             drop(stdin); // close stdin so plugin knows input is complete
         }
 
-        let stdout = child.stdout.take().ok_or_else(|| {
-            ProviderError::Request("no stdout from plugin provider".into())
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ProviderError::Request("no stdout from plugin provider".into()))?;
 
         let provider_id = self.provider_id.clone();
 
@@ -150,9 +157,20 @@ fn parse_ndjson_event(line: &str) -> Option<StreamEvent> {
             ev.event_type = StreamEventType::ToolCall;
             ev.text = String::new();
             ev.tool_call = Some(ToolCall {
-                id: v.get("id").and_then(|c| c.as_str()).unwrap_or("").to_string(),
-                name: v.get("name").and_then(|c| c.as_str()).unwrap_or("").to_string(),
-                input: v.get("input").cloned().unwrap_or(serde_json::Value::Object(Default::default())),
+                id: v
+                    .get("id")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                name: v
+                    .get("name")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                input: v
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Object(Default::default())),
             });
             Some(ev)
         }
@@ -160,8 +178,10 @@ fn parse_ndjson_event(line: &str) -> Option<StreamEvent> {
             let mut ev = StreamEvent::done();
             ev.usage = v.get("usage").and_then(|u| {
                 Some(UsageInfo {
-                    input_tokens: u.get("input_tokens").and_then(|t| t.as_i64()).unwrap_or(0) as i32,
-                    output_tokens: u.get("output_tokens").and_then(|t| t.as_i64()).unwrap_or(0) as i32,
+                    input_tokens: u.get("input_tokens").and_then(|t| t.as_i64()).unwrap_or(0)
+                        as i32,
+                    output_tokens: u.get("output_tokens").and_then(|t| t.as_i64()).unwrap_or(0)
+                        as i32,
                     cache_creation_input_tokens: 0,
                     cache_read_input_tokens: 0,
                 })
@@ -169,7 +189,10 @@ fn parse_ndjson_event(line: &str) -> Option<StreamEvent> {
             Some(ev)
         }
         "error" => {
-            let msg = v.get("content").and_then(|c| c.as_str()).unwrap_or("unknown error");
+            let msg = v
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("unknown error");
             Some(StreamEvent::error(msg))
         }
         _ => None,

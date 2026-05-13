@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use db::Store;
 use crate::domain::DomainInput;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
+use db::Store;
 
 /// MessageTool handles outbound delivery to the owner (notifications, companion chat, SMS, TTS).
 pub struct MessageTool {
@@ -52,12 +52,12 @@ impl DynTool for MessageTool {
             "properties": {
                 "resource": {
                     "type": "string",
-                    "description": "Resource type: owner, notify, sms",
+                    "description": "REQUIRED. The messaging resource category — determines which actions are available.",
                     "enum": ["owner", "notify", "sms"]
                 },
                 "action": {
                     "type": "string",
-                    "description": "Action to perform",
+                    "description": "The operation to perform on the selected resource. Never put a resource name here.",
                     "enum": ["notify", "send", "alert", "dnd_status", "conversations", "read", "search"]
                 },
                 "text": { "type": "string", "description": "Message text" },
@@ -66,7 +66,7 @@ impl DynTool for MessageTool {
                 "query": { "type": "string", "description": "Search query for SMS search" },
                 "limit": { "type": "integer", "description": "Max number of results to return", "default": 20 }
             },
-            "required": ["action"]
+            "required": ["resource", "action"]
         })
     }
 
@@ -124,12 +124,8 @@ impl DynTool for MessageTool {
                         Err(e) => ToolResult::error(format!("Failed to notify: {}", e)),
                     }
                 }
-                "notify" => {
-                    handle_notify(&self.store, &domain_input.action, &input).await
-                }
-                "sms" => {
-                    handle_sms(&domain_input.action, &input).await
-                }
+                "notify" => handle_notify(&self.store, &domain_input.action, &input).await,
+                "sms" => handle_sms(&domain_input.action, &input).await,
                 other => ToolResult::error(format!(
                     "Resource {:?} not available. Available: owner, notify, sms",
                     other
@@ -156,7 +152,7 @@ async fn handle_notify(store: &Store, action: &str, input: &serde_json::Value) -
             let id = uuid::Uuid::new_v4().to_string();
             match store.create_notification(
                 &id,
-                "",  // user_id (single-user app)
+                "", // user_id (single-user app)
                 "info",
                 title,
                 Some(text),
@@ -180,12 +176,10 @@ async fn handle_notify(store: &Store, action: &str, input: &serde_json::Value) -
 
             handle_alert(title, text).await
         }
-        "speak" => {
-            ToolResult::error("speak has moved to the os tool: os(resource: \"tts\", action: \"speak\", text: \"...\")")
-        }
-        "dnd_status" => {
-            handle_dnd_status().await
-        }
+        "speak" => ToolResult::error(
+            "speak has moved to the os tool: os(resource: \"tts\", action: \"speak\", text: \"...\")",
+        ),
+        "dnd_status" => handle_dnd_status().await,
         other => ToolResult::error(format!(
             "Unknown action '{}' for notify resource. Available: send, alert, speak, dnd_status",
             other
@@ -239,7 +233,11 @@ async fn handle_dnd_status() -> ToolResult {
     {
         // Try Focus Modes first (macOS 12+), fall back to legacy DND prefs
         let output = tokio::process::Command::new("defaults")
-            .args(["read", "com.apple.controlcenter", "NSStatusItem Visible FocusModes"])
+            .args([
+                "read",
+                "com.apple.controlcenter",
+                "NSStatusItem Visible FocusModes",
+            ])
             .output()
             .await;
 
@@ -247,10 +245,13 @@ async fn handle_dnd_status() -> ToolResult {
             Ok(o) if o.status.success() => {
                 let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
                 let enabled = stdout == "1";
-                return ToolResult::ok(serde_json::json!({
-                    "dnd_enabled": enabled,
-                    "raw": stdout,
-                }).to_string());
+                return ToolResult::ok(
+                    serde_json::json!({
+                        "dnd_enabled": enabled,
+                        "raw": stdout,
+                    })
+                    .to_string(),
+                );
             }
             _ => {}
         }
@@ -264,12 +265,15 @@ async fn handle_dnd_status() -> ToolResult {
         match output {
             Ok(o) => {
                 let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                let enabled = stdout.contains("dndDisplayLock = 1")
-                    || stdout.contains("dndMirrored = 1");
-                return ToolResult::ok(serde_json::json!({
-                    "dnd_enabled": enabled,
-                    "raw": stdout,
-                }).to_string());
+                let enabled =
+                    stdout.contains("dndDisplayLock = 1") || stdout.contains("dndMirrored = 1");
+                return ToolResult::ok(
+                    serde_json::json!({
+                        "dnd_enabled": enabled,
+                        "raw": stdout,
+                    })
+                    .to_string(),
+                );
             }
             Err(e) => return ToolResult::error(format!("Failed to read DND status: {}", e)),
         }
@@ -295,16 +299,22 @@ async fn handle_dnd_status() -> ToolResult {
             Ok(o) if o.status.success() => {
                 let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
                 let enabled = stdout.contains("true");
-                return ToolResult::ok(serde_json::json!({
-                    "dnd_enabled": enabled,
-                    "raw": stdout,
-                }).to_string());
+                return ToolResult::ok(
+                    serde_json::json!({
+                        "dnd_enabled": enabled,
+                        "raw": stdout,
+                    })
+                    .to_string(),
+                );
             }
             _ => {
-                return ToolResult::ok(serde_json::json!({
-                    "dnd_enabled": false,
-                    "note": "Could not query D-Bus; assuming DND is off",
-                }).to_string());
+                return ToolResult::ok(
+                    serde_json::json!({
+                        "dnd_enabled": false,
+                        "note": "Could not query D-Bus; assuming DND is off",
+                    })
+                    .to_string(),
+                );
             }
         }
     }
@@ -527,10 +537,7 @@ async fn run_osascript(script: &str) -> ToolResult {
 
 #[allow(dead_code)] // Used on Linux
 async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
-    let output = tokio::process::Command::new(cmd)
-        .args(args)
-        .output()
-        .await;
+    let output = tokio::process::Command::new(cmd).args(args).output().await;
 
     match output {
         Ok(o) if o.status.success() => {

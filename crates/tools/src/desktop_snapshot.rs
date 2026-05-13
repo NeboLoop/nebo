@@ -121,9 +121,14 @@ pub fn generate_snapshot_id() -> String {
 /// Map an accessibility role to a short prefix for element IDs.
 fn role_prefix(role: &str) -> &'static str {
     let r = role.to_lowercase();
-    if r.contains("button") || r.contains("checkbox") || r.contains("radio") || r.contains("popup") {
+    if r.contains("button") || r.contains("checkbox") || r.contains("radio") || r.contains("popup")
+    {
         "B"
-    } else if r.contains("textfield") || r.contains("textarea") || r.contains("searchfield") || r.contains("combobox") {
+    } else if r.contains("textfield")
+        || r.contains("textarea")
+        || r.contains("searchfield")
+        || r.contains("combobox")
+    {
         "T"
     } else if r.contains("link") {
         "L"
@@ -131,7 +136,11 @@ fn role_prefix(role: &str) -> &'static str {
         "S"
     } else if r.contains("image") {
         "I"
-    } else if r.contains("group") || r.contains("list") || r.contains("table") || r.contains("outline") {
+    } else if r.contains("group")
+        || r.contains("list")
+        || r.contains("table")
+        || r.contains("outline")
+    {
         "G"
     } else if r.contains("menu") {
         "M"
@@ -191,7 +200,10 @@ pub fn parse_ax_output(output: &str) -> Vec<UIElement> {
             }
         };
 
-        let actionable = role_prefix(&role) == "B" || role_prefix(&role) == "T" || role_prefix(&role) == "L" || role_prefix(&role) == "M";
+        let actionable = role_prefix(&role) == "B"
+            || role_prefix(&role) == "T"
+            || role_prefix(&role) == "L"
+            || role_prefix(&role) == "M";
 
         elements.push(UIElement {
             id: String::new(), // assigned later by assign_element_ids
@@ -220,7 +232,12 @@ mod tests {
                 id: "B1".into(),
                 role: "AXButton".into(),
                 label: "Submit".into(),
-                bounds: Rect { x: 100, y: 200, width: 80, height: 30 },
+                bounds: Rect {
+                    x: 100,
+                    y: 200,
+                    width: 80,
+                    height: 30,
+                },
                 actionable: true,
                 keyboard_shortcut: None,
             }],
@@ -277,7 +294,12 @@ mod tests {
                     id: "B1".into(),
                     role: "AXButton".into(),
                     label: "OK".into(),
-                    bounds: Rect { x: 10, y: 20, width: 60, height: 25 },
+                    bounds: Rect {
+                        x: 10,
+                        y: 20,
+                        width: 60,
+                        height: 25,
+                    },
                     actionable: true,
                     keyboard_shortcut: None,
                 },
@@ -285,7 +307,12 @@ mod tests {
                     id: "T1".into(),
                     role: "AXTextField".into(),
                     label: "Name".into(),
-                    bounds: Rect { x: 50, y: 100, width: 200, height: 30 },
+                    bounds: Rect {
+                        x: 50,
+                        y: 100,
+                        width: 200,
+                        height: 30,
+                    },
                     actionable: true,
                     keyboard_shortcut: None,
                 },
@@ -298,17 +325,70 @@ mod tests {
 
     #[test]
     fn test_rect_center() {
-        let r = Rect { x: 100, y: 200, width: 80, height: 30 };
+        let r = Rect {
+            x: 100,
+            y: 200,
+            width: 80,
+            height: 30,
+        };
         assert_eq!(r.center(), (140, 215));
     }
 
     #[test]
     fn test_element_id_generation() {
         let mut elements = vec![
-            UIElement { id: String::new(), role: "AXButton".into(), label: "OK".into(), bounds: Rect { x: 0, y: 0, width: 0, height: 0 }, actionable: true, keyboard_shortcut: None },
-            UIElement { id: String::new(), role: "AXTextField".into(), label: "Name".into(), bounds: Rect { x: 0, y: 0, width: 0, height: 0 }, actionable: true, keyboard_shortcut: None },
-            UIElement { id: String::new(), role: "AXButton".into(), label: "Cancel".into(), bounds: Rect { x: 0, y: 0, width: 0, height: 0 }, actionable: true, keyboard_shortcut: None },
-            UIElement { id: String::new(), role: "AXStaticText".into(), label: "Help".into(), bounds: Rect { x: 0, y: 0, width: 0, height: 0 }, actionable: false, keyboard_shortcut: None },
+            UIElement {
+                id: String::new(),
+                role: "AXButton".into(),
+                label: "OK".into(),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                },
+                actionable: true,
+                keyboard_shortcut: None,
+            },
+            UIElement {
+                id: String::new(),
+                role: "AXTextField".into(),
+                label: "Name".into(),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                },
+                actionable: true,
+                keyboard_shortcut: None,
+            },
+            UIElement {
+                id: String::new(),
+                role: "AXButton".into(),
+                label: "Cancel".into(),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                },
+                actionable: true,
+                keyboard_shortcut: None,
+            },
+            UIElement {
+                id: String::new(),
+                role: "AXStaticText".into(),
+                label: "Help".into(),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                },
+                actionable: false,
+                keyboard_shortcut: None,
+            },
         ];
         assign_element_ids(&mut elements);
         assert_eq!(elements[0].id, "B1");

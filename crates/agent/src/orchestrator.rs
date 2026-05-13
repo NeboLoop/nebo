@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -42,7 +42,11 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    pub fn new(runner: Arc<Runner>, store: Arc<Store>, concurrency: Arc<ConcurrencyController>) -> Self {
+    pub fn new(
+        runner: Arc<Runner>,
+        store: Arc<Store>,
+        concurrency: Arc<ConcurrencyController>,
+    ) -> Self {
         Self {
             runner,
             store,
@@ -59,11 +63,12 @@ impl Orchestrator {
 
     /// Spawn a single sub-agent.
     async fn spawn_internal(&self, req: SpawnRequest) -> Result<SpawnResult, String> {
-
         let task_id = format!("sa-{}", uuid::Uuid::new_v4());
         let session_key = format!("subagent:{}:{}", req.parent_session_key, task_id);
         // Derive a child token from the parent so cancelling the parent cascades.
-        let cancel = req.parent_cancel.as_ref()
+        let cancel = req
+            .parent_cancel
+            .as_ref()
             .map(|p| p.child_token())
             .unwrap_or_else(CancellationToken::new);
 
@@ -154,7 +159,12 @@ impl Orchestrator {
                 let _permit = concurrency.acquire_llm_permit().await;
 
                 let run_req = build_subagent_request(
-                    &bg_session_key, &prompt, &model_override, &user_id, &cancel, max_iterations,
+                    &bg_session_key,
+                    &prompt,
+                    &model_override,
+                    &user_id,
+                    &cancel,
+                    max_iterations,
                 );
 
                 let result = run_and_collect(&runner, run_req, cancel, None).await;
@@ -200,7 +210,14 @@ impl Orchestrator {
             format!("{}\n\n{}", dep_context, prompt)
         };
 
-        let req = build_subagent_request(session_key, &full_prompt, model_override, user_id, &cancel, max_iterations);
+        let req = build_subagent_request(
+            session_key,
+            &full_prompt,
+            model_override,
+            user_id,
+            &cancel,
+            max_iterations,
+        );
         run_and_collect(&self.runner, req, cancel, None).await
     }
 
@@ -261,7 +278,8 @@ impl Orchestrator {
 
         // 4. Shared cancellation for the entire DAG — derived from parent so
         //    cancelling the parent cascades to all DAG tasks.
-        let dag_cancel = parent_cancel.as_ref()
+        let dag_cancel = parent_cancel
+            .as_ref()
             .map(|p| p.child_token())
             .unwrap_or_else(CancellationToken::new);
 
@@ -281,8 +299,7 @@ impl Orchestrator {
                 let model_override = node.model_override.clone();
                 let user_id = user_id.to_string();
                 let cancel = dag_cancel.clone();
-                let session_key =
-                    format!("subagent:{}:{}", parent_session_id, task_id);
+                let session_key = format!("subagent:{}:{}", parent_session_id, task_id);
 
                 let runner = self.runner.clone();
                 let store = self.store.clone();
@@ -318,14 +335,20 @@ impl Orchestrator {
                     };
 
                     let req = build_subagent_request(
-                        &session_key, &full_prompt, &model_override, &user_id, &cancel, 0,
+                        &session_key,
+                        &full_prompt,
+                        &model_override,
+                        &user_id,
+                        &cancel,
+                        0,
                     );
 
                     let result = run_and_collect(&runner, req, cancel, None).await;
 
                     match &result {
                         Ok(output) => {
-                            let _ = store.update_task_completed(&child_task_id, Some(output.as_str()));
+                            let _ =
+                                store.update_task_completed(&child_task_id, Some(output.as_str()));
                         }
                         Err(e) => {
                             let _ = store.update_task_failed(&child_task_id, e);
@@ -364,7 +387,8 @@ impl Orchestrator {
         let success = !graph.has_failures();
 
         let _ = if success {
-            self.store.update_task_completed(&parent_task_id, Some(&output))
+            self.store
+                .update_task_completed(&parent_task_id, Some(&output))
         } else {
             self.store
                 .update_task_failed(&parent_task_id, "One or more sub-tasks failed")
@@ -446,13 +470,7 @@ impl Orchestrator {
         let active = self.active.read().await;
         active
             .values()
-            .map(|a| {
-                (
-                    a.task_id.clone(),
-                    a.description.clone(),
-                    a.status.clone(),
-                )
-            })
+            .map(|a| (a.task_id.clone(), a.description.clone(), a.status.clone()))
             .collect()
     }
 
@@ -472,12 +490,21 @@ impl Orchestrator {
         let (prog_tx, mut prog_rx) = mpsc::channel::<SubagentProgress>(64);
 
         // Spawn all sub-agents
-        let mut running: FuturesUnordered<Pin<Box<dyn Future<Output = (String, String, Result<String, String>, usize, i32)> + Send>>> = FuturesUnordered::new();
+        let mut running: FuturesUnordered<
+            Pin<
+                Box<
+                    dyn Future<Output = (String, String, Result<String, String>, usize, i32)>
+                        + Send,
+                >,
+            >,
+        > = FuturesUnordered::new();
 
         for req in requests {
             let task_id = format!("sa-{}", uuid::Uuid::new_v4());
             let session_key = format!("subagent:{}:{}", req.parent_session_key, task_id);
-            let cancel = req.parent_cancel.as_ref()
+            let cancel = req
+                .parent_cancel
+                .as_ref()
                 .map(|p| p.child_token())
                 .unwrap_or_else(CancellationToken::new);
 
@@ -488,40 +515,50 @@ impl Orchestrator {
 
             // Persist to DB
             let _ = self.store.create_pending_task(
-                &task_id, "subagent", &session_key,
-                Some(&req.user_id), &prefixed_prompt,
-                Some(task_prefix.trim()), Some(&description),
-                Some("subagent"), 0,
+                &task_id,
+                "subagent",
+                &session_key,
+                Some(&req.user_id),
+                &prefixed_prompt,
+                Some(task_prefix.trim()),
+                Some(&description),
+                Some("subagent"),
+                0,
             );
 
             // Register active
             {
                 let mut active = self.active.write().await;
-                active.insert(task_id.clone(), ActiveAgent {
-                    task_id: task_id.clone(),
-                    description: description.clone(),
-                    status: "running".to_string(),
-                    cancel: cancel.clone(),
-                });
+                active.insert(
+                    task_id.clone(),
+                    ActiveAgent {
+                        task_id: task_id.clone(),
+                        description: description.clone(),
+                        status: "running".to_string(),
+                        cancel: cancel.clone(),
+                    },
+                );
             }
 
             // Send SubagentStart event
-            let _ = progress_tx.send(StreamEvent {
-                event_type: StreamEventType::SubagentStart,
-                text: description.clone(),
-                tool_call: None,
-                error: Some(task_id.clone()),
-                usage: None,
-                rate_limit: None,
-                widgets: Some(serde_json::json!({
-                    "task_id": task_id,
-                    "description": description,
-                    "agent_type": req.agent_type,
-                    "total_count": total,
-                })),
-                provider_metadata: None,
-                stop_reason: None,
-            }).await;
+            let _ = progress_tx
+                .send(StreamEvent {
+                    event_type: StreamEventType::SubagentStart,
+                    text: description.clone(),
+                    tool_call: None,
+                    error: Some(task_id.clone()),
+                    usage: None,
+                    rate_limit: None,
+                    widgets: Some(serde_json::json!({
+                        "task_id": task_id,
+                        "description": description,
+                        "agent_type": req.agent_type,
+                        "total_count": total,
+                    })),
+                    provider_metadata: None,
+                    stop_reason: None,
+                })
+                .await;
 
             let runner = self.runner.clone();
             let store = self.store.clone();
@@ -532,7 +569,12 @@ impl Orchestrator {
             let prog_tx_clone = prog_tx.clone();
 
             let run_req = build_subagent_request(
-                &session_key, &prefixed_prompt, &req.model_override, &req.user_id, &cancel, req.max_iterations,
+                &session_key,
+                &prefixed_prompt,
+                &req.model_override,
+                &req.user_id,
+                &cancel,
+                req.max_iterations,
             );
 
             running.push(Box::pin(async move {
@@ -655,7 +697,11 @@ impl Orchestrator {
             task_id: parent_task_id,
             success: all_success,
             output: combined,
-            error: if all_success { None } else { Some("One or more sub-agents failed".to_string()) },
+            error: if all_success {
+                None
+            } else {
+                Some("One or more sub-agents failed".to_string())
+            },
         })
     }
 
@@ -934,8 +980,12 @@ fn format_dep_context(deps: &[(String, String)]) -> String {
 /// plus task-specific instructions in the user message.
 fn task_prefix_for_type(agent_type: &AgentType) -> &'static str {
     match agent_type {
-        AgentType::Explore => "[EXPLORATION agent — search, read, research only. Do NOT modify files or execute destructive commands. Report findings clearly.]\n\n",
-        AgentType::Plan => "[PLANNING agent — analyze, break down steps, identify files and patterns. Produce a clear actionable plan. Do NOT implement anything.]\n\n",
+        AgentType::Explore => {
+            "[EXPLORATION agent — search, read, research only. Do NOT modify files or execute destructive commands. Report findings clearly.]\n\n"
+        }
+        AgentType::Plan => {
+            "[PLANNING agent — analyze, break down steps, identify files and patterns. Produce a clear actionable plan. Do NOT implement anything.]\n\n"
+        }
         AgentType::General => "[Execute the task using whatever tools are needed.]\n\n",
     }
 }

@@ -5,7 +5,7 @@
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
   import { theme } from '$lib/stores/theme.js';
-  import { onboardingComplete, onboardingChecked, checkOnboardingStatus } from '$lib/stores/onboarding';
+  import { onboardingComplete, onboardingChecked, backendReady, backendChecking, checkOnboardingStatus, retryBackendConnection } from '$lib/stores/onboarding';
   import Toast from '$lib/components/Toast.svelte';
   import NotificationBell from '$lib/components/NotificationBell.svelte';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
@@ -105,7 +105,10 @@
     return '';
   });
 
+  const isEmbed = $derived($page.url.pathname.startsWith('/chat-embed'));
+
   const isMinimalChrome = $derived(
+    isEmbed ||
     $page.url.pathname.startsWith('/settings') ||
     $page.url.pathname.startsWith('/app/')
   );
@@ -113,7 +116,27 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} oncontextmenu={handleContextMenu} />
 
-{#if !$onboardingChecked}
+{#if isEmbed}
+  {@render children()}
+{:else if !$backendReady && !$onboardingChecked}
+  <div class="h-dvh flex flex-col items-center justify-center bg-base-100 gap-4">
+    <div class="w-10 h-10 rounded-lg bg-primary text-primary-content flex items-center justify-center font-mono text-xl font-bold">N</div>
+    {#if $backendChecking}
+      <span class="loading loading-spinner loading-md"></span>
+      <p class="text-sm text-base-content/70">Connecting to Nebo...</p>
+    {:else}
+      <p class="text-sm text-base-content/70">Waiting for backend...</p>
+      <span class="loading loading-dots loading-sm"></span>
+    {/if}
+    <button
+      class="btn btn-sm btn-outline mt-2"
+      disabled={$backendChecking}
+      onclick={() => retryBackendConnection()}
+    >
+      Retry now
+    </button>
+  </div>
+{:else if !$onboardingChecked}
   <div class="h-dvh flex items-center justify-center bg-base-100">
     <span class="loading loading-spinner loading-lg"></span>
   </div>
@@ -153,13 +176,15 @@
     </div>
   </div>
 {/if}
-<Toast />
-<CommandPalette bind:show={showCommandPalette} />
-<UpgradeSuccessModal
-  bind:show={showUpgradeSuccess}
-  plan={upgradedPlan}
-  onclose={() => {
-    showUpgradeSuccess = false;
-    if ($page.url.pathname.startsWith('/upgrade')) goto('/');
-  }}
-/>
+{#if !isEmbed}
+  <Toast />
+  <CommandPalette bind:show={showCommandPalette} />
+  <UpgradeSuccessModal
+    bind:show={showUpgradeSuccess}
+    plan={upgradedPlan}
+    onclose={() => {
+      showUpgradeSuccess = false;
+      if ($page.url.pathname.startsWith('/upgrade')) goto('/');
+    }}
+  />
+{/if}

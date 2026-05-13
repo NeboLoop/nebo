@@ -1,8 +1,22 @@
 import { writable, get } from 'svelte/store';
 import { AGENT_ID_MAP, AGENT_ID_REVERSE, AGENTS } from '$lib/data.js';
 import { ensureAgentColor } from '$lib/tokens.js';
+import type { Agent, AgentRunEntry, WorkflowRun } from '$lib/api/neboComponents';
 
 // ─── Types ───────────────────────────────────────────────────────────
+
+/** Shape of a workflow entry returned by the backend (workflows map values). */
+interface WorkflowEntry {
+  isActive?: boolean;
+  description?: string;
+  trigger?: {
+    type?: string;
+    schedule?: string;
+    cron?: string;
+    interval?: string;
+    window?: { start: string; end: string };
+  };
+}
 export type EventKind = 'sched' | 'event' | 'user';
 export type RunStatus = 'success' | 'failed' | 'skipped' | 'running' | 'pending';
 
@@ -199,7 +213,7 @@ function dateStringToDays(startedAt: string): number[] {
 // ─── Computed schedule data ──────────────────────────────────────────
 let _scheduledItems: CalendarItem[] = [];
 let _eventRunItems: CalendarItem[] = [];
-let _apiRunsCache: Record<string, any[]> = {};
+let _apiRunsCache: Record<string, AgentRunEntry[]> = {};
 
 // ─── User-created items store ────────────────────────────────────────
 export const userScheduleItems = writable<CalendarItem[]>([]);
@@ -227,6 +241,26 @@ function ensureAgent(agentId: string, name?: string, role?: string): string | nu
   return shortId;
 }
 
+/** Convert a WorkflowRun (API shape) to the AgentRunEntry shape used by the schedule cache. */
+function mapWorkflowRunToEntry(run: WorkflowRun): AgentRunEntry {
+  const startSecs = typeof run.startedAt === 'number' ? run.startedAt : 0;
+  const endSecs = typeof run.completedAt === 'number' ? run.completedAt : 0;
+  const durSecs = endSecs > 0 && startSecs > 0 ? endSecs - startSecs : 0;
+  const durStr = durSecs > 0
+    ? (durSecs >= 60 ? `${Math.floor(durSecs / 60)}m ${Math.round(durSecs % 60)}s` : `${Math.round(durSecs)}s`)
+    : '';
+  const dt = startSecs > 0 ? new Date(startSecs * 1000) : null;
+  return {
+    id: run.id,
+    name: run.triggerDetail || run.currentActivity || run.triggerType || 'Workflow run',
+    status: run.status,
+    duration: durStr,
+    date: dt ? dt.toLocaleString() : '',
+    workflowRunId: run.id,
+    trigger: run.triggerType,
+  };
+}
+
 /** Load schedule data from backend API (agents + workflows + runs). */
 export async function loadScheduleFromAPI(): Promise<void> {
   try {
@@ -236,7 +270,8 @@ export async function loadScheduleFromAPI(): Promise<void> {
     const agentsResp = await api.listAgents().catch(() => null);
     const agentIds: string[] = [];
     if (agentsResp?.agents?.length) {
-      for (const a of agentsResp.agents) {
+      const agents = agentsResp.agents as Agent[];
+      for (const a of agents) {
         if (!a.isEnabled) continue;
         const shortId = ensureAgent(a.id, a.name, a.description);
         if (shortId) agentIds.push(a.id);
@@ -249,10 +284,10 @@ export async function loadScheduleFromAPI(): Promise<void> {
         const runsResp = await api.listAgentRuns(agentId).catch(() => null);
         if (runsResp?.runs?.length) {
           for (const run of runsResp.runs) {
-            const wfId = (run as any).workflowRunId || (run as any).workflowId || '';
+            const wfId = run.workflowId || '';
             const key = `${agentId}:${wfId}`;
             if (!_apiRunsCache[key]) _apiRunsCache[key] = [];
-            _apiRunsCache[key].push(run);
+            _apiRunsCache[key].push(mapWorkflowRunToEntry(run));
           }
         }
       } catch { /* skip agent */ }
@@ -262,7 +297,7 @@ export async function loadScheduleFromAPI(): Promise<void> {
     const apiItems: CalendarItem[] = [];
     const workflowPromises = agentIds.map(async (agentId) => {
       try {
-        const resp = await api.getAgentWorkflows(agentId);
+        const resp = await api.listAgentWorkflows(agentId);
         const workflowMap = resp?.workflows;
         if (!workflowMap || typeof workflowMap !== 'object') return;
         const entries = Object.entries(workflowMap);
@@ -271,7 +306,7 @@ export async function loadScheduleFromAPI(): Promise<void> {
         if (!agentShort) return;
 
         for (const [bindingName, wfData] of entries) {
-          const wf = wfData as any;
+          const wf = wfData as WorkflowEntry;
           if (wf.isActive === false) continue;
           const trigger = wf.trigger || {};
           const triggerType = trigger.type || 'manual';
@@ -282,10 +317,10 @@ export async function loadScheduleFromAPI(): Promise<void> {
           const runs = _apiRunsCache[runKey] || [];
           let dur = 0.25; // default 15 min
           if (runs.length > 0) {
-            const durations = runs.map((r: any) => {
+            const durations = runs.map((r) => {
               if (r.duration) return parseDurationString(r.duration);
               return 0;
-            }).filter((d: number) => d > 0);
+            }).filter((d) => d > 0);
             if (durations.length) dur = Math.max(0.25, durations.reduce((a: number, b: number) => a + b, 0) / durations.length);
           }
 
@@ -336,7 +371,7 @@ export async function loadScheduleFromAPI(): Promise<void> {
       const isScheduled = apiItems.some(i => i.workflowId === wfId && i.agentFull === agentFull);
       if (isScheduled) continue;
 
-      for (const run of runs as any[]) {
+      for (const run of runs) {
         const dateStr = run.date || '';
         const timeMatch = dateStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
         let fractionalHour = 9; // default
@@ -360,12 +395,10 @@ export async function loadScheduleFromAPI(): Promise<void> {
           end: fractionalHour + Math.max(0.25, runDur),
           workflowId: wfId, triggerType: 'event',
           run: {
-            id: run.id, status: run.status === 'completed' ? 'success' : run.status,
+            id: run.id, status: (run.status === 'completed' ? 'success' : run.status) as RunStatus,
             actualDuration: run.duration || '',
             startedAt: dateStr,
             completedAt: '',
-            tokens: run.tokens,
-            activities: run.activities,
           },
         });
       }
@@ -438,7 +471,7 @@ export function flattenForDate(
 }
 
 /** Attach run data to scheduled items for a given date. */
-export function attachRunData(items: CalendarItem[]): CalendarItem[] {
+export function attachRunData<T extends CalendarItem>(items: T[]): T[] {
   return items.map(item => {
     // Event items already have run data attached
     if (item.run) return item;
@@ -453,12 +486,10 @@ export function attachRunData(items: CalendarItem[]): CalendarItem[] {
           ...item,
           run: {
             id: latest.id,
-            status: latest.status === 'completed' ? 'success' : latest.status,
+            status: (latest.status === 'completed' ? 'success' : latest.status) as RunStatus,
             actualDuration: latest.duration || '',
             startedAt: latest.date || '',
             completedAt: '',
-            tokens: latest.tokens,
-            activities: latest.activities,
           },
         };
       }
@@ -468,7 +499,7 @@ export function attachRunData(items: CalendarItem[]): CalendarItem[] {
 }
 
 /** Get recent runs for a workflow (for DayDetailPane). */
-export function getRecentRuns(agentFull: string, workflowId: string): any[] {
+export function getRecentRuns(agentFull: string, workflowId: string): AgentRunEntry[] {
   const key = `${agentFull}:${workflowId}`;
   return _apiRunsCache[key] || [];
 }

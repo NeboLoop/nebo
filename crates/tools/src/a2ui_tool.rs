@@ -17,7 +17,7 @@ use serde_json::json;
 use tracing::debug;
 
 use crate::domain::{
-    build_domain_description, build_domain_schema, DomainSchemaConfig, FieldConfig, ResourceConfig,
+    DomainSchemaConfig, FieldConfig, ResourceConfig, build_domain_description, build_domain_schema,
 };
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
@@ -274,7 +274,10 @@ impl A2UIDomainTool {
     /// Resolve agent_id: use explicit param if provided, otherwise derive from
     /// ToolContext.session_key (format "agent:{id}:{channel}").
     fn resolve_agent_id<'a>(params: &'a serde_json::Value, ctx: &'a ToolContext) -> &'a str {
-        let explicit = params.get("agent_id").and_then(|v| v.as_str()).unwrap_or("");
+        let explicit = params
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if !explicit.is_empty() {
             return explicit;
         }
@@ -289,7 +292,12 @@ impl A2UIDomainTool {
         ""
     }
 
-    async fn handle_surface(&self, action: &str, params: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+    async fn handle_surface(
+        &self,
+        action: &str,
+        params: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> ToolResult {
         match action {
             "create" => {
                 let agent_id = Self::resolve_agent_id(params, ctx);
@@ -308,7 +316,9 @@ impl A2UIDomainTool {
                 let theme = params.get("theme").cloned();
 
                 if agent_id.is_empty() {
-                    return ToolResult::error("agent_id is required (pass it explicitly or ensure session is agent-scoped)");
+                    return ToolResult::error(
+                        "agent_id is required (pass it explicitly or ensure session is agent-scoped)",
+                    );
                 }
 
                 match self
@@ -365,7 +375,10 @@ impl A2UIDomainTool {
             }
 
             "navigate" => {
-                let surface_id = params.get("surface_id").and_then(|v| v.as_str()).unwrap_or("");
+                let surface_id = params
+                    .get("surface_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let agent_id_param = Self::resolve_agent_id(params, ctx);
                 let target_view = match params.get("target_view").and_then(|v| v.as_str()) {
                     Some(v) => v,
@@ -374,14 +387,26 @@ impl A2UIDomainTool {
                 let nav_params = params.get("params").cloned();
                 let views_json = match params.get("views_json") {
                     Some(v) => v.clone(),
-                    None => return ToolResult::error("views_json is required (agent views definition)"),
+                    None => {
+                        return ToolResult::error(
+                            "views_json is required (agent views definition)",
+                        );
+                    }
                 };
 
                 // Derive agent_id and from_view from surface_id or params
                 let (agent_id, from_view) = if !surface_id.is_empty() {
                     let parts: Vec<&str> = surface_id.split(':').collect();
-                    let aid = if parts.len() >= 2 { parts[1] } else { agent_id_param };
-                    let fv = if parts.len() >= 3 { parts[2] } else { "default" };
+                    let aid = if parts.len() >= 2 {
+                        parts[1]
+                    } else {
+                        agent_id_param
+                    };
+                    let fv = if parts.len() >= 3 {
+                        parts[2]
+                    } else {
+                        "default"
+                    };
                     (aid, fv)
                 } else {
                     (agent_id_param, "default")
@@ -391,9 +416,14 @@ impl A2UIDomainTool {
                     return ToolResult::error("agent_id is required for navigate");
                 }
 
-                match self.host.navigate_view(agent_id, from_view, target_view, nav_params, &views_json).await {
+                match self
+                    .host
+                    .navigate_view(agent_id, from_view, target_view, nav_params, &views_json)
+                    .await
+                {
                     Ok(sid) => ToolResult::ok(
-                        json!({ "surface_id": sid, "status": "navigated", "view": target_view }).to_string(),
+                        json!({ "surface_id": sid, "status": "navigated", "view": target_view })
+                            .to_string(),
                     ),
                     Err(e) => ToolResult::error(format!("Failed to navigate: {e}")),
                 }
@@ -416,7 +446,9 @@ impl A2UIDomainTool {
             "list" => {
                 let agent_id = Self::resolve_agent_id(params, ctx);
                 if agent_id.is_empty() {
-                    return ToolResult::error("agent_id is required (pass it explicitly or ensure session is agent-scoped)");
+                    return ToolResult::error(
+                        "agent_id is required (pass it explicitly or ensure session is agent-scoped)",
+                    );
                 }
 
                 let surfaces = self.host.list_surfaces(agent_id).await;

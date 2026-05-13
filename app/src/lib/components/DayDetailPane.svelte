@@ -31,7 +31,10 @@
   );
 
   // Workflow definition — loaded from API via schedule store, no longer from mock data
-  const workflowDef = $derived.by(() => {
+  interface WorkflowDef {
+    activities: { id: string; intent: string }[];
+  }
+  const workflowDef = $derived.by((): WorkflowDef | null => {
     return null; // TODO: load from listAgentWorkflows() API when item selected
   });
   const workflowActivities = $derived(workflowDef?.activities ?? []);
@@ -300,7 +303,7 @@
     >Create Event</button>
   </div>
 
-{:else if showDetail}
+{:else if showDetail && item}
   <!-- ─── Detail View ─────────────────────────────────────────── -->
   <div class="w-80 border-l border-base-content/10 bg-base-100 p-5 flex flex-col gap-3 shrink-0 overflow-y-auto">
     <!-- Header -->
@@ -435,7 +438,7 @@
           <div class="pt-2 border-t border-base-content/5">
             <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Workflow</div>
             {#each workflowActivities as activity, i}
-              {@const runActivity = item.run?.activities?.find((a: { id: string }) => a.id === activity.id)}
+              {@const runActivity = item.run?.activities?.find((a) => a.id === activity.id)}
               <div class="flex items-start gap-2 py-1.5 {i < workflowActivities.length - 1 ? 'border-b border-base-content/5' : ''}">
                 {#if runActivity}
                   <span class="font-mono text-xs mt-0.5 shrink-0 {statusColor(runActivity.status)}">{statusIcon(runActivity.status)}</span>
@@ -461,7 +464,7 @@
             {#each recentRuns as run}
               <div class="flex items-center gap-2 py-1 border-b border-base-content/5 last:border-b-0">
                 <span class="font-mono text-xs {statusColor(run.status)}">{statusIcon(run.status)}</span>
-                <span class="flex-1 text-xs text-base-content/70 truncate">{run.startedAt}</span>
+                <span class="flex-1 text-xs text-base-content/70 truncate">{run.date}</span>
                 <span class="font-mono text-xs text-base-content/50">{run.duration}</span>
               </div>
             {/each}

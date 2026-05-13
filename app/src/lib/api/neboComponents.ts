@@ -96,17 +96,6 @@ export interface AgentWorkflow {
 	connections?: unknown
 }
 
-export interface AgentInputField {
-	key: string
-	label: string
-	description?: string
-	type: 'text' | 'textarea' | 'number' | 'select' | 'checkbox' | 'radio' | 'path' | 'file'
-	required?: boolean
-	default?: unknown
-	placeholder?: string
-	options?: Array<{ value: string; label: string }>
-}
-
 export interface AgentWorkflowStats {
 	totalRuns: number
 	completed: number
@@ -136,6 +125,29 @@ export interface AuthProfile {
 	createdAt: number
 	updatedAt: number
 	authType?: string
+}
+
+export interface BillingPriceInfo {
+	id?: string
+	stripePriceId?: string
+	nickname?: string
+	displayName?: string
+	description?: string
+	amountCents?: number
+	currency?: string
+	interval?: string
+	category?: string
+	displayOrder?: number
+	boostPriceId?: string
+	features?: string[]
+}
+
+export interface BillingSubscription {
+	id?: string
+	stripeSubscriptionId?: string
+	plan?: string
+	status?: string
+	currentPeriodEnd?: string
 }
 
 export interface Channel {
@@ -171,6 +183,7 @@ export interface ChatMessage {
 	toolCalls?: string
 	toolResults?: string
 	tokenEstimate?: number
+	html?: string
 }
 
 export interface ChatStreamResponse {
@@ -290,6 +303,17 @@ export interface HealthResponse {
 	version: string
 }
 
+export interface InvoiceInfo {
+	id?: string
+	status?: string
+	amountCents?: number
+	currency?: string
+	description?: string
+	createdAt?: string
+	hostedUrl?: string
+	pdfUrl?: string
+}
+
 export interface Lead {
 	id: string
 	email: string
@@ -402,6 +426,16 @@ export interface OauthConnection {
 	updated_at: number
 }
 
+export interface PaymentMethodInfo {
+	id?: string
+	type?: string
+	brand?: string
+	lastFour?: string
+	expMonth?: number
+	expYear?: number
+	isDefault?: boolean
+}
+
 export interface PendingTask {
 	id: string
 	taskType: string
@@ -445,6 +479,12 @@ export interface PluginRegistry {
 	metadata: string
 	createdAt: number
 	updatedAt: number
+	slug?: string
+	author?: string
+	source?: string
+	binaryPath?: string
+	manifestHash?: string
+	signatureStatus?: string
 }
 
 export interface PluginSetting {
@@ -629,10 +669,6 @@ export interface WorkflowToolBinding {
 
 // ── API Response Types (inferred from handlers) ────────────────────
 
-export interface AcceptTermsResponse {
-	success: boolean
-}
-
 export interface ActivateAgentChatResponse {
 	chatId: string
 	messages: ChatMessage[]
@@ -644,6 +680,7 @@ export interface ActivateAgentResponse {
 	agentId: string
 	name: string
 	status: string
+	isApp: unknown
 }
 
 export interface AddCollectionItemResponse {
@@ -677,13 +714,6 @@ export interface AuthStatusResponse {
 	authenticated: boolean
 }
 
-export interface BotStatusResponse {
-	connected: boolean
-	authenticated: boolean
-	botId: string
-	apiServer: string
-}
-
 export interface BrowseResponse {
 	path: string
 	entries: unknown[]
@@ -691,10 +721,6 @@ export interface BrowseResponse {
 
 export interface CancelRunResponse {
 	cancelled: string
-}
-
-export interface ChangePasswordResponse {
-	success: boolean
 }
 
 export interface ChatWithAgentResponse {
@@ -716,11 +742,6 @@ export interface ConfigResponse {
 	requiresSetup: unknown
 	googleEnabled: boolean
 	githubEnabled: boolean
-}
-
-export interface ConnectHandlerResponse {
-	connected: boolean
-	botId: string
 }
 
 export interface ConnectIntegrationResponse {
@@ -788,10 +809,6 @@ export interface DeactivateAgentResponse {
 	agentId: string
 	name: string
 	status: string
-}
-
-export interface DeleteAccountResponse {
-	success: boolean
 }
 
 export interface DeleteAdvisorResponse {
@@ -871,10 +888,6 @@ export interface EditMessageResponse {
 	success: boolean
 }
 
-export interface ForceReconnectResponse {
-	reconnected: boolean
-}
-
 export interface GetAgentNavResponse {
 	viewId: unknown
 	label: string
@@ -882,6 +895,7 @@ export interface GetAgentNavResponse {
 
 export interface GetAgentResponse {
 	agent: Agent
+	displayName: string
 	version: string
 	inputFields: unknown[]
 	personaProperties: unknown
@@ -890,6 +904,8 @@ export interface GetAgentResponse {
 	model: unknown
 	skills: string[]
 	views: unknown
+	pluginsNeedingAuth: unknown
+	needsSetup: unknown
 }
 
 export interface GetAgentSurfacesResponse {
@@ -905,7 +921,7 @@ export interface GetChatHistoryByDayResponse {
 }
 
 export interface GetChatMessagesResponse {
-	messages: ChatMessage[]
+	messages: unknown[]
 }
 
 export interface GetCompanionChatResponse {
@@ -915,13 +931,10 @@ export interface GetCompanionChatResponse {
 	sessionKey: string
 }
 
-export interface GetCurrentUserResponse {
-	id: string
-	email: string
-	name: string
-	avatarUrl: string
-	role: string
-	createdAt: number
+export interface GetDiagnosticsResponse {
+	plugin: unknown
+	diagnostics: unknown[]
+	total: number
 }
 
 export interface GetEntityConfigResponse {
@@ -942,6 +955,17 @@ export interface GetHeartbeatResponse {
 	crons: unknown[]
 }
 
+export interface GetIdentityResponse {
+	id: string
+	name: string
+	displayName: string
+	description: string
+	persona: unknown
+	model: unknown
+	skills: string[]
+	inputValues: unknown
+}
+
 export interface GetLanesResponse {
 	lanes: unknown[]
 }
@@ -954,22 +978,15 @@ export interface GetOauthUrlResponse {
 	authUrl: string
 }
 
-export interface GetPermissionsResponse {
-	permissions: ToolPermission[]
-}
-
-export interface GetPreferencesResponse {
-	preferences: UserPreference
-}
-
-export interface GetProfileResponse {
-	profile: unknown
+export interface GetPluginConfigResponse {
+	plugin: unknown
+	config: unknown[]
 }
 
 export interface GetRunResponse {
 	run: WorkflowRun
 	activities: WorkflowActivityResult[]
-	taskItems: Record<string, PendingTask[]>
+	taskItems: unknown
 }
 
 export interface GetSessionMessagesResponse {
@@ -994,10 +1011,14 @@ export interface GetStatsResponse {
 
 export interface GetStatusResponse {
 	status: string
-	activeTasks: number
-	queuedTasks: number
+	activeTasks: PendingTask[]
+	queuedTasks: PendingTask[]
 	providers: unknown
 	tools: number
+}
+
+export interface GetStorageResponse {
+	key: string
 }
 
 export interface GetStoreCollectionResponse {
@@ -1026,6 +1047,12 @@ export interface GetWorkflowResponse {
 	workflow: Workflow
 }
 
+export interface HttpProxyResponse {
+	status: string
+	headers: unknown
+	body: unknown
+}
+
 export interface InstallDepsResponse {
 	agentId: string
 	cascade: unknown
@@ -1035,10 +1062,8 @@ export interface InstallStoreProductResponse {
 	success: boolean
 }
 
-export interface JanusUsageResponse {
-	session: unknown
-	weekly: unknown
-	budget: unknown
+export interface JanusCompleteResponse {
+	text: unknown
 }
 
 export interface ListActiveAgentsResponse {
@@ -1051,13 +1076,13 @@ export interface ListAdvisorsResponse {
 }
 
 export interface ListAgentChatsResponse {
-	chats: EnrichedChat[]
+	chats: unknown[]
 	activeChatId: string
 	total: number
 }
 
 export interface ListAgentRunsResponse {
-	runs: AgentRunEntry[]
+	runs: WorkflowRun[]
 	total: number
 }
 
@@ -1067,8 +1092,7 @@ export interface ListAgentWorkflowsResponse {
 }
 
 export interface ListAgentsResponse {
-	agents: Agent[]
-	filesystemAgents: unknown[]
+	agents: unknown[]
 	total: number
 }
 
@@ -1090,12 +1114,18 @@ export interface ListChatsResponse {
 	total: number
 }
 
+export interface ListDependentsResponse {
+	skills: unknown[]
+	agents: unknown[]
+	total: number
+}
+
 export interface ListEventSourcesResponse {
 	sources: unknown[]
 }
 
 export interface ListExtensionsResponse {
-	extensions: ExtensionInfo[]
+	extensions: unknown[]
 }
 
 export interface ListIntegrationsResponse {
@@ -1123,62 +1153,6 @@ export interface ListNotificationsResponse {
 
 export interface ListPersonalityPresetsResponse {
 	presets: unknown
-	id: string
-	name: string
-	description: string
-	voiceStyle: string
-	responseLength: string
-	emojiUsage: string
-	formality: string
-	proactivity: string
-	id: string
-	name: string
-	description: string
-	voiceStyle: string
-	responseLength: string
-	emojiUsage: string
-	formality: string
-	proactivity: string
-	id: string
-	name: string
-	description: string
-	voiceStyle: string
-	responseLength: string
-	emojiUsage: string
-	formality: string
-	proactivity: string
-	id: string
-	name: string
-	description: string
-	voiceStyle: string
-	responseLength: string
-	emojiUsage: string
-	formality: string
-	proactivity: string
-	id: string
-	name: string
-	description: string
-	voiceStyle: string
-	responseLength: string
-	emojiUsage: string
-	formality: string
-	proactivity: string
-	id: string
-	name: string
-	description: string
-	voiceStyle: string
-	responseLength: string
-	emojiUsage: string
-	formality: string
-	proactivity: string
-	id: string
-	name: string
-	description: string
-	voiceStyle: string
-	responseLength: string
-	emojiUsage: string
-	formality: string
-	proactivity: string
 }
 
 export interface ListPluginEventsResponse {
@@ -1198,31 +1172,6 @@ export interface ListProvidersResponse {
 
 export interface ListRegistryResponse {
 	registry: unknown
-	name: string
-	description: string
-	serverType: string
-	command: string
-	args: unknown
-	name: string
-	description: string
-	serverType: string
-	command: string
-	args: unknown
-	name: string
-	description: string
-	serverType: string
-	command: string
-	args: unknown
-	name: string
-	description: string
-	serverType: string
-	command: string
-	args: unknown
-	name: string
-	description: string
-	serverType: string
-	command: string
-	args: unknown
 }
 
 export interface ListRunsResponse {
@@ -1236,6 +1185,10 @@ export interface ListSessionsResponse {
 
 export interface ListSkillSecretsResponse {
 	secrets: unknown[]
+}
+
+export interface ListStorageResponse {
+	items: unknown[]
 }
 
 export interface ListStoreCollectionsResponse {
@@ -1277,7 +1230,57 @@ export interface MarkReadResponse {
 	success: boolean
 }
 
-export interface OpenNeboloopResponse {
+export interface NeboLoopBillingCheckoutResponse {
+	clientSecret: string
+	publishableKey: string
+	checkoutUrl: string
+}
+
+export interface NeboLoopBillingInvoicesResponse {
+	invoices: InvoiceInfo[]
+}
+
+export interface NeboLoopBillingPaymentMethodsResponse {
+	methods: PaymentMethodInfo[]
+}
+
+export interface NeboLoopBillingPricesResponse {
+	prices: BillingPriceInfo[]
+}
+
+export interface NeboLoopBillingSetupIntentResponse {
+	clientSecret: string
+	publishableKey: string
+}
+
+export interface NeboLoopBillingSubscriptionResponse {
+	plan: string
+	subscriptions: BillingSubscription[]
+}
+
+export interface NeboLoopBotStatusResponse {
+	connected: boolean
+	authenticated: boolean
+	botId: string
+	apiServer: string
+}
+
+export interface NeboLoopConnectHandlerResponse {
+	connected: boolean
+	botId: string
+}
+
+export interface NeboLoopForceReconnectResponse {
+	reconnected: boolean
+}
+
+export interface NeboLoopJanusUsageResponse {
+	session: unknown
+	weekly: unknown
+	budget: unknown
+}
+
+export interface NeboLoopOpenNeboloopResponse {
 	ok: boolean
 }
 
@@ -1294,6 +1297,10 @@ export interface ProcessAgentBindingsResponse {
 	triggerType: unknown
 	hasActivities: unknown
 	status: string
+}
+
+export interface ProxyPluginRouteResponse {
+	output: unknown
 }
 
 export interface ReauthenticateIntegrationResponse {
@@ -1336,6 +1343,10 @@ export interface SearchMessagesResponse {
 	messages: ChatMessage[]
 }
 
+export interface SetPluginConfigResponse {
+	success: boolean
+}
+
 export interface SetSkillSecretResponse {
 	success: boolean
 }
@@ -1373,8 +1384,16 @@ export interface ToggleWorkflowResponse {
 	workflow: Workflow
 }
 
+export interface TranscribeResponse {
+	text: string
+}
+
 export interface TriggerAgentSetupResponse {
 	ok: boolean
+}
+
+export interface TtsResponse {
+	error: string
 }
 
 export interface UninstallStoreProductResponse {
@@ -1413,15 +1432,6 @@ export interface UpdateCliProviderResponse {
 	message: string
 }
 
-export interface UpdateCurrentUserResponse {
-	id: string
-	email: string
-	name: string
-	avatarUrl: string
-	role: string
-	createdAt: number
-}
-
 export interface UpdateEntityConfigResponse {
 	config: unknown
 }
@@ -1441,14 +1451,6 @@ export interface UpdateModelConfigResponse {
 
 export interface UpdateModelResponse {
 	message: string
-}
-
-export interface UpdatePermissionsResponse {
-	success: boolean
-}
-
-export interface UpdateProfileResponse {
-	profile: unknown
 }
 
 export interface UpdateSettingsResponse {
@@ -1473,6 +1475,56 @@ export interface UpdateTeamResponse {
 
 export interface UpdateWorkflowResponse {
 	workflow: Workflow
+}
+
+export interface UserAcceptTermsResponse {
+	success: boolean
+}
+
+export interface UserChangePasswordResponse {
+	success: boolean
+}
+
+export interface UserDeleteAccountResponse {
+	success: boolean
+}
+
+export interface UserGetCurrentUserResponse {
+	id: string
+	email: string
+	name: string
+	avatarUrl: string
+	role: string
+	createdAt: number
+}
+
+export interface UserGetPermissionsResponse {
+	permissions: ToolPermission[]
+}
+
+export interface UserGetPreferencesResponse {
+	preferences: UserPreference
+}
+
+export interface UserGetProfileResponse {
+	profile: UserProfileFull
+}
+
+export interface UserUpdateCurrentUserResponse {
+	id: string
+	email: string
+	name: string
+	avatarUrl: string
+	role: string
+	createdAt: number
+}
+
+export interface UserUpdatePermissionsResponse {
+	success: boolean
+}
+
+export interface UserUpdateProfileResponse {
+	profile: unknown
 }
 
 // ── Common Types ───────────────────────────────────────────────────
@@ -1558,137 +1610,52 @@ export interface ToolPermission {
 	allowed: boolean
 }
 
-// ── Billing types (NeboLoop proxy — not auto-generatable) ──
-
-export interface BillingPriceInfo {
-	id: string
-	productName: string
-	displayName: string
-	nickname: string
-	productDisplayName: string
-	productDescription?: string
-	stripePriceId: string
-	amountCents: number
-	currency: string
-	interval: string
-	intervalCount?: number
-	category: string
-	displayOrder: number
-	description?: string
-	features?: string[]
-	boostPriceId?: string
-}
-
-export interface PaymentMethodInfo {
-	id: string
-	type: string
-	brand?: string
-	lastFour?: string
-	expiresAt?: string
-	isDefault: boolean
-	createdAt: string
-}
-
-export interface InvoiceInfo {
-	id: string
-	amountCents: number
-	currency: string
-	description: string
-	status: string
-	hostedUrl?: string
-	pdfUrl?: string
-	receiptUrl?: string
-	createdAt: string
-}
-
-export interface BillingPricesResponse { prices: BillingPriceInfo[] }
-export interface BillingSubscriptionResponse { plan: string; subscriptions: any[] }
-export interface BillingCheckoutResponse { checkoutUrl?: string; clientSecret?: string; publishableKey?: string }
-export interface BillingPortalResponse { portalUrl: string }
-export interface BillingCancelResponse { status: string }
-export interface BillingInvoicesResponse { invoices: InvoiceInfo[] }
-export interface BillingPaymentMethodsResponse { methods: PaymentMethodInfo[] }
-
-// ── Janus usage types ──
-
-export interface NeboLoopJanusWindowUsage {
-	limitCredits: number
-	remainingCredits: number
-	usedCredits: number
-	percentUsed: number
-	resetAt?: string
-}
-
-export interface NeboLoopBudget {
-	freeAvailable: number
-	giftAvailable: number
-	creditsCents: number
-	activePool?: string
-}
-
-export interface NeboLoopJanusUsageResponse {
-	session: NeboLoopJanusWindowUsage
-	weekly: NeboLoopJanusWindowUsage
-	budget?: NeboLoopBudget
-	updatedAt?: string
-}
-
-// ── Account status ──
-
-export interface NeboLoopAccountStatusResponse {
-	connected: boolean
-	janusProvider: boolean
-	profileId?: string
-	ownerId?: string
-	email?: string
-	displayName?: string
-	plan?: string
-}
-
-// ── Referral ──
-
-export interface NeboLoopReferralCodeResponse {
-	referral_code: string
-	referral_link: string
-	token_balance: number
-}
-
-// ── User profile ──
-
-export interface GetUserProfileResponse { profile: UserProfile }
-export interface UpdateUserProfileRequest {
+export interface UserProfileFull {
+	userId: string
 	displayName?: string
 	bio?: string
 	location?: string
 	timezone?: string
 	occupation?: string
-	interests?: string[]
+	interests?: string
 	communicationStyle?: string
 	goals?: string
 	context?: string
-	onboardingCompleted?: boolean
+	onboardingCompleted: boolean
+	onboardingStep?: number
+	toolPermissions?: string
+	termsAcceptedAt?: number
+	createdAt: number
+	updatedAt: number
 }
-export interface UpdateUserProfileResponse { profile: UserProfile }
-
-// ── Setup ──
-
-export interface SetupStatusResponse { setupComplete: boolean }
-export interface CompleteSetupResponse { success: boolean }
-
-export interface DeleteAccountRequest { password?: string }
 
 // ── WebSocket Event Types ──────────────────────────────────────────
 
 /** Server → Client WebSocket events */
 export type WSServerEventType =
+	| "app_action"
+	| "app_ping"
 	| "chat_cancelled"
 	| "session_reset"
 	| "session_compact"
 	| "chat_complete"
 	| "a2ui_message"
 	| "chat_ack"
+	| "chat_stream"
 	| "chat_error"
 	| "agent_activated"
+
+export interface AppActionEvent {
+	agentId: string
+	surfaceId: string
+	name: unknown
+	sourceComponentId: string
+	context: unknown
+}
+
+export interface AppPingEvent {
+	agentId: string
+}
 
 export interface ChatCancelledEvent {
 	session_id: string
@@ -1708,6 +1675,11 @@ export interface ChatAckEvent {
 	status: string
 }
 
+export interface ChatStreamEvent {
+	session_id: string
+	content: unknown
+}
+
 export interface ChatErrorEvent {
 	error: string
 }
@@ -1718,11 +1690,11 @@ export interface AgentActivatedEvent {
 
 /** Client → Server WebSocket message types */
 export type WSClientMessageType =
+	| "ping"
 	| "chat"
 	| "cancel"
 	| "auth"
 	| "connect"
-	| "ping"
 	| "pong"
 	| "session_reset"
 	| "session_compact"

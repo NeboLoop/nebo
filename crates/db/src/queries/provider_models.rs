@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::ProviderModel;
 use crate::Store;
+use crate::models::ProviderModel;
 use types::NeboError;
 
 impl Store {
@@ -155,11 +155,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_provider_model_active(
-        &self,
-        id: &str,
-        is_active: i64,
-    ) -> Result<(), NeboError> {
+    pub fn update_provider_model_active(&self, id: &str, is_active: i64) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE provider_models SET is_active = ?2, updated_at = unixepoch() WHERE id = ?1",
@@ -183,11 +179,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_default_provider_model(
-        &self,
-        id: &str,
-        provider: &str,
-    ) -> Result<(), NeboError> {
+    pub fn set_default_provider_model(&self, id: &str, provider: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE provider_models SET is_default = CASE WHEN id = ?1 THEN 1 ELSE 0 END, updated_at = unixepoch() WHERE provider = ?2",
@@ -204,10 +196,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn delete_provider_models_by_provider(
-        &self,
-        provider: &str,
-    ) -> Result<(), NeboError> {
+    pub fn delete_provider_models_by_provider(&self, provider: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "DELETE FROM provider_models WHERE provider = ?1",

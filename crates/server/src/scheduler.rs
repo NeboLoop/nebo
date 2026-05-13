@@ -6,7 +6,7 @@ use cron::Schedule;
 use tokio::process::Command;
 use tracing::{error, info, warn};
 
-use agent::{Runner, RunRequest};
+use agent::{RunRequest, Runner};
 use db::Store;
 use tools::Origin;
 
@@ -50,9 +50,7 @@ async fn tick(
         warn!("failed to cleanup old tasks: {}", e);
     }
 
-    let jobs = store
-        .list_enabled_cron_jobs()
-        .map_err(|e| e.to_string())?;
+    let jobs = store.list_enabled_cron_jobs().map_err(|e| e.to_string())?;
 
     let now = Utc::now();
 
@@ -70,13 +68,18 @@ async fn tick(
         // Check if job is due: find the most recent scheduled time and compare to last_run.
         // When last_run is NULL (new job or first run), default to now so we wait for
         // the next scheduled occurrence instead of firing immediately.
-        let last_run_ts = job.last_run.as_deref()
-            .and_then(|s| s.parse::<i64>().ok()
-                .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()
-                    .map(|dt| dt.and_utc().timestamp())))
+        let last_run_ts = job
+            .last_run
+            .as_deref()
+            .and_then(|s| {
+                s.parse::<i64>().ok().or_else(|| {
+                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                        .ok()
+                        .map(|dt| dt.and_utc().timestamp())
+                })
+            })
             .unwrap_or(now.timestamp());
-        let last_run = chrono::DateTime::from_timestamp(last_run_ts, 0)
-            .unwrap_or(now);
+        let last_run = chrono::DateTime::from_timestamp(last_run_ts, 0).unwrap_or(now);
 
         // Get the upcoming time from last_run — if it's before now, the job is due
         let next = match schedule.after(&last_run).next() {
@@ -97,8 +100,14 @@ async fn tick(
             "bash" | "shell" | "" => execute_shell(&job.command).await,
             "agent" => execute_agent(runner, hub, job, run_registry).await,
             "workflow" => execute_workflow_task(workflow_manager, &job.command).await,
-            "agent_workflow" | "role_workflow" => execute_agent_workflow_task(workflow_manager, &store, &job.command).await,
-            other => (false, String::new(), Some(format!("unknown task type: {}", other))),
+            "agent_workflow" | "role_workflow" => {
+                execute_agent_workflow_task(workflow_manager, &store, &job.command).await
+            }
+            other => (
+                false,
+                String::new(),
+                Some(format!("unknown task type: {}", other)),
+            ),
         };
 
         // Best-effort: update last_run timestamp (non-critical tracking)
@@ -109,7 +118,11 @@ async fn tick(
             let _ = store.update_cron_history(
                 h.id,
                 success,
-                if output.is_empty() { None } else { Some(&output) },
+                if output.is_empty() {
+                    None
+                } else {
+                    Some(&output)
+                },
                 err_msg.as_deref(),
             );
         }
@@ -153,25 +166,24 @@ async fn execute_agent(
     job: &db::models::CronJob,
     run_registry: &RunRegistry,
 ) -> (bool, String, Option<String>) {
-    let prompt = job
-        .message
-        .as_deref()
-        .unwrap_or(&job.command);
+    let prompt = job.message.as_deref().unwrap_or(&job.command);
 
     let system = job.instructions.as_deref().unwrap_or("").to_string();
     let session_key = format!("cron-{}", job.name);
     let cancel_token = tokio_util::sync::CancellationToken::new();
 
     // Register in the global RunRegistry so cron runs are visible and cancellable
-    let run_handle = run_registry.register(RegisterParams {
-        session_key: session_key.clone(),
-        entity_id: "main".to_string(),
-        entity_name: format!("Cron: {}", job.name),
-        origin: "cron".to_string(),
-        channel: "cron".to_string(),
-        cancel_token: cancel_token.clone(),
-        parent_run_id: None,
-    }).await;
+    let run_handle = run_registry
+        .register(RegisterParams {
+            session_key: session_key.clone(),
+            entity_id: "main".to_string(),
+            entity_name: format!("Cron: {}", job.name),
+            origin: "cron".to_string(),
+            channel: "cron".to_string(),
+            cancel_token: cancel_token.clone(),
+            parent_run_id: None,
+        })
+        .await;
 
     let req = RunRequest {
         session_key: session_key.clone(),
@@ -222,7 +234,10 @@ async fn execute_workflow_task(
     manager: &dyn tools::workflows::WorkflowManager,
     workflow_id: &str,
 ) -> (bool, String, Option<String>) {
-    match manager.run(workflow_id, serde_json::Value::Null, "cron").await {
+    match manager
+        .run(workflow_id, serde_json::Value::Null, "cron")
+        .await
+    {
         Ok(run_id) => (true, format!("workflow run started: {}", run_id), None),
         Err(e) => (false, String::new(), Some(e)),
     }
@@ -236,7 +251,11 @@ async fn execute_agent_workflow_task(
 ) -> (bool, String, Option<String>) {
     let parts: Vec<&str> = command.splitn(3, ':').collect();
     if parts.len() != 3 || (parts[0] != "agent" && parts[0] != "role") {
-        return (false, String::new(), Some(format!("invalid agent_workflow command: {}", command)));
+        return (
+            false,
+            String::new(),
+            Some(format!("invalid agent_workflow command: {}", command)),
+        );
     }
     let agent_id = parts[1];
     let binding_name = parts[2];
@@ -245,12 +264,20 @@ async fn execute_agent_workflow_task(
     match store.is_agent_workflow_active(agent_id, binding_name) {
         Ok(false) => {
             info!(agent_id, binding_name, "skipping disabled agent workflow");
-            return (false, String::new(), Some("automation is disabled".to_string()));
+            return (
+                false,
+                String::new(),
+                Some("automation is disabled".to_string()),
+            );
         }
         Err(e) => {
             warn!(agent_id, binding_name, error = %e, "failed to check agent workflow status");
             // Fail closed: don't execute if we can't verify it's active
-            return (false, String::new(), Some(format!("failed to check active status: {}", e)));
+            return (
+                false,
+                String::new(),
+                Some(format!("failed to check active status: {}", e)),
+            );
         }
         Ok(true) => {} // proceed
     }
@@ -258,22 +285,44 @@ async fn execute_agent_workflow_task(
     // Load agent config from DB
     let agent_rec = match store.get_agent(agent_id) {
         Ok(Some(r)) => r,
-        Ok(None) => return (false, String::new(), Some(format!("agent not found: {}", agent_id))),
+        Ok(None) => {
+            return (
+                false,
+                String::new(),
+                Some(format!("agent not found: {}", agent_id)),
+            );
+        }
         Err(e) => return (false, String::new(), Some(format!("db error: {}", e))),
     };
 
     let config = match napp::agent::parse_agent_config(&agent_rec.frontmatter) {
         Ok(c) => c,
-        Err(e) => return (false, String::new(), Some(format!("parse agent config: {}", e))),
+        Err(e) => {
+            return (
+                false,
+                String::new(),
+                Some(format!("parse agent config: {}", e)),
+            );
+        }
     };
 
     let binding = match config.workflows.get(binding_name) {
         Some(b) => b,
-        None => return (false, String::new(), Some(format!("binding '{}' not found in agent", binding_name))),
+        None => {
+            return (
+                false,
+                String::new(),
+                Some(format!("binding '{}' not found in agent", binding_name)),
+            );
+        }
     };
 
     if !binding.has_activities() {
-        return (false, String::new(), Some("binding has no activities".to_string()));
+        return (
+            false,
+            String::new(),
+            Some("binding has no activities".to_string()),
+        );
     }
 
     let def_json = binding.to_workflow_json(binding_name);
@@ -283,8 +332,22 @@ async fn execute_agent_workflow_task(
         format!("{}.{}", slug, emit_name)
     });
 
-    match manager.run_inline(def_json, inputs, "schedule", Some(binding_name.to_string()), agent_id, emit_source).await {
-        Ok(run_id) => (true, format!("inline workflow run started: {}", run_id), None),
+    match manager
+        .run_inline(
+            def_json,
+            inputs,
+            "schedule",
+            Some(binding_name.to_string()),
+            agent_id,
+            emit_source,
+        )
+        .await
+    {
+        Ok(run_id) => (
+            true,
+            format!("inline workflow run started: {}", run_id),
+            None,
+        ),
         Err(e) => (false, String::new(), Some(e)),
     }
 }

@@ -88,9 +88,7 @@ impl Response {
     pub fn extract_confidence(text: &str) -> i32 {
         // Look for "Confidence: X" or "**Confidence**: X" or "Confidence: X/10"
         for line in text.lines() {
-            let stripped = line
-                .replace("**", "")
-                .replace('*', "");
+            let stripped = line.replace("**", "").replace('*', "");
             if stripped.trim_start().starts_with("Confidence") {
                 // Find the first digit
                 if let Some(num) = stripped.chars().find(|c| c.is_ascii_digit()) {
@@ -211,22 +209,10 @@ Be constructive but unflinching in your analysis.
 
     #[test]
     fn test_extract_confidence() {
-        assert_eq!(
-            Response::extract_confidence("**Confidence**: 8/10"),
-            8
-        );
-        assert_eq!(
-            Response::extract_confidence("Confidence: 3"),
-            3
-        );
-        assert_eq!(
-            Response::extract_confidence("**Confidence**: 10/10"),
-            10
-        );
-        assert_eq!(
-            Response::extract_confidence("No confidence line here"),
-            5
-        );
+        assert_eq!(Response::extract_confidence("**Confidence**: 8/10"), 8);
+        assert_eq!(Response::extract_confidence("Confidence: 3"), 3);
+        assert_eq!(Response::extract_confidence("**Confidence**: 10/10"), 10);
+        assert_eq!(Response::extract_confidence("No confidence line here"), 5);
     }
 
     #[test]
@@ -244,9 +230,6 @@ Be constructive but unflinching in your analysis.
             Response::extract_section(text, "Suggestion"),
             "Start with a prototype."
         );
-        assert_eq!(
-            Response::extract_section(text, "Missing"),
-            ""
-        );
+        assert_eq!(Response::extract_section(text, "Missing"), "");
     }
 }

@@ -82,14 +82,8 @@ pub fn validate_jwt_claims(token_string: &str, secret: &str) -> Result<JWTClaims
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let exp = map
-        .get("exp")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as i64;
-    let iat = map
-        .get("iat")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as i64;
+    let exp = map.get("exp").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
+    let iat = map.get("iat").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
 
     Ok(JWTClaims {
         sub,
@@ -102,10 +96,7 @@ pub fn validate_jwt_claims(token_string: &str, secret: &str) -> Result<JWTClaims
 }
 
 /// Mint a short-lived HS256 JWT for agent WebSocket authentication.
-pub fn generate_agent_ws_token(
-    secret: &str,
-    ttl_seconds: i64,
-) -> Result<String, NeboError> {
+pub fn generate_agent_ws_token(secret: &str, ttl_seconds: i64) -> Result<String, NeboError> {
     let now = chrono::Utc::now().timestamp();
     let claims = AgentWSClaims {
         token_type: "agent_ws".into(),
@@ -124,10 +115,7 @@ pub fn generate_agent_ws_token(
 /// Verifies signature, expiration, and that the "type" claim is "agent_ws".
 pub fn validate_agent_ws_token(token_string: &str, secret: &str) -> Result<(), NeboError> {
     let map = validate_jwt(token_string, secret)?;
-    let token_type = map
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let token_type = map.get("type").and_then(|v| v.as_str()).unwrap_or("");
     if token_type != "agent_ws" {
         return Err(NeboError::InvalidToken);
     }

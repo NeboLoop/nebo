@@ -178,18 +178,20 @@ pub fn update_run_status(run_dir: &Path, status: RunStatus) -> Result<(), String
     let meta_path = run_dir.join("meta.json");
     let content = std::fs::read_to_string(&meta_path)
         .map_err(|e| format!("Failed to read meta.json: {}", e))?;
-    let mut meta: RunMeta = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse meta.json: {}", e))?;
+    let mut meta: RunMeta =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse meta.json: {}", e))?;
 
     meta.status = status.clone();
-    if matches!(status, RunStatus::Completed | RunStatus::Cancelled | RunStatus::Failed) {
+    if matches!(
+        status,
+        RunStatus::Completed | RunStatus::Cancelled | RunStatus::Failed
+    ) {
         meta.completed_at = Some(chrono::Utc::now().timestamp());
     }
 
     let updated = serde_json::to_string_pretty(&meta)
         .map_err(|e| format!("Failed to serialize meta: {}", e))?;
-    std::fs::write(&meta_path, updated)
-        .map_err(|e| format!("Failed to write meta.json: {}", e))?;
+    std::fs::write(&meta_path, updated).map_err(|e| format!("Failed to write meta.json: {}", e))?;
 
     Ok(())
 }

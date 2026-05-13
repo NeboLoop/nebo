@@ -107,7 +107,10 @@ impl AgentLoader {
     }
 
     /// Set the embedded bundled agents (compiled into the binary, lowest priority).
-    pub fn with_bundled(mut self, bundled: &'static [(&'static str, &'static str, &'static str, &'static str)]) -> Self {
+    pub fn with_bundled(
+        mut self,
+        bundled: &'static [(&'static str, &'static str, &'static str, &'static str)],
+    ) -> Self {
         self.bundled = bundled;
         self
     }
@@ -167,7 +170,12 @@ impl AgentLoader {
 
     /// Start watching for filesystem changes, reload on modification, and emit
     /// diff events through the returned channel for DB/registry/WS sync.
-    pub fn watch(&self) -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Receiver<AgentFsEvent>) {
+    pub fn watch(
+        &self,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio::sync::mpsc::Receiver<AgentFsEvent>,
+    ) {
         let installed_dir = self.installed_dir.clone();
         let user_dir = self.user_dir.clone();
         let agents = self.agents.clone();
@@ -183,8 +191,7 @@ impl AgentLoader {
                 move |res| {
                     let _ = tx.blocking_send(res);
                 },
-                notify::Config::default()
-                    .with_poll_interval(std::time::Duration::from_secs(2)),
+                notify::Config::default().with_poll_interval(std::time::Duration::from_secs(2)),
             ) {
                 Ok(w) => w,
                 Err(e) => {
@@ -213,9 +220,7 @@ impl AgentLoader {
                     Ok(event) => {
                         let dominated = matches!(
                             event.kind,
-                            EventKind::Create(_)
-                                | EventKind::Modify(_)
-                                | EventKind::Remove(_)
+                            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
                         );
                         if !dominated {
                             continue;
@@ -229,6 +234,11 @@ impl AgentLoader {
                                 || name == "views.json"
                                 || name == "theme.css"
                                 || name.ends_with(".napp")
+                                // New symlink/directory added directly under watched dir
+                                || (matches!(event.kind, EventKind::Create(_))
+                                    && (p.parent() == Some(user_dir.as_path())
+                                        || p.parent() == Some(installed_dir.as_path()))
+                                    && p.is_dir())
                         });
                         if !relevant {
                             continue;
@@ -255,24 +265,30 @@ impl AgentLoader {
                             for (key, new_agent) in &loaded {
                                 match old.get(key) {
                                     None => {
-                                        let _ = event_tx.send(AgentFsEvent::Added(new_agent.clone())).await;
+                                        let _ = event_tx
+                                            .send(AgentFsEvent::Added(new_agent.clone()))
+                                            .await;
                                     }
                                     Some(old_agent) => {
                                         if old_agent.agent_md != new_agent.agent_md
                                             || old_agent.frontmatter != new_agent.frontmatter
                                             || old_agent.theme_css != new_agent.theme_css
                                         {
-                                            let _ = event_tx.send(AgentFsEvent::Changed(new_agent.clone())).await;
+                                            let _ = event_tx
+                                                .send(AgentFsEvent::Changed(new_agent.clone()))
+                                                .await;
                                         }
                                     }
                                 }
                             }
                             for (key, old_agent) in old.iter() {
                                 if !loaded.contains_key(key) {
-                                    let _ = event_tx.send(AgentFsEvent::Removed {
-                                        name_key: key.clone(),
-                                        agent: old_agent.clone(),
-                                    }).await;
+                                    let _ = event_tx
+                                        .send(AgentFsEvent::Removed {
+                                            name_key: key.clone(),
+                                            agent: old_agent.clone(),
+                                        })
+                                        .await;
                                 }
                             }
                         }
@@ -363,8 +379,7 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
         )));
     }
 
-    let agent_md_raw = std::fs::read_to_string(&agent_md_path)
-        .map_err(NappError::Io)?;
+    let agent_md_raw = std::fs::read_to_string(&agent_md_path).map_err(NappError::Io)?;
     let mut agent_def = parse_agent(&agent_md_raw)?;
 
     // Fall back to directory name when AGENT.md has no frontmatter name
@@ -377,8 +392,7 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
     let (config, frontmatter) = {
         let config_path = dir.join("agent.json");
         if config_path.exists() {
-            let json = std::fs::read_to_string(&config_path)
-                .map_err(NappError::Io)?;
+            let json = std::fs::read_to_string(&config_path).map_err(NappError::Io)?;
             let cfg = parse_agent_config(&json)?;
             (Some(cfg), json)
         } else {
@@ -386,27 +400,30 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
         }
     };
 
-    // Read version, id, display name, and app config from manifest.json if available
-    let (version, id, manifest_name, artifact_type, window_config) = {
+    // Read version, id, display name, description, and app config from manifest.json if available
+    let (version, id, manifest_name, manifest_desc, artifact_type, window_config) = {
         let manifest_path = dir.join("manifest.json");
         if manifest_path.exists() {
             let raw = std::fs::read_to_string(&manifest_path).ok();
-            let parsed = raw.as_ref()
+            let parsed = raw
+                .as_ref()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
-            let manifest_full = raw.as_ref()
+            let manifest_full = raw
+                .as_ref()
                 .and_then(|s| serde_json::from_str::<crate::manifest::Manifest>(s).ok());
             match parsed {
                 Some(v) => (
                     v["version"].as_str().map(String::from),
                     v["id"].as_str().map(String::from),
                     v["name"].as_str().map(String::from),
-                    v["type"].as_str().map(String::from),
+                    v["description"].as_str().map(String::from),
+                    v["artifact_type"].as_str().map(String::from),
                     manifest_full.and_then(|m| m.window),
                 ),
-                None => (None, None, None, None, None),
+                None => (None, None, None, None, None, None),
             }
         } else {
-            (None, None, None, None, None)
+            (None, None, None, None, None, None)
         }
     };
 
@@ -415,6 +432,13 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
     if let Some(ref name) = manifest_name {
         if !name.is_empty() && !name.contains('@') && !name.contains('/') {
             agent_def.name = name.clone();
+        }
+    }
+
+    // Use manifest description when AGENT.md has no frontmatter description
+    if agent_def.description.is_empty() {
+        if let Some(ref d) = manifest_desc {
+            agent_def.description = d.clone();
         }
     }
 
@@ -454,11 +478,12 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
         // Look for sidecar binary in bin/ directory
         let bin_dir = dir.join("bin");
         if bin_dir.is_dir() {
-            std::fs::read_dir(&bin_dir).ok()
-                .and_then(|mut entries| entries.find_map(|e| {
+            std::fs::read_dir(&bin_dir).ok().and_then(|mut entries| {
+                entries.find_map(|e| {
                     let p = e.ok()?.path();
                     if p.is_file() { Some(p) } else { None }
-                }))
+                })
+            })
         } else {
             // Also check for "binary" or "app" directly
             let binary = dir.join("binary");
@@ -466,7 +491,11 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
                 Some(binary)
             } else {
                 let app_bin = dir.join("app");
-                if app_bin.exists() { Some(app_bin) } else { None }
+                if app_bin.exists() {
+                    Some(app_bin)
+                } else {
+                    None
+                }
             }
         }
     } else {
@@ -501,12 +530,13 @@ pub fn scan_installed_agents(dir: &Path) -> Vec<LoadedAgent> {
         return agents;
     }
     // Load from extracted directories (free content)
-    crate::reader::walk_for_marker(dir, "AGENT.md", &mut |agent_dir| {
-        match load_from_dir(agent_dir, AgentSource::Installed) {
-            Ok(agent) => agents.push(agent),
-            Err(e) => {
-                debug!(path = %agent_dir.display(), error = %e, "skipping directory (not an agent)");
-            }
+    crate::reader::walk_for_marker(dir, "AGENT.md", &mut |agent_dir| match load_from_dir(
+        agent_dir,
+        AgentSource::Installed,
+    ) {
+        Ok(agent) => agents.push(agent),
+        Err(e) => {
+            debug!(path = %agent_dir.display(), error = %e, "skipping directory (not an agent)");
         }
     });
     agents
@@ -597,7 +627,8 @@ fn load_from_sealed_napp(
     napp_path: &Path,
     license_key: &[u8; 32],
 ) -> Result<LoadedAgent, NappError> {
-    let agent_md_raw = crate::reader::read_sealed_napp_entry_string(napp_path, "AGENT.md", license_key)?;
+    let agent_md_raw =
+        crate::reader::read_sealed_napp_entry_string(napp_path, "AGENT.md", license_key)?;
     let mut agent_def = parse_agent(&agent_md_raw)?;
 
     if agent_def.name.is_empty() {
@@ -606,48 +637,53 @@ fn load_from_sealed_napp(
         }
     }
 
-    let (config, frontmatter) = match crate::reader::read_sealed_napp_entry_string(napp_path, "agent.json", license_key) {
-        Ok(json) => {
-            let cfg = parse_agent_config(&json)?;
-            (Some(cfg), json)
-        }
-        Err(NappError::NotFound(_)) => (None, String::new()),
-        Err(e) => return Err(e),
-    };
+    let (config, frontmatter) =
+        match crate::reader::read_sealed_napp_entry_string(napp_path, "agent.json", license_key) {
+            Ok(json) => {
+                let cfg = parse_agent_config(&json)?;
+                (Some(cfg), json)
+            }
+            Err(NappError::NotFound(_)) => (None, String::new()),
+            Err(e) => return Err(e),
+        };
 
-    let (version, id, manifest_name) = match crate::reader::read_sealed_napp_entry_string(napp_path, "manifest.json", license_key) {
-        Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
-            Ok(v) => (
-                v["version"].as_str().map(String::from),
-                v["id"].as_str().map(String::from),
-                v["name"].as_str().map(String::from),
-            ),
-            Err(_) => (None, None, None),
-        },
-        // manifest.json may have been partially extracted — try sibling dir
-        Err(NappError::NotFound(_)) => {
-            let sibling = napp_path.with_extension("");
-            if sibling.is_dir() {
-                let manifest = sibling.join("manifest.json");
-                if manifest.exists() {
-                    std::fs::read_to_string(&manifest)
-                        .ok()
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                        .map(|v| (
-                            v["version"].as_str().map(String::from),
-                            v["id"].as_str().map(String::from),
-                            v["name"].as_str().map(String::from),
-                        ))
-                        .unwrap_or((None, None, None))
+    let (version, id, manifest_name) =
+        match crate::reader::read_sealed_napp_entry_string(napp_path, "manifest.json", license_key)
+        {
+            Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+                Ok(v) => (
+                    v["version"].as_str().map(String::from),
+                    v["id"].as_str().map(String::from),
+                    v["name"].as_str().map(String::from),
+                ),
+                Err(_) => (None, None, None),
+            },
+            // manifest.json may have been partially extracted — try sibling dir
+            Err(NappError::NotFound(_)) => {
+                let sibling = napp_path.with_extension("");
+                if sibling.is_dir() {
+                    let manifest = sibling.join("manifest.json");
+                    if manifest.exists() {
+                        std::fs::read_to_string(&manifest)
+                            .ok()
+                            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                            .map(|v| {
+                                (
+                                    v["version"].as_str().map(String::from),
+                                    v["id"].as_str().map(String::from),
+                                    v["name"].as_str().map(String::from),
+                                )
+                            })
+                            .unwrap_or((None, None, None))
+                    } else {
+                        (None, None, None)
+                    }
                 } else {
                     (None, None, None)
                 }
-            } else {
-                (None, None, None)
             }
-        }
-        Err(_) => (None, None, None),
-    };
+            Err(_) => (None, None, None),
+        };
 
     if let Some(ref mname) = manifest_name {
         if !mname.is_empty() && !mname.contains('@') && !mname.contains('/') {
@@ -662,7 +698,8 @@ fn load_from_sealed_napp(
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
 
-    let theme_css = crate::reader::read_sealed_napp_entry_string(napp_path, "theme.css", license_key).ok();
+    let theme_css =
+        crate::reader::read_sealed_napp_entry_string(napp_path, "theme.css", license_key).ok();
 
     Ok(LoadedAgent {
         agent_def,

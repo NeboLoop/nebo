@@ -50,7 +50,7 @@
 		if (!confirm($t('marketplace.installedPage.uninstallConfirm', { values: { name: item.name } }))) return;
 		uninstallingId = item.id;
 		try {
-			await api.uninstallStoreProduct(item.id);
+			await api.removePlugin(item.id);
 			installed = installed.filter(i => i.id !== item.id);
 		} catch (err: any) {
 			error = err?.message || 'Failed to uninstall';

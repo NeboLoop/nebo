@@ -5,6 +5,7 @@
   const ctx = getContext<AgentPageContext>('agentPage');
   const agent = $derived(ctx.agent);
   const workflowStats = $derived(ctx.workflowStats);
+  const loading = $derived(ctx.runsLoading);
 </script>
 
 <div class="flex-1 flex flex-col bg-base-100 min-w-0 min-h-0">
@@ -13,7 +14,12 @@
     <span class="text-xs text-base-content/50 ml-auto">{agent?.name}</span>
   </div>
   <div class="flex-1 overflow-y-auto p-6">
-    {#if workflowStats.totalRuns > 0}
+    {#if loading}
+      <div class="flex items-center justify-center pt-16 gap-2">
+        <span class="loading loading-spinner loading-sm text-base-content/40"></span>
+        <span class="text-xs text-base-content/50">Loading runs…</span>
+      </div>
+    {:else if workflowStats.totalRuns > 0}
       <div class="grid grid-cols-4 gap-2 mb-5">
         <div class="rounded-lg border border-base-300 bg-base-100 p-3 text-center">
           <div class="text-lg font-semibold">{workflowStats.totalRuns}</div>

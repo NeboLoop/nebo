@@ -7,12 +7,12 @@ use sha2::{Digest, Sha256};
 use tar::Archive;
 use tracing::info;
 
-use crate::manifest::Manifest;
 use crate::NappError;
+use crate::manifest::Manifest;
 
 const MAX_BINARY_SIZE: u64 = 500 * 1024 * 1024; // 500MB
-const MAX_UI_FILE_SIZE: u64 = 5 * 1024 * 1024;  // 5MB
-const MAX_METADATA_SIZE: u64 = 1024 * 1024;      // 1MB
+const MAX_UI_FILE_SIZE: u64 = 5 * 1024 * 1024; // 5MB
+const MAX_METADATA_SIZE: u64 = 1024 * 1024; // 1MB
 
 // .napp envelope constants
 const NAPP_MAGIC: &[u8; 4] = b"NAPP";
@@ -70,9 +70,9 @@ pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, Na
     signed.extend_from_slice(expected_hash);
     signed.extend_from_slice(payload);
 
-    public_key
-        .verify(&signed, &signature)
-        .map_err(|_| NappError::Extraction("signature verification failed: not signed by NeboLoop".into()))?;
+    public_key.verify(&signed, &signature).map_err(|_| {
+        NappError::Extraction("signature verification failed: not signed by NeboLoop".into())
+    })?;
 
     info!("napp envelope verified");
     Ok(payload.to_vec())
@@ -127,7 +127,10 @@ pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappE
 
     let mut found_manifest = false;
 
-    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| NappError::Extraction(e.to_string()))?
+    {
         let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
         let path = entry
             .path()
@@ -161,8 +164,12 @@ pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappE
         let base_name = name.trim_start_matches("./");
 
         // Determine if this is the native binary (plugin .napp uses real binary name, not "binary")
-        let is_binary = base_name == "binary" || base_name == "app"
-            || (!is_ui && !is_skill && !ALLOWED_FILES.contains(&base_name) && !base_name.contains('/'));
+        let is_binary = base_name == "binary"
+            || base_name == "app"
+            || (!is_ui
+                && !is_skill
+                && !ALLOWED_FILES.contains(&base_name)
+                && !base_name.contains('/'));
 
         if is_skill {
             // Skills directory: only allow SKILL.md or skill.md files
@@ -252,14 +259,20 @@ pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappE
     }
 
     if !found_manifest {
-        return Err(NappError::Extraction("manifest.json not found in .napp".into()));
+        return Err(NappError::Extraction(
+            "manifest.json not found in .napp".into(),
+        ));
     }
 
     // Load and validate manifest
     let manifest = Manifest::load(&dest_dir.join("manifest.json"))?;
     manifest.validate()?;
 
-    info!(app = manifest.id.as_str(), version = manifest.version.as_str(), "extracted .napp");
+    info!(
+        app = manifest.id.as_str(),
+        version = manifest.version.as_str(),
+        "extracted .napp"
+    );
     Ok(manifest)
 }
 
@@ -275,8 +288,8 @@ fn validate_binary_format(content: &[u8]) -> Result<(), NappError> {
         || content.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])         // Mach-O 64
         || content.starts_with(&[0xce, 0xfa, 0xed, 0xfe])         // Mach-O 32 (swapped)
         || content.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])         // Mach-O 64 (swapped)
-        || content.starts_with(&[0xca, 0xfe, 0xba, 0xbe]);        // Universal
-    let is_pe = content.starts_with(&[0x4d, 0x5a]);               // PE/COFF
+        || content.starts_with(&[0xca, 0xfe, 0xba, 0xbe]); // Universal
+    let is_pe = content.starts_with(&[0x4d, 0x5a]); // PE/COFF
 
     if !is_elf && !is_macho && !is_pe {
         // Reject scripts

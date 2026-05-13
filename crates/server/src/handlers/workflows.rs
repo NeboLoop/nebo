@@ -3,8 +3,8 @@ use axum::response::Json;
 use serde::Deserialize;
 use tools::workflows::WorkflowManager;
 
+use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
-use super::{to_error_response, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
@@ -24,7 +24,10 @@ pub async fn list_workflows(
     Query(q): Query<ListQuery>,
 ) -> HandlerResult<serde_json::Value> {
     let limit = q.limit.min(100);
-    let workflows = state.store.list_workflows(limit, q.offset).map_err(to_error_response)?;
+    let workflows = state
+        .store
+        .list_workflows(limit, q.offset)
+        .map_err(to_error_response)?;
     let total = state.store.count_workflows().unwrap_or(0);
     Ok(Json(serde_json::json!({
         "workflows": workflows,
@@ -40,9 +43,9 @@ pub async fn create_workflow(
     let name = body["name"]
         .as_str()
         .ok_or_else(|| to_error_response(types::NeboError::Validation("name required".into())))?;
-    let definition = body["definition"]
-        .as_str()
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("definition required".into())))?;
+    let definition = body["definition"].as_str().ok_or_else(|| {
+        to_error_response(types::NeboError::Validation("definition required".into()))
+    })?;
 
     // Validate the workflow definition
     let _def = workflow::parser::parse_workflow(definition)
@@ -65,7 +68,9 @@ pub async fn create_workflow(
         if std::fs::create_dir_all(&wf_dir).is_ok() {
             let json_path = wf_dir.join("workflow.json");
             if std::fs::write(&json_path, definition).is_ok() {
-                let _ = state.store.set_workflow_napp_path(&id, &wf_dir.to_string_lossy());
+                let _ = state
+                    .store
+                    .set_workflow_napp_path(&id, &wf_dir.to_string_lossy());
             }
         }
     }
@@ -162,7 +167,10 @@ pub async fn delete_workflow(
     if let Err(e) = state.store.delete_workflow_bindings(&id) {
         tracing::warn!(workflow_id = %id, error = %e, "failed to delete workflow bindings");
     }
-    state.store.delete_workflow(&id).map_err(to_error_response)?;
+    state
+        .store
+        .delete_workflow(&id)
+        .map_err(to_error_response)?;
 
     // Clean up filesystem directory if it exists
     if let Some(ref napp_path) = wf.napp_path {
@@ -187,7 +195,10 @@ pub async fn toggle_workflow(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    state.store.toggle_workflow(&id).map_err(to_error_response)?;
+    state
+        .store
+        .toggle_workflow(&id)
+        .map_err(to_error_response)?;
     let wf = state
         .store
         .get_workflow(&id)
@@ -208,10 +219,14 @@ pub async fn run_workflow(
     let parsed: serde_json::Value = if body.is_empty() {
         serde_json::json!({})
     } else {
-        serde_json::from_slice(&body)
-            .map_err(|e| to_error_response(types::NeboError::Validation(format!("invalid JSON: {}", e))))?
+        serde_json::from_slice(&body).map_err(|e| {
+            to_error_response(types::NeboError::Validation(format!("invalid JSON: {}", e)))
+        })?
     };
-    let inputs = parsed.get("inputs").cloned().unwrap_or(serde_json::json!({}));
+    let inputs = parsed
+        .get("inputs")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
 
     let run_id = state
         .workflow_manager
@@ -266,7 +281,8 @@ pub async fn get_run(
         .map_err(to_error_response)?;
 
     // Gather task_items for each activity (per-step tracking)
-    let mut task_items_by_activity: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    let mut task_items_by_activity: serde_json::Map<String, serde_json::Value> =
+        serde_json::Map::new();
     for act in &activities {
         let list_id = format!("run:{}:{}", run_id, act.activity_id);
         if let Ok(items) = state.store.list_task_items(&list_id) {
@@ -307,7 +323,9 @@ pub async fn cancel_run(
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
 
-    Ok(Json(serde_json::json!({ "cancelled": true, "runId": run_id })))
+    Ok(Json(
+        serde_json::json!({ "cancelled": true, "runId": run_id }),
+    ))
 }
 
 /// GET /workflows/{id}/bindings
@@ -320,7 +338,9 @@ pub async fn list_bindings(
         .list_workflow_bindings(&id)
         .map_err(to_error_response)?;
     let total = bindings.len();
-    Ok(Json(serde_json::json!({ "bindings": bindings, "total": total })))
+    Ok(Json(
+        serde_json::json!({ "bindings": bindings, "total": total }),
+    ))
 }
 
 /// PUT /workflows/{id}/bindings
@@ -336,21 +356,30 @@ pub async fn update_bindings(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let bindings = body["bindings"]
-        .as_array()
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("bindings array required".into())))?;
+    let bindings = body["bindings"].as_array().ok_or_else(|| {
+        to_error_response(types::NeboError::Validation(
+            "bindings array required".into(),
+        ))
+    })?;
 
     // Clear existing and upsert new
-    state.store.delete_workflow_bindings(&id).map_err(to_error_response)?;
+    state
+        .store
+        .delete_workflow_bindings(&id)
+        .map_err(to_error_response)?;
 
     for b in bindings {
-        let interface_name = b["interfaceName"]
-            .as_str()
-            .ok_or_else(|| to_error_response(types::NeboError::Validation("interfaceName required".into())))?;
+        let interface_name = b["interfaceName"].as_str().ok_or_else(|| {
+            to_error_response(types::NeboError::Validation(
+                "interfaceName required".into(),
+            ))
+        })?;
         let tool_code = b["tool"]
             .as_str()
             .or_else(|| b["toolCode"].as_str())
-            .ok_or_else(|| to_error_response(types::NeboError::Validation("tool required".into())))?;
+            .ok_or_else(|| {
+                to_error_response(types::NeboError::Validation("tool required".into()))
+            })?;
         state
             .store
             .upsert_workflow_binding(&id, interface_name, tool_code)

@@ -27,7 +27,7 @@
 	let submittingReview = $state(false);
 	let installing = $state(false);
 
-	const skillId = $derived($page.params.id);
+	const skillId = $derived($page.params.id ?? '');
 
 	const replyMap = $derived.by(() => {
 		const map: Record<string, any> = {};
@@ -298,7 +298,7 @@
 	<!-- Write Review Modal -->
 	{#if showReview}
 		<div class="fixed inset-0 z-50 flex items-center justify-center">
-			<button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showReview = false}></button>
+			<button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showReview = false} aria-label="Close review modal"></button>
 			<div class="relative bg-base-100 rounded-2xl border border-base-content/10 w-full max-w-sm mx-4 p-6">
 				<div class="flex items-center justify-between mb-4">
 					<h3 class="font-display text-lg font-bold">{$t('marketplace.detail.reviewTitle', { values: { name: skill.name } })}</h3>

@@ -6,16 +6,24 @@
   import type { A2UIView, A2UINavItem, A2UIViewsConfig } from '$lib/a2ui/types.js';
   import A2Surface from '$lib/a2ui/A2Surface.svelte';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
+  import AgentSetupModal from '$lib/components/agent-setup/AgentSetupModal.svelte';
 
-  const agentId = $derived($page.params.agentId);
+  const agentId = $derived($page.params.agentId ?? '');
 
   let agentName = $state('');
   let agentInitial = $state('');
   let agentColor = $state('teal');
+  let isAppMode = $state(false);
   let config = $state<A2UIViewsConfig | null>(null);
   let chatMessages = $state<any[]>([]);
   let isLoading = $state(false);
   let streamingContent = $state('');
+
+  // Onboarding modal state
+  let showSetupModal = $state(false);
+  let setupAgentName = $state('');
+  let setupAgentDesc = $state('');
+  let setupInputFields = $state<unknown[]>([]);
 
   const color = $derived(AGENT_COLORS_MAP[agentColor as keyof typeof AGENT_COLORS_MAP] ?? null);
   const navItems = $derived(config ? config._nav : []);
@@ -54,6 +62,26 @@
 
       agentName = detail.agent.name;
       agentInitial = agentName.charAt(0).toUpperCase();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const displayName = (detail as any).displayName as string | undefined;
+      if (displayName) {
+        agentName = displayName;
+        agentInitial = displayName.charAt(0).toUpperCase();
+      }
+
+      // App mode: agent with is_app flag renders its UI in an iframe
+      if (detail.agent.isApp) {
+        isAppMode = true;
+      }
+
+      // Auto-trigger onboarding if agent has unconfigured required inputs
+      if ((detail as any).needsSetup) {
+        setupAgentName = agentName;
+        setupAgentDesc = detail.agent.description || '';
+        setupInputFields = Array.isArray((detail as any).inputFields) ? (detail as any).inputFields : [];
+        showSetupModal = true;
+      }
 
       if (detail.views) {
         const views = typeof detail.views === 'string'
@@ -208,20 +236,26 @@
   <title>{agentName || 'Workspace'} - Nebo</title>
 </svelte:head>
 
-{#if config && color}
+{#if isAppMode || (config && color)}
   <div class="h-screen flex flex-col bg-base-100">
     <!-- Nav bar -->
     <div class="flex items-center border-b border-base-content/10 shrink-0 h-[44px] px-4 gap-0.5">
-      <div class="w-6 h-6 rounded-md flex items-center justify-center text-xs font-mono font-semibold mr-2 {color.bgClass} {color.inkClass}">{agentInitial}</div>
+      {#if color}
+        <div class="w-6 h-6 rounded-md flex items-center justify-center text-xs font-mono font-semibold mr-2 {color.bgClass} {color.inkClass}">{agentInitial}</div>
+      {:else}
+        <div class="w-6 h-6 rounded-md flex items-center justify-center text-xs font-mono font-semibold mr-2 bg-primary/15 text-primary">{agentInitial}</div>
+      {/if}
       <span class="text-sm font-semibold mr-4">{agentName}</span>
-      {#each navItems as nav}
-        <button
-          class="flex items-center gap-1.5 py-1.5 px-3 rounded-md text-sm cursor-pointer border-none transition-colors {activeViewId === nav.viewId ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)] font-medium text-base-content' : 'bg-transparent hover:bg-base-100/70'}"
-          onclick={() => activeViewId = nav.viewId}
-        >
-          <span>{nav.label}</span>
-        </button>
-      {/each}
+      {#if !isAppMode}
+        {#each navItems as nav}
+          <button
+            class="flex items-center gap-1.5 py-1.5 px-3 rounded-md text-sm cursor-pointer border-none transition-colors {activeViewId === nav.viewId ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)] font-medium text-base-content' : 'bg-transparent hover:bg-base-100/70'}"
+            onclick={() => activeViewId = nav.viewId}
+          >
+            <span>{nav.label}</span>
+          </button>
+        {/each}
+      {/if}
       <div class="flex-1"></div>
       <button
         class="w-7 h-7 rounded-md flex items-center justify-center cursor-pointer bg-transparent border-none text-base-content/50 hover:text-base-content hover:bg-base-200/50 transition-colors"
@@ -232,19 +266,28 @@
       </button>
     </div>
 
-    <!-- A2UI Surface + Chat -->
+    <!-- Content + Chat -->
     <div class="flex-1 flex min-h-0 {chatResizing ? 'select-none' : ''}" bind:this={contentEl}>
-      <div class="flex-1 overflow-y-auto p-5 min-w-0">
-        {#if reactiveView}
-          <A2Surface view={reactiveView} onaction={handleAction} />
-        {/if}
-      </div>
+      {#if isAppMode}
+        <iframe
+          src="/apps/{agentId}/ui/index.html"
+          class="flex-1 border-none min-w-0"
+          title={agentName}
+        ></iframe>
+      {:else}
+        <div class="flex-1 overflow-y-auto p-5 min-w-0">
+          {#if reactiveView}
+            <A2Surface view={reactiveView} onaction={handleAction} />
+          {/if}
+        </div>
+      {/if}
       {#if chatOpen}
-        <!-- Resize handle -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
         <div
           class="w-0 shrink-0 cursor-col-resize relative z-10 group"
           onmousedown={startChatResize}
           role="separator"
+          tabindex="0"
           aria-orientation="vertical"
         >
           <div class="absolute inset-y-0 -left-2 -right-2"></div>
@@ -275,12 +318,24 @@
 {:else}
   <div class="h-screen flex items-center justify-center bg-base-100">
     <div class="text-center">
-      {#if agentName && !config}
+      {#if agentName && !config && !isAppMode}
         <div class="text-base font-semibold mb-1">{agentName}</div>
-        <div class="text-sm text-base-content/70">No workspace views configured</div>
+        <div class="text-xs text-base-content/70">No workspace views configured</div>
       {:else}
         <div class="loading loading-spinner loading-md text-base-content/30"></div>
       {/if}
     </div>
   </div>
+{/if}
+
+{#if showSetupModal}
+  <AgentSetupModal
+    appId=""
+    agentName={setupAgentName}
+    agentDescription={setupAgentDesc}
+    inputs={setupInputFields}
+    existingAgentId={agentId}
+    onComplete={() => { showSetupModal = false; window.location.reload(); }}
+    onCancel={() => { showSetupModal = false; }}
+  />
 {/if}

@@ -1,7 +1,7 @@
 //! macOS organizer: AppleScript integration with Mail, Contacts, Calendar, Reminders.
 
-use super::shared::{escape_applescript, run_osascript};
 use super::OrganizerInput;
+use super::shared::{escape_applescript, run_osascript};
 use crate::origin::ToolContext;
 use crate::registry::ToolResult;
 
@@ -71,9 +71,7 @@ end tell"#,
                 ));
             }
 
-            script.push_str(
-                "\n    send newMsg\nend tell",
-            );
+            script.push_str("\n    send newMsg\nend tell");
             run_osascript(&script).await
         }
         "search" => {
@@ -115,13 +113,27 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
     {
         let limit_str = input.limit.map(|l| l.to_string());
         let mut args: Vec<(&str, &str)> = vec![];
-        if !input.query.is_empty() { args.push(("query", &input.query)); }
-        if !input.name.is_empty() { args.push(("name", &input.name)); }
-        if !input.email.is_empty() { args.push(("email", &input.email)); }
-        if !input.phone.is_empty() { args.push(("phone", &input.phone)); }
-        if !input.company.is_empty() { args.push(("company", &input.company)); }
-        if !input.notes.is_empty() { args.push(("notes", &input.notes)); }
-        if let Some(ref s) = limit_str { args.push(("limit", s)); }
+        if !input.query.is_empty() {
+            args.push(("query", &input.query));
+        }
+        if !input.name.is_empty() {
+            args.push(("name", &input.name));
+        }
+        if !input.email.is_empty() {
+            args.push(("email", &input.email));
+        }
+        if !input.phone.is_empty() {
+            args.push(("phone", &input.phone));
+        }
+        if !input.company.is_empty() {
+            args.push(("company", &input.company));
+        }
+        if !input.notes.is_empty() {
+            args.push(("notes", &input.notes));
+        }
+        if let Some(ref s) = limit_str {
+            args.push(("limit", s));
+        }
         if let Some(result) = super::native::run_pim("contacts", action, &args).await {
             return result;
         }
@@ -256,7 +268,11 @@ end tell"#,
 /// warm up during the first calendar query.
 ///
 /// When preferences are saved, only the selected calendars are queried.
-async fn query_calendar_events(calendar: &str, days: u32, store: Option<&std::sync::Arc<db::Store>>) -> ToolResult {
+async fn query_calendar_events(
+    calendar: &str,
+    days: u32,
+    store: Option<&std::sync::Arc<db::Store>>,
+) -> ToolResult {
     let no_events_msg = if days <= 1 {
         "No events today".to_string()
     } else {
@@ -290,10 +306,14 @@ end tell"#,
     let saved_prefs = load_calendar_prefs(store);
     let cal_filter = if let Some(ref prefs) = saved_prefs {
         // AppleScript list literal: {"cal1", "cal2", ...}
-        let items: Vec<String> = prefs.iter()
+        let items: Vec<String> = prefs
+            .iter()
             .map(|n| format!("\"{}\"", escape_applescript(n)))
             .collect();
-        format!("set targetCals to {{{}}}\n    set allCals to {{}}\n    repeat with cName in targetCals\n        set allCals to allCals & (every calendar whose name is cName)\n    end repeat", items.join(", "))
+        format!(
+            "set targetCals to {{{}}}\n    set allCals to {{}}\n    repeat with cName in targetCals\n        set allCals to allCals & (every calendar whose name is cName)\n    end repeat",
+            items.join(", ")
+        )
     } else {
         "set allCals to every calendar".to_string()
     };
@@ -389,7 +409,11 @@ const CALENDAR_PREFS_KEY: &str = "calendar_prefs";
 /// Load saved calendar preferences from DB, with migration from legacy file.
 fn load_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>) -> Option<Vec<String>> {
     let prefs = load_full_calendar_prefs(store)?;
-    if prefs.calendars.is_empty() { None } else { Some(prefs.calendars) }
+    if prefs.calendars.is_empty() {
+        None
+    } else {
+        Some(prefs.calendars)
+    }
 }
 
 fn load_full_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>) -> Option<CalendarPrefs> {
@@ -409,7 +433,10 @@ fn load_full_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>) -> Option
             let prefs = if let Ok(p) = serde_json::from_str::<CalendarPrefs>(&data) {
                 Some(p)
             } else if let Ok(cals) = serde_json::from_str::<Vec<String>>(&data) {
-                Some(CalendarPrefs { calendars: cals, auto_accept: false })
+                Some(CalendarPrefs {
+                    calendars: cals,
+                    auto_accept: false,
+                })
             } else {
                 None
             };
@@ -428,7 +455,10 @@ fn load_full_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>) -> Option
 }
 
 /// Save calendar preferences to DB.
-fn save_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>, calendars: &[String]) -> Result<(), String> {
+fn save_calendar_prefs(
+    store: Option<&std::sync::Arc<db::Store>>,
+    calendars: &[String],
+) -> Result<(), String> {
     let mut prefs = load_full_calendar_prefs(store).unwrap_or(CalendarPrefs {
         calendars: vec![],
         auto_accept: false,
@@ -437,18 +467,27 @@ fn save_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>, calendars: &[S
     save_full_calendar_prefs(store, &prefs)
 }
 
-fn save_full_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>, prefs: &CalendarPrefs) -> Result<(), String> {
+fn save_full_calendar_prefs(
+    store: Option<&std::sync::Arc<db::Store>>,
+    prefs: &CalendarPrefs,
+) -> Result<(), String> {
     let store = store.ok_or("DB store not available")?;
-    store.ensure_skill_plugin(CALENDAR_PLUGIN_NAME)
+    store
+        .ensure_skill_plugin(CALENDAR_PLUGIN_NAME)
         .map_err(|e| format!("ensure plugin entry: {e}"))?;
-    let json = serde_json::to_string(prefs)
-        .map_err(|e| format!("serialize prefs: {e}"))?;
-    store.set_plugin_setting(CALENDAR_PLUGIN_NAME, CALENDAR_PREFS_KEY, &json)
+    let json = serde_json::to_string(prefs).map_err(|e| format!("serialize prefs: {e}"))?;
+    store
+        .set_plugin_setting(CALENDAR_PLUGIN_NAME, CALENDAR_PREFS_KEY, &json)
         .map_err(|e| format!("save to DB: {e}"))?;
     Ok(())
 }
 
-pub async fn handle_calendar(action: &str, input: &OrganizerInput, ctx: &ToolContext, store: Option<&std::sync::Arc<db::Store>>) -> ToolResult {
+pub async fn handle_calendar(
+    action: &str,
+    input: &OrganizerInput,
+    ctx: &ToolContext,
+    store: Option<&std::sync::Arc<db::Store>>,
+) -> ToolResult {
     // Auto-accept: silently accept pending invites before any read operation
     if matches!(action, "today" | "upcoming" | "list") {
         if let Some(prefs) = load_full_calendar_prefs(store) {
@@ -479,7 +518,11 @@ pub async fn handle_calendar(action: &str, input: &OrganizerInput, ctx: &ToolCon
         return ToolResult::ok(format!(
             "Calendar auto-accept is now {}. Pending invitations will be {} accepted when you check your calendar.",
             if prefs.auto_accept { "ON" } else { "OFF" },
-            if prefs.auto_accept { "automatically" } else { "not automatically" },
+            if prefs.auto_accept {
+                "automatically"
+            } else {
+                "not automatically"
+            },
         ));
     }
 
@@ -495,17 +538,37 @@ pub async fn handle_calendar(action: &str, input: &OrganizerInput, ctx: &ToolCon
         let days_str = days_val.to_string();
         let name = input.event_name();
         let mut args: Vec<(&str, &str)> = vec![];
-        if !input.calendar.is_empty() { args.push(("calendar", &input.calendar)); }
-        if !input.date.is_empty() { args.push(("date", &input.date)); }
-        if !input.end_date.is_empty() { args.push(("end_date", &input.end_date)); }
-        if !input.location.is_empty() { args.push(("location", &input.location)); }
-        if !input.notes.is_empty() { args.push(("notes", &input.notes)); }
-        if !name.is_empty() { args.push(("title", name)); }
-        if !input.repeat.is_empty() { args.push(("repeat", &input.repeat)); }
-        if !input.repeat_days.is_empty() { args.push(("days", &input.repeat_days)); }
-        if !input.end_repeat.is_empty() { args.push(("end_repeat", &input.end_repeat)); }
+        if !input.calendar.is_empty() {
+            args.push(("calendar", &input.calendar));
+        }
+        if !input.date.is_empty() {
+            args.push(("date", &input.date));
+        }
+        if !input.end_date.is_empty() {
+            args.push(("end_date", &input.end_date));
+        }
+        if !input.location.is_empty() {
+            args.push(("location", &input.location));
+        }
+        if !input.notes.is_empty() {
+            args.push(("notes", &input.notes));
+        }
+        if !name.is_empty() {
+            args.push(("title", name));
+        }
+        if !input.repeat.is_empty() {
+            args.push(("repeat", &input.repeat));
+        }
+        if !input.repeat_days.is_empty() {
+            args.push(("days", &input.repeat_days));
+        }
+        if !input.end_repeat.is_empty() {
+            args.push(("end_repeat", &input.end_repeat));
+        }
         let interval_str = input.interval.map(|i| i.to_string());
-        if let Some(ref s) = interval_str { args.push(("interval", s)); }
+        if let Some(ref s) = interval_str {
+            args.push(("interval", s));
+        }
         if matches!(action, "today" | "upcoming" | "list") {
             args.push(("days", &days_str));
         }
@@ -518,14 +581,18 @@ pub async fn handle_calendar(action: &str, input: &OrganizerInput, ctx: &ToolCon
     match action {
         "configure" => {
             // List all calendars via AppleScript
-            let result = run_osascript(
-                "tell application \"Calendar\" to return name of every calendar",
-            ).await;
+            let result =
+                run_osascript("tell application \"Calendar\" to return name of every calendar")
+                    .await;
             if result.is_error {
                 return result;
             }
 
-            let all_cals: Vec<String> = result.content.split(", ").map(|s| s.trim().to_string()).collect();
+            let all_cals: Vec<String> = result
+                .content
+                .split(", ")
+                .map(|s| s.trim().to_string())
+                .collect();
             if all_cals.is_empty() {
                 return ToolResult::error("No calendars found on this system");
             }
@@ -546,7 +613,8 @@ pub async fn handle_calendar(action: &str, input: &OrganizerInput, ctx: &ToolCon
 
             match ctx.ask_user(prompt, widgets).await {
                 Some(response) if !response.is_empty() => {
-                    let selected: Vec<String> = response.split(", ").map(|s| s.trim().to_string()).collect();
+                    let selected: Vec<String> =
+                        response.split(", ").map(|s| s.trim().to_string()).collect();
                     if let Err(e) = save_calendar_prefs(store, &selected) {
                         return ToolResult::error(format!("Failed to save preferences: {e}"));
                     }
@@ -556,7 +624,9 @@ pub async fn handle_calendar(action: &str, input: &OrganizerInput, ctx: &ToolCon
                         selected.join(", ")
                     ))
                 }
-                _ => ToolResult::ok("Calendar configuration cancelled — no changes made.".to_string()),
+                _ => ToolResult::ok(
+                    "Calendar configuration cancelled — no changes made.".to_string(),
+                ),
             }
         }
         "calendars" => {
@@ -577,7 +647,9 @@ pub async fn handle_calendar(action: &str, input: &OrganizerInput, ctx: &ToolCon
                 return ToolResult::error("'name' or 'title' parameter required for create");
             }
             if input.date.is_empty() {
-                return ToolResult::error("'date' parameter required for create (e.g. '2024-06-15 14:00')");
+                return ToolResult::error(
+                    "'date' parameter required for create (e.g. '2024-06-15 14:00')",
+                );
             }
 
             let start_dt = match super::shared::parse_date(&input.date) {
@@ -682,11 +754,21 @@ pub async fn handle_reminders(action: &str, input: &OrganizerInput) -> ToolResul
         let name = input.event_name();
         let pri_str = input.priority.map(|p| p.to_string());
         let mut args: Vec<(&str, &str)> = vec![];
-        if !name.is_empty() { args.push(("name", name)); }
-        if !input.list.is_empty() { args.push(("list", &input.list)); }
-        if !input.notes.is_empty() { args.push(("notes", &input.notes)); }
-        if !input.due_date.is_empty() { args.push(("due_date", &input.due_date)); }
-        if let Some(ref s) = pri_str { args.push(("priority", s)); }
+        if !name.is_empty() {
+            args.push(("name", name));
+        }
+        if !input.list.is_empty() {
+            args.push(("list", &input.list));
+        }
+        if !input.notes.is_empty() {
+            args.push(("notes", &input.notes));
+        }
+        if !input.due_date.is_empty() {
+            args.push(("due_date", &input.due_date));
+        }
+        if let Some(ref s) = pri_str {
+            args.push(("priority", s));
+        }
         if let Some(result) = super::native::run_pim("reminders", action, &args).await {
             return result;
         }
@@ -743,10 +825,7 @@ end tell"#,
             let mut props = format!("name:\"{}\"", escape_applescript(name));
 
             if !input.notes.is_empty() {
-                props.push_str(&format!(
-                    ", body:\"{}\"",
-                    escape_applescript(&input.notes)
-                ));
+                props.push_str(&format!(", body:\"{}\"", escape_applescript(&input.notes)));
             }
 
             // Priority: 1-4 = high (1), 5 = medium (5), 6-9 = low (9)

@@ -34,7 +34,11 @@ impl PluginManager {
     /// Add a plugin to the manager (does not activate it).
     pub async fn register(&self, plugin: Arc<dyn CommPlugin>) {
         let mut inner = self.inner.write().await;
-        info!(plugin = plugin.name(), version = plugin.version(), "registered comm plugin");
+        info!(
+            plugin = plugin.name(),
+            version = plugin.version(),
+            "registered comm plugin"
+        );
         inner.plugins.insert(plugin.name().to_string(), plugin);
     }
 

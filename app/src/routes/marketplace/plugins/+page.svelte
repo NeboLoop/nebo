@@ -26,13 +26,13 @@
 
   onMount(async () => {
     try {
-      const res = await listStoreProducts({ type: 'plugin' });
+      const res = await listStoreProducts({ type: 'plugin' }) as { apps?: Record<string, unknown>[] } | null;
       if (res?.apps?.length) {
         plugins = res.apps.map((a: Record<string, unknown>) => ({
-          id: a.id, name: a.name, desc: a.description || '',
-          category: a.category || '', rating: a.rating || 0,
-          installs: a.installCount || 0, featured: a.featured ?? false,
-          price: a.price || 'Get', code: a.code || '',
+          id: String(a.id ?? ''), name: String(a.name ?? ''), desc: String(a.description ?? ''),
+          category: String(a.category ?? ''), rating: Number(a.rating ?? 0),
+          installs: Number(a.installCount ?? 0), featured: Boolean(a.featured ?? false),
+          price: String(a.price ?? 'Get'), code: String(a.code ?? ''),
         }));
       }
     } catch {}

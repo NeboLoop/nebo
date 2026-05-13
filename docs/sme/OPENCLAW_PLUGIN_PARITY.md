@@ -26,7 +26,7 @@ This is stronger than OpenClaw (in-process TypeScript) and Hermes (in-process Py
 | 0B | Manifest validation | `PluginManifest::validate()` — slug format, semver, binary name safety, auth/event consistency |
 | 0D | Plugin-to-plugin dependencies | `dependencies[]` in plugin.json; cascade resolves recursively; dep env vars injected |
 | 1A | Structured capabilities manifest | `capabilities` field with `tools`, `hooks`, `commands`, `routes`, `providers` sub-types |
-| 1C | Generated typed tools | `PluginCommandTool` implements `DynTool`; registered on install, unregistered on remove |
+| 1C | Generated typed tools | Replaced by STRAP `PluginTool` with consolidated action routing |
 
 ### Not Started
 
@@ -77,7 +77,7 @@ How Nebo compares to OpenClaw and Hermes after Phase 0+1 work:
 | File | What |
 |------|------|
 | `crates/napp/src/plugin.rs` | Core types, PluginStore, validation, capabilities, dependencies |
-| `crates/tools/src/plugin_tool.rs` | PluginCommandTool (DynTool), run_plugin_command, register/unregister |
+| `crates/tools/src/plugin_tool.rs` | PluginTool (STRAP domain tool), run_plugin_command |
 | `crates/server/src/deps.rs` | Dependency cascade (now supports plugin→plugin) |
 | `crates/server/src/codes.rs` | PLUG code handling + tool registration |
 | `docs/sme/PLUGIN_SYSTEM.md` | Full SME reference (§4 types, §11 cascade, §23 boundaries) |

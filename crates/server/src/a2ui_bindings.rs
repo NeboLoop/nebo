@@ -87,13 +87,17 @@ impl DataBindingManager {
                 loop {
                     // Call MCP tool
                     match bridge
-                        .call_tool(&binding.source.server, &binding.source.tool, binding.params.clone())
+                        .call_tool(
+                            &binding.source.server,
+                            &binding.source.tool,
+                            binding.params.clone(),
+                        )
                         .await
                     {
                         Ok(result) => {
                             consecutive_errors = 0;
-                            let value = serde_json::to_value(&result.content)
-                                .unwrap_or(json!(null));
+                            let value =
+                                serde_json::to_value(&result.content).unwrap_or(json!(null));
                             if let Err(e) = a2ui
                                 .update_data_model(&surface_id, Some(&binding.path), value)
                                 .await
@@ -119,9 +123,8 @@ impl DataBindingManager {
                             // Exponential backoff on repeated failures
                             if consecutive_errors > 1 {
                                 let backoff = Duration::from_secs(
-                                    (2u64.saturating_pow(consecutive_errors.min(6))).min(
-                                        max_backoff.as_secs(),
-                                    ),
+                                    (2u64.saturating_pow(consecutive_errors.min(6)))
+                                        .min(max_backoff.as_secs()),
                                 );
                                 tokio::time::sleep(backoff).await;
                             }
@@ -142,7 +145,10 @@ impl DataBindingManager {
                 count = handles.len(),
                 "started data binding poll tasks"
             );
-            self.tasks.write().await.insert(surface_id.to_string(), handles);
+            self.tasks
+                .write()
+                .await
+                .insert(surface_id.to_string(), handles);
         }
     }
 

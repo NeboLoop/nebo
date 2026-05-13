@@ -4,13 +4,13 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
+use crate::BrowserError;
 use crate::chrome::RunningChrome;
 use crate::config::BrowserConfig;
 use crate::executor::ActionExecutor;
 use crate::extension_bridge::ExtensionBridge;
 use crate::headless_bridge::HeadlessBridge;
 use crate::session::Session;
-use crate::BrowserError;
 
 /// Manages browser instances and sessions.
 pub struct Manager {
@@ -33,7 +33,8 @@ pub struct ProfileStatus {
 
 impl Manager {
     pub fn new(config: BrowserConfig, data_dir: String) -> Self {
-        let headless = HeadlessBridge::detect_binary().map(|bin| Arc::new(HeadlessBridge::new(bin)));
+        let headless =
+            HeadlessBridge::detect_binary().map(|bin| Arc::new(HeadlessBridge::new(bin)));
         Self {
             config,
             data_dir,
@@ -51,7 +52,10 @@ impl Manager {
 
     /// Get an ActionExecutor that routes to extension or headless backend.
     pub fn executor(&self) -> Option<ActionExecutor> {
-        Some(ActionExecutor::new(self.bridge.clone(), self.headless.clone()))
+        Some(ActionExecutor::new(
+            self.bridge.clone(),
+            self.headless.clone(),
+        ))
     }
 
     /// Check if the Chrome extension is connected via the bridge.
@@ -174,10 +178,7 @@ impl Manager {
             .iter()
             .map(|(name, cfg)| {
                 let running = browsers.contains_key(name);
-                let page_count = sessions
-                    .get(name)
-                    .map(|s| s.page_count())
-                    .unwrap_or(0);
+                let page_count = sessions.get(name).map(|s| s.page_count()).unwrap_or(0);
                 ProfileStatus {
                     name: name.clone(),
                     driver: cfg.driver.clone(),

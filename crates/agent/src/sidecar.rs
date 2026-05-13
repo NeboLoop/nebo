@@ -63,9 +63,5 @@ pub async fn verify_screenshot(
         }
     }
 
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }

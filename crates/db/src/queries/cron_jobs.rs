@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::{CronHistory, CronJob};
 use crate::Store;
+use crate::models::{CronHistory, CronJob};
 use types::NeboError;
 
 impl Store {

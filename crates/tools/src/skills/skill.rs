@@ -198,7 +198,10 @@ impl Skill {
             return Err("skill name is required".into());
         }
         if self.name.len() > 64 {
-            return Err(format!("skill name exceeds 64 characters: {}", self.name.len()));
+            return Err(format!(
+                "skill name exceeds 64 characters: {}",
+                self.name.len()
+            ));
         }
         if self.name.starts_with('-') || self.name.ends_with('-') {
             return Err("skill name must not start or end with a hyphen".into());
@@ -206,17 +209,29 @@ impl Skill {
         if self.name.contains("--") {
             return Err("skill name must not contain consecutive hyphens".into());
         }
-        if !self.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-            return Err("skill name must contain only lowercase letters, digits, and hyphens".into());
+        if !self
+            .name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(
+                "skill name must contain only lowercase letters, digits, and hyphens".into(),
+            );
         }
         if self.description.is_empty() {
             return Err("skill description is required".into());
         }
         if self.description.len() > 1024 {
-            return Err(format!("skill description exceeds 1024 characters: {}", self.description.len()));
+            return Err(format!(
+                "skill description exceeds 1024 characters: {}",
+                self.description.len()
+            ));
         }
         if self.compatibility.len() > 500 {
-            return Err(format!("compatibility exceeds 500 characters: {}", self.compatibility.len()));
+            return Err(format!(
+                "compatibility exceeds 500 characters: {}",
+                self.compatibility.len()
+            ));
         }
         Ok(())
     }
@@ -262,8 +277,16 @@ impl Skill {
                 let key = v.get("key")?.as_str()?.to_string();
                 Some(SecretDeclaration {
                     key,
-                    label: v.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    hint: v.get("hint").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    label: v
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    hint: v
+                        .get("hint")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     required: v.get("required").and_then(|v| v.as_bool()).unwrap_or(false),
                 })
             })
@@ -367,8 +390,10 @@ pub fn walk_resources_filtered(base: &Path, dir: &Path, out: &mut Vec<String>) {
         } else if let Ok(rel) = path.strip_prefix(base) {
             let rel_str = rel.to_string_lossy().to_string();
             // Only include executables
-            if rel_str == "binary" || rel_str == "app"
-                || rel_str.starts_with("scripts/") || rel_str.starts_with("bin/")
+            if rel_str == "binary"
+                || rel_str == "app"
+                || rel_str.starts_with("scripts/")
+                || rel_str.starts_with("bin/")
             {
                 out.push(rel_str);
             }
@@ -633,7 +658,11 @@ Process spreadsheets.
         let base = tmp.path();
 
         // Create skill structure
-        std::fs::write(base.join("SKILL.md"), "---\nname: test\ndescription: t\n---\nbody").unwrap();
+        std::fs::write(
+            base.join("SKILL.md"),
+            "---\nname: test\ndescription: t\n---\nbody",
+        )
+        .unwrap();
         std::fs::create_dir_all(base.join("scripts")).unwrap();
         std::fs::write(base.join("scripts/run.py"), "print('hello')").unwrap();
         std::fs::create_dir_all(base.join("references")).unwrap();
@@ -740,9 +769,19 @@ Process PDFs here.
 
     #[test]
     fn test_name_validation_valid_names() {
-        for name in &["a", "pdf-processing", "data-analysis", "code-review", "a1b2"] {
+        for name in &[
+            "a",
+            "pdf-processing",
+            "data-analysis",
+            "code-review",
+            "a1b2",
+        ] {
             let md = format!("---\nname: {}\ndescription: test\n---\nbody", name);
-            assert!(parse_skill_md(md.as_bytes()).is_ok(), "should accept name: {}", name);
+            assert!(
+                parse_skill_md(md.as_bytes()).is_ok(),
+                "should accept name: {}",
+                name
+            );
         }
     }
 

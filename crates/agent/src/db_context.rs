@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use db::models::{AgentProfile, UserPreference, UserProfile};
 use db::Store;
+use db::models::{AgentProfile, UserPreference, UserProfile};
 use tracing::debug;
 
 use crate::memory::{self, ScoredMemory};
@@ -88,10 +88,7 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     // 3. Personality directive (learned from style observations)
     if let Some(ref directive) = ctx.personality_directive {
         if !directive.is_empty() {
-            sections.push(format!(
-                "# Personality (Learned)\n{}",
-                directive
-            ));
+            sections.push(format!("# Personality (Learned)\n{}", directive));
         }
     }
 
@@ -172,7 +169,10 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         }
         if let Some(ref context) = user.context {
             if !context.is_empty() {
-                parts.push(format!("Context: {}", sanitize::sanitize_for_prompt(context)));
+                parts.push(format!(
+                    "Context: {}",
+                    sanitize::sanitize_for_prompt(context)
+                ));
             }
         }
         if !parts.is_empty() {
@@ -327,11 +327,19 @@ fn language_display_name(code: &str) -> &'static str {
 /// Map personality preset names to prompt text.
 fn personality_preset_prompt(preset: Option<&str>) -> Option<&'static str> {
     match preset? {
-        "professional" => Some("You are professional, precise, and efficient. You focus on accuracy and clear communication."),
-        "friendly" => Some("You are warm, friendly, and approachable. You make people feel comfortable and supported."),
+        "professional" => Some(
+            "You are professional, precise, and efficient. You focus on accuracy and clear communication.",
+        ),
+        "friendly" => Some(
+            "You are warm, friendly, and approachable. You make people feel comfortable and supported.",
+        ),
         "casual" => Some("You are laid-back and casual. You keep things light and conversational."),
-        "creative" => Some("You are creative, imaginative, and expressive. You bring fresh perspectives and ideas."),
-        "analytical" => Some("You are methodical, detail-oriented, and data-driven. You think critically and provide thorough analysis."),
+        "creative" => Some(
+            "You are creative, imaginative, and expressive. You bring fresh perspectives and ideas.",
+        ),
+        "analytical" => Some(
+            "You are methodical, detail-oriented, and data-driven. You think critically and provide thorough analysis.",
+        ),
         _ => None,
     }
 }

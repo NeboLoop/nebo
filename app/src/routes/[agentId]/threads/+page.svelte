@@ -46,7 +46,7 @@
         await api.chatWithAgent(agentId, { prompt: text });
       }
 
-      goto(`/${agentId}/threads/${newChatId}`);
+      goto(`/${agentId}/threads/${newChatId}?active=1`);
     } catch (e) {
       console.warn('[nebo] Failed to create thread', e);
       isLoading = false;

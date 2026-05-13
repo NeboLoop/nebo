@@ -32,6 +32,12 @@ var typeOverrides = map[string]string{
 	"get_chat_messages.messages": "ChatMessage[]",
 	"list_chat_messages.messages": "ChatMessage[]",
 
+	// ── User profile ──
+	"userGetProfile.profile": "UserProfileFull",
+
+	// ── User permissions ──
+	"userGetPermissions.permissions": "ToolPermission[]",
+
 	// ── Misc ──
 	"get_agent_stats.stats":       "AgentStats",
 	"list_aliases.aliases":        "AliasEntry[]",
@@ -107,4 +113,24 @@ var extraInterfaces = map[string]string{
 	type: string
 	parentId?: string
 }`,
+
+	"UserProfileFull": `export interface UserProfileFull {
+	userId: string
+	displayName?: string
+	bio?: string
+	location?: string
+	timezone?: string
+	occupation?: string
+	interests?: string
+	communicationStyle?: string
+	goals?: string
+	context?: string
+	onboardingCompleted: boolean
+	onboardingStep?: number
+	toolPermissions?: string
+	termsAcceptedAt?: number
+	createdAt: number
+	updatedAt: number
+}`,
+
 }

@@ -102,10 +102,7 @@ pub struct SignaturesFile {
 }
 
 /// Verify .napp signatures.
-pub fn verify_signatures(
-    key: &VerifyingKey,
-    app_dir: &std::path::Path,
-) -> Result<(), NappError> {
+pub fn verify_signatures(key: &VerifyingKey, app_dir: &std::path::Path) -> Result<(), NappError> {
     let sigs_path = app_dir.join("signatures.json");
     let sigs_data = std::fs::read_to_string(&sigs_path)
         .map_err(|e| NappError::Signing(format!("read signatures.json: {}", e)))?;
@@ -184,7 +181,9 @@ fn find_binary(app_dir: &std::path::Path) -> Result<std::path::PathBuf, NappErro
             }
         }
     }
-    Err(NappError::NotFound("no binary found in app directory".into()))
+    Err(NappError::NotFound(
+        "no binary found in app directory".into(),
+    ))
 }
 
 /// Checks NeboLoop's revocation list with caching.
@@ -231,7 +230,9 @@ impl RevocationChecker {
                     #[serde(default)]
                     revoked: Vec<String>,
                 }
-                let list: RevocationList = r.json().await
+                let list: RevocationList = r
+                    .json()
+                    .await
                     .map_err(|e| NappError::Signing(format!("parse revocations: {}", e)))?;
 
                 let set: std::collections::HashSet<String> = list.revoked.into_iter().collect();

@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use db::Store;
-use tracing::{debug, warn};
 use crate::domain::DomainInput;
 use crate::orchestrator::OrchestratorHandle;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use crate::run_querier::RunQuerierHandle;
+use db::Store;
+use tracing::{debug, warn};
 
 /// Trait for advisor deliberation (implemented by agent::advisors::Runner).
 /// Defined here to avoid circular dependencies between tools and agent crates.
@@ -49,7 +49,13 @@ pub struct AgentTool {
 
 impl AgentTool {
     pub fn new(store: Arc<Store>, orchestrator: OrchestratorHandle) -> Self {
-        Self { store, orchestrator, advisor_runner: None, hybrid_searcher: None, run_querier: crate::run_querier::new_handle() }
+        Self {
+            store,
+            orchestrator,
+            advisor_runner: None,
+            hybrid_searcher: None,
+            run_querier: crate::run_querier::new_handle(),
+        }
     }
 
     pub fn with_advisor_runner(mut self, runner: Arc<dyn AdvisorDeliberator>) -> Self {
@@ -70,7 +76,8 @@ impl AgentTool {
     fn infer_resource(&self, action: &str) -> &str {
         match action {
             "store" | "recall" | "search" => "memory",
-            "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create" | "update" | "delete" => "task",
+            "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create"
+            | "update" | "delete" => "task",
             "research" | "submit_findings" => "research",
             "active" | "cancel_run" => "runs",
             "history" | "query" => "session",
@@ -102,10 +109,15 @@ impl AgentTool {
                     "memory store attempt"
                 );
 
-                match self.store.upsert_memory(namespace, key, value, None, None, &ctx.user_id) {
+                match self
+                    .store
+                    .upsert_memory(namespace, key, value, None, None, &ctx.user_id)
+                {
                     Ok(_) => {
                         // Verify the write was persisted by reading it back (different pool connection)
-                        let verify = self.store.get_memory_by_key_and_user(namespace, key, &ctx.user_id);
+                        let verify =
+                            self.store
+                                .get_memory_by_key_and_user(namespace, key, &ctx.user_id);
                         match &verify {
                             Ok(Some(m)) => debug!(
                                 key = key,
@@ -135,7 +147,10 @@ impl AgentTool {
                                 "memory store verify read failed"
                             ),
                         }
-                        ToolResult::ok(format!("Stored memory: [{}] {} = {}", namespace, key, value))
+                        ToolResult::ok(format!(
+                            "Stored memory: [{}] {} = {}",
+                            namespace, key, value
+                        ))
                     }
                     Err(e) => ToolResult::error(format!("Failed to store memory: {}", e)),
                 }
@@ -154,10 +169,15 @@ impl AgentTool {
                     "memory recall attempt"
                 );
 
-                match self.store.get_memory_by_key_and_user(namespace, key, &ctx.user_id) {
+                match self
+                    .store
+                    .get_memory_by_key_and_user(namespace, key, &ctx.user_id)
+                {
                     Ok(Some(mem)) => {
                         // Increment access count on recall
-                        let _ = self.store.increment_memory_access_by_key(namespace, key, &ctx.user_id);
+                        let _ =
+                            self.store
+                                .increment_memory_access_by_key(namespace, key, &ctx.user_id);
                         ToolResult::ok(format!("[{}] {}: {}", mem.namespace, mem.key, mem.value))
                     }
                     Ok(None) => {
@@ -172,7 +192,9 @@ impl AgentTool {
                                     actual_user_id = %m.user_id,
                                     "memory exists but user_id mismatch — returning anyway"
                                 );
-                                let _ = self.store.increment_memory_access_by_key(namespace, key, &m.user_id);
+                                let _ = self
+                                    .store
+                                    .increment_memory_access_by_key(namespace, key, &m.user_id);
                                 ToolResult::ok(format!("[{}] {}: {}", m.namespace, m.key, m.value))
                             }
                             Ok(None) => {
@@ -185,7 +207,10 @@ impl AgentTool {
                                             key = key,
                                             "memory found in different namespace"
                                         );
-                                        ToolResult::ok(format!("[{}] {}: {}", m.namespace, m.key, m.value))
+                                        ToolResult::ok(format!(
+                                            "[{}] {}: {}",
+                                            m.namespace, m.key, m.value
+                                        ))
                                     }
                                     _ => {
                                         warn!(
@@ -218,7 +243,12 @@ impl AgentTool {
                     if !results.is_empty() {
                         let lines: Vec<String> = results
                             .iter()
-                            .map(|r| format!("- [{}] {}: {} (score: {:.2})", r.namespace, r.key, r.value, r.score))
+                            .map(|r| {
+                                format!(
+                                    "- [{}] {}: {} (score: {:.2})",
+                                    r.namespace, r.key, r.value, r.score
+                                )
+                            })
                             .collect();
                         return ToolResult::ok(format!(
                             "Found {} memories:\n{}",
@@ -230,7 +260,10 @@ impl AgentTool {
                 }
 
                 // Fallback: simple LIKE query
-                match self.store.search_memories_by_user(&ctx.user_id, query, limit as i64, 0) {
+                match self
+                    .store
+                    .search_memories_by_user(&ctx.user_id, query, limit as i64, 0)
+                {
                     Ok(memories) => {
                         if memories.is_empty() {
                             ToolResult::ok(format!("No memories found matching: {}", query))
@@ -289,7 +322,10 @@ impl AgentTool {
                 let mut total = 0usize;
 
                 // Step 1: exact scope (namespace + key + user_id)
-                if let Ok(n) = self.store.delete_memory_by_key_and_user(namespace, key, &ctx.user_id) {
+                if let Ok(n) =
+                    self.store
+                        .delete_memory_by_key_and_user(namespace, key, &ctx.user_id)
+                {
                     total += n;
                 }
 
@@ -303,14 +339,21 @@ impl AgentTool {
                     Ok(n) => {
                         total += n;
                         if n > 0 && total > n {
-                            warn!(key = key, namespace = namespace, total = total,
-                                "delete: required broader fallback to fully purge");
+                            warn!(
+                                key = key,
+                                namespace = namespace,
+                                total = total,
+                                "delete: required broader fallback to fully purge"
+                            );
                         }
                         ToolResult::ok(format!("Deleted {} memory entries for key: {}", total, key))
                     }
                     Err(e) => {
                         if total > 0 {
-                            ToolResult::ok(format!("Deleted {} memory entries for key: {}", total, key))
+                            ToolResult::ok(format!(
+                                "Deleted {} memory entries for key: {}",
+                                total, key
+                            ))
                         } else {
                             ToolResult::error(format!("Failed to delete: {}", e))
                         }
@@ -322,10 +365,14 @@ impl AgentTool {
                 if namespace.is_empty() {
                     return ToolResult::error("namespace is required to clear memories");
                 }
-                match self.store.delete_memories_by_namespace_and_user(namespace, &ctx.user_id) {
-                    Ok(count) => {
-                        ToolResult::ok(format!("Cleared {} memories in namespace: {}", count, namespace))
-                    }
+                match self
+                    .store
+                    .delete_memories_by_namespace_and_user(namespace, &ctx.user_id)
+                {
+                    Ok(count) => ToolResult::ok(format!(
+                        "Cleared {} memories in namespace: {}",
+                        count, namespace
+                    )),
                     Err(e) => ToolResult::error(format!("Failed to clear: {}", e)),
                 }
             }
@@ -343,9 +390,9 @@ impl AgentTool {
             "spawn" => {
                 let task_prompt = input["prompt"].as_str().unwrap_or("");
                 let agent_type = input["agent_type"].as_str().unwrap_or("general");
-                let description = input["description"].as_str().unwrap_or(
-                    &task_prompt[..task_prompt.len().min(80)]
-                );
+                let description = input["description"]
+                    .as_str()
+                    .unwrap_or(&task_prompt[..task_prompt.len().min(80)]);
                 let model_override = input["model_override"].as_str().unwrap_or("");
                 let wait = input["wait"].as_bool().unwrap_or(true);
                 let max_iterations = input["max_iterations"].as_u64().unwrap_or(0) as usize;
@@ -407,14 +454,19 @@ impl AgentTool {
 
                 let stream_tx = match ctx.stream_tx {
                     Some(ref tx) => tx.clone(),
-                    None => return ToolResult::error("Stream sender not available for progress events"),
+                    None => {
+                        return ToolResult::error(
+                            "Stream sender not available for progress events",
+                        );
+                    }
                 };
 
                 let requests: Vec<crate::orchestrator::SpawnRequest> = tasks
                     .iter()
                     .map(|t| {
                         let prompt = t["prompt"].as_str().unwrap_or("").to_string();
-                        let description = t["description"].as_str()
+                        let description = t["description"]
+                            .as_str()
                             .unwrap_or(&prompt[..prompt.len().min(80)])
                             .to_string();
                         crate::orchestrator::SpawnRequest {
@@ -462,7 +514,15 @@ impl AgentTool {
                     None => return ToolResult::error("Sub-agent orchestrator not ready"),
                 };
 
-                match orch.execute_dag(task_prompt, "", &ctx.session_id, Some(ctx.cancel_token.clone())).await {
+                match orch
+                    .execute_dag(
+                        task_prompt,
+                        "",
+                        &ctx.session_id,
+                        Some(ctx.cancel_token.clone()),
+                    )
+                    .await
+                {
                     Ok(result) => {
                         if result.success {
                             ToolResult::ok(format!(
@@ -559,13 +619,13 @@ impl AgentTool {
                 if subject.is_empty() {
                     return ToolResult::error("subject is required for task creation");
                 }
-                let description = input["description"].as_str().or_else(|| input["details"].as_str());
+                let description = input["description"]
+                    .as_str()
+                    .or_else(|| input["details"].as_str());
                 let list_id = format!("session:{}", ctx.session_id);
 
                 match self.store.create_task_item(&list_id, subject, description) {
-                    Ok(task) => {
-                        ToolResult::ok(format!("Task {} created: {}", task.id, subject))
-                    }
+                    Ok(task) => ToolResult::ok(format!("Task {} created: {}", task.id, subject)),
                     Err(e) => ToolResult::error(format!("Failed to create task: {}", e)),
                 }
             }
@@ -576,15 +636,18 @@ impl AgentTool {
                 }
                 let status = input["status"].as_str().unwrap_or("");
                 if status.is_empty() {
-                    return ToolResult::error("status is required (pending, in_progress, completed, failed)");
+                    return ToolResult::error(
+                        "status is required (pending, in_progress, completed, failed)",
+                    );
                 }
                 let output = input["output"].as_str();
                 let error = input["error"].as_str();
 
-                match self.store.update_task_item(task_id, status, output, error, 0, 0) {
-                    Ok(_) => {
-                        ToolResult::ok(format!("Task {} updated to {}", task_id, status))
-                    }
+                match self
+                    .store
+                    .update_task_item(task_id, status, output, error, 0, 0)
+                {
+                    Ok(_) => ToolResult::ok(format!("Task {} updated to {}", task_id, status)),
                     Err(e) => ToolResult::error(format!("Failed to update task: {}", e)),
                 }
             }
@@ -598,23 +661,17 @@ impl AgentTool {
                             let lines: Vec<String> = tasks
                                 .iter()
                                 .map(|t| {
-                                    let output_hint = if t.status == "completed" && t.output.is_some() {
-                                        " [has output]"
-                                    } else {
-                                        ""
-                                    };
+                                    let output_hint =
+                                        if t.status == "completed" && t.output.is_some() {
+                                            " [has output]"
+                                        } else {
+                                            ""
+                                        };
                                     let desc = t.description.as_deref().unwrap_or(&t.prompt);
-                                    format!(
-                                        "{} [{}] {}{}",
-                                        t.id, t.status, desc, output_hint
-                                    )
+                                    format!("{} [{}] {}{}", t.id, t.status, desc, output_hint)
                                 })
                                 .collect();
-                            ToolResult::ok(format!(
-                                "{} tasks:\n{}",
-                                tasks.len(),
-                                lines.join("\n")
-                            ))
+                            ToolResult::ok(format!("{} tasks:\n{}", tasks.len(), lines.join("\n")))
                         }
                     }
                     Err(e) => ToolResult::error(format!("Failed to list tasks: {}", e)),
@@ -628,10 +685,7 @@ impl AgentTool {
                 match self.store.get_task_item(task_id) {
                     Ok(Some(t)) => {
                         let desc = t.description.as_deref().unwrap_or(&t.prompt);
-                        let mut result = format!(
-                            "Task {}: {}\nStatus: {}\n",
-                            t.id, desc, t.status
-                        );
+                        let mut result = format!("Task {}: {}\nStatus: {}\n", t.id, desc, t.status);
                         if let Some(ref output) = t.output {
                             result.push_str(&format!("Output: {}\n", output));
                         }
@@ -649,10 +703,11 @@ impl AgentTool {
                 if task_id.is_empty() {
                     return ToolResult::error("task_id is required");
                 }
-                match self.store.update_task_item(task_id, "skipped", None, None, 0, 0) {
-                    Ok(_) => {
-                        ToolResult::ok(format!("Task {} deleted", task_id))
-                    }
+                match self
+                    .store
+                    .update_task_item(task_id, "skipped", None, None, 0, 0)
+                {
+                    Ok(_) => ToolResult::ok(format!("Task {} deleted", task_id)),
                     Err(e) => ToolResult::error(format!("Failed to delete task: {}", e)),
                 }
             }
@@ -690,16 +745,18 @@ impl AgentTool {
                 Err(e) => ToolResult::error(format!("Failed to list sessions: {}", e)),
             },
             "history" => {
-                let session_id = input["session_id"]
-                    .as_str()
-                    .unwrap_or(&ctx.session_id);
+                let session_id = input["session_id"].as_str().unwrap_or(&ctx.session_id);
                 // Sessions use chat_messages table with session_id as the chat_id
                 match self.store.get_chat_messages(session_id) {
                     Ok(msgs) => {
                         if msgs.is_empty() {
-                            return ToolResult::ok(format!("No messages in session: {}", session_id));
+                            return ToolResult::ok(format!(
+                                "No messages in session: {}",
+                                session_id
+                            ));
                         }
-                        let recent: Vec<&db::models::ChatMessage> = msgs.iter().rev().take(50).collect();
+                        let recent: Vec<&db::models::ChatMessage> =
+                            msgs.iter().rev().take(50).collect();
                         let lines: Vec<String> = recent
                             .iter()
                             .rev()
@@ -712,20 +769,14 @@ impl AgentTool {
                                 format!("[{}] {}: {}", m.id, m.role, preview)
                             })
                             .collect();
-                        ToolResult::ok(format!(
-                            "{} messages:\n{}",
-                            msgs.len(),
-                            lines.join("\n")
-                        ))
+                        ToolResult::ok(format!("{} messages:\n{}", msgs.len(), lines.join("\n")))
                     }
                     Err(e) => ToolResult::error(format!("Failed to get history: {}", e)),
                 }
             }
             "status" => ToolResult::ok(format!("Current session: {}", ctx.session_id)),
             "clear" => {
-                let session_id = input["session_id"]
-                    .as_str()
-                    .unwrap_or(&ctx.session_id);
+                let session_id = input["session_id"].as_str().unwrap_or(&ctx.session_id);
                 match self.store.reset_session(session_id) {
                     Ok(_) => ToolResult::ok(format!("Cleared session: {}", session_id)),
                     Err(e) => ToolResult::error(format!("Failed to clear session: {}", e)),
@@ -745,23 +796,38 @@ impl AgentTool {
                         for session in &sessions {
                             if let Ok(msgs) = self.store.get_chat_messages(&session.id) {
                                 for msg in msgs {
-                                    if msg.content.to_lowercase().contains(&query_text.to_lowercase()) {
+                                    if msg
+                                        .content
+                                        .to_lowercase()
+                                        .contains(&query_text.to_lowercase())
+                                    {
                                         let preview = if msg.content.len() > 150 {
                                             format!("{}...", crate::truncate_str(&msg.content, 150))
                                         } else {
                                             msg.content.clone()
                                         };
-                                        found.push(format!("- [{}] {}: {}", session.id, msg.role, preview));
-                                        if found.len() >= limit { break; }
+                                        found.push(format!(
+                                            "- [{}] {}: {}",
+                                            session.id, msg.role, preview
+                                        ));
+                                        if found.len() >= limit {
+                                            break;
+                                        }
                                     }
                                 }
                             }
-                            if found.len() >= limit { break; }
+                            if found.len() >= limit {
+                                break;
+                            }
                         }
                         if found.is_empty() {
                             ToolResult::ok(format!("No messages found matching: {}", query_text))
                         } else {
-                            ToolResult::ok(format!("Found {} messages:\n{}", found.len(), found.join("\n")))
+                            ToolResult::ok(format!(
+                                "Found {} messages:\n{}",
+                                found.len(),
+                                found.join("\n")
+                            ))
                         }
                     }
                     Err(e) => ToolResult::error(format!("Cross-session search failed: {}", e)),
@@ -780,7 +846,11 @@ impl AgentTool {
             "summary" => {
                 // Get recent messages from the current session for a summary
                 // Use session_key as the chat_id (messages are stored under session name, not session UUID)
-                let chat_id = if !ctx.session_key.is_empty() { &ctx.session_key } else { &ctx.session_id };
+                let chat_id = if !ctx.session_key.is_empty() {
+                    &ctx.session_key
+                } else {
+                    &ctx.session_id
+                };
                 match self.store.get_chat_messages(chat_id) {
                     Ok(msgs) => {
                         let count = msgs.len();
@@ -788,7 +858,9 @@ impl AgentTool {
                         let assistant_count = msgs.iter().filter(|m| m.role == "assistant").count();
                         let tool_count = msgs.iter().filter(|m| m.role == "tool").count();
 
-                        let last_topic = msgs.iter().rev()
+                        let last_topic = msgs
+                            .iter()
+                            .rev()
                             .find(|m| m.role == "user")
                             .map(|m| {
                                 if m.content.len() > 100 {
@@ -801,22 +873,27 @@ impl AgentTool {
 
                         ToolResult::ok(format!(
                             "Session: {}\nMessages: {} ({} user, {} assistant, {} tool)\nLast user message: {}",
-                            ctx.session_id, count, user_count, assistant_count, tool_count, last_topic
+                            ctx.session_id,
+                            count,
+                            user_count,
+                            assistant_count,
+                            tool_count,
+                            last_topic
                         ))
                     }
                     Err(e) => ToolResult::error(format!("Failed to get context: {}", e)),
                 }
             }
-            "reset" => {
-                match self.store.reset_session(&ctx.session_id) {
-                    Ok(_) => ToolResult::ok("Session context has been reset."),
-                    Err(e) => ToolResult::error(format!("Failed to reset: {}", e)),
-                }
-            }
+            "reset" => match self.store.reset_session(&ctx.session_id) {
+                Ok(_) => ToolResult::ok("Session context has been reset."),
+                Err(e) => ToolResult::error(format!("Failed to reset: {}", e)),
+            },
             "compact" => {
                 // Compaction is handled automatically by the agentic loop's sliding window.
                 // This explicit call is a no-op signal that the agent wants to reduce context.
-                ToolResult::ok("Context compaction noted. The agentic loop will apply sliding window pruning on the next iteration.")
+                ToolResult::ok(
+                    "Context compaction noted. The agentic loop will apply sliding window pruning on the next iteration.",
+                )
             }
             _ => ToolResult::error(format!(
                 "Unknown context action: {}. Available: summary, reset, compact",
@@ -831,7 +908,9 @@ impl AgentTool {
             "deliberate" => {
                 let task = input["task"].as_str().unwrap_or("");
                 if task.is_empty() {
-                    return ToolResult::error("task description is required for advisor deliberation");
+                    return ToolResult::error(
+                        "task description is required for advisor deliberation",
+                    );
                 }
 
                 // Use the advisor runner if available (real LLM deliberation)
@@ -854,9 +933,7 @@ impl AgentTool {
                 // Fallback: format personas from DB (no LLM calls)
                 match self.store.list_advisors() {
                     Ok(advisors) => {
-                        let enabled: Vec<_> = advisors.iter()
-                            .filter(|a| a.enabled != 0)
-                            .collect();
+                        let enabled: Vec<_> = advisors.iter().filter(|a| a.enabled != 0).collect();
 
                         if enabled.is_empty() {
                             return ToolResult::ok(format!(
@@ -867,9 +944,17 @@ impl AgentTool {
 
                         let mut perspectives = Vec::new();
                         for advisor in &enabled {
-                            let persona = if advisor.persona.is_empty() { "general advisor" } else { &advisor.persona };
+                            let persona = if advisor.persona.is_empty() {
+                                "general advisor"
+                            } else {
+                                &advisor.persona
+                            };
                             let name = &advisor.name;
-                            let role = if advisor.role.is_empty() { "advisor" } else { &advisor.role };
+                            let role = if advisor.role.is_empty() {
+                                "advisor"
+                            } else {
+                                &advisor.role
+                            };
                             perspectives.push(format!(
                                 "**{}** ({}): Consider this task from the perspective of {}.",
                                 name, role, persona,
@@ -885,23 +970,36 @@ impl AgentTool {
                     Err(e) => ToolResult::error(format!("Failed to load advisors: {}", e)),
                 }
             }
-            "list" => {
-                match self.store.list_advisors() {
-                    Ok(advisors) => {
-                        if advisors.is_empty() {
-                            ToolResult::ok("No advisors configured.")
-                        } else {
-                            let lines: Vec<String> = advisors.iter().map(|a| {
-                                let enabled = if a.enabled != 0 { "enabled" } else { "disabled" };
-                                let desc = if a.description.is_empty() { "-" } else { &a.description };
+            "list" => match self.store.list_advisors() {
+                Ok(advisors) => {
+                    if advisors.is_empty() {
+                        ToolResult::ok("No advisors configured.")
+                    } else {
+                        let lines: Vec<String> = advisors
+                            .iter()
+                            .map(|a| {
+                                let enabled = if a.enabled != 0 {
+                                    "enabled"
+                                } else {
+                                    "disabled"
+                                };
+                                let desc = if a.description.is_empty() {
+                                    "-"
+                                } else {
+                                    &a.description
+                                };
                                 format!("- {} [{}] — {}", a.name, enabled, desc)
-                            }).collect();
-                            ToolResult::ok(format!("{} advisors:\n{}", advisors.len(), lines.join("\n")))
-                        }
+                            })
+                            .collect();
+                        ToolResult::ok(format!(
+                            "{} advisors:\n{}",
+                            advisors.len(),
+                            lines.join("\n")
+                        ))
                     }
-                    Err(e) => ToolResult::error(format!("Failed to list advisors: {}", e)),
                 }
-            }
+                Err(e) => ToolResult::error(format!("Failed to list advisors: {}", e)),
+            },
             _ => ToolResult::error(format!(
                 "Unknown advisors action: {}. Available: deliberate, list",
                 action
@@ -917,7 +1015,10 @@ impl AgentTool {
                 if text.is_empty() {
                     return ToolResult::error("text is required for ask operations");
                 }
-                let options = input.get("options").cloned().unwrap_or(serde_json::json!([]));
+                let options = input
+                    .get("options")
+                    .cloned()
+                    .unwrap_or(serde_json::json!([]));
 
                 // Build widget definition from action type
                 let widget_type = match action {
@@ -937,9 +1038,12 @@ impl AgentTool {
                 }]);
 
                 match ctx.ask_user(text, widgets).await {
-                    Some(response) => ToolResult::ok(serde_json::json!({
-                        "response": response,
-                    }).to_string()),
+                    Some(response) => ToolResult::ok(
+                        serde_json::json!({
+                            "response": response,
+                        })
+                        .to_string(),
+                    ),
                     None => ToolResult::error(
                         "Ask prompt not supported in this context (no UI connected)",
                     ),
@@ -967,7 +1071,11 @@ impl AgentTool {
         // Format: "agent:<uuid>:<channel>" → entity is the uuid.
         // Anything else (e.g., "default", "main") → "main" (primary agent).
         let caller_entity_id = if ctx.session_key.starts_with("agent:") {
-            ctx.session_key.split(':').nth(1).unwrap_or("main").to_string()
+            ctx.session_key
+                .split(':')
+                .nth(1)
+                .unwrap_or("main")
+                .to_string()
         } else {
             "main".to_string()
         };
@@ -978,19 +1086,25 @@ impl AgentTool {
                 if runs.is_empty() {
                     return ToolResult::ok("No active agent runs.");
                 }
-                let lines: Vec<String> = runs.iter().map(|r| {
-                    let tool_info = if r.current_tool.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" — running: {}", r.current_tool)
-                    };
-                    format!(
-                        "- [{}] {} ({}) · {} tools · {}s{}",
-                        &r.run_id[..8.min(r.run_id.len())],
-                        r.entity_name, r.origin,
-                        r.tool_call_count, r.elapsed_secs, tool_info,
-                    )
-                }).collect();
+                let lines: Vec<String> = runs
+                    .iter()
+                    .map(|r| {
+                        let tool_info = if r.current_tool.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" — running: {}", r.current_tool)
+                        };
+                        format!(
+                            "- [{}] {} ({}) · {} tools · {}s{}",
+                            &r.run_id[..8.min(r.run_id.len())],
+                            r.entity_name,
+                            r.origin,
+                            r.tool_call_count,
+                            r.elapsed_secs,
+                            tool_info,
+                        )
+                    })
+                    .collect();
                 ToolResult::ok(format!("{} active runs:\n{}", runs.len(), lines.join("\n")))
             }
             "cancel_run" => {
@@ -1023,14 +1137,18 @@ impl AgentTool {
 
                 let data_dir = match config::data_dir() {
                     Ok(d) => d,
-                    Err(e) => return ToolResult::error(format!("Cannot determine data dir: {}", e)),
+                    Err(e) => {
+                        return ToolResult::error(format!("Cannot determine data dir: {}", e));
+                    }
                 };
 
                 let run_id = format!("research-{}", uuid::Uuid::new_v4().as_simple());
 
                 let run_dir = match crate::research::create_run_dir(&data_dir, &run_id, query) {
                     Ok(d) => d,
-                    Err(e) => return ToolResult::error(format!("Failed to create research dir: {}", e)),
+                    Err(e) => {
+                        return ToolResult::error(format!("Failed to create research dir: {}", e));
+                    }
                 };
 
                 ToolResult::ok(format!(
@@ -1084,13 +1202,19 @@ impl AgentTool {
                 // For now, scan <data_dir>/research/ for the most recent run with status "running".
                 let data_dir = match config::data_dir() {
                     Ok(d) => d,
-                    Err(e) => return ToolResult::error(format!("Cannot determine data dir: {}", e)),
+                    Err(e) => {
+                        return ToolResult::error(format!("Cannot determine data dir: {}", e));
+                    }
                 };
 
                 let research_dir = data_dir.join("research");
                 let run_dir = match crate::research::find_active_run_dir(&research_dir) {
                     Some(d) => d,
-                    None => return ToolResult::error("No active research run found. Was bot(action: 'research') called first?"),
+                    None => {
+                        return ToolResult::error(
+                            "No active research run found. Was bot(action: 'research') called first?",
+                        );
+                    }
                 };
 
                 match crate::research::write_worker_findings(&run_dir, &worker_findings) {
@@ -1157,12 +1281,12 @@ impl DynTool for AgentTool {
             "properties": {
                 "resource": {
                     "type": "string",
-                    "description": "Resource type",
+                    "description": "REQUIRED. The agent resource category — determines which actions are available.",
                     "enum": ["memory", "task", "session", "context", "advisors", "ask", "research"]
                 },
                 "action": {
                     "type": "string",
-                    "description": "Action to perform"
+                    "description": "The operation to perform on the selected resource. Never put a resource name here."
                 },
                 "key": { "type": "string", "description": "Memory key" },
                 "value": { "type": "string", "description": "Memory value or field value" },
@@ -1186,7 +1310,7 @@ impl DynTool for AgentTool {
                 "gaps": { "type": "array", "description": "Array of gaps (unanswered questions) from research worker" },
                 "max_iterations": { "type": "integer", "description": "Max iterations for sub-agent (default: 100)" }
             },
-            "required": ["action"]
+            "required": ["resource", "action"]
         })
     }
 

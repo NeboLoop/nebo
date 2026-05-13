@@ -11,6 +11,12 @@ let _baseUrl: string | null = null;
 export function getAppId(): string {
   if (_appId) return _appId;
 
+  // Custom protocol: neboapp://{agent_id}/
+  if (window.location.protocol === 'neboapp:') {
+    _appId = window.location.hostname;
+    return _appId;
+  }
+
   // Try URL path first: /apps/{id}/ui/...
   const match = window.location.pathname.match(/^\/apps\/([^/]+)\/ui/);
   if (match) {
@@ -33,6 +39,12 @@ export function getAppId(): string {
 
 export function getBaseUrl(): string {
   if (_baseUrl) return _baseUrl;
+
+  // Custom protocol: API calls go to the local Nebo server
+  if (window.location.protocol === 'neboapp:') {
+    _baseUrl = 'http://localhost:27895';
+    return _baseUrl;
+  }
 
   // In production (same origin), base is just the origin
   // In dev, check for nebo-base-url meta tag

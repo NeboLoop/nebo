@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use crate::ElementRef;
 use crate::actions::INTERACTIVE_ROLES;
 use crate::snapshot_store::AnnotatedElement;
-use crate::ElementRef;
 
 /// Options for accessibility tree snapshots.
 pub struct SnapshotOptions {

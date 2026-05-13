@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::{CommanderEdge, CommanderNodePosition, CommanderTeam, CommanderTeamMember};
 use crate::Store;
+use crate::models::{CommanderEdge, CommanderNodePosition, CommanderTeam, CommanderTeamMember};
 use types::NeboError;
 
 fn row_to_team(row: &rusqlite::Row) -> rusqlite::Result<CommanderTeam> {

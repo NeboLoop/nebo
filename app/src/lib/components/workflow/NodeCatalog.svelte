@@ -18,7 +18,7 @@
 	onMount(async () => {
 		try {
 			const [mcpRes, agentsRes] = await Promise.all([
-				nebo.listMCPIntegrations(),
+				nebo.listIntegrations(),
 				nebo.listAgents(),
 			]);
 			// Rebuild catalog with dynamic connectors and agents
@@ -35,7 +35,8 @@
 					serverId: s.id,
 					serverName: s.name,
 				}));
-			const agentItems = (agentsRes?.agents || [])
+			interface AgentRecord { id: string; name: string; role?: string; description?: string; color?: string }
+			const agentItems = ((agentsRes?.agents || []) as AgentRecord[])
 				.filter((a) => a.id !== 'assistant')
 				.map((a) => ({
 					type: `agent-${a.id}`,

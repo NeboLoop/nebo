@@ -90,9 +90,7 @@ pub fn resolve(
     // Permissions: start from global, overlay entity-specific
     let mut permissions = global_permissions.clone();
     if let Some(entity_perms_json) = entity.and_then(|e| e.permissions.as_deref()) {
-        if let Ok(entity_perms) =
-            serde_json::from_str::<HashMap<String, bool>>(entity_perms_json)
-        {
+        if let Ok(entity_perms) = serde_json::from_str::<HashMap<String, bool>>(entity_perms_json) {
             overrides.insert("permissions".into(), true);
             for (k, v) in entity_perms {
                 permissions.insert(k, v);
@@ -204,7 +202,10 @@ pub fn resolve_for_chat(
         .map(|d| std::fs::read_to_string(d.join("HEARTBEAT.md")).unwrap_or_default())
         .unwrap_or_default();
 
-    let entity = store.get_entity_config(entity_type, entity_id).ok().flatten();
+    let entity = store
+        .get_entity_config(entity_type, entity_id)
+        .ok()
+        .flatten();
 
     Some(resolve(
         entity_type,

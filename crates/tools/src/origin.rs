@@ -89,7 +89,11 @@ impl ToolContext {
         channels.lock().await.insert(request_id.clone(), resp_tx);
 
         let _ = tx
-            .send(ai::StreamEvent::ask_request(&request_id, prompt, Some(widgets)))
+            .send(ai::StreamEvent::ask_request(
+                &request_id,
+                prompt,
+                Some(widgets),
+            ))
             .await;
 
         resp_rx.await.ok()

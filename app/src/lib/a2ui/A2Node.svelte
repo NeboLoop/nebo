@@ -10,6 +10,7 @@
   import A2Icon from './components/A2Icon.svelte';
   import A2Image from './components/A2Image.svelte';
   import A2Tabs from './components/A2Tabs.svelte';
+  import A2Node from './A2Node.svelte';
 
   let { def, rootData, scopeData, components, onaction }: {
     def: A2UIComponentDef;
@@ -63,11 +64,11 @@
   >
     {#if listData}
       {#each listData.items as item}
-        <svelte:self def={listData.template} {rootData} scopeData={item} {components} {onaction} />
+        <A2Node def={listData.template} {rootData} scopeData={item} {components} {onaction} />
       {/each}
     {:else}
       {#each staticChildren as child}
-        <svelte:self def={child} {rootData} {scopeData} {components} {onaction} />
+        <A2Node def={child} {rootData} {scopeData} {components} {onaction} />
       {/each}
     {/if}
   </A2Column>
@@ -82,11 +83,11 @@
   >
     {#if listData}
       {#each listData.items as item}
-        <svelte:self def={listData.template} {rootData} scopeData={item} {components} {onaction} />
+        <A2Node def={listData.template} {rootData} scopeData={item} {components} {onaction} />
       {/each}
     {:else}
       {#each staticChildren as child}
-        <svelte:self def={child} {rootData} {scopeData} {components} {onaction} />
+        <A2Node def={child} {rootData} {scopeData} {components} {onaction} />
       {/each}
     {/if}
   </A2Row>
@@ -111,11 +112,11 @@
   <A2Card class={resolveProp(p.class)}>
     {#if listData}
       {#each listData.items as item}
-        <svelte:self def={listData.template} {rootData} scopeData={item} {components} {onaction} />
+        <A2Node def={listData.template} {rootData} scopeData={item} {components} {onaction} />
       {/each}
     {:else}
       {#each staticChildren as child}
-        <svelte:self def={child} {rootData} {scopeData} {components} {onaction} />
+        <A2Node def={child} {rootData} {scopeData} {components} {onaction} />
       {/each}
     {/if}
   </A2Card>
@@ -126,7 +127,7 @@
     {#snippet children(activeTabId)}
       {#each staticChildren as child}
         {#if child.id === activeTabId}
-          <svelte:self def={child} {rootData} {scopeData} {components} {onaction} />
+          <A2Node def={child} {rootData} {scopeData} {components} {onaction} />
         {/if}
       {/each}
     {/snippet}
@@ -180,6 +181,6 @@
 {:else}
   <!-- Unknown component: {def.component} -->
   {#each staticChildren as child}
-    <svelte:self def={child} {rootData} {scopeData} {components} {onaction} />
+    <A2Node def={child} {rootData} {scopeData} {components} {onaction} />
   {/each}
 {/if}

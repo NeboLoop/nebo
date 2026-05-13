@@ -7,7 +7,8 @@
   import TriangleAlert from 'lucide-svelte/icons/triangle-alert';
   import * as api from '$lib/api/nebo';
   import type {
-    NeboLoopAccountStatusResponse,
+    AccountStatusResponse,
+    NeboLoopBillingSubscriptionResponse,
     PaymentMethodInfo,
     InvoiceInfo
   } from '$lib/api/neboComponents';
@@ -15,8 +16,8 @@
   import GiveNebo from '$lib/components/GiveNebo.svelte';
 
   let isLoading = $state(true);
-  let status = $state<NeboLoopAccountStatusResponse | null>(null);
-  let subscription = $state<{ plan: string; subscriptions: any[] } | null>(null);
+  let status = $state<AccountStatusResponse | null>(null);
+  let subscription = $state<NeboLoopBillingSubscriptionResponse | null>(null);
   let paymentMethods = $state<PaymentMethodInfo[]>([]);
   let invoices = $state<InvoiceInfo[]>([]);
   let actionLoading = $state('');
@@ -34,7 +35,7 @@
   onMount(() => {
     (async () => {
       try {
-        status = await api.neboLoopAccountStatus();
+        status = (await api.neboLoopAccountStatus()) as AccountStatusResponse;
         if (status?.connected) {
           const [subResp, pmResp, invResp] = await Promise.allSettled([
             api.neboLoopBillingSubscription(),
@@ -98,7 +99,7 @@
     actionLoading = 'cancel';
     actionError = '';
     try {
-      await api.neboLoopBillingCancel(subscriptionId);
+      await api.neboLoopBillingCancel({ subscriptionId });
       try {
         subscription = await api.neboLoopBillingSubscription();
       } catch { /* ignore */ }
@@ -290,14 +291,14 @@
         {#each invoices as inv}
           <div class="flex items-center justify-between p-4">
             <div>
-              <p class="text-sm text-base-content">{formatDate(inv.createdAt)}</p>
+              <p class="text-sm text-base-content">{formatDate(inv.createdAt ?? '')}</p>
               {#if inv.description}
                 <p class="text-xs text-base-content/50">{inv.description}</p>
               {/if}
             </div>
             <div class="flex items-center gap-4">
               <span class="text-sm font-medium text-base-content tabular-nums">
-                {formatPrice(inv.amountCents, inv.currency)}
+                {formatPrice(inv.amountCents ?? 0, inv.currency ?? 'usd')}
               </span>
               <span class="px-2 py-0.5 rounded text-xs font-semibold {inv.status === 'paid' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'}">
                 {inv.status === 'paid' ? 'Paid' : inv.status}
@@ -361,7 +362,7 @@
                 disabled={actionLoading === 'cancel'}
                 onclick={async () => {
                   const sub = subscription!.subscriptions[0];
-                  await handleCancel(sub.stripeSubscriptionId || sub.id);
+                  await handleCancel(sub.stripeSubscriptionId || sub.id || '');
                 }}
               >
                 {#if actionLoading === 'cancel'}

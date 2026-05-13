@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::registry::{DynTool, ToolResult};
-use crate::origin::ToolContext;
 use super::manager::WorkflowManager;
+use crate::origin::ToolContext;
+use crate::registry::{DynTool, ToolResult};
 
 /// STRAP domain tool for managing and running workflows.
 ///
@@ -80,7 +80,11 @@ impl WorkTool {
                 }
             }
             "uninstall" => {
-                let target = if !parsed.id.is_empty() { &parsed.id } else { "" };
+                let target = if !parsed.id.is_empty() {
+                    &parsed.id
+                } else {
+                    ""
+                };
                 if target.is_empty() {
                     return ToolResult::error("id is required");
                 }
@@ -116,7 +120,9 @@ impl WorkTool {
                     Err(e) => ToolResult::error(format!("create failed: {}", e)),
                 }
             }
-            "" => ToolResult::error("action is required. Use: list, create, install, uninstall, cancel. Or set resource to dispatch to a workflow."),
+            "" => ToolResult::error(
+                "action is required. Use: list, create, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
+            ),
             other => ToolResult::error(format!(
                 "unknown action: {:?}. Use: list, create, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
                 other
@@ -171,16 +177,16 @@ impl WorkTool {
                 });
                 ToolResult::ok(serde_json::to_string_pretty(&json).unwrap_or_default())
             }
-            "toggle" => {
-                match self.manager.toggle(&info.id).await {
-                    Ok(enabled) => {
-                        let state = if enabled { "enabled" } else { "disabled" };
-                        ToolResult::ok(format!("Workflow {:?} is now {}", info.name, state))
-                    }
-                    Err(e) => ToolResult::error(format!("toggle failed: {}", e)),
+            "toggle" => match self.manager.toggle(&info.id).await {
+                Ok(enabled) => {
+                    let state = if enabled { "enabled" } else { "disabled" };
+                    ToolResult::ok(format!("Workflow {:?} is now {}", info.name, state))
                 }
-            }
-            "" => ToolResult::error("action is required when resource is set. Use: run, status, runs, toggle."),
+                Err(e) => ToolResult::error(format!("toggle failed: {}", e)),
+            },
+            "" => ToolResult::error(
+                "action is required when resource is set. Use: run, status, runs, toggle.",
+            ),
             other => ToolResult::error(format!(
                 "unknown action {:?} for workflow {:?}. Use: run, status, runs, toggle.",
                 other, info.name

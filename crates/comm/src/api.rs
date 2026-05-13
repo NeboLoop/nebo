@@ -5,12 +5,12 @@
 use std::sync::RwLock;
 
 use reqwest::Client;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tracing::debug;
 
-use crate::api_types::*;
 use crate::CommError;
+use crate::api_types::*;
 
 /// NeboLoop REST API client.
 pub struct NeboLoopApi {
@@ -39,7 +39,9 @@ impl NeboLoopApi {
     }
 
     /// Create from a settings map (keys: api_server, bot_id, token).
-    pub fn from_settings(settings: &std::collections::HashMap<String, String>) -> Result<Self, CommError> {
+    pub fn from_settings(
+        settings: &std::collections::HashMap<String, String>,
+    ) -> Result<Self, CommError> {
         let api_server = settings
             .get("api_server")
             .ok_or_else(|| CommError::Other("api_server not configured".into()))?
@@ -83,18 +85,23 @@ impl NeboLoopApi {
         let url = format!("{}{}", self.api_server, path);
         debug!(method = %method, url = %url, "neboloop api");
 
-        let mut req = self.client.request(method, &url)
-            .bearer_auth(self.token());
+        let mut req = self.client.request(method, &url).bearer_auth(self.token());
 
         if let Some(b) = body {
             req = req.json(b);
         }
 
-        let resp = req.send().await.map_err(|e| CommError::Other(format!("request failed: {}", e)))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| CommError::Other(format!("request failed: {}", e)))?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(CommError::Other(format!("NeboLoop returned {}: {}", status, body)));
+            return Err(CommError::Other(format!(
+                "NeboLoop returned {}: {}",
+                status, body
+            )));
         }
 
         resp.json::<T>()
@@ -109,18 +116,23 @@ impl NeboLoopApi {
         body: Option<&impl Serialize>,
     ) -> Result<(), CommError> {
         let url = format!("{}{}", self.api_server, path);
-        let mut req = self.client.request(method, &url)
-            .bearer_auth(self.token());
+        let mut req = self.client.request(method, &url).bearer_auth(self.token());
 
         if let Some(b) = body {
             req = req.json(b);
         }
 
-        let resp = req.send().await.map_err(|e| CommError::Other(format!("request failed: {}", e)))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| CommError::Other(format!("request failed: {}", e)))?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(CommError::Other(format!("NeboLoop returned {}: {}", status, body)));
+            return Err(CommError::Other(format!(
+                "NeboLoop returned {}: {}",
+                status, body
+            )));
         }
         Ok(())
     }
@@ -156,13 +168,21 @@ impl NeboLoopApi {
         page: Option<i64>,
         page_size: Option<i64>,
     ) -> Result<AppsResponse, CommError> {
-        let path = format!("/api/v1/apps{}", build_query(query, category, page, page_size));
+        let path = format!(
+            "/api/v1/apps{}",
+            build_query(query, category, page, page_size)
+        );
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
     /// Get a single app with manifest.
     pub async fn get_app(&self, id: &str) -> Result<AppDetail, CommError> {
-        self.do_json(reqwest::Method::GET, &format!("/api/v1/apps/{}", id), None::<&()>).await
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/api/v1/apps/{}", id),
+            None::<&()>,
+        )
+        .await
     }
 
     /// Get reviews for an app.
@@ -172,20 +192,34 @@ impl NeboLoopApi {
         page: Option<i64>,
         page_size: Option<i64>,
     ) -> Result<ReviewsResponse, CommError> {
-        let path = format!("/api/v1/apps/{}/reviews{}", id, build_query(None, None, page, page_size));
+        let path = format!(
+            "/api/v1/apps/{}/reviews{}",
+            id,
+            build_query(None, None, page, page_size)
+        );
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
     /// Install an app for this bot.
     pub async fn install_app(&self, id: &str) -> Result<InstallResponse, CommError> {
         let body = serde_json::json!({ "botId": self.bot_id });
-        self.do_json(reqwest::Method::POST, &format!("/api/v1/apps/{}/install", id), Some(&body)).await
+        self.do_json(
+            reqwest::Method::POST,
+            &format!("/api/v1/apps/{}/install", id),
+            Some(&body),
+        )
+        .await
     }
 
     /// Uninstall an app for this bot.
     pub async fn uninstall_app(&self, id: &str) -> Result<(), CommError> {
         let body = serde_json::json!({ "botId": self.bot_id });
-        self.do_void(reqwest::Method::DELETE, &format!("/api/v1/apps/{}/install", id), Some(&body)).await
+        self.do_void(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/apps/{}/install", id),
+            Some(&body),
+        )
+        .await
     }
 
     // ── Skills ──────────────────────────────────────────────────────
@@ -198,13 +232,21 @@ impl NeboLoopApi {
         page: Option<i64>,
         page_size: Option<i64>,
     ) -> Result<SkillsResponse, CommError> {
-        let path = format!("/api/v1/skills{}", build_query(query, category, page, page_size));
+        let path = format!(
+            "/api/v1/skills{}",
+            build_query(query, category, page, page_size)
+        );
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
     /// Get a single skill with manifest.
     pub async fn get_skill(&self, id: &str) -> Result<SkillDetail, CommError> {
-        self.do_json(reqwest::Method::GET, &format!("/api/v1/skills/{}", id), None::<&()>).await
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/api/v1/skills/{}", id),
+            None::<&()>,
+        )
+        .await
     }
 
     /// List top/popular skills.
@@ -213,7 +255,10 @@ impl NeboLoopApi {
         page: Option<i64>,
         page_size: Option<i64>,
     ) -> Result<serde_json::Value, CommError> {
-        let path = format!("/api/v1/skills/top{}", build_query(None, None, page, page_size));
+        let path = format!(
+            "/api/v1/skills/top{}",
+            build_query(None, None, page, page_size)
+        );
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
@@ -224,7 +269,11 @@ impl NeboLoopApi {
         page: Option<i64>,
         page_size: Option<i64>,
     ) -> Result<ReviewsResponse, CommError> {
-        let path = format!("/api/v1/skills/{}/reviews{}", id, build_query(None, None, page, page_size));
+        let path = format!(
+            "/api/v1/skills/{}/reviews{}",
+            id,
+            build_query(None, None, page, page_size)
+        );
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
@@ -234,12 +283,22 @@ impl NeboLoopApi {
         id: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::POST, &format!("/api/v1/skills/{}/reviews", id), Some(body)).await
+        self.do_json(
+            reqwest::Method::POST,
+            &format!("/api/v1/skills/{}/reviews", id),
+            Some(body),
+        )
+        .await
     }
 
     /// Get media (screenshots, videos) for a skill/product.
     pub async fn get_skill_media(&self, id: &str) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::GET, &format!("/api/v1/skills/{}/media", id), None::<&()>).await
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/api/v1/skills/{}/media", id),
+            None::<&()>,
+        )
+        .await
     }
 
     /// Get feedback for a skill/product.
@@ -249,7 +308,11 @@ impl NeboLoopApi {
         page: Option<i64>,
         page_size: Option<i64>,
     ) -> Result<serde_json::Value, CommError> {
-        let path = format!("/api/v1/skills/{}/feedback{}", id, build_query(None, None, page, page_size));
+        let path = format!(
+            "/api/v1/skills/{}/feedback{}",
+            id,
+            build_query(None, None, page, page_size)
+        );
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
@@ -259,12 +322,22 @@ impl NeboLoopApi {
         id: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::POST, &format!("/api/v1/skills/{}/feedback", id), Some(body)).await
+        self.do_json(
+            reqwest::Method::POST,
+            &format!("/api/v1/skills/{}/feedback", id),
+            Some(body),
+        )
+        .await
     }
 
     /// Get similar products for an app/product.
     pub async fn get_similar_apps(&self, id: &str) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::GET, &format!("/api/v1/apps/{}/similar", id), None::<&()>).await
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/api/v1/apps/{}/similar", id),
+            None::<&()>,
+        )
+        .await
     }
 
     /// Get featured apps/products.
@@ -283,12 +356,25 @@ impl NeboLoopApi {
 
     /// List marketplace categories with counts.
     pub async fn list_categories(&self) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::GET, "/api/v1/marketplace/categories", None::<&()>).await
+        self.do_json(
+            reqwest::Method::GET,
+            "/api/v1/marketplace/categories",
+            None::<&()>,
+        )
+        .await
     }
 
     /// Get screenshots for a product type.
-    pub async fn get_screenshots(&self, screenshot_type: &str) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::GET, &format!("/api/v1/screenshots/{}", screenshot_type), None::<&()>).await
+    pub async fn get_screenshots(
+        &self,
+        screenshot_type: &str,
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/api/v1/screenshots/{}", screenshot_type),
+            None::<&()>,
+        )
+        .await
     }
 
     // ── Universal Code Redemption ────────────────────────────────────
@@ -301,7 +387,8 @@ impl NeboLoopApi {
             "botIds": [self.bot_id],
             "platform": napp::plugin::current_platform_key(),
         });
-        self.do_json(reqwest::Method::POST, "/api/v1/codes/redeem", Some(&body)).await
+        self.do_json(reqwest::Method::POST, "/api/v1/codes/redeem", Some(&body))
+            .await
     }
 
     /// Install a skill for this bot via universal code redemption.
@@ -314,7 +401,9 @@ impl NeboLoopApi {
     pub async fn install_product(&self, id: &str) -> Result<serde_json::Value, CommError> {
         let body = serde_json::json!({ "botId": self.bot_id });
         let url = format!("{}/api/v1/products/{}/install", self.api_server, id);
-        let resp = self.client.post(&url)
+        let resp = self
+            .client
+            .post(&url)
             .bearer_auth(self.token())
             .json(&body)
             .send()
@@ -324,7 +413,10 @@ impl NeboLoopApi {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(CommError::Other(format!("NeboLoop returned {}: {}", status, text)));
+            return Err(CommError::Other(format!(
+                "NeboLoop returned {}: {}",
+                status, text
+            )));
         }
 
         let text = resp.text().await.unwrap_or_default();
@@ -339,7 +431,12 @@ impl NeboLoopApi {
     /// Uninstall a product for this bot by product ID.
     pub async fn uninstall_product(&self, id: &str) -> Result<(), CommError> {
         let body = serde_json::json!({ "botId": self.bot_id });
-        self.do_void(reqwest::Method::DELETE, &format!("/api/v1/products/{}/install", id), Some(&body)).await
+        self.do_void(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/products/{}/install", id),
+            Some(&body),
+        )
+        .await
     }
 
     /// Download a sealed .napp archive from a URL.
@@ -358,7 +455,12 @@ impl NeboLoopApi {
 
     /// Uninstall a skill for this bot.
     pub async fn uninstall_skill(&self, id: &str) -> Result<(), CommError> {
-        self.do_void(reqwest::Method::DELETE, &format!("/api/v1/skills/{}/install/{}", id, self.bot_id), None::<&()>).await
+        self.do_void(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/skills/{}/install/{}", id, self.bot_id),
+            None::<&()>,
+        )
+        .await
     }
 
     // ── Workflows ───────────────────────────────────────────────────
@@ -370,7 +472,12 @@ impl NeboLoopApi {
 
     /// Uninstall a workflow for this bot.
     pub async fn uninstall_workflow(&self, id: &str) -> Result<(), CommError> {
-        self.do_void(reqwest::Method::DELETE, &format!("/api/v1/workflows/{}/install/{}", id, self.bot_id), None::<&()>).await
+        self.do_void(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/workflows/{}/install/{}", id, self.bot_id),
+            None::<&()>,
+        )
+        .await
     }
 
     /// List workflows from NeboLoop catalog.
@@ -381,7 +488,10 @@ impl NeboLoopApi {
         page: Option<i64>,
         page_size: Option<i64>,
     ) -> Result<WorkflowsResponse, CommError> {
-        let path = format!("/api/v1/workflows{}", build_query(query, category, page, page_size));
+        let path = format!(
+            "/api/v1/workflows{}",
+            build_query(query, category, page, page_size)
+        );
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
@@ -400,13 +510,25 @@ impl NeboLoopApi {
 
     /// Uninstall an agent for this bot.
     pub async fn uninstall_agent(&self, id: &str) -> Result<(), CommError> {
-        self.do_void(reqwest::Method::DELETE, &format!("/api/v1/agents/{}/install/{}", id, self.bot_id), None::<&()>).await
+        self.do_void(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/agents/{}/install/{}", id, self.bot_id),
+            None::<&()>,
+        )
+        .await
     }
 
     // ── Publishing ────────────────────────────────────────────────
 
     /// Create or update a skill artifact on NeboLoop.
-    pub async fn publish_skill(&self, name: &str, description: &str, manifest_content: &str, version: &str, visibility: &str) -> Result<serde_json::Value, CommError> {
+    pub async fn publish_skill(
+        &self,
+        name: &str,
+        description: &str,
+        manifest_content: &str,
+        version: &str,
+        visibility: &str,
+    ) -> Result<serde_json::Value, CommError> {
         let body = serde_json::json!({
             "name": name,
             "description": description,
@@ -415,11 +537,20 @@ impl NeboLoopApi {
             "version": version,
             "visibility": visibility,
         });
-        self.do_json(reqwest::Method::POST, "/api/v1/skills", Some(&body)).await
+        self.do_json(reqwest::Method::POST, "/api/v1/skills", Some(&body))
+            .await
     }
 
     /// Create or update an agent artifact on NeboLoop.
-    pub async fn publish_agent(&self, name: &str, description: &str, manifest_content: &str, version: &str, visibility: &str, agent_json: Option<&str>) -> Result<serde_json::Value, CommError> {
+    pub async fn publish_agent(
+        &self,
+        name: &str,
+        description: &str,
+        manifest_content: &str,
+        version: &str,
+        visibility: &str,
+        agent_json: Option<&str>,
+    ) -> Result<serde_json::Value, CommError> {
         let mut body = serde_json::json!({
             "name": name,
             "description": description,
@@ -431,13 +562,23 @@ impl NeboLoopApi {
         if let Some(aj) = agent_json {
             body["typeConfig"] = serde_json::from_str(aj).unwrap_or(serde_json::json!({}));
         }
-        self.do_json(reqwest::Method::POST, "/api/v1/skills", Some(&body)).await
+        self.do_json(reqwest::Method::POST, "/api/v1/skills", Some(&body))
+            .await
     }
 
     /// Submit an artifact for marketplace review.
-    pub async fn submit_for_review(&self, artifact_id: &str, version: &str) -> Result<serde_json::Value, CommError> {
+    pub async fn submit_for_review(
+        &self,
+        artifact_id: &str,
+        version: &str,
+    ) -> Result<serde_json::Value, CommError> {
         let body = serde_json::json!({ "version": version });
-        self.do_json(reqwest::Method::POST, &format!("/api/v1/skills/{}/submit", artifact_id), Some(&body)).await
+        self.do_json(
+            reqwest::Method::POST,
+            &format!("/api/v1/skills/{}/submit", artifact_id),
+            Some(&body),
+        )
+        .await
     }
 
     // ── Bot Identity ────────────────────────────────────────────────
@@ -448,7 +589,12 @@ impl NeboLoopApi {
             name: name.into(),
             role: role.into(),
         };
-        self.do_void(reqwest::Method::PUT, &format!("/api/v1/bots/{}", self.bot_id), Some(&body)).await
+        self.do_void(
+            reqwest::Method::PUT,
+            &format!("/api/v1/bots/{}", self.bot_id),
+            Some(&body),
+        )
+        .await
     }
 
     // ── Loops ───────────────────────────────────────────────────────
@@ -459,27 +605,41 @@ impl NeboLoopApi {
             code: code.into(),
             bot_id: self.bot_id.clone(),
         };
-        self.do_json(reqwest::Method::POST, "/api/v1/loops/join", Some(&body)).await
+        self.do_json(reqwest::Method::POST, "/api/v1/loops/join", Some(&body))
+            .await
     }
 
     /// List all loops this bot belongs to.
     pub async fn list_bot_loops(&self) -> Result<Vec<crate::api_types::Loop>, CommError> {
-        let resp: LoopsResponse = self.do_json(reqwest::Method::GET, &format!("/api/v1/bots/{}/loops", self.bot_id), None::<&()>).await?;
+        let resp: LoopsResponse = self
+            .do_json(
+                reqwest::Method::GET,
+                &format!("/api/v1/bots/{}/loops", self.bot_id),
+                None::<&()>,
+            )
+            .await?;
         Ok(resp.loops)
     }
 
     /// Get a single loop by ID.
     pub async fn get_loop(&self, loop_id: &str) -> Result<crate::api_types::Loop, CommError> {
-        self.do_json(reqwest::Method::GET, &format!("/api/v1/bots/{}/loops/{}", self.bot_id, loop_id), None::<&()>).await
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/api/v1/bots/{}/loops/{}", self.bot_id, loop_id),
+            None::<&()>,
+        )
+        .await
     }
 
     /// List members of a loop with online presence.
     pub async fn list_loop_members(&self, loop_id: &str) -> Result<Vec<LoopMember>, CommError> {
-        let resp: LoopMembersResponse = self.do_json(
-            reqwest::Method::GET,
-            &format!("/api/v1/bots/{}/loops/{}/members", self.bot_id, loop_id),
-            None::<&()>,
-        ).await?;
+        let resp: LoopMembersResponse = self
+            .do_json(
+                reqwest::Method::GET,
+                &format!("/api/v1/bots/{}/loops/{}/members", self.bot_id, loop_id),
+                None::<&()>,
+            )
+            .await?;
         Ok(resp.members)
     }
 
@@ -509,10 +669,7 @@ impl NeboLoopApi {
     }
 
     /// List agents registered by this bot in a loop.
-    pub async fn list_agents(
-        &self,
-        loop_id: &str,
-    ) -> Result<Vec<AgentInfo>, CommError> {
+    pub async fn list_agents(&self, loop_id: &str) -> Result<Vec<AgentInfo>, CommError> {
         #[derive(serde::Deserialize)]
         struct Resp {
             agents: Vec<AgentInfo>,
@@ -551,31 +708,50 @@ impl NeboLoopApi {
 
     /// List all channels this bot belongs to across all loops.
     pub async fn list_bot_channels(&self) -> Result<Vec<LoopChannel>, CommError> {
-        let resp: LoopChannelsResponse = self.do_json(
-            reqwest::Method::GET,
-            &format!("/api/v1/bots/{}/channels", self.bot_id),
-            None::<&()>,
-        ).await?;
+        let resp: LoopChannelsResponse = self
+            .do_json(
+                reqwest::Method::GET,
+                &format!("/api/v1/bots/{}/channels", self.bot_id),
+                None::<&()>,
+            )
+            .await?;
         Ok(resp.channels)
     }
 
     /// List members of a channel.
-    pub async fn list_channel_members(&self, channel_id: &str) -> Result<Vec<ChannelMember>, CommError> {
-        let resp: ChannelMembersResponse = self.do_json(
-            reqwest::Method::GET,
-            &format!("/api/v1/bots/{}/channels/{}/members", self.bot_id, channel_id),
-            None::<&()>,
-        ).await?;
+    pub async fn list_channel_members(
+        &self,
+        channel_id: &str,
+    ) -> Result<Vec<ChannelMember>, CommError> {
+        let resp: ChannelMembersResponse = self
+            .do_json(
+                reqwest::Method::GET,
+                &format!(
+                    "/api/v1/bots/{}/channels/{}/members",
+                    self.bot_id, channel_id
+                ),
+                None::<&()>,
+            )
+            .await?;
         Ok(resp.members)
     }
 
     /// Fetch recent messages from a channel (normalized).
-    pub async fn list_channel_messages(&self, channel_id: &str, limit: Option<i64>) -> Result<Vec<NormalizedChannelMessage>, CommError> {
-        let mut path = format!("/api/v1/bots/{}/channels/{}/messages", self.bot_id, channel_id);
+    pub async fn list_channel_messages(
+        &self,
+        channel_id: &str,
+        limit: Option<i64>,
+    ) -> Result<Vec<NormalizedChannelMessage>, CommError> {
+        let mut path = format!(
+            "/api/v1/bots/{}/channels/{}/messages",
+            self.bot_id, channel_id
+        );
         if let Some(l) = limit {
             path.push_str(&format!("?limit={}", l));
         }
-        let resp: ChannelMessagesResponse = self.do_json(reqwest::Method::GET, &path, None::<&()>).await?;
+        let resp: ChannelMessagesResponse = self
+            .do_json(reqwest::Method::GET, &path, None::<&()>)
+            .await?;
         Ok(resp.normalize())
     }
 
@@ -583,64 +759,121 @@ impl NeboLoopApi {
 
     /// Get or create the user's referral/invite code.
     pub async fn referral_code(&self) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::GET, "/api/v1/owners/me/referral-code", None::<&()>).await
+        self.do_json(
+            reqwest::Method::GET,
+            "/api/v1/owners/me/referral-code",
+            None::<&()>,
+        )
+        .await
     }
 
     // ── Billing ────────────────────────────────────────────────────
 
     /// List billing prices/plans.
     pub async fn billing_prices(&self) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::GET, "/api/v1/billing/prices", None::<&()>).await
+        self.do_json(reqwest::Method::GET, "/api/v1/billing/prices", None::<&()>)
+            .await
     }
 
     /// Get current subscription status.
     pub async fn billing_subscription(&self) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::GET, "/api/v1/billing/subscription", None::<&()>).await
+        self.do_json(
+            reqwest::Method::GET,
+            "/api/v1/billing/subscription",
+            None::<&()>,
+        )
+        .await
     }
 
     /// Create a Stripe checkout session for a given price.
     pub async fn billing_checkout(&self, price_id: &str) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::POST, "/api/v1/billing/checkout", Some(&serde_json::json!({"priceId": price_id}))).await
+        self.do_json(
+            reqwest::Method::POST,
+            "/api/v1/billing/checkout",
+            Some(&serde_json::json!({"priceId": price_id})),
+        )
+        .await
     }
 
     /// Create a Stripe checkout session with multiple prices (plan + boost).
     /// Pass `ui_mode` = "embedded" to get a clientSecret for embedded checkout instead of a redirect URL.
-    pub async fn billing_checkout_multi(&self, price_ids: &[String], ui_mode: Option<&str>) -> Result<serde_json::Value, CommError> {
+    pub async fn billing_checkout_multi(
+        &self,
+        price_ids: &[String],
+        ui_mode: Option<&str>,
+    ) -> Result<serde_json::Value, CommError> {
         let mut body = serde_json::json!({"priceIds": price_ids});
         if let Some(mode) = ui_mode {
             body["uiMode"] = serde_json::json!(mode);
         }
-        self.do_json(reqwest::Method::POST, "/api/v1/billing/checkout", Some(&body)).await
+        self.do_json(
+            reqwest::Method::POST,
+            "/api/v1/billing/checkout",
+            Some(&body),
+        )
+        .await
     }
 
     /// Create an inline subscription (returns clientSecret for PaymentElement).
-    pub async fn billing_subscribe(&self, price_ids: &[String]) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::POST, "/api/v1/billing/subscribe", Some(&serde_json::json!({"priceIds": price_ids}))).await
+    pub async fn billing_subscribe(
+        &self,
+        price_ids: &[String],
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::POST,
+            "/api/v1/billing/subscribe",
+            Some(&serde_json::json!({"priceIds": price_ids})),
+        )
+        .await
     }
 
     /// Create a Stripe customer portal session.
     pub async fn billing_portal(&self) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::POST, "/api/v1/billing/portal", None::<&()>).await
+        self.do_json(reqwest::Method::POST, "/api/v1/billing/portal", None::<&()>)
+            .await
     }
 
     /// Create a Stripe SetupIntent for in-app payment method collection.
     pub async fn billing_setup_intent(&self) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::POST, "/api/v1/billing/setup-intent", None::<&()>).await
+        self.do_json(
+            reqwest::Method::POST,
+            "/api/v1/billing/setup-intent",
+            None::<&()>,
+        )
+        .await
     }
 
     /// Cancel a subscription.
-    pub async fn billing_cancel(&self, subscription_id: &str) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::POST, "/api/v1/billing/cancel-subscription", Some(&serde_json::json!({"subscriptionId": subscription_id}))).await
+    pub async fn billing_cancel(
+        &self,
+        subscription_id: &str,
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::POST,
+            "/api/v1/billing/cancel-subscription",
+            Some(&serde_json::json!({"subscriptionId": subscription_id})),
+        )
+        .await
     }
 
     /// List invoices (owner-scoped).
     pub async fn billing_invoices(&self) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::GET, "/api/v1/owners/me/invoices", None::<&()>).await
+        self.do_json(
+            reqwest::Method::GET,
+            "/api/v1/owners/me/invoices",
+            None::<&()>,
+        )
+        .await
     }
 
     /// List payment methods (owner-scoped).
     pub async fn billing_payment_methods(&self) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::GET, "/api/v1/owners/me/payment-methods", None::<&()>).await
+        self.do_json(
+            reqwest::Method::GET,
+            "/api/v1/owners/me/payment-methods",
+            None::<&()>,
+        )
+        .await
     }
 
     // ── Plugins ─────────────────────────────────────────────────────
@@ -679,13 +912,18 @@ impl NeboLoopApi {
     ///
     /// Called on startup after authentication. Idempotent — re-registering
     /// the same bot_id updates last_seen and platform info.
-    pub async fn register_bot(&self, platform: &str, app_version: &str) -> Result<serde_json::Value, CommError> {
+    pub async fn register_bot(
+        &self,
+        platform: &str,
+        app_version: &str,
+    ) -> Result<serde_json::Value, CommError> {
         let body = serde_json::json!({
             "bot_id": self.bot_id,
             "platform": platform,
             "app_version": app_version,
         });
-        self.do_json(reqwest::Method::POST, "/api/v1/bots", Some(&body)).await
+        self.do_json(reqwest::Method::POST, "/api/v1/bots", Some(&body))
+            .await
     }
 
     /// Fetch license keys for sealed .napp artifacts.
@@ -700,7 +938,8 @@ impl NeboLoopApi {
             "bot_id": self.bot_id,
             "artifact_ids": artifact_ids,
         });
-        self.do_json(reqwest::Method::POST, "/api/v1/licenses/keys", Some(&body)).await
+        self.do_json(reqwest::Method::POST, "/api/v1/licenses/keys", Some(&body))
+            .await
     }
 
     // ── Raw Fetch ───────────────────────────────────────────────────
@@ -718,7 +957,10 @@ impl NeboLoopApi {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(CommError::Other(format!("NeboLoop returned {}: {}", status, body)));
+            return Err(CommError::Other(format!(
+                "NeboLoop returned {}: {}",
+                status, body
+            )));
         }
 
         resp.bytes()
@@ -726,7 +968,6 @@ impl NeboLoopApi {
             .map(|b| b.to_vec())
             .map_err(|e| CommError::Other(format!("read body: {}", e)))
     }
-
 }
 
 // ── Standalone functions (pre-auth, no client instance needed) ───────
@@ -759,7 +1000,10 @@ pub async fn redeem_code(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(CommError::Other(format!("NeboLoop returned {}: {}", status, body)));
+        return Err(CommError::Other(format!(
+            "NeboLoop returned {}: {}",
+            status, body
+        )));
     }
 
     resp.json::<RedeemCodeResponse>()

@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 use crate::manifest::Manifest;
 use crate::runtime::{Process, Runtime};
 use crate::signing::{RevocationChecker, SigningKeyProvider};
-use crate::{NappError, InstallEvent, QuarantineEvent};
+use crate::{InstallEvent, NappError, QuarantineEvent};
 
 /// Where a tool was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,15 +120,13 @@ impl Registry {
 
             // Read manifest from sealed archive
             let manifest = match crate::reader::read_napp_entry(&napp_path, "manifest.json") {
-                Ok(data) => {
-                    match serde_json::from_slice::<Manifest>(&data) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            error!(path = %napp_path.display(), error = %e, "invalid manifest in .napp");
-                            continue;
-                        }
+                Ok(data) => match serde_json::from_slice::<Manifest>(&data) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!(path = %napp_path.display(), error = %e, "invalid manifest in .napp");
+                        continue;
                     }
-                }
+                },
                 Err(e) => {
                     debug!(path = %napp_path.display(), error = %e, "no manifest in .napp (may not be a tool)");
                     continue;
@@ -154,11 +152,24 @@ impl Registry {
             // Verify binary integrity against sealed archive
             if let Err(e) = self.verify_installed_binary(&napp_path, &version_dir).await {
                 error!(path = %napp_path.display(), error = %e, "binary integrity check failed");
-                self.quarantine(manifest.id(), &version_dir, &format!("integrity check failed: {}", e)).await;
+                self.quarantine(
+                    manifest.id(),
+                    &version_dir,
+                    &format!("integrity check failed: {}", e),
+                )
+                .await;
                 continue;
             }
 
-            match self.launch_tool_from_dir(&version_dir, manifest, ToolSource::Installed, Some(napp_path)).await {
+            match self
+                .launch_tool_from_dir(
+                    &version_dir,
+                    manifest,
+                    ToolSource::Installed,
+                    Some(napp_path),
+                )
+                .await
+            {
                 Ok(()) => {}
                 Err(e) => {
                     error!(dir = %version_dir.display(), error = %e, "failed to launch installed tool");
@@ -220,7 +231,10 @@ impl Registry {
                 ToolSource::User
             };
 
-            match self.launch_tool_from_dir(&tool_dir, manifest, source, None).await {
+            match self
+                .launch_tool_from_dir(&tool_dir, manifest, source, None)
+                .await
+            {
                 Ok(()) => {}
                 Err(e) => {
                     error!(dir = %tool_dir.display(), error = %e, "failed to launch user tool");
@@ -254,8 +268,16 @@ impl Registry {
                 if let Some(ref signing) = self.signing {
                     let key = signing.get_key().await?;
                     if let Err(e) = crate::signing::verify_signatures(&key, tool_dir) {
-                        self.quarantine(manifest.id(), tool_dir, &format!("signature verification failed: {}", e)).await;
-                        return Err(NappError::Signing(format!("signature verification failed: {}", e)));
+                        self.quarantine(
+                            manifest.id(),
+                            tool_dir,
+                            &format!("signature verification failed: {}", e),
+                        )
+                        .await;
+                        return Err(NappError::Signing(format!(
+                            "signature verification failed: {}",
+                            e
+                        )));
                     }
                     let _ = napp; // napp_path used only to gate this branch
                 }
@@ -284,7 +306,11 @@ impl Registry {
     }
 
     /// Verify that the extracted binary matches the hash in the sealed archive.
-    async fn verify_installed_binary(&self, napp_path: &Path, version_dir: &Path) -> Result<(), NappError> {
+    async fn verify_installed_binary(
+        &self,
+        napp_path: &Path,
+        version_dir: &Path,
+    ) -> Result<(), NappError> {
         // Read manifest from sealed archive to get expected binary hash
         let manifest_data = crate::reader::read_napp_entry(napp_path, "manifest.json")?;
         let manifest: Manifest = serde_json::from_slice(&manifest_data)
@@ -298,7 +324,9 @@ impl Registry {
                 } else if version_dir.join("app").exists() {
                     version_dir.join("app")
                 } else {
-                    return Err(NappError::Signing("no binary found for verification".into()));
+                    return Err(NappError::Signing(
+                        "no binary found for verification".into(),
+                    ));
                 };
 
                 let binary_data = std::fs::read(&binary_path)?;
@@ -319,24 +347,20 @@ impl Registry {
 
     /// Stop and unregister a tool.
     pub async fn uninstall(&self, tool_id: &str) -> Result<(), NappError> {
-        let tool_dir = {
+        let removed = {
             let mut tools = self.tools.write().await;
-            if let Some(mut tool) = tools.remove(tool_id) {
-                if let Some(ref mut process) = tool.process {
-                    process.stop().await;
-                }
-                Some((tool.tool_dir.clone(), tool.napp_path.clone()))
-            } else {
-                None
-            }
+            tools.remove(tool_id)
         };
 
-        if let Some((dir, napp_path)) = tool_dir {
-            if dir.exists() {
-                std::fs::remove_dir_all(&dir)?;
+        if let Some(mut tool) = removed {
+            if let Some(ref mut process) = tool.process {
+                process.stop().await;
+            }
+            if tool.tool_dir.exists() {
+                std::fs::remove_dir_all(&tool.tool_dir)?;
             }
             // Also remove the .napp archive if it exists
-            if let Some(napp) = napp_path {
+            if let Some(napp) = tool.napp_path {
                 let _ = std::fs::remove_file(&napp);
             }
         }
@@ -347,13 +371,13 @@ impl Registry {
 
     /// Quarantine a tool (preserve data, remove binary).
     async fn quarantine(&self, tool_id: &str, tool_dir: &Path, reason: &str) {
-        // Stop process
-        {
+        let removed = {
             let mut tools = self.tools.write().await;
-            if let Some(mut tool) = tools.remove(tool_id) {
-                if let Some(ref mut process) = tool.process {
-                    process.stop().await;
-                }
+            tools.remove(tool_id)
+        };
+        if let Some(mut tool) = removed {
+            if let Some(ref mut process) = tool.process {
+                process.stop().await;
             }
         }
 
@@ -397,7 +421,8 @@ impl Registry {
             .map_err(|e| NappError::Other(format!("create symlink: {}", e)))?;
 
         let tool_id = manifest.id().to_string();
-        self.launch_tool_from_dir(&link_path, manifest, ToolSource::User, None).await?;
+        self.launch_tool_from_dir(&link_path, manifest, ToolSource::User, None)
+            .await?;
         info!(tool = tool_id.as_str(), "tool sideloaded");
         Ok(tool_id)
     }
@@ -416,9 +441,11 @@ impl Registry {
             )));
         }
 
-        // Stop process
-        let mut tools = self.tools.write().await;
-        if let Some(mut tool) = tools.remove(tool_id) {
+        let removed = {
+            let mut tools = self.tools.write().await;
+            tools.remove(tool_id)
+        };
+        if let Some(mut tool) = removed {
             if let Some(ref mut process) = tool.process {
                 process.stop().await;
             }
@@ -433,7 +460,8 @@ impl Registry {
     /// List registered processes.
     pub async fn list_processes(&self) -> Vec<ProcessInfo> {
         let tools = self.tools.read().await;
-        tools.values()
+        tools
+            .values()
             .map(|t| ProcessInfo {
                 id: t.manifest.id().to_string(),
                 name: t.manifest.name.clone(),
@@ -450,7 +478,10 @@ impl Registry {
     pub async fn get_endpoint(&self, tool_id: &str) -> Option<String> {
         let tools = self.tools.read().await;
         tools.get(tool_id).and_then(|t| {
-            t.process.as_ref().filter(|p| p.is_alive()).map(|p| p.grpc_endpoint())
+            t.process
+                .as_ref()
+                .filter(|p| p.is_alive())
+                .map(|p| p.grpc_endpoint())
         })
     }
 
@@ -462,14 +493,16 @@ impl Registry {
 
     /// Shutdown all tools.
     pub async fn shutdown(&self) {
-        let mut tools = self.tools.write().await;
-        for (id, tool) in tools.iter_mut() {
+        let tools = {
+            let mut guard = self.tools.write().await;
+            std::mem::take(&mut *guard)
+        };
+        for (id, mut tool) in tools {
             if let Some(ref mut process) = tool.process {
                 process.stop().await;
             }
             info!(tool = id.as_str(), "tool shutdown");
         }
-        tools.clear();
     }
 
     /// Download and install a .napp from a URL.
@@ -541,9 +574,18 @@ impl Registry {
         std::fs::write(version_dir.join("manifest.json"), &manifest_data)?;
 
         let tool_id = manifest.id().to_string();
-        self.launch_tool_from_dir(&version_dir, manifest, ToolSource::Installed, Some(napp_dest)).await?;
+        self.launch_tool_from_dir(
+            &version_dir,
+            manifest,
+            ToolSource::Installed,
+            Some(napp_dest),
+        )
+        .await?;
 
-        info!(tool = tool_id.as_str(), "tool installed from URL (sealed .napp)");
+        info!(
+            tool = tool_id.as_str(),
+            "tool installed from URL (sealed .napp)"
+        );
         Ok(tool_id)
     }
 
@@ -551,9 +593,12 @@ impl Registry {
     pub async fn handle_install_event(&self, event: InstallEvent) -> Result<(), NappError> {
         match event.event_type.as_str() {
             "tool_installed" => {
-                let url = event.payload["download_url"].as_str()
+                let url = event.payload["download_url"]
+                    .as_str()
                     .filter(|u| !u.is_empty())
-                    .ok_or(NappError::Other("missing or empty download_url in install event".into()))?;
+                    .ok_or(NappError::Other(
+                        "missing or empty download_url in install event".into(),
+                    ))?;
                 if !url.starts_with("https://") && !url.starts_with("http://") {
                     return Err(NappError::Other(format!("invalid download_url: {}", url)));
                 }
@@ -569,7 +614,8 @@ impl Registry {
                     tools.get(&event.tool_id).map(|t| t.tool_dir.clone())
                 };
                 if let Some(dir) = tool_dir {
-                    self.quarantine(&event.tool_id, &dir, "revoked by NeboLoop").await;
+                    self.quarantine(&event.tool_id, &dir, "revoked by NeboLoop")
+                        .await;
                 }
             }
             _ => {}

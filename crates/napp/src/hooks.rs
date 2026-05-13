@@ -310,11 +310,25 @@ pub struct PluginHookCaller {
 }
 
 impl PluginHookCaller {
-    pub fn new(binary_path: PathBuf, command: String, plugin_slug: String, timeout: Duration) -> Self {
-        Self { binary_path, command, plugin_slug, timeout }
+    pub fn new(
+        binary_path: PathBuf,
+        command: String,
+        plugin_slug: String,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            binary_path,
+            command,
+            plugin_slug,
+            timeout,
+        }
     }
 
-    async fn spawn_and_communicate(&self, _hook: &str, payload: Vec<u8>) -> Result<Vec<u8>, String> {
+    async fn spawn_and_communicate(
+        &self,
+        _hook: &str,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
         let args: Vec<&str> = self.command.split_whitespace().collect();
         let mut cmd = tokio::process::Command::new(&self.binary_path);
         cmd.args(&args);
@@ -322,9 +336,9 @@ impl PluginHookCaller {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().map_err(|e| {
-            format!("plugin '{}' hook spawn failed: {}", self.plugin_slug, e)
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("plugin '{}' hook spawn failed: {}", self.plugin_slug, e))?;
 
         // Write payload to stdin
         if let Some(mut stdin) = child.stdin.take() {
@@ -360,7 +374,10 @@ impl HookCaller for PluginHookCaller {
         // Parse response: { "payload": ..., "handled": bool }
         // If the output is valid JSON with "handled", use it. Otherwise treat as passthrough.
         if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&stdout) {
-            let handled = resp.get("handled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let handled = resp
+                .get("handled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let out_payload = if let Some(p) = resp.get("payload") {
                 serde_json::to_vec(p).unwrap_or(stdout)
             } else {
@@ -561,13 +578,11 @@ mod tests {
             _hook: &str,
             payload: Vec<u8>,
         ) -> Result<(Vec<u8>, bool), String> {
-            self.count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok((payload, false))
         }
         async fn call_action(&self, _hook: &str, _payload: Vec<u8>) -> Result<(), String> {
-            self.count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
     }
@@ -622,7 +637,9 @@ mod tests {
             Arc::new(ErrorCaller),
         );
 
-        let (result, handled) = d.apply_filter("message.pre_send", b"original".to_vec()).await;
+        let (result, handled) = d
+            .apply_filter("message.pre_send", b"original".to_vec())
+            .await;
         assert!(!handled);
         assert_eq!(result, b"original");
     }

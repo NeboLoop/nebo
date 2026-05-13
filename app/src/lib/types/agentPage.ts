@@ -1,5 +1,17 @@
 // Types for the [agentId] layout context shared across child routes.
 
+/** Input field configuration for agent setup forms. */
+export interface AgentInputField {
+	key: string
+	label: string
+	description?: string
+	type: string
+	required?: boolean
+	default?: unknown
+	placeholder?: string
+	options?: { value: string; label: string }[]
+}
+
 /** Enriched chat object returned by list_agent_chats (not the raw Chat struct). */
 export interface EnrichedChat {
 	id: string
@@ -18,6 +30,8 @@ export interface WorkflowTrigger {
 	type: string
 	event?: string
 	schedule?: string
+	interval?: string
+	window?: { start?: string; end?: string }
 }
 
 /** Workflow object used in the agent config. */

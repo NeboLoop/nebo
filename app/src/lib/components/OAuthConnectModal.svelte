@@ -42,7 +42,7 @@
 
 {#if show}
   <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={handleClose}></div>
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="presentation" onclick={handleClose} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClose(); } }}></div>
 
     <div class="relative w-full max-w-sm rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden">
       <div class="px-6 py-6">

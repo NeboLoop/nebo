@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use axum::extract::{Path, State};
 use axum::response::Json;
 
+use super::{HandlerResult, to_error_response};
 use crate::entity_config;
 use crate::state::AppState;
-use super::{to_error_response, HandlerResult};
 use types::NeboError;
 
 /// GET /entity-config/{entity_type}/{entity_id}

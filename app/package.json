@@ -17,6 +17,7 @@
 		"@sveltejs/vite-plugin-svelte": "^7.0.0",
 		"@tailwindcss/typography": "^0.5.19",
 		"@tailwindcss/vite": "^4.2.4",
+		"@types/node": "^25.6.2",
 		"svelte": "^5.55.2",
 		"tailwindcss": "^4.2.4",
 		"tsx": "^4.21.0",

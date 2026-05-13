@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::{PluginRegistry, PluginSetting};
 use crate::Store;
+use crate::models::{PluginRegistry, PluginSetting};
 use types::NeboError;
 
 impl Store {
@@ -134,7 +134,18 @@ impl Store {
                 signature_status = excluded.signature_status,
                 author = excluded.author,
                 updated_at = excluded.updated_at",
-            params![id, slug, name, version, now, slug, author, binary_path, manifest_hash, signature_status],
+            params![
+                id,
+                slug,
+                name,
+                version,
+                now,
+                slug,
+                author,
+                binary_path,
+                manifest_hash,
+                signature_status
+            ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
 
@@ -144,11 +155,8 @@ impl Store {
     /// Delete an installed plugin from the registry.
     pub fn delete_installed_plugin(&self, slug: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM plugin_registry WHERE slug = ?1",
-            params![slug],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute("DELETE FROM plugin_registry WHERE slug = ?1", params![slug])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -165,7 +173,10 @@ impl Store {
     }
 
     /// List all settings for a plugin by its slug (not id).
-    pub fn list_plugin_settings_by_slug(&self, slug: &str) -> Result<Vec<PluginSetting>, NeboError> {
+    pub fn list_plugin_settings_by_slug(
+        &self,
+        slug: &str,
+    ) -> Result<Vec<PluginSetting>, NeboError> {
         let conn = self.conn()?;
         let plugin_id = format!("napp-{slug}");
         let mut stmt = conn

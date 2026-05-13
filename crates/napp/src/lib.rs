@@ -1,24 +1,24 @@
+pub mod agent;
+pub mod agent_loader;
 pub mod hooks;
 pub mod manifest;
 pub mod napp;
 pub mod plugin;
 pub mod reader;
 pub mod registry;
-pub mod sealed;
-pub mod agent;
-pub mod agent_loader;
 pub mod runtime;
 pub mod sandbox;
+pub mod sealed;
 pub mod signing;
 pub mod supervisor;
 pub mod version;
 
+pub use agent_loader::{AgentFsEvent, AgentLoader, AgentSource, LoadedAgent};
+pub use hooks::{HookCaller, HookDispatcher, HookType, register_plugin_hooks};
 pub use manifest::{Manifest, ManifestSignature, QualifiedName};
 pub use registry::{Registry, RegistryConfig};
 pub use runtime::{Process, Runtime};
-pub use signing::{SigningKeyProvider, RevocationChecker, builtin_verifying_key};
-pub use hooks::{HookDispatcher, HookCaller, HookType, register_plugin_hooks};
-pub use agent_loader::{AgentLoader, LoadedAgent, AgentSource, AgentFsEvent};
+pub use signing::{RevocationChecker, SigningKeyProvider, builtin_verifying_key};
 
 use serde::{Deserialize, Serialize};
 

@@ -9,10 +9,11 @@
 //!   cargo test -p nebo-server --test mvp_readiness -- --nocapture
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── Test Server ─────────────────────────────────────────────────────
 
@@ -41,7 +42,9 @@ impl TestServer {
         std::fs::create_dir_all(data_dir.join("user").join("agents")).unwrap();
         // Set NEBO_DATA_DIR so config::data_dir() resolves to our temp dir
         // SAFETY: single-threaded at this point (before server spawn)
-        unsafe { std::env::set_var("NEBO_DATA_DIR", &data_dir); }
+        unsafe {
+            std::env::set_var("NEBO_DATA_DIR", &data_dir);
+        }
 
         let port = find_free_port();
         let db_path = data_dir.join("data").join("nebo.db");
@@ -114,11 +117,7 @@ impl TestServer {
     }
 
     async fn delete(&self, path: &str) -> reqwest::Response {
-        self.client
-            .delete(&self.url(path))
-            .send()
-            .await
-            .unwrap()
+        self.client.delete(&self.url(path)).send().await.unwrap()
     }
 
     /// Get a direct DB store handle for setup/assertions that need DB access
@@ -361,11 +360,15 @@ async fn test_skill_lifecycle(server: &TestServer) -> TestResult {
     );
 
     // 6. POST toggle disable
-    let resp = server.post_json("/skills/mvp-test-skill/toggle", &json!({})).await;
+    let resp = server
+        .post_json("/skills/mvp-test-skill/toggle", &json!({}))
+        .await;
     assert_eq!(resp.status(), 200);
 
     // 7. POST toggle re-enable
-    let resp = server.post_json("/skills/mvp-test-skill/toggle", &json!({})).await;
+    let resp = server
+        .post_json("/skills/mvp-test-skill/toggle", &json!({}))
+        .await;
     assert_eq!(resp.status(), 200);
 
     // 8. Verify filesystem
@@ -386,10 +389,7 @@ async fn test_skill_lifecycle(server: &TestServer) -> TestResult {
     assert_eq!(resp.status(), 404, "GET deleted skill should return 404");
 
     // 11. Verify filesystem cleanup
-    assert!(
-        !skill_md.exists(),
-        "SKILL.md should be gone after delete"
-    );
+    assert!(!skill_md.exists(), "SKILL.md should be gone after delete");
 
     TestResult {
         name: "skill_lifecycle".into(),
@@ -628,7 +628,7 @@ async fn test_provider_management(server: &TestServer) -> TestResult {
 
 fn test_install_flow() -> TestResult {
     // ── Code Detection ──────────────────────────────────────────────
-    use nebo_server::codes::{detect_code, CodeType};
+    use nebo_server::codes::{CodeType, detect_code};
 
     // Valid codes
     let (ct, _) = detect_code("SKIL-A1B2-C3D4").expect("valid SKILL code");
@@ -653,7 +653,10 @@ fn test_install_flow() -> TestResult {
     assert!(detect_code("  SKIL-0000-ZZZZ  ").is_some());
 
     // Invalid codes
-    assert!(detect_code("NEBO-IIIL-OOOU").is_none(), "I,L,O,U invalid in Crockford");
+    assert!(
+        detect_code("NEBO-IIIL-OOOU").is_none(),
+        "I,L,O,U invalid in Crockford"
+    );
     assert!(detect_code("INVALID-A1B2-C3D4").is_none(), "bad prefix");
     assert!(detect_code("SKIL-A1B2").is_none(), "too short");
     assert!(detect_code("NEBO-A1B2-C3D4-EXTRA").is_none(), "too long");
@@ -695,7 +698,11 @@ fn test_install_flow() -> TestResult {
     }"#;
     let config = napp::agent::parse_agent_config(role_json).unwrap();
     let deps = extract_agent_deps(&config);
-    assert_eq!(deps.len(), 1, "1 skill dep (workflow refs are inline, not extracted)");
+    assert_eq!(
+        deps.len(),
+        1,
+        "1 skill dep (workflow refs are inline, not extracted)"
+    );
 
     // extract_workflow_deps
     let wf_json = r#"{
@@ -790,7 +797,10 @@ async fn test_memory(server: &TestServer) -> TestResult {
 
     // PUT /memories/{id} — update
     let resp = server
-        .put_json(&format!("/memories/{}", mem_id), &json!({ "value": "green" }))
+        .put_json(
+            &format!("/memories/{}", mem_id),
+            &json!({ "value": "green" }),
+        )
         .await;
     assert_eq!(resp.status(), 200);
 
@@ -841,12 +851,18 @@ async fn test_cron(server: &TestServer) -> TestResult {
 
     // Verify cron_job was created (count increased)
     let count_after = store.count_cron_jobs().unwrap();
-    assert!(count_after > count_before, "cron_job count should increase after register");
+    assert!(
+        count_after > count_before,
+        "cron_job count should increase after register"
+    );
 
     // Unregister
     workflow::triggers::unregister_triggers("mvp-wf-1", &store);
     let count_removed = store.count_cron_jobs().unwrap();
-    assert!(count_removed < count_after, "cron_job count should decrease after unregister");
+    assert!(
+        count_removed < count_after,
+        "cron_job count should decrease after unregister"
+    );
 
     // ── Agent trigger registration ───────────────────────────────────
     let bindings = vec![db::models::AgentWorkflow {
@@ -866,12 +882,18 @@ async fn test_cron(server: &TestServer) -> TestResult {
     let count_before_agent = store.count_cron_jobs().unwrap();
     workflow::triggers::register_agent_triggers("mvp-role-1", &bindings, &store);
     let count_after_agent = store.count_cron_jobs().unwrap();
-    assert!(count_after_agent > count_before_agent, "agent cron_job should be created");
+    assert!(
+        count_after_agent > count_before_agent,
+        "agent cron_job should be created"
+    );
 
     // Unregister agent triggers
     workflow::triggers::unregister_agent_triggers("mvp-role-1", &store);
     let count_removed_agent = store.count_cron_jobs().unwrap();
-    assert!(count_removed_agent < count_after_agent, "agent cron_job should be removed");
+    assert!(
+        count_removed_agent < count_after_agent,
+        "agent cron_job should be removed"
+    );
 
     TestResult {
         name: "cron".into(),
@@ -916,7 +938,11 @@ async fn test_events() -> TestResult {
         timestamp: 0,
     };
     let matches = dispatcher.match_event(&event).await;
-    assert_eq!(matches.len(), 2, "email.urgent should match 2 subscriptions");
+    assert_eq!(
+        matches.len(),
+        2,
+        "email.urgent should match 2 subscriptions"
+    );
 
     // email.info matches only wildcard
     let event = tools::events::Event {
@@ -936,7 +962,11 @@ async fn test_events() -> TestResult {
         timestamp: 0,
     };
     let matches = dispatcher.match_event(&event).await;
-    assert_eq!(matches.len(), 0, "calendar.changed should match 0 subscriptions");
+    assert_eq!(
+        matches.len(),
+        0,
+        "calendar.changed should match 0 subscriptions"
+    );
 
     // ── Event Bus ───────────────────────────────────────────────────
     let (bus, mut rx) = tools::events::EventBus::new();
@@ -1068,4 +1098,3 @@ fn test_browser() -> TestResult {
         detail: "snapshot annotation with element refs verified".into(),
     }
 }
-

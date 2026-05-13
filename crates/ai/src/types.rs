@@ -323,10 +323,7 @@ pub trait Provider: Send + Sync {
     }
 
     /// Send a request and return a channel of streaming events.
-    async fn stream(
-        &self,
-        req: &ChatRequest,
-    ) -> Result<EventReceiver, ProviderError>;
+    async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError>;
 }
 
 /// Optional trait for providers that support HTTP/2 connection reset recovery.
@@ -378,7 +375,10 @@ impl ProviderError {
         matches!(
             self,
             ProviderError::RateLimit
-                | ProviderError::Api { retryable: true, .. }
+                | ProviderError::Api {
+                    retryable: true,
+                    ..
+                }
                 | ProviderError::Stream(_)
         )
     }
@@ -433,11 +433,20 @@ pub fn classify_error_reason(err: &ProviderError) -> &str {
         ProviderError::Api { code, message, .. } => {
             let lower_msg = message.to_lowercase();
             let lower_code = code.to_lowercase();
-            if lower_code.contains("rate_limit") || lower_msg.contains("rate limit") || lower_msg.contains("429") {
+            if lower_code.contains("rate_limit")
+                || lower_msg.contains("rate limit")
+                || lower_msg.contains("429")
+            {
                 "rate_limit"
-            } else if lower_code.contains("auth") || lower_msg.contains("unauthorized") || lower_msg.contains("api key") {
+            } else if lower_code.contains("auth")
+                || lower_msg.contains("unauthorized")
+                || lower_msg.contains("api key")
+            {
                 "auth"
-            } else if lower_msg.contains("billing") || lower_msg.contains("quota") || lower_msg.contains("payment") {
+            } else if lower_msg.contains("billing")
+                || lower_msg.contains("quota")
+                || lower_msg.contains("payment")
+            {
                 "billing"
             } else if lower_msg.contains("timeout") || lower_msg.contains("timed out") {
                 "timeout"
@@ -449,7 +458,10 @@ pub fn classify_error_reason(err: &ProviderError) -> &str {
             let lower = msg.to_lowercase();
             if lower.contains("rate limit") || lower.contains("429") {
                 "rate_limit"
-            } else if lower.contains("billing") || lower.contains("quota") || lower.contains("payment") {
+            } else if lower.contains("billing")
+                || lower.contains("quota")
+                || lower.contains("payment")
+            {
                 "billing"
             } else if lower.contains("provider error") || lower.contains("upstream") {
                 "provider"
@@ -504,10 +516,7 @@ impl Provider for ProfiledProvider {
         self.inner.handles_tools()
     }
 
-    async fn stream(
-        &self,
-        req: &ChatRequest,
-    ) -> Result<EventReceiver, ProviderError> {
+    async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         self.inner.stream(req).await
     }
 }

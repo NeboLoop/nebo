@@ -19,16 +19,16 @@
 
   onMount(async () => {
     try {
-      const res = await listStoreProducts();
+      const res = await listStoreProducts() as { apps?: Record<string, unknown>[] } | null;
       if (res?.apps?.length) {
         allProducts = res.apps.map((a: Record<string, unknown>) => {
-          const t = a.type || a.category || 'skill';
+          const t = String(a.type || a.category || 'skill');
           const typeMap: Record<string, string> = { agent: 'agents', skill: 'skills', plugin: 'plugins', connector: 'connectors' };
           return {
-            id: a.id, name: a.name, desc: a.description || '',
-            category: a.category || '', rating: a.rating || 0,
-            installs: a.installCount || 0, featured: a.featured ?? false,
-            price: a.price || 'Get', code: a.code || '',
+            id: String(a.id ?? ''), name: String(a.name ?? ''), desc: String(a.description ?? ''),
+            category: String(a.category ?? ''), rating: Number(a.rating ?? 0),
+            installs: Number(a.installCount ?? 0), featured: Boolean(a.featured ?? false),
+            price: String(a.price ?? 'Get'), code: String(a.code ?? ''),
             type: t, path: `/marketplace/${typeMap[t] || 'skills'}/${a.id}`,
             private: false,
           };
@@ -129,7 +129,9 @@
     // Simulate async install
     setTimeout(() => {
       if (found) {
-        installItem({ id: found.id, name: found.name, type: found.type });
+        const validTypes = ['skill', 'agent', 'plugin', 'connector'] as const;
+        const itemType = validTypes.includes(found.type as typeof validTypes[number]) ? found.type as typeof validTypes[number] : 'skill';
+        installItem({ id: found.id, name: found.name, type: itemType });
         codeStatus = 'success';
         codeMessage = `Installed ${found.name}`;
         codeInput = '';
@@ -160,7 +162,7 @@
     <div class="flex-1 overflow-y-auto">
       <div class="flex flex-col items-center gap-1 py-2">
         {#each navItems as item}
-          {@const icons = { featured: '◆', agents: '◉', skills: '⚡', plugins: '🔌', connectors: '⬡', collections: '▤', installed: '✓' }}
+          {@const icons: Record<string, string> = { featured: '◆', agents: '◉', skills: '⚡', plugins: '🔌', connectors: '⬡', collections: '▤', installed: '✓' }}
           <a
             href={item.path}
             class="w-8 h-8 rounded-md flex items-center justify-center text-sm transition-colors {marketplaceTab === item.id ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)]' : 'hover:bg-base-200'}"

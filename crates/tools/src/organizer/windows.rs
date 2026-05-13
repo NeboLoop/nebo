@@ -7,8 +7,8 @@
 //! Fallback: Task Scheduler (`Register-ScheduledTask` + `msg.exe`)
 //! for reminders when Outlook is not available.
 
-use super::shared::{escape_powershell, run_powershell};
 use super::OrganizerInput;
+use super::shared::{escape_powershell, run_powershell};
 use crate::registry::ToolResult;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -153,9 +153,7 @@ $mail.Body = "{body}""#,
                 script.push_str(&format!("\n$mail.CC = \"{cc_str}\""));
             }
 
-            script.push_str(
-                "\n$mail.Send()\nWrite-Output \"Email sent\"",
-            );
+            script.push_str("\n$mail.Send()\nWrite-Output \"Email sent\"");
             run_powershell(&script).await
         }
         "search" => {
@@ -299,9 +297,7 @@ $c.LastName = "{last}""#,
                 ));
             }
 
-            script.push_str(
-                "\n$c.Save()\nWrite-Output (\"Contact created: \" + $c.FullName)",
-            );
+            script.push_str("\n$c.Save()\nWrite-Output (\"Contact created: \" + $c.FullName)");
             run_powershell(&script).await
         }
         "groups" => {
@@ -327,7 +323,12 @@ if ($output -eq "") { Write-Output "No contact folders" } else { Write-Output $o
 // Calendar
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn handle_calendar(action: &str, input: &OrganizerInput, _ctx: &crate::origin::ToolContext, _store: Option<&std::sync::Arc<db::Store>>) -> ToolResult {
+pub async fn handle_calendar(
+    action: &str,
+    input: &OrganizerInput,
+    _ctx: &crate::origin::ToolContext,
+    _store: Option<&std::sync::Arc<db::Store>>,
+) -> ToolResult {
     if !has_outlook() {
         return ToolResult::error("Calendar requires Microsoft Outlook on Windows");
     }
@@ -477,9 +478,7 @@ $apt.End = [DateTime]"{end_str}""#,
                 ));
             }
 
-            script.push_str(
-                "\n$apt.Save()\nWrite-Output (\"Event created: \" + $apt.Subject)",
-            );
+            script.push_str("\n$apt.Save()\nWrite-Output (\"Event created: \" + $apt.Subject)");
             run_powershell(&script).await
         }
         _ => ToolResult::error(format!(
@@ -587,16 +586,14 @@ $task.Subject = "{name}""#,
 
             if let Some(pri) = input.priority {
                 let importance = match pri {
-                    1..=3 => "2",  // High
-                    4..=6 => "1",  // Normal
+                    1..=3 => "2", // High
+                    4..=6 => "1", // Normal
                     _ => "0",     // Low
                 };
                 script.push_str(&format!("\n$task.Importance = {importance}"));
             }
 
-            script.push_str(
-                "\n$task.Save()\nWrite-Output (\"Task created: \" + $task.Subject)",
-            );
+            script.push_str("\n$task.Save()\nWrite-Output (\"Task created: \" + $task.Subject)");
             run_powershell(&script).await
         }
         "complete" => {

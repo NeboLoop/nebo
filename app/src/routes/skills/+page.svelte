@@ -2,18 +2,29 @@
   import { onMount } from 'svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
 
+  interface ToolEntry {
+    name: string;
+    bundled?: boolean;
+    is_bundled?: boolean;
+    enabled?: boolean;
+    is_enabled?: boolean;
+    tools?: string[];
+    capabilities?: string[];
+  }
+
   let skills = $state<{ name: string; bundled: boolean; enabled: boolean; tools: string[] }[]>([]);
 
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.listMCPTools();
+      const resp = await api.listTools();
       if (resp?.tools?.length) {
-        skills = (resp.tools as Record<string, unknown>[]).map((t) => ({
-          name: t.name as string,
-          bundled: (t.bundled ?? t.is_bundled ?? false) as boolean,
-          enabled: (t.enabled ?? t.is_enabled ?? true) as boolean,
-          tools: (t.tools || t.capabilities || []) as string[],
+        const tools = resp.tools as ToolEntry[];
+        skills = tools.map((t) => ({
+          name: t.name,
+          bundled: !!(t.bundled ?? t.is_bundled ?? false),
+          enabled: !!(t.enabled ?? t.is_enabled ?? true),
+          tools: (t.tools || t.capabilities || []),
         }));
       }
     } catch { /* keep mock data */ }

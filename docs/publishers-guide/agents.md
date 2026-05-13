@@ -224,18 +224,19 @@ The user installs a job. Everything else cascades — plugins first, then skills
 
 During development, agents placed in `~/.nebo/user/agents/` are detected automatically by the filesystem watcher:
 
-- **Added:** New agent directory with `AGENT.md` → appears in sidebar
-- **Changed:** Edits to `AGENT.md`, `agent.json`, `views.json`, or `theme.css` → metadata updated in DB, worker restarted if active
+- **Added:** New agent directory or symlink with `AGENT.md` → appears in sidebar and Apps page
+- **Changed:** Edits to `AGENT.md`, `agent.json`, `manifest.json`, `views.json`, or `theme.css` → metadata updated in DB, worker restarted if active
 - **Removed:** Deleted directory → agent soft-deactivated (DB record preserved with `is_enabled=0`)
 
-Changes are debounced at 1 second. No restart needed.
+Changes are debounced at 1 second. No restart needed. Symlinks are fully supported — you can symlink an entire app directory from your source repo into `~/.nebo/user/agents/` and changes take effect immediately.
 
 ---
 
 ## Validation Rules
 
-- Each workflow binding must have a valid `ref` (qualified name: `@org/workflows/name@version`) and a `trigger`
+- Each workflow binding must have a `trigger`
 - Trigger type must be one of: `schedule`, `heartbeat`, `event`, `watch`, `manual`
+- Workflow bindings with invalid triggers are skipped with a warning — they do not prevent the agent from loading
 - Schedule triggers must have a valid `cron` expression
 - Heartbeat triggers must have a valid `interval` (e.g., `"30m"`, `"1h"`)
 - Event triggers should have at least one entry in `sources` — an empty array is accepted but the trigger will never fire

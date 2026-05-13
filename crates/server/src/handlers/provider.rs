@@ -4,8 +4,8 @@ use axum::extract::{Path, State};
 use axum::response::Json;
 use tracing::{info, warn};
 
+use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
-use super::{to_error_response, HandlerResult};
 
 /// Rebuild AI providers from auth_profiles and reload them on the runner.
 pub(crate) async fn reload_providers(state: &AppState) {
@@ -27,7 +27,8 @@ pub(crate) async fn reload_providers(state: &AppState) {
         }
         let provider: Option<Arc<dyn ai::Provider>> = match profile.provider.as_str() {
             "anthropic" => {
-                let default_model = models_cfg.default_model_for_provider("anthropic")
+                let default_model = models_cfg
+                    .default_model_for_provider("anthropic")
                     .unwrap_or_default();
                 Some(Arc::new(ai::AnthropicProvider::new(
                     profile.api_key.clone(),
@@ -35,7 +36,8 @@ pub(crate) async fn reload_providers(state: &AppState) {
                 )))
             }
             "openai" => {
-                let default_model = models_cfg.default_model_for_provider("openai")
+                let default_model = models_cfg
+                    .default_model_for_provider("openai")
                     .unwrap_or_default();
                 Some(Arc::new(ai::OpenAIProvider::new(
                     profile.api_key.clone(),
@@ -43,18 +45,23 @@ pub(crate) async fn reload_providers(state: &AppState) {
                 )))
             }
             "deepseek" => {
-                let default_model = models_cfg.default_model_for_provider("deepseek")
+                let default_model = models_cfg
+                    .default_model_for_provider("deepseek")
                     .unwrap_or_default();
                 let mut p = ai::OpenAIProvider::with_base_url(
                     profile.api_key.clone(),
                     profile.model.clone().unwrap_or(default_model),
-                    profile.base_url.clone().unwrap_or_else(|| "https://api.deepseek.com/v1".into()),
+                    profile
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.deepseek.com/v1".into()),
                 );
                 p.set_provider_id("deepseek");
                 Some(Arc::new(p))
             }
             "google" => {
-                let default_model = models_cfg.default_model_for_provider("google")
+                let default_model = models_cfg
+                    .default_model_for_provider("google")
                     .unwrap_or_default();
                 Some(Arc::new(ai::GeminiProvider::new(
                     profile.api_key.clone(),
@@ -62,10 +69,14 @@ pub(crate) async fn reload_providers(state: &AppState) {
                 )))
             }
             "ollama" => {
-                let default_model = models_cfg.default_model_for_provider("ollama")
+                let default_model = models_cfg
+                    .default_model_for_provider("ollama")
                     .unwrap_or_default();
                 Some(Arc::new(ai::OllamaProvider::new(
-                    profile.base_url.clone().unwrap_or_else(|| "http://localhost:11434".into()),
+                    profile
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "http://localhost:11434".into()),
                     profile.model.clone().unwrap_or(default_model),
                 )))
             }
@@ -83,39 +94,43 @@ pub(crate) async fn reload_providers(state: &AppState) {
                     // Skip Janus if user has disabled all Janus chat models.
                     // Only count chat-capable models (not embedding-only).
                     // Fail-safe: if DB query fails, skip Janus (don't burn tokens).
-                    let has_active_chat = state.store
+                    let has_active_chat = state
+                        .store
                         .list_active_provider_models("janus")
-                        .map(|models| models.iter().any(|m| {
-                            let caps: Vec<String> = m.capabilities
-                                .as_ref()
-                                .and_then(|c| serde_json::from_str(c).ok())
-                                .unwrap_or_default();
-                            caps.iter().any(|c| c == "streaming" || c == "tools")
-                        }))
+                        .map(|models| {
+                            models.iter().any(|m| {
+                                let caps: Vec<String> = m
+                                    .capabilities
+                                    .as_ref()
+                                    .and_then(|c| serde_json::from_str(c).ok())
+                                    .unwrap_or_default();
+                                caps.iter().any(|c| c == "streaming" || c == "tools")
+                            })
+                        })
                         .unwrap_or(false);
                     if !has_active_chat {
                         info!("janus provider has no active models in catalog, skipping");
                         None
                     } else {
-                    let janus_url = &state.config.neboloop.janus_url;
-                    let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
-                    let bot_id = config::read_bot_id().unwrap_or_default();
-                    // Janus authenticates via X-Bot-ID header; api_key (OAuth token) is optional
-                    let api_key = if profile.api_key.is_empty() {
-                        bot_id.clone()
-                    } else {
-                        profile.api_key.clone()
-                    };
-                    let mut p = ai::OpenAIProvider::with_base_url(
-                        api_key,
-                        model,
-                        format!("{}/v1", janus_url),
-                    );
-                    p.set_provider_id("janus");
-                    if !bot_id.is_empty() {
-                        p.set_bot_id(bot_id);
-                    }
-                    Some(Arc::new(p))
+                        let janus_url = &state.config.neboloop.janus_url;
+                        let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
+                        let bot_id = config::read_bot_id().unwrap_or_default();
+                        // Janus authenticates via X-Bot-ID header; api_key (OAuth token) is optional
+                        let api_key = if profile.api_key.is_empty() {
+                            bot_id.clone()
+                        } else {
+                            profile.api_key.clone()
+                        };
+                        let mut p = ai::OpenAIProvider::with_base_url(
+                            api_key,
+                            model,
+                            format!("{}/v1", janus_url),
+                        );
+                        p.set_provider_id("janus");
+                        if !bot_id.is_empty() {
+                            p.set_bot_id(bot_id);
+                        }
+                        Some(Arc::new(p))
                     }
                 } else {
                     info!(
@@ -143,7 +158,9 @@ pub(crate) async fn reload_providers(state: &AppState) {
 
     // Auto-create Ollama provider if Ollama is running and has active models,
     // even without an auth_profile (Ollama needs no API key).
-    let has_ollama_profile = profiles.iter().any(|p| p.provider == "ollama" && p.is_active.unwrap_or(0) == 1);
+    let has_ollama_profile = profiles
+        .iter()
+        .any(|p| p.provider == "ollama" && p.is_active.unwrap_or(0) == 1);
     if !has_ollama_profile {
         if let Ok(active_models) = state.store.list_active_provider_models("ollama") {
             if !active_models.is_empty() {
@@ -198,10 +215,11 @@ pub(crate) async fn reload_providers(state: &AppState) {
 }
 
 /// GET /api/v1/providers
-pub async fn list_providers(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
-    let profiles = state.store.list_auth_profiles().map_err(to_error_response)?;
+pub async fn list_providers(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let profiles = state
+        .store
+        .list_auth_profiles()
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"profiles": profiles})))
 }
 
@@ -213,9 +231,9 @@ pub async fn create_provider(
     let name = body["name"]
         .as_str()
         .ok_or_else(|| to_error_response(types::NeboError::Validation("name required".into())))?;
-    let provider = body["provider"]
-        .as_str()
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("provider required".into())))?;
+    let provider = body["provider"].as_str().ok_or_else(|| {
+        to_error_response(types::NeboError::Validation("provider required".into()))
+    })?;
     let api_key = body["apiKey"].as_str().unwrap_or("");
     let model = body["model"].as_str();
     let base_url = body["baseUrl"].as_str();
@@ -275,7 +293,9 @@ pub async fn update_provider(
     let api_key = body["apiKey"].as_str().unwrap_or(&existing.api_key);
     let model = body["model"].as_str().or(existing.model.as_deref());
     let base_url = body["baseUrl"].as_str().or(existing.base_url.as_deref());
-    let priority = body["priority"].as_i64().unwrap_or(existing.priority.unwrap_or(50));
+    let priority = body["priority"]
+        .as_i64()
+        .unwrap_or(existing.priority.unwrap_or(50));
     let auth_type = body["authType"].as_str().or(existing.auth_type.as_deref());
     // Merge incoming metadata into existing metadata (don't replace wholesale)
     let metadata = {
@@ -298,7 +318,16 @@ pub async fn update_provider(
 
     state
         .store
-        .update_auth_profile(&id, name, api_key, model, base_url, priority, auth_type, metadata.as_deref())
+        .update_auth_profile(
+            &id,
+            name,
+            api_key,
+            model,
+            base_url,
+            priority,
+            auth_type,
+            metadata.as_deref(),
+        )
         .map_err(to_error_response)?;
 
     // Handle isActive toggle (separate DB column, not part of update_auth_profile)
@@ -312,7 +341,10 @@ pub async fn update_provider(
     // Reload providers on the runner
     reload_providers(&state).await;
 
-    let updated = state.store.get_auth_profile(&id).map_err(to_error_response)?;
+    let updated = state
+        .store
+        .get_auth_profile(&id)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!(updated)))
 }
 
@@ -321,7 +353,10 @@ pub async fn delete_provider(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    state.store.delete_auth_profile(&id).map_err(to_error_response)?;
+    state
+        .store
+        .delete_auth_profile(&id)
+        .map_err(to_error_response)?;
     // Reload providers on the runner
     reload_providers(&state).await;
     Ok(Json(serde_json::json!({"success": true})))
@@ -359,8 +394,12 @@ pub async fn test_provider(
             test_provider_connection(&provider).await
         }
         "deepseek" => {
-            let base_url = profile.base_url.clone().unwrap_or_else(|| "https://api.deepseek.com/v1".into());
-            let provider = ai::OpenAIProvider::with_base_url(profile.api_key.clone(), model, base_url);
+            let base_url = profile
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.deepseek.com/v1".into());
+            let provider =
+                ai::OpenAIProvider::with_base_url(profile.api_key.clone(), model, base_url);
             test_provider_connection(&provider).await
         }
         "google" => {
@@ -368,7 +407,10 @@ pub async fn test_provider(
             test_provider_connection(&provider).await
         }
         "ollama" => {
-            let base_url = profile.base_url.clone().unwrap_or_else(|| "http://localhost:11434".into());
+            let base_url = profile
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:11434".into());
             let provider = ai::OllamaProvider::new(base_url, model);
             test_provider_connection(&provider).await
         }
@@ -446,11 +488,12 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
 }
 
 /// GET /api/v1/models — returns model catalog from DB + routing config from YAML.
-pub async fn list_models(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     // Read models from the database (source of truth for model availability)
-    let all_models = state.store.list_all_provider_models().map_err(to_error_response)?;
+    let all_models = state
+        .store
+        .list_all_provider_models()
+        .map_err(to_error_response)?;
 
     // Group models by provider
     let mut models: std::collections::HashMap<String, Vec<serde_json::Value>> =
@@ -486,10 +529,7 @@ pub async fn list_models(
             });
         }
 
-        models
-            .entry(m.provider.clone())
-            .or_default()
-            .push(info);
+        models.entry(m.provider.clone()).or_default().push(info);
     }
 
     // Routing config comes from the YAML catalog (not per-model data).
@@ -512,16 +552,25 @@ pub async fn list_models(
     let lane_routing = cfg.lane_routing.as_ref().map(|lr| {
         let mut m = serde_json::Map::new();
         if !lr.heartbeat.is_empty() {
-            m.insert("heartbeat".into(), serde_json::Value::String(lr.heartbeat.clone()));
+            m.insert(
+                "heartbeat".into(),
+                serde_json::Value::String(lr.heartbeat.clone()),
+            );
         }
         if !lr.events.is_empty() {
-            m.insert("events".into(), serde_json::Value::String(lr.events.clone()));
+            m.insert(
+                "events".into(),
+                serde_json::Value::String(lr.events.clone()),
+            );
         }
         if !lr.comm.is_empty() {
             m.insert("comm".into(), serde_json::Value::String(lr.comm.clone()));
         }
         if !lr.subagent.is_empty() {
-            m.insert("subagent".into(), serde_json::Value::String(lr.subagent.clone()));
+            m.insert(
+                "subagent".into(),
+                serde_json::Value::String(lr.subagent.clone()),
+            );
         }
         serde_json::Value::Object(m)
     });
@@ -620,12 +669,14 @@ pub async fn update_model(
     // Janus cascade: when no chat-capable Janus models remain active,
     // disable ALL Janus models (embeddings cost money too).
     if provider == "janus" {
-        let has_active_chat = state.store
+        let has_active_chat = state
+            .store
             .list_active_provider_models("janus")
             .unwrap_or_default()
             .iter()
             .any(|m| {
-                let caps: Vec<String> = m.capabilities
+                let caps: Vec<String> = m
+                    .capabilities
                     .as_ref()
                     .and_then(|c| serde_json::from_str(c).ok())
                     .unwrap_or_default();
@@ -660,15 +711,19 @@ pub async fn update_cli_provider(
     Path(cli_id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    let active = body.get("active").and_then(|v| v.as_bool()).ok_or_else(|| {
-        to_error_response(types::NeboError::Validation("active field is required".into()))
-    })?;
+    let active = body
+        .get("active")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| {
+            to_error_response(types::NeboError::Validation(
+                "active field is required".into(),
+            ))
+        })?;
 
     // CLI providers are config, stored in models.yaml
     let mut cfg = config::ModelsConfig::load();
-    cfg.set_cli_provider_active(&cli_id, active).map_err(|e| {
-        to_error_response(types::NeboError::Validation(e))
-    })?;
+    cfg.set_cli_provider_active(&cli_id, active)
+        .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
 
     // Reload providers so the toggle takes effect immediately
     reload_providers(&state).await;
@@ -705,11 +760,14 @@ pub async fn update_model_config(
             .collect();
     }
 
-    cfg.save().map_err(|e| {
-        to_error_response(types::NeboError::Server(e))
-    })?;
+    cfg.save()
+        .map_err(|e| to_error_response(types::NeboError::Server(e)))?;
 
-    let primary = cfg.defaults.as_ref().map(|d| d.primary.as_str()).unwrap_or("");
+    let primary = cfg
+        .defaults
+        .as_ref()
+        .map(|d| d.primary.as_str())
+        .unwrap_or("");
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -725,24 +783,41 @@ pub async fn update_task_routing(
     let mut cfg = config::ModelsConfig::load();
 
     // Update task routing
-    let tr = cfg.task_routing.get_or_insert_with(|| config::models::TaskRouting {
-        vision: String::new(),
-        audio: String::new(),
-        reasoning: String::new(),
-        code: String::new(),
-        general: String::new(),
-        fallbacks: std::collections::HashMap::new(),
-    });
-    if let Some(v) = body.get("vision").and_then(|v| v.as_str()) { tr.vision = v.to_string(); }
-    if let Some(v) = body.get("audio").and_then(|v| v.as_str()) { tr.audio = v.to_string(); }
-    if let Some(v) = body.get("reasoning").and_then(|v| v.as_str()) { tr.reasoning = v.to_string(); }
-    if let Some(v) = body.get("code").and_then(|v| v.as_str()) { tr.code = v.to_string(); }
-    if let Some(v) = body.get("general").and_then(|v| v.as_str()) { tr.general = v.to_string(); }
+    let tr = cfg
+        .task_routing
+        .get_or_insert_with(|| config::models::TaskRouting {
+            vision: String::new(),
+            audio: String::new(),
+            reasoning: String::new(),
+            code: String::new(),
+            general: String::new(),
+            fallbacks: std::collections::HashMap::new(),
+        });
+    if let Some(v) = body.get("vision").and_then(|v| v.as_str()) {
+        tr.vision = v.to_string();
+    }
+    if let Some(v) = body.get("audio").and_then(|v| v.as_str()) {
+        tr.audio = v.to_string();
+    }
+    if let Some(v) = body.get("reasoning").and_then(|v| v.as_str()) {
+        tr.reasoning = v.to_string();
+    }
+    if let Some(v) = body.get("code").and_then(|v| v.as_str()) {
+        tr.code = v.to_string();
+    }
+    if let Some(v) = body.get("general").and_then(|v| v.as_str()) {
+        tr.general = v.to_string();
+    }
     if let Some(fallbacks) = body.get("fallbacks").and_then(|v| v.as_object()) {
         let mut fb = std::collections::HashMap::new();
         for (k, v) in fallbacks {
             if let Some(arr) = v.as_array() {
-                fb.insert(k.clone(), arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+                fb.insert(
+                    k.clone(),
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect(),
+                );
             }
         }
         tr.fallbacks = fb;
@@ -750,16 +825,26 @@ pub async fn update_task_routing(
 
     // Update lane routing
     if let Some(lr_val) = body.get("laneRouting").and_then(|v| v.as_object()) {
-        let lr = cfg.lane_routing.get_or_insert_with(|| config::models::LaneRouting {
-            heartbeat: String::new(),
-            events: String::new(),
-            comm: String::new(),
-            subagent: String::new(),
-        });
-        if let Some(v) = lr_val.get("heartbeat").and_then(|v| v.as_str()) { lr.heartbeat = v.to_string(); }
-        if let Some(v) = lr_val.get("events").and_then(|v| v.as_str()) { lr.events = v.to_string(); }
-        if let Some(v) = lr_val.get("comm").and_then(|v| v.as_str()) { lr.comm = v.to_string(); }
-        if let Some(v) = lr_val.get("subagent").and_then(|v| v.as_str()) { lr.subagent = v.to_string(); }
+        let lr = cfg
+            .lane_routing
+            .get_or_insert_with(|| config::models::LaneRouting {
+                heartbeat: String::new(),
+                events: String::new(),
+                comm: String::new(),
+                subagent: String::new(),
+            });
+        if let Some(v) = lr_val.get("heartbeat").and_then(|v| v.as_str()) {
+            lr.heartbeat = v.to_string();
+        }
+        if let Some(v) = lr_val.get("events").and_then(|v| v.as_str()) {
+            lr.events = v.to_string();
+        }
+        if let Some(v) = lr_val.get("comm").and_then(|v| v.as_str()) {
+            lr.comm = v.to_string();
+        }
+        if let Some(v) = lr_val.get("subagent").and_then(|v| v.as_str()) {
+            lr.subagent = v.to_string();
+        }
     }
 
     // Update aliases
@@ -774,9 +859,8 @@ pub async fn update_task_routing(
             .collect();
     }
 
-    cfg.save().map_err(|e| {
-        to_error_response(types::NeboError::Server(e))
-    })?;
+    cfg.save()
+        .map_err(|e| to_error_response(types::NeboError::Server(e)))?;
 
     Ok(Json(serde_json::json!({
         "message": "Task routing updated successfully",
@@ -803,7 +887,10 @@ pub async fn local_models_status(
 
     // Sync discovered models into the DB so they appear in the model catalog.
     // New models default to is_active=false — the user must explicitly enable them.
-    let existing = state.store.list_provider_models("ollama").unwrap_or_default();
+    let existing = state
+        .store
+        .list_provider_models("ollama")
+        .unwrap_or_default();
     let existing_ids: std::collections::HashSet<&str> =
         existing.iter().map(|m| m.model_id.as_str()).collect();
 
@@ -846,8 +933,7 @@ pub async fn local_models_status(
     }
 
     // Remove DB models that Ollama no longer reports
-    let live: std::collections::HashSet<&str> =
-        model_names.iter().map(|n| n.as_str()).collect();
+    let live: std::collections::HashSet<&str> = model_names.iter().map(|n| n.as_str()).collect();
     for m in &existing {
         if !live.contains(m.model_id.as_str()) {
             let _ = state.store.delete_provider_model(&m.id);

@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::Session;
 use crate::Store;
+use crate::models::Session;
 use types::NeboError;
 
 impl Store {

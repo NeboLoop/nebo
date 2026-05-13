@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use comm::CommPlugin;
 use crate::domain::DomainInput;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
+use comm::CommPlugin;
 
 /// LoopTool provides NeboLoop communication capabilities.
 /// Resources: dm, channel, group, topic.
@@ -65,10 +65,7 @@ impl LoopTool {
                     Err(e) => ToolResult::error(format!("Failed to send DM: {}", e)),
                 }
             }
-            _ => ToolResult::error(format!(
-                "Unknown dm action: {}. Available: send",
-                action
-            )),
+            _ => ToolResult::error(format!("Unknown dm action: {}. Available: send", action)),
         }
     }
 
@@ -118,7 +115,9 @@ impl LoopTool {
                 }
                 let limit = input["limit"].as_u64().unwrap_or(50) as usize;
                 match self.comm.list_channel_messages(channel_id, limit).await {
-                    Ok(msgs) => ToolResult::ok(serde_json::to_string_pretty(&msgs).unwrap_or_default()),
+                    Ok(msgs) => {
+                        ToolResult::ok(serde_json::to_string_pretty(&msgs).unwrap_or_default())
+                    }
                     Err(e) => ToolResult::error(format!("Failed to list channel messages: {}", e)),
                 }
             }
@@ -128,16 +127,18 @@ impl LoopTool {
                     return ToolResult::error("channel_id is required for channel members");
                 }
                 match self.comm.list_channel_members(channel_id).await {
-                    Ok(members) => ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default()),
+                    Ok(members) => {
+                        ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default())
+                    }
                     Err(e) => ToolResult::error(format!("Failed to list channel members: {}", e)),
                 }
             }
-            "list" => {
-                match self.comm.list_channels().await {
-                    Ok(channels) => ToolResult::ok(serde_json::to_string_pretty(&channels).unwrap_or_default()),
-                    Err(e) => ToolResult::error(format!("Failed to list channels: {}", e)),
+            "list" => match self.comm.list_channels().await {
+                Ok(channels) => {
+                    ToolResult::ok(serde_json::to_string_pretty(&channels).unwrap_or_default())
                 }
-            }
+                Err(e) => ToolResult::error(format!("Failed to list channels: {}", e)),
+            },
             _ => ToolResult::error(format!(
                 "Unknown channel action: {}. Available: send, messages, members, list",
                 action
@@ -149,19 +150,21 @@ impl LoopTool {
         let action = input["action"].as_str().unwrap_or("");
 
         match action {
-            "list" => {
-                match self.comm.list_loops().await {
-                    Ok(loops) => ToolResult::ok(serde_json::to_string_pretty(&loops).unwrap_or_default()),
-                    Err(e) => ToolResult::error(format!("Failed to list loops: {}", e)),
+            "list" => match self.comm.list_loops().await {
+                Ok(loops) => {
+                    ToolResult::ok(serde_json::to_string_pretty(&loops).unwrap_or_default())
                 }
-            }
+                Err(e) => ToolResult::error(format!("Failed to list loops: {}", e)),
+            },
             "get" => {
                 let loop_id = input["loop_id"].as_str().unwrap_or("");
                 if loop_id.is_empty() {
                     return ToolResult::error("loop_id is required for group get");
                 }
                 match self.comm.get_loop_info(loop_id).await {
-                    Ok(info) => ToolResult::ok(serde_json::to_string_pretty(&info).unwrap_or_default()),
+                    Ok(info) => {
+                        ToolResult::ok(serde_json::to_string_pretty(&info).unwrap_or_default())
+                    }
                     Err(e) => ToolResult::error(format!("Failed to get loop info: {}", e)),
                 }
             }
@@ -171,7 +174,9 @@ impl LoopTool {
                     return ToolResult::error("loop_id is required for group members");
                 }
                 match self.comm.list_channel_members(loop_id).await {
-                    Ok(members) => ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default()),
+                    Ok(members) => {
+                        ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default())
+                    }
                     Err(e) => ToolResult::error(format!("Failed to list group members: {}", e)),
                 }
             }
@@ -251,12 +256,12 @@ impl DynTool for LoopTool {
             "properties": {
                 "resource": {
                     "type": "string",
-                    "description": "Resource type",
+                    "description": "REQUIRED. The communication resource category — determines which actions are available.",
                     "enum": ["dm", "channel", "group", "topic"]
                 },
                 "action": {
                     "type": "string",
-                    "description": "Action to perform",
+                    "description": "The operation to perform on the selected resource. Never put a resource name here.",
                     "enum": ["send", "messages", "members", "list", "get", "subscribe", "unsubscribe", "status"]
                 },
                 "text": { "type": "string", "description": "Message text" },
@@ -266,7 +271,7 @@ impl DynTool for LoopTool {
                 "loop_id": { "type": "string", "description": "Loop (group) ID" },
                 "limit": { "type": "integer", "description": "Max results to return" }
             },
-            "required": ["action"]
+            "required": ["resource", "action"]
         })
     }
 

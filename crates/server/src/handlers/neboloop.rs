@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use super::{to_error_response, HandlerResult};
+use super::{HandlerResult, to_error_response};
 use crate::codes::build_api_client;
 use crate::state::AppState;
 use config;
@@ -38,23 +38,23 @@ static PENDING_FLOWS: LazyLock<Mutex<HashMap<String, OAuthFlowState>>> =
 // --- PKCE helpers (RFC 7636) ---
 
 fn generate_code_verifier() -> String {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let mut buf = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut buf);
     URL_SAFE_NO_PAD.encode(buf)
 }
 
 fn compute_code_challenge(verifier: &str) -> String {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let hash = Sha256::digest(verifier.as_bytes());
     URL_SAFE_NO_PAD.encode(hash)
 }
 
 fn generate_state() -> String {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let mut buf = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut buf);
     URL_SAFE_NO_PAD.encode(buf)
@@ -65,11 +65,14 @@ fn generate_state() -> String {
 fn neboloop_frontend_url(api_url: &str) -> String {
     match url::Url::parse(api_url) {
         Ok(mut u) => {
-            let needs_rewrite = u
-                .host_str()
-                .map_or(false, |h| h.starts_with("api."));
+            let needs_rewrite = u.host_str().map_or(false, |h| h.starts_with("api."));
             if needs_rewrite {
-                let new_host = u.host_str().unwrap().strip_prefix("api.").unwrap().to_string();
+                let new_host = u
+                    .host_str()
+                    .unwrap()
+                    .strip_prefix("api.")
+                    .unwrap()
+                    .to_string();
                 let _ = u.set_host(Some(&new_host));
             }
             u.to_string().trim_end_matches('/').to_string()
@@ -110,7 +113,10 @@ pub async fn oauth_start(
     let challenge = compute_code_challenge(&verifier);
     let janus_provider = params.janus.as_deref() == Some("true");
 
-    let redirect_uri = format!("http://localhost:{}/auth/neboloop/callback", state.config.port);
+    let redirect_uri = format!(
+        "http://localhost:{}/auth/neboloop/callback",
+        state.config.port
+    );
 
     let authorize_params = [
         ("response_type", "code"),
@@ -188,7 +194,10 @@ pub async fn oauth_callback(
     if !err_param.is_empty() {
         flow.error = err_param.clone();
         flow.completed = true;
-        return callback_html("", &format!("Authentication was denied or failed: {err_param}"));
+        return callback_html(
+            "",
+            &format!("Authentication was denied or failed: {err_param}"),
+        );
     }
 
     if code.is_empty() {
@@ -344,9 +353,7 @@ pub struct AccountStatusResponse {
     pub plan: Option<String>,
 }
 
-pub async fn account_status(
-    State(state): State<AppState>,
-) -> HandlerResult<AccountStatusResponse> {
+pub async fn account_status(State(state): State<AppState>) -> HandlerResult<AccountStatusResponse> {
     let profiles = state
         .store
         .list_all_active_auth_profiles_by_provider("neboloop")
@@ -380,7 +387,11 @@ pub async fn account_status(
     }
 
     let plan = state.plan_tier.read().await.clone();
-    let plan = if plan.is_empty() || plan == "free" { None } else { Some(plan) };
+    let plan = if plan.is_empty() || plan == "free" {
+        None
+    } else {
+        Some(plan)
+    };
 
     Ok(Json(AccountStatusResponse {
         connected: true,
@@ -396,9 +407,7 @@ pub async fn account_status(
 // --- Bot connection status (NeboLoop MQTT) ---
 
 /// GET /api/v1/neboloop/status — bot/WebSocket connection status.
-pub async fn bot_status(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn bot_status(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let profiles = state
         .store
         .list_all_active_auth_profiles_by_provider("neboloop")
@@ -429,7 +438,9 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
         .map(|p| p.api_key.clone())
         .unwrap_or_default();
     if token.is_empty() {
-        return Err(NeboError::Internal("no neboloop token for janus usage".into()));
+        return Err(NeboError::Internal(
+            "no neboloop token for janus usage".into(),
+        ));
     }
     let bot_id = config::read_bot_id().unwrap_or_default();
 
@@ -442,7 +453,10 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
         .map_err(|e| NeboError::Internal(format!("janus usage fetch: {e}")))?;
 
     if !resp.status().is_success() {
-        return Err(NeboError::Internal(format!("janus usage: HTTP {}", resp.status())));
+        return Err(NeboError::Internal(format!(
+            "janus usage: HTTP {}",
+            resp.status()
+        )));
     }
 
     let body: serde_json::Value = resp
@@ -498,13 +512,17 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
 
 /// Build the JSON response from a JanusUsage struct.
 fn janus_usage_response(u: &crate::state::JanusUsage) -> serde_json::Value {
-    let session_used = u.session_limit_credits.saturating_sub(u.session_remaining_credits);
+    let session_used = u
+        .session_limit_credits
+        .saturating_sub(u.session_remaining_credits);
     let session_pct = if u.session_limit_credits > 0 {
         ((session_used as f64 / u.session_limit_credits as f64) * 100.0).round() as u64
     } else {
         0
     };
-    let weekly_used = u.weekly_limit_credits.saturating_sub(u.weekly_remaining_credits);
+    let weekly_used = u
+        .weekly_limit_credits
+        .saturating_sub(u.weekly_remaining_credits);
     let weekly_pct = if u.weekly_limit_credits > 0 {
         ((weekly_used as f64 / u.weekly_limit_credits as f64) * 100.0).round() as u64
     } else {
@@ -538,9 +556,7 @@ fn janus_usage_response(u: &crate::state::JanusUsage) -> serde_json::Value {
 
 /// GET /api/v1/neboloop/janus/usage — Janus usage stats.
 /// Returns cached data if available, otherwise fetches directly from Janus.
-pub async fn janus_usage(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn janus_usage(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     // Try in-memory cache first
     let cached = state.janus_usage.read().await.clone();
     if let Some(ref u) = cached {
@@ -573,9 +589,7 @@ pub async fn janus_usage_refresh(
 // --- Open NeboLoop in browser ---
 
 /// GET /api/v1/neboloop/open — Open NeboLoop dashboard in system browser.
-pub async fn open_neboloop(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn open_neboloop(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let frontend_url = neboloop_frontend_url(&state.config.neboloop.api_url);
     // Best-effort: open browser, may fail in headless environments
     let _ = open::that(&frontend_url);
@@ -608,16 +622,109 @@ pub async fn account_disconnect(
     }))
 }
 
+// --- Billing response types ---
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingPriceInfo {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub stripe_price_id: String,
+    #[serde(default)]
+    pub nickname: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub amount_cents: i64,
+    #[serde(default)]
+    pub currency: String,
+    #[serde(default)]
+    pub interval: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub display_order: i32,
+    #[serde(default)]
+    pub boost_price_id: Option<String>,
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingSubscription {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub stripe_subscription_id: String,
+    #[serde(default)]
+    pub plan: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub current_period_end: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentMethodInfo {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, rename = "type")]
+    pub method_type: String,
+    #[serde(default)]
+    pub brand: String,
+    #[serde(default)]
+    pub last_four: String,
+    #[serde(default)]
+    pub exp_month: i32,
+    #[serde(default)]
+    pub exp_year: i32,
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvoiceInfo {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub amount_cents: i64,
+    #[serde(default)]
+    pub currency: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub hosted_url: Option<String>,
+    #[serde(default)]
+    pub pdf_url: Option<String>,
+}
+
 // --- Billing proxy handlers ---
 
 /// GET /api/v1/neboloop/billing/prices — list billing plans/prices.
-pub async fn billing_prices(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn billing_prices(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api.billing_prices().await
+    let resp = api
+        .billing_prices()
+        .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("billing_prices: {e}"))))?;
-    Ok(Json(resp))
+    let prices: Vec<BillingPriceInfo> = resp
+        .get("prices")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    Ok(Json(serde_json::json!({
+        "prices": prices,
+    })))
 }
 
 /// GET /api/v1/neboloop/billing/subscription — current subscription.
@@ -625,9 +732,23 @@ pub async fn billing_subscription(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api.billing_subscription().await
-        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_subscription: {e}"))))?;
-    Ok(Json(resp))
+    let resp = api.billing_subscription().await.map_err(|e| {
+        to_error_response(NeboError::Internal(format!("billing_subscription: {e}")))
+    })?;
+    let plan: String = resp
+        .get("plan")
+        .and_then(|v| v.as_str())
+        .unwrap_or("free")
+        .to_string();
+    let subscriptions: Vec<BillingSubscription> = resp
+        .get("subscriptions")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    Ok(Json(serde_json::json!({
+        "plan": plan,
+        "subscriptions": subscriptions,
+    })))
 }
 
 #[derive(serde::Deserialize)]
@@ -649,17 +770,25 @@ pub async fn billing_checkout(
     let api = build_api_client(&state).map_err(to_error_response)?;
     // Support single priceId or array of priceIds
     let price_ids: Vec<String> = if !body.price_ids.is_empty() {
-        body.price_ids.iter().filter(|s| !s.is_empty()).cloned().collect()
+        body.price_ids
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect()
     } else if !body.price_id.is_empty() {
         vec![body.price_id.clone()]
     } else {
         vec![]
     };
     if price_ids.is_empty() {
-        return Err(to_error_response(NeboError::Validation("priceId or priceIds is required".into())));
+        return Err(to_error_response(NeboError::Validation(
+            "priceId or priceIds is required".into(),
+        )));
     }
     let ui_mode = body.ui_mode.as_deref();
-    let resp = api.billing_checkout_multi(&price_ids, ui_mode).await
+    let resp = api
+        .billing_checkout_multi(&price_ids, ui_mode)
+        .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("billing_checkout: {e}"))))?;
     // For redirect-based checkout, open in system browser; embedded mode returns clientSecret instead
     if ui_mode.is_none() || ui_mode == Some("hosted") {
@@ -667,7 +796,14 @@ pub async fn billing_checkout(
             let _ = open::that(url);
         }
     }
-    Ok(Json(resp))
+    let client_secret: String = resp.get("clientSecret").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let publishable_key: String = resp.get("publishableKey").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let checkout_url: Option<String> = resp.get("checkoutUrl").and_then(|v| v.as_str()).map(|s| s.to_string());
+    Ok(Json(serde_json::json!({
+        "clientSecret": client_secret,
+        "publishableKey": publishable_key,
+        "checkoutUrl": checkout_url,
+    })))
 }
 
 /// POST /api/v1/neboloop/billing/subscribe — create inline subscription (returns clientSecret for PaymentElement).
@@ -681,17 +817,19 @@ pub async fn billing_subscribe(
     } else {
         vec![body.price_id.clone()]
     };
-    let resp = api.billing_subscribe(&price_ids).await
+    let resp = api
+        .billing_subscribe(&price_ids)
+        .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("billing_subscribe: {e}"))))?;
     Ok(Json(resp))
 }
 
 /// POST /api/v1/neboloop/billing/portal — open Stripe customer portal.
-pub async fn billing_portal(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn billing_portal(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api.billing_portal().await
+    let resp = api
+        .billing_portal()
+        .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("billing_portal: {e}"))))?;
     // Open portal URL in system browser (Stripe CSP blocks iframe embedding)
     if let Some(url) = resp.get("portalUrl").and_then(|v| v.as_str()) {
@@ -705,9 +843,15 @@ pub async fn billing_setup_intent(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api.billing_setup_intent().await
-        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_setup_intent: {e}"))))?;
-    Ok(Json(resp))
+    let resp = api.billing_setup_intent().await.map_err(|e| {
+        to_error_response(NeboError::Internal(format!("billing_setup_intent: {e}")))
+    })?;
+    let client_secret: String = resp.get("clientSecret").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let publishable_key: String = resp.get("publishableKey").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    Ok(Json(serde_json::json!({
+        "clientSecret": client_secret,
+        "publishableKey": publishable_key,
+    })))
 }
 
 #[derive(serde::Deserialize)]
@@ -722,19 +866,28 @@ pub async fn billing_cancel(
     Json(body): Json<CancelRequest>,
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api.billing_cancel(&body.subscription_id).await
+    let resp = api
+        .billing_cancel(&body.subscription_id)
+        .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("billing_cancel: {e}"))))?;
     Ok(Json(resp))
 }
 
 /// GET /api/v1/neboloop/billing/invoices — list invoices.
-pub async fn billing_invoices(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn billing_invoices(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api.billing_invoices().await
+    let resp = api
+        .billing_invoices()
+        .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("billing_invoices: {e}"))))?;
-    Ok(Json(resp))
+    let invoices: Vec<InvoiceInfo> = resp
+        .get("invoices")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    Ok(Json(serde_json::json!({
+        "invoices": invoices,
+    })))
 }
 
 /// GET /api/v1/neboloop/billing/payment-methods — list payment methods.
@@ -742,17 +895,25 @@ pub async fn billing_payment_methods(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api.billing_payment_methods().await
-        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_payment_methods: {e}"))))?;
-    Ok(Json(resp))
+    let resp = api.billing_payment_methods().await.map_err(|e| {
+        to_error_response(NeboError::Internal(format!("billing_payment_methods: {e}")))
+    })?;
+    let methods: Vec<PaymentMethodInfo> = resp
+        .get("methods")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    Ok(Json(serde_json::json!({
+        "methods": methods,
+    })))
 }
 
 /// GET /api/v1/neboloop/referral-code — fetch or create the user's referral/invite code via NeboLoop.
-pub async fn referral_code(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn referral_code(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp: serde_json::Value = api.referral_code().await
+    let resp: serde_json::Value = api
+        .referral_code()
+        .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("referral_code: {e}"))))?;
     Ok(Json(resp))
 }
@@ -970,9 +1131,7 @@ setTimeout(function() {{ window.close(); }}, 1500);
 
 /// POST /api/v1/neboloop/reconnect — tear down stale connection and reconnect.
 /// Called by Tauri on system resume or manually for diagnostics.
-pub async fn force_reconnect(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn force_reconnect(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     info!("neboloop: force reconnect requested (sleep/wake)");
 
     state.comm_manager.shutdown().await;
@@ -981,13 +1140,17 @@ pub async fn force_reconnect(
     match crate::codes::activate_neboloop(&state).await {
         Ok(()) => {
             if let Some(new_token) = state.comm_manager.take_rotated_token().await {
-                let _ = state.store.update_auth_profile_token_by_provider("neboloop", &new_token);
+                let _ = state
+                    .store
+                    .update_auth_profile_token_by_provider("neboloop", &new_token);
             }
             Ok(Json(serde_json::json!({"reconnected": true})))
         }
         Err(e) => {
             warn!(error = %e, "neboloop: force reconnect failed");
-            Ok(Json(serde_json::json!({"reconnected": false, "error": e.to_string()})))
+            Ok(Json(
+                serde_json::json!({"reconnected": false, "error": e.to_string()}),
+            ))
         }
     }
 }

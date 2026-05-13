@@ -1,8 +1,8 @@
 use rusqlite::params;
 
-use crate::models::A2UISurface;
 use crate::OptionalExt;
 use crate::Store;
+use crate::models::A2UISurface;
 use types::NeboError;
 
 fn row_to_surface(row: &rusqlite::Row) -> rusqlite::Result<A2UISurface> {
@@ -123,11 +123,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_a2ui_surface_geometry(
-        &self,
-        id: &str,
-        geometry: &str,
-    ) -> Result<(), NeboError> {
+    pub fn update_a2ui_surface_geometry(&self, id: &str, geometry: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE a2ui_surfaces SET window_geometry = ?2, updated_at = unixepoch() WHERE id = ?1",

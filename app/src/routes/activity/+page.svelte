@@ -8,7 +8,7 @@
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.listAgentSessions();
+      const resp = await api.listSessions();
       if (resp?.sessions?.length) {
         sessions = resp.sessions.map((s: Session) => ({
           id: s.id,

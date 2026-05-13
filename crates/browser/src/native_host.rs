@@ -7,16 +7,16 @@
 //! tab events) and sends messages to the extension (tool requests, indicator commands).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, oneshot};
 use tracing::{debug, info, warn};
 
+use crate::BrowserError;
 use crate::audit;
 use crate::native_types::NativeMessage;
-use crate::BrowserError;
 
 /// Native messaging host — bridges the Chrome extension to the Nebo agent.
 pub struct NativeHost {
@@ -141,7 +141,10 @@ impl NativeHost {
             }
 
             _ => {
-                debug!(msg_type = msg.msg_type, "unknown message type from extension");
+                debug!(
+                    msg_type = msg.msg_type,
+                    "unknown message type from extension"
+                );
                 None
             }
         }
@@ -187,7 +190,9 @@ impl NativeHost {
                 BrowserError::Timeout(format!("Tool '{}' timed out after 30s", tool))
             })?
             .map_err(|_| {
-                BrowserError::Other("Extension disconnected while waiting for tool result".to_string())
+                BrowserError::Other(
+                    "Extension disconnected while waiting for tool result".to_string(),
+                )
             })?;
 
         result.map_err(|e| BrowserError::Other(e))
@@ -219,9 +224,7 @@ impl NativeHost {
 
 /// Read a single native message from the reader.
 /// Chrome native messaging protocol: 4-byte little-endian length prefix + JSON body.
-async fn read_native_message(
-    reader: &mut tokio::io::Stdin,
-) -> Result<NativeMessage, BrowserError> {
+async fn read_native_message(reader: &mut tokio::io::Stdin) -> Result<NativeMessage, BrowserError> {
     // Read 4-byte length prefix
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf).await?;
@@ -260,7 +263,10 @@ const DEV_EXTENSION_ID: &str = "bmkkjdcmjiebhegfibdnbimjpkmaickm";
 /// instead of starting the full app.
 ///
 /// Accepts optional local_extension_id for additional unpacked development builds.
-pub fn install_manifest(nebo_binary_path: &str, local_extension_id: &str) -> Result<(), BrowserError> {
+pub fn install_manifest(
+    nebo_binary_path: &str,
+    local_extension_id: &str,
+) -> Result<(), BrowserError> {
     let mut origins = vec![
         format!("chrome-extension://{}/", PRODUCTION_EXTENSION_ID),
         format!("chrome-extension://{}/", DEV_EXTENSION_ID),
@@ -454,7 +460,10 @@ fn all_native_messaging_dirs() -> Vec<String> {
         if let Ok(home) = std::env::var("HOME") {
             let base = format!("{}/Library/Application Support", home);
             dirs.push(format!("{}/Google/Chrome/NativeMessagingHosts", base));
-            dirs.push(format!("{}/BraveSoftware/Brave-Browser/NativeMessagingHosts", base));
+            dirs.push(format!(
+                "{}/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+                base
+            ));
             dirs.push(format!("{}/Microsoft Edge/NativeMessagingHosts", base));
             dirs.push(format!("{}/Chromium/NativeMessagingHosts", base));
         }
@@ -463,9 +472,18 @@ fn all_native_messaging_dirs() -> Vec<String> {
     #[cfg(target_os = "linux")]
     {
         if let Ok(home) = std::env::var("HOME") {
-            dirs.push(format!("{}/.config/google-chrome/NativeMessagingHosts", home));
-            dirs.push(format!("{}/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts", home));
-            dirs.push(format!("{}/.config/microsoft-edge/NativeMessagingHosts", home));
+            dirs.push(format!(
+                "{}/.config/google-chrome/NativeMessagingHosts",
+                home
+            ));
+            dirs.push(format!(
+                "{}/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+                home
+            ));
+            dirs.push(format!(
+                "{}/.config/microsoft-edge/NativeMessagingHosts",
+                home
+            ));
             dirs.push(format!("{}/.config/chromium/NativeMessagingHosts", home));
         }
     }
@@ -473,9 +491,18 @@ fn all_native_messaging_dirs() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
         if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
-            dirs.push(format!("{}\\Google\\Chrome\\User Data\\NativeMessagingHosts", appdata));
-            dirs.push(format!("{}\\BraveSoftware\\Brave-Browser\\User Data\\NativeMessagingHosts", appdata));
-            dirs.push(format!("{}\\Microsoft\\Edge\\User Data\\NativeMessagingHosts", appdata));
+            dirs.push(format!(
+                "{}\\Google\\Chrome\\User Data\\NativeMessagingHosts",
+                appdata
+            ));
+            dirs.push(format!(
+                "{}\\BraveSoftware\\Brave-Browser\\User Data\\NativeMessagingHosts",
+                appdata
+            ));
+            dirs.push(format!(
+                "{}\\Microsoft\\Edge\\User Data\\NativeMessagingHosts",
+                appdata
+            ));
         }
     }
 
@@ -489,12 +516,27 @@ fn windows_native_messaging_registry_keys() -> Vec<(String, String)> {
     let mut entries = Vec::new();
     if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
         let browsers = [
-            ("HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\dev.neboloop.nebo",
-             format!("{}\\Google\\Chrome\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json", appdata)),
-            ("HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\dev.neboloop.nebo",
-             format!("{}\\BraveSoftware\\Brave-Browser\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json", appdata)),
-            ("HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\dev.neboloop.nebo",
-             format!("{}\\Microsoft\\Edge\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json", appdata)),
+            (
+                "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\dev.neboloop.nebo",
+                format!(
+                    "{}\\Google\\Chrome\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json",
+                    appdata
+                ),
+            ),
+            (
+                "HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\dev.neboloop.nebo",
+                format!(
+                    "{}\\BraveSoftware\\Brave-Browser\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json",
+                    appdata
+                ),
+            ),
+            (
+                "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\dev.neboloop.nebo",
+                format!(
+                    "{}\\Microsoft\\Edge\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json",
+                    appdata
+                ),
+            ),
         ];
         for (key, path) in browsers {
             entries.push((key.to_string(), path));
@@ -509,11 +551,8 @@ mod tests {
 
     #[test]
     fn test_native_message_serialization() {
-        let msg = NativeMessage::tool_request(
-            1,
-            "read_page",
-            &serde_json::json!({"filter": "all"}),
-        );
+        let msg =
+            NativeMessage::tool_request(1, "read_page", &serde_json::json!({"filter": "all"}));
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("execute_tool"));
         assert!(json.contains("read_page"));

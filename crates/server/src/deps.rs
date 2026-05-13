@@ -85,113 +85,117 @@ fn resolve_cascade_inner<'a>(
     force: bool,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CascadeResult> + Send + 'a>> {
     Box::pin(async move {
-    let autonomous = force || is_autonomous(state);
-    let mut results = Vec::new();
-    let mut installed_count = 0usize;
-    let mut pending_count = 0usize;
-    let mut failed_count = 0usize;
+        let autonomous = force || is_autonomous(state);
+        let mut results = Vec::new();
+        let mut installed_count = 0usize;
+        let mut pending_count = 0usize;
+        let mut failed_count = 0usize;
 
-    for dep in deps {
-        // Cycle / dedup check
-        let key = format!("{:?}:{}", dep.dep_type, dep.reference);
-        if !visited.insert(key) {
-            continue;
-        }
-
-        // Check if already installed
-        if is_installed(state, &dep).await {
-            results.push(DepResult {
-                dep,
-                status: DepStatus::AlreadyInstalled,
-                children: vec![],
-            });
-            continue;
-        }
-
-        // Simple names (no @ prefix, no install code) are built-in — mark unresolvable
-        if !is_marketplace_ref(&dep.reference) {
-            let reason = format!("'{}' is a built-in or simple name, not a marketplace ref", dep.reference);
-            results.push(DepResult {
-                dep,
-                status: DepStatus::Unresolvable { reason },
-                children: vec![],
-            });
-            continue;
-        }
-
-        if autonomous {
-            match install_dep(state, &dep).await {
-                Ok(child_deps) => {
-                    state.hub.broadcast(
-                        "dep_installed",
-                        serde_json::json!({
-                            "depType": format!("{:?}", dep.dep_type),
-                            "reference": dep.reference,
-                        }),
-                    );
-                    installed_count += 1;
-
-                    // Recurse into child deps
-                    let child_result = resolve_cascade_inner(state, child_deps, visited, force).await;
-                    installed_count += child_result.installed_count;
-                    pending_count += child_result.pending_count;
-                    failed_count += child_result.failed_count;
-
-                    results.push(DepResult {
-                        dep,
-                        status: DepStatus::Installed,
-                        children: child_result.results,
-                    });
-                }
-                Err(e) => {
-                    state.hub.broadcast(
-                        "dep_failed",
-                        serde_json::json!({
-                            "depType": format!("{:?}", dep.dep_type),
-                            "reference": dep.reference,
-                            "error": e,
-                        }),
-                    );
-                    failed_count += 1;
-                    results.push(DepResult {
-                        dep,
-                        status: DepStatus::Failed { error: e },
-                        children: vec![],
-                    });
-                }
+        for dep in deps {
+            // Cycle / dedup check
+            let key = format!("{:?}:{}", dep.dep_type, dep.reference);
+            if !visited.insert(key) {
+                continue;
             }
-        } else {
-            state.hub.broadcast(
-                "dep_pending",
-                serde_json::json!({
-                    "depType": format!("{:?}", dep.dep_type),
-                    "reference": dep.reference,
-                }),
-            );
-            pending_count += 1;
-            results.push(DepResult {
-                dep,
-                status: DepStatus::PendingApproval,
-                children: vec![],
-            });
+
+            // Check if already installed
+            if is_installed(state, &dep).await {
+                results.push(DepResult {
+                    dep,
+                    status: DepStatus::AlreadyInstalled,
+                    children: vec![],
+                });
+                continue;
+            }
+
+            // Simple names (no @ prefix, no install code) are built-in — mark unresolvable
+            if !is_marketplace_ref(&dep.reference) {
+                let reason = format!(
+                    "'{}' is a built-in or simple name, not a marketplace ref",
+                    dep.reference
+                );
+                results.push(DepResult {
+                    dep,
+                    status: DepStatus::Unresolvable { reason },
+                    children: vec![],
+                });
+                continue;
+            }
+
+            if autonomous {
+                match install_dep(state, &dep).await {
+                    Ok(child_deps) => {
+                        state.hub.broadcast(
+                            "dep_installed",
+                            serde_json::json!({
+                                "depType": format!("{:?}", dep.dep_type),
+                                "reference": dep.reference,
+                            }),
+                        );
+                        installed_count += 1;
+
+                        // Recurse into child deps
+                        let child_result =
+                            resolve_cascade_inner(state, child_deps, visited, force).await;
+                        installed_count += child_result.installed_count;
+                        pending_count += child_result.pending_count;
+                        failed_count += child_result.failed_count;
+
+                        results.push(DepResult {
+                            dep,
+                            status: DepStatus::Installed,
+                            children: child_result.results,
+                        });
+                    }
+                    Err(e) => {
+                        state.hub.broadcast(
+                            "dep_failed",
+                            serde_json::json!({
+                                "depType": format!("{:?}", dep.dep_type),
+                                "reference": dep.reference,
+                                "error": e,
+                            }),
+                        );
+                        failed_count += 1;
+                        results.push(DepResult {
+                            dep,
+                            status: DepStatus::Failed { error: e },
+                            children: vec![],
+                        });
+                    }
+                }
+            } else {
+                state.hub.broadcast(
+                    "dep_pending",
+                    serde_json::json!({
+                        "depType": format!("{:?}", dep.dep_type),
+                        "reference": dep.reference,
+                    }),
+                );
+                pending_count += 1;
+                results.push(DepResult {
+                    dep,
+                    status: DepStatus::PendingApproval,
+                    children: vec![],
+                });
+            }
         }
-    }
 
-    state.hub.broadcast(
-        "dep_cascade_complete",
-        serde_json::json!({
-            "installed": installed_count,
-            "pending": pending_count,
-            "failed": failed_count,
-        }),
-    );
+        state.hub.broadcast(
+            "dep_cascade_complete",
+            serde_json::json!({
+                "installed": installed_count,
+                "pending": pending_count,
+                "failed": failed_count,
+            }),
+        );
 
-    CascadeResult {
-        results,
-        installed_count,
-        pending_count,
-        failed_count,
-    }
+        CascadeResult {
+            results,
+            installed_count,
+            pending_count,
+            failed_count,
+        }
     }) // Box::pin
 }
 
@@ -353,7 +357,8 @@ async fn install_skill(
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
     // Redeem the code with NeboLoop to register the install
-    let resp = api.install_skill(reference)
+    let resp = api
+        .install_skill(reference)
         .await
         .map_err(|e| format!("install_skill: {}", e))?;
 
@@ -414,7 +419,9 @@ async fn install_plugin(
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
     // Redeem the install code (plugins use the same redeem endpoint)
-    let resp = api.install_skill(reference).await
+    let resp = api
+        .install_skill(reference)
+        .await
         .map_err(|e| format!("redeem plugin code: {e}"))?;
 
     let name = resp.artifact.name.clone();
@@ -423,11 +430,14 @@ async fn install_plugin(
     } else {
         resp.artifact.slug.clone()
     };
-    let download_url = resp.download_url
+    let download_url = resp
+        .download_url
         .ok_or_else(|| format!("plugin {} has no download URL in redeem response", name))?;
 
     // Download .napp directly from redeem response URL
-    let napp_data = api.download_napp(&download_url).await
+    let napp_data = api
+        .download_napp(&download_url)
+        .await
         .map_err(|e| format!("download .napp for {}: {}", slug, e))?;
 
     tracing::info!(plugin = %name, slug = %slug, size = napp_data.len(), "cascade: downloaded plugin .napp");
@@ -439,7 +449,10 @@ async fn install_plugin(
     let _ = state.plugin_store.remove(&slug);
 
     // Install from .napp archive (extracts binary, plugin.json, embedded skills)
-    let install_result = state.plugin_store.install_from_napp(&slug, "latest", &napp_data).await;
+    let install_result = state
+        .plugin_store
+        .install_from_napp(&slug, "latest", &napp_data)
+        .await;
 
     match install_result {
         Ok(path) => {
@@ -452,13 +465,16 @@ async fn install_plugin(
             // Re-register plugin tool
             state.tools.unregister("plugin").await;
             if !state.plugin_store.list_installed().is_empty() {
-                state.tools.register(Box::new(
-                    tools::plugin_tool::PluginTool::new(state.plugin_store.clone())
-                )).await;
+                state
+                    .tools
+                    .register(Box::new(tools::plugin_tool::PluginTool::new(
+                        state.plugin_store.clone(),
+                    )))
+                    .await;
             }
 
-            // Register structured tools from plugin capabilities manifest
-            tools::plugin_tool::register_plugin_tools(&state.tools, &state.plugin_store, &slug, Some(&state.store)).await;
+            // Plugin command tools are discovered via the `plugin` STRAP tool (lookup),
+            // not registered individually (13K+ tools overwhelm the LLM context).
         }
         Err(e) => {
             state.skill_loader.resume_watcher();
@@ -467,7 +483,9 @@ async fn install_plugin(
     }
 
     // Extract child plugin dependencies from manifest
-    let child_deps = state.plugin_store.get_dependencies(&slug)
+    let child_deps = state
+        .plugin_store
+        .get_dependencies(&slug)
         .into_iter()
         .filter(|d| !d.optional)
         .map(|d| DepRef {

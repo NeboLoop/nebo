@@ -1,14 +1,14 @@
 use rusqlite::params;
 
-use crate::models::{UserPreference, UserProfile};
 use crate::Store;
+use crate::models::{UserPreference, UserProfile};
 use types::NeboError;
 
 impl Store {
     /// Get or create the local user ID. In this single-user local app,
     /// the onboarding flow may call profile/terms endpoints before the
     /// formal setup creates a user, so we ensure one exists.
-    fn ensure_local_user_id(&self) -> Result<String, NeboError> {
+    pub fn ensure_local_user_id(&self) -> Result<String, NeboError> {
         let conn = self.conn()?;
         match conn.query_row("SELECT id FROM users LIMIT 1", [], |row| {
             row.get::<_, String>(0)
@@ -92,8 +92,11 @@ impl Store {
                 .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = bio {
-            conn.execute("UPDATE user_profiles SET bio = ?1, updated_at = unixepoch() WHERE user_id = ?2", params![v, user_id])
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE user_profiles SET bio = ?1, updated_at = unixepoch() WHERE user_id = ?2",
+                params![v, user_id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = location {
             conn.execute("UPDATE user_profiles SET location = ?1, updated_at = unixepoch() WHERE user_id = ?2", params![v, user_id])
@@ -116,8 +119,11 @@ impl Store {
                 .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = goals {
-            conn.execute("UPDATE user_profiles SET goals = ?1, updated_at = unixepoch() WHERE user_id = ?2", params![v, user_id])
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE user_profiles SET goals = ?1, updated_at = unixepoch() WHERE user_id = ?2",
+                params![v, user_id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = context {
             conn.execute("UPDATE user_profiles SET context = ?1, updated_at = unixepoch() WHERE user_id = ?2", params![v, user_id])

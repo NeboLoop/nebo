@@ -13,9 +13,10 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use agent::lanes::make_task;
 use agent::RunRequest;
+use agent::lanes::make_task;
 use ai::StreamEventType;
+use tokio::sync::mpsc;
 use tools::Origin;
 
 use crate::run_registry::RegisterParams;
@@ -100,9 +101,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         config.entity_name.clone()
     } else if !config.agent_id.is_empty() {
         let registry = state.agent_registry.read().await;
-        registry.get(&config.agent_id).map(|r| r.name.clone()).unwrap_or_default()
+        registry
+            .get(&config.agent_id)
+            .map(|r| r.name.clone())
+            .unwrap_or_default()
     } else {
-        state.store.get_agent_profile().ok().flatten()
+        state
+            .store
+            .get_agent_profile()
+            .ok()
+            .flatten()
             .map(|p| p.name)
             .unwrap_or_else(|| "Nebo".to_string())
     };
@@ -121,15 +129,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let origin_label = format!("{:?}", config.origin).to_lowercase();
 
     // Register in the global RunRegistry — ALL run paths go through here.
-    let run_handle = state.run_registry.register(RegisterParams {
-        session_key: sid.clone(),
-        entity_id,
-        entity_name: agent_display_name.clone(),
-        origin: origin_label,
-        channel: config.channel.clone(),
-        cancel_token: cancel_token.clone(),
-        parent_run_id: None,
-    }).await;
+    let run_handle = state
+        .run_registry
+        .register(RegisterParams {
+            session_key: sid.clone(),
+            entity_id,
+            entity_name: agent_display_name.clone(),
+            origin: origin_label,
+            channel: config.channel.clone(),
+            cancel_token: cancel_token.clone(),
+            parent_run_id: None,
+        })
+        .await;
 
     // Destructure config fields before moving into closure
     let prompt = config.prompt;
@@ -188,7 +199,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             } else {
                 (None, None, None, None)
             };
-        let allowed_paths = entity_cfg.as_ref().map(|ec| ec.allowed_paths.clone()).unwrap_or_default();
+        let allowed_paths = entity_cfg
+            .as_ref()
+            .map(|ec| ec.allowed_paths.clone())
+            .unwrap_or_default();
 
         // Build progress tracker from RunHandle's shared Arcs
         let progress = agent::RunProgress {
@@ -265,10 +279,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             full_response.push_str(&event.text);
                             text_buffer.push_str(&event.text);
                             if last_flush.elapsed().as_millis() as u64 >= COALESCE_MS {
-                                hub.broadcast("chat_stream", ws_payload!(
-                                    "content": &text_buffer,
-                                    "html": md_to_html(&full_response),
-                                ));
+                                hub.broadcast(
+                                    "chat_stream",
+                                    ws_payload!(
+                                        "content": &text_buffer,
+                                        "html": md_to_html(&full_response),
+                                    ),
+                                );
                                 text_buffer.clear();
                                 last_flush = tokio::time::Instant::now();
                             }
@@ -278,12 +295,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 let flush_elapsed = last_comm_flush
                                     .get_or_insert_with(tokio::time::Instant::now)
                                     .elapsed()
-                                    .as_millis() as u64;
+                                    .as_millis()
+                                    as u64;
                                 if flush_elapsed >= COMM_COALESCE_MS {
                                     if let Some(cfg) = &comm_reply {
                                         let mut chunk_meta = std::collections::HashMap::new();
                                         if !agent_display_name.is_empty() {
-                                            chunk_meta.insert("senderName".to_string(), agent_display_name.clone());
+                                            chunk_meta.insert(
+                                                "senderName".to_string(),
+                                                agent_display_name.clone(),
+                                            );
                                         }
                                         let chunk = comm::CommMessage {
                                             id: comm_stream_id.clone(),
@@ -303,7 +324,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                             artifacts: vec![],
                                             error: None,
                                         };
-                                        if let Err(e) = send_to_channel(&cfg.provider, &comm_manager, &channel_providers, chunk).await {
+                                        if let Err(e) = send_to_channel(
+                                            &cfg.provider,
+                                            &comm_manager,
+                                            &channel_providers,
+                                            chunk,
+                                        )
+                                        .await
+                                        {
                                             warn!(error = %e, "failed to send comm stream chunk");
                                         }
                                         comm_streamed = true;
@@ -314,62 +342,89 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                         }
                         StreamEventType::Thinking => {
-                            hub.broadcast("thinking", ws_payload!(
-                                "content": event.text,
-                            ));
+                            hub.broadcast(
+                                "thinking",
+                                ws_payload!(
+                                    "content": event.text,
+                                ),
+                            );
                         }
                         StreamEventType::ToolCall => {
                             // Flush pending text before tool event to prevent fragmentation
                             if !text_buffer.is_empty() {
-                                hub.broadcast("chat_stream", ws_payload!(
-                                    "content": &text_buffer,
-                                    "html": md_to_html(&full_response),
-                                ));
+                                hub.broadcast(
+                                    "chat_stream",
+                                    ws_payload!(
+                                        "content": &text_buffer,
+                                        "html": md_to_html(&full_response),
+                                    ),
+                                );
                                 text_buffer.clear();
                                 last_flush = tokio::time::Instant::now();
                             }
                             if let Some(ref tc) = event.tool_call {
-                                hub.broadcast("tool_start", ws_payload!(
-                                    "tool_id": tc.id,
-                                    "tool": tc.name,
-                                    "input": tc.input,
-                                ));
+                                hub.broadcast(
+                                    "tool_start",
+                                    ws_payload!(
+                                        "tool_id": tc.id,
+                                        "tool": tc.name,
+                                        "input": tc.input,
+                                    ),
+                                );
                             }
                         }
                         StreamEventType::ToolResult => {
-                            let tool_name = event.tool_call.as_ref()
-                                .map(|tc| tc.name.as_str()).unwrap_or("");
-                            let tool_id = event.tool_call.as_ref()
-                                .map(|tc| tc.id.as_str()).unwrap_or("");
-                            hub.broadcast("tool_result", ws_payload!(
-                                "tool_id": tool_id,
-                                "tool_name": tool_name,
-                                "result": event.text,
-                                "is_error": event.error.is_some(),
-                            ));
+                            let tool_name = event
+                                .tool_call
+                                .as_ref()
+                                .map(|tc| tc.name.as_str())
+                                .unwrap_or("");
+                            let tool_id = event
+                                .tool_call
+                                .as_ref()
+                                .map(|tc| tc.id.as_str())
+                                .unwrap_or("");
+                            hub.broadcast(
+                                "tool_result",
+                                ws_payload!(
+                                    "tool_id": tool_id,
+                                    "tool_name": tool_name,
+                                    "result": event.text,
+                                    "is_error": event.error.is_some(),
+                                ),
+                            );
                         }
                         StreamEventType::Error => {
-                            hub.broadcast("chat_error", ws_payload!(
-                                "error": event.error.unwrap_or_default(),
-                            ));
+                            hub.broadcast(
+                                "chat_error",
+                                ws_payload!(
+                                    "error": event.error.unwrap_or_default(),
+                                ),
+                            );
                         }
                         StreamEventType::Usage => {
                             if let Some(ref usage) = event.usage {
-                                hub.broadcast("usage", serde_json::json!({
-                                    "session_id": sid,
-                                    "input_tokens": usage.input_tokens,
-                                    "output_tokens": usage.output_tokens,
-                                }));
+                                hub.broadcast(
+                                    "usage",
+                                    serde_json::json!({
+                                        "session_id": sid,
+                                        "input_tokens": usage.input_tokens,
+                                        "output_tokens": usage.output_tokens,
+                                    }),
+                                );
                             }
                         }
                         StreamEventType::ApprovalRequest => {
                             if let Some(ref tc) = event.tool_call {
-                                hub.broadcast("approval_request", serde_json::json!({
-                                    "session_id": sid,
-                                    "request_id": tc.id,
-                                    "tool": tc.name,
-                                    "input": tc.input,
-                                }));
+                                hub.broadcast(
+                                    "approval_request",
+                                    serde_json::json!({
+                                        "session_id": sid,
+                                        "request_id": tc.id,
+                                        "tool": tc.name,
+                                        "input": tc.input,
+                                    }),
+                                );
                             }
                         }
                         StreamEventType::AskRequest => {
@@ -400,9 +455,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                             .session_reset_at
                                             .clone()
                                             .unwrap_or_default(),
-                                        weekly_limit_credits: rl
-                                            .weekly_limit_credits
-                                            .unwrap_or(0),
+                                        weekly_limit_credits: rl.weekly_limit_credits.unwrap_or(0),
                                         weekly_remaining_credits: rl
                                             .weekly_remaining_credits
                                             .unwrap_or(0),
@@ -416,9 +469,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         budget_gift_available: rl
                                             .budget_gift_available
                                             .unwrap_or(0),
-                                        budget_credits_cents: rl
-                                            .budget_credits_cents
-                                            .unwrap_or(0),
+                                        budget_credits_cents: rl.budget_credits_cents.unwrap_or(0),
                                         budget_active_pool: rl
                                             .budget_active_pool
                                             .clone()
@@ -431,9 +482,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // If the runner forwarded a quota warning (text is non-empty),
                             // broadcast to the frontend so it can show a warning banner.
                             if !event.text.is_empty() {
-                                hub.broadcast("quota_warning", ws_payload!(
-                                    "message": event.text,
-                                ));
+                                hub.broadcast(
+                                    "quota_warning",
+                                    ws_payload!(
+                                        "message": event.text,
+                                    ),
+                                );
                             }
                         }
                         StreamEventType::SubagentStart => {
@@ -469,9 +523,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
                 // Flush any remaining coalesced text
                 if !text_buffer.is_empty() {
-                    hub.broadcast("chat_stream", ws_payload!(
-                        "content": &text_buffer,
-                    ));
+                    hub.broadcast(
+                        "chat_stream",
+                        ws_payload!(
+                            "content": &text_buffer,
+                        ),
+                    );
                 }
 
                 // Render HTML before comm reply (which may move full_response)
@@ -510,7 +567,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 artifacts: vec![],
                                 error: None,
                             };
-                            if let Err(e) = send_to_channel(&reply_config.provider, &comm_manager, &channel_providers, chunk).await {
+                            if let Err(e) = send_to_channel(
+                                &reply_config.provider,
+                                &comm_manager,
+                                &channel_providers,
+                                chunk,
+                            )
+                            .await
+                            {
                                 warn!(error = %e, "failed to send comm stream flush");
                             }
                             comm_streamed = true;
@@ -544,7 +608,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 artifacts: vec![],
                                 error: None,
                             };
-                            if let Err(e) = send_to_channel(&reply_config.provider, &comm_manager, &channel_providers, reply).await {
+                            if let Err(e) = send_to_channel(
+                                &reply_config.provider,
+                                &comm_manager,
+                                &channel_providers,
+                                reply,
+                            )
+                            .await
+                            {
                                 warn!(error = %e, "failed to send comm reply");
                             }
                         }
@@ -558,33 +629,41 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 }
 
                 // Always send chat_complete
-                hub.broadcast("chat_complete", ws_payload!(
-                    "html": html,
-                ));
+                hub.broadcast(
+                    "chat_complete",
+                    ws_payload!(
+                        "html": html,
+                    ),
+                );
 
                 // Auto-generate a descriptive chat title in the background
                 let title_runner = runner.clone();
                 let title_hub = hub.clone();
                 let title_sid = sid.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = generate_chat_title_if_needed(
-                        &title_runner, &title_hub, &title_sid,
-                    ).await {
+                    if let Err(e) =
+                        generate_chat_title_if_needed(&title_runner, &title_hub, &title_sid).await
+                    {
                         tracing::debug!(error = %e, "chat title generation skipped");
                     }
                 });
             }
             Err(e) => {
                 warn!(error = %e, "agent run failed");
-                hub.broadcast("chat_error", ws_payload!(
-                    "error": e.to_string(),
-                ));
+                hub.broadcast(
+                    "chat_error",
+                    ws_payload!(
+                        "error": e.to_string(),
+                    ),
+                );
                 hub.broadcast("chat_complete", ws_payload!());
             }
         }
 
         // Clean up browser tab groups/indicators for this session
-        extension_bridge.send_command("hide_indicators", Some(&sid)).await;
+        extension_bridge
+            .send_command("hide_indicators", Some(&sid))
+            .await;
 
         // RunHandle unregisters from RunRegistry on drop (including panics)
         drop(_run_handle);
@@ -595,13 +674,163 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     state.lanes.enqueue_async(&lane, lane_task);
 }
 
+/// Run chat through the canonical agent dispatch path and return raw stream events.
+///
+/// This is for API transports such as app SSE/REST that need direct access to
+/// stream events while preserving the agent lens: lane queueing, RunRegistry,
+/// persona, permissions, model preference, memory/session behavior, presence,
+/// and proactive inbox.
+pub async fn run_chat_events(
+    state: &AppState,
+    config: ChatConfig,
+) -> Result<mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
+    let runner = state.runner.clone();
+    let presence_tracker = state.presence.clone();
+    let proactive_inbox = state.proactive_inbox.clone();
+    let extension_bridge = state.extension_bridge.clone();
+
+    let agent_display_name = if !config.entity_name.is_empty() {
+        config.entity_name.clone()
+    } else if !config.agent_id.is_empty() {
+        let registry = state.agent_registry.read().await;
+        registry
+            .get(&config.agent_id)
+            .map(|r| r.name.clone())
+            .unwrap_or_default()
+    } else {
+        state
+            .store
+            .get_agent_profile()
+            .ok()
+            .flatten()
+            .map(|p| p.name)
+            .unwrap_or_else(|| "Nebo".to_string())
+    };
+
+    let sid = config.session_key.clone();
+    let agent_id = config.agent_id.clone();
+    let cancel_token = config.cancel_token.clone();
+    let lane = config.lane.clone();
+    let entity_id = if !agent_id.is_empty() {
+        agent_id.clone()
+    } else {
+        "main".to_string()
+    };
+    let origin_label = format!("{:?}", config.origin).to_lowercase();
+
+    let run_handle = state
+        .run_registry
+        .register(RegisterParams {
+            session_key: sid.clone(),
+            entity_id,
+            entity_name: agent_display_name,
+            origin: origin_label,
+            channel: config.channel.clone(),
+            cancel_token: cancel_token.clone(),
+            parent_run_id: None,
+        })
+        .await;
+
+    let (permissions, resource_grants, model_preference, personality_snippet) =
+        if let Some(ref ec) = config.entity_config {
+            (
+                Some(ec.permissions.clone()),
+                Some(ec.resource_grants.clone()),
+                ec.model_preference.clone(),
+                ec.personality_snippet.clone(),
+            )
+        } else {
+            (None, None, None, None)
+        };
+    let allowed_paths = config
+        .entity_config
+        .as_ref()
+        .map(|ec| ec.allowed_paths.clone())
+        .unwrap_or_default();
+
+    let progress = agent::RunProgress {
+        run_id: run_handle.run_id.clone(),
+        iteration_count: run_handle.iteration_count.clone(),
+        tool_call_count: run_handle.tool_call_count.clone(),
+        current_tool: run_handle.current_tool.clone(),
+    };
+
+    let req = RunRequest {
+        session_key: sid.clone(),
+        prompt: config.prompt,
+        system: config.system,
+        user_id: config.user_id,
+        channel: config.channel,
+        origin: config.origin,
+        cancel_token: cancel_token.clone(),
+        agent_id: agent_id.clone(),
+        permissions,
+        resource_grants,
+        model_preference,
+        personality_snippet,
+        images: config.images,
+        allowed_paths,
+        presence_tracker: Some(presence_tracker),
+        proactive_inbox: Some(proactive_inbox),
+        progress: Some(progress),
+        mention_context: config.mention_context,
+        ..Default::default()
+    };
+
+    let (tx, rx) = mpsc::channel(64);
+    let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
+        let _run_handle = run_handle;
+        match runner.run(req).await {
+            Ok(mut events) => loop {
+                let event = tokio::select! {
+                    _ = cancel_token.cancelled() => break,
+                    ev = events.recv() => match ev {
+                        Some(e) => e,
+                        None => break,
+                    }
+                };
+                _run_handle.touch();
+                if tx.send(event).await.is_err() {
+                    break;
+                }
+            },
+            Err(e) => {
+                let _ = tx
+                    .send(ai::StreamEvent {
+                        event_type: ai::StreamEventType::Error,
+                        text: String::new(),
+                        tool_call: None,
+                        error: Some(e.to_string()),
+                        usage: None,
+                        rate_limit: None,
+                        widgets: None,
+                        provider_metadata: None,
+                        stop_reason: None,
+                    })
+                    .await;
+            }
+        }
+
+        extension_bridge
+            .send_command("hide_indicators", Some(&sid))
+            .await;
+        drop(_run_handle);
+        Ok(())
+    });
+
+    state.lanes.enqueue_async(&lane, lane_task);
+    Ok(rx)
+}
+
 /// Send a comm message through the appropriate channel provider.
 /// Fast path for "neboloop" uses the comm_manager directly.
 /// Other providers are looked up in the channel_providers registry.
 async fn send_to_channel(
     provider: &str,
     comm_manager: &Option<Arc<comm::PluginManager>>,
-    channel_providers: &Option<Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn comm::ChannelProvider>>>>>,
+    channel_providers: &Option<
+        Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn comm::ChannelProvider>>>>,
+    >,
     msg: comm::CommMessage,
 ) -> Result<(), comm::CommError> {
     if provider == "neboloop" {
@@ -611,13 +840,18 @@ async fn send_to_channel(
         return Err(comm::CommError::NoActivePlugin);
     }
     if let Some(ref providers_lock) = *channel_providers {
-        let providers: tokio::sync::RwLockReadGuard<'_, HashMap<String, Arc<dyn comm::ChannelProvider>>> =
-            providers_lock.read().await;
+        let providers: tokio::sync::RwLockReadGuard<
+            '_,
+            HashMap<String, Arc<dyn comm::ChannelProvider>>,
+        > = providers_lock.read().await;
         if let Some(p) = providers.get(provider) {
             return p.send_response(msg).await;
         }
     }
-    Err(comm::CommError::Other(format!("unknown channel provider: {}", provider)))
+    Err(comm::CommError::Other(format!(
+        "unknown channel provider: {}",
+        provider
+    )))
 }
 
 /// Generate a descriptive chat title from the conversation's first messages.
@@ -633,7 +867,9 @@ async fn generate_chat_title_if_needed(
     let session_id = runner.sessions().resolve_session_id_by_key(session_key)?;
     let chat_id = runner.sessions().active_chat_id(&session_id);
 
-    let chat = store.get_chat(&chat_id)?.ok_or(types::NeboError::NotFound)?;
+    let chat = store
+        .get_chat(&chat_id)?
+        .ok_or(types::NeboError::NotFound)?;
 
     // Skip if already has a real title
     let title = &chat.title;
@@ -652,10 +888,15 @@ async fn generate_chat_title_if_needed(
     }
 
     // Build a compact transcript from the first few messages
-    let transcript: String = messages.iter()
+    let transcript: String = messages
+        .iter()
         .take(4)
         .map(|m| {
-            let snippet = if m.content.len() > 200 { &m.content[..200] } else { &m.content };
+            let snippet = if m.content.len() > 200 {
+                &m.content[..200]
+            } else {
+                &m.content
+            };
             format!("{}: {}", m.role, snippet)
         })
         .collect::<Vec<_>>()
@@ -664,7 +905,8 @@ async fn generate_chat_title_if_needed(
     // Use the cheapest available provider
     let providers_lock = runner.providers();
     let providers = providers_lock.read().await;
-    let provider = providers.first()
+    let provider = providers
+        .first()
         .ok_or_else(|| types::NeboError::Internal("no providers available".into()))?;
 
     let req = ai::ChatRequest {
@@ -688,7 +930,9 @@ async fn generate_chat_title_if_needed(
         cancel_token: None,
     };
 
-    let mut rx = provider.stream(&req).await
+    let mut rx = provider
+        .stream(&req)
+        .await
         .map_err(|e| types::NeboError::Internal(format!("provider error: {}", e)))?;
 
     let mut new_title = String::new();
@@ -712,10 +956,13 @@ async fn generate_chat_title_if_needed(
 
     store.update_chat_title(&chat_id, &new_title)?;
 
-    hub.broadcast("chat_title_updated", serde_json::json!({
-        "chatId": chat_id,
-        "title": new_title,
-    }));
+    hub.broadcast(
+        "chat_title_updated",
+        serde_json::json!({
+            "chatId": chat_id,
+            "title": new_title,
+        }),
+    );
 
     info!(chat_id = %chat_id, title = %new_title, "auto-generated chat title");
 

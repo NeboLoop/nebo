@@ -67,9 +67,9 @@ pub fn unseal_payload(sealed: &[u8], license_key: &[u8; KEY_SIZE]) -> Result<Vec
     let nonce = Nonce::from_slice(&sealed[..NONCE_SIZE]);
     let ciphertext = &sealed[NONCE_SIZE..];
 
-    cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| NappError::Extraction("unseal: decryption failed (wrong key or corrupted data)".into()))
+    cipher.decrypt(nonce, ciphertext).map_err(|_| {
+        NappError::Extraction("unseal: decryption failed (wrong key or corrupted data)".into())
+    })
 }
 
 /// Checks whether a .napp payload (after envelope unwrap) is sealed or plain.

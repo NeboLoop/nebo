@@ -12,7 +12,8 @@
 		type WorkflowConnection,
 	} from '$lib/utils/workflowLayout';
 	import { createTypedActivity, isBranchingType, getActivityType } from '$lib/utils/workflowTypes';
-	import type { WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
+	import type { WorkflowConfig, WorkflowActivity, WorkflowTrigger } from '$lib/types/agentPage';
+	import { untrack } from 'svelte';
 
 	let {
 		workflows = {},
@@ -21,19 +22,19 @@
 		onclose,
 		onsave,
 	}: {
-		workflows: Record<string, any>;
+		workflows: Record<string, WorkflowConfig>;
 		agentId: string;
 		agentName: string;
 		onclose?: () => void;
-		onsave?: (workflows: Record<string, any>) => void;
+		onsave?: (workflows: Record<string, WorkflowConfig>) => void;
 	} = $props();
 
 	// ── Mutable builder state (deep clone from read-only props)
-	const originalSnapshot = JSON.stringify(workflows);
-	let builderWorkflows = $state<Record<string, any>>(JSON.parse(originalSnapshot));
+	const originalSnapshot = $derived(JSON.stringify(workflows));
+	let builderWorkflows = $state<Record<string, WorkflowConfig>>(untrack(() => JSON.parse(JSON.stringify(workflows))));
 
 	// ── Active workflow (single-workflow canvas)
-	let activeWorkflowName = $state<string>(Object.keys(workflows)[0] || '');
+	let activeWorkflowName = $state<string>(untrack(() => Object.keys(builderWorkflows)[0] || ''));
 	const activeWorkflow = $derived(builderWorkflows[activeWorkflowName] ?? null);
 	const workflowNames = $derived(Object.keys(builderWorkflows));
 
@@ -41,7 +42,7 @@
 	const isDirty = $derived(JSON.stringify(builderWorkflows) !== originalSnapshot);
 
 	// ── Undo / Redo history
-	let undoStack = $state<string[]>([originalSnapshot]);
+	let undoStack = $state<string[]>(untrack(() => [originalSnapshot]));
 	let undoPointer = $state(0);
 	const canUndo = $derived(undoPointer > 0);
 	const canRedo = $derived(undoPointer < undoStack.length - 1);
@@ -131,7 +132,7 @@
 	});
 
 	// ── Immutable workflow update helper (with undo snapshot)
-	function updateActiveWorkflow(updater: (wf: WorkflowConfig & Record<string, unknown>) => WorkflowConfig & Record<string, unknown>) {
+	function updateActiveWorkflow(updater: (wf: WorkflowConfig) => WorkflowConfig) {
 		const wf = builderWorkflows[activeWorkflowName];
 		if (!wf) return;
 		const updated = updater(JSON.parse(JSON.stringify(wf)));
@@ -142,23 +143,24 @@
 	// ── Node mutations
 	function handleAddNode(catalogItem: Record<string, unknown>, afterNodeId: string | null, branchLabel?: string | null) {
 		if (!activeWorkflowName || !builderWorkflows[activeWorkflowName]) return;
+		const itemType = typeof catalogItem.type === 'string' ? catalogItem.type : '';
 
 		updateActiveWorkflow((wf) => {
-			if (catalogItem.type === 'emit') {
+			if (itemType === 'emit') {
 				wf.emit = 'new.event';
-			} else if (catalogItem.type.startsWith('trigger-')) {
-				const triggerType = catalogItem.type.replace('trigger-', '');
+			} else if (itemType.startsWith('trigger-')) {
+				const triggerType = itemType.replace('trigger-', '');
 				wf.trigger = { type: triggerType };
 			} else {
-				const newAct = createTypedActivity(catalogItem.type, catalogItem);
-				wf.activities = addActivityToWorkflow(wf.activities || [], afterNodeId, newAct);
+				const newAct = createTypedActivity(itemType, catalogItem as { label: string; desc: string; agentId?: string; serverId?: string; serverName?: string });
+				wf.activities = addActivityToWorkflow(wf.activities || [], afterNodeId, newAct).map(a => ({ ...a, type: a.type || 'custom' }));
 
 				const branching = isBranchingType(newAct.type);
 				const typeDef = branching ? getActivityType(newAct.type) : null;
 				const newBranchLabels = typeDef?.branchLabels ?? [];
 
 				if (!wf.connections) {
-					const existingActs = wf.activities.filter((a: WorkflowActivity) => a.id !== newAct.id);
+					const existingActs = (wf.activities ?? []).filter((a: WorkflowActivity) => a.id !== newAct.id);
 					wf.connections = generateLinearConnections(existingActs, wf.emit);
 				}
 
@@ -184,7 +186,7 @@
 						conns.push({ from: afterNodeId, to: newAct.id });
 					}
 				} else {
-					const acts = wf.activities;
+					const acts = wf.activities ?? [];
 					const prevAct = acts.length > 1 ? acts[acts.length - 2] : null;
 					const from = prevAct ? prevAct.id : '__trigger__';
 					conns.push({ from, to: newAct.id });
@@ -225,7 +227,7 @@
 						}
 					}
 				}
-				wf.activities = removeActivityFromWorkflow(wf.activities || [], nodeId);
+				wf.activities = removeActivityFromWorkflow(wf.activities || [], nodeId).map(a => ({ ...a, type: a.type || 'custom' }));
 			}
 			return wf;
 		});
@@ -268,11 +270,12 @@
 
 		updateActiveWorkflow((wf) => {
 			const oldActivities = wf.activities || [];
-			wf.activities = duplicateActivityInWorkflow(oldActivities, nodeId);
+			const newActivities = duplicateActivityInWorkflow(oldActivities, nodeId).map(a => ({ ...a, type: a.type || 'custom' }));
+			wf.activities = newActivities;
 
-			const origIdx = wf.activities.findIndex((a: WorkflowActivity) => a.id === nodeId);
-			if (origIdx >= 0 && origIdx + 1 < wf.activities.length) {
-				const dupeId = wf.activities[origIdx + 1].id;
+			const origIdx = newActivities.findIndex((a: WorkflowActivity) => a.id === nodeId);
+			if (origIdx >= 0 && origIdx + 1 < newActivities.length) {
+				const dupeId = newActivities[origIdx + 1].id;
 
 				if (wf.connections) {
 					const outIdx = wf.connections.findIndex((c: WorkflowConnection) => c.from === nodeId);
@@ -291,15 +294,29 @@
 		});
 	}
 
-	function handleUpdateActivity(activityId: string, field: string, value: unknown) {
+	function handleUpdateActivity(activityId: string, field: keyof WorkflowActivity, value: unknown) {
 		updateActiveWorkflow((wf) => {
 			const act = wf.activities?.find((a: WorkflowActivity) => a.id === activityId);
-			if (act) (act as Record<string, unknown>)[field] = value;
+			if (!act) return wf;
+			switch (field) {
+				case 'id': act.id = value as string; break;
+				case 'type': act.type = value as string; break;
+				case 'label': act.label = value as string; break;
+				case 'description': act.description = value as string; break;
+				case 'tool': act.tool = value as string; break;
+				case 'resource': act.resource = value as string; break;
+				case 'action': act.action = value as string; break;
+				case 'intent': act.intent = value as string; break;
+				case 'skills': act.skills = value as string[]; break;
+				case 'steps': act.steps = value as string[]; break;
+				case 'params': act.params = value as Record<string, unknown>; break;
+				case 'branches': act.branches = value as { label: string; nextId?: string }[]; break;
+			}
 			return wf;
 		});
 	}
 
-	function handleUpdateTrigger(trigger: Record<string, unknown>) {
+	function handleUpdateTrigger(trigger: WorkflowTrigger) {
 		updateActiveWorkflow((wf) => { wf.trigger = trigger; return wf; });
 	}
 
@@ -351,23 +368,34 @@
 		handleAddNode(item, afterNodeId);
 	}
 
+	interface ArchitectPayload {
+		workflowName?: string;
+		label?: string;
+		type?: string;
+		intent?: string;
+		skills?: string[];
+		steps?: string[];
+		params?: Record<string, unknown>;
+	}
+
 	function handleArchitectAction(action: string, payload: unknown) {
-		if (action === 'add-activity' && payload.workflowName) {
-			const wfName = payload.workflowName;
+		const p = payload as ArchitectPayload;
+		if (action === 'add-activity' && p.workflowName) {
+			const wfName = p.workflowName;
 			if (!builderWorkflows[wfName]) return;
 			if (wfName !== activeWorkflowName) activeWorkflowName = wfName;
 
-			const newId = (payload.label || 'new-step').toLowerCase().replace(/\s+/g, '-') + '-' + Date.now().toString(36);
+			const newId = (p.label || 'new-step').toLowerCase().replace(/\s+/g, '-') + '-' + Date.now().toString(36);
 			updateActiveWorkflow((wf) => {
 				const newAct = {
 					id: newId,
-					type: payload.type || 'custom',
-					intent: payload.intent || 'New activity',
-					skills: payload.skills || [],
-					steps: payload.steps || [],
-					params: payload.params || {},
+					type: p.type || 'custom',
+					intent: p.intent || 'New activity',
+					skills: p.skills || [],
+					steps: p.steps || [],
+					params: p.params || {},
 				};
-				wf.activities = addActivityToWorkflow(wf.activities || [], null, newAct);
+				wf.activities = addActivityToWorkflow(wf.activities || [], null, newAct).map(a => ({ ...a, type: a.type || 'custom' }));
 				return wf;
 			});
 			selectedNodeId = newId;

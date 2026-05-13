@@ -11,7 +11,7 @@
 
 	let { item, label }: { item: AppItem; label?: string } = $props();
 
-	const typeLabel = label || (item.type === 'agent' ? 'AGENT' : item.type === 'workflow' ? 'WORKFLOW' : 'SKILL');
+	const typeLabel = $derived(label || (item.type === 'agent' ? 'AGENT' : item.type === 'workflow' ? 'WORKFLOW' : 'SKILL'));
 
 	let installing = $state(false);
 	let showSetupModal = $state(false);
@@ -40,9 +40,9 @@
 
 			if (item.type === 'agent') {
 				const agentsRes = await listAgents();
-				const allAgents = agentsRes?.agents || [];
+				const allAgents = (agentsRes?.agents || []) as Array<{ id: string; name?: string }>;
 				const matched = allAgents.find(
-					(r: any) => r.name?.toLowerCase() === item.name.toLowerCase()
+					(r) => r.name?.toLowerCase() === item.name.toLowerCase()
 				);
 
 				if (matched) {

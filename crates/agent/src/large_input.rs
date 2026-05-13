@@ -63,8 +63,16 @@ pub fn detect_content_type(content: &str) -> &'static str {
 
     // Legal document indicators
     let legal_markers = [
-        "whereas", "herein", "hereinafter", "party", "agreement",
-        "shall", "pursuant", "indemnif", "liability", "governing law",
+        "whereas",
+        "herein",
+        "hereinafter",
+        "party",
+        "agreement",
+        "shall",
+        "pursuant",
+        "indemnif",
+        "liability",
+        "governing law",
     ];
     let legal_hits = legal_markers.iter().filter(|m| lower.contains(*m)).count();
     if legal_hits >= 3 {
@@ -74,9 +82,12 @@ pub fn detect_content_type(content: &str) -> &'static str {
     // Code indicators — brace/semicolon density + common patterns
     let brace_count = sample.chars().filter(|c| *c == '{' || *c == '}').count();
     let semicolons = sample.chars().filter(|c| *c == ';').count();
-    let has_code_keywords = lower.contains("fn ") || lower.contains("func ")
-        || lower.contains("function ") || lower.contains("class ")
-        || lower.contains("import ") || lower.contains("def ")
+    let has_code_keywords = lower.contains("fn ")
+        || lower.contains("func ")
+        || lower.contains("function ")
+        || lower.contains("class ")
+        || lower.contains("import ")
+        || lower.contains("def ")
         || lower.contains("#include");
     if (brace_count > 10 && semicolons > 5) || has_code_keywords {
         return "code";
@@ -117,10 +128,18 @@ pub async fn summarize(
     model: &str,
 ) -> Result<String, String> {
     let system = match content_type {
-        "email" => "Summarize this email chain concisely. List: participants, key requests, decisions made, action items, and any deadlines.",
-        "code" => "Summarize this code concisely. List: what it does, key functions/classes, dependencies, and any issues.",
-        "legal" => "Summarize this legal document concisely. List: parties involved, key terms, obligations, dates, and important clauses.",
-        _ => "Summarize this document concisely. Capture: main topic, key points, any requests or action items, and important details the reader needs to know.",
+        "email" => {
+            "Summarize this email chain concisely. List: participants, key requests, decisions made, action items, and any deadlines."
+        }
+        "code" => {
+            "Summarize this code concisely. List: what it does, key functions/classes, dependencies, and any issues."
+        }
+        "legal" => {
+            "Summarize this legal document concisely. List: parties involved, key terms, obligations, dates, and important clauses."
+        }
+        _ => {
+            "Summarize this document concisely. Capture: main topic, key points, any requests or action items, and important details the reader needs to know."
+        }
     };
 
     // Cap the content fed to the model — the rest is accessible via file paging.
@@ -148,7 +167,10 @@ pub async fn summarize(
         cancel_token: None,
     };
 
-    let mut rx = provider.stream(&req).await.map_err(|e| format!("summarize stream: {e}"))?;
+    let mut rx = provider
+        .stream(&req)
+        .await
+        .map_err(|e| format!("summarize stream: {e}"))?;
 
     let mut text = String::new();
     while let Some(event) = rx.recv().await {
@@ -180,7 +202,11 @@ pub fn fallback_summary(content: &str) -> String {
         .map(|(i, _)| i)
         .unwrap_or(content.len());
     let preview = &content[..preview_end];
-    let ellipsis = if preview_end < content.len() { "..." } else { "" };
+    let ellipsis = if preview_end < content.len() {
+        "..."
+    } else {
+        ""
+    };
 
     format!(
         "Document statistics: {} characters, ~{} words, {} lines.\n\nPreview:\n{}{}",
@@ -229,4 +255,3 @@ pub fn build_replacement(
         file_path: file_path.to_string(),
     }
 }
-

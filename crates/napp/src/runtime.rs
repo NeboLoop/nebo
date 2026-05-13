@@ -4,9 +4,9 @@ use std::time::Duration;
 use tokio::process::Command;
 use tracing::{info, warn};
 
+use crate::NappError;
 use crate::manifest::Manifest;
 use crate::sandbox;
-use crate::NappError;
 
 /// A running tool process.
 pub struct Process {
@@ -119,6 +119,19 @@ impl Runtime {
         }
         cmd.current_dir(tool_dir);
 
+        // Redirect stdout/stderr to dedicated log file in the data directory
+        let log_path = data_dir.join("sidecar.log");
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|e| NappError::Runtime(format!("open sidecar log: {}", e)))?;
+        let stderr_file = log_file
+            .try_clone()
+            .map_err(|e| NappError::Runtime(format!("clone log fd: {}", e)))?;
+        cmd.stdout(std::process::Stdio::from(stderr_file));
+        cmd.stderr(std::process::Stdio::from(log_file));
+
         // Process group isolation on Unix
         #[cfg(unix)]
         {
@@ -162,11 +175,7 @@ impl Runtime {
             let _ = std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600));
         }
 
-        info!(
-            tool = manifest.id.as_str(),
-            pid,
-            "tool launched"
-        );
+        info!(tool = manifest.id.as_str(), pid, "tool launched");
 
         Ok(Process {
             tool_id: manifest.id.clone(),
@@ -197,6 +206,42 @@ impl Runtime {
                 }
             }
         }
+        // App packages may place their sidecar in bin/.
+        let bin = tool_dir.join("bin");
+        if bin.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&bin) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        return Ok(path);
+                    }
+                }
+            }
+        }
+        // Dev-built sidecars live in sidecar/target/release/.
+        let sidecar_release = tool_dir.join("sidecar/target/release");
+        if sidecar_release.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&sidecar_release) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().is_none() {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(meta) = path.metadata() {
+                                if meta.permissions().mode() & 0o111 != 0 {
+                                    return Ok(path);
+                                }
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            return Ok(path);
+                        }
+                    }
+                }
+            }
+        }
         Err(NappError::NotFound("no binary found".into()))
     }
 
@@ -208,10 +253,7 @@ impl Runtime {
     async fn health_check(&self, sock_path: &Path, timeout: Duration) -> Result<(), NappError> {
         match tokio::time::timeout(timeout, tokio::net::UnixStream::connect(sock_path)).await {
             Ok(Ok(_stream)) => Ok(()),
-            Ok(Err(e)) => Err(NappError::Runtime(format!(
-                "socket connect failed: {}",
-                e
-            ))),
+            Ok(Err(e)) => Err(NappError::Runtime(format!("socket connect failed: {}", e))),
             Err(_) => Err(NappError::Runtime(format!(
                 "socket connect timed out after {}s",
                 timeout.as_secs()

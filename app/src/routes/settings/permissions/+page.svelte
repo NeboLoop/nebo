@@ -23,8 +23,8 @@
     try {
       const api = await import('$lib/api/nebo');
       const [permResp, settingsResp] = await Promise.all([
-        api.getToolPermissions(),
-        api.getAgentSettings().catch(() => null),
+        api.userGetPermissions(),
+        api.getSettings().catch(() => null),
       ]);
       // Convert ToolPermission[] to a keyed record
       let permObj: Record<string, boolean> = {};
@@ -158,7 +158,7 @@
 <!-- Autonomous Mode Activation Modal -->
 {#if showEnableModal}
   <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={cancelEnable}></div>
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="0" aria-label="Close modal" onclick={cancelEnable} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cancelEnable(); } }}></div>
     <div class="relative w-full max-w-lg rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden">
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">

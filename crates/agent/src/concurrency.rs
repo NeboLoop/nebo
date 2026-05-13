@@ -136,7 +136,9 @@ impl ConcurrencyController {
         let remaining_held = held.len();
         drop(held);
 
-        let old = self.effective_permits.fetch_add(to_release, Ordering::SeqCst);
+        let old = self
+            .effective_permits
+            .fetch_add(to_release, Ordering::SeqCst);
         debug!(
             released = to_release,
             new_effective = old + to_release,

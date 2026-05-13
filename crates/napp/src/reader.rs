@@ -18,14 +18,16 @@ use crate::NappError;
 /// Entry names are matched after stripping any leading `./` prefix.
 /// Returns `NappError::NotFound` if the entry doesn't exist in the archive.
 pub fn read_napp_entry(napp_path: &Path, entry_name: &str) -> Result<Vec<u8>, NappError> {
-    let file = std::fs::File::open(napp_path)
-        .map_err(|e| NappError::Io(e))?;
+    let file = std::fs::File::open(napp_path).map_err(|e| NappError::Io(e))?;
     let gz = GzDecoder::new(file);
     let mut archive = Archive::new(gz);
 
     let target = entry_name.trim_start_matches("./");
 
-    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| NappError::Extraction(e.to_string()))?
+    {
         let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
         let path = entry
             .path()
@@ -52,18 +54,21 @@ pub fn read_napp_entry(napp_path: &Path, entry_name: &str) -> Result<Vec<u8>, Na
 /// Read a single entry from a .napp archive and return it as a UTF-8 string.
 pub fn read_napp_entry_string(napp_path: &Path, entry_name: &str) -> Result<String, NappError> {
     let bytes = read_napp_entry(napp_path, entry_name)?;
-    String::from_utf8(bytes).map_err(|e| NappError::Extraction(format!("invalid UTF-8 in {}: {}", entry_name, e)))
+    String::from_utf8(bytes)
+        .map_err(|e| NappError::Extraction(format!("invalid UTF-8 in {}: {}", entry_name, e)))
 }
 
 /// List all entry names in a .napp (tar.gz) archive.
 pub fn list_napp_entries(napp_path: &Path) -> Result<Vec<String>, NappError> {
-    let file = std::fs::File::open(napp_path)
-        .map_err(|e| NappError::Io(e))?;
+    let file = std::fs::File::open(napp_path).map_err(|e| NappError::Io(e))?;
     let gz = GzDecoder::new(file);
     let mut archive = Archive::new(gz);
 
     let mut entries = Vec::new();
-    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| NappError::Extraction(e.to_string()))?
+    {
         let entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
         let path = entry
             .path()
@@ -117,15 +122,17 @@ pub fn extract_napp_prefix(
     prefix: &str,
     dest_dir: &Path,
 ) -> Result<Vec<String>, NappError> {
-    let file = std::fs::File::open(napp_path)
-        .map_err(|e| NappError::Io(e))?;
+    let file = std::fs::File::open(napp_path).map_err(|e| NappError::Io(e))?;
     let gz = GzDecoder::new(file);
     let mut archive = Archive::new(gz);
 
     let target_prefix = prefix.trim_start_matches("./");
     let mut extracted = Vec::new();
 
-    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| NappError::Extraction(e.to_string()))?
+    {
         let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
         let path = entry
             .path()
@@ -169,10 +176,7 @@ pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, Nap
         let path = entry
             .path()
             .map_err(|e| NappError::Extraction(e.to_string()))?;
-        let normalized = path
-            .to_string_lossy()
-            .trim_start_matches("./")
-            .to_string();
+        let normalized = path.to_string_lossy().trim_start_matches("./").to_string();
 
         if normalized.is_empty() {
             continue;
@@ -233,40 +237,31 @@ pub fn extract_napp_alongside(napp_path: &Path) -> Result<PathBuf, NappError> {
 
 /// Walk a directory tree. When a dir contains `marker_file`, call `cb(dir_path)`
 /// and stop recursing into that dir (prevents finding nested markers).
+///
+/// Single-pass: one `read_dir()` per directory (checks for marker in the same
+/// listing used to discover subdirectories).
 pub fn walk_for_marker(dir: &Path, marker_file: &str, cb: &mut dyn FnMut(&Path)) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
     };
+    let entries: Vec<_> = entries.flatten().collect();
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        // Check for marker file (case-insensitive)
-        if has_marker(&path, marker_file) {
-            cb(&path);
-        } else {
-            walk_for_marker(&path, marker_file, cb);
+    // Check if marker exists in THIS directory's entries (single pass)
+    let has_marker = entries
+        .iter()
+        .any(|e| e.file_name().eq_ignore_ascii_case(marker_file));
+
+    if has_marker {
+        cb(dir);
+        return; // Don't recurse into children of a marker dir
+    }
+
+    // Recurse into subdirectories
+    for entry in &entries {
+        if entry.path().is_dir() {
+            walk_for_marker(&entry.path(), marker_file, cb);
         }
     }
-}
-
-/// Check if a directory contains a file matching `marker_file` (case-insensitive).
-fn has_marker(dir: &Path, marker_file: &str) -> bool {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    for entry in entries.flatten() {
-        if let Some(name) = entry.file_name().to_str() {
-            if name.eq_ignore_ascii_case(marker_file) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 // ── Sealed .napp readers ─────────────────────────────────────────────────
@@ -322,9 +317,14 @@ pub fn partial_extract_sealed_napp(
     let mut archive = Archive::new(gz);
     let mut extracted_any = false;
 
-    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| NappError::Extraction(e.to_string()))?
+    {
         let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
-        let path = entry.path().map_err(|e| NappError::Extraction(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| NappError::Extraction(e.to_string()))?;
         let normalized = path.to_string_lossy().trim_start_matches("./").to_string();
 
         if normalized.is_empty() || entry.header().entry_type().is_dir() {
@@ -342,7 +342,8 @@ pub fn partial_extract_sealed_napp(
         }
 
         let mut content = Vec::new();
-        entry.read_to_end(&mut content)
+        entry
+            .read_to_end(&mut content)
             .map_err(|e| NappError::Extraction(e.to_string()))?;
         std::fs::write(&dest_path, &content)?;
 
@@ -382,14 +383,20 @@ fn read_entry_from_targz_bytes(
     let mut archive = Archive::new(gz);
     let target = entry_name.trim_start_matches("./");
 
-    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| NappError::Extraction(e.to_string()))?
+    {
         let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
-        let path = entry.path().map_err(|e| NappError::Extraction(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| NappError::Extraction(e.to_string()))?;
         let normalized = path.to_string_lossy().trim_start_matches("./").to_string();
 
         if normalized == target {
             let mut content = Vec::new();
-            entry.read_to_end(&mut content)
+            entry
+                .read_to_end(&mut content)
                 .map_err(|e| NappError::Extraction(e.to_string()))?;
             return Ok(content);
         }
@@ -408,9 +415,14 @@ fn list_entries_from_targz_bytes(targz: &[u8]) -> Result<Vec<String>, NappError>
     let mut archive = Archive::new(gz);
     let mut entries = Vec::new();
 
-    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| NappError::Extraction(e.to_string()))?
+    {
         let entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
-        let path = entry.path().map_err(|e| NappError::Extraction(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| NappError::Extraction(e.to_string()))?;
         let normalized = path.to_string_lossy().trim_start_matches("./").to_string();
         if !normalized.is_empty() {
             entries.push(normalized);
@@ -422,10 +434,7 @@ fn list_entries_from_targz_bytes(targz: &[u8]) -> Result<Vec<String>, NappError>
 
 /// Check if a tar entry name is an executable (needs +x permission).
 fn is_executable_entry(name: &str) -> bool {
-    name == "binary"
-        || name == "app"
-        || name.starts_with("scripts/")
-        || name.starts_with("bin/")
+    name == "binary" || name == "app" || name.starts_with("scripts/") || name.starts_with("bin/")
 }
 
 /// Check if a tar entry should be extracted during partial extraction.
@@ -449,7 +458,10 @@ pub fn read_plugin_identity_from_tar_gz(payload: &[u8]) -> Result<(String, Strin
     let gz = GzDecoder::new(payload);
     let mut archive = Archive::new(gz);
 
-    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| NappError::Extraction(e.to_string()))?
+    {
         let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
         let path = entry
             .path()
@@ -484,8 +496,8 @@ pub fn read_plugin_identity_from_tar_gz(payload: &[u8]) -> Result<(String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
 
     /// Create a synthetic .napp archive with the given entries.
     fn create_test_napp(dir: &Path, entries: &[(&str, &[u8])]) -> std::path::PathBuf {
@@ -499,9 +511,7 @@ mod tests {
             header.set_size(data.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
-            builder
-                .append_data(&mut header, name, &data[..])
-                .unwrap();
+            builder.append_data(&mut header, name, &data[..]).unwrap();
         }
 
         builder.finish().unwrap();
@@ -514,10 +524,10 @@ mod tests {
         let manifest = br#"{"id":"test","name":"Test","version":"1.0.0","artifact_type":"skill"}"#;
         let skill_md = b"---\nname: test\ndescription: A test\n---\nBody content";
 
-        let napp = create_test_napp(tmp.path(), &[
-            ("manifest.json", manifest),
-            ("SKILL.md", skill_md),
-        ]);
+        let napp = create_test_napp(
+            tmp.path(),
+            &[("manifest.json", manifest), ("SKILL.md", skill_md)],
+        );
 
         let result = read_napp_entry(&napp, "manifest.json").unwrap();
         assert_eq!(result, manifest);
@@ -529,9 +539,7 @@ mod tests {
     #[test]
     fn test_read_napp_entry_not_found() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let napp = create_test_napp(tmp.path(), &[
-            ("manifest.json", b"{}"),
-        ]);
+        let napp = create_test_napp(tmp.path(), &[("manifest.json", b"{}")]);
 
         let result = read_napp_entry(&napp, "nonexistent.txt");
         assert!(result.is_err());
@@ -542,9 +550,7 @@ mod tests {
     fn test_read_napp_entry_string() {
         let tmp = tempfile::TempDir::new().unwrap();
         let content = "Hello, world!";
-        let napp = create_test_napp(tmp.path(), &[
-            ("SKILL.md", content.as_bytes()),
-        ]);
+        let napp = create_test_napp(tmp.path(), &[("SKILL.md", content.as_bytes())]);
 
         let result = read_napp_entry_string(&napp, "SKILL.md").unwrap();
         assert_eq!(result, content);
@@ -553,11 +559,14 @@ mod tests {
     #[test]
     fn test_list_napp_entries() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let napp = create_test_napp(tmp.path(), &[
-            ("manifest.json", b"{}"),
-            ("SKILL.md", b"content"),
-            ("signatures.json", b"{}"),
-        ]);
+        let napp = create_test_napp(
+            tmp.path(),
+            &[
+                ("manifest.json", b"{}"),
+                ("SKILL.md", b"content"),
+                ("signatures.json", b"{}"),
+            ],
+        );
 
         let entries = list_napp_entries(&napp).unwrap();
         assert_eq!(entries.len(), 3);
@@ -570,9 +579,7 @@ mod tests {
     fn test_extract_napp_entry() {
         let tmp = tempfile::TempDir::new().unwrap();
         let data = b"binary content here";
-        let napp = create_test_napp(tmp.path(), &[
-            ("binary", data),
-        ]);
+        let napp = create_test_napp(tmp.path(), &[("binary", data)]);
 
         let dest = tmp.path().join("extracted").join("binary");
         extract_napp_entry(&napp, "binary", &dest).unwrap();
@@ -583,11 +590,14 @@ mod tests {
     #[test]
     fn test_extract_napp_prefix() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let napp = create_test_napp(tmp.path(), &[
-            ("manifest.json", b"{}"),
-            ("ui/index.html", b"<html></html>"),
-            ("ui/style.css", b"body {}"),
-        ]);
+        let napp = create_test_napp(
+            tmp.path(),
+            &[
+                ("manifest.json", b"{}"),
+                ("ui/index.html", b"<html></html>"),
+                ("ui/style.css", b"body {}"),
+            ],
+        );
 
         let dest_dir = tmp.path().join("extracted");
         let extracted = extract_napp_prefix(&napp, "ui/", &dest_dir).unwrap();
@@ -611,11 +621,14 @@ mod tests {
     #[test]
     fn test_extract_all() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let napp = create_test_napp(tmp.path(), &[
-            ("manifest.json", b"{}"),
-            ("SKILL.md", b"---\nname: test\n---\nbody"),
-            ("scripts/run.py", b"print('hello')"),
-        ]);
+        let napp = create_test_napp(
+            tmp.path(),
+            &[
+                ("manifest.json", b"{}"),
+                ("SKILL.md", b"---\nname: test\n---\nbody"),
+                ("scripts/run.py", b"print('hello')"),
+            ],
+        );
 
         let dest = tmp.path().join("extracted");
         let entries = extract_all(&napp, &dest).unwrap();
@@ -646,7 +659,9 @@ mod tests {
         header.set_size(data.len() as u64);
         header.set_mode(0o644);
         header.set_cksum();
-        builder.append_data(&mut header, "manifest.json", &data[..]).unwrap();
+        builder
+            .append_data(&mut header, "manifest.json", &data[..])
+            .unwrap();
         // Properly finalize: into_inner flushes the tar, then finish() the gz
         builder.into_inner().unwrap().finish().unwrap();
 

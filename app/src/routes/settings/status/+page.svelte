@@ -10,7 +10,7 @@
     try {
       const api = await import('$lib/api/nebo');
       const [statusResp, lanesResp] = await Promise.all([
-        api.getSimpleAgentStatus().catch(() => null),
+        api.getStatus().catch(() => null),
         api.getLanes().catch(() => null),
       ]);
 

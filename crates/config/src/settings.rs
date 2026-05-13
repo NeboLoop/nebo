@@ -50,7 +50,9 @@ pub fn load_settings() -> Result<Settings, NeboError> {
                         return Ok(settings);
                     }
                     Err(e) => {
-                        tracing::warn!("settings.json exists but failed to parse: {e} — regenerating");
+                        tracing::warn!(
+                            "settings.json exists but failed to parse: {e} — regenerating"
+                        );
                     }
                 }
             }
@@ -76,9 +78,8 @@ pub fn save_settings(settings: &Settings) -> Result<(), NeboError> {
 
     // Ensure directory exists
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            NeboError::Config(format!("failed to create settings directory: {e}"))
-        })?;
+        fs::create_dir_all(parent)
+            .map_err(|e| NeboError::Config(format!("failed to create settings directory: {e}")))?;
     }
 
     let data = serde_json::to_string_pretty(settings)

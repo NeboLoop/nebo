@@ -4,8 +4,18 @@ use crate::selector::ModelInfo;
 
 /// Variant tokens — common model suffixes that affect scoring.
 const VARIANT_TOKENS: &[&str] = &[
-    "lightning", "preview", "mini", "fast", "turbo", "lite",
-    "beta", "small", "nano", "instant", "pro", "thinking",
+    "lightning",
+    "preview",
+    "mini",
+    "fast",
+    "turbo",
+    "lite",
+    "beta",
+    "small",
+    "nano",
+    "instant",
+    "pro",
+    "thinking",
 ];
 
 /// Fuzzy model matching engine with alias building.
@@ -58,11 +68,16 @@ impl FuzzyMatcher {
             let full_id = format!("{}/{}", provider_name, first_model);
 
             // Provider name as alias
-            self.aliases.insert(provider_name.to_lowercase(), full_id.clone());
+            self.aliases
+                .insert(provider_name.to_lowercase(), full_id.clone());
 
             // Track first API provider
             if first_api_provider.is_empty() {
-                if provider_credentials.get(provider_name).copied().unwrap_or(false) {
+                if provider_credentials
+                    .get(provider_name)
+                    .copied()
+                    .unwrap_or(false)
+                {
                     first_api_provider = full_id.clone();
                 }
             }
@@ -74,9 +89,11 @@ impl FuzzyMatcher {
                 }
                 let m_full_id = format!("{}/{}", provider_name, m.id);
                 self.aliases.insert(m.id.to_lowercase(), m_full_id.clone());
-                self.aliases.insert(m_full_id.to_lowercase(), m_full_id.clone());
+                self.aliases
+                    .insert(m_full_id.to_lowercase(), m_full_id.clone());
                 if !m.display_name.is_empty() {
-                    self.aliases.insert(m.display_name.to_lowercase(), m_full_id.clone());
+                    self.aliases
+                        .insert(m.display_name.to_lowercase(), m_full_id.clone());
                 }
 
                 // Short-form aliases from model ID parts
@@ -87,13 +104,18 @@ impl FuzzyMatcher {
                     .map(|s| s.to_string())
                     .collect();
                 for part in parts {
-                    self.aliases.entry(part).or_insert_with(|| m_full_id.clone());
+                    self.aliases
+                        .entry(part)
+                        .or_insert_with(|| m_full_id.clone());
                 }
 
                 // Build kind mappings
                 for kind in &m.kind {
                     let kind_lower = kind.to_lowercase();
-                    kind_to_models.entry(kind_lower.clone()).or_default().push(m_full_id.clone());
+                    kind_to_models
+                        .entry(kind_lower.clone())
+                        .or_default()
+                        .push(m_full_id.clone());
                     if m.preferred {
                         kind_preferred.insert(kind_lower, m_full_id.clone());
                     }
@@ -115,13 +137,16 @@ impl FuzzyMatcher {
 
         // 4. Add "api" alias
         if !first_api_provider.is_empty() {
-            self.aliases.entry("api".to_string()).or_insert(first_api_provider);
+            self.aliases
+                .entry("api".to_string())
+                .or_insert(first_api_provider);
         }
     }
 
     /// Register an additional alias.
     pub fn add_alias(&mut self, alias: &str, model_id: &str) {
-        self.aliases.insert(alias.to_lowercase(), model_id.to_string());
+        self.aliases
+            .insert(alias.to_lowercase(), model_id.to_string());
     }
 
     /// Resolve user input to a model ID. Returns None if no good match.
@@ -141,7 +166,14 @@ impl FuzzyMatcher {
         let mut best_len = usize::MAX;
 
         for (alias, model_id) in &self.aliases {
-            let score = score_match(input, &normalized_input, &input_words, &input_variants, alias, model_id);
+            let score = score_match(
+                input,
+                &normalized_input,
+                &input_words,
+                &input_variants,
+                alias,
+                model_id,
+            );
             if score > 0 {
                 if score > best_score || (score == best_score && model_id.len() < best_len) {
                     best_score = score;
@@ -211,7 +243,10 @@ pub fn parse_model_request(input: &str) -> Option<String> {
             }
             let remainder = remainder.trim();
             // Strip punctuation
-            let cleaned: String = remainder.chars().filter(|c| !c.is_ascii_punctuation()).collect();
+            let cleaned: String = remainder
+                .chars()
+                .filter(|c| !c.is_ascii_punctuation())
+                .collect();
             let cleaned = cleaned.trim();
             if !cleaned.is_empty() {
                 return Some(cleaned.to_string());
@@ -316,8 +351,13 @@ fn score_match(
     all_model_variants.dedup();
 
     if !input_variants.is_empty() {
-        let match_count = input_variants.iter()
-            .filter(|iv| all_model_variants.iter().any(|mv| iv.as_str() == mv.as_str()))
+        let match_count = input_variants
+            .iter()
+            .filter(|iv| {
+                all_model_variants
+                    .iter()
+                    .any(|mv| iv.as_str() == mv.as_str())
+            })
             .count();
         if match_count > 0 {
             score += match_count as i32 * 60;
@@ -347,7 +387,8 @@ fn is_numeric(s: &str) -> bool {
 /// Extract variant tokens found in the string.
 fn extract_variants(s: &str) -> Vec<String> {
     let lower = s.to_lowercase();
-    VARIANT_TOKENS.iter()
+    VARIANT_TOKENS
+        .iter()
         .filter(|v| lower.contains(*v))
         .map(|v| v.to_string())
         .collect()
@@ -361,7 +402,11 @@ fn bounded_levenshtein(a: &str, b: &str, max_dist: usize) -> Option<usize> {
     if a.is_empty() || b.is_empty() {
         return None;
     }
-    let len_diff = if a.len() > b.len() { a.len() - b.len() } else { b.len() - a.len() };
+    let len_diff = if a.len() > b.len() {
+        a.len() - b.len()
+    } else {
+        b.len() - a.len()
+    };
     if len_diff > max_dist {
         return None;
     }
@@ -397,11 +442,7 @@ fn bounded_levenshtein(a: &str, b: &str, max_dist: usize) -> Option<usize> {
     }
 
     let dist = prev[len2];
-    if dist > max_dist {
-        None
-    } else {
-        Some(dist)
-    }
+    if dist > max_dist { None } else { Some(dist) }
 }
 
 #[cfg(test)]
@@ -410,32 +451,36 @@ mod tests {
 
     fn test_models() -> HashMap<String, Vec<ModelInfo>> {
         let mut m = HashMap::new();
-        m.insert("anthropic".to_string(), vec![
-            ModelInfo {
-                id: "claude-sonnet-4".to_string(),
-                display_name: "Claude Sonnet 4".to_string(),
-                context_window: 200_000,
-                input_price: 3.0,
-                output_price: 15.0,
-                capabilities: vec!["general".to_string()],
-                kind: vec!["smart".to_string()],
-                preferred: true,
-                active: true,
-            },
-            ModelInfo {
-                id: "claude-opus-4".to_string(),
-                display_name: "Claude Opus 4".to_string(),
-                context_window: 200_000,
-                input_price: 15.0,
-                output_price: 75.0,
-                capabilities: vec!["thinking".to_string()],
-                kind: vec!["reasoning".to_string()],
-                preferred: false,
-                active: true,
-            },
-        ]);
-        m.insert("openai".to_string(), vec![
-            ModelInfo {
+        m.insert(
+            "anthropic".to_string(),
+            vec![
+                ModelInfo {
+                    id: "claude-sonnet-4".to_string(),
+                    display_name: "Claude Sonnet 4".to_string(),
+                    context_window: 200_000,
+                    input_price: 3.0,
+                    output_price: 15.0,
+                    capabilities: vec!["general".to_string()],
+                    kind: vec!["smart".to_string()],
+                    preferred: true,
+                    active: true,
+                },
+                ModelInfo {
+                    id: "claude-opus-4".to_string(),
+                    display_name: "Claude Opus 4".to_string(),
+                    context_window: 200_000,
+                    input_price: 15.0,
+                    output_price: 75.0,
+                    capabilities: vec!["thinking".to_string()],
+                    kind: vec!["reasoning".to_string()],
+                    preferred: false,
+                    active: true,
+                },
+            ],
+        );
+        m.insert(
+            "openai".to_string(),
+            vec![ModelInfo {
                 id: "gpt-4o".to_string(),
                 display_name: "GPT-4o".to_string(),
                 context_window: 128_000,
@@ -445,8 +490,8 @@ mod tests {
                 kind: vec!["fast".to_string()],
                 preferred: false,
                 active: true,
-            },
-        ]);
+            }],
+        );
         m
     }
 
@@ -515,10 +560,22 @@ mod tests {
 
     #[test]
     fn test_parse_model_request() {
-        assert_eq!(parse_model_request("use sonnet"), Some("sonnet".to_string()));
-        assert_eq!(parse_model_request("switch to opus please"), Some("opus".to_string()));
-        assert_eq!(parse_model_request("change to gpt-4o model"), Some("gpt4o".to_string()));
-        assert_eq!(parse_model_request("try claude"), Some("claude".to_string()));
+        assert_eq!(
+            parse_model_request("use sonnet"),
+            Some("sonnet".to_string())
+        );
+        assert_eq!(
+            parse_model_request("switch to opus please"),
+            Some("opus".to_string())
+        );
+        assert_eq!(
+            parse_model_request("change to gpt-4o model"),
+            Some("gpt4o".to_string())
+        );
+        assert_eq!(
+            parse_model_request("try claude"),
+            Some("claude".to_string())
+        );
         assert_eq!(parse_model_request("hello world"), None);
     }
 

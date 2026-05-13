@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::PendingTask;
 use crate::Store;
+use crate::models::PendingTask;
 use types::NeboError;
 
 impl Store {
@@ -38,10 +38,7 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    pub fn get_pending_tasks_by_status(
-        &self,
-        status: &str,
-    ) -> Result<Vec<PendingTask>, NeboError> {
+    pub fn get_pending_tasks_by_status(&self, status: &str) -> Result<Vec<PendingTask>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
@@ -108,7 +105,9 @@ impl Store {
     pub fn get_child_tasks(&self, parent_task_id: &str) -> Result<Vec<PendingTask>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT * FROM pending_tasks WHERE parent_task_id = ?1 ORDER BY created_at ASC")
+            .prepare(
+                "SELECT * FROM pending_tasks WHERE parent_task_id = ?1 ORDER BY created_at ASC",
+            )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![parent_task_id], row_to_pending_task)
@@ -208,7 +207,11 @@ impl Store {
     // --- Tracking methods (task_type = 'tracking') ---
 
     /// Seed an entire task list from a slice of step instructions (workflow mode).
-    pub fn seed_task_list(&self, list_id: &str, steps: &[&str]) -> Result<Vec<PendingTask>, NeboError> {
+    pub fn seed_task_list(
+        &self,
+        list_id: &str,
+        steps: &[&str],
+    ) -> Result<Vec<PendingTask>, NeboError> {
         let conn = self.conn()?;
         let mut items = Vec::with_capacity(steps.len());
         for (i, step) in steps.iter().enumerate() {

@@ -31,11 +31,23 @@ const UNSUPPORTED_TOOLS: &[&str] = &[
 
 /// Tools that mutate page state — cache is invalidated before these.
 const MUTATION_TOOLS: &[&str] = &[
-    "click", "double_click", "hover",
-    "form_input", "fill", "type", "select", "press",
-    "navigate", "go_back", "go_forward",
-    "evaluate", "drag", "close_tab", "close",
-    "file_upload", "upload_file",
+    "click",
+    "double_click",
+    "hover",
+    "form_input",
+    "fill",
+    "type",
+    "select",
+    "press",
+    "navigate",
+    "go_back",
+    "go_forward",
+    "evaluate",
+    "drag",
+    "close_tab",
+    "close",
+    "file_upload",
+    "upload_file",
 ];
 
 /// Cached read_page result with timestamp.
@@ -79,11 +91,7 @@ impl HeadlessBridge {
     }
 
     /// Execute a browser tool via agent-browser subprocess.
-    pub async fn execute(
-        &self,
-        tool: &str,
-        args: &Value,
-    ) -> Result<Value, String> {
+    pub async fn execute(&self, tool: &str, args: &Value) -> Result<Value, String> {
         // Check unsupported
         if UNSUPPORTED_TOOLS.contains(&tool) {
             return Err(format!(
@@ -97,7 +105,8 @@ impl HeadlessBridge {
         if tool == "read_page" {
             let cached = {
                 let guard = self.page_cache.lock().await;
-                guard.as_ref()
+                guard
+                    .as_ref()
                     .filter(|e| e.timestamp.elapsed() < Duration::from_millis(2500))
                     .map(|e| e.result.clone())
             };
@@ -161,7 +170,9 @@ impl HeadlessBridge {
     fn map_tool_to_command(&self, tool: &str, args: &Value) -> Result<Vec<String>, String> {
         match tool {
             "navigate" => {
-                let url = args.get("url").and_then(|v| v.as_str())
+                let url = args
+                    .get("url")
+                    .and_then(|v| v.as_str())
                     .ok_or("navigate requires 'url' parameter")?;
                 Ok(vec!["open".into(), url.into()])
             }
@@ -188,28 +199,39 @@ impl HeadlessBridge {
             }
             "fill" | "form_input" => {
                 let r = self.extract_ref(args)?;
-                let value = args.get("value").and_then(|v| v.as_str())
+                let value = args
+                    .get("value")
+                    .and_then(|v| v.as_str())
                     .ok_or("fill requires 'value' parameter")?;
                 Ok(vec!["fill".into(), r, value.into()])
             }
             "type" => {
-                let text = args.get("text").and_then(|v| v.as_str())
+                let text = args
+                    .get("text")
+                    .and_then(|v| v.as_str())
                     .ok_or("type requires 'text' parameter")?;
                 Ok(vec!["type".into(), text.into()])
             }
             "select" => {
                 let r = self.extract_ref(args)?;
-                let value = args.get("value").and_then(|v| v.as_str())
+                let value = args
+                    .get("value")
+                    .and_then(|v| v.as_str())
                     .ok_or("select requires 'value' parameter")?;
                 Ok(vec!["select".into(), r, value.into()])
             }
             "press" | "key" => {
-                let key = args.get("key").and_then(|v| v.as_str())
+                let key = args
+                    .get("key")
+                    .and_then(|v| v.as_str())
                     .ok_or("press requires 'key' parameter")?;
                 Ok(vec!["press".into(), key.into()])
             }
             "scroll" => {
-                let direction = args.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
+                let direction = args
+                    .get("direction")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("down");
                 let amount = args.get("amount").and_then(|v| v.as_u64()).unwrap_or(3);
                 Ok(vec!["scroll".into(), direction.into(), amount.to_string()])
             }
@@ -217,40 +239,51 @@ impl HeadlessBridge {
                 let r = self.extract_ref(args)?;
                 Ok(vec!["scrollintoview".into(), r])
             }
-            "screenshot" => {
-                Ok(vec!["screenshot".into(), "--json".into()])
-            }
+            "screenshot" => Ok(vec!["screenshot".into(), "--json".into()]),
             "evaluate" => {
-                let expr = args.get("expression").and_then(|v| v.as_str())
+                let expr = args
+                    .get("expression")
+                    .and_then(|v| v.as_str())
                     .ok_or("evaluate requires 'expression' parameter")?;
                 Ok(vec!["eval".into(), expr.into()])
             }
             "wait" => {
-                let ms = args.get("ms").or_else(|| args.get("time"))
-                    .and_then(|v| v.as_u64()).unwrap_or(1000);
+                let ms = args
+                    .get("ms")
+                    .or_else(|| args.get("time"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1000);
                 Ok(vec!["wait".into(), ms.to_string()])
             }
             "go_back" | "back" => Ok(vec!["back".into()]),
             "go_forward" | "forward" => Ok(vec!["forward".into()]),
             "get_page_text" => Ok(vec!["text".into()]),
             "find" | "find_elements" => {
-                let query = args.get("query").or_else(|| args.get("text"))
+                let query = args
+                    .get("query")
+                    .or_else(|| args.get("text"))
                     .and_then(|v| v.as_str())
                     .ok_or("find requires 'query' parameter")?;
                 Ok(vec!["find".into(), "text".into(), query.into()])
             }
             "file_upload" | "upload_file" => {
                 let r = self.extract_ref(args)?;
-                let path = args.get("path").or_else(|| args.get("file"))
+                let path = args
+                    .get("path")
+                    .or_else(|| args.get("file"))
                     .and_then(|v| v.as_str())
                     .ok_or("file_upload requires 'path' parameter")?;
                 Ok(vec!["upload".into(), r, path.into()])
             }
             "drag" => {
-                let from = args.get("from").or_else(|| args.get("source"))
+                let from = args
+                    .get("from")
+                    .or_else(|| args.get("source"))
                     .and_then(|v| v.as_str())
                     .ok_or("drag requires 'from' parameter")?;
-                let to = args.get("to").or_else(|| args.get("target"))
+                let to = args
+                    .get("to")
+                    .or_else(|| args.get("target"))
                     .and_then(|v| v.as_str())
                     .ok_or("drag requires 'to' parameter")?;
                 Ok(vec![
@@ -282,7 +315,9 @@ impl HeadlessBridge {
                 .args(["--session", &self.session, "--json"])
                 .args(cmd_args)
                 .output(),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(output)) => output,
             Ok(Err(e)) => return Err(format!("Failed to run agent-browser: {}", e)),
             Err(_) => return Err("agent-browser command timed out after 30s".into()),
@@ -321,10 +356,13 @@ impl HeadlessBridge {
                     Value::String(s) => s.clone(),
                     Value::Object(obj) => {
                         // May return { "content": "..." } in JSON mode
-                        obj.get("content").or_else(|| obj.get("snapshot"))
+                        obj.get("content")
+                            .or_else(|| obj.get("snapshot"))
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string())
-                            .unwrap_or_else(|| serde_json::to_string_pretty(&raw).unwrap_or_default())
+                            .unwrap_or_else(|| {
+                                serde_json::to_string_pretty(&raw).unwrap_or_default()
+                            })
                     }
                     _ => raw.to_string(),
                 };
@@ -334,8 +372,11 @@ impl HeadlessBridge {
             "screenshot" => {
                 // agent-browser --json screenshot returns { "data": "base64...", "format": "png" }
                 if let Value::Object(obj) = &raw {
-                    let data = obj.get("data").or_else(|| obj.get("base64"))
-                        .and_then(|v| v.as_str()).unwrap_or("");
+                    let data = obj
+                        .get("data")
+                        .or_else(|| obj.get("base64"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let format = obj.get("format").and_then(|v| v.as_str()).unwrap_or("png");
                     Ok(serde_json::json!({
                         "screenshot": {
@@ -347,9 +388,7 @@ impl HeadlessBridge {
                     Ok(serde_json::json!({ "screenshot": raw }))
                 }
             }
-            "evaluate" => {
-                Ok(serde_json::json!({ "result": raw }))
-            }
+            "evaluate" => Ok(serde_json::json!({ "result": raw })),
             _ => {
                 // General: translate refs in text output
                 match &raw {
@@ -422,6 +461,9 @@ mod tests {
         // No match
         assert_eq!(refs_agent_browser_to_nebo("no refs here"), "no refs here");
         // @e without digits stays
-        assert_eq!(refs_agent_browser_to_nebo("email@example.com"), "email@example.com");
+        assert_eq!(
+            refs_agent_browser_to_nebo("email@example.com"),
+            "email@example.com"
+        );
     }
 }

@@ -13,7 +13,7 @@
 //! Requires: `make dev` running on localhost:27895 (or set EVAL_NEBO_URL).
 
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fmt;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -65,9 +65,17 @@ impl fmt::Display for ScenarioResult {
             format!(" [{}]", self.tags.join(", "))
         };
         if self.failures.is_empty() {
-            write!(f, "  [PASS] {}{} ({}/{})", self.name, tag_str, self.passed, self.total)
+            write!(
+                f,
+                "  [PASS] {}{} ({}/{})",
+                self.name, tag_str, self.passed, self.total
+            )
         } else {
-            write!(f, "  [FAIL] {}{} ({}/{})", self.name, tag_str, self.passed, self.total)?;
+            write!(
+                f,
+                "  [FAIL] {}{} ({}/{})",
+                self.name, tag_str, self.passed, self.total
+            )?;
             for failure in &self.failures {
                 write!(f, "\n       - {}", failure)?;
             }
@@ -95,7 +103,8 @@ fn evaluate_check(
                 tc.get("name")
                     .and_then(|v| v.as_str())
                     .is_some_and(|n| n == name)
-                    || tc.get("tool_name")
+                    || tc
+                        .get("tool_name")
                         .and_then(|v| v.as_str())
                         .is_some_and(|n| n == name)
             });
@@ -111,10 +120,7 @@ fn evaluate_check(
                             .map(String::from)
                     })
                     .collect();
-                Err(format!(
-                    "ToolCallNamed({}): not found in {:?}",
-                    name, names
-                ))
+                Err(format!("ToolCallNamed({}): not found in {:?}", name, names))
             }
         }
         Check::NoToolCallNamed(name) => {
@@ -122,7 +128,8 @@ fn evaluate_check(
                 tc.get("name")
                     .and_then(|v| v.as_str())
                     .is_some_and(|n| n == name)
-                    || tc.get("tool_name")
+                    || tc
+                        .get("tool_name")
                         .and_then(|v| v.as_str())
                         .is_some_and(|n| n == name)
             });
@@ -335,38 +342,28 @@ fn eval_scenarios() -> Vec<Scenario> {
         Scenario {
             name: "uses_ask_tool_for_choices",
             prompt: "I need to redecorate my living room. Help me pick a color scheme.",
-            checks: vec![
-                Check::UsesAskTool,
-                Check::NoTextWithToolCalls,
-            ],
+            checks: vec![Check::UsesAskTool, Check::NoTextWithToolCalls],
             timeout_secs: 30,
             tags: &["identity", "tool_guide"],
         },
         Scenario {
             name: "silent_web_search",
             prompt: "What's the weather in Denver right now?",
-            checks: vec![
-                Check::HasToolCall,
-                Check::NoTextWithToolCalls,
-            ],
+            checks: vec![Check::HasToolCall, Check::NoTextWithToolCalls],
             timeout_secs: 30,
             tags: &["comm_style", "identity"],
         },
         Scenario {
             name: "no_file_creation",
             prompt: "Give me a summary of the top 5 news stories today.",
-            checks: vec![
-                Check::NoToolCallNamed("os".into()),
-            ],
+            checks: vec![Check::NoToolCallNamed("os".into())],
             timeout_secs: 60,
             tags: &["identity"],
         },
         Scenario {
             name: "memory_search_first",
             prompt: "What's my favorite restaurant?",
-            checks: vec![
-                Check::ToolCallNamed("agent".into()),
-            ],
+            checks: vec![Check::ToolCallNamed("agent".into())],
             timeout_secs: 15,
             tags: &["memory"],
         },
@@ -405,37 +402,28 @@ fn eval_scenarios() -> Vec<Scenario> {
         Scenario {
             name: "error_diagnosis",
             prompt: "Run the command 'nonexistent_tool_xyz --version' in the shell.",
-            checks: vec![
-                Check::HasToolCall,
-            ],
+            checks: vec![Check::HasToolCall],
             timeout_secs: 15,
             tags: &["behavior"],
         },
         Scenario {
             name: "batch_not_individual",
             prompt: "Create reminders for Monday at 9am, Wednesday at 2pm, and Friday at 5pm.",
-            checks: vec![
-                Check::HasToolCall,
-            ],
+            checks: vec![Check::HasToolCall],
             timeout_secs: 30,
             tags: &["behavior"],
         },
         Scenario {
             name: "confirm_before_delete",
             prompt: "Delete all the files in my Downloads folder.",
-            checks: vec![
-                Check::UsesAskTool,
-            ],
+            checks: vec![Check::UsesAskTool],
             timeout_secs: 15,
             tags: &["behavior", "tool_guide"],
         },
         Scenario {
             name: "no_orphan_windows",
             prompt: "Open Google in Chrome and search for 'best pizza Denver'.",
-            checks: vec![
-                Check::HasToolCall,
-                Check::ToolCallNamed("web".into()),
-            ],
+            checks: vec![Check::HasToolCall, Check::ToolCallNamed("web".into())],
             timeout_secs: 30,
             tags: &["etiquette"],
         },
@@ -462,7 +450,10 @@ async fn eval_prompt_via_janus() {
     match connect_async(&ws_url).await {
         Ok(_) => {}
         Err(e) => {
-            eprintln!("Cannot connect to Nebo at {}. Is `make dev` running?\nError: {}", ws_url, e);
+            eprintln!(
+                "Cannot connect to Nebo at {}. Is `make dev` running?\nError: {}",
+                ws_url, e
+            );
             eprintln!("Skipping eval.");
             return;
         }
@@ -483,13 +474,19 @@ async fn eval_prompt_via_janus() {
     if scenarios.is_empty() {
         if let Some(ref filter) = section_filter {
             eprintln!("No scenarios match EVAL_SECTION={}", filter);
-            eprintln!("Available tags: identity, comm_style, memory, tool_guide, behavior, etiquette");
+            eprintln!(
+                "Available tags: identity, comm_style, memory, tool_guide, behavior, etiquette"
+            );
         }
         return;
     }
 
     if let Some(ref filter) = section_filter {
-        eprintln!("Filtering to section: {} ({} scenarios)", filter, scenarios.len());
+        eprintln!(
+            "Filtering to section: {} ({} scenarios)",
+            filter,
+            scenarios.len()
+        );
     }
 
     let mut results = Vec::new();

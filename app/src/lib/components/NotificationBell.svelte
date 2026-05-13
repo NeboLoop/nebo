@@ -1,14 +1,11 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { onMount } from 'svelte';
   import Bell from 'lucide-svelte/icons/bell';
   import X from 'lucide-svelte/icons/x';
   import CheckCheck from 'lucide-svelte/icons/check-check';
-  import { notifications, unreadCount, markAsRead, markAllRead, removeNotification, loadNotifications, type Notification } from '$lib/stores/notifications.js';
+  import { notifications, unreadCount, markAsRead, markAllRead, removeNotification, type Notification } from '$lib/stores/notifications.js';
 
   let open = $state(false);
-
-  onMount(() => { loadNotifications(); });
 
   const typeColors: Record<string, string> = {
     agent: 'bg-success',
@@ -65,6 +62,7 @@
             <div
               class="flex items-start gap-3 px-4 py-3 border-b border-base-content/5 last:border-b-0 transition-colors cursor-pointer {notif.read ? '' : 'bg-primary/5'}"
               onclick={() => handleClick(notif)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(notif); } }}
               role="button"
               tabindex="0"
             >

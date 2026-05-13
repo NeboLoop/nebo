@@ -1,6 +1,6 @@
 # Memory & Prompt System -- SME Deep-Dive
 
-> **Last updated:** 2026-04-17
+> **Last updated:** 2026-05-13
 >
 > **Purpose:** Definitive technical reference for Nebo's entire memory system and system prompt pipeline -- storage, extraction, personality synthesis, hybrid search, embeddings, session transcript indexing, prompt assembly, steering, and context management. Dead code (functions ported but never called from the runner) is explicitly flagged.
 
@@ -17,7 +17,7 @@
 | `crates/agent/src/memory_debounce.rs` | Debounced extraction timer (5s per session) | Active |
 | `crates/agent/src/memory_flush.rs` | Pre-compaction memory flush (`should_run_memory_flush`, `run_memory_flush`) | Dead code |
 | `crates/agent/src/personality.rs` | `synthesize_directive()` with decay, LLM generation, style loading | Dead code |
-| `crates/agent/src/steering.rs` | 14 steering generators, format_directives, pipeline, should_force_break | Active |
+| `crates/agent/src/steering.rs` | 15 steering generators, format_directives, pipeline, should_force_break | Active |
 | `crates/agent/src/pruning.rs` | Sliding window, micro-compact, LLM summary, token estimation | Active |
 | `crates/agent/src/compaction.rs` | Tool failure collection, enhanced summary | Dead code |
 | `crates/agent/src/session.rs` | SessionManager: CRUD, summary, active task, work tasks | Active |
@@ -127,7 +127,7 @@ The system prompt is a **two-tier, cache-optimized structure**:
 |  STEERING DIRECTIVES (ephemeral, never persisted)          |
 |  Injected into the dynamic suffix, not the message array   |
 |                                                            |
-|  13 generators, formatted as [Label] content lines         |
+|  15 generators, formatted as [Label] content lines         |
 |  Appear in "## Agent Directives" section of system prompt  |
 +------------------------------------------------------------+
 ```
@@ -340,7 +340,7 @@ File: `crates/tools/src/bot_tool.rs` (lines 75-328)
 1. Sanitize key/value (injection detection + control char stripping)
 2. Build effective namespace from layer + namespace
 3. `store.upsert_memory()` with user_id
-4. Verify write on separate connection
+4. **Cross-connection verification:** Read-back on a separate pool connection to detect FTS trigger corruption or persistence failures. Returns a specific error with total memory count and restart suggestion if the verify finds nothing.
 
 #### `recall`
 1. Try exact key match with user_id
@@ -733,6 +733,18 @@ From `load_memory_context()` in `memory.rs:519-614`:
 
 Parts joined with `\n\n---\n\n` separators.
 
+### Prompt-Relevant Memory Injection
+
+`load_prompt_relevant_memories(store, user_id, prompt, existing_memory_ids)` in `db_context.rs`:
+
+1. FTS search against `memories` table using the user prompt (limit 10)
+2. Filter out memories already present in the scored tacit set (by `existing_memory_ids`)
+3. Cap at 5 additional memories
+4. Format as `## Relevant to This Conversation` section with `- key: value` bullets
+5. Returns empty string if no relevant hits
+
+This provides **query-time memory augmentation** — memories that match the current user prompt but weren't in the top-40 tacit set are injected into the system prompt. Prevents the static 40-memory cap from hiding contextually relevant knowledge.
+
 ### Known Gaps
 
 - No file-based context fallback (SOUL.md, AGENTS.md, MEMORY.md)
@@ -760,6 +772,56 @@ Parts joined with `\n\n---\n\n` separators.
 **Sub-agent prompt assembly:** `orchestrator.rs` sets `RunRequest.prompt_mode = Minimal`. Agent-type instructions (Explore/Plan/General) are prepended to the user message as a task prefix via `task_prefix_for_type()`, not injected into the system prompt. The old `system_prompt_for_type()` with 3-line hardcoded prompts was removed.
 
 **Field:** `RunRequest.prompt_mode: PromptMode` (default: `Full`). Threaded from `run()` → `run_loop()` → `PromptContext.mode` → `build_static()`.
+
+### PromptContext Fields
+
+```rust
+pub struct PromptContext {
+    pub mode: PromptMode,
+    pub agent_name: String,
+    pub active_skill: Option<String>,
+    pub skill_catalog: String,
+    pub model_aliases: String,
+    pub channel: String,
+    pub platform: String,
+    pub memory_context: String,
+    pub db_context: Option<String>,        // Rich DB context; replaces memory_context when set
+    pub active_agent: Option<String>,      // AGENT.md body, injected before identity
+    pub plugin_inventory: String,
+    pub research_prompt: Option<String>,   // Injected when bot(action: "research") activates
+    pub context_file: Option<String>,      // Workspace context from .nebo.md or NEBO.md
+}
+```
+
+### DynamicContext Fields
+
+```rust
+pub struct DynamicContext {
+    pub provider_name: String,
+    pub model_name: String,
+    pub active_task: String,
+    pub summary: String,
+    pub neboloop_connected: bool,
+    pub channel: String,
+    pub work_tasks: Vec<WorkTask>,
+    pub tool_doc_cache: Vec<(String, String)>,  // Survives sliding window eviction (max 8k chars)
+    pub steering_directives: String,
+    pub proactive_context: String,
+    pub user_timezone: Option<String>,          // IANA timezone override for date/time
+}
+```
+
+### Model-Specific Guidance
+
+`build_model_specific_guidance(provider, model)` injects provider-specific enforcement into the dynamic suffix:
+
+| Provider | Sections Added |
+|----------|---------------|
+| Anthropic (Claude) | None (follows system prompt natively) |
+| OpenAI (GPT) | Tool-Use Enforcement + GPT Execution Guidance (tool_persistence, mandatory_tool_use, act_dont_ask, prerequisite_checks, verification, missing_context) |
+| Google (Gemini) | Tool-Use Enforcement + Operational Directives (absolute paths, verify_first, dependency_checks, conciseness, parallel_tool_calls, non-interactive_commands, keep_going) |
+| Janus | Tool-Use Enforcement (routes to non-Claude models) |
+| Ollama | Tool-Use Enforcement |
 
 ### Step 1: DB Context (FIRST -- highest priority position)
 
@@ -905,7 +967,7 @@ let is_ollama = ctx.provider_id == "ollama";
 // Ollama skips: janus_quota_warning
 ```
 
-### The 14 Generators
+### The 15 Generators
 
 | # | Generator | Trigger | Priority | Skipped for |
 |---|-----------|---------|----------|-------------|
@@ -918,11 +980,14 @@ let is_ollama = ctx.provider_id == "ollama";
 | 7 | `RepetitionDetector` | iteration ≥ 3, 40%+ trigram overlap between consecutive responses (>100 chars) | 9 | Claude |
 | 8 | `LoopDetector` | Same-tool loops (3+), stale results, ping-pong, budget pressure, user stop | 6-10 | — |
 | 9 | `ErrorRecovery` | 1+ consecutive all-error iterations (priority 9→10) | 9-10 | — |
-| 10 | `AutomationSpeed` | iteration ≥ 4, 2+ wait() calls OR 2+ consecutive reads OR 4+ single-tool responses | 6 | — |
-| 11 | `PresenceAwareness` | User unfocused/away or just returned, iteration ≥ 2 | 4 | — |
-| 12 | `ContextPressure` | `iteration >= 15 && iteration % 15 == 0` | 6 | — |
-| 13 | `JanusQuotaWarning` | quota_warning string set and non-empty | 7 | Ollama |
-| 14 | `AskToolNudge` | Last assistant response has question mark or choice phrases, no ask tool call | 7 | Claude |
+| 10 | `PresenceAwareness` | User unfocused/away or just returned, iteration ≥ 2 | 4 | — |
+| 11 | `ContextPressure` | `iteration >= 15 && iteration % 15 == 0` | 6 | — |
+| 12 | `JanusQuotaWarning` | quota_warning string set and non-empty | 7 | Ollama |
+| 13 | `TaskTrackingNudge` | iteration == 1, no work tasks, multi-step complexity detected in user prompt | 5 | — |
+| 14 | `TaskCompletionNudge` | iteration ≥ 3, all tasks pending despite active tool use | 5 | — |
+| 15 | `AskToolNudge` | Last assistant response has question mark or choice phrases, no ask tool call | 7 | Claude |
+
+> **Removed:** `AutomationSpeed` (was #10, efficiency nudge for wait/read/single-tool patterns).
 
 Proactive results are handled separately in `Pipeline::generate()` — proactive items are formatted into a `proactive_context` output (not a steering directive) and injected as `[Background Results]` in the dynamic suffix.
 
@@ -935,6 +1000,18 @@ Fires only when last assistant response exceeds 300 chars (non-Claude models). M
 - Handle errors silently or try different approach
 
 Previously had an always-on "Tool Enforcement" arm (150+ words every iteration) — removed as redundant with PendingTaskAction and the consolidated prompt.
+
+### TaskTrackingNudge (multi-step task detection)
+
+Fires only on iteration 1 (first response to user message). Conditions:
+- No work tasks exist yet
+- User prompt contains multi-step complexity signals ("and then", "after that", "first", "next", "finally", "step 1", "1.", "2.", "3.", "multiple", "each", "all of", etc.)
+
+Steers the LLM to create work tasks via `bot(resource: "task")` before executing. Priority 5.
+
+### TaskCompletionNudge (progress tracking)
+
+Fires at iteration ≥ 3 when work tasks exist but ALL are still "pending" despite active tool use. Steers the LLM to update task status (`in_progress` → `completed`) as it works. Priority 5.
 
 ### AskToolNudge (interactive input enforcement)
 
@@ -975,13 +1052,6 @@ Called by the runner BEFORE the next LLM call. Returns `Some(reason)` to halt th
 - 3+ consecutive error iterations (was 5)
 - 4+ same-tool-same-args calls, hash-based (was 6)
 - User stop request (iteration > 2)
-
-### AutomationSpeed (NEW — efficiency nudge)
-
-Fires at iteration ≥ 4. Inspects last 8 assistant messages for automation inefficiencies:
-- **2+ web/desktop wait() calls** → "Don't call wait() unless you see a loading spinner"
-- **2+ consecutive read-only responses** (read_page/screenshot without mutation) → "Don't re-read unless you changed something"
-- **4+ single-tool responses** out of 5+ → "Chain multiple tool calls in one response"
 
 ### Known Gaps
 
@@ -1255,7 +1325,7 @@ Runner.run(ctx, req)
     +-- enrichedPrompt = staticSystem + dynamicSuffix
     +-- micro_compact (trim old tool results, 3k min savings)
     |
-    +-- Steering pipeline generates directives (13 generators)
+    +-- Steering pipeline generates directives (15 generators)
     |    format_directives() into dynamic suffix
     |
     +-- Build ChatRequest:
@@ -1303,7 +1373,7 @@ Runner.run(ctx, req)
     +-- 5. build_dynamic_suffix() -- includes summary + objective
     +-- 6. enrichedPrompt = static + dynamic
     +-- 7. micro_compact
-    +-- 8. Steering pipeline (13 generators)
+    +-- 8. Steering pipeline (15 generators)
     +-- 9. Send to LLM -> stream response, capture stop_reason
     +-- 10. Execute tool calls (hash results for stale detection)
     +-- 10a. Max output recovery (stop_reason=length → retry up to 3x)
@@ -1604,4 +1674,4 @@ Both `agent_profile` and `user_profiles` are queried by `db_context::load_db_con
 
 13. **Dead code inventory.** The following modules are fully implemented but never called from the runner: `personality.rs` (synthesis), `memory_flush.rs` (pre-compaction flush), `transcript.rs` (session indexing), `compaction.rs` (tool failure collection), `embed_memories_async()` (memory embedding). These represent ready-to-wire infrastructure.
 
-14. **Removed steering generators.** The following generators were removed from earlier versions: `ProactiveResults` (×2), `DateTimeRefresh`, `MemoryNudge`, `TaskParameterNudge`, `ObjectiveTaskNudge`, `TaskProgress`, `ActiveObjectiveReminder`, `ProgressNudge`. Proactive results are now handled inline in `Pipeline::generate()`, not as a registered generator. Date/time is always in the dynamic suffix (no refresh needed). Task-related nudges were consolidated into `PendingTaskAction`.
+14. **Removed steering generators.** The following generators were removed from earlier versions: `ProactiveResults` (×2), `DateTimeRefresh`, `MemoryNudge`, `TaskParameterNudge`, `ObjectiveTaskNudge`, `TaskProgress`, `ActiveObjectiveReminder`, `ProgressNudge`, `AutomationSpeed`. Proactive results are now handled inline in `Pipeline::generate()`, not as a registered generator. Date/time is always in the dynamic suffix (no refresh needed). Task-related nudges were consolidated into `PendingTaskAction`. `AutomationSpeed` was replaced by `TaskTrackingNudge` and `TaskCompletionNudge`.

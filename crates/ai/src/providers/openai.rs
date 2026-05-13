@@ -127,10 +127,13 @@ impl OpenAIProvider {
                         continue;
                     }
                     if let Some(ref images) = msg.images {
-                        let mut parts: Vec<ChatCompletionRequestUserMessageContentPart> = Vec::new();
+                        let mut parts: Vec<ChatCompletionRequestUserMessageContentPart> =
+                            Vec::new();
                         if !msg.content.is_empty() {
                             parts.push(ChatCompletionRequestUserMessageContentPart::Text(
-                                ChatCompletionRequestMessageContentPartText { text: msg.content.clone() },
+                                ChatCompletionRequestMessageContentPartText {
+                                    text: msg.content.clone(),
+                                },
                             ));
                         }
                         for img in images {
@@ -316,14 +319,10 @@ impl OpenAIProvider {
                                     .get("message")
                                     .and_then(|m| m.as_str())
                                     .unwrap_or("unknown provider error");
-                                let code = err_obj
-                                    .get("code")
-                                    .and_then(|c| c.as_str())
-                                    .unwrap_or("");
-                                let err_type = err_obj
-                                    .get("type")
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("");
+                                let code =
+                                    err_obj.get("code").and_then(|c| c.as_str()).unwrap_or("");
+                                let err_type =
+                                    err_obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
                                 warn!(
                                     error = msg,
                                     code = code,
@@ -331,9 +330,7 @@ impl OpenAIProvider {
                                     raw = %err_obj,
                                     "provider returned error in SSE stream"
                                 );
-                                let _ = tx
-                                    .send(StreamEvent::error(msg.to_string()))
-                                    .await;
+                                let _ = tx.send(StreamEvent::error(msg.to_string())).await;
                                 finished = true;
                                 break 'outer;
                             }
@@ -342,7 +339,9 @@ impl OpenAIProvider {
                         // Extract provider_metadata from Janus for tool stickiness
                         if let Some(ref val) = raw_val {
                             if let Some(pm) = val.get("provider_metadata") {
-                                if let Ok(meta) = serde_json::from_value::<HashMap<String, String>>(pm.clone()) {
+                                if let Ok(meta) =
+                                    serde_json::from_value::<HashMap<String, String>>(pm.clone())
+                                {
                                     last_provider_metadata = Some(meta);
                                 }
                             }
@@ -380,13 +379,13 @@ impl OpenAIProvider {
                             if let Some(ref tcs) = choice.delta.tool_calls {
                                 for tc in tcs {
                                     let idx = tc.index;
-                                    let entry = tool_calls
-                                        .entry(idx)
-                                        .or_insert_with(|| AccumulatedToolCall {
+                                    let entry = tool_calls.entry(idx).or_insert_with(|| {
+                                        AccumulatedToolCall {
                                             id: String::new(),
                                             name: String::new(),
                                             arguments: String::new(),
-                                        });
+                                        }
+                                    });
 
                                     if let Some(id) = tc.id.as_deref() {
                                         if !id.is_empty() {
@@ -397,9 +396,7 @@ impl OpenAIProvider {
                                     if let Some(ref func) = tc.function {
                                         // Dedup tool name: Janus sends name in every chunk
                                         if let Some(name) = func.name.as_deref() {
-                                            if !name.is_empty()
-                                                && !seen_tool_name.contains(&idx)
-                                            {
+                                            if !name.is_empty() && !seen_tool_name.contains(&idx) {
                                                 entry.name = name.to_string();
                                                 seen_tool_name.insert(idx);
                                             }
@@ -410,10 +407,8 @@ impl OpenAIProvider {
                                             if !args.is_empty() {
                                                 if seen_tool_args.contains(&idx) {
                                                     // Already have complete args, skip duplicate
-                                                } else if serde_json::from_str::<
-                                                    serde_json::Value,
-                                                >(
-                                                    args
+                                                } else if serde_json::from_str::<serde_json::Value>(
+                                                    args,
                                                 )
                                                 .is_ok()
                                                 {
@@ -440,10 +435,12 @@ impl OpenAIProvider {
                                     chunk_count,
                                     "stream finished"
                                 );
-                                last_finish_reason = Some(serde_json::to_value(reason)
-                                    .ok()
-                                    .and_then(|v| v.as_str().map(String::from))
-                                    .unwrap_or_else(|| format!("{:?}", reason).to_lowercase()));
+                                last_finish_reason = Some(
+                                    serde_json::to_value(reason)
+                                        .ok()
+                                        .and_then(|v| v.as_str().map(String::from))
+                                        .unwrap_or_else(|| format!("{:?}", reason).to_lowercase()),
+                                );
                                 finished = true;
                                 break 'outer;
                             }
@@ -488,7 +485,9 @@ impl OpenAIProvider {
 
 impl ConnectionResetter for OpenAIProvider {
     fn reset_connections(&self) {
-        let mut lock = self.http_client.write()
+        let mut lock = self
+            .http_client
+            .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *lock = reqwest::Client::new();
         info!(provider = %self.provider_id, "reset HTTP connections");
@@ -588,14 +587,13 @@ impl Provider for OpenAIProvider {
         }
         if let Some(ref lane) = self.lane {
             if let Ok(val) = lane.parse() {
-                headers.insert(
-                    reqwest::header::HeaderName::from_static("x-lane"),
-                    val,
-                );
+                headers.insert(reqwest::header::HeaderName::from_static("x-lane"), val);
             }
         }
 
-        let client = self.http_client.read()
+        let client = self
+            .http_client
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         let response = client
@@ -604,7 +602,7 @@ impl Provider for OpenAIProvider {
             .json(&body_val)
             .send()
             .await
-            .map_err(|e| ProviderError::Request(e.to_string()))?;
+            .map_err(|e| ProviderError::Request(format!("{} (model: {} · {})", e, model, url)))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -616,7 +614,7 @@ impl Provider for OpenAIProvider {
                 model = model,
                 "provider HTTP error"
             );
-            return Err(map_http_error(status.as_u16(), &body));
+            return Err(map_http_error(status.as_u16(), &body, &model, &url));
         }
 
         let (tx, rx) = mpsc::channel(100);
@@ -726,7 +724,7 @@ impl Provider for OpenAIProvider {
 }
 
 /// Map HTTP error status + body to our ProviderError type.
-fn map_http_error(status: u16, body: &str) -> ProviderError {
+fn map_http_error(status: u16, body: &str, model: &str, url: &str) -> ProviderError {
     // Try to parse as OpenAI error JSON: {"error":{"message":"...", "code":"..."}}
     let (msg, code) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
         let err = &v["error"];
@@ -743,10 +741,7 @@ fn map_http_error(status: u16, body: &str) -> ProviderError {
         401 => ProviderError::Auth(msg),
         _ => {
             // Rate limit by code/message
-            if code == "rate_limit_exceeded"
-                || msg.contains("rate limit")
-                || msg.contains("429")
-            {
+            if code == "rate_limit_exceeded" || msg.contains("rate limit") || msg.contains("429") {
                 return ProviderError::RateLimit;
             }
             // Auth
@@ -765,9 +760,14 @@ fn map_http_error(status: u16, body: &str) -> ProviderError {
                 return ProviderError::ContextOverflow;
             }
 
+            // Include HTTP status, model, and endpoint for diagnostics
+            let detailed = format!(
+                "{} (HTTP {} · model: {} · {})",
+                msg, status, model, url
+            );
             ProviderError::Api {
                 code,
-                message: msg,
+                message: detailed,
                 retryable: status >= 500,
             }
         }

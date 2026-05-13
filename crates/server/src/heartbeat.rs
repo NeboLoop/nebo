@@ -23,17 +23,45 @@ use crate::state::AppState;
 type LastFired = Arc<Mutex<HashMap<String, Instant>>>;
 
 /// Spawn the heartbeat scheduler. Polls every 60 seconds.
+/// Seeds last-fire times from DB so heartbeats don't re-fire immediately after restart.
 pub fn spawn(state: AppState) {
     let last_fired: LastFired = Arc::new(Mutex::new(HashMap::new()));
 
+    let lf = last_fired.clone();
+    let store = state.store.clone();
     tokio::spawn(async move {
         // Initial delay to let the server boot
         tokio::time::sleep(Duration::from_secs(15)).await;
 
+        // Seed from DB: load last_heartbeat_at for all heartbeat entities
+        if let Ok(entities) = store.list_heartbeat_entities() {
+            let now = Instant::now();
+            let mut fired = lf.lock().await;
+            let mut seeded = 0;
+            for entity in &entities {
+                if let Some(ref ts) = entity.last_heartbeat_at {
+                    if let Ok(epoch) = ts.parse::<u64>() {
+                        let fired_time = std::time::UNIX_EPOCH + Duration::from_secs(epoch);
+                        let elapsed = std::time::SystemTime::now()
+                            .duration_since(fired_time)
+                            .unwrap_or_default();
+                        if let Some(synthetic) = now.checked_sub(elapsed) {
+                            let key = format!("{}-{}", entity.entity_type, entity.entity_id);
+                            fired.insert(key, synthetic);
+                            seeded += 1;
+                        }
+                    }
+                }
+            }
+            if seeded > 0 {
+                info!(seeded, "seeded heartbeat timers from DB");
+            }
+        }
+
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            if let Err(e) = tick(&state, &last_fired).await {
+            if let Err(e) = tick(&state, &lf).await {
                 warn!("heartbeat tick error: {}", e);
             }
         }
@@ -87,7 +115,9 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
         .get_entity_config("main", "main")
         .map_err(|e| e.to_string())?;
 
-    let main_explicitly_listed = entities.iter().any(|e| e.entity_type == "main" && e.entity_id == "main");
+    let main_explicitly_listed = entities
+        .iter()
+        .any(|e| e.entity_type == "main" && e.entity_id == "main");
     if !main_explicitly_listed && settings.heartbeat_interval_minutes > 0 {
         // Main entity uses global settings — check if not explicitly disabled
         let disabled = main_config
@@ -118,6 +148,7 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
                     multi_chat: None,
                     created_at: 0,
                     updated_at: 0,
+                    last_heartbeat_at: None,
                 });
             }
         }
@@ -199,7 +230,21 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
         };
 
         run_chat(state, config).await;
-        fired.insert(key, now);
+        fired.insert(key.clone(), now);
+
+        // Persist to DB so heartbeat timing survives restarts
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string();
+        if let Err(e) = state.store.update_heartbeat_at(
+            &entity.entity_type,
+            &entity.entity_id,
+            &epoch,
+        ) {
+            warn!(entity = %key, error = %e, "failed to persist heartbeat timestamp");
+        }
     }
 
     Ok(())

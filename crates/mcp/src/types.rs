@@ -24,7 +24,11 @@ pub struct McpToolDef {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "inputSchema")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "inputSchema"
+    )]
     pub input_schema: Option<serde_json::Value>,
 }
 

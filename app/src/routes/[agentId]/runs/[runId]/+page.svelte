@@ -32,11 +32,11 @@
     expandedSteps = {};
 
     import('$lib/api/nebo').then(api =>
-      api.getWorkflowRun(`agent:${aid}`, rid)
+      api.getRun(`agent:${aid}`, rid)
     ).then(res => {
       if (res?.run) runDetail = res.run;
       if (res?.activities) activities = res.activities;
-      if (res?.taskItems) taskItems = res.taskItems;
+      if (res?.taskItems && typeof res.taskItems === 'object') taskItems = res.taskItems as Record<string, PendingTask[]>;
     }).catch(err => {
       console.warn('[nebo] Failed to load run detail:', err);
     }).finally(() => {
@@ -201,7 +201,7 @@
       </span>
     </div>
 
-    <div class="flex-1 overflow-y-auto p-5">
+    <div class="flex-1 overflow-y-auto p-5 select-text">
       <!-- Run metadata -->
       <div class="flex items-center gap-3 mb-4 text-xs text-base-content/50">
         <span>{triggerIcon(selectedRun.trigger ?? '')} <span class="capitalize">{selectedRun.trigger}</span></span>

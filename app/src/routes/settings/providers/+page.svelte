@@ -8,7 +8,7 @@
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.listAuthProfiles();
+      const resp = await api.listProviders();
       if (resp?.profiles?.length) {
         providers = resp.profiles.map((p: AuthProfile) => ({
           id: p.id,

@@ -83,7 +83,7 @@
             href="/{agentId}/runs/{run.id}"
             class="w-full flex items-center gap-2 py-2 px-3.5 border-b border-base-300/50 text-sm text-left cursor-pointer bg-transparent border-l-2 transition-colors no-underline text-base-content {selectedRunId === run.id ? 'bg-base-100 border-l-primary' : 'border-l-transparent hover:bg-base-200'}"
           >
-            <div class="w-2.5 h-2.5 rounded-full shrink-0 {run.status === 'success' ? 'bg-success' : run.status === 'failed' ? 'bg-error' : run.status === 'running' ? 'bg-warning animate-pulse' : 'bg-base-300'}"></div>
+            <div class="w-2.5 h-2.5 rounded-full shrink-0 {run.status === 'success' ? 'bg-success' : run.status === 'skipped' ? 'bg-base-content/30' : run.status === 'failed' ? 'bg-error' : run.status === 'running' ? 'bg-warning animate-pulse' : 'bg-base-300'}"></div>
             <div class="flex-1 min-w-0">
               <div class="text-sm font-medium truncate">{run.workflowName}</div>
               <div class="text-xs text-base-content/50 font-mono">{run.time}</div>

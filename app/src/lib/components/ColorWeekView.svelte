@@ -10,8 +10,8 @@
 
   const HOUR_PX = 80;
 
-  let scrollEl = $state(null);
-  let selected = $state(null);
+  let scrollEl = $state<HTMLDivElement | null>(null);
+  let selected = $state<string | null>(null);
   let createData = $state<{ hour: number; date: Date } | null>(null);
   let preview = $state<{ agent: string; hour: number; dur: number; label: string } | null>(null);
   let now = $state(new Date());
@@ -146,6 +146,7 @@
             style="left:calc({leftPct}% + 2px); width:calc({widthPct}% - 4px); top:{top}px; height:{height}px; {selected === item._id ? `--tw-ring-color:${c.edgeVar}; z-index:20` : `z-index:${zBase}`}"
             title="{a?.name ?? item.agent}: {item.label}"
             onclick={(e) => { e.stopPropagation(); selected = item._id; createData = null; }}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selected = item._id; createData = null; } }}
             role="button"
             tabindex="0"
           >
@@ -158,18 +159,19 @@
 
         <!-- Live preview block while creating -->
         {#if preview && createData}
+          {@const pv = preview}
           {@const previewDayIdx = (() => { const cd = createData.date; return weekDays.findIndex(wd => wd.getFullYear() === cd.getFullYear() && wd.getMonth() === cd.getMonth() && wd.getDate() === cd.getDate()); })()}
           {#if previewDayIdx === dayIdx}
-            {@const pc = AGENT_COLORS[preview.agent]}
-            {@const pa = AGENTS.find(x => x.id === preview.agent)}
-            {@const pTop = preview.hour * HOUR_PX}
-            {@const pHeight = Math.max(20, preview.dur * HOUR_PX)}
+            {@const pc = AGENT_COLORS[pv.agent]}
+            {@const pa = AGENTS.find(x => x.id === pv.agent)}
+            {@const pTop = pv.hour * HOUR_PX}
+            {@const pHeight = Math.max(20, pv.dur * HOUR_PX)}
             {#if pc}
               <div
                 class="absolute rounded-sm overflow-hidden flex items-center border-l-[2.5px] border-dashed px-1 py-0.5 opacity-70 animate-pulse {pc.fillClass} {pc.edgeClass} {pc.textClass}"
                 style="left:2px; right:2px; top:{pTop}px; height:{pHeight}px; z-index:15"
               >
-                <span class="text-xs font-semibold overflow-hidden text-ellipsis whitespace-nowrap flex-1">{pa?.name ?? preview.agent}: {preview.label}</span>
+                <span class="text-xs font-semibold overflow-hidden text-ellipsis whitespace-nowrap flex-1">{pa?.name ?? pv.agent}: {pv.label}</span>
               </div>
             {/if}
           {/if}

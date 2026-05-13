@@ -39,8 +39,7 @@ pub async fn try_dispatch(state: &AppState, prompt: &str, session_id: &str) -> O
                 continue;
             }
             // Match: "/gmail" == "/gmail" or "gmail" matches "/gmail"
-            let matches = cmd_def.name == cmd_name
-                || format!("/{}", cmd_def.name) == cmd_name;
+            let matches = cmd_def.name == cmd_name || format!("/{}", cmd_def.name) == cmd_name;
             if !matches {
                 continue;
             }
@@ -83,10 +82,7 @@ async fn execute(binary: &std::path::Path, command: &str, args: &str, slug: &str
         }
     };
 
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        child.wait_with_output(),
-    ).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await {
         Ok(Ok(output)) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -97,7 +93,11 @@ async fn execute(binary: &std::path::Path, command: &str, args: &str, slug: &str
                     stdout.trim().to_string()
                 }
             } else {
-                let err = if stderr.trim().is_empty() { stdout.to_string() } else { stderr.to_string() };
+                let err = if stderr.trim().is_empty() {
+                    stdout.to_string()
+                } else {
+                    stderr.to_string()
+                };
                 format!("Command failed: {}", err.trim())
             }
         }

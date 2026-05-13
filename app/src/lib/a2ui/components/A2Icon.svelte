@@ -38,7 +38,7 @@
     class?: string;
   } = $props();
 
-  const iconMap: Record<string, Component> = {
+  const iconMap: Record<string, Component<{ size?: number; class?: string }>> = {
     activity: Activity,
     'alert-triangle': AlertTriangle,
     'arrow-right': ArrowRight,
