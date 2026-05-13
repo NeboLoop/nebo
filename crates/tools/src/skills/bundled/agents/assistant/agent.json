@@ -1,0 +1,12 @@
+{
+  "inputs": [],
+  "workflows": {},
+  "skills": [],
+  "pricing": {
+    "model": "monthly_fixed",
+    "cost": 0.0
+  },
+  "defaults": {
+    "timezone": "user_local"
+  }
+}

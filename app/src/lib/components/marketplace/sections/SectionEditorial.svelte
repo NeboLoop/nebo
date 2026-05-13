@@ -10,7 +10,7 @@
 		{#if title}
 			<h2 class="font-display text-lg font-bold mb-4">{title}</h2>
 		{/if}
-		<div class="flex gap-3 overflow-x-auto scrollbar-hide pb-2">
+		<div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
 			{#each items as item}
 				<MediumCard {item} />
 			{/each}

@@ -1,8 +1,10 @@
 <script lang="ts">
-	import { installStoreProduct, listAgents, activateAgent, getAgent, updateAgentInputs, getAgentWorkflows, updateAgentWorkflow } from '$lib/api/nebo';
-	import type { AgentInputField, AgentWorkflowEntry } from '$lib/api/neboComponents';
+	import { installStoreProduct, listAgents, activateAgent, getAgent, updateAgentInputs, listAgentWorkflows, updateAgentWorkflow, authLogin } from '$lib/api/nebo';
+	import type { AgentWorkflow } from '$lib/api/neboComponents';
+	import type { AgentInputField } from '$lib/types/agentPage';
 	import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
-	import { X } from 'lucide-svelte';
+	import { X, KeyRound } from 'lucide-svelte';
+	import { onMount, onDestroy } from 'svelte';
 
 	let {
 		appId,
@@ -22,43 +24,48 @@
 		onCancel: () => void;
 	} = $props();
 
-	// Wizard steps
-	type Step = 'inputs' | 'schedule' | 'installing' | 'done';
+	type Step = 'inputs' | 'auth' | 'schedule' | 'installing' | 'done';
 	let step = $state<Step>('inputs');
 	let error = $state('');
 
-	// Agent data (loaded after install)
 	let agentId = $state('');
 	let inputFields = $state<AgentInputField[]>([]);
 	let inputValues = $state<Record<string, unknown>>({});
-	let workflows = $state<AgentWorkflowEntry[]>([]);
+	let workflows = $state<AgentWorkflow[]>([]);
 
-	// Schedule overrides (binding name → user-chosen interval label)
 	let scheduleOverrides = $state<Record<string, string>>({});
 
-	// If inputs is an array of field definitions, normalize to AgentInputField format
-	if (Array.isArray(inputs)) {
-		inputFields = inputs.map((f: any) => ({
-			key: f.key || f.name || '',
-			label: f.label || (f.name || '').replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
-			description: f.description || '',
-			type: f.type || 'text',
-			required: f.required || false,
-			default: f.default,
-			placeholder: f.placeholder || '',
-			options: Array.isArray(f.options) ? f.options.map((o: any) =>
-			typeof o === 'string' ? { value: o, label: o.replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) } : o
-		) : f.options,
-		}));
-	} else {
-		// Legacy fallback: if old-style flat inputs, convert to values
-		for (const [key, val] of Object.entries(inputs)) {
-			inputValues[key] = val;
+	// Plugin auth state
+	interface PluginAuthEntry { slug: string; label: string; description: string; }
+	let authQueue = $state<PluginAuthEntry[]>([]);
+	let authIndex = $state(0);
+	let authInProgress = $state(false);
+
+	const currentAuthPlugin = $derived(authQueue[authIndex]);
+
+	$effect(() => {
+		if (Array.isArray(inputs)) {
+			inputFields = inputs.map((f: any) => ({
+				key: f.key || f.name || '',
+				label: f.label || (f.name || '').replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+				description: f.description || '',
+				type: f.type || 'text',
+				required: f.required || false,
+				default: f.default,
+				placeholder: f.placeholder || '',
+				options: Array.isArray(f.options) ? f.options.map((o: any) =>
+				typeof o === 'string' ? { value: o, label: o.replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) } : o
+			) : f.options,
+			}));
+		} else {
+			for (const [key, val] of Object.entries(inputs)) {
+				inputValues[key] = val;
+			}
 		}
-	}
+	});
 
 	const hasInputFields = $derived(inputFields.length > 0);
-	const hasSchedules = $derived(workflows.some(w =>
+	const hasSchedules = $derived(Array.isArray(workflows) && workflows.some(w =>
 		w.isActive && (w.triggerType === 'schedule' || w.triggerType === 'heartbeat')
 	));
 
@@ -74,7 +81,41 @@
 		{ value: '24h', label: 'Every 24 hours' },
 	];
 
-	function summarizeTrigger(wf: AgentWorkflowEntry): string {
+	// WS event listeners for auth flow
+	function handleAuthComplete(e: CustomEvent) {
+		const data = e.detail;
+		if (!currentAuthPlugin || data?.plugin !== currentAuthPlugin.slug) return;
+		authInProgress = false;
+		advanceAuth();
+	}
+
+	function handleAuthError(e: CustomEvent) {
+		const data = e.detail;
+		if (!currentAuthPlugin || data?.plugin !== currentAuthPlugin.slug) return;
+		authInProgress = false;
+		error = data?.error || 'Authentication failed';
+	}
+
+	function handleAuthUrl(e: CustomEvent) {
+		const data = e.detail;
+		if (data?.url) {
+			window.open(data.url, '_blank');
+		}
+	}
+
+	onMount(() => {
+		window.addEventListener('nebo:plugin_auth_complete', handleAuthComplete as EventListener);
+		window.addEventListener('nebo:plugin_auth_error', handleAuthError as EventListener);
+		window.addEventListener('nebo:plugin_auth_url', handleAuthUrl as EventListener);
+	});
+
+	onDestroy(() => {
+		window.removeEventListener('nebo:plugin_auth_complete', handleAuthComplete as EventListener);
+		window.removeEventListener('nebo:plugin_auth_error', handleAuthError as EventListener);
+		window.removeEventListener('nebo:plugin_auth_url', handleAuthUrl as EventListener);
+	});
+
+	function summarizeTrigger(wf: AgentWorkflow): string {
 		if (wf.triggerType === 'heartbeat') {
 			const interval = wf.triggerConfig.split('|')[0] || '30m';
 			const match = intervalOptions.find(o => o.value === interval);
@@ -91,17 +132,14 @@
 		error = '';
 		try {
 			if (existingAgentId) {
-				// Agent already installed (e.g. via code) — skip install + lookup
 				agentId = existingAgentId;
 			} else {
-				// 1. Install
 				await installStoreProduct(appId);
 
-				// 2. Find the agent
 				const agentsRes = await listAgents();
-				const allAgents = agentsRes?.agents || [];
+				const allAgents = (agentsRes?.agents || []) as { id: string; name: string }[];
 				const matchedAgent = allAgents.find(
-					(r: any) => r.name?.toLowerCase() === agentName.toLowerCase()
+					(r) => r.name?.toLowerCase() === agentName.toLowerCase()
 				);
 
 				if (!matchedAgent) {
@@ -113,27 +151,34 @@
 				agentId = matchedAgent.id;
 			}
 
-			// 3. Load normalized input fields from backend
+			let pluginsNeedingAuth: PluginAuthEntry[] = [];
+
 			try {
 				const agentRes = await getAgent(agentId);
 				if (agentRes?.inputFields) {
-					inputFields = agentRes.inputFields;
+					inputFields = agentRes.inputFields as AgentInputField[];
+				}
+				if (Array.isArray(agentRes?.pluginsNeedingAuth)) {
+					pluginsNeedingAuth = agentRes.pluginsNeedingAuth as PluginAuthEntry[];
 				}
 			} catch { /* ignore */ }
 
-			// 4. Load workflows for schedule config
 			try {
-				const wfRes = await getAgentWorkflows(agentId);
-				workflows = wfRes?.workflows || [];
+				const wfRes = await listAgentWorkflows(agentId);
+				const wfList = wfRes?.workflows;
+				workflows = Array.isArray(wfList) ? wfList as AgentWorkflow[] : [];
 			} catch { /* ignore */ }
 
-			// 5. Save input values
 			if (Object.keys(inputValues).length > 0) {
 				await updateAgentInputs(agentId, inputValues).catch(() => {});
 			}
 
-			// If there are schedules to configure, go to schedule step
-			if (hasSchedules) {
+			// Check if plugins need auth before proceeding
+			if (pluginsNeedingAuth.length > 0) {
+				authQueue = pluginsNeedingAuth;
+				authIndex = 0;
+				step = 'auth';
+			} else if (hasSchedules) {
 				step = 'schedule';
 			} else {
 				await finalize();
@@ -144,17 +189,45 @@
 		}
 	}
 
+	async function startAuth() {
+		if (!currentAuthPlugin) return;
+		authInProgress = true;
+		error = '';
+		try {
+			await authLogin(currentAuthPlugin.slug);
+		} catch (e: any) {
+			authInProgress = false;
+			error = e?.error || e?.message || 'Failed to start authentication';
+		}
+	}
+
+	function advanceAuth() {
+		if (authIndex + 1 < authQueue.length) {
+			authIndex++;
+			error = '';
+		} else {
+			// All auth done — proceed to next step
+			if (hasSchedules) {
+				step = 'schedule';
+			} else {
+				finalize();
+			}
+		}
+	}
+
+	function skipAuth() {
+		advanceAuth();
+	}
+
 	async function handleScheduleDone() {
 		step = 'installing';
 		try {
-			// Apply schedule overrides
 			for (const [bindingName, interval] of Object.entries(scheduleOverrides)) {
 				const wf = workflows.find(w => w.bindingName === bindingName);
 				if (!wf) continue;
 
 				if (wf.triggerType === 'heartbeat') {
 					const parts = wf.triggerConfig.split('|');
-					const newConfig = parts.length > 1 ? `${interval}|${parts[1]}` : interval;
 					await updateAgentWorkflow(agentId, bindingName, {
 						triggerType: 'heartbeat',
 						triggerConfig: { interval, ...(parts[1] ? { window: parts[1] } : {}) },
@@ -195,16 +268,66 @@
 				<p class="text-sm text-base-content/70 mt-1">Your agent is now active and working.</p>
 			</div>
 
-		{:else if step === 'schedule'}
-			<!-- Schedule configuration -->
+		{:else if step === 'auth'}
 			<div class="flex items-center justify-between px-6 pt-6 pb-2">
 				<div></div>
-				<button
-					type="button"
-					class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors"
-					onclick={onCancel}
-					aria-label="Close"
-				>
+				<button type="button" class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors" onclick={onCancel} aria-label="Close">
+					<X class="w-4 h-4 text-base-content/70" />
+				</button>
+			</div>
+
+			<div class="px-6 pb-6 overflow-y-auto">
+				<div class="text-center mb-6">
+					<div class="w-12 h-12 rounded-full bg-primary/15 flex items-center justify-center mx-auto mb-4">
+						<KeyRound class="w-6 h-6 text-primary" />
+					</div>
+					<h2 class="font-display text-xl font-bold">Connect account</h2>
+					{#if authQueue.length > 1}
+						<p class="text-xs text-base-content/50 mt-1">Step {authIndex + 1} of {authQueue.length}</p>
+					{/if}
+				</div>
+
+				{#if error}
+					<div class="text-sm text-error bg-error/10 rounded-lg px-3 py-2 mb-4">{error}</div>
+				{/if}
+
+				{#if currentAuthPlugin}
+					<div class="rounded-xl border border-base-content/10 p-4 mb-6">
+						<p class="text-sm font-medium">{currentAuthPlugin.label || currentAuthPlugin.slug}</p>
+						{#if currentAuthPlugin.description}
+							<p class="text-xs text-base-content/70 mt-1">{currentAuthPlugin.description}</p>
+						{/if}
+					</div>
+				{/if}
+
+				{#if authInProgress}
+					<div class="flex flex-col items-center py-4 mb-6">
+						<span class="loading loading-spinner loading-md text-primary"></span>
+						<p class="text-sm text-base-content/70 mt-3">Waiting for authorization...</p>
+						<p class="text-xs text-base-content/50 mt-1">Complete the sign-in in your browser, then return here.</p>
+					</div>
+
+					<div class="flex justify-center">
+						<button type="button" class="text-sm text-base-content/50 hover:text-base-content/70 transition-colors" onclick={() => { authInProgress = false; }}>
+							Cancel
+						</button>
+					</div>
+				{:else}
+					<div class="flex gap-3">
+						<button type="button" class="flex-1 h-11 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors" onclick={skipAuth}>
+							Skip
+						</button>
+						<button type="button" class="flex-1 h-11 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all" onclick={startAuth}>
+							Connect {currentAuthPlugin?.label || 'Account'}
+						</button>
+					</div>
+				{/if}
+			</div>
+
+		{:else if step === 'schedule'}
+			<div class="flex items-center justify-between px-6 pt-6 pb-2">
+				<div></div>
+				<button type="button" class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors" onclick={onCancel} aria-label="Close">
 					<X class="w-4 h-4 text-base-content/70" />
 				</button>
 			</div>
@@ -243,33 +366,19 @@
 				</div>
 
 				<div class="flex gap-3">
-					<button
-						type="button"
-						class="flex-1 h-11 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
-						onclick={() => { step = 'inputs'; }}
-					>
+					<button type="button" class="flex-1 h-11 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors" onclick={() => { step = 'inputs'; }}>
 						Back
 					</button>
-					<button
-						type="button"
-						class="flex-1 h-11 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all"
-						onclick={handleScheduleDone}
-					>
+					<button type="button" class="flex-1 h-11 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all" onclick={handleScheduleDone}>
 						Start working
 					</button>
 				</div>
 			</div>
 
 		{:else}
-			<!-- Step 1: Inputs -->
 			<div class="flex items-center justify-between px-6 pt-6 pb-2">
 				<div></div>
-				<button
-					type="button"
-					class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors"
-					onclick={onCancel}
-					aria-label="Close"
-				>
+				<button type="button" class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors" onclick={onCancel} aria-label="Close">
 					<X class="w-4 h-4 text-base-content/70" />
 				</button>
 			</div>
@@ -298,7 +407,6 @@
 						/>
 					</div>
 				{:else if Object.keys(inputs).length > 0}
-					<!-- Legacy fallback: flat key-value inputs -->
 					<div class="border-t border-base-content/10 pt-4 mb-6">
 						<p class="text-sm text-base-content/70 mb-4">
 							Before {agentName} gets to work, tell it a bit about you.
@@ -327,18 +435,10 @@
 				{/if}
 
 				<div class="flex gap-3">
-					<button
-						type="button"
-						class="flex-1 h-11 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
-						onclick={onCancel}
-					>
+					<button type="button" class="flex-1 h-11 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors" onclick={onCancel}>
 						Cancel
 					</button>
-					<button
-						type="button"
-						class="flex-1 h-11 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all"
-						onclick={handleInstall}
-					>
+					<button type="button" class="flex-1 h-11 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all" onclick={handleInstall}>
 						{hasInputFields || Object.keys(inputs).length > 0 ? 'Next' : 'Install & Start'}
 					</button>
 				</div>

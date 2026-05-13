@@ -17,14 +17,138 @@ You can use both patterns. A skill can embed a binary AND declare plugin depende
 
 ---
 
+## What a Plugin Can Do
+
+A plugin is a single native binary that can contribute multiple capabilities simultaneously. What makes a plugin a "connector" vs a "provider" vs a "tool plugin" is determined by which capabilities it declares in its manifest. A single plugin can declare all of them.
+
+| Capability | Manifest Field | What It Does | Runtime |
+|---|---|---|---|
+| **Tools** | `capabilities.tools[]` | Registers typed, schema-validated tools the agent can call | Routed through STRAP `PluginTool` |
+| **Hooks** | `capabilities.hooks[]` | Intercepts lifecycle events (tool execution, messages, memory, prompts) | `HookDispatcher` with circuit breaker |
+| **Commands** | `capabilities.commands[]` | Registers `/slash` commands that bypass the LLM and execute directly | Chat dispatch, 30s timeout |
+| **Routes** | `capabilities.routes[]` | Handles HTTP endpoints (OAuth callbacks, webhooks) | Proxied through catch-all handler |
+| **Providers** | `capabilities.providers[]` | Registers as an AI model provider (LLM, speech, image) | `PluginProvider` with NDJSON streaming |
+| **Config** | `capabilities.configSchema[]` | Declares user-configurable settings rendered as a form in the UI | Values injected as env vars |
+| **Events** | `events[]` | Produces events via long-running watch processes (NDJSON on stdout) | Auto-emitted into EventBus |
+| **Auth** | `auth` | Declares an authentication flow (OAuth, API keys) with login/status/logout | HTTP endpoints + WebSocket events |
+| **Permissions** | `permissions` | Declares env var access, network needs, and max execution timeout | Enforced at exec time |
+
+### Common Plugin Patterns
+
+**Connector plugin** — wraps a SaaS API. Declares `auth` for OAuth/API key login, `tools[]` for API operations, `events[]` for webhook-driven watches, and `configSchema[]` for user settings.
+
+```json
+{
+  "id": "asana",
+  "slug": "asana",
+  "capabilities": {
+    "tools": [
+      { "name": "asana.list-tasks", "description": "List tasks", "command": "tasks list" }
+    ],
+    "configSchema": [
+      { "key": "WORKSPACE_ID", "label": "Workspace", "fieldType": "string", "required": true }
+    ]
+  },
+  "auth": { "type": "oauth_cli", "label": "Asana account", "commands": { "login": "auth login", "status": "doctor" } },
+  "events": [
+    { "name": "task.created", "description": "New task created", "command": "watch tasks" }
+  ]
+}
+```
+
+**Provider plugin** — adds an AI model backend. Declares `providers[]` with commands for listing models and streaming chat.
+
+```json
+{
+  "id": "openrouter",
+  "slug": "openrouter",
+  "capabilities": {
+    "providers": [
+      {
+        "id": "openrouter",
+        "displayName": "OpenRouter",
+        "providerType": "model",
+        "modelsCommand": "models list",
+        "chatCommand": "chat stream",
+        "authCommand": "auth setup"
+      }
+    ]
+  }
+}
+```
+
+**Hook plugin** — intercepts agent lifecycle events. Declares `hooks[]` to filter or observe tool calls, messages, memory, or prompts.
+
+```json
+{
+  "id": "content-filter",
+  "slug": "content-filter",
+  "capabilities": {
+    "hooks": [
+      {
+        "hook": "message.pre_send",
+        "hookType": "filter",
+        "priority": 10,
+        "command": "filter message",
+        "timeoutMs": 200
+      },
+      {
+        "hook": "tool.pre_execute",
+        "hookType": "filter",
+        "priority": 50,
+        "command": "filter tool-input",
+        "timeoutMs": 500
+      }
+    ]
+  }
+}
+```
+
+**Utility plugin** — shared binary that other plugins or skills depend on. No capabilities of its own — just a binary distributed via env var.
+
+```json
+{
+  "id": "ffmpeg",
+  "slug": "ffmpeg",
+  "platforms": {
+    "darwin-arm64": { "binaryName": "ffmpeg", "sha256": "...", "size": 50000000 }
+  }
+}
+```
+
+### Available Hook Points
+
+Plugins can subscribe to these lifecycle hooks. Filter hooks can modify payloads; action hooks are fire-and-forget.
+
+| Hook | Default Type | When |
+|---|---|---|
+| `tool.pre_execute` | filter | Before a tool runs — can modify input or block |
+| `tool.post_execute` | filter | After a tool completes — can modify output |
+| `message.pre_send` | filter | Before user message is sent to the agent |
+| `message.post_receive` | filter | After agent message is received |
+| `memory.pre_store` | filter | Before a memory is persisted |
+| `memory.pre_recall` | filter | Before memories are retrieved |
+| `session.message_append` | action | When a message is added to the session |
+| `prompt.system_sections` | filter | During system prompt generation — can inject sections |
+| `steering.generate` | filter | During steering signal generation |
+| `response.stream` | action | During response streaming |
+| `agent.turn` | action | When an agent turn completes |
+| `agent.should_continue` | filter | Decision point to continue or halt a turn |
+
+Hook circuit breaker: 3 consecutive failures disables the hook, auto-recovery after 5 minutes.
+
+---
+
 ## How It Works
 
 1. Publisher uploads a native binary to NeboLoop for each platform
-2. Publisher creates a skill with `plugins:` in SKILL.md frontmatter
-3. User installs the skill (via marketplace or `SKIL-XXXX-XXXX` code)
+2. Publisher creates a skill with `plugins:` in SKILL.md frontmatter (or another plugin with `dependencies:` in plugin.json)
+3. User installs the skill or plugin (via marketplace or install code)
 4. Nebo detects the plugin dependency and downloads the binary silently
-5. Binary is stored locally at `<data_dir>/nebo/plugins/<slug>/<version>/`
-6. Skill scripts access the binary via `{SLUG}_BIN` environment variable
+5. If the plugin declares its own `dependencies[]`, those are installed recursively
+6. Binary is stored locally at `<data_dir>/nebo/plugins/<slug>/<version>/`
+7. Skill scripts and dependent plugins access the binary via `{SLUG}_BIN` environment variable
+8. If the plugin declares `capabilities.tools[]`, typed tools are registered for the agent
 
 ```
 User installs skill → SKILL.md declares plugins: [{name: "gws", version: ">=1.2.0"}]
@@ -134,7 +258,7 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
 
 ```json
 {
-  "id": "plugin-uuid-123",
+  "id": "gws",
   "slug": "gws",
   "name": "Google Workspace CLI",
   "version": "1.2.3",
@@ -159,7 +283,9 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
   "signingKeyId": "key-001",
   "envVar": "",
   "auth": { ... },
-  "events": [ ... ]
+  "events": [ ... ],
+  "dependencies": [ ... ],
+  "capabilities": { ... }
 }
 ```
 
@@ -167,7 +293,7 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | string | Yes | NeboLoop artifact ID (assigned on create) |
+| `id` | string | **Yes** | Unique identifier — use the plugin's slug (e.g., `"gws"`). For published plugins, NeboLoop may assign its own artifact ID. **Deserialization fails without this field** — the plugin will not be resolvable. |
 | `slug` | string | Yes | URL-safe slug. Must match what skills reference in `plugins[].name` |
 | `name` | string | Yes | Human-readable display name |
 | `version` | string | Yes | Semver version string |
@@ -178,6 +304,10 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
 | `envVar` | string | No | Custom env var name override. If empty, defaults to `{SLUG}_BIN` |
 | `auth` | object | No | Authentication configuration. See [Authentication](#authentication) |
 | `events` | array | No | Event declarations. See [Plugin Events](#plugin-events) |
+| `dependencies` | array | No | Plugin-to-plugin dependencies. See [Plugin Dependencies](#plugin-to-plugin-dependencies) |
+| `capabilities` | object | No | Structured capability declarations. See [Structured Capabilities](#structured-capabilities) |
+
+> **Important:** The `id` field is required for all plugins. Without it, `PluginManifest` deserialization fails and the plugin cannot be resolved. Use the slug as the id (e.g., `"id": "gws"`).
 
 ### PlatformBinary
 
@@ -312,7 +442,7 @@ If a multiplexed line has no `event` field, the declared event name is used as f
 
 ### Agent Watch Triggers
 
-Agents consume plugin events by declaring a watch trigger with an `event` field in `agent.json`:
+Agents consume plugin events by declaring a watch trigger with `event` and `command` in `agent.json`. Always provide both — `event` enables EventBus auto-emission, `command` is the fallback if the event isn't found in the manifest:
 
 ```json
 {
@@ -321,6 +451,7 @@ Agents consume plugin events by declaring a watch trigger with an `event` field 
       "type": "watch",
       "plugin": "gws",
       "event": "email.new",
+      "command": "gmail +watch --format ndjson",
       "restart_delay_secs": 5
     },
     "description": "React to new emails",
@@ -329,7 +460,7 @@ Agents consume plugin events by declaring a watch trigger with an `event` field 
 }
 ```
 
-When `event` is set, the watch command is resolved from the plugin's manifest — no need to hardcode CLI args in the agent config. The `{{key}}` placeholders in the manifest command are substituted from the agent's input values.
+When `event` is set, the runtime first attempts to resolve the CLI command from the plugin's manifest. If the event is not found (plugin not installed, manifest missing the event, etc.), the `command` field is used instead. Without either, the watcher is silently skipped. The `{{key}}` placeholders in the command are substituted from the agent's input values.
 
 Watch triggers with `event` set but no activities are also valid. They auto-emit into the EventBus without running any inline workflow, allowing other agents to subscribe to the events.
 
@@ -355,6 +486,330 @@ Response format:
   ],
   "total": 1
 }
+```
+
+---
+
+## Plugin-to-Plugin Dependencies
+
+Plugins can depend on other plugins. For example, `digest` needs `ffmpeg` for media extraction, and `nebo-office` may need `nebo-pdf` for shared rendering.
+
+Declare dependencies in your `plugin.json`:
+
+```json
+{
+  "id": "digest",
+  "slug": "digest",
+  "version": "1.2.0",
+  "dependencies": [
+    { "name": "ffmpeg", "version": ">=5.0.0" },
+    { "name": "imagemagick", "version": "*", "optional": true }
+  ]
+}
+```
+
+### Dependency Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Dependency plugin slug |
+| `version` | string | `"*"` | Semver version range (same syntax as skill plugin deps) |
+| `optional` | bool | `false` | If true, the parent plugin installs even without this dep |
+
+### How It Works
+
+1. User installs your plugin (via `PLUG-XXXX-XXXX` code or as a skill dependency)
+2. Nebo reads your manifest's `dependencies[]` field
+3. Each required dependency is resolved and installed recursively (same cascade as skill→plugin deps)
+4. Your plugin binary receives dependency binaries as environment variables: `{DEP_SLUG}_BIN`
+
+```
+digest installs → reads dependencies: [{name: "ffmpeg"}]
+  → installs ffmpeg → digest runs with DIGEST_BIN + FFMPEG_BIN
+```
+
+### Cycle Protection
+
+The dependency cascade uses a visited set. If plugin A depends on B and B depends on A, the second install is skipped (already visited). No infinite loops.
+
+### Accessing Dependency Binaries
+
+Your plugin binary receives its own binary path as `{SLUG}_BIN` and each dependency binary as `{DEP_SLUG}_BIN`:
+
+```bash
+#!/bin/bash
+# digest plugin — uses ffmpeg for media processing
+$FFMPEG_BIN -i "$INPUT" -f wav - | process_audio
+```
+
+---
+
+## Structured Capabilities
+
+Plugins can declare structured capabilities in their manifest. These are richer than the generic `plugin` tool — they give the agent typed tools with schemas, and prepare for future hook/command/route/provider integration.
+
+### Tools
+
+Declare tools in `capabilities.tools[]`. Each tool becomes a typed, schema-validated tool available to the agent:
+
+```json
+{
+  "capabilities": {
+    "tools": [
+      {
+        "name": "gws.gmail.triage",
+        "description": "Triage Gmail inbox — categorize, prioritize, and draft responses",
+        "command": "gmail +triage",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "limit": { "type": "integer", "description": "Max emails to triage" },
+            "label": { "type": "string", "description": "Gmail label filter" }
+          }
+        },
+        "approval": true,
+        "timeoutSeconds": 120
+      }
+    ]
+  }
+}
+```
+
+#### Tool Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Tool name exposed to the agent (e.g., `"gws.gmail.triage"`) |
+| `description` | string | required | Description for the model to understand when to use this tool |
+| `command` | string | required | CLI args appended to the plugin binary (e.g., `"gmail +triage"`) |
+| `inputSchema` | object | generic object | JSON Schema for typed input validation |
+| `approval` | bool | `true` | Whether this tool requires user approval before execution |
+| `timeoutSeconds` | number | `120` | Maximum execution time in seconds |
+
+#### How Typed Tools Work
+
+1. Plugin installs → Nebo reads `capabilities.tools[]`
+2. Tool definitions are routed through the consolidated STRAP `PluginTool`
+3. Agent sees the tool with its schema and description
+4. On execution: Nebo resolves the plugin binary, runs `<binary> <command>` with input as JSON on stdin, returns stdout
+
+The generic `plugin(resource, action, command)` tool still works alongside structured tools — it's the fallback for commands not declared in capabilities.
+
+### Hooks (Manifest Ready)
+
+Declare lifecycle hooks your plugin wants to subscribe to:
+
+```json
+{
+  "capabilities": {
+    "hooks": [
+      {
+        "hook": "tool.pre_execute",
+        "hookType": "filter",
+        "priority": 50,
+        "command": "hooks tool-pre-execute",
+        "timeoutMs": 500
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `hook` | string | required | Hook point name (e.g., `"tool.pre_execute"`) |
+| `hookType` | string | `"action"` | `"filter"` (can modify payload) or `"action"` (fire-and-forget) |
+| `priority` | number | `100` | Lower runs first |
+| `command` | string | required | CLI subcommand for the hook handler |
+| `timeoutMs` | number | `500` | Timeout in milliseconds |
+
+> **Note:** Hook declarations are stored in the manifest but the runtime bridge (`PluginHookCaller`) is not yet implemented. This will be completed in a future release.
+
+### Commands (Manifest Ready)
+
+Declare slash commands or app commands:
+
+```json
+{
+  "capabilities": {
+    "commands": [
+      {
+        "name": "/gmail",
+        "description": "Quick access to Gmail operations",
+        "command": "gmail",
+        "slash": true
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Command name (e.g., `"/gmail"`) |
+| `description` | string | required | Human-readable description |
+| `command` | string | required | CLI subcommand to execute |
+| `slash` | bool | `false` | Register as a slash command in chat |
+
+### Routes (Manifest Ready)
+
+Declare HTTP routes your plugin handles (e.g., OAuth callbacks):
+
+```json
+{
+  "capabilities": {
+    "routes": [
+      {
+        "path": "/gws/oauth/callback",
+        "method": "GET",
+        "command": "auth callback",
+        "auth": "public"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | string | required | Route path |
+| `method` | string | required | HTTP method (GET, POST, etc.) |
+| `command` | string | required | CLI subcommand that handles the request |
+| `auth` | string | `"jwt"` | `"public"` or `"jwt"` |
+
+### Providers (Manifest Ready)
+
+Declare AI provider adapters (for custom model backends):
+
+```json
+{
+  "capabilities": {
+    "providers": [
+      {
+        "id": "openrouter",
+        "displayName": "OpenRouter",
+        "providerType": "model",
+        "modelsCommand": "models list",
+        "chatCommand": "chat stream",
+        "authCommand": "auth setup"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | string | required | Provider ID |
+| `displayName` | string | required | Display name |
+| `providerType` | string | required | `"model"`, `"speech"`, `"image"`, etc. |
+| `modelsCommand` | string | required | CLI subcommand to list available models (JSON output) |
+| `chatCommand` | string | required | CLI subcommand for streaming chat (NDJSON on stdout) |
+| `authCommand` | string | — | CLI subcommand for auth setup |
+
+### Config Schema (User Settings)
+
+Declare user-configurable settings that render as a form in the UI. Values are stored in `plugin_settings` and injected as environment variables on every plugin execution.
+
+```json
+{
+  "capabilities": {
+    "configSchema": [
+      {
+        "key": "WORKSPACE_ID",
+        "label": "Workspace ID",
+        "description": "Your Asana workspace ID",
+        "fieldType": "string",
+        "required": true
+      },
+      {
+        "key": "MAX_RESULTS",
+        "label": "Max Results",
+        "fieldType": "number",
+        "default": "50"
+      },
+      {
+        "key": "API_KEY",
+        "label": "API Key",
+        "fieldType": "string",
+        "required": true,
+        "secret": true
+      },
+      {
+        "key": "LOG_LEVEL",
+        "label": "Log Level",
+        "fieldType": "select",
+        "options": ["debug", "info", "warn", "error"],
+        "default": "info"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `key` | string | required | Env var name injected on execution (e.g., `"MAX_RESULTS"`) |
+| `label` | string | required | Display label in the settings form |
+| `description` | string | `""` | Help text |
+| `fieldType` | string | `"string"` | `"string"`, `"number"`, `"boolean"`, or `"select"` |
+| `default` | string | — | Default value |
+| `required` | bool | `false` | Whether the user must set this field |
+| `secret` | bool | `false` | If true, value is stored encrypted |
+| `options` | string[] | — | Available choices for `"select"` type |
+
+---
+
+## Permissions
+
+Plugins can declare a permissions manifest that controls environment variable access and execution limits.
+
+```json
+{
+  "permissions": {
+    "envAllow": ["HOME", "PATH", "WORKSPACE_ID"],
+    "envDeny": ["AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN"],
+    "network": true,
+    "maxTimeoutSeconds": 600
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `envAllow` | string[] | `[]` (all allowed) | Env vars the plugin may read. Empty means all are allowed. |
+| `envDeny` | string[] | `[]` | Env vars always stripped before execution |
+| `network` | bool | `false` | Whether the plugin needs network access (informational) |
+| `maxTimeoutSeconds` | number | `300` | Maximum timeout in seconds for any tool execution |
+
+---
+
+## Manifest Validation
+
+Nebo validates `plugin.json` during installation. Invalid manifests are rejected before the binary is written to disk.
+
+### Validation Rules
+
+| Field | Rule |
+|-------|------|
+| `slug` | Required. Lowercase alphanumeric + hyphens only. No leading/trailing hyphens. Max 64 characters. |
+| `version` | Required. Must be valid semver (e.g., `"1.2.3"`, not `"latest"`). |
+| `platforms` | At least one platform entry required. |
+| `binaryName` | No path separators (`/`, `\`). No `..`. Cannot be empty. |
+| `auth.commands.login` | Must be non-empty if `auth` is present. |
+| `events[].name` | Must be non-empty. No path separators. |
+| `events[].command` | Must be non-empty. |
+
+### Common Validation Errors
+
+```
+"slug is required"
+"slug 'My Plugin!' contains invalid characters — use lowercase alphanumeric and hyphens"
+"slug must not start or end with a hyphen"
+"version 'latest' is not valid semver"
+"platforms must have at least one entry"
+"binary_name '../evil' contains path separator"
+"auth.commands.login must be non-empty when auth is present"
 ```
 
 ---
@@ -529,6 +984,7 @@ To test auth locally, create a `plugin.json` in the version directory with your 
 
 ```json
 {
+  "id": "my-plugin",
   "slug": "my-plugin",
   "name": "My Plugin",
   "version": "0.1.0",
@@ -555,6 +1011,7 @@ Declare events in your local `plugin.json`:
 
 ```json
 {
+  "id": "my-plugin",
   "slug": "my-plugin",
   "name": "My Plugin",
   "version": "0.1.0",
@@ -620,7 +1077,7 @@ Same scoping and version resolution rules as skills. See [Packaging](packaging.m
 
 ```json
 {
-  "id": "abc-123",
+  "id": "gws",
   "slug": "gws",
   "name": "Google Workspace CLI",
   "version": "1.2.3",
@@ -661,6 +1118,54 @@ Same scoping and version resolution rules as skills. See [Packaging](packaging.m
       "command": "calendar +watch --format ndjson",
       "multiplexed": true
     }
-  ]
+  ],
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "version": ">=5.0.0"
+    }
+  ],
+  "capabilities": {
+    "tools": [
+      {
+        "name": "gws.gmail.triage",
+        "description": "Triage Gmail inbox — categorize, prioritize, and draft responses",
+        "command": "gmail +triage",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "limit": { "type": "integer", "description": "Max emails to process" },
+            "label": { "type": "string", "description": "Gmail label to filter" }
+          }
+        },
+        "approval": true,
+        "timeoutSeconds": 120
+      },
+      {
+        "name": "gws.calendar.create",
+        "description": "Create a Google Calendar event",
+        "command": "calendar +create",
+        "approval": true,
+        "timeoutSeconds": 30
+      }
+    ],
+    "hooks": [
+      {
+        "hook": "tool.pre_execute",
+        "hookType": "filter",
+        "priority": 50,
+        "command": "hooks tool-pre-execute",
+        "timeoutMs": 500
+      }
+    ],
+    "commands": [
+      {
+        "name": "/gmail",
+        "description": "Quick access to Gmail operations",
+        "command": "gmail",
+        "slash": true
+      }
+    ]
+  }
 }
 ```

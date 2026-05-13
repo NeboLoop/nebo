@@ -3,15 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use ai::{
-    ChatRequest, Message, Provider, ProviderError, StreamEvent, StreamEventType,
-};
-use db::models::ChatMessage;
+use ai::{ChatRequest, Message, Provider, ProviderError, StreamEvent, StreamEventType};
 use db::Store;
+use db::models::ChatMessage;
 use tools::{Origin, Registry, ToolContext, ToolResult};
 
 use crate::concurrency::ConcurrencyController;
@@ -50,7 +48,10 @@ const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
 /// background operations (memory extraction, compaction, summarisation) from
 /// burning Janus credits when a CLI or direct-API provider is loaded.
 fn prefer_non_gateway(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
-    providers.iter().find(|p| p.id() != "janus").cloned()
+    providers
+        .iter()
+        .find(|p| p.id() != "janus")
+        .cloned()
         .or_else(|| providers.first().cloned())
 }
 
@@ -106,10 +107,16 @@ pub struct RunRequest {
     /// When set, the runner forces continuation even on text-only responses
     /// until this many iterations have been reached.
     pub min_iterations: usize,
+    /// Prompt assembly mode. Defaults to Full for interactive chat.
+    /// Set to Minimal for sub-agents (drops memory docs, tool routing, etiquette, etc.).
+    pub prompt_mode: prompt::PromptMode,
     /// Optional progress counters shared with the global RunRegistry.
     /// When set, the runner updates these atomics during run_loop() so
     /// external observers can see live iteration/tool counts.
     pub progress: Option<RunProgress>,
+    /// Injected as a system-role message after the user prompt — visible to the
+    /// LLM but not rendered in the frontend. Used for @mention routing context.
+    pub mention_context: Option<String>,
 }
 
 /// Shared atomic counters for live run progress reporting.
@@ -161,6 +168,7 @@ pub struct Runner {
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
     agent_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
+    ask_channels: Option<tools::AskChannels>,
 }
 
 impl Runner {
@@ -180,6 +188,7 @@ impl Runner {
             providers: Arc::new(RwLock::new(providers)),
             tools,
             store,
+            ask_channels: None,
             selector: Arc::new(selector),
             _steering: steering::Pipeline::new(),
             concurrency,
@@ -195,6 +204,12 @@ impl Runner {
         self.providers.clone()
     }
 
+    /// Set the shared ask channels so tools can prompt the user via `ctx.ask_user()`.
+    pub fn set_ask_channels(mut self, channels: tools::AskChannels) -> Self {
+        self.ask_channels = Some(channels);
+        self
+    }
+
     /// Replace the active providers list (called when auth_profiles change).
     pub async fn reload_providers(&self, providers: Vec<Arc<dyn Provider>>) {
         let loaded_ids: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
@@ -204,16 +219,19 @@ impl Runner {
         drop(lock);
         // Sync selector with newly loaded provider IDs
         self.selector.set_loaded_providers(loaded_ids);
-        self.selector.rebuild_fuzzy(&std::collections::HashMap::new());
+        self.selector
+            .rebuild_fuzzy(&std::collections::HashMap::new());
         info!(count, "reloaded AI providers");
+    }
+
+    /// Access the model selector (e.g. to inject runtime-discovered models).
+    pub fn selector(&self) -> &ModelSelector {
+        &self.selector
     }
 
     /// Run the agentic loop: prompt -> stream -> tool calls -> loop.
     /// Returns a receiver of streaming events.
-    pub async fn run(
-        &self,
-        req: RunRequest,
-    ) -> Result<mpsc::Receiver<StreamEvent>, ProviderError> {
+    pub async fn run(&self, req: RunRequest) -> Result<mpsc::Receiver<StreamEvent>, ProviderError> {
         info!(session_key = %req.session_key, channel = %req.channel, "Runner.run() called");
         {
             let lock = self.providers.read().await;
@@ -272,26 +290,27 @@ impl Runner {
                 let summary = {
                     let prov = prefer_non_gateway(&self.providers.read().await);
                     match prov {
-                        Some(p) => {
-                            crate::large_input::summarize(
-                                p.as_ref(),
-                                &req.prompt,
-                                content_type,
-                                &cheap_model,
-                            )
-                            .await
-                            .unwrap_or_else(|e| {
-                                warn!(error = %e, "large input summarisation failed, using fallback");
-                                crate::large_input::fallback_summary(&req.prompt)
-                            })
-                        }
+                        Some(p) => crate::large_input::summarize(
+                            p.as_ref(),
+                            &req.prompt,
+                            content_type,
+                            &cheap_model,
+                        )
+                        .await
+                        .unwrap_or_else(|e| {
+                            warn!(error = %e, "large input summarisation failed, using fallback");
+                            crate::large_input::fallback_summary(&req.prompt)
+                        }),
                         None => crate::large_input::fallback_summary(&req.prompt),
                     }
                 };
 
                 // 4. Build replacement content + metadata
                 let result = crate::large_input::build_replacement(
-                    &req.prompt, &summary, &file_path_str, content_type,
+                    &req.prompt,
+                    &summary,
+                    &file_path_str,
+                    content_type,
                 );
 
                 // Merge with image metadata when both are present
@@ -320,17 +339,26 @@ impl Runner {
             };
 
             info!(session_id = %session_id, prompt_len = effective_content.len(), "appending user message");
-            self.sessions.append_message(
-                &session_id,
-                "user",
-                &effective_content,
-                None,
-                None,
-                metadata.as_deref(),
-            ).map_err(|e| {
-                warn!(session_id = %session_id, error = %e, "failed to append user message");
-                ProviderError::Request(format!("failed to store message: {}", e))
-            })?;
+            self.sessions
+                .append_message(
+                    &session_id,
+                    "user",
+                    &effective_content,
+                    None,
+                    None,
+                    metadata.as_deref(),
+                )
+                .map_err(|e| {
+                    warn!(session_id = %session_id, error = %e, "failed to append user message");
+                    ProviderError::Request(format!("failed to store message: {}", e))
+                })?;
+
+            // Inject @mention routing context as an invisible system message
+            if let Some(ref ctx) = req.mention_context {
+                let _ = self
+                    .sessions
+                    .append_message(&session_id, "system", ctx, None, None, None);
+            }
         }
 
         // Create result channel
@@ -365,7 +393,8 @@ impl Runner {
         let model_override = if raw_model.is_empty() {
             String::new()
         } else {
-            self.selector.resolve_fuzzy(&raw_model)
+            self.selector
+                .resolve_fuzzy(&raw_model)
                 .unwrap_or_else(|| raw_model.clone())
         };
 
@@ -374,14 +403,22 @@ impl Runner {
             req.channel.clone()
         } else {
             let key_info = keyparser::parse_session_key(&session_key);
-            if key_info.channel.is_empty() { "web".to_string() } else { key_info.channel }
+            if key_info.channel.is_empty() {
+                "web".to_string()
+            } else {
+                key_info.channel
+            }
         };
 
         // Get model aliases for prompt injection
         let model_aliases = self.selector.get_aliases_text();
 
         let cancel_token = req.cancel_token.clone();
-        let max_iterations = if req.max_iterations > 0 { req.max_iterations } else { DEFAULT_MAX_ITERATIONS };
+        let max_iterations = if req.max_iterations > 0 {
+            req.max_iterations
+        } else {
+            DEFAULT_MAX_ITERATIONS
+        };
         let min_iterations = req.min_iterations;
         let entity_permissions = req.permissions.clone();
         let entity_resource_grants = req.resource_grants.clone();
@@ -389,7 +426,9 @@ impl Runner {
         let allowed_paths = req.allowed_paths.clone();
         let presence_tracker = req.presence_tracker.clone();
         let proactive_inbox = req.proactive_inbox.clone();
+        let prompt_mode = req.prompt_mode.clone();
         let progress = req.progress.clone();
+        let ask_channels = self.ask_channels.clone();
 
         // Set MCP context so CLI providers can access tools with the right session info
         if let Some(ref mcp_ctx) = self.mcp_context {
@@ -435,7 +474,9 @@ impl Runner {
                 presence_tracker.as_ref(),
                 proactive_inbox.as_ref(),
                 min_iterations,
+                prompt_mode,
                 progress.as_ref(),
+                ask_channels.as_ref(),
             )
             .await;
 
@@ -454,7 +495,9 @@ impl Runner {
     pub async fn chat(&self, prompt: &str) -> Result<String, ProviderError> {
         let prov_lock = self.providers.read().await;
         if prov_lock.is_empty() {
-            return Err(ProviderError::Request("No providers configured".to_string()));
+            return Err(ProviderError::Request(
+                "No providers configured".to_string(),
+            ));
         }
 
         let req = ChatRequest {
@@ -540,7 +583,9 @@ async fn run_loop(
     presence_tracker: Option<&Arc<crate::proactive::PresenceTracker>>,
     proactive_inbox: Option<&Arc<crate::proactive::ProactiveInbox>>,
     min_iterations: usize,
+    prompt_mode: prompt::PromptMode,
     progress: Option<&RunProgress>,
+    ask_channels: Option<&tools::AskChannels>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
@@ -557,7 +602,8 @@ async fn run_loop(
     // Cycle detection: track last auto-continued response to break loops
     let mut prev_auto_content: Option<String> = None;
     // Sticky flag: once user demands action ("don't stop", "do them all"), stays true for the run
-    let mut user_demanded_action_sticky = user_demanded_action(&sessions.get_messages(session_id).unwrap_or_default());
+    let mut user_demanded_action_sticky =
+        user_demanded_action(&sessions.get_messages(session_id).unwrap_or_default());
     // Cache for tool documentation (help/schema results) — survives sliding window eviction
     // via injection into the dynamic suffix. Max 5 entries, LRU-evict oldest.
     let mut tool_doc_cache: Vec<(String, String)> = Vec::new();
@@ -566,8 +612,15 @@ async fn run_loop(
     let mut output_recovery_attempts = 0usize;
     let mut continuation_steering: Option<String> = None;
     let mut consecutive_error_iterations = 0usize;
+    let mut post_tool_empty_nudges = 0usize;
+    let mut empty_content_retries = 0usize;
+    const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
+    let mut turn_exit_reason = "unknown".to_string();
+    let mut final_iteration = 0usize;
+    let mut last_model_name = String::new();
     // Deferred tools that have been activated (keyword-matched or first-called)
-    let mut activated_deferred: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut activated_deferred: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     // Resolve agent from registry if agent_id is set
     let active_agent_entry = if !agent_id.is_empty() {
@@ -589,7 +642,9 @@ async fn run_loop(
     let db_ctx = db_context::load_db_context(store, &memory_user_id);
 
     // Extract user-configured timezone for date/time in the dynamic suffix
-    let user_timezone = db_ctx.user.as_ref()
+    let user_timezone = db_ctx
+        .user
+        .as_ref()
         .and_then(|u| u.timezone.clone())
         .filter(|tz| !tz.is_empty());
 
@@ -605,12 +660,50 @@ async fn run_loop(
     };
     let mut db_context_formatted = db_context::format_for_system_prompt(&db_ctx, &agent_name);
 
+    // Inject agent input_values into the system prompt so the LLM knows
+    // about user-configured values (API keys, target market, etc.).
+    // Without this, agents and their sub-agents ignore configured inputs.
+    if !agent_id.is_empty() {
+        if let Ok(Some(agent_rec)) = store.get_agent(agent_id) {
+            if let Ok(vals) = serde_json::from_str::<serde_json::Value>(&agent_rec.input_values) {
+                if let Some(obj) = vals.as_object() {
+                    if !obj.is_empty() {
+                        let lines: Vec<String> = obj
+                            .iter()
+                            .filter_map(|(key, val)| {
+                                let display = match val {
+                                    serde_json::Value::String(s) if !s.is_empty() => s.clone(),
+                                    serde_json::Value::String(_) => return None,
+                                    other => other.to_string(),
+                                };
+                                Some(format!("- **{}**: {}", key, display))
+                            })
+                            .collect();
+                        if !lines.is_empty() {
+                            db_context_formatted.push_str(&format!(
+                                "\n\n---\n\n# Configured Inputs\nThe user has configured the following inputs for this agent. \
+                                Use these values — do NOT ask the user for information that is already provided here.\n{}",
+                                lines.join("\n")
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Pre-load prompt-relevant memories via FTS (surfaces memories the decay scoring may miss)
     if !user_prompt.is_empty() {
-        let existing_ids: std::collections::HashSet<i64> =
-            db_ctx.tacit_memories.iter().map(|sm| sm.memory.id).collect();
+        let existing_ids: std::collections::HashSet<i64> = db_ctx
+            .tacit_memories
+            .iter()
+            .map(|sm| sm.memory.id)
+            .collect();
         let relevant = db_context::load_prompt_relevant_memories(
-            store, &memory_user_id, user_prompt, &existing_ids,
+            store,
+            &memory_user_id,
+            user_prompt,
+            &existing_ids,
         );
         if !relevant.is_empty() {
             db_context_formatted.push_str(&relevant);
@@ -618,9 +711,7 @@ async fn run_loop(
     }
 
     // Get active task (mutable: refreshed periodically to catch async detect_objective)
-    let mut active_task = sessions
-        .get_active_task(session_id)
-        .unwrap_or_default();
+    let mut active_task = sessions.get_active_task(session_id).unwrap_or_default();
 
     // Match skills against user prompt (force_skill overrides trigger matching)
     // Template variables (${NEBO_SKILL_DIR}, ${NEBO_DATA_DIR}, etc.) are expanded at activation.
@@ -706,12 +797,16 @@ async fn run_loop(
                                     "name" | "description" | "triggers" => {
                                         let val_str = match val {
                                             serde_yaml::Value::String(s) => s.clone(),
-                                            serde_yaml::Value::Sequence(seq) => {
-                                                seq.iter().filter_map(|i| match i {
-                                                    serde_yaml::Value::String(s) => Some(s.as_str()),
+                                            serde_yaml::Value::Sequence(seq) => seq
+                                                .iter()
+                                                .filter_map(|i| match i {
+                                                    serde_yaml::Value::String(s) => {
+                                                        Some(s.as_str())
+                                                    }
                                                     _ => None,
-                                                }).collect::<Vec<_>>().join(", ")
-                                            }
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .join(", "),
                                             _ => continue,
                                         };
                                         identity_parts.push(format!("- **{}**: {}", key, val_str));
@@ -741,13 +836,17 @@ async fn run_loop(
     // The full skill body is now in active_skill_template (agent-declared skills)
     // or loaded on-demand via the skill tool.
     let skill_catalog = if let Some(loader) = skill_loader {
-        loader.compact_catalog().await
+        crate::sanitize::sanitize_for_prompt(&loader.compact_catalog().await)
     } else {
         String::new()
     };
 
+    // Load workspace context file (.nebo.md or NEBO.md) — walk up from CWD to git root or home.
+    let context_file = load_context_file();
+
     let static_system = if system_prompt.is_empty() {
         let pctx = prompt::PromptContext {
+            mode: prompt_mode,
             agent_name: agent_name.clone(),
             active_skill: active_skill_template,
             skill_catalog,
@@ -758,6 +857,8 @@ async fn run_loop(
             db_context: Some(db_context_formatted.clone()),
             active_agent: active_agent_body,
             plugin_inventory,
+            research_prompt: None,
+            context_file,
         };
         prompt::build_static(&pctx)
     } else {
@@ -785,9 +886,15 @@ async fn run_loop(
         let store = store.clone();
         let conc = concurrency.clone();
         let session_id = session_id.to_string();
-        let user_prompt = sessions.get_messages(&session_id)
+        let user_prompt = sessions
+            .get_messages(&session_id)
             .ok()
-            .and_then(|msgs| msgs.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()))
+            .and_then(|msgs| {
+                msgs.iter()
+                    .rev()
+                    .find(|m| m.role == "user")
+                    .map(|m| m.content.clone())
+            })
             .unwrap_or_default();
         tokio::spawn(async move {
             let _permit = conc.acquire_llm_permit().await;
@@ -801,9 +908,11 @@ async fn run_loop(
     let hard_ceiling = max_iterations.max(EXTENDED_MAX_ITERATIONS);
 
     for iteration in 1..=hard_ceiling {
+        final_iteration = iteration;
         // Update progress counter for external observers (RunRegistry dashboard)
         if let Some(p) = progress {
-            p.iteration_count.store(iteration as u32, std::sync::atomic::Ordering::Relaxed);
+            p.iteration_count
+                .store(iteration as u32, std::sync::atomic::Ordering::Relaxed);
         }
 
         if cancel_token.is_cancelled() {
@@ -811,7 +920,7 @@ async fn run_loop(
             return Ok(());
         }
 
-        // Adaptive iteration limit: extend past default only if making genuine progress
+        // Adaptive iteration limit: extend past default only if making genuine progress.
         if iteration > max_iterations && iteration <= hard_ceiling {
             if consecutive_error_iterations >= 2
                 || steering::should_force_break(&steering::Context {
@@ -831,13 +940,21 @@ async fn run_loop(
                     user_just_returned: false,
                     proactive_items: vec![],
                     provider_id: String::new(),
-                }).is_some()
+                })
+                .is_some()
             {
-                info!(session_id, iteration, "adaptive limit: stopping, no progress");
+                turn_exit_reason = "adaptive_limit_no_progress".to_string();
+                info!(
+                    session_id,
+                    iteration, "adaptive limit: stopping, no progress"
+                );
                 break;
             }
             if iteration == max_iterations + 1 {
-                info!(session_id, "adaptive limit: extending past {} (making progress)", max_iterations);
+                info!(
+                    session_id,
+                    "adaptive limit: extending past {} (making progress)", max_iterations
+                );
             }
         }
 
@@ -851,7 +968,9 @@ async fn run_loop(
             })
             .unwrap_or_default();
             let (result, _) = hooks.apply_filter("agent.should_continue", payload).await;
-            if let Ok(resp) = serde_json::from_slice::<crate::hooks::ShouldContinueResponse>(&result) {
+            if let Ok(resp) =
+                serde_json::from_slice::<crate::hooks::ShouldContinueResponse>(&result)
+            {
                 if !resp.should_continue {
                     info!(session_id, turn = iteration, reason = ?resp.reason, "hook requested stop");
                     break;
@@ -887,14 +1006,18 @@ async fn run_loop(
         }
 
         if all_messages.is_empty() {
-            let chat_id = sessions.resolve_session_key(session_id)
+            let chat_id = sessions
+                .resolve_session_key(session_id)
                 .unwrap_or_else(|_| format!("(unresolved, fallback=chat-{})", session_id));
             warn!(
                 session_id,
                 chat_id = %chat_id,
                 "No messages in session — session_key may not have been cached"
             );
-            return Err(format!("No messages in session (session_id={}, chat_id={})", session_id, chat_id));
+            return Err(format!(
+                "No messages in session (session_id={}, chat_id={})",
+                session_id, chat_id
+            ));
         }
 
         // Compute prompt overhead on first iteration
@@ -913,13 +1036,15 @@ async fn run_loop(
         // under-utilized.  Falls back to DEFAULT_CONTEXT_TOKEN_LIMIT (80K).
         let thresholds = state.thresholds.get_or_insert_with(|| {
             let model_ctx = if !model_override.is_empty() {
-                selector.get_model_info(model_override)
+                selector
+                    .get_model_info(model_override)
                     .map(|m| m.context_window as usize)
                     .filter(|&w| w > 0)
             } else {
                 let default_model = selector.select(&[]);
                 if !default_model.is_empty() {
-                    selector.get_model_info(&default_model)
+                    selector
+                        .get_model_info(&default_model)
                         .map(|m| m.context_window as usize)
                         .filter(|&w| w > 0)
                 } else {
@@ -929,6 +1054,28 @@ async fn run_loop(
             let context_window = model_ctx.unwrap_or(DEFAULT_CONTEXT_TOKEN_LIMIT);
             ContextThresholds::from_context_window(context_window, state.prompt_overhead)
         });
+
+        // Pre-compaction memory flush: extract facts from ALL messages before
+        // the sliding window evicts them. Only fires when new compactions have
+        // occurred and the conversation is large enough to warrant it.
+        if !skip_memory {
+            if crate::memory_flush::should_run_memory_flush(
+                &store,
+                session_id,
+                thresholds.auto_compact,
+            ) {
+                let prov = prefer_non_gateway(&providers.read().await);
+                if let Some(prov) = prov {
+                    crate::memory_flush::run_memory_flush(
+                        prov.as_ref(),
+                        &store,
+                        session_id,
+                        &memory_user_id,
+                    )
+                    .await;
+                }
+            }
+        }
 
         // Apply sliding window — token-only threshold (no message count limit).
         // auto_compact is ~80% of effective context window, so eviction only
@@ -1006,7 +1153,10 @@ async fn run_loop(
         // Detect which deferred tools should be activated this iteration (keyword match or prior call)
         let deferred_names = tools.get_deferred_names().await;
         let new_activations = tool_filter::detect_deferred_activations(
-            &window_messages, &called_tools, &deferred_names, &activated_deferred,
+            &window_messages,
+            &called_tools,
+            &deferred_names,
+            &activated_deferred,
         );
         if !new_activations.is_empty() {
             debug!(tools = ?new_activations, "activating deferred tools");
@@ -1015,21 +1165,28 @@ async fn run_loop(
 
         // Get tool definitions: active (non-deferred + activated deferred) tools get full schemas
         let all_tool_defs = tools.list_active(&activated_deferred).await;
-        let (tool_defs, active_contexts) = tool_filter::filter_tools_with_context(&all_tool_defs, &window_messages, &called_tools);
+        let (tool_defs, active_contexts) =
+            tool_filter::filter_tools_with_context(&all_tool_defs, &window_messages, &called_tools);
 
-        // Parse work tasks for steering
-        let work_tasks_json = sessions.get_work_tasks(session_id).unwrap_or_default();
-        let work_tasks: Vec<steering::WorkTask> = serde_json::from_str(&work_tasks_json)
-            .unwrap_or_default();
+        // Read tracking tasks from pending_tasks (session-scoped list)
+        let task_items_list_id = format!("session:{}", session_id);
+        let work_tasks: Vec<steering::WorkTask> = store
+            .list_task_items(&task_items_list_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| steering::WorkTask {
+                id: t.id.clone(),
+                subject: t.description.unwrap_or(t.prompt),
+                status: t.status,
+                details: None,
+            })
+            .collect();
 
         // Resolve user presence for steering (live from shared tracker)
         let (user_presence, user_just_returned) = if let Some(tracker) = presence_tracker {
             let p = tracker.get("_global").await;
             let jr = tracker.just_returned("_global").await;
-            (
-                p.map(|p| p.as_str().to_string()).unwrap_or_default(),
-                jr,
-            )
+            (p.map(|p| p.as_str().to_string()).unwrap_or_default(), jr)
         } else {
             (String::new(), false)
         };
@@ -1075,6 +1232,7 @@ async fn run_loop(
         } else {
             selector::parse_model_id(&selected_model)
         };
+        last_model_name = selected_model_name.to_string();
 
         // Generate steering directives (provider_id needed for skip rules)
         let steering_ctx = steering::Context {
@@ -1127,7 +1285,9 @@ async fn run_loop(
             })
             .unwrap_or_default();
             let (result, _) = hooks.apply_filter("steering.generate", payload).await;
-            if let Ok(resp) = serde_json::from_slice::<crate::hooks::SteeringGenerateResponse>(&result) {
+            if let Ok(resp) =
+                serde_json::from_slice::<crate::hooks::SteeringGenerateResponse>(&result)
+            {
                 for d in resp.directives {
                     all_directives.push(steering::SteeringDirective {
                         label: d.label,
@@ -1145,6 +1305,22 @@ async fn run_loop(
                 content: cont,
                 priority: 8,
             });
+        }
+
+        // Inject research mode nudge when detect_objective classified this as a research task.
+        // Short directive only — the full methodology is delivered via the bot tool result.
+        {
+            let detected_mode = sessions.get_detected_mode(session_id);
+            if detected_mode == "research" {
+                all_directives.push(steering::SteeringDirective {
+                    label: "Research Mode".to_string(),
+                    content: "This task requires multi-source research. \
+                        Call bot(resource: \"research\", action: \"research\", query: \"<the user's research question>\") \
+                        to activate parallel sub-agent research."
+                        .to_string(),
+                    priority: 9,
+                });
+            }
         }
 
         // Convert ChatMessage to ai::Message (no steering injection — steering goes in system prompt)
@@ -1175,9 +1351,15 @@ async fn run_loop(
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
         let full_system = if deferred_listing.is_empty() {
-            format!("{}\n\n{}\n\n{}{}", static_system, strap_section, tools_list, dynamic_suffix)
+            format!(
+                "{}\n\n{}\n\n{}{}",
+                static_system, strap_section, tools_list, dynamic_suffix
+            )
         } else {
-            format!("{}\n\n{}\n\n{}\n\n{}{}", static_system, strap_section, tools_list, deferred_listing, dynamic_suffix)
+            format!(
+                "{}\n\n{}\n\n{}\n\n{}{}",
+                static_system, strap_section, tools_list, deferred_listing, dynamic_suffix
+            )
         };
 
         // Hook: message.pre_send — let apps modify system prompt before LLM call
@@ -1209,9 +1391,7 @@ async fn run_loop(
                 bps.push(boundary);
             }
             let static_len = static_system.len();
-            if static_len > 0
-                && (bps.is_empty() || *bps.last().unwrap() < static_len)
-            {
+            if static_len > 0 && (bps.is_empty() || *bps.last().unwrap() < static_len) {
                 bps.push(static_len);
             }
             bps
@@ -1351,7 +1531,10 @@ async fn run_loop(
                     retryable_retries += 1;
                     selector.mark_failed(&selected_model);
                     if retryable_retries > MAX_RETRYABLE_RETRIES {
-                        return Err(format!("Service temporarily unavailable after {} retries: {}", MAX_RETRYABLE_RETRIES, e));
+                        return Err(format!(
+                            "Service temporarily unavailable after {} retries: {}",
+                            MAX_RETRYABLE_RETRIES, e
+                        ));
                     }
                     let prov_lock = providers.read().await;
                     let prov_count = prov_lock.len();
@@ -1422,12 +1605,21 @@ async fn run_loop(
                     if cli_incremental && !tool_calls.is_empty() {
                         let tc_json = serde_json::to_string(&tool_calls).ok();
                         if let Err(e) = sessions.append_message(
-                            session_id, "assistant", &assistant_content,
-                            tc_json.as_deref(), None, None,
+                            session_id,
+                            "assistant",
+                            &assistant_content,
+                            tc_json.as_deref(),
+                            None,
+                            None,
                         ) {
                             warn!(session_id = %session_id, error = %e, "failed to save CLI turn to DB");
                         } else {
-                            debug!(session_id, content_len = assistant_content.len(), tool_count = tool_calls.len(), "saved CLI turn incrementally");
+                            debug!(
+                                session_id,
+                                content_len = assistant_content.len(),
+                                tool_count = tool_calls.len(),
+                                "saved CLI turn incrementally"
+                            );
                         }
                         assistant_content.clear();
                         tool_calls.clear();
@@ -1473,8 +1665,9 @@ async fn run_loop(
                             (meta.session_limit_credits, meta.session_remaining_credits)
                         {
                             if limit > 0 {
-                                let used_pct =
-                                    ((limit.saturating_sub(remaining)) as f64 / limit as f64) * 100.0;
+                                let used_pct = ((limit.saturating_sub(remaining)) as f64
+                                    / limit as f64)
+                                    * 100.0;
                                 if used_pct >= 80.0 {
                                     warnings.push(format!(
                                         "Session usage at {:.0}% (resets at {})",
@@ -1488,8 +1681,9 @@ async fn run_loop(
                             (meta.weekly_limit_credits, meta.weekly_remaining_credits)
                         {
                             if limit > 0 {
-                                let used_pct =
-                                    ((limit.saturating_sub(remaining)) as f64 / limit as f64) * 100.0;
+                                let used_pct = ((limit.saturating_sub(remaining)) as f64
+                                    / limit as f64)
+                                    * 100.0;
                                 if used_pct >= 80.0 {
                                     warnings.push(format!(
                                         "Weekly usage at {:.0}% (resets at {})",
@@ -1507,17 +1701,19 @@ async fn run_loop(
                             // so chat_dispatch can broadcast a quota_warning WS event.
                             if !state.quota_warning_sent {
                                 state.quota_warning_sent = true;
-                                let _ = tx.send(StreamEvent {
-                                    event_type: StreamEventType::RateLimit,
-                                    text: warning_text,
-                                    tool_call: None,
-                                    error: None,
-                                    usage: None,
-                                    rate_limit: event.rate_limit.clone(),
-                                    widgets: None,
-                                    provider_metadata: None,
-                                    stop_reason: None,
-                                }).await;
+                                let _ = tx
+                                    .send(StreamEvent {
+                                        event_type: StreamEventType::RateLimit,
+                                        text: warning_text,
+                                        tool_call: None,
+                                        error: None,
+                                        usage: None,
+                                        rate_limit: event.rate_limit.clone(),
+                                        widgets: None,
+                                        provider_metadata: None,
+                                        stop_reason: None,
+                                    })
+                                    .await;
                             }
                         }
                     }
@@ -1533,7 +1729,8 @@ async fn run_loop(
                     }
                 }
                 StreamEventType::ToolResult
-                | StreamEventType::ApprovalRequest | StreamEventType::AskRequest => {
+                | StreamEventType::ApprovalRequest
+                | StreamEventType::AskRequest => {
                     // ToolResult/Approval/Ask: only sent by runner, not received from provider.
                 }
                 StreamEventType::SubagentStart
@@ -1595,12 +1792,18 @@ async fn run_loop(
             if is_retryable {
                 retryable_retries += 1;
                 if retryable_retries > MAX_RETRYABLE_RETRIES {
-                    let _ = tx.send(StreamEvent::error(
-                        format!("Service temporarily unavailable after {} retries: {}", MAX_RETRYABLE_RETRIES, err_msg)
-                    )).await;
+                    let _ = tx
+                        .send(StreamEvent::error(format!(
+                            "Service temporarily unavailable after {} retries: {}",
+                            MAX_RETRYABLE_RETRIES, err_msg
+                        )))
+                        .await;
                     break;
                 }
-                warn!(reason, retryable_retries, "retryable stream error, trying next provider");
+                warn!(
+                    reason,
+                    retryable_retries, "retryable stream error, trying next provider"
+                );
                 let prov_count = providers.read().await.len();
                 if prov_count > 1 {
                     provider_idx += 1;
@@ -1653,18 +1856,21 @@ async fn run_loop(
             };
 
             // Persist the content block order so rehydration preserves it.
-            let metadata = if block_order.len() > 1 || block_order.first().map_or(false, |b| b.0 == "tool") {
-                let blocks: Vec<serde_json::Value> = block_order
-                    .iter()
-                    .map(|(kind, idx)| match (*kind, idx) {
-                        ("tool", Some(i)) => serde_json::json!({"type": "tool", "toolCallIndex": i}),
-                        _ => serde_json::json!({"type": "text"}),
-                    })
-                    .collect();
-                serde_json::to_string(&serde_json::json!({"contentBlocks": blocks})).ok()
-            } else {
-                None // single text block = default order, no need to persist
-            };
+            let metadata =
+                if block_order.len() > 1 || block_order.first().map_or(false, |b| b.0 == "tool") {
+                    let blocks: Vec<serde_json::Value> = block_order
+                        .iter()
+                        .map(|(kind, idx)| match (*kind, idx) {
+                            ("tool", Some(i)) => {
+                                serde_json::json!({"type": "tool", "toolCallIndex": i})
+                            }
+                            _ => serde_json::json!({"type": "text"}),
+                        })
+                        .collect();
+                    serde_json::to_string(&serde_json::json!({"contentBlocks": blocks})).ok()
+                } else {
+                    None // single text block = default order, no need to persist
+                };
 
             if let Err(e) = sessions.append_message(
                 session_id,
@@ -1691,13 +1897,18 @@ async fn run_loop(
 
         // CLI providers handle their own tool execution via MCP — skip runner tool loop
         if provider.handles_tools() && !tool_calls.is_empty() {
-            info!(session_id, tool_count = tool_calls.len(), "CLI provider handled tools via MCP");
+            info!(
+                session_id,
+                tool_count = tool_calls.len(),
+                "CLI provider handled tools via MCP"
+            );
             break;
         }
 
         // Execute tool calls in parallel
         if !tool_calls.is_empty() {
-            let resolved_key = sessions.resolve_session_key(session_id)
+            let resolved_key = sessions
+                .resolve_session_key(session_id)
                 .unwrap_or_else(|_| session_id.to_string());
             let ctx = ToolContext {
                 origin,
@@ -1710,6 +1921,7 @@ async fn run_loop(
                 cancel_token: cancel_token.clone(),
                 stream_tx: Some(tx.clone()),
                 run_id: progress.map(|p| p.run_id.clone()),
+                ask_channels: ask_channels.cloned(),
             };
 
             // Track tool names for filter + activate any deferred tools on first call
@@ -1725,7 +1937,10 @@ async fn run_loop(
             let mut futures = FuturesUnordered::new();
             // Update progress: count tools and set current tool name
             if let Some(p) = progress {
-                p.tool_call_count.fetch_add(tool_calls.len() as u32, std::sync::atomic::Ordering::Relaxed);
+                p.tool_call_count.fetch_add(
+                    tool_calls.len() as u32,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 if let Ok(mut ct) = p.current_tool.lock() {
                     ct.clear();
                     if tool_calls.len() == 1 {
@@ -1735,7 +1950,36 @@ async fn run_loop(
                     }
                 }
             }
+            // Apply tool.pre_execute filter hooks — may block individual tools.
+            let mut blocked_results: Vec<Option<(ai::ToolCall, ToolResult)>> =
+                vec![None; tool_calls.len()];
+            let has_pre_hook = hooks.has_subscribers("tool.pre_execute");
+            if has_pre_hook {
+                for (idx, tc) in tool_calls.iter().enumerate() {
+                    let payload = serde_json::to_vec(&crate::hooks::ToolPreExecutePayload {
+                        tool_name: tc.name.clone(),
+                        input: tc.input.clone(),
+                        session_id: session_id.to_string(),
+                    })
+                    .unwrap_or_default();
+                    let (result, _handled) = hooks.apply_filter("tool.pre_execute", payload).await;
+                    if let Ok(resp) =
+                        serde_json::from_slice::<crate::hooks::ToolPreExecuteResponse>(&result)
+                    {
+                        if resp.blocked {
+                            let msg = resp
+                                .blocked_message
+                                .unwrap_or_else(|| "Blocked by plugin hook".into());
+                            blocked_results[idx] = Some((tc.clone(), ToolResult::error(msg)));
+                        }
+                    }
+                }
+            }
+
             for (idx, tc) in tool_calls.iter().enumerate() {
+                if blocked_results[idx].is_some() {
+                    continue; // skip blocked tools
+                }
                 let tools = tools.clone();
                 let ctx = ctx.clone();
                 let tc = tc.clone();
@@ -1804,13 +2048,55 @@ async fn run_loop(
                 results[idx] = Some((tc, result));
             }
 
+            // Inject blocked tool results (from pre_execute hooks).
+            for (idx, blocked) in blocked_results.into_iter().enumerate() {
+                if let Some((tc, result)) = blocked {
+                    let _ = tx
+                        .send(StreamEvent {
+                            event_type: StreamEventType::ToolResult,
+                            text: result.content.clone(),
+                            tool_call: Some(ai::ToolCall {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                                input: serde_json::Value::Null,
+                            }),
+                            error: Some(result.content.clone()),
+                            usage: None,
+                            rate_limit: None,
+                            widgets: None,
+                            provider_metadata: None,
+                            stop_reason: None,
+                        })
+                        .await;
+                    results[idx] = Some((tc, result));
+                }
+            }
+
+            // Fire tool.post_execute action hooks for completed tools.
+            if hooks.has_subscribers("tool.post_execute") {
+                for entry in &results {
+                    if let Some((tc, result)) = entry {
+                        let payload = serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
+                            tool_name: tc.name.clone(),
+                            result: result.content.clone(),
+                            is_error: result.is_error,
+                            session_id: session_id.to_string(),
+                        })
+                        .unwrap_or_default();
+                        hooks.do_action("tool.post_execute", payload).await;
+                    }
+                }
+            }
+
             // Sidecar vision verification — only for providers that can't include
             // images directly in tool results. Vision-capable providers (Anthropic,
             // Gemini) get the raw image passed through instead.
             {
                 let main_supports_images = {
                     let prov_lock = providers.read().await;
-                    prov_lock.first().map_or(false, |p| p.supports_tool_result_images())
+                    prov_lock
+                        .first()
+                        .map_or(false, |p| p.supports_tool_result_images())
                 };
 
                 if !main_supports_images {
@@ -1829,7 +2115,9 @@ async fn run_loop(
                                     let prov = provider.clone();
                                     sidecar_futures.push(async move {
                                         let verification = crate::sidecar::verify_screenshot(
-                                            prov.as_ref(), &image_url, &action_ctx,
+                                            prov.as_ref(),
+                                            &image_url,
+                                            &action_ctx,
                                         )
                                         .await;
                                         (idx, verification)
@@ -1877,6 +2165,24 @@ async fn run_loop(
                         preview, total_len
                     );
                 }
+                // Activate tools discovered by tool_search
+                if tc.name == "tool_search" && !result.is_error {
+                    if let Ok(search) = serde_json::from_str::<serde_json::Value>(&result.content) {
+                        if let Some(matches) = search.get("matches").and_then(|v| v.as_array()) {
+                            for m in matches {
+                                if let Some(name) = m.as_str() {
+                                    if deferred_names.contains(name)
+                                        && !activated_deferred.contains(name)
+                                    {
+                                        debug!(tool = %name, "activating tool via tool_search");
+                                        activated_deferred.insert(name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Cache tool documentation results so they survive sliding window eviction.
                 // Detect help/schema actions on skill and plugin tools.
                 if !result.is_error && result.content.len() > 100 {
@@ -1905,14 +2211,9 @@ async fn run_loop(
                 };
                 let tr_json = serde_json::json!([row]).to_string();
 
-                if let Err(e) = sessions.append_message(
-                    session_id,
-                    "tool",
-                    "",
-                    None,
-                    Some(&tr_json),
-                    None,
-                ) {
+                if let Err(e) =
+                    sessions.append_message(session_id, "tool", "", None, Some(&tr_json), None)
+                {
                     warn!(session_id = %session_id, error = %e, "failed to save tool message to DB");
                 }
             }
@@ -1925,7 +2226,8 @@ async fn run_loop(
                 let args_str = tc.input.to_string();
                 let args_hash = simple_hash(args_str.as_bytes());
                 // Hash first 2000 bytes of the most recent result for this tool
-                let content_hash = sessions.get_messages(session_id)
+                let content_hash = sessions
+                    .get_messages(session_id)
                     .ok()
                     .and_then(|msgs| msgs.iter().rev().find(|m| m.role == "tool").cloned())
                     .and_then(|m| m.tool_results)
@@ -1944,9 +2246,8 @@ async fn run_loop(
             if had_results && all_errors_this_iteration {
                 consecutive_error_iterations += 1;
                 warn!(
-                    session_id, iteration,
-                    consecutive_error_iterations,
-                    "all tool calls failed this iteration"
+                    session_id,
+                    iteration, consecutive_error_iterations, "all tool calls failed this iteration"
                 );
             } else {
                 consecutive_error_iterations = 0;
@@ -1961,7 +2262,8 @@ async fn run_loop(
 
             // agent.turn action — notify apps after tool execution
             if hooks.has_subscribers("agent.turn") {
-                let turn_tool_names: Vec<String> = tool_calls.iter().map(|tc| tc.name.clone()).collect();
+                let turn_tool_names: Vec<String> =
+                    tool_calls.iter().map(|tc| tc.name.clone()).collect();
                 let payload = serde_json::to_vec(&crate::hooks::TurnPayload {
                     session_id: session_id.to_string(),
                     turn: iteration,
@@ -1973,27 +2275,37 @@ async fn run_loop(
                 hooks.do_action("agent.turn", payload).await;
             }
 
+            // Reset post-tool nudge flag after successful tool execution
+            // so it can fire again if the model goes empty on a later tool round.
+            post_tool_empty_nudges = 0;
+
             // Continue loop — LLM needs to respond to tool results
             continue;
         }
 
         // Max output tokens recovery: if response was truncated, force continuation
-        if stop_reason.as_deref() == Some("length")
-            || stop_reason.as_deref() == Some("max_tokens")
+        if stop_reason.as_deref() == Some("length") || stop_reason.as_deref() == Some("max_tokens")
         {
             if output_recovery_attempts < MAX_OUTPUT_RECOVERY_ATTEMPTS {
                 output_recovery_attempts += 1;
-                info!(iteration, session_id, attempt = output_recovery_attempts, "max output tokens recovery");
+                info!(
+                    iteration,
+                    session_id,
+                    attempt = output_recovery_attempts,
+                    "max output tokens recovery"
+                );
                 continuation_steering = Some(
                     "<system>Your previous response was cut off by the output token limit. \
                      Resume directly from where you stopped. No recap, no apology. \
-                     If you had pending tool calls, make them now.</system>".to_string()
+                     If you had pending tool calls, make them now.</system>"
+                        .to_string(),
                 );
                 continue;
             }
         }
         // Reset recovery counter on successful non-truncated completion
-        if stop_reason.as_deref() != Some("length") && stop_reason.as_deref() != Some("max_tokens") {
+        if stop_reason.as_deref() != Some("length") && stop_reason.as_deref() != Some("max_tokens")
+        {
             output_recovery_attempts = 0;
         }
 
@@ -2001,21 +2313,92 @@ async fn run_loop(
         // force-continue even if the LLM wants to stop.
         if min_iterations > 0 && iteration < min_iterations && tool_calls.is_empty() {
             if cancel_token.is_cancelled() {
-                info!(session_id, "skipping budget continuation: run was cancelled");
+                info!(
+                    session_id,
+                    "skipping budget continuation: run was cancelled"
+                );
                 break;
             }
             if !assistant_content.is_empty() {
-                info!(iteration, session_id, min = min_iterations, "budget continuation: forcing next iteration");
+                info!(
+                    iteration,
+                    session_id,
+                    min = min_iterations,
+                    "budget continuation: forcing next iteration"
+                );
                 continuation_steering = Some(
                     "<system>You stopped early but your task is not complete. \
                      Keep working — use your tools to make more progress. \
-                     Do not summarize or ask to continue. Take the next action.</system>".to_string()
+                     Do not summarize or ask to continue. Take the next action.</system>"
+                        .to_string(),
                 );
                 continue;
             }
         }
 
-        // No tool calls — check if we should auto-continue.
+        // No tool calls — handle empty responses before checking auto-continuation.
+        // Matches Hermes: post-tool nudge → empty retries → auto-continue → break.
+        if assistant_content.trim().is_empty() {
+            // Post-tool empty response nudge: model returned empty after tool results.
+            // Append assistant("(empty)") + user(nudge) to keep message sequence valid,
+            // then continue. One-shot: only fires once per tool round.
+            let prior_was_tool = sessions
+                .get_messages(session_id)
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .take(5)
+                .any(|m| m.role == "tool");
+            if prior_was_tool && post_tool_empty_nudges < 1 {
+                post_tool_empty_nudges += 1;
+                warn!(
+                    iteration,
+                    session_id, "empty response after tool calls — nudging model to continue"
+                );
+                // Append empty assistant + user nudge to maintain valid message sequence
+                let _ =
+                    sessions.append_message(session_id, "assistant", "(empty)", None, None, None);
+                let _ = sessions.append_message(
+                    session_id,
+                    "user",
+                    "You just executed tool calls but returned an empty response. \
+                     Please process the tool results above and continue with the task.",
+                    None,
+                    None,
+                    None,
+                );
+                continue;
+            }
+
+            // Empty response retry: retry up to 3 times before giving up.
+            if empty_content_retries < MAX_EMPTY_CONTENT_RETRIES {
+                empty_content_retries += 1;
+                warn!(
+                    iteration,
+                    session_id,
+                    retry = empty_content_retries,
+                    "empty response — retrying"
+                );
+                continue;
+            }
+
+            // Exhausted retries — output "(empty)" and break.
+            turn_exit_reason = "empty_response_exhausted".to_string();
+            warn!(
+                iteration,
+                session_id,
+                "empty response after {} retries — giving up",
+                MAX_EMPTY_CONTENT_RETRIES
+            );
+            let _ = sessions.append_message(session_id, "assistant", "(empty)", None, None, None);
+            let _ = tx.send(StreamEvent::text("(empty)".to_string())).await;
+            break;
+        }
+
+        // Reset retry counters on successful non-empty content
+        empty_content_retries = 0;
+
+        // Check if we should auto-continue.
         //
         // Philosophy (aligned with Claude Code / OpenClaw / Hermes): the primary
         // continuation signal is the presence of tool_use blocks, NOT pattern
@@ -2039,7 +2422,8 @@ async fn run_loop(
             if let Some(ref prev) = prev_auto_content {
                 if prev == &assistant_content {
                     info!(
-                        iteration, session_id,
+                        iteration,
+                        session_id,
                         auto_continuations,
                         "cycle detected: identical response, stopping auto-continuation"
                     );
@@ -2048,14 +2432,21 @@ async fn run_loop(
             }
 
             if cancel_token.is_cancelled() {
-                info!(session_id, "skipping work-task auto-continue: run was cancelled");
+                info!(
+                    session_id,
+                    "skipping work-task auto-continue: run was cancelled"
+                );
                 break;
             }
             prev_auto_content = Some(assistant_content.clone());
             auto_continuations += 1;
-            let incomplete_count = work_tasks.iter().filter(|t| t.status != "completed").count();
+            let incomplete_count = work_tasks
+                .iter()
+                .filter(|t| t.status != "completed")
+                .count();
             info!(
-                iteration, session_id,
+                iteration,
+                session_id,
                 auto_continuations,
                 auto_limit,
                 incomplete_count,
@@ -2083,19 +2474,101 @@ async fn run_loop(
             hooks.do_action("agent.turn", payload).await;
         }
 
-        // Conversation turn complete
-        info!(iteration, session_id, "agentic loop complete");
+        // Conversation turn complete — normal exit with text response
+        turn_exit_reason = format!("text_response(stop_reason={:?})", stop_reason);
+        info!(iteration, session_id, exit_reason = %turn_exit_reason, "agentic loop complete");
         break;
     }
+
+    // Post-loop: budget exhaustion summary request (matches Hermes _handle_max_iterations).
+    // If the loop exited because we hit max_iterations without a final text response,
+    // make ONE more API call with tools stripped to get a summary.
+    if final_iteration >= max_iterations && !turn_exit_reason.starts_with("text_response") {
+        // Only request summary if the last message is a tool result (mid-task exit)
+        let last_msg_is_tool = sessions
+            .get_messages(session_id)
+            .unwrap_or_default()
+            .last()
+            .map(|m| m.role == "tool")
+            .unwrap_or(false);
+        if last_msg_is_tool {
+            turn_exit_reason = format!(
+                "max_iterations_reached({}/{})",
+                final_iteration, max_iterations
+            );
+            info!(session_id, exit_reason = %turn_exit_reason, "budget exhausted — requesting summary");
+
+            // Append a user message requesting summary, then make one toolless API call
+            let _ = sessions.append_message(
+                session_id, "user",
+                "You've reached the maximum number of tool-calling iterations allowed. \
+                 Please provide a final response summarizing what you've found and accomplished so far, \
+                 without calling any more tools.",
+                None, None, None,
+            );
+
+            // Pick first available provider for the summary call
+            let prov_lock = providers.read().await;
+            if let Some(summary_provider) = prov_lock.first() {
+                let summary_messages =
+                    convert_messages(&sessions.get_messages(session_id).unwrap_or_default());
+
+                let summary_req = ChatRequest {
+                    messages: summary_messages,
+                    tools: vec![], // No tools — text-only response
+                    max_tokens: 4096,
+                    temperature: 0.7,
+                    system: static_system.clone(),
+                    static_system: static_system.clone(),
+                    model: last_model_name.clone(),
+                    enable_thinking: false,
+                    metadata: sticky_metadata.clone(),
+                    cache_breakpoints: vec![],
+                    cancel_token: Some(cancel_token.clone()),
+                };
+
+                if let Ok(mut rx) = summary_provider.stream(&summary_req).await {
+                    let mut summary_text = String::new();
+                    while let Some(event) = rx.recv().await {
+                        match event.event_type {
+                            ai::StreamEventType::Text => {
+                                let _ = tx.send(StreamEvent::text(event.text.clone())).await;
+                                summary_text.push_str(&event.text);
+                            }
+                            ai::StreamEventType::Done | ai::StreamEventType::Error => break,
+                            _ => {}
+                        }
+                    }
+                    if !summary_text.is_empty() {
+                        let _ = sessions.append_message(
+                            session_id,
+                            "assistant",
+                            &summary_text,
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Turn exit diagnostic (matches Hermes _turn_exit_reason logging)
+    info!(
+        session_id,
+        exit_reason = %turn_exit_reason,
+        iterations = final_iteration,
+        max_iterations,
+        "turn ended"
+    );
 
     // Debounced memory extraction: only runs after 5s idle per session.
     // Extract from last exchange only (last user msg + assistant response + tool
     // calls) to avoid re-extracting facts from old messages and creating duplicates.
     let has_providers = !providers.read().await.is_empty();
     if !skip_memory && has_providers {
-        let all_msgs = sessions
-            .get_messages(session_id)
-            .unwrap_or_default();
+        let all_msgs = sessions.get_messages(session_id).unwrap_or_default();
         // Find the last user message and take everything from there onward.
         let last_exchange: Vec<_> = {
             let last_user_idx = all_msgs.iter().rposition(|m| m.role == "user");
@@ -2115,22 +2588,84 @@ async fn run_loop(
             let mem_uid = memory_user_id.clone();
             let session_id_owned = session_id.to_string();
 
-            debouncer.schedule(session_id, move || async move {
-                let provider = {
-                    let prov_lock = providers.read().await;
-                    prefer_non_gateway(&prov_lock)
-                };
-                if let Some(provider) = provider {
-                    if let Some(facts) = memory::extract_facts(provider.as_ref(), &last_exchange).await {
-                        memory::store_facts(&store, &facts, &mem_uid);
-                        debug!(session_id = session_id_owned, "extracted and stored memory facts");
+            debouncer
+                .schedule(session_id, move || async move {
+                    let provider = {
+                        let prov_lock = providers.read().await;
+                        prefer_non_gateway(&prov_lock)
+                    };
+                    if let Some(provider) = provider {
+                        if let Some(facts) =
+                            memory::extract_facts(provider.as_ref(), &last_exchange).await
+                        {
+                            memory::store_facts(&store, &facts, &mem_uid);
+                            debug!(
+                                session_id = session_id_owned,
+                                "extracted and stored memory facts"
+                            );
+                        }
                     }
-                }
-            }).await;
+                })
+                .await;
         }
     }
 
+    // Background personality synthesis: if enough style observations exist,
+    // synthesize a personality directive. Runs at most once per run (spawned
+    // as a background task so it doesn't block the response).
+    if !skip_memory {
+        let store_clone = store.clone();
+        let providers_clone = providers.clone();
+        let uid = memory_user_id.clone();
+        let conc = concurrency.clone();
+        tokio::spawn(async move {
+            let _permit = conc.acquire_llm_permit().await;
+            let prov = prefer_non_gateway(&providers_clone.read().await);
+            if let Some(prov) = prov {
+                crate::personality::synthesize_directive(&store_clone, prov.as_ref(), &uid).await;
+            }
+        });
+    }
+
     Ok(())
+}
+
+/// Load workspace context from `.nebo.md` or `NEBO.md`.
+/// Walks up from CWD to git root (or home dir), returns the first match.
+fn load_context_file() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let mut dir = cwd.as_path();
+
+    loop {
+        for name in &[".nebo.md", "NEBO.md"] {
+            let path = dir.join(name);
+            if path.is_file() {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        let sanitized = crate::sanitize::sanitize_for_prompt(&content);
+                        debug!(path = %path.display(), "loaded workspace context file");
+                        return Some(sanitized);
+                    }
+                    Err(e) => {
+                        warn!(path = %path.display(), error = %e, "failed to read context file");
+                    }
+                }
+            }
+        }
+
+        // Stop at git root
+        if dir.join(".git").exists() {
+            break;
+        }
+
+        // Walk up
+        match dir.parent() {
+            Some(parent) if parent != dir => dir = parent,
+            _ => break,
+        }
+    }
+
+    None
 }
 
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
@@ -2156,7 +2691,10 @@ fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<St
     match tool_name {
         "skill" => {
             if action == "help" || action == "list" || action == "docs" {
-                let skill_name = input.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let skill_name = input
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 Some(format!("skill:{}", skill_name))
             } else {
                 None
@@ -2167,7 +2705,10 @@ fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<St
                 let name = if !resource.is_empty() {
                     resource
                 } else {
-                    input.get("name").and_then(|v| v.as_str()).unwrap_or("unknown")
+                    input
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
                 };
                 Some(format!("plugin:{}:{}", name, action))
             } else {
@@ -2177,7 +2718,10 @@ fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<St
         // MCP tool documentation
         "mcp" => {
             if action == "help" || action == "list" || action == "schema" {
-                let server = input.get("server").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let server = input
+                    .get("server")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 Some(format!("mcp:{}:{}", server, action))
             } else {
                 None
@@ -2190,7 +2734,10 @@ fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<St
 /// Compute max auto-continuations based on incomplete work tasks.
 /// Scales with remaining work so batch tasks get more runway.
 fn max_auto_continuations(work_tasks: &[steering::WorkTask]) -> usize {
-    let incomplete = work_tasks.iter().filter(|t| t.status != "completed").count();
+    let incomplete = work_tasks
+        .iter()
+        .filter(|t| t.status != "completed")
+        .count();
     if incomplete > 0 {
         (incomplete * 2).clamp(10, MAX_AUTO_CONTINUATIONS_CEILING)
     } else {
@@ -2203,12 +2750,33 @@ fn max_auto_continuations(work_tasks: &[steering::WorkTask]) -> usize {
 /// detection hasn't run yet.
 fn user_demanded_action(messages: &[ChatMessage]) -> bool {
     let imperative_patterns = [
-        "do it", "just do it", "get it done", "finish it", "keep going",
-        "don't stop", "dont stop", "do not stop", "handle it", "do them all", "go ahead",
-        "get them done", "do them", "finish them", "just go", "proceed",
-        "continue", "keep at it", "do the rest", "all of them",
-        "finish all", "complete all", "process all", "handle all",
-        "work through all", "why did you stop", "why are you stopping",
+        "do it",
+        "just do it",
+        "get it done",
+        "finish it",
+        "keep going",
+        "don't stop",
+        "dont stop",
+        "do not stop",
+        "handle it",
+        "do them all",
+        "go ahead",
+        "get them done",
+        "do them",
+        "finish them",
+        "just go",
+        "proceed",
+        "continue",
+        "keep at it",
+        "do the rest",
+        "all of them",
+        "finish all",
+        "complete all",
+        "process all",
+        "handle all",
+        "work through all",
+        "why did you stop",
+        "why are you stopping",
     ];
     // Check last 5 user messages (was 2) to catch demands that scroll off
     let recent_user: Vec<&ChatMessage> = messages
@@ -2249,27 +2817,21 @@ fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
                 return None;
             }
 
-            let tool_calls = msg
-                .tool_calls
-                .as_ref()
-                .and_then(|tc| {
-                    if tc.is_empty() || tc == "[]" || tc == "null" {
-                        None
-                    } else {
-                        serde_json::from_str::<serde_json::Value>(tc).ok()
-                    }
-                });
+            let tool_calls = msg.tool_calls.as_ref().and_then(|tc| {
+                if tc.is_empty() || tc == "[]" || tc == "null" {
+                    None
+                } else {
+                    serde_json::from_str::<serde_json::Value>(tc).ok()
+                }
+            });
 
-            let tool_results = msg
-                .tool_results
-                .as_ref()
-                .and_then(|tr| {
-                    if tr.is_empty() || tr == "[]" || tr == "null" {
-                        None
-                    } else {
-                        serde_json::from_str::<serde_json::Value>(tr).ok()
-                    }
-                });
+            let tool_results = msg.tool_results.as_ref().and_then(|tr| {
+                if tr.is_empty() || tr == "[]" || tr == "null" {
+                    None
+                } else {
+                    serde_json::from_str::<serde_json::Value>(tr).ok()
+                }
+            });
 
             let images = msg
                 .metadata
@@ -2331,10 +2893,7 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
             if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr_json) {
                 let mut valid_results = Vec::new();
                 for r in &results {
-                    let tcid = r
-                        .get("tool_call_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let tcid = r.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
                     if tcid.is_empty() || !issued_call_ids.contains(tcid) {
                         orphaned += 1;
                         continue;
@@ -2359,6 +2918,7 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
                                 tool_calls: None,
                                 tool_results: Some(single_tr),
                                 token_estimate: msg.token_estimate,
+                                html: None,
                             },
                         );
                     }
@@ -2373,6 +2933,7 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     // Phase 3: Rebuild with tool results injected after their assistant
     let mut result = Vec::with_capacity(messages.len());
     let mut reordered = 0u32;
+    let mut orphaned_uses = 0u32;
 
     for (i, msg) in messages.into_iter().enumerate() {
         if tool_msg_indices.contains(&i) {
@@ -2390,6 +2951,28 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
                             if let Some(tool_msg) = tool_result_map.remove(id) {
                                 reordered += 1;
                                 result.push(tool_msg);
+                            } else {
+                                // Orphaned tool_use: no matching tool_result exists.
+                                // Inject a synthetic result so strict providers
+                                // (Anthropic, GPT) don't reject the conversation.
+                                orphaned_uses += 1;
+                                let synthetic = serde_json::json!([{
+                                    "tool_call_id": id,
+                                    "content": "[Tool result unavailable]"
+                                }]);
+                                result.push(ChatMessage {
+                                    id: String::new(),
+                                    chat_id: String::new(),
+                                    role: "tool".to_string(),
+                                    content: "[Tool result unavailable]".to_string(),
+                                    metadata: None,
+                                    created_at: chrono::Utc::now().timestamp(),
+                                    day_marker: None,
+                                    tool_calls: None,
+                                    tool_results: Some(synthetic.to_string()),
+                                    token_estimate: Some(0),
+                                    html: None,
+                                });
                             }
                         }
                     }
@@ -2399,10 +2982,19 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     }
 
     if reordered > 0 {
-        debug!(reordered, "reordered tool results for correct message ordering");
+        debug!(
+            reordered,
+            "reordered tool results for correct message ordering"
+        );
     }
     if orphaned > 0 {
         debug!(orphaned, "stripped orphaned tool results");
+    }
+    if orphaned_uses > 0 {
+        debug!(
+            orphaned_uses,
+            "injected synthetic results for orphaned tool_use blocks"
+        );
     }
     // Drop any remaining unmatched results — they're double orphans
     let unmatched = tool_result_map.len();
@@ -2442,10 +3034,12 @@ async fn detect_objective(
     };
 
     // Gather recent conversation context (last 6 messages) for better classification
-    let recent_context = sessions.get_messages(session_id)
+    let recent_context = sessions
+        .get_messages(session_id)
         .ok()
         .map(|msgs| {
-            let recent: Vec<String> = msgs.iter()
+            let recent: Vec<String> = msgs
+                .iter()
                 .rev()
                 .take(6)
                 .collect::<Vec<_>>()
@@ -2474,10 +3068,14 @@ Recent conversation:
 Latest user message: {msg}
 
 Respond with ONLY one JSON line, no markdown fences:
-{{"action": "set", "objective": "concise 1-sentence objective"}}
-OR {{"action": "update", "objective": "refined objective incorporating the addition"}}
+{{"action": "set", "objective": "concise 1-sentence objective", "mode": "normal"}}
+OR {{"action": "update", "objective": "refined objective incorporating the addition", "mode": "normal"}}
 OR {{"action": "clear"}}
 OR {{"action": "keep"}}
+
+The "mode" field (required for "set" and "update") classifies HOW the agent should work:
+- "research" — the user wants multi-source investigation: comparing options, finding deals, evaluating alternatives, gathering information from multiple websites. The agent should use parallel sub-agents for coverage.
+- "normal" — everything else: direct actions, conversations, single lookups, creative tasks.
 
 ## Decision rules (in priority order):
 
@@ -2501,7 +3099,11 @@ OR {{"action": "keep"}}
 
 ## Key principle: When in doubt between "set" and "keep", prefer "set". A stale objective that doesn't match what the user actually wants is MORE harmful than resetting. The user can always continue the old task, but they can't unstick an agent that's persisting on a finished objective."#,
         obj = obj_display,
-        context = if recent_context.is_empty() { "(no prior messages)".to_string() } else { recent_context },
+        context = if recent_context.is_empty() {
+            "(no prior messages)".to_string()
+        } else {
+            recent_context
+        },
         msg = user_prompt
     );
 
@@ -2553,6 +3155,8 @@ OR {{"action": "keep"}}
         action: String,
         #[serde(default)]
         objective: String,
+        #[serde(default)]
+        mode: String,
     }
 
     let result: ObjectiveResult = match serde_json::from_str(resp) {
@@ -2565,16 +3169,21 @@ OR {{"action": "keep"}}
 
     match result.action.as_str() {
         "set" if !result.objective.is_empty() => {
-            info!(objective = %result.objective, "objective set");
+            info!(objective = %result.objective, mode = %result.mode, "objective set");
             let _ = sessions.set_active_task(session_id, &result.objective);
+            sessions.set_detected_mode(session_id, &result.mode);
         }
         "update" if !result.objective.is_empty() => {
-            info!(objective = %result.objective, "objective updated");
+            info!(objective = %result.objective, mode = %result.mode, "objective updated");
             let _ = sessions.set_active_task(session_id, &result.objective);
+            if !result.mode.is_empty() {
+                sessions.set_detected_mode(session_id, &result.mode);
+            }
         }
         "clear" => {
             info!("objective cleared");
             let _ = sessions.clear_active_task(session_id);
+            sessions.set_detected_mode(session_id, "");
         }
         "keep" | _ => {
             // No change
@@ -2625,7 +3234,11 @@ fn extract_skill_name(skill_ref: &str) -> String {
     if skill_ref.starts_with('@') {
         let without_at = &skill_ref[1..];
         let name_part = without_at.split('@').next().unwrap_or(without_at);
-        name_part.rsplit('/').next().unwrap_or(name_part).to_string()
+        name_part
+            .rsplit('/')
+            .next()
+            .unwrap_or(name_part)
+            .to_string()
     } else {
         skill_ref.to_string()
     }
@@ -2649,6 +3262,7 @@ mod tests {
                 tool_calls: None,
                 tool_results: None,
                 token_estimate: None,
+                html: None,
             },
             ChatMessage {
                 id: "2".into(),
@@ -2661,6 +3275,7 @@ mod tests {
                 tool_calls: None,
                 tool_results: None,
                 token_estimate: None,
+                html: None,
             },
         ];
 
@@ -2696,6 +3311,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         }
     }
 
@@ -2740,18 +3356,10 @@ mod tests {
         assert_eq!(result[0].role, "user");
         assert_eq!(result[1].role, "assistant"); // call_A
         assert_eq!(result[2].role, "tool"); // result for call_A
-        assert!(result[2]
-            .tool_results
-            .as_ref()
-            .unwrap()
-            .contains("call_A"));
+        assert!(result[2].tool_results.as_ref().unwrap().contains("call_A"));
         assert_eq!(result[3].role, "assistant"); // call_B
         assert_eq!(result[4].role, "tool"); // result for call_B
-        assert!(result[4]
-            .tool_results
-            .as_ref()
-            .unwrap()
-            .contains("call_B"));
+        assert!(result[4].tool_results.as_ref().unwrap().contains("call_B"));
     }
 
     #[test]
@@ -2774,7 +3382,10 @@ mod tests {
     #[test]
     fn test_extract_skill_name() {
         // Qualified ref with org and version
-        assert_eq!(extract_skill_name("@nebo/skills/gws-gmail@^1.0.0"), "gws-gmail");
+        assert_eq!(
+            extract_skill_name("@nebo/skills/gws-gmail@^1.0.0"),
+            "gws-gmail"
+        );
         // Qualified ref without version
         assert_eq!(extract_skill_name("@nebo/skills/gws-gmail"), "gws-gmail");
         // Plain name passthrough

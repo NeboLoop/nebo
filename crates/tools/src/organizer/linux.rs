@@ -6,8 +6,8 @@
 //! Calendar:  khal → gcalcli → calcurse
 //! Reminders: taskwarrior (task) → todo.sh
 
-use super::shared::{run_command, run_command_with_stdin, which_exists};
 use super::OrganizerInput;
+use super::shared::{run_command, run_command_with_stdin, which_exists};
 use crate::registry::ToolResult;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -100,7 +100,7 @@ async fn mail_send(input: &OrganizerInput) -> ToolResult {
                  - neomutt (recommended): sudo apt install neomutt\n\
                  - mutt: sudo apt install mutt\n\
                  - s-nail: sudo apt install s-nail",
-            )
+            );
         }
     };
 
@@ -144,7 +144,7 @@ async fn mail_read(input: &OrganizerInput) -> ToolResult {
                 "No mail reader found. Install notmuch for best results:\n\
                  sudo apt install notmuch\n\
                  notmuch setup",
-            )
+            );
         }
     };
 
@@ -288,7 +288,7 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
                 "No contacts backend found. Install one of:\n\
                  - khard (recommended): sudo apt install khard\n\
                  - abook: sudo apt install abook",
-            )
+            );
         }
     };
 
@@ -374,7 +374,12 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
 // Calendar
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn handle_calendar(action: &str, input: &OrganizerInput) -> ToolResult {
+pub async fn handle_calendar(
+    action: &str,
+    input: &OrganizerInput,
+    _ctx: &crate::origin::ToolContext,
+    _store: Option<&std::sync::Arc<db::Store>>,
+) -> ToolResult {
     let backend = match detect_calendar() {
         Some(b) => b,
         None => {
@@ -383,7 +388,7 @@ pub async fn handle_calendar(action: &str, input: &OrganizerInput) -> ToolResult
                  - khal (recommended): sudo apt install khal\n\
                  - gcalcli (Google Calendar): pip install gcalcli\n\
                  - calcurse: sudo apt install calcurse",
-            )
+            );
         }
     };
 
@@ -562,32 +567,21 @@ pub async fn handle_calendar(action: &str, input: &OrganizerInput) -> ToolResult
         }
 
         // ── calcurse ──
-        ("calcurse", "calendars") => {
-            ToolResult::ok(
-                "calcurse uses a single local calendar stored in ~/.local/share/calcurse/"
-                    .to_string(),
-            )
-        }
+        ("calcurse", "calendars") => ToolResult::ok(
+            "calcurse uses a single local calendar stored in ~/.local/share/calcurse/".to_string(),
+        ),
         ("calcurse", "today") => {
             run_command("calcurse", &["-Q", "--filter-type", "apt", "-d", "1"]).await
         }
         ("calcurse", "upcoming") => {
             let days = input.days.unwrap_or(7).clamp(1, 365);
             let days_str = days.to_string();
-            run_command(
-                "calcurse",
-                &["-Q", "--filter-type", "apt", "-d", &days_str],
-            )
-            .await
+            run_command("calcurse", &["-Q", "--filter-type", "apt", "-d", &days_str]).await
         }
         ("calcurse", "list") => {
             let days = input.days.unwrap_or(365).clamp(1, 365);
             let days_str = days.to_string();
-            run_command(
-                "calcurse",
-                &["-Q", "--filter-type", "apt", "-d", &days_str],
-            )
-            .await
+            run_command("calcurse", &["-Q", "--filter-type", "apt", "-d", &days_str]).await
         }
         ("calcurse", "create") => {
             let name = input.event_name();
@@ -642,7 +636,7 @@ pub async fn handle_reminders(action: &str, input: &OrganizerInput) -> ToolResul
                 "No task/reminder backend found. Install one of:\n\
                  - taskwarrior (recommended): sudo apt install taskwarrior\n\
                  - todo.sh: https://github.com/todotxt/todo.txt-cli",
-            )
+            );
         }
     };
 

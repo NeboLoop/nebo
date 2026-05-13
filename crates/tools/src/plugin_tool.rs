@@ -271,7 +271,10 @@ impl DynTool for PluginTool {
 
     fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
         // help, services, and events are read-only; exec needs approval
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("exec");
+        let action = input
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("exec");
         action == "exec"
     }
 
@@ -341,7 +344,11 @@ impl PluginTool {
                         "- **{}.{}** — {}{}\n",
                         slug,
                         ev.name,
-                        if ev.description.is_empty() { "(no description)" } else { &ev.description },
+                        if ev.description.is_empty() {
+                            "(no description)"
+                        } else {
+                            &ev.description
+                        },
                         if ev.multiplexed { " [multiplexed]" } else { "" }
                     ));
                 }
@@ -375,10 +382,9 @@ impl PluginTool {
             None => {
                 // Try to suggest similar services
                 let services = self.list_services(slug);
-                let names: Vec<&str> = services.iter()
-                    .map(|(n, _)| {
-                        n.strip_prefix(&format!("{}-", slug)).unwrap_or(n.as_str())
-                    })
+                let names: Vec<&str> = services
+                    .iter()
+                    .map(|(n, _)| n.strip_prefix(&format!("{}-", slug)).unwrap_or(n.as_str()))
                     .collect();
                 ToolResult::error(format!(
                     "No docs found for '{}'. Available services: {}",
@@ -461,7 +467,7 @@ impl PluginTool {
     async fn run_plugin_command(&self, pi: &PluginInput) -> ToolResult {
         if pi.command.is_empty() && pi.args.is_empty() {
             return ToolResult::error(
-                "command is required for exec. Use action: \"services\" to discover available commands."
+                "command is required for exec. Use action: \"services\" to discover available commands.",
             );
         }
 
@@ -529,6 +535,16 @@ impl PluginTool {
             binary_path.to_string_lossy().as_ref(),
         );
 
+        // Dependency plugin env vars (e.g., digest gets FFMPEG_BIN)
+        for dep in self.plugin_store.get_dependencies(&pi.resource) {
+            if let Some(dep_path) = self.plugin_store.resolve(&dep.name, &dep.version) {
+                cmd.env(
+                    napp::plugin::plugin_env_var(&dep.name),
+                    dep_path.to_string_lossy().as_ref(),
+                );
+            }
+        }
+
         // Augmented PATH with all plugin directories
         cmd.env("PATH", self.plugin_store.path_with_plugins());
 
@@ -539,21 +555,16 @@ impl PluginTool {
             }
         }
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            cmd.output(),
-        )
-        .await;
+        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output()).await;
 
         match result {
             Err(_) => ToolResult::error(format!(
                 "Plugin '{}' command timed out after {}s",
                 pi.resource, timeout_secs
             )),
-            Ok(Err(e)) => ToolResult::error(format!(
-                "Plugin '{}' command failed: {}",
-                pi.resource, e
-            )),
+            Ok(Err(e)) => {
+                ToolResult::error(format!("Plugin '{}' command failed: {}", pi.resource, e))
+            }
             Ok(Ok(output)) => {
                 let mut text = String::new();
 
@@ -757,11 +768,7 @@ impl PluginTool {
                             all.push_str(&chunk);
                             if !opened {
                                 if let Some(url) = extract_url(&all, false) {
-                                    open_auth_url(
-                                        &slug_for_stdout,
-                                        &url,
-                                        &broadcaster_for_stdout,
-                                    );
+                                    open_auth_url(&slug_for_stdout, &url, &broadcaster_for_stdout);
                                     opened = true;
                                 }
                             }
@@ -809,7 +816,7 @@ impl PluginTool {
 
 /// Check if a plugin command failure is due to stale/expired authentication.
 /// Matches common OAuth/auth error patterns in the combined output text.
-fn is_auth_error(output: &str) -> bool {
+pub fn is_auth_error(output: &str) -> bool {
     let lower = output.to_lowercase();
     const PATTERNS: &[&str] = &[
         "unauthorized",
@@ -906,7 +913,10 @@ mod tests {
     fn test_extract_url_streaming() {
         // URL followed by more text → extracted
         assert_eq!(
-            extract_url("Visit https://accounts.google.com/o/oauth2 to continue", false),
+            extract_url(
+                "Visit https://accounts.google.com/o/oauth2 to continue",
+                false
+            ),
             Some("https://accounts.google.com/o/oauth2".to_string())
         );
         // URL as last token without trailing whitespace → NOT extracted (still streaming)

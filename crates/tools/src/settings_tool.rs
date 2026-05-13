@@ -128,7 +128,10 @@ async fn handle_brightness(action: &str, input: &serde_json::Value) -> ToolResul
                 Err(e) => ToolResult::error(format!("Failed to set brightness: {}", e)),
             }
         }
-        _ => ToolResult::error(format!("Unknown brightness action '{}'. Use: get, set", action)),
+        _ => ToolResult::error(format!(
+            "Unknown brightness action '{}'. Use: get, set",
+            action
+        )),
     }
 }
 
@@ -150,7 +153,10 @@ async fn handle_wifi(action: &str) -> ToolResult {
                 Err(e) => ToolResult::error(format!("Failed to check WiFi: {}", e)),
             }
         }
-        _ => ToolResult::error(format!("Unknown wifi action '{}'. Use: status, toggle", action)),
+        _ => ToolResult::error(format!(
+            "Unknown wifi action '{}'. Use: status, toggle",
+            action
+        )),
     }
 }
 
@@ -159,16 +165,29 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
     match action {
         "status" => {
             let on = macos_native::bluetooth_is_on();
-            ToolResult::ok(if on { "Bluetooth: On" } else { "Bluetooth: Off" }.to_string())
+            ToolResult::ok(
+                if on {
+                    "Bluetooth: On"
+                } else {
+                    "Bluetooth: Off"
+                }
+                .to_string(),
+            )
         }
         "toggle" => {
             let currently_on = macos_native::bluetooth_is_on();
             macos_native::bluetooth_set(!currently_on);
             std::thread::sleep(std::time::Duration::from_millis(500));
             let new_state = macos_native::bluetooth_is_on();
-            ToolResult::ok(format!("Bluetooth: {}", if new_state { "On" } else { "Off" }))
+            ToolResult::ok(format!(
+                "Bluetooth: {}",
+                if new_state { "On" } else { "Off" }
+            ))
         }
-        _ => ToolResult::error(format!("Unknown bluetooth action '{}'. Use: status, toggle", action)),
+        _ => ToolResult::error(format!(
+            "Unknown bluetooth action '{}'. Use: status, toggle",
+            action
+        )),
     }
 }
 
@@ -203,7 +222,10 @@ async fn handle_darkmode(action: &str) -> ToolResult {
             ))
             .await
         }
-        _ => ToolResult::error(format!("Unknown darkmode action '{}'. Use: status, toggle", action)),
+        _ => ToolResult::error(format!(
+            "Unknown darkmode action '{}'. Use: status, toggle",
+            action
+        )),
     }
 }
 
@@ -254,7 +276,9 @@ async fn handle_volume(action: &str, input: &serde_json::Value) -> ToolResult {
             } else if which("amixer") {
                 run_command("amixer", &["get", "Master"]).await
             } else {
-                ToolResult::error("No audio control available (install pulseaudio-utils or alsa-utils)")
+                ToolResult::error(
+                    "No audio control available (install pulseaudio-utils or alsa-utils)",
+                )
             }
         }
         "set" => {
@@ -265,7 +289,9 @@ async fn handle_volume(action: &str, input: &serde_json::Value) -> ToolResult {
             } else if which("amixer") {
                 run_command("amixer", &["set", "Master", &pct]).await
             } else {
-                ToolResult::error("No audio control available (install pulseaudio-utils or alsa-utils)")
+                ToolResult::error(
+                    "No audio control available (install pulseaudio-utils or alsa-utils)",
+                )
             }
         }
         _ => ToolResult::error(format!("Unknown volume action '{}'. Use: get, set", action)),
@@ -281,7 +307,9 @@ async fn handle_brightness(action: &str, input: &serde_json::Value) -> ToolResul
             } else if which("xbacklight") {
                 run_command("xbacklight", &["-get"]).await
             } else {
-                ToolResult::error("Brightness control unavailable (install brightnessctl or xbacklight)")
+                ToolResult::error(
+                    "Brightness control unavailable (install brightnessctl or xbacklight)",
+                )
             }
         }
         "set" => {
@@ -292,10 +320,15 @@ async fn handle_brightness(action: &str, input: &serde_json::Value) -> ToolResul
             } else if which("xbacklight") {
                 run_command("xbacklight", &["-set", &format!("{}", value)]).await
             } else {
-                ToolResult::error("Brightness control unavailable (install brightnessctl or xbacklight)")
+                ToolResult::error(
+                    "Brightness control unavailable (install brightnessctl or xbacklight)",
+                )
             }
         }
-        _ => ToolResult::error(format!("Unknown brightness action '{}'. Use: get, set", action)),
+        _ => ToolResult::error(format!(
+            "Unknown brightness action '{}'. Use: get, set",
+            action
+        )),
     }
 }
 
@@ -321,7 +354,11 @@ async fn handle_wifi(action: &str) -> ToolResult {
                 let new_state = match output {
                     Ok(out) => {
                         let text = String::from_utf8_lossy(&out.stdout);
-                        if text.trim() == "enabled" { "off" } else { "on" }
+                        if text.trim() == "enabled" {
+                            "off"
+                        } else {
+                            "on"
+                        }
                     }
                     Err(_) => "on",
                 };
@@ -335,7 +372,11 @@ async fn handle_wifi(action: &str) -> ToolResult {
                 let action = match output {
                     Ok(out) => {
                         let text = String::from_utf8_lossy(&out.stdout);
-                        if text.contains("Soft blocked: yes") { "unblock" } else { "block" }
+                        if text.contains("Soft blocked: yes") {
+                            "unblock"
+                        } else {
+                            "block"
+                        }
                     }
                     Err(_) => "unblock",
                 };
@@ -344,7 +385,10 @@ async fn handle_wifi(action: &str) -> ToolResult {
                 ToolResult::error("Wi-Fi control unavailable (install NetworkManager or rfkill)")
             }
         }
-        _ => ToolResult::error(format!("Unknown wifi action '{}'. Use: status, toggle", action)),
+        _ => ToolResult::error(format!(
+            "Unknown wifi action '{}'. Use: status, toggle",
+            action
+        )),
     }
 }
 
@@ -376,7 +420,8 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
                 match output {
                     Ok(out) => {
                         let text = String::from_utf8_lossy(&out.stdout);
-                        if text.contains("Soft blocked: yes") || text.contains("Hard blocked: yes") {
+                        if text.contains("Soft blocked: yes") || text.contains("Hard blocked: yes")
+                        {
                             ToolResult::ok("Bluetooth: OFF (blocked)".to_string())
                         } else {
                             ToolResult::ok("Bluetooth: ON".to_string())
@@ -398,7 +443,11 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
                 let new_state = match output {
                     Ok(out) => {
                         let text = String::from_utf8_lossy(&out.stdout);
-                        if text.contains("Powered: yes") { "off" } else { "on" }
+                        if text.contains("Powered: yes") {
+                            "off"
+                        } else {
+                            "on"
+                        }
                     }
                     Err(_) => "on",
                 };
@@ -411,7 +460,11 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
                 let action = match output {
                     Ok(out) => {
                         let text = String::from_utf8_lossy(&out.stdout);
-                        if text.contains("Soft blocked: yes") { "unblock" } else { "block" }
+                        if text.contains("Soft blocked: yes") {
+                            "unblock"
+                        } else {
+                            "block"
+                        }
                     }
                     Err(_) => "unblock",
                 };
@@ -420,14 +473,21 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
                 ToolResult::error("Bluetooth control unavailable (install bluez or rfkill)")
             }
         }
-        _ => ToolResult::error(format!("Unknown bluetooth action '{}'. Use: status, toggle", action)),
+        _ => ToolResult::error(format!(
+            "Unknown bluetooth action '{}'. Use: status, toggle",
+            action
+        )),
     }
 }
 
 #[cfg(target_os = "linux")]
 async fn handle_battery() -> ToolResult {
     if which("upower") {
-        run_command("upower", &["-i", "/org/freedesktop/UPower/devices/battery_BAT0"]).await
+        run_command(
+            "upower",
+            &["-i", "/org/freedesktop/UPower/devices/battery_BAT0"],
+        )
+        .await
     } else {
         // Read directly from sysfs
         let capacity = std::fs::read_to_string("/sys/class/power_supply/BAT0/capacity")
@@ -490,8 +550,15 @@ async fn handle_info() -> ToolResult {
         }
     }
     // Kernel
-    if let Ok(out) = tokio::process::Command::new("uname").arg("-r").output().await {
-        info.push_str(&format!("Kernel: {}\n", String::from_utf8_lossy(&out.stdout).trim()));
+    if let Ok(out) = tokio::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .await
+    {
+        info.push_str(&format!(
+            "Kernel: {}\n",
+            String::from_utf8_lossy(&out.stdout).trim()
+        ));
     }
     // CPU
     if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
@@ -505,7 +572,11 @@ async fn handle_info() -> ToolResult {
         }
     }
     // Memory
-    if let Ok(out) = tokio::process::Command::new("free").args(["-h"]).output().await {
+    if let Ok(out) = tokio::process::Command::new("free")
+        .args(["-h"])
+        .output()
+        .await
+    {
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines() {
             if line.starts_with("Mem:") {
@@ -517,8 +588,15 @@ async fn handle_info() -> ToolResult {
         }
     }
     // Uptime
-    if let Ok(out) = tokio::process::Command::new("uptime").arg("-p").output().await {
-        info.push_str(&format!("Uptime: {}\n", String::from_utf8_lossy(&out.stdout).trim()));
+    if let Ok(out) = tokio::process::Command::new("uptime")
+        .arg("-p")
+        .output()
+        .await
+    {
+        info.push_str(&format!(
+            "Uptime: {}\n",
+            String::from_utf8_lossy(&out.stdout).trim()
+        ));
     }
 
     ToolResult::ok(info)
@@ -534,7 +612,10 @@ async fn handle_mute(mute: bool) -> ToolResult {
         let amixer_state = if mute { "mute" } else { "unmute" };
         run_command("amixer", &["set", "Master", amixer_state]).await
     } else {
-        ToolResult::error(format!("Failed to {}. No audio control available.", state_str))
+        ToolResult::error(format!(
+            "Failed to {}. No audio control available.",
+            state_str
+        ))
     }
 }
 
@@ -569,7 +650,8 @@ async fn handle_volume(action: &str, input: &serde_json::Value) -> ToolResult {
 async fn handle_brightness(action: &str, input: &serde_json::Value) -> ToolResult {
     match action {
         "get" => {
-            let script = "(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness";
+            let script =
+                "(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness";
             run_powershell(script).await
         }
         "set" => {
@@ -580,12 +662,16 @@ async fn handle_brightness(action: &str, input: &serde_json::Value) -> ToolResul
             );
             match run_powershell(&script).await {
                 r if r.is_error => ToolResult::error(format!(
-                    "Failed to set brightness (may not work on desktop monitors): {}", r.content
+                    "Failed to set brightness (may not work on desktop monitors): {}",
+                    r.content
                 )),
                 _ => ToolResult::ok(format!("Brightness set to {}%", value)),
             }
         }
-        _ => ToolResult::error(format!("Unknown brightness action '{}'. Use: get, set", action)),
+        _ => ToolResult::error(format!(
+            "Unknown brightness action '{}'. Use: get, set",
+            action
+        )),
     }
 }
 
@@ -609,9 +695,7 @@ async fn handle_wifi(action: &str) -> ToolResult {
                         return ToolResult::error("No Wi-Fi adapter found");
                     }
                     // Check current state
-                    let status_script = format!(
-                        "(Get-NetAdapter -Name '{}').Status", adapter
-                    );
+                    let status_script = format!("(Get-NetAdapter -Name '{}').Status", adapter);
                     let status_out = tokio::process::Command::new("powershell")
                         .args(["-NoProfile", "-Command", &status_script])
                         .output()
@@ -629,7 +713,10 @@ async fn handle_wifi(action: &str) -> ToolResult {
                 Err(e) => ToolResult::error(format!("Failed to find Wi-Fi adapter: {}", e)),
             }
         }
-        _ => ToolResult::error(format!("Unknown wifi action '{}'. Use: status, toggle", action)),
+        _ => ToolResult::error(format!(
+            "Unknown wifi action '{}'. Use: status, toggle",
+            action
+        )),
     }
 }
 
@@ -683,7 +770,11 @@ async fn handle_darkmode(action: &str) -> ToolResult {
                 .await;
             let new_value = match output {
                 Ok(out) => {
-                    if String::from_utf8_lossy(&out.stdout).trim() == "0" { 1 } else { 0 }
+                    if String::from_utf8_lossy(&out.stdout).trim() == "0" {
+                        1
+                    } else {
+                        0
+                    }
                 }
                 Err(_) => 0,
             };
@@ -693,15 +784,29 @@ async fn handle_darkmode(action: &str) -> ToolResult {
                 reg_path, new_value, reg_path, new_value
             );
             run_powershell(&script).await;
-            ToolResult::ok(format!("Dark mode {}", if new_value == 0 { "enabled" } else { "disabled" }))
+            ToolResult::ok(format!(
+                "Dark mode {}",
+                if new_value == 0 {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            ))
         }
-        _ => ToolResult::error(format!("Unknown darkmode action '{}'. Use: status, toggle", action)),
+        _ => ToolResult::error(format!(
+            "Unknown darkmode action '{}'. Use: status, toggle",
+            action
+        )),
     }
 }
 
 #[cfg(target_os = "windows")]
 async fn handle_sleep() -> ToolResult {
-    run_command("cmd", &["/C", "rundll32.exe powrprof.dll,SetSuspendState 0,1,0"]).await
+    run_command(
+        "cmd",
+        &["/C", "rundll32.exe powrprof.dll,SetSuspendState 0,1,0"],
+    )
+    .await
 }
 
 #[cfg(target_os = "windows")]
@@ -769,7 +874,8 @@ mod macos_native {
 
     fn load_display_services() -> Result<(*mut c_void, GetBrightnessFn, SetBrightnessFn), String> {
         unsafe {
-            let path = CString::new(DISPLAY_SERVICES_PATH).map_err(|e| format!("CString: {}", e))?;
+            let path =
+                CString::new(DISPLAY_SERVICES_PATH).map_err(|e| format!("CString: {}", e))?;
             let handle = dlopen(path.as_ptr(), RTLD_NOW);
             if handle.is_null() {
                 return Err("Failed to load DisplayServices framework".to_string());
@@ -796,7 +902,11 @@ mod macos_native {
             let display = CGMainDisplayID();
             let mut brightness: c_float = 0.0;
             let result = get_fn(display, &mut brightness);
-            if result == 0 { Ok(brightness) } else { Err(format!("error code {}", result)) }
+            if result == 0 {
+                Ok(brightness)
+            } else {
+                Err(format!("error code {}", result))
+            }
         }
     }
 
@@ -805,7 +915,11 @@ mod macos_native {
         unsafe {
             let display = CGMainDisplayID();
             let result = set_fn(display, value);
-            if result == 0 { Ok(()) } else { Err(format!("error code {}", result)) }
+            if result == 0 {
+                Ok(())
+            } else {
+                Err(format!("error code {}", result))
+            }
         }
     }
 
@@ -814,7 +928,9 @@ mod macos_native {
     }
 
     pub fn bluetooth_set(on: bool) {
-        unsafe { IOBluetoothPreferenceSetControllerPowerState(if on { 1 } else { 0 }); }
+        unsafe {
+            IOBluetoothPreferenceSetControllerPowerState(if on { 1 } else { 0 });
+        }
     }
 }
 
@@ -832,7 +948,11 @@ async fn run_osascript(script: &str) -> ToolResult {
     {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() { "OK".to_string() } else { text })
+            ToolResult::ok(if text.is_empty() {
+                "OK".to_string()
+            } else {
+                text
+            })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -846,7 +966,11 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() { "OK".to_string() } else { text })
+            ToolResult::ok(if text.is_empty() {
+                "OK".to_string()
+            } else {
+                text
+            })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -854,7 +978,11 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
             ToolResult::error(format!(
                 "{}{}",
                 stdout,
-                if stderr.is_empty() { String::new() } else { format!("\n{}", stderr) }
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stderr)
+                }
             ))
         }
         Err(e) => ToolResult::error(format!("Command '{}' failed: {}", cmd, e)),
@@ -916,7 +1044,11 @@ mod tests {
         let result = macos_native::brightness_get();
         assert!(result.is_ok(), "brightness_get failed: {:?}", result);
         let value = result.unwrap();
-        assert!((0.0..=1.0).contains(&value), "brightness should be 0.0-1.0, got {}", value);
+        assert!(
+            (0.0..=1.0).contains(&value),
+            "brightness should be 0.0-1.0, got {}",
+            value
+        );
     }
 
     #[cfg(target_os = "macos")]

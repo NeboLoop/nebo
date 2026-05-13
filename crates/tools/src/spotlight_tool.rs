@@ -125,7 +125,11 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                 if results.is_empty() {
                     ToolResult::ok("No files found")
                 } else {
-                    ToolResult::ok(format!("Found {} results:\n{}", results.len(), results.join("\n")))
+                    ToolResult::ok(format!(
+                        "Found {} results:\n{}",
+                        results.len(),
+                        results.join("\n")
+                    ))
                 }
             }
             _ => {
@@ -142,7 +146,11 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                         if results.is_empty() {
                             ToolResult::ok("No files found")
                         } else {
-                            ToolResult::ok(format!("Found {} results:\n{}", results.len(), results.join("\n")))
+                            ToolResult::ok(format!(
+                                "Found {} results:\n{}",
+                                results.len(),
+                                results.join("\n")
+                            ))
                         }
                     }
                     Err(e) => ToolResult::error(format!("Search failed: {}", e)),
@@ -155,7 +163,11 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
     {
         // Use PowerShell to search via Windows Search API
         let escaped_query = query.replace("'", "''");
-        let search_dir = if dir.is_empty() { "$env:USERPROFILE".to_string() } else { format!("'{}'", dir.replace("'", "''")) };
+        let search_dir = if dir.is_empty() {
+            "$env:USERPROFILE".to_string()
+        } else {
+            format!("'{}'", dir.replace("'", "''"))
+        };
         let script = format!(
             "Get-ChildItem -Path {} -Recurse -Filter '*{}*' -ErrorAction SilentlyContinue | Select-Object -First {} -ExpandProperty FullName",
             search_dir, escaped_query, limit
@@ -171,7 +183,11 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                 if results.is_empty() {
                     ToolResult::ok("No files found")
                 } else {
-                    ToolResult::ok(format!("Found {} results:\n{}", results.len(), results.join("\n")))
+                    ToolResult::ok(format!(
+                        "Found {} results:\n{}",
+                        results.len(),
+                        results.join("\n")
+                    ))
                 }
             }
             Ok(output) => {

@@ -38,19 +38,18 @@ pub fn resolve_version(
         )));
     }
 
-    let req = if range.is_empty() || range == "*" {
-        None
-    } else {
-        Some(
-            semver::VersionReq::parse(range)
-                .map_err(|e| NappError::Other(format!("invalid semver range '{}': {}", range, e)))?,
-        )
-    };
+    let req =
+        if range.is_empty() || range == "*" {
+            None
+        } else {
+            Some(semver::VersionReq::parse(range).map_err(|e| {
+                NappError::Other(format!("invalid semver range '{}': {}", range, e))
+            })?)
+        };
 
     let mut best: Option<(semver::Version, PathBuf)> = None;
 
-    let entries = std::fs::read_dir(&dir)
-        .map_err(|e| NappError::Io(e))?;
+    let entries = std::fs::read_dir(&dir).map_err(|e| NappError::Io(e))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -100,15 +99,17 @@ pub fn resolve_version(
 }
 
 /// List all installed versions for a qualified name, sorted newest first.
-pub fn list_versions(base_dir: &Path, qualified_name: &str) -> Result<Vec<(semver::Version, PathBuf)>, NappError> {
+pub fn list_versions(
+    base_dir: &Path,
+    qualified_name: &str,
+) -> Result<Vec<(semver::Version, PathBuf)>, NappError> {
     let dir = base_dir.join(qualified_name);
 
     if !dir.exists() {
         return Ok(Vec::new());
     }
 
-    let entries = std::fs::read_dir(&dir)
-        .map_err(|e| NappError::Io(e))?;
+    let entries = std::fs::read_dir(&dir).map_err(|e| NappError::Io(e))?;
 
     let mut versions: Vec<(semver::Version, PathBuf)> = entries
         .flatten()
@@ -152,11 +153,7 @@ mod tests {
         create_napp_file(&skill_dir, "1.1.0");
         create_napp_file(&skill_dir, "2.0.0");
 
-        let result = resolve_version(
-            tmp.path(),
-            "@acme/skills/test",
-            "*",
-        ).unwrap();
+        let result = resolve_version(tmp.path(), "@acme/skills/test", "*").unwrap();
 
         assert!(result.ends_with("2.0.0.napp"));
     }
@@ -172,11 +169,7 @@ mod tests {
         create_napp_file(&skill_dir, "1.5.0");
         create_napp_file(&skill_dir, "2.0.0");
 
-        let result = resolve_version(
-            tmp.path(),
-            "@acme/skills/test",
-            "^1.0.0",
-        ).unwrap();
+        let result = resolve_version(tmp.path(), "@acme/skills/test", "^1.0.0").unwrap();
 
         // ^1.0.0 matches >=1.0.0, <2.0.0
         assert!(result.ends_with("1.5.0.napp"));
@@ -192,11 +185,7 @@ mod tests {
         create_napp_file(&skill_dir, "1.0.5");
         create_napp_file(&skill_dir, "1.1.0");
 
-        let result = resolve_version(
-            tmp.path(),
-            "@acme/skills/test",
-            "~1.0.0",
-        ).unwrap();
+        let result = resolve_version(tmp.path(), "@acme/skills/test", "~1.0.0").unwrap();
 
         // ~1.0.0 matches >=1.0.0, <1.1.0
         assert!(result.ends_with("1.0.5.napp"));
@@ -211,11 +200,7 @@ mod tests {
         create_napp_file(&skill_dir, "1.0.0");
         create_napp_file(&skill_dir, "1.1.0");
 
-        let result = resolve_version(
-            tmp.path(),
-            "@acme/skills/test",
-            "=1.0.0",
-        ).unwrap();
+        let result = resolve_version(tmp.path(), "@acme/skills/test", "=1.0.0").unwrap();
 
         assert!(result.ends_with("1.0.0.napp"));
     }
@@ -228,11 +213,7 @@ mod tests {
 
         create_napp_file(&skill_dir, "1.0.0");
 
-        let result = resolve_version(
-            tmp.path(),
-            "@acme/skills/test",
-            "^2.0.0",
-        );
+        let result = resolve_version(tmp.path(), "@acme/skills/test", "^2.0.0");
 
         assert!(result.is_err());
     }
@@ -241,11 +222,7 @@ mod tests {
     fn test_resolve_missing_directory() {
         let tmp = tempfile::TempDir::new().unwrap();
 
-        let result = resolve_version(
-            tmp.path(),
-            "@acme/skills/nonexistent",
-            "*",
-        );
+        let result = resolve_version(tmp.path(), "@acme/skills/nonexistent", "*");
 
         assert!(result.is_err());
     }
@@ -260,11 +237,7 @@ mod tests {
         create_napp_file(&skill_dir, "2.0.0");
 
         // Empty range should return latest
-        let result = resolve_version(
-            tmp.path(),
-            "@acme/skills/test",
-            "",
-        ).unwrap();
+        let result = resolve_version(tmp.path(), "@acme/skills/test", "").unwrap();
 
         assert!(result.ends_with("2.0.0.napp"));
     }

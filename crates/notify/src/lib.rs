@@ -1,5 +1,4 @@
 use std::process::Command;
-use tracing::warn;
 
 /// Send a native OS notification. Falls back silently if unavailable.
 ///
@@ -11,11 +10,9 @@ pub fn send(_title: &str, _body: &str) {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)] // Used when send() is re-enabled with tauri-plugin-notification
 fn send_platform(title: &str, body: &str) -> Result<(), String> {
-    let script = format!(
-        "display notification \"{}\" with title \"{}\"",
-        body, title
-    );
+    let script = format!("display notification \"{}\" with title \"{}\"", body, title);
     Command::new("osascript")
         .args(["-e", &script])
         .output()
@@ -24,6 +21,7 @@ fn send_platform(title: &str, body: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn send_platform(title: &str, body: &str) -> Result<(), String> {
     Command::new("notify-send")
         .args([title, body])
@@ -33,6 +31,7 @@ fn send_platform(title: &str, body: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn send_platform(title: &str, body: &str) -> Result<(), String> {
     let ps = format!(
         r#"
@@ -54,11 +53,13 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[allow(dead_code)]
 fn send_platform(_title: &str, _body: &str) -> Result<(), String> {
     Ok(())
 }
 
 /// Remove characters that could break shell quoting and truncate.
+#[allow(dead_code)] // Used by tests and when send() is re-enabled
 fn sanitize(s: &str) -> String {
     let s = s.replace('\'', "\u{2019}"); // curly quote
     let s = s.replace('\\', "");

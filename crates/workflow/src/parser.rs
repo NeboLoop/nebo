@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 use crate::WorkflowError;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Top-level workflow definition (parsed from workflow.json).
 ///
@@ -69,7 +69,9 @@ fn default_token_max() -> u32 {
 
 impl Default for TokenBudget {
     fn default() -> Self {
-        Self { max: default_token_max() }
+        Self {
+            max: default_token_max(),
+        }
     }
 }
 
@@ -82,8 +84,12 @@ pub struct OnError {
     pub fallback: Fallback,
 }
 
-fn default_retry() -> u32 { 1 }
-fn default_fallback() -> Fallback { Fallback::NotifyOwner }
+fn default_retry() -> u32 {
+    1
+}
+fn default_fallback() -> Fallback {
+    Fallback::NotifyOwner
+}
 
 impl Default for OnError {
     fn default() -> Self {
@@ -123,8 +129,8 @@ pub struct Budget {
 
 /// Parse a workflow definition from JSON.
 pub fn parse_workflow(json_str: &str) -> Result<WorkflowDef, WorkflowError> {
-    let def: WorkflowDef = serde_json::from_str(json_str)
-        .map_err(|e| WorkflowError::Parse(e.to_string()))?;
+    let def: WorkflowDef =
+        serde_json::from_str(json_str).map_err(|e| WorkflowError::Parse(e.to_string()))?;
     validate_workflow(&def)?;
     Ok(def)
 }
@@ -135,10 +141,14 @@ pub fn validate_workflow(def: &WorkflowDef) -> Result<(), WorkflowError> {
         return Err(WorkflowError::Validation("workflow id is required".into()));
     }
     if def.name.is_empty() {
-        return Err(WorkflowError::Validation("workflow name is required".into()));
+        return Err(WorkflowError::Validation(
+            "workflow name is required".into(),
+        ));
     }
     if def.activities.is_empty() {
-        return Err(WorkflowError::Validation("at least one activity is required".into()));
+        return Err(WorkflowError::Validation(
+            "at least one activity is required".into(),
+        ));
     }
 
     // Check activity IDs are unique
@@ -225,5 +235,4 @@ mod tests {
         }"#;
         assert!(parse_workflow(json).is_err());
     }
-
 }

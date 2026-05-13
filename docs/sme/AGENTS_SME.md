@@ -5,7 +5,7 @@
 > heartbeat, event, watch, manual), the cron scheduler, event dispatcher, AgentWorker
 > runtime, database schema, HTTP endpoints, and known issues.
 
-**Last verified against source:** 2026-04-05
+**Last verified against source:** 2026-04-13
 
 ---
 
@@ -29,8 +29,10 @@
 16. [Toggle / Enable / Disable](#16-toggle--enable--disable)
 17. [End-to-End Flows](#17-end-to-end-flows)
 18. [Error Handling & Recovery](#18-error-handling--recovery)
-19. [Known Issues](#19-known-issues)
-20. [Key Files Reference](#20-key-files-reference)
+19. [A2UI Workspace Surfaces](#19-a2ui-workspace-surfaces)
+20. [Input Values & System Prompt Injection](#20-input-values--system-prompt-injection)
+21. [Known Issues](#21-known-issues)
+22. [Key Files Reference](#22-key-files-reference)
 
 ---
 
@@ -315,18 +317,58 @@ pub struct LoadedAgent {
     pub source: AgentSource,             // Installed or User
     pub napp_path: Option<PathBuf>,
     pub source_path: PathBuf,
-    pub version: Option<String>,        // From manifest.json
+    pub version: Option<String>,         // From manifest.json
+    pub agent_md: String,                // Raw AGENT.md content
+    pub frontmatter: String,             // Raw agent.json content as JSON string
+    pub description: String,             // Extracted description
+    pub id: Option<String>,              // NeboLoop UUID (marketplace agents)
+    pub views: Option<serde_json::Value>, // Parsed views.json (if exists)
+    pub theme_css: Option<String>,       // theme.css content (if exists)
 }
 ```
 
 ### Scanning
 
-- `load_from_dir(dir, source)` -- loads AGENT.md + optional agent.json + manifest.json
+- `load_from_dir(dir, source)` -- loads AGENT.md + optional agent.json + manifest.json + views.json + theme.css
 - `scan_installed_agents(dir)` -- walks for `AGENT.md` marker files
 - `scan_user_agents(dir)` -- shallow read_dir, checks for `AGENT.md` in each subdirectory
 - Falls back to directory name if AGENT.md has no frontmatter name
 
 The `list_agents` handler merges DB agents with filesystem agents, deduplicating by name.
+
+### Filesystem Watcher
+
+The `watch()` method spawns a background task that monitors both agent directories for changes and emits typed events.
+
+**Signature:**
+```rust
+pub fn watch(&self) -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Receiver<AgentFsEvent>)
+```
+
+**AgentFsEvent enum:**
+```rust
+pub enum AgentFsEvent {
+    Added(LoadedAgent),
+    Changed(LoadedAgent),
+    Removed { name_key: String, agent: LoadedAgent },
+}
+```
+
+**Diff logic:** On each filesystem change (debounced at 1 second):
+1. Re-scan both directories into a new `loaded` HashMap
+2. Compare against cached state:
+   - Key in new but not old → `Added`
+   - Key in both but `agent_md` or `frontmatter` differ → `Changed`
+   - Key in old but not new → `Removed`
+3. Send events via the mpsc channel (capacity 32)
+4. Overwrite cache with new state
+
+**Watched files:** `AGENT.md`, `agent.json`, `manifest.json`, `views.json`, `theme.css`
+
+**Server-side consumer** (`crates/server/src/lib.rs`):
+- `Added` → create/update DB record, sync workflows, broadcast `agent_installed`
+- `Changed` → update DB record, sync workflows, restart worker if active, broadcast `agent_updated`
+- `Removed` → soft-deactivate (`is_enabled=0`), stop worker, broadcast `agent_deactivated`
 
 ---
 
@@ -586,6 +628,9 @@ entity_config ── standalone per (entity_type, entity_id) pair
 | GET | `/agents/{id}/stats` | `agent_stats` | Aggregate workflow run statistics |
 | GET | `/agents/{id}/runs` | `list_agent_runs` | List workflow runs for agent |
 | POST | `/agents/{id}/chat` | `chat_with_agent` | Send message to agent's session |
+| GET | `/agents/{id}/surfaces` | `list_agent_surfaces` | List A2UI surfaces for agent |
+| GET | `/agents/{id}/theme.css` | `get_agent_theme` | Serve agent's theme.css (200 or 204) |
+| GET | `/agents/{id}/nav` | `get_agent_nav` | Navigation structure from views.json `_nav` |
 
 ### Agent Workflows -- `/api/v1/agents/{id}/workflows`
 
@@ -1056,6 +1101,8 @@ pub struct AgentWorker {
     cancel: CancellationToken,
     event_dispatcher: Arc<EventDispatcher>,
     workflow_manager: Arc<dyn WorkflowManager>,
+    plugin_store: Arc<PluginStore>,
+    event_bus: EventBus,
 }
 ```
 
@@ -1071,6 +1118,7 @@ pub struct AgentWorker {
 | `schedule` | No-op (handled by cron scheduler via registered cron_jobs) |
 | `heartbeat` | Spawns `tokio::interval` task -> `run_inline()` on tick |
 | `event` | Subscribes patterns to EventDispatcher |
+| `watch` | Spawns plugin process, reads NDJSON stdout, auto-emits to EventBus + optional `run_inline()` |
 | `manual` | No-op (user-triggered via REST) |
 
 ### Heartbeat Worker Detail
@@ -1111,6 +1159,39 @@ dispatcher.subscribe(EventSubscription {
     definition_json: def_json.clone(),
     emit_source: event_emit_source.clone(),
 }).await;
+```
+
+### Watch Worker Detail
+
+Watch triggers spawn a long-running plugin process and read NDJSON from its stdout.
+
+```rust
+struct WatchTriggerConfig {
+    plugin: String,
+    command: String,          // Shell command or resolved from event
+    event: Option<String>,    // Plugin event name (enables auto-emission)
+    multiplexed: bool,        // Multi-event support (uses "event" field in NDJSON)
+    restart_delay_secs: u64,  // Default: 5
+}
+```
+
+**Execution loop:**
+1. Load agent's `input_values` from DB
+2. `substitute_inputs(&template, &input_values)` — replaces `{{key}}` with string values
+3. Resolve plugin binary path via `PluginStore`
+4. Spawn process with `shlex::split(&command)` args
+5. Read NDJSON lines from stdout:
+   - If `event` is set: emit to EventBus as `{plugin}.{event_name}`
+   - If `activities` present: run inline workflow with `_watch_payload` input
+6. On process exit: exponential backoff restart (5s → 10s → 20s ... → 300s max)
+7. Resets backoff if process ran for >30s (considered stable)
+
+**Input value substitution:**
+```rust
+fn substitute_inputs(template: &str, inputs: &serde_json::Value) -> String {
+    // Replaces {{key}} with value from inputs JSON object
+    // Leaves unmatched placeholders unchanged
+}
 ```
 
 ### stop()
@@ -1406,7 +1487,153 @@ as "cancelled" with error "server restart".
 
 ---
 
-## 19. Known Issues
+## 19. A2UI Workspace Surfaces
+
+**Files:** `crates/server/src/a2ui.rs`, `crates/server/src/a2ui_actions.rs`, `crates/server/src/a2ui_bindings.rs`, `crates/tools/src/a2ui_tool.rs`
+
+Agents can declare workspace UIs via `views.json` or create them dynamically via the `a2ui` tool. Surfaces are persisted in the `a2ui_surfaces` DB table.
+
+### A2UIManager
+
+```rust
+pub struct A2UIManager {
+    hub: Arc<ClientHub>,
+    store: Arc<Store>,
+    catalog_provider: Arc<NeboCatalogProvider>,
+    surfaces: RwLock<HashMap<String, SurfaceState>>,
+    binding_manager: RwLock<Option<Arc<DataBindingManager>>>,
+    pending_actions: RwLock<std::collections::HashSet<String>>,  // "surfaceId:actionName"
+}
+```
+
+**Key methods:**
+- `create_surface(agent_id, view_id, surface_type, catalog_id, theme)` — creates + persists + broadcasts
+- `update_components(surface_id, components)` — normalizes + broadcasts
+- `update_data_model(surface_id, path, value)` — JSON Pointer path update
+- `navigate_view(agent_id, from_view, to_view, params, views_json)` — view transition
+- `delete_surface(surface_id)` — cleanup + DB deactivation
+- `try_begin_action(surface_id, action_name)` → bool — dedup, broadcasts `a2ui_action_status: processing`
+- `end_action(surface_id, action_name)` — broadcasts `a2ui_action_status: complete`
+- `restore_surfaces()` — replays persisted state on startup/reconnect
+
+### Action Dispatch (`a2ui_actions.rs`)
+
+When a user clicks a button, the WS handler routes through:
+1. Try deterministic dispatch via `ActionBinding` from `views.json` actions map
+2. If handled (mcp_call/navigate/update_data): skip LLM
+3. If not handled: `try_begin_action()` → `run_chat()` → `end_action()`
+
+**Deterministic action types:**
+- `mcp_call` — calls MCP tool via bridge, injects result into data model at `update_path`
+- `navigate` — switches views via `A2UIManager::navigate_view()`
+- `update_data` — direct data model update at JSON Pointer path
+
+### Data Bindings (`a2ui_bindings.rs`)
+
+```rust
+pub struct DataBinding {
+    pub path: String,              // JSON Pointer for result injection
+    pub source: DataBindingSource, // { server, tool }
+    pub params: serde_json::Value,
+    pub interval_secs: u64,        // Default: 30
+}
+```
+
+`DataBindingManager` spawns tokio tasks per binding, polls MCP tools at intervals, injects results. Exponential backoff on repeated failures (max 60s).
+
+### Surface ID Format
+
+`agent:{agent_id}:{view_id}` — e.g., `agent:crm:dashboard`
+
+### DB Schema
+
+```sql
+CREATE TABLE a2ui_surfaces (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    view_id TEXT NOT NULL,
+    surface_type TEXT DEFAULT 'panel',
+    components TEXT,    -- Last component tree (JSON)
+    data_model TEXT,    -- Last data model (JSON)
+    window_geometry TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_at INTEGER DEFAULT (unixepoch()),
+    updated_at INTEGER DEFAULT (unixepoch())
+);
+```
+
+### A2UI Tool (STRAP)
+
+`a2ui(resource: "surface", action, ...params)`:
+- `create` — agent_id, view_id, surface_type, catalog_id, theme
+- `update_components` — surface_id, components array
+- `update_data` — surface_id, path, value
+- `navigate` — surface_id, target_view, params
+- `delete` — surface_id
+- `list` — agent_id
+
+### Frontend (Lit Web Components)
+
+- **NeboSurfaceElement** (`nebo-surface.ts`) — extends `A2uiSurface`, injects document styles into shadow root, provides Lit context for button state
+- **NeboButtonElement** (`NeboButton.ts`) — consumes Lit context via `ContextConsumer`, shows DaisyUI spinner while action is pending
+- **A2UISurfacePanel** (`A2UISurfacePanel.svelte`) — Svelte wrapper that binds surface model, routes actions to WS, bridges store pending state to Lit context
+
+### Agent Theme CSS
+
+- Served via `GET /agents/{id}/theme.css`
+- Loaded as `<style data-a2ui-theme media="not all">` in document.head (prevents global leakage)
+- `NeboSurfaceElement` clones into shadow root with `media=""` (enables inside shadow DOM)
+- `MutationObserver` watches for dynamically-added stylesheets (Vite HMR support)
+
+---
+
+## 20. Input Values & System Prompt Injection
+
+**File:** `crates/agent/src/runner.rs`
+
+### Storage
+
+- Schema: `agent.json` `inputs` array defines field types, labels, and options
+- Values: `agents.input_values` DB column (JSON string, defaults to `{}`)
+- Updated via: `PUT /agents/{id}/inputs` → `store.update_agent_input_values(id, json_str)`
+
+### System Prompt Injection
+
+In `runner.rs`, after `format_for_system_prompt()` builds the 9-section system prompt, agent `input_values` are loaded and appended:
+
+```rust
+// After db_context_formatted is built:
+if !agent_id.is_empty() {
+    if let Ok(Some(agent_rec)) = store.get_agent(agent_id) {
+        if let Ok(vals) = serde_json::from_str::<serde_json::Value>(&agent_rec.input_values) {
+            if let Some(obj) = vals.as_object() {
+                if !obj.is_empty() {
+                    // Append "# Configured Inputs" section with key-value pairs
+                    // Includes instruction: "Use these values — do NOT ask the user"
+                }
+            }
+        }
+    }
+}
+```
+
+This ensures the LLM sees user-configured values (API keys, target market, preferences) without re-asking. The section is rebuilt on every message (fresh from DB), so changes take effect immediately.
+
+### Watch Trigger Substitution
+
+In `agent_worker.rs`, watch commands support `{{key}}` template placeholders:
+```rust
+let command = substitute_inputs(&watch_cfg.command, &input_values);
+```
+Example: `gmail +watch --project {{gcp_project}}` → `gmail +watch --project my-project-123`
+
+### Sub-Agent Input Propagation
+
+Sub-agents spawned via `bot(task, spawn)` inherit parent values through prompt text — the parent agent naturally mentions configured inputs in the task description since they're in its system prompt.
+
+---
+
+## 21. Known Issues
 
 ### BUG: Disabled Schedule Automations Still Execute
 
@@ -1501,7 +1728,7 @@ notification mechanism is not implemented. Both abort the workflow on activity f
 
 ---
 
-## 20. Key Files Reference
+## 22. Key Files Reference
 
 ### Core Agent System
 
@@ -1513,6 +1740,19 @@ notification mechanism is not implemented. Both abort the workflow on activity f
 | `crates/db/src/queries/agents.rs` | ~353 | All agent + agent_workflow DB queries |
 | `crates/db/src/models.rs:570-647` | ~78 | Agent, AgentWorkflow, EmitSource, AgentWorkflowStats structs |
 | `crates/tools/src/persona_tool.rs:14-29` | ~16 | ActiveAgent struct, AgentRegistry type alias |
+
+### A2UI Workspace
+
+| File | Lines | Description |
+|------|-------|-------------|
+| `crates/server/src/a2ui.rs` | ~350 | A2UIManager, SurfaceState, NeboCatalogProvider, action dedup |
+| `crates/server/src/a2ui_actions.rs` | ~200 | ActionBinding, deterministic dispatch (mcp_call, navigate, update_data) |
+| `crates/server/src/a2ui_bindings.rs` | ~180 | DataBindingManager, MCP tool polling |
+| `crates/tools/src/a2ui_tool.rs` | ~300 | A2UIHost trait, A2UITool STRAP implementation |
+| `app/src/lib/components/a2ui/nebo-surface.ts` | ~99 | NeboSurfaceElement (shadow DOM + style injection + Lit context) |
+| `app/src/lib/components/a2ui/nebo-action-context.ts` | ~18 | Lit context for button pending state |
+| `app/src/lib/components/a2ui/A2UISurfacePanel.svelte` | ~113 | Svelte wrapper for surface rendering + action routing |
+| `app/src/lib/stores/a2ui.ts` | ~183 | A2UI store (MessageProcessor, pendingActions, handleActionStatus) |
 
 ### Workflow Engine
 
@@ -1556,4 +1796,4 @@ notification mechanism is not implemented. Both abort the workflow on activity f
 
 ---
 
-*Last updated: 2026-04-05*
+*Last updated: 2026-04-13*

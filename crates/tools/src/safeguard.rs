@@ -15,7 +15,11 @@ pub fn check_safeguard(tool_name: &str, input: &serde_json::Value) -> Option<Str
 /// If allowed_paths is empty, all paths are allowed (unrestricted).
 /// File reads are always allowed. Only writes/edits/deletes are restricted.
 /// Shell commands are restricted to running within allowed directories.
-pub fn check_path_scope(tool_name: &str, input: &serde_json::Value, allowed_paths: &[String]) -> Option<String> {
+pub fn check_path_scope(
+    tool_name: &str,
+    input: &serde_json::Value,
+    allowed_paths: &[String],
+) -> Option<String> {
     if allowed_paths.is_empty() {
         return None;
     }
@@ -32,7 +36,12 @@ fn check_file_path_scope(input: &serde_json::Value, allowed_paths: &[String]) ->
     let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
     // Only restrict destructive actions — reads are always allowed
-    if action != "write" && action != "edit" && action != "delete" && action != "move" && action != "copy" {
+    if action != "write"
+        && action != "edit"
+        && action != "delete"
+        && action != "move"
+        && action != "copy"
+    {
         return None;
     }
 
@@ -52,7 +61,8 @@ fn check_file_path_scope(input: &serde_json::Value, allowed_paths: &[String]) ->
     Some(format!(
         "BLOCKED: cannot {} {:?} — this agent is restricted to: {}. \
          Ask the owner to update the allowed directories in the Configure tab.",
-        action, path,
+        action,
+        path,
         allowed_paths.join(", ")
     ))
 }
@@ -202,8 +212,14 @@ fn has_sudo(cmd_lower: &str) -> bool {
         return true;
     }
     let separators = [
-        " | sudo ", "| sudo ", " && sudo ", "&& sudo ",
-        " ; sudo ", "; sudo ", " || sudo ", "|| sudo ",
+        " | sudo ",
+        "| sudo ",
+        " && sudo ",
+        "&& sudo ",
+        " ; sudo ",
+        "; sudo ",
+        " || sudo ",
+        "|| sudo ",
     ];
     for sep in &separators {
         if cmd_lower.contains(sep) {
@@ -232,12 +248,18 @@ fn has_su(cmd_lower: &str) -> bool {
 fn check_destructive_command(_cmd: &str, cmd_lower: &str) -> Option<String> {
     // Block rm -rf / or rm -rf /*
     if is_root_wipe(cmd_lower) {
-        return Some("cannot delete root filesystem — this would destroy the operating system".to_string());
+        return Some(
+            "cannot delete root filesystem — this would destroy the operating system".to_string(),
+        );
     }
 
     // Block dd to block devices
-    if cmd_lower.contains("dd ") && (cmd_lower.contains("of=/dev/") || cmd_lower.contains("of= /dev/")) {
-        return Some("cannot write to block devices with dd — this could destroy disk data".to_string());
+    if cmd_lower.contains("dd ")
+        && (cmd_lower.contains("of=/dev/") || cmd_lower.contains("of= /dev/"))
+    {
+        return Some(
+            "cannot write to block devices with dd — this could destroy disk data".to_string(),
+        );
     }
 
     // Block disk formatting/partitioning commands
@@ -266,7 +288,10 @@ fn check_destructive_command(_cmd: &str, cmd_lower: &str) -> Option<String> {
             cmd_lower.contains(&format!("> {}", d)) || cmd_lower.contains(&format!(">{}", d))
         });
         if !is_safe {
-            return Some("cannot write to device files — this could damage hardware or corrupt data".to_string());
+            return Some(
+                "cannot write to device files — this could damage hardware or corrupt data"
+                    .to_string(),
+            );
         }
     }
 
@@ -275,14 +300,23 @@ fn check_destructive_command(_cmd: &str, cmd_lower: &str) -> Option<String> {
 
 fn is_root_wipe(cmd_lower: &str) -> bool {
     let wipe_patterns = [
-        "rm -rf /", "rm -fr /", "rm -rf /*", "rm -fr /*",
-        "rm -rf --no-preserve-root /", "rm -rf --no-preserve-root /*",
+        "rm -rf /",
+        "rm -fr /",
+        "rm -rf /*",
+        "rm -fr /*",
+        "rm -rf --no-preserve-root /",
+        "rm -rf --no-preserve-root /*",
     ];
     for p in &wipe_patterns {
         if let Some(idx) = cmd_lower.find(p) {
             let after = &cmd_lower[idx + p.len()..];
             let last_char = p.as_bytes()[p.len() - 1];
-            if last_char == b'/' && (after.is_empty() || after.starts_with(' ') || after.starts_with(';') || after.starts_with('&')) {
+            if last_char == b'/'
+                && (after.is_empty()
+                    || after.starts_with(' ')
+                    || after.starts_with(';')
+                    || after.starts_with('&'))
+            {
                 return true;
             }
             if last_char == b'*' {
@@ -333,7 +367,10 @@ fn is_protected_path_darwin(abs_path: &str) -> Option<String> {
     is_protected_user_path(abs_path)
 }
 
-#[cfg(any(target_os = "linux", not(any(target_os = "macos", target_os = "windows"))))]
+#[cfg(any(
+    target_os = "linux",
+    not(any(target_os = "macos", target_os = "windows"))
+))]
 fn is_protected_path_linux(abs_path: &str) -> Option<String> {
     if abs_path == "/" {
         return Some("this is the root filesystem".to_string());
@@ -368,7 +405,10 @@ fn is_protected_path_windows(abs_path: &str) -> Option<String> {
     let protected = [
         ("c:\\windows", "Windows system directory"),
         ("c:\\program files", "installed program files"),
-        ("c:\\program files (x86)", "installed program files (32-bit)"),
+        (
+            "c:\\program files (x86)",
+            "installed program files (32-bit)",
+        ),
     ];
 
     for (prefix, reason) in &protected {
@@ -470,10 +510,7 @@ mod tests {
         let home_str = home.to_string_lossy();
 
         #[cfg(target_os = "macos")]
-        let nebo_data = format!(
-            "{}/Library/Application Support/Nebo/data/nebo.db",
-            home_str
-        );
+        let nebo_data = format!("{}/Library/Application Support/Nebo/data/nebo.db", home_str);
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let nebo_data = format!("{}/.config/nebo/data/nebo.db", home_str);
         #[cfg(target_os = "windows")]
@@ -487,7 +524,10 @@ mod tests {
             "path": nebo_data,
         });
         let result = check_file_safeguard(&input);
-        assert!(result.is_some(), "should block writes to Nebo data directory");
+        assert!(
+            result.is_some(),
+            "should block writes to Nebo data directory"
+        );
         assert!(
             result.unwrap().contains("Nebo database directory"),
             "should mention Nebo database"

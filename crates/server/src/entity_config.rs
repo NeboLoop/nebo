@@ -24,6 +24,12 @@ pub struct ResolvedEntityConfig {
     /// Allowed filesystem paths — restricts file writes and shell to these directories.
     #[serde(default)]
     pub allowed_paths: Vec<String>,
+    /// Whether this entity is pinned in the sidebar.
+    #[serde(default)]
+    pub pinned: bool,
+    /// Whether this entity supports multiple concurrent chats.
+    #[serde(default)]
+    pub multi_chat: bool,
 }
 
 /// Resolve entity config by layering overrides on global defaults.
@@ -84,9 +90,7 @@ pub fn resolve(
     // Permissions: start from global, overlay entity-specific
     let mut permissions = global_permissions.clone();
     if let Some(entity_perms_json) = entity.and_then(|e| e.permissions.as_deref()) {
-        if let Ok(entity_perms) =
-            serde_json::from_str::<HashMap<String, bool>>(entity_perms_json)
-        {
+        if let Ok(entity_perms) = serde_json::from_str::<HashMap<String, bool>>(entity_perms_json) {
             overrides.insert("permissions".into(), true);
             for (k, v) in entity_perms {
                 permissions.insert(k, v);
@@ -134,6 +138,18 @@ pub fn resolve(
         overrides.insert("allowedPaths".into(), true);
     }
 
+    // Pinned
+    let pinned = entity
+        .and_then(|e| e.pinned)
+        .map(|v| v != 0)
+        .unwrap_or(false);
+
+    // Multi-chat
+    let multi_chat = entity
+        .and_then(|e| e.multi_chat)
+        .map(|v| v != 0)
+        .unwrap_or(false);
+
     ResolvedEntityConfig {
         entity_type: entity_type.to_string(),
         entity_id: entity_id.to_string(),
@@ -147,6 +163,8 @@ pub fn resolve(
         personality_snippet,
         overrides,
         allowed_paths,
+        pinned,
+        multi_chat,
     }
 }
 
@@ -184,7 +202,10 @@ pub fn resolve_for_chat(
         .map(|d| std::fs::read_to_string(d.join("HEARTBEAT.md")).unwrap_or_default())
         .unwrap_or_default();
 
-    let entity = store.get_entity_config(entity_type, entity_id).ok().flatten();
+    let entity = store
+        .get_entity_config(entity_type, entity_id)
+        .ok()
+        .flatten();
 
     Some(resolve(
         entity_type,

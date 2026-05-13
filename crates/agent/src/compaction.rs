@@ -52,13 +52,13 @@ pub fn collect_tool_failures(messages: &[ChatMessage]) -> Vec<ToolFailure> {
             }
             seen_ids.insert(tool_call_id.clone());
 
-            let content = result
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
             let tool_name = extract_tool_name(messages, &tool_call_id);
-            let summary = truncate_text(&normalize_text(&sanitize_for_summary(content)), MAX_TOOL_FAILURE_CHARS);
+            let summary = truncate_text(
+                &normalize_text(&sanitize_for_summary(content)),
+                MAX_TOOL_FAILURE_CHARS,
+            );
             let meta = extract_failure_meta(content);
 
             failures.push(ToolFailure {
@@ -95,7 +95,10 @@ pub fn format_tool_failures_section(failures: &[ToolFailure]) -> String {
     }
 
     if failures.len() > MAX_TOOL_FAILURES {
-        section.push_str(&format!("- ...and {} more\n", failures.len() - MAX_TOOL_FAILURES));
+        section.push_str(&format!(
+            "- ...and {} more\n",
+            failures.len() - MAX_TOOL_FAILURES
+        ));
     }
 
     section

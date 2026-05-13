@@ -1,6 +1,9 @@
 pub mod agent;
+pub mod agents;
+pub mod apps;
 pub mod auth;
 pub mod chat;
+pub mod commander;
 pub mod entity_config;
 pub mod files;
 pub mod integrations;
@@ -10,20 +13,19 @@ pub mod neboloop;
 pub mod notification;
 pub mod plugins;
 pub mod provider;
-pub mod agents;
 pub mod setup;
 pub mod skills;
 pub mod store;
 pub mod tasks;
 pub mod user;
+pub mod voice;
 pub mod workflows;
 pub mod ws;
-pub mod commander;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
-use types::api::ErrorResponse;
 use types::NeboError;
+use types::api::ErrorResponse;
 
 /// Newtype wrapper that implements `IntoResponse` for `NeboError`.
 ///
@@ -35,7 +37,8 @@ pub struct ApiError(pub NeboError);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status =
+            StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         if status.is_server_error() {
             tracing::error!(status = %status, error = %self.0, "handler error");
         }

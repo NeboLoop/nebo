@@ -2,16 +2,16 @@
 
 mod shared;
 
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+mod native;
 #[cfg(target_os = "windows")]
 mod windows;
 
-pub use shared::{parse_date, which_exists};
-
-use crate::registry::ToolResult;
+// parse_date and which_exists are used by platform modules via super::shared::
 
 // ═══════════════════════════════════════════════════════════════════════
 // Platform dispatch
@@ -36,7 +36,12 @@ pub async fn handle_contacts(_action: &str, _input: &OrganizerInput) -> ToolResu
     ToolResult::error("Contacts is not supported on this platform")
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-pub async fn handle_calendar(_action: &str, _input: &OrganizerInput) -> ToolResult {
+pub async fn handle_calendar(
+    _action: &str,
+    _input: &OrganizerInput,
+    _ctx: &crate::origin::ToolContext,
+    _store: Option<&std::sync::Arc<db::Store>>,
+) -> ToolResult {
     ToolResult::error("Calendar is not supported on this platform")
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -57,6 +62,7 @@ pub struct OrganizerInput {
     #[serde(default)]
     pub action: String,
     #[serde(default)]
+    #[allow(dead_code)] // Deserialized from STRAP input but routing handled by caller
     pub resource: String,
 
     // Mail fields
@@ -98,6 +104,14 @@ pub struct OrganizerInput {
     pub title: String,
     #[serde(default)]
     pub days: Option<i64>,
+    #[serde(default)]
+    pub repeat: String,
+    #[serde(default)]
+    pub interval: Option<i32>,
+    #[serde(default)]
+    pub end_repeat: String,
+    #[serde(default, alias = "weekdays")]
+    pub repeat_days: String,
 
     // Reminder fields
     #[serde(default)]
@@ -240,10 +254,9 @@ mod tests {
 
     #[test]
     fn test_event_name_prefers_title() {
-        let input: OrganizerInput = serde_json::from_str(
-            r#"{"action":"create","title":"From Title","name":"From Name"}"#,
-        )
-        .unwrap();
+        let input: OrganizerInput =
+            serde_json::from_str(r#"{"action":"create","title":"From Title","name":"From Name"}"#)
+                .unwrap();
         assert_eq!(input.event_name(), "From Title");
     }
 

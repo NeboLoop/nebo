@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { AgentInputField } from '$lib/api/neboComponents';
+	import type { AgentInputField } from '$lib/types/agentPage';
 	import { pickFolder, pickFiles } from '$lib/api/nebo';
 	import { FolderOpen, FileText } from 'lucide-svelte';
 
@@ -66,7 +66,6 @@
 			{/if}
 
 			{#if field.type === 'path'}
-				<!-- Directory picker -->
 				<div class="flex items-center gap-2">
 					<input
 						id="input-{field.key}"
@@ -87,7 +86,6 @@
 				</div>
 
 			{:else if field.type === 'file'}
-				<!-- File picker -->
 				<div class="flex items-center gap-2">
 					<input
 						id="input-{field.key}"
@@ -170,7 +168,6 @@
 				</div>
 
 			{:else}
-				<!-- text (default) -->
 				<input
 					id="input-{field.key}"
 					type="text"

@@ -4,7 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use serde::Deserialize;
 
-use super::{to_error_response, HandlerResult};
+use super::{HandlerResult, to_error_response};
 use crate::codes::build_api_client;
 use crate::state::AppState;
 use types::NeboError;
@@ -212,7 +212,9 @@ fn normalize_to_skills(mut val: serde_json::Value) -> serde_json::Value {
         return val;
     }
     if let Some(results) = val.as_object_mut().and_then(|o| o.remove("results")) {
-        val.as_object_mut().unwrap().insert("skills".to_string(), results);
+        val.as_object_mut()
+            .unwrap()
+            .insert("skills".to_string(), results);
     }
     val
 }
@@ -222,38 +224,47 @@ fn normalize_to_apps(mut val: serde_json::Value) -> serde_json::Value {
         return val;
     }
     if let Some(results) = val.as_object_mut().and_then(|o| o.remove("results")) {
-        val.as_object_mut().unwrap().insert("apps".to_string(), results);
+        val.as_object_mut()
+            .unwrap()
+            .insert("apps".to_string(), results);
     }
     val
 }
 
 // ── Local install state enrichment ─────────────────────────────────
 
-/// Check if a skill is installed locally by slug, checking both
+/// Check if an artifact is installed locally by slug, checking both
 /// user and nebo artifact directories.
-fn is_skill_locally_installed(slug: &str) -> bool {
+///
+/// All artifact types (skills, agents, plugins) use filesystem-based
+/// discovery. The DB stores mutable state (enabled, input_values) but
+/// is NOT the source of truth for installation.
+fn is_locally_installed(slug: &str, artifact_type: &str) -> bool {
     let (user_dir, nebo_dir) = match (config::user_dir(), config::nebo_dir()) {
         (Ok(u), Ok(n)) => (u, n),
         _ => return false,
     };
 
-    // Check user dir: slug/SKILL.md
-    let user_path = user_dir.join("skills").join(slug);
+    // Check user dir
+    let user_path = user_dir.join(artifact_type).join(slug);
     if user_path.exists() {
         return true;
     }
 
-    // Check nebo (marketplace) dir: slug/
-    let nebo_path = nebo_dir.join("skills").join(slug);
+    // Check nebo (marketplace) dir
+    let nebo_path = nebo_dir.join(artifact_type).join(slug);
     nebo_path.exists()
 }
 
-/// Check if a product is installed: roles use the DB, skills use the filesystem.
-fn is_installed(slug: &str, name: &str, artifact_type: &str, store: &db::Store) -> bool {
-    match artifact_type {
-        "agent" => store.agent_installed_by_name(name).unwrap_or(false),
-        _ => is_skill_locally_installed(slug),
-    }
+/// Check if a product is installed on the filesystem.
+fn is_installed(slug: &str, _name: &str, artifact_type: &str, _store: &db::Store) -> bool {
+    let dir_type = match artifact_type {
+        "agent" => "agents",
+        "skill" => "skills",
+        "plugin" => "plugins",
+        _ => "skills",
+    };
+    is_locally_installed(slug, dir_type)
 }
 
 /// Enrich a single product JSON value with local install state.
@@ -290,21 +301,24 @@ pub async fn install_store_product(
     let api = build_api_client(&state).map_err(to_error_response)?;
 
     // Fetch product detail to get its install code
-    let detail = api
-        .get_skill(&id)
-        .await
-        .map_err(|e| to_error_response(NeboError::Internal(format!("fetch product detail: {e}"))))?;
+    let detail = api.get_skill(&id).await.map_err(|e| {
+        to_error_response(NeboError::Internal(format!("fetch product detail: {e}")))
+    })?;
 
     let code = detail
+        .item
         .code
         .as_deref()
         .filter(|c| !c.is_empty())
-        .ok_or_else(|| to_error_response(NeboError::Internal("product has no install code".into())))?;
+        .ok_or_else(|| {
+            to_error_response(NeboError::Internal("product has no install code".into()))
+        })?;
 
     // Route through the standard code handler which handles the full lifecycle:
     // redeem → persist to DB/disk → activate → register agent → cascade deps
-    let (code_type, validated_code) = crate::codes::detect_code(code)
-        .ok_or_else(|| to_error_response(NeboError::Internal(format!("invalid code format: {code}"))))?;
+    let (code_type, validated_code) = crate::codes::detect_code(code).ok_or_else(|| {
+        to_error_response(NeboError::Internal(format!("invalid code format: {code}")))
+    })?;
 
     // Use a synthetic session ID for the install
     let session_id = format!("store-install-{}", id);
@@ -330,21 +344,27 @@ pub async fn uninstall_store_product(
     let _ = api.uninstall_product(&id).await;
 
     // Look up local agent by NeboLoop product ID first, then by name as fallback
-    let local_agent = state.store.get_agent(&id).ok().flatten()
-        .or_else(|| {
-            let name = detail.as_ref().map(|d| d.item.name.as_str()).unwrap_or("");
-            if !name.is_empty() {
-                state.store.get_agent_by_name(name).ok().flatten()
-            } else {
-                None
-            }
-        });
-    let slug = detail.as_ref().map(|d| d.item.slug.clone()).unwrap_or_default();
-    let artifact_type = detail.as_ref().and_then(|d| d.artifact_type.as_deref()).unwrap_or("");
+    let local_agent = state.store.get_agent(&id).ok().flatten().or_else(|| {
+        let name = detail.as_ref().map(|d| d.item.name.as_str()).unwrap_or("");
+        if !name.is_empty() {
+            state.store.get_agent_by_name(name).ok().flatten()
+        } else {
+            None
+        }
+    });
+    let slug = detail
+        .as_ref()
+        .map(|d| d.item.slug.clone())
+        .unwrap_or_default();
+    let artifact_type = detail
+        .as_ref()
+        .and_then(|d| d.item.artifact_type.as_deref())
+        .unwrap_or("");
 
     // Derive slug from role name if NeboLoop didn't provide it
     let slug = if slug.is_empty() {
-        local_agent.as_ref()
+        local_agent
+            .as_ref()
             .map(|r| r.name.to_lowercase().replace(' ', "-"))
             .unwrap_or_default()
     } else {
@@ -354,7 +374,11 @@ pub async fn uninstall_store_product(
     // Determine artifact type from local DB kind or NeboLoop
     let is_agent = artifact_type == "agent"
         || local_agent.is_some()
-        || local_agent.as_ref().and_then(|r| r.kind.as_deref()).map(|k| k.starts_with("AGNT-")).unwrap_or(false);
+        || local_agent
+            .as_ref()
+            .and_then(|r| r.kind.as_deref())
+            .map(|k| k.starts_with("AGNT-"))
+            .unwrap_or(false);
 
     // Clean up local DB — use the local agent's ID (may differ from NeboLoop product ID)
     if let Some(ref agent_rec) = local_agent {
@@ -412,4 +436,68 @@ pub async fn uninstall_store_product(
     state.skill_loader.load_all().await;
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// ── Collections ───────────────────────────────────────────────────
+//
+// Collection CRUD for org-scoped marketplace bundles.
+// Currently stubs — will proxy to NeboLoop API when collection
+// endpoints are available server-side.
+
+/// GET /store/collections — list all collections.
+pub async fn list_store_collections(
+    State(_state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    Ok(Json(serde_json::json!({ "collections": [], "total": 0 })))
+}
+
+/// GET /store/collections/{id} — get a single collection.
+pub async fn get_store_collection(Path(id): Path<String>) -> HandlerResult<serde_json::Value> {
+    Ok(Json(serde_json::json!({ "collection": null, "id": id })))
+}
+
+/// POST /store/collections — create a new collection.
+pub async fn create_store_collection(
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    Ok(Json(serde_json::json!({ "collection": body })))
+}
+
+/// PUT /store/collections/{id} — update a collection.
+pub async fn update_store_collection(
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    Ok(Json(serde_json::json!({ "collection": body, "id": id })))
+}
+
+/// DELETE /store/collections/{id} — delete a collection.
+pub async fn delete_store_collection(Path(id): Path<String>) -> HandlerResult<serde_json::Value> {
+    Ok(Json(serde_json::json!({ "deleted": true, "id": id })))
+}
+
+/// POST /store/collections/{id}/items — add an item to a collection.
+pub async fn add_collection_item(
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    Ok(Json(
+        serde_json::json!({ "collection": { "id": id }, "added": body }),
+    ))
+}
+
+/// DELETE /store/collections/{id}/items/{item_id} — remove an item from a collection.
+pub async fn remove_collection_item(
+    Path((id, item_id)): Path<(String, String)>,
+) -> HandlerResult<serde_json::Value> {
+    Ok(Json(
+        serde_json::json!({ "collection": { "id": id }, "removedItem": item_id }),
+    ))
+}
+
+// ── Organizations ─────────────────────────────────────────────────
+
+/// GET /store/orgs — list organizations the user has access to.
+pub async fn list_store_orgs(State(_state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    Ok(Json(serde_json::json!({ "orgs": [] })))
 }

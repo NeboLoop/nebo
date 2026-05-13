@@ -1,12 +1,11 @@
 use axum::extract::{Path, Query, State};
-use axum::response::Json;
 use axum::http::StatusCode;
+use axum::response::Json;
 use serde::Deserialize;
 use tracing::{info, warn};
 
+use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
-use super::{to_error_response, HandlerResult};
-
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
@@ -18,6 +17,23 @@ pub struct ListQuery {
 
 fn default_limit() -> i64 {
     50
+}
+
+pub(crate) fn app_tool_dir(agent: &db::models::Agent) -> Option<std::path::PathBuf> {
+    if let Some(ref ui_path) = agent.app_ui_path {
+        return std::path::Path::new(ui_path)
+            .parent()
+            .map(|p| p.to_path_buf());
+    }
+    let binary = agent.app_binary_path.as_ref()?;
+    let path = std::path::PathBuf::from(binary);
+    match path.parent() {
+        Some(parent) if parent.file_name().and_then(|n| n.to_str()) == Some("bin") => {
+            parent.parent().map(|p| p.to_path_buf())
+        }
+        Some(parent) => Some(parent.to_path_buf()),
+        None => None,
+    }
 }
 
 /// Extract agentJson from request body — handles both string and object values.
@@ -58,33 +74,39 @@ fn parse_persona_properties(yaml_str: &str) -> Vec<serde_json::Value> {
         Ok(m) => m,
         Err(_) => return vec![],
     };
-    mapping.into_iter().filter_map(|(k, v)| {
-        let key = match k {
-            serde_yaml::Value::String(s) => s,
-            _ => return None,
-        };
-        let value = match v {
-            serde_yaml::Value::String(s) => serde_json::json!(s),
-            serde_yaml::Value::Number(n) => serde_json::json!(n.to_string()),
-            serde_yaml::Value::Bool(b) => serde_json::json!(b.to_string()),
-            serde_yaml::Value::Sequence(seq) => {
-                let items: Vec<String> = seq.into_iter().filter_map(|item| match item {
-                    serde_yaml::Value::String(s) => Some(s),
-                    other => Some(format!("{:?}", other)),
-                }).collect();
-                serde_json::json!(items)
-            }
-            serde_yaml::Value::Mapping(m) => {
-                // Flatten nested mapping to a compact YAML string for display
-                match serde_yaml::to_string(&serde_yaml::Value::Mapping(m)) {
-                    Ok(s) => serde_json::json!(s.trim().to_string()),
-                    Err(_) => serde_json::json!(""),
+    mapping
+        .into_iter()
+        .filter_map(|(k, v)| {
+            let key = match k {
+                serde_yaml::Value::String(s) => s,
+                _ => return None,
+            };
+            let value = match v {
+                serde_yaml::Value::String(s) => serde_json::json!(s),
+                serde_yaml::Value::Number(n) => serde_json::json!(n.to_string()),
+                serde_yaml::Value::Bool(b) => serde_json::json!(b.to_string()),
+                serde_yaml::Value::Sequence(seq) => {
+                    let items: Vec<String> = seq
+                        .into_iter()
+                        .filter_map(|item| match item {
+                            serde_yaml::Value::String(s) => Some(s),
+                            other => Some(format!("{:?}", other)),
+                        })
+                        .collect();
+                    serde_json::json!(items)
                 }
-            }
-            _ => serde_json::json!(""),
-        };
-        Some(serde_json::json!({ "key": key, "value": value }))
-    }).collect()
+                serde_yaml::Value::Mapping(m) => {
+                    // Flatten nested mapping to a compact YAML string for display
+                    match serde_yaml::to_string(&serde_yaml::Value::Mapping(m)) {
+                        Ok(s) => serde_json::json!(s.trim().to_string()),
+                        Err(_) => serde_json::json!(""),
+                    }
+                }
+                _ => serde_json::json!(""),
+            };
+            Some(serde_json::json!({ "key": key, "value": value }))
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -110,40 +132,110 @@ struct AgentPricing {
 /// GET /agents
 pub async fn list_agents(
     State(state): State<AppState>,
-    Query(q): Query<ListQuery>,
+    Query(_q): Query<ListQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    let limit = q.limit.min(100);
-    let db_agents = state.store.list_agents(limit, q.offset).map_err(to_error_response)?;
-    let total = state.store.count_agents().unwrap_or(0);
+    // Filesystem is the source of truth — read from AgentLoader (in-memory, loaded from disk).
+    // DB supplements with runtime state (is_enabled, input_values, installed_at).
+    let fs_agents = state.agent_loader.list().await;
 
-    // Also scan filesystem agents (matching agent behavior)
-    let mut fs_agents = Vec::new();
-    if let Ok(data_dir) = config::data_dir() {
-        let installed = napp::agent_loader::scan_installed_agents(&data_dir.join("nebo").join("agents"));
-        let user = napp::agent_loader::scan_user_agents(&data_dir.join("user").join("agents"));
+    // Build a lookup map from DB for supplemental state
+    let db_map: std::collections::HashMap<String, db::models::Agent> = state
+        .store
+        .list_agents(1000, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|a| {
+            let name_key = a.name.to_lowercase();
+            let id_key = a.id.clone();
+            vec![(id_key, a.clone()), (name_key, a)]
+        })
+        .collect();
 
-        let db_names: Vec<&str> = db_agents.iter().map(|r| r.name.as_str()).collect();
-        for agent in installed.into_iter().chain(user.into_iter()) {
-            if !db_names.contains(&agent.agent_def.name.as_str()) {
-                let source = match agent.source {
-                    napp::agent_loader::AgentSource::Installed => "installed",
-                    napp::agent_loader::AgentSource::User => "user",
-                };
-                fs_agents.push(serde_json::json!({
-                    "name": agent.agent_def.name,
-                    "description": agent.agent_def.description,
-                    "source": source,
-                    "version": agent.version,
-                    "isEnabled": true,
-                }));
+    let mut agents = Vec::with_capacity(fs_agents.len());
+    for loaded in &fs_agents {
+        let agent_id = loaded
+            .id
+            .clone()
+            .unwrap_or_else(|| loaded.agent_def.name.clone());
+        let source = match loaded.source {
+            napp::AgentSource::Installed => "installed",
+            napp::AgentSource::User => "user",
+        };
+
+        // Look up DB record by ID or name for supplemental state
+        let db_row = db_map
+            .get(&agent_id)
+            .or_else(|| db_map.get(&loaded.agent_def.name.to_lowercase()));
+
+        // Compute a display name: window title > first # heading from body > name
+        let display_name = loaded
+            .app_window_config
+            .as_ref()
+            .and_then(|wc| wc.title.clone())
+            .filter(|t| !t.is_empty())
+            .or_else(|| {
+                loaded.agent_def.body.lines().find_map(|line| {
+                    line.trim()
+                        .strip_prefix("# ")
+                        .map(|h| h.trim().to_string())
+                        .filter(|h| !h.is_empty())
+                })
+            })
+            .unwrap_or_else(|| loaded.agent_def.name.clone());
+
+        let mut entry = serde_json::json!({
+            "id": agent_id,
+            "name": loaded.agent_def.name,
+            "displayName": display_name,
+            "description": loaded.description,
+            "source": source,
+            "version": loaded.version,
+            "isApp": loaded.is_app,
+            "isEnabled": db_row.map(|r| r.is_enabled != 0).unwrap_or(true),
+            "inputValues": db_row.map(|r| r.input_values.as_str()).unwrap_or("{}"),
+            "installedAt": db_row.map(|r| r.installed_at),
+        });
+        // Derive needsSetup from config inputs vs stored input_values
+        let needs_setup = if let Some(ref cfg) = loaded.config {
+            if cfg.inputs.is_empty() {
+                false
+            } else {
+                let current_values: serde_json::Value = serde_json::from_str(
+                    db_row.map(|r| r.input_values.as_str()).unwrap_or("{}"),
+                )
+                .unwrap_or_default();
+                cfg.inputs.iter().any(|inp| {
+                    if !inp.required {
+                        return false;
+                    }
+                    let key = if inp.key.is_empty() {
+                        inp.name.as_deref().unwrap_or("")
+                    } else {
+                        &inp.key
+                    };
+                    if key.is_empty() {
+                        return false;
+                    }
+                    match current_values.get(key) {
+                        None => true,
+                        Some(v) => v.is_null() || v.as_str().map_or(false, |s| s.is_empty()),
+                    }
+                })
             }
+        } else {
+            false
+        };
+        entry["needsSetup"] = serde_json::json!(needs_setup);
+        if let Some(ref wc) = loaded.app_window_config {
+            entry["appWindowConfig"] = serde_json::to_value(wc).unwrap_or_default();
         }
+        agents.push(entry);
     }
 
+    let total = agents.len() as i64;
     Ok(Json(serde_json::json!({
-        "agents": db_agents,
-        "filesystemAgents": fs_agents,
-        "total": total + fs_agents.len() as i64,
+        "agents": agents,
+        "total": total,
     })))
 }
 
@@ -157,18 +249,20 @@ pub async fn create_agent(
         return create_blank_agent(state).await;
     }
 
-    let agent_md = body["agentMd"]
-        .as_str()
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("agentMd required".into())))?;
+    let agent_md = body["agentMd"].as_str().ok_or_else(|| {
+        to_error_response(types::NeboError::Validation("agentMd required".into()))
+    })?;
 
     let (fm, _body) = parse_agent_md(agent_md).map_err(to_error_response)?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let kind = body["kind"].as_str().or_else(|| body["code"].as_str());
     let name = if fm.name.is_empty() {
-        body["name"]
-            .as_str()
-            .ok_or_else(|| to_error_response(types::NeboError::Validation("name required in body or frontmatter".into())))?
+        body["name"].as_str().ok_or_else(|| {
+            to_error_response(types::NeboError::Validation(
+                "name required in body or frontmatter".into(),
+            ))
+        })?
     } else {
         &fm.name
     };
@@ -208,10 +302,13 @@ pub async fn create_agent(
             // Add pricing from AGENT.md frontmatter if not in agentJson
             if let (Some(obj), Some(p)) = (fm_val.as_object_mut(), &fm.pricing) {
                 if !obj.contains_key("pricing") {
-                    obj.insert("pricing".into(), serde_json::json!({
-                        "model": p.model,
-                        "cost": p.cost,
-                    }));
+                    obj.insert(
+                        "pricing".into(),
+                        serde_json::json!({
+                            "model": p.model,
+                            "cost": p.cost,
+                        }),
+                    );
                 }
             }
             fm_val
@@ -260,8 +357,8 @@ pub async fn create_agent(
             let _ = std::fs::write(agent_dir.join("AGENT.md"), agent_md);
             // Write the original agentJson if provided (contains triggers, workflow bindings),
             // otherwise fall back to the merged frontmatter
-            let agent_json_content = extract_agent_json_str(&body)
-                .unwrap_or_else(|| frontmatter_json.to_string());
+            let agent_json_content =
+                extract_agent_json_str(&body).unwrap_or_else(|| frontmatter_json.to_string());
             let _ = std::fs::write(agent_dir.join("agent.json"), &agent_json_content);
             // Auto-generate manifest.json so version info is available
             let manifest_path = agent_dir.join("manifest.json");
@@ -272,9 +369,14 @@ pub async fn create_agent(
                     "type": "agent",
                     "description": description,
                 });
-                let _ = std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap_or_default());
+                let _ = std::fs::write(
+                    &manifest_path,
+                    serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+                );
             }
-            let _ = state.store.set_agent_napp_path(&id, &agent_dir.to_string_lossy());
+            let _ = state
+                .store
+                .set_agent_napp_path(&id, &agent_dir.to_string_lossy());
         }
     }
 
@@ -332,13 +434,25 @@ pub async fn get_agent(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     // Read local version from manifest.json if it exists
-    let version = agent.napp_path.as_ref()
+    let version = agent
+        .napp_path
+        .as_ref()
         .and_then(|p| {
             let manifest_path = std::path::PathBuf::from(p).join("manifest.json");
             std::fs::read_to_string(manifest_path).ok()
         })
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v["version"].as_str().map(|s| s.to_string()));
+
+    // Read views.json for deterministic UI declarations
+    let views = agent
+        .napp_path
+        .as_ref()
+        .and_then(|p| {
+            let views_path = std::path::PathBuf::from(p).join("views.json");
+            std::fs::read_to_string(views_path).ok()
+        })
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
 
     // Parse and normalize inputFields from frontmatter so frontend doesn't have to
     let input_fields: Vec<serde_json::Value> = if !agent.frontmatter.is_empty() {
@@ -400,16 +514,85 @@ pub async fn get_agent(
         vec![]
     };
 
+    // Derive needsSetup: true when any required input field is missing a value
+    let needs_setup = if input_fields.is_empty() {
+        false
+    } else {
+        let current_values: serde_json::Value =
+            serde_json::from_str(&agent.input_values).unwrap_or_default();
+        input_fields.iter().any(|field| {
+            let required = field
+                .get("required")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !required {
+                return false;
+            }
+            let key = field.get("key").and_then(|v| v.as_str()).unwrap_or("");
+            if key.is_empty() {
+                return false;
+            }
+            match current_values.get(key) {
+                None => true,
+                Some(v) => v.is_null() || v.as_str().map_or(false, |s| s.is_empty()),
+            }
+        })
+    };
+
     // Split agentMd into properties + body for the persona editor
-    let (yaml_str, persona_body) = napp::agent::split_frontmatter(&agent.agent_md).unwrap_or_default();
+    let (yaml_str, persona_body) =
+        napp::agent::split_frontmatter(&agent.agent_md).unwrap_or_default();
     let persona_properties = parse_persona_properties(&yaml_str);
+
+    // Extract model and skills from frontmatter for V2 frontend
+    let frontmatter_val: serde_json::Value = if !agent.frontmatter.is_empty() {
+        serde_json::from_str(&agent.frontmatter).unwrap_or_default()
+    } else {
+        serde_json::Value::Null
+    };
+    let model = frontmatter_val
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let skills: Vec<&str> = frontmatter_val
+        .get("skills")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+
+    // Check installed plugins for pending auth — lets frontend show OAuth wizard
+    let plugins_needing_auth = check_plugins_auth_status(&state).await;
+
+    // Compute a human-readable display name (window title > first heading > name)
+    let display_name = agent
+        .app_window_config
+        .as_ref()
+        .and_then(|cfg_str| serde_json::from_str::<serde_json::Value>(cfg_str).ok())
+        .and_then(|cfg| cfg.get("title").and_then(|t| t.as_str().map(|s| s.to_string())))
+        .filter(|t| !t.is_empty())
+        .or_else(|| {
+            persona_body.lines().find_map(|line| {
+                line.trim()
+                    .strip_prefix("# ")
+                    .map(|h| h.trim().to_string())
+                    .filter(|h| !h.is_empty())
+            })
+        })
+        .unwrap_or_else(|| agent.name.clone());
 
     Ok(Json(serde_json::json!({
         "agent": agent,
+        "displayName": display_name,
         "version": version,
         "inputFields": input_fields,
         "personaProperties": persona_properties,
         "personaBody": persona_body,
+        "persona": persona_body,
+        "model": model,
+        "skills": skills,
+        "views": views,
+        "pluginsNeedingAuth": plugins_needing_auth,
+        "needsSetup": needs_setup,
     })))
 }
 
@@ -430,14 +613,24 @@ pub async fn update_agent(
 
     // Body fields take priority over frontmatter (allows renaming without editing AGENT.md)
     let name = body["name"].as_str().unwrap_or_else(|| {
-        if fm.name.is_empty() { &existing.name } else { &fm.name }
+        if fm.name.is_empty() {
+            &existing.name
+        } else {
+            &fm.name
+        }
     });
     let description = body["description"].as_str().unwrap_or_else(|| {
-        if fm.description.is_empty() { &existing.description } else { &fm.description }
+        if fm.description.is_empty() {
+            &existing.description
+        } else {
+            &fm.description
+        }
     });
 
     // Update agent_md frontmatter if name/description changed via body (not via agentMd)
-    let final_agent_md = if body.get("agentMd").is_none() && (name != fm.name.as_str() || description != fm.description.as_str()) {
+    let final_agent_md = if body.get("agentMd").is_none()
+        && (name != fm.name.as_str() || description != fm.description.as_str())
+    {
         // Rebuild agent_md with updated name/description in frontmatter
         let mut new_md = String::from("---\n");
         new_md.push_str(&format!("name: \"{}\"\n", name));
@@ -450,7 +643,10 @@ pub async fn update_agent(
             }
         }
         if let Some(ref p) = fm.pricing {
-            new_md.push_str(&format!("pricing:\n  model: \"{}\"\n  cost: {}\n", p.model, p.cost));
+            new_md.push_str(&format!(
+                "pricing:\n  model: \"{}\"\n  cost: {}\n",
+                p.model, p.cost
+            ));
         }
         new_md.push_str("---\n");
         if !_body.is_empty() {
@@ -464,8 +660,12 @@ pub async fn update_agent(
     };
 
     // Preserve existing frontmatter workflows (inline definitions) if not overridden
-    let existing_fm: serde_json::Value = serde_json::from_str(&existing.frontmatter).unwrap_or_default();
-    let workflows = existing_fm.get("workflows").cloned().unwrap_or(serde_json::json!({}));
+    let existing_fm: serde_json::Value =
+        serde_json::from_str(&existing.frontmatter).unwrap_or_default();
+    let workflows = existing_fm
+        .get("workflows")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
 
     let frontmatter_json = serde_json::json!({
         "workflows": workflows,
@@ -603,7 +803,7 @@ pub async fn toggle_agent(
 
     // Start or stop the agent worker based on the new enabled state
     if agent.is_enabled != 0 {
-        state.agent_workers.start_agent(&id, &agent.name).await;
+        state.agent_workers.start_agent(&id, &agent.name, None).await;
     } else {
         state.agent_workers.stop_agent(&id).await;
     }
@@ -645,7 +845,9 @@ pub async fn process_agent_bindings(
 
     for (binding_name, binding) in &config.workflows {
         let (trigger_type, trigger_config) = match &binding.trigger {
-            napp::agent::AgentTrigger::Schedule { cron } => ("schedule", tools::PersonaTool::normalize_cron(cron)),
+            napp::agent::AgentTrigger::Schedule { cron, .. } => {
+                ("schedule", tools::PersonaTool::normalize_cron(cron))
+            }
             napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                 let cfg = match window {
                     Some(w) => format!("{}|{}", interval, w),
@@ -654,7 +856,12 @@ pub async fn process_agent_bindings(
                 ("heartbeat", cfg)
             }
             napp::agent::AgentTrigger::Event { sources } => ("event", sources.join(",")),
-            napp::agent::AgentTrigger::Watch { plugin, command, event, restart_delay_secs } => {
+            napp::agent::AgentTrigger::Watch {
+                plugin,
+                command,
+                event,
+                restart_delay_secs,
+            } => {
                 let mut cfg = serde_json::json!({
                     "plugin": plugin,
                     "command": command,
@@ -686,6 +893,12 @@ pub async fn process_agent_bindings(
             serde_json::to_string(&binding.activities).ok()
         };
 
+        let connections_json = if binding.connections.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&binding.connections).ok()
+        };
+
         if let Err(e) = state.store.upsert_agent_workflow(
             agent_id,
             binding_name,
@@ -695,6 +908,7 @@ pub async fn process_agent_bindings(
             inputs_json.as_deref(),
             binding.emit.as_deref(),
             activities_json.as_deref(),
+            connections_json.as_deref(),
         ) {
             warn!(agent = agent_id, binding = %binding_name, error = %e, "failed to upsert agent workflow");
             report.push(serde_json::json!({
@@ -730,7 +944,11 @@ pub async fn process_agent_bindings(
                     .map(|wb| wb.to_workflow_json(&b.binding_name));
 
                 // Build emit_source from the WorkflowBinding
-                let agent_name = state.store.get_agent(agent_id).ok().flatten()
+                let agent_name = state
+                    .store
+                    .get_agent(agent_id)
+                    .ok()
+                    .flatten()
                     .map(|r| r.name)
                     .unwrap_or_else(|| agent_id.to_string());
                 let emit_src = config
@@ -742,20 +960,20 @@ pub async fn process_agent_bindings(
                         format!("{}.{}", slug, emit_name)
                     });
 
-                b.trigger_config.split(',').map(move |source| {
-                    workflow::events::EventSubscription {
+                b.trigger_config
+                    .split(',')
+                    .map(move |source| workflow::events::EventSubscription {
                         pattern: source.trim().to_string(),
                         default_inputs: b
                             .inputs
                             .as_ref()
                             .and_then(|s| serde_json::from_str(s).ok())
-                            .unwrap_or_default(),
+                            .unwrap_or_else(|| serde_json::json!({})),
                         agent_source: agent_id.to_string(),
                         binding_name: b.binding_name.clone(),
                         definition_json: def_json.clone(),
                         emit_source: emit_src.clone(),
-                    }
-                })
+                    })
             })
             .collect();
 
@@ -764,7 +982,11 @@ pub async fn process_agent_bindings(
         }
     }
 
-    info!(agent = agent_id, bindings = config.workflows.len(), "processed agent bindings");
+    info!(
+        agent = agent_id,
+        bindings = config.workflows.len(),
+        "processed agent bindings"
+    );
     report
 }
 
@@ -787,8 +1009,12 @@ async fn create_blank_agent(state: AppState) -> HandlerResult<serde_json::Value>
         channel_id: None,
         degraded: None,
     };
-    state.agent_registry.write().await.insert(id.clone(), active);
-    state.agent_workers.start_agent(&id, &agent.name).await;
+    state
+        .agent_registry
+        .write()
+        .await
+        .insert(id.clone(), active);
+    state.agent_workers.start_agent(&id, &agent.name, None).await;
 
     state.hub.broadcast(
         "agent_installed",
@@ -806,9 +1032,7 @@ async fn create_blank_agent(state: AppState) -> HandlerResult<serde_json::Value>
 }
 
 /// GET /agents/event-sources — returns available emit names from active workflow bindings.
-pub async fn list_event_sources(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn list_event_sources(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let emit_sources = state.store.list_emit_sources().map_err(to_error_response)?;
 
     let sources: Vec<serde_json::Value> = emit_sources
@@ -831,34 +1055,37 @@ pub async fn list_event_sources(
 }
 
 /// GET /agents/active — returns currently active agents from the AgentRegistry.
-pub async fn list_active_agents(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn list_active_agents(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let registry = state.agent_registry.read().await;
     let now = chrono::Utc::now();
 
-    let agents: Vec<serde_json::Value> = registry.values().map(|agent| {
-        // Fetch description from DB if available
-        let description = state.store.get_agent(&agent.agent_id)
-            .ok()
-            .flatten()
-            .map(|r| r.description)
-            .unwrap_or_default();
+    let agents: Vec<serde_json::Value> = registry
+        .values()
+        .map(|agent| {
+            // Fetch description from DB if available
+            let description = state
+                .store
+                .get_agent(&agent.agent_id)
+                .ok()
+                .flatten()
+                .map(|r| r.description)
+                .unwrap_or_default();
 
-        // Compute nextFireAt: earliest next fire across all active bindings
-        let next_fire_at = compute_next_fire(&state.store, &agent.agent_id, &now);
+            // Compute nextFireAt: earliest next fire across all active bindings
+            let next_fire_at = compute_next_fire(&state.store, &agent.agent_id, &now);
 
-        serde_json::json!({
-            "agentId": agent.agent_id,
-            "name": agent.name,
-            "description": description,
-            "channelId": agent.channel_id,
-            "hasConfig": agent.config.is_some(),
-            "workflowCount": agent.config.as_ref().map(|c| c.workflows.len()).unwrap_or(0),
-            "skillCount": agent.config.as_ref().map(|c| c.skills.len()).unwrap_or(0),
-            "nextFireAt": next_fire_at,
+            serde_json::json!({
+                "agentId": agent.agent_id,
+                "name": agent.name,
+                "description": description,
+                "channelId": agent.channel_id,
+                "hasConfig": agent.config.is_some(),
+                "workflowCount": agent.config.as_ref().map(|c| c.workflows.len()).unwrap_or(0),
+                "skillCount": agent.config.as_ref().map(|c| c.skills.len()).unwrap_or(0),
+                "nextFireAt": next_fire_at,
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(Json(serde_json::json!({
         "agents": agents,
@@ -867,7 +1094,11 @@ pub async fn list_active_agents(
 }
 
 /// Compute the earliest next fire timestamp across all active bindings for an agent.
-fn compute_next_fire(store: &db::Store, agent_id: &str, now: &chrono::DateTime<chrono::Utc>) -> Option<i64> {
+fn compute_next_fire(
+    store: &db::Store,
+    agent_id: &str,
+    now: &chrono::DateTime<chrono::Utc>,
+) -> Option<i64> {
     let bindings = store.list_agent_workflows(agent_id).ok()?;
     let mut earliest: Option<i64> = None;
     let now_ts = now.timestamp();
@@ -938,6 +1169,9 @@ fn parse_interval_secs(s: &str) -> i64 {
 }
 
 /// GET /agents/{id}/workflows — returns workflow bindings for an agent.
+///
+/// Returns a map keyed by binding_name with structured trigger objects
+/// and full activity/connection data for the V2 workflow builder.
 pub async fn list_agent_workflows(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -949,11 +1183,143 @@ pub async fn list_agent_workflows(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let workflows = state.store.list_agent_workflows(&id).map_err(to_error_response)?;
+    let workflows = state
+        .store
+        .list_agent_workflows(&id)
+        .map_err(to_error_response)?;
+
+    // Build a map keyed by binding_name with structured trigger
+    let mut wf_map = serde_json::Map::new();
+    for wf in &workflows {
+        let trigger = reconstruct_trigger(&wf.trigger_type, &wf.trigger_config);
+        let mut entry = serde_json::json!({
+            "trigger": trigger,
+            "description": wf.description,
+            "isActive": wf.is_active != 0,
+            "lastFired": wf.last_fired,
+            "emit": wf.emit,
+            "activities": wf.activities,
+            "connections": wf.connections,
+        });
+        if let Some(inputs_str) = &wf.inputs {
+            if let Ok(inputs) = serde_json::from_str::<serde_json::Value>(inputs_str) {
+                entry["inputs"] = inputs;
+            }
+        }
+        wf_map.insert(wf.binding_name.clone(), entry);
+    }
+
     Ok(Json(serde_json::json!({
-        "workflows": workflows,
+        "workflows": wf_map,
         "count": workflows.len(),
     })))
+}
+
+/// Reconstruct a structured trigger JSON from the flat trigger_type + trigger_config
+/// stored in the DB, matching the V2 frontend's expected trigger shape.
+fn reconstruct_trigger(trigger_type: &str, trigger_config: &str) -> serde_json::Value {
+    match trigger_type {
+        "schedule" => serde_json::json!({
+            "type": "schedule",
+            "cron": trigger_config,
+            "schedule": cron_to_human_readable(trigger_config),
+        }),
+        "heartbeat" => {
+            let parts: Vec<&str> = trigger_config.splitn(2, '|').collect();
+            let interval = parts.first().unwrap_or(&"");
+            let window = parts.get(1);
+            let mut t = serde_json::json!({
+                "type": "heartbeat",
+                "interval": interval,
+            });
+            if let Some(w) = window {
+                if let Some((start, end)) = w.split_once('-') {
+                    t["window"] = serde_json::json!({ "start": start, "end": end });
+                }
+            }
+            t
+        }
+        "event" => {
+            let sources: Vec<&str> = trigger_config
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .collect();
+            serde_json::json!({
+                "type": "event",
+                "sources": sources,
+            })
+        }
+        "watch" => {
+            // trigger_config is JSON for watch triggers
+            if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(trigger_config) {
+                let mut t = serde_json::json!({ "type": "watch" });
+                if let Some(obj) = cfg.as_object() {
+                    for (k, v) in obj {
+                        t[k] = v.clone();
+                    }
+                }
+                t
+            } else {
+                serde_json::json!({ "type": "watch" })
+            }
+        }
+        "manual" => serde_json::json!({ "type": "manual" }),
+        _ => serde_json::json!({ "type": trigger_type }),
+    }
+}
+
+/// Convert a cron expression to a human-readable schedule string.
+/// Handles 5-field (minute hour dom month dow), 6-field, and
+/// 7-field (second minute hour dom month dow year) formats.
+fn cron_to_human_readable(cron: &str) -> String {
+    let parts: Vec<&str> = cron.split_whitespace().collect();
+    if parts.len() < 5 {
+        return cron.to_string();
+    }
+    // 7-field: second minute hour dom month dow year
+    // 6-field: second minute hour dom month dow  (normalize_cron sometimes)
+    // 5-field: minute hour dom month dow
+    let (minute, hour, _dom, _month, dow) = match parts.len() {
+        7 | 6 => (parts[1], parts[2], parts[3], parts[4], parts[5]),
+        _ => (parts[0], parts[1], parts[2], parts[3], parts[4]),
+    };
+
+    // Parse time
+    let time_str = if let (Ok(h), Ok(m)) = (hour.parse::<u32>(), minute.parse::<u32>()) {
+        let (h12, ampm) = if h == 0 {
+            (12, "AM")
+        } else if h < 12 {
+            (h, "AM")
+        } else if h == 12 {
+            (12, "PM")
+        } else {
+            (h - 12, "PM")
+        };
+        if m == 0 {
+            format!("{}:00 {}", h12, ampm)
+        } else {
+            format!("{}:{:02} {}", h12, m, ampm)
+        }
+    } else {
+        return cron.to_string();
+    };
+
+    // Parse day-of-week
+    let day_str = match dow {
+        "*" => "daily",
+        "1-5" | "MON-FRI" => "weekdays",
+        "0,6" | "SAT,SUN" => "weekends",
+        "1" | "MON" => "Monday",
+        "2" | "TUE" => "Tuesday",
+        "3" | "WED" => "Wednesday",
+        "4" | "THU" => "Thursday",
+        "5" | "FRI" => "Friday",
+        "6" | "SAT" => "Saturday",
+        "0" | "7" | "SUN" => "Sunday",
+        _ => return format!("{} ({})", time_str, cron),
+    };
+
+    format!("{} {}", time_str, day_str)
 }
 
 /// POST /agents/{id}/check-update — check if a newer version is available on NeboLoop.
@@ -961,7 +1327,10 @@ pub async fn check_agent_update(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let agent = state.store.get_agent(&id).map_err(to_error_response)?
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     let kind = agent.kind.as_deref().unwrap_or("");
@@ -976,7 +1345,9 @@ pub async fn check_agent_update(
     match api.get_skill(&id).await {
         Ok(detail) => {
             let remote_version = &detail.item.version;
-            let local_version = agent.napp_path.as_ref()
+            let local_version = agent
+                .napp_path
+                .as_ref()
                 .and_then(|p| {
                     let manifest_path = std::path::PathBuf::from(p).join("manifest.json");
                     std::fs::read_to_string(manifest_path).ok()
@@ -1004,13 +1375,16 @@ pub async fn apply_agent_update(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let agent = state.store.get_agent(&id).map_err(to_error_response)?
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     let kind = agent.kind.as_deref().unwrap_or("");
     if kind.is_empty() {
         return Err(to_error_response(types::NeboError::Validation(
-            "Cannot update a user-created agent from marketplace".to_string()
+            "Cannot update a user-created agent from marketplace".to_string(),
         )));
     }
 
@@ -1018,13 +1392,18 @@ pub async fn apply_agent_update(
     match tools::persist_agent_from_api(&api, &id, &agent.name, kind, &state.store).await {
         Ok(_) => {
             // Re-read updated agent
-            let updated = state.store.get_agent(&id).map_err(to_error_response)?
+            let updated = state
+                .store
+                .get_agent(&id)
+                .map_err(to_error_response)?
                 .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
             // Update live registry
             if let Some(config) = if !updated.frontmatter.is_empty() {
                 napp::agent::parse_agent_config(&updated.frontmatter).ok()
-            } else { None } {
+            } else {
+                None
+            } {
                 let active = tools::ActiveAgent {
                     agent_id: id.clone(),
                     name: updated.name.clone(),
@@ -1033,7 +1412,11 @@ pub async fn apply_agent_update(
                     channel_id: None,
                     degraded: None,
                 };
-                state.agent_registry.write().await.insert(id.clone(), active);
+                state
+                    .agent_registry
+                    .write()
+                    .await
+                    .insert(id.clone(), active);
             }
 
             Ok(Json(serde_json::json!({
@@ -1041,7 +1424,10 @@ pub async fn apply_agent_update(
                 "agent": updated,
             })))
         }
-        Err(e) => Err(to_error_response(types::NeboError::Internal(format!("Update failed: {}", e)))),
+        Err(e) => Err(to_error_response(types::NeboError::Internal(format!(
+            "Update failed: {}",
+            e
+        )))),
     }
 }
 
@@ -1050,10 +1436,15 @@ pub async fn reload_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let agent = state.store.get_agent(&id).map_err(to_error_response)?
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let agent_dir = agent.napp_path.as_ref()
+    let agent_dir = agent
+        .napp_path
+        .as_ref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -1093,17 +1484,31 @@ pub async fn reload_agent(
     }
 
     if changes.is_empty() {
-        return Ok(Json(serde_json::json!({ "ok": true, "message": "Already in sync" })));
+        return Ok(Json(
+            serde_json::json!({ "ok": true, "message": "Already in sync" }),
+        ));
     }
 
     // Persist
-    state.store.update_agent(&id, &agent.name, &agent.description, &current_md, &current_fm, agent.pricing_model.as_deref(), agent.pricing_cost)
+    state
+        .store
+        .update_agent(
+            &id,
+            &agent.name,
+            &agent.description,
+            &current_md,
+            &current_fm,
+            agent.pricing_model.as_deref(),
+            agent.pricing_cost,
+        )
         .map_err(to_error_response)?;
 
     // Re-register triggers if agent.json changed
     if changes.contains(&"agent.json") {
         if let Ok(config) = napp::agent::parse_agent_config(&current_fm) {
-            let _ = state.store.delete_cron_jobs_by_prefix(&format!("agent-{}-", id));
+            let _ = state
+                .store
+                .delete_cron_jobs_by_prefix(&format!("agent-{}-", id));
             let _ = state.store.delete_agent_workflows(&id);
             process_agent_bindings(&id, &config, &state).await;
         }
@@ -1128,14 +1533,20 @@ pub async fn trigger_agent_setup(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let agent = state.store.get_agent(&id).map_err(to_error_response)?
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    state.hub.broadcast("agent_setup", serde_json::json!({
-        "agentId": agent.id,
-        "agentName": agent.name,
-        "agentDescription": agent.description,
-    }));
+    state.hub.broadcast(
+        "agent_setup",
+        serde_json::json!({
+            "agentId": agent.id,
+            "agentName": agent.name,
+            "agentDescription": agent.description,
+        }),
+    );
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1153,7 +1564,10 @@ pub async fn update_agent_inputs(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     let values_str = body.to_string();
-    state.store.update_agent_input_values(&id, &values_str).map_err(to_error_response)?;
+    state
+        .store
+        .update_agent_input_values(&id, &values_str)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -1168,8 +1582,14 @@ pub async fn agent_stats(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let stats = state.store.agent_workflow_stats(&id).map_err(to_error_response)?;
-    let errors = state.store.agent_recent_errors(&id, 5).map_err(to_error_response)?;
+    let stats = state
+        .store
+        .agent_workflow_stats(&id)
+        .map_err(to_error_response)?;
+    let errors = state
+        .store
+        .agent_recent_errors(&id, 5)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({
         "stats": stats,
         "recentErrors": errors,
@@ -1189,8 +1609,14 @@ pub async fn list_agent_runs(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     let wf_id = format!("agent:{}", id);
-    let runs = state.store.list_workflow_runs(&wf_id, q.limit, q.offset).map_err(to_error_response)?;
-    let total = state.store.count_workflow_runs(&wf_id).map_err(to_error_response)?;
+    let runs = state
+        .store
+        .list_workflow_runs(&wf_id, q.limit, q.offset)
+        .map_err(to_error_response)?;
+    let total = state
+        .store
+        .count_workflow_runs(&wf_id)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({
         "runs": runs,
         "total": total,
@@ -1209,7 +1635,10 @@ pub async fn activate_agent(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     // Persist enabled state so it survives restart
-    state.store.set_agent_enabled(&id, true).map_err(to_error_response)?;
+    state
+        .store
+        .set_agent_enabled(&id, true)
+        .map_err(to_error_response)?;
 
     let agent_id = agent.id.clone();
     let config = if !agent.frontmatter.is_empty() {
@@ -1227,10 +1656,52 @@ pub async fn activate_agent(
         degraded: None,
     };
 
-    state.agent_registry.write().await.insert(agent_id.clone(), active);
+    state
+        .agent_registry
+        .write()
+        .await
+        .insert(agent_id.clone(), active);
 
     // Start autonomous agent worker (heartbeat, event, schedule triggers)
-    state.agent_workers.start_agent(&agent_id, &agent.name).await;
+    state
+        .agent_workers
+        .start_agent(&agent_id, &agent.name, None)
+        .await;
+
+    // Launch sidecar binary for app agents using the shared .napp runtime.
+    if agent.is_app.unwrap_or(0) != 0 {
+        let old_lifecycle = {
+            let mut lifecycles = state.app_lifecycles.write().await;
+            lifecycles.remove(&agent_id)
+        };
+        if let Some(mut lifecycle) = old_lifecycle {
+            if let Err(e) = lifecycle.shutdown().await {
+                warn!(agent = %agent_id, error = %e, "failed to stop existing app sidecar");
+            }
+        }
+
+        if let Some(tool_dir) = app_tool_dir(&agent) {
+            let mut lifecycle = crate::app_lifecycle::AppLifecycle::new(
+                agent_id.clone(),
+                tool_dir,
+                state.hub.clone(),
+            );
+            match lifecycle.launch().await {
+                Ok(()) => {
+                    state
+                        .app_lifecycles
+                        .write()
+                        .await
+                        .insert(agent_id.clone(), lifecycle);
+                }
+                Err(e) => {
+                    warn!(agent = %agent_id, error = %e, "failed to launch app sidecar");
+                }
+            }
+        } else {
+            warn!(agent = %agent_id, "app agent has no sidecar directory");
+        }
+    }
 
     // Register agent in the owner's personal loop (non-blocking)
     {
@@ -1246,13 +1717,14 @@ pub async fn activate_agent(
 
     state.hub.broadcast(
         "agent_activated",
-        serde_json::json!({ "agentId": agent_id, "name": agent.name }),
+        serde_json::json!({ "agentId": agent_id, "name": agent.name, "isApp": agent.is_app.unwrap_or(0) != 0 }),
     );
 
     Ok(Json(serde_json::json!({
         "agentId": agent_id,
         "name": agent.name,
         "status": "active",
+        "isApp": agent.is_app.unwrap_or(0) != 0,
     })))
 }
 
@@ -1268,6 +1740,16 @@ pub async fn deactivate_agent(
 
     // Stop autonomous agent worker (cancels heartbeat, event, schedule triggers)
     state.agent_workers.stop_agent(&id).await;
+
+    let lifecycle = {
+        let mut lifecycles = state.app_lifecycles.write().await;
+        lifecycles.remove(&id)
+    };
+    if let Some(mut lifecycle) = lifecycle {
+        if let Err(e) = lifecycle.shutdown().await {
+            warn!(agent = %id, error = %e, "failed to stop app sidecar");
+        }
+    }
 
     let removed = state.agent_registry.write().await.remove(&id);
     match removed {
@@ -1345,9 +1827,13 @@ pub async fn duplicate_agent(
         .map_err(to_error_response)?;
 
     // Copy agent_workflow bindings from source
-    let source_workflows = state.store.list_agent_workflows(&id).map_err(to_error_response)?;
+    let source_workflows = state
+        .store
+        .list_agent_workflows(&id)
+        .map_err(to_error_response)?;
     for wf in &source_workflows {
         let activities_str = wf.activities.as_ref().map(|v| v.to_string());
+        let connections_str = wf.connections.as_ref().map(|v| v.to_string());
         let _ = state.store.upsert_agent_workflow(
             &new_id,
             &wf.binding_name,
@@ -1357,6 +1843,7 @@ pub async fn duplicate_agent(
             wf.inputs.as_deref(),
             wf.emit.as_deref(),
             activities_str.as_deref(),
+            connections_str.as_deref(),
         );
     }
 
@@ -1369,8 +1856,12 @@ pub async fn duplicate_agent(
         channel_id: None,
         degraded: None,
     };
-    state.agent_registry.write().await.insert(new_id.clone(), active);
-    state.agent_workers.start_agent(&new_id, &agent.name).await;
+    state
+        .agent_registry
+        .write()
+        .await
+        .insert(new_id.clone(), active);
+    state.agent_workers.start_agent(&new_id, &agent.name, None).await;
 
     state.hub.broadcast(
         "agent_installed",
@@ -1393,10 +1884,7 @@ pub async fn chat_with_agent(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    let prompt = body["prompt"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let prompt = body["prompt"].as_str().unwrap_or("").to_string();
     if prompt.is_empty() {
         return Err(to_error_response(types::NeboError::Validation(
             "prompt is required".into(),
@@ -1407,9 +1895,10 @@ pub async fn chat_with_agent(
     {
         let reg = state.agent_registry.read().await;
         if !reg.contains_key(&id) {
-            return Err(to_error_response(types::NeboError::Validation(
-                format!("Agent '{}' is not active. Activate it first.", id),
-            )));
+            return Err(to_error_response(types::NeboError::Validation(format!(
+                "Agent '{}' is not active. Activate it first.",
+                id
+            ))));
         }
     }
 
@@ -1431,6 +1920,8 @@ pub async fn chat_with_agent(
         entity_config,
         images: vec![],
         entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context: None,
     };
 
     crate::chat_dispatch::run_chat(&state, config).await;
@@ -1448,11 +1939,17 @@ pub async fn chat_with_agent(
 fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) -> serde_json::Value {
     match trigger_type {
         "schedule" => {
-            let cron = trigger_config.get("cron").and_then(|v| v.as_str()).unwrap_or("0 * * * *");
+            let cron = trigger_config
+                .get("cron")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0 * * * *");
             serde_json::json!({ "type": "schedule", "cron": cron })
         }
         "heartbeat" => {
-            let interval = trigger_config.get("interval").and_then(|v| v.as_str()).unwrap_or("30m");
+            let interval = trigger_config
+                .get("interval")
+                .and_then(|v| v.as_str())
+                .unwrap_or("30m");
             let mut t = serde_json::json!({ "type": "heartbeat", "interval": interval });
             if let Some(window) = trigger_config.get("window").and_then(|v| v.as_str()) {
                 if !window.is_empty() {
@@ -1462,13 +1959,19 @@ fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) ->
             t
         }
         "event" => {
-            let sources: Vec<String> = if let Some(arr) = trigger_config.get("sources").and_then(|v| v.as_array()) {
-                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-            } else if let Some(s) = trigger_config.get("sources").and_then(|v| v.as_str()) {
-                s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
-            } else {
-                vec![]
-            };
+            let sources: Vec<String> =
+                if let Some(arr) = trigger_config.get("sources").and_then(|v| v.as_array()) {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                } else if let Some(s) = trigger_config.get("sources").and_then(|v| v.as_str()) {
+                    s.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                } else {
+                    vec![]
+                };
             serde_json::json!({ "type": "event", "sources": sources })
         }
         _ => serde_json::json!({ "type": "manual" }),
@@ -1479,11 +1982,17 @@ fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) ->
 fn flatten_trigger_config(trigger_type: &str, trigger_config: &serde_json::Value) -> String {
     match trigger_type {
         "schedule" => {
-            let raw = trigger_config.get("cron").and_then(|v| v.as_str()).unwrap_or("");
+            let raw = trigger_config
+                .get("cron")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             tools::PersonaTool::normalize_cron(raw)
         }
         "heartbeat" => {
-            let interval = trigger_config.get("interval").and_then(|v| v.as_str()).unwrap_or("30m");
+            let interval = trigger_config
+                .get("interval")
+                .and_then(|v| v.as_str())
+                .unwrap_or("30m");
             match trigger_config.get("window").and_then(|v| v.as_str()) {
                 Some(w) if !w.is_empty() => format!("{}|{}", interval, w),
                 _ => interval.to_string(),
@@ -1491,9 +2000,16 @@ fn flatten_trigger_config(trigger_type: &str, trigger_config: &serde_json::Value
         }
         "event" => {
             if let Some(arr) = trigger_config.get("sources").and_then(|v| v.as_array()) {
-                arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(",")
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
             } else {
-                trigger_config.get("sources").and_then(|v| v.as_str()).unwrap_or("").to_string()
+                trigger_config
+                    .get("sources")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
             }
         }
         _ => String::new(),
@@ -1519,13 +2035,21 @@ async fn register_binding_triggers(
     trigger_type: &str,
     trigger_config_flat: &str,
     frontmatter: &serde_json::Value,
+    inputs_json: Option<&str>,
     state: &AppState,
 ) {
     if trigger_type == "schedule" {
         let name = format!("agent-{}-{}", agent_id, binding_name);
         let command = format!("agent:{}:{}", agent_id, binding_name);
         if let Err(e) = state.store.upsert_cron_job(
-            &name, trigger_config_flat, &command, "agent_workflow", None, None, None, true,
+            &name,
+            trigger_config_flat,
+            &command,
+            "agent_workflow",
+            None,
+            None,
+            None,
+            true,
         ) {
             warn!(agent = agent_id, binding = binding_name, error = %e, "failed to register cron job");
         }
@@ -1538,33 +2062,52 @@ async fn register_binding_triggers(
         let parsed_binding = binding_val
             .and_then(|v| serde_json::from_value::<napp::agent::WorkflowBinding>(v.clone()).ok());
 
-        let def_json = parsed_binding.as_ref()
+        let def_json = parsed_binding
+            .as_ref()
             .filter(|wb| wb.has_activities())
             .map(|wb| wb.to_workflow_json(binding_name));
 
         // Build emit_source from binding emit field
-        let emit_source = parsed_binding.as_ref()
-            .and_then(|wb| wb.emit.as_ref())
-            .map(|emit_name| {
-                let agent_name = frontmatter.get("name").and_then(|n| n.as_str())
-                    .map(|s| s.to_string())
-                    .or_else(|| state.store.get_agent(agent_id).ok().flatten().map(|r| r.name))
-                    .unwrap_or_else(|| agent_id.to_string());
-                let slug = agent_name.to_lowercase().replace(' ', "-");
-                format!("{}.{}", slug, emit_name)
-            });
+        let emit_source =
+            parsed_binding
+                .as_ref()
+                .and_then(|wb| wb.emit.as_ref())
+                .map(|emit_name| {
+                    let agent_name = frontmatter
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            state
+                                .store
+                                .get_agent(agent_id)
+                                .ok()
+                                .flatten()
+                                .map(|r| r.name)
+                        })
+                        .unwrap_or_else(|| agent_id.to_string());
+                    let slug = agent_name.to_lowercase().replace(' ', "-");
+                    format!("{}.{}", slug, emit_name)
+                });
 
-        for source in trigger_config_flat.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            state.event_dispatcher.subscribe(
-                workflow::events::EventSubscription {
+        for source in trigger_config_flat
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            state
+                .event_dispatcher
+                .subscribe(workflow::events::EventSubscription {
                     pattern: source.to_string(),
-                    default_inputs: serde_json::Value::Object(Default::default()),
+                    default_inputs: inputs_json
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_else(|| serde_json::json!({})),
                     agent_source: agent_id.to_string(),
                     binding_name: binding_name.to_string(),
                     definition_json: def_json.clone(),
                     emit_source: emit_source.clone(),
-                },
-            ).await;
+                })
+                .await;
         }
     }
 }
@@ -1575,23 +2118,38 @@ pub async fn create_agent_workflow(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    let agent = state.store.get_agent(&id).map_err(to_error_response)?
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let binding_name = body["bindingName"].as_str()
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("bindingName required".into())))?;
-    let trigger_type = body["triggerType"].as_str()
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("triggerType required".into())))?;
-    let trigger_config = body.get("triggerConfig").cloned().unwrap_or(serde_json::json!({}));
+    let binding_name = body["bindingName"].as_str().ok_or_else(|| {
+        to_error_response(types::NeboError::Validation("bindingName required".into()))
+    })?;
+    let trigger_type = body["triggerType"].as_str().ok_or_else(|| {
+        to_error_response(types::NeboError::Validation("triggerType required".into()))
+    })?;
+    let trigger_config = body
+        .get("triggerConfig")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
 
     // Parse existing frontmatter
-    let mut fm: serde_json::Value = serde_json::from_str(&agent.frontmatter).unwrap_or(serde_json::json!({}));
+    let mut fm: serde_json::Value =
+        serde_json::from_str(&agent.frontmatter).unwrap_or(serde_json::json!({}));
 
     // Check for conflict
-    if fm.get("workflows").and_then(|w| w.get(binding_name)).is_some() {
+    if fm
+        .get("workflows")
+        .and_then(|w| w.get(binding_name))
+        .is_some()
+    {
         return Err((
             StatusCode::CONFLICT,
-            Json(types::api::ErrorResponse { error: format!("binding '{}' already exists", binding_name) }),
+            Json(types::api::ErrorResponse {
+                error: format!("binding '{}' already exists", binding_name),
+            }),
         ));
     }
 
@@ -1623,29 +2181,66 @@ pub async fn create_agent_workflow(
     fm["workflows"][binding_name] = binding_val;
 
     // Update agent in DB
-    state.store.update_agent(
-        &id, &agent.name, &agent.description, &agent.agent_md,
-        &fm.to_string(), agent.pricing_model.as_deref(), agent.pricing_cost,
-    ).map_err(to_error_response)?;
+    state
+        .store
+        .update_agent(
+            &id,
+            &agent.name,
+            &agent.description,
+            &agent.agent_md,
+            &fm.to_string(),
+            agent.pricing_model.as_deref(),
+            agent.pricing_cost,
+        )
+        .map_err(to_error_response)?;
 
     // Upsert tracking row
     let trigger_config_flat = flatten_trigger_config(trigger_type, &trigger_config);
     let desc = body.get("description").and_then(|v| v.as_str());
-    let inputs_json = body.get("inputs").and_then(|v| serde_json::to_string(v).ok());
+    let inputs_json = body
+        .get("inputs")
+        .and_then(|v| serde_json::to_string(v).ok());
     let emit_val = body.get("emit").and_then(|v| v.as_str());
-    let activities_json = body.get("activities").and_then(|v| serde_json::to_string(v).ok());
-    state.store.upsert_agent_workflow(
-        &id, binding_name, trigger_type, &trigger_config_flat,
-        desc, inputs_json.as_deref(), emit_val, activities_json.as_deref(),
-    ).map_err(to_error_response)?;
+    let activities_json = body
+        .get("activities")
+        .and_then(|v| serde_json::to_string(v).ok());
+    let connections_json = body
+        .get("connections")
+        .and_then(|v| serde_json::to_string(v).ok());
+    state
+        .store
+        .upsert_agent_workflow(
+            &id,
+            binding_name,
+            trigger_type,
+            &trigger_config_flat,
+            desc,
+            inputs_json.as_deref(),
+            emit_val,
+            activities_json.as_deref(),
+            connections_json.as_deref(),
+        )
+        .map_err(to_error_response)?;
 
     // Register triggers
-    register_binding_triggers(&id, binding_name, trigger_type, &trigger_config_flat, &fm, &state).await;
+    register_binding_triggers(
+        &id,
+        binding_name,
+        trigger_type,
+        &trigger_config_flat,
+        &fm,
+        inputs_json.as_deref(),
+        &state,
+    )
+    .await;
 
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
 
-    let workflows = state.store.list_agent_workflows(&id).map_err(to_error_response)?;
+    let workflows = state
+        .store
+        .list_agent_workflows(&id)
+        .map_err(to_error_response)?;
     let wf = workflows.iter().find(|w| w.binding_name == binding_name);
 
     Ok(Json(serde_json::json!({
@@ -1659,23 +2254,37 @@ pub async fn update_agent_workflow(
     Path((id, binding_name)): Path<(String, String)>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    let agent = state.store.get_agent(&id).map_err(to_error_response)?
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let mut fm: serde_json::Value = serde_json::from_str(&agent.frontmatter).unwrap_or(serde_json::json!({}));
+    let mut fm: serde_json::Value =
+        serde_json::from_str(&agent.frontmatter).unwrap_or(serde_json::json!({}));
 
     // Verify binding exists
-    let existing_binding = fm.get("workflows").and_then(|w| w.get(&binding_name)).cloned()
+    let existing_binding = fm
+        .get("workflows")
+        .and_then(|w| w.get(&binding_name))
+        .cloned()
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     // Determine old trigger type for cleanup
-    let old_trigger_type = existing_binding.get("trigger").and_then(|t| t.get("type")).and_then(|v| v.as_str()).unwrap_or("manual");
+    let old_trigger_type = existing_binding
+        .get("trigger")
+        .and_then(|t| t.get("type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("manual");
 
     // Build updated binding — merge provided fields over existing
     let mut updated = existing_binding.clone();
 
     if let Some(trigger_type) = body.get("triggerType").and_then(|v| v.as_str()) {
-        let trigger_config = body.get("triggerConfig").cloned().unwrap_or(serde_json::json!({}));
+        let trigger_config = body
+            .get("triggerConfig")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         updated["trigger"] = build_trigger_json(trigger_type, &trigger_config);
     }
     if let Some(desc) = body.get("description") {
@@ -1702,42 +2311,92 @@ pub async fn update_agent_workflow(
     fm["workflows"][&binding_name] = updated;
 
     // Update agent in DB
-    state.store.update_agent(
-        &id, &agent.name, &agent.description, &agent.agent_md,
-        &fm.to_string(), agent.pricing_model.as_deref(), agent.pricing_cost,
-    ).map_err(to_error_response)?;
+    state
+        .store
+        .update_agent(
+            &id,
+            &agent.name,
+            &agent.description,
+            &agent.agent_md,
+            &fm.to_string(),
+            agent.pricing_model.as_deref(),
+            agent.pricing_cost,
+        )
+        .map_err(to_error_response)?;
 
     // Determine new trigger info
-    let new_trigger_type = body.get("triggerType").and_then(|v| v.as_str()).unwrap_or(old_trigger_type);
+    let new_trigger_type = body
+        .get("triggerType")
+        .and_then(|v| v.as_str())
+        .unwrap_or(old_trigger_type);
     let trigger_config = body.get("triggerConfig").cloned().unwrap_or_else(|| {
         // Reconstruct from existing trigger
-        existing_binding.get("trigger").cloned().unwrap_or(serde_json::json!({}))
+        existing_binding
+            .get("trigger")
+            .cloned()
+            .unwrap_or(serde_json::json!({}))
     });
     let trigger_config_flat = flatten_trigger_config(new_trigger_type, &trigger_config);
 
     // Upsert tracking row
-    let desc = fm["workflows"][&binding_name].get("description").and_then(|v| v.as_str());
-    let inputs_json = fm["workflows"][&binding_name].get("inputs").and_then(|v| serde_json::to_string(v).ok());
-    let emit_val = fm["workflows"][&binding_name].get("emit").and_then(|v| v.as_str());
-    let activities_json = fm["workflows"][&binding_name].get("activities").and_then(|v| serde_json::to_string(v).ok());
-    state.store.upsert_agent_workflow(
-        &id, &binding_name, new_trigger_type, &trigger_config_flat,
-        desc, inputs_json.as_deref(), emit_val, activities_json.as_deref(),
-    ).map_err(to_error_response)?;
+    let desc = fm["workflows"][&binding_name]
+        .get("description")
+        .and_then(|v| v.as_str());
+    let inputs_json = fm["workflows"][&binding_name]
+        .get("inputs")
+        .and_then(|v| serde_json::to_string(v).ok());
+    let emit_val = fm["workflows"][&binding_name]
+        .get("emit")
+        .and_then(|v| v.as_str());
+    let activities_json = fm["workflows"][&binding_name]
+        .get("activities")
+        .and_then(|v| serde_json::to_string(v).ok());
+    let connections_json = fm["workflows"][&binding_name]
+        .get("connections")
+        .and_then(|v| serde_json::to_string(v).ok());
+    state
+        .store
+        .upsert_agent_workflow(
+            &id,
+            &binding_name,
+            new_trigger_type,
+            &trigger_config_flat,
+            desc,
+            inputs_json.as_deref(),
+            emit_val,
+            activities_json.as_deref(),
+            connections_json.as_deref(),
+        )
+        .map_err(to_error_response)?;
 
     // If trigger type changed, unregister old triggers first
     if body.get("triggerType").is_some() {
         workflow::triggers::unregister_single_agent_trigger(&id, &binding_name, &state.store);
-        state.event_dispatcher.unsubscribe_binding(&id, &binding_name).await;
+        state
+            .event_dispatcher
+            .unsubscribe_binding(&id, &binding_name)
+            .await;
     }
 
     // Register new triggers
-    register_binding_triggers(&id, &binding_name, new_trigger_type, &trigger_config_flat, &fm, &state).await;
+    register_binding_triggers(
+        &id,
+        &binding_name,
+        new_trigger_type,
+        &trigger_config_flat,
+        &fm,
+        inputs_json.as_deref(),
+        &state,
+    )
+    .await;
 
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
 
-    let workflows = state.store.list_agent_workflows(&id).map_err(to_error_response)?;
+    let workflows = state
+        .store
+        .list_agent_workflows(&id)
+        .map_err(to_error_response)?;
     let wf = workflows.iter().find(|w| w.binding_name == binding_name);
 
     Ok(Json(serde_json::json!({
@@ -1751,10 +2410,16 @@ pub async fn toggle_agent_workflow(
     Path((id, binding_name)): Path<(String, String)>,
 ) -> HandlerResult<serde_json::Value> {
     // Verify agent exists
-    let agent = state.store.get_agent(&id).map_err(to_error_response)?
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let is_active = state.store.toggle_agent_workflow(&id, &binding_name).map_err(to_error_response)?;
+    let is_active = state
+        .store
+        .toggle_agent_workflow(&id, &binding_name)
+        .map_err(to_error_response)?;
 
     if is_active {
         // Re-register triggers
@@ -1762,14 +2427,24 @@ pub async fn toggle_agent_workflow(
         if let Ok(bindings) = state.store.list_agent_workflows(&id) {
             if let Some(binding) = bindings.iter().find(|b| b.binding_name == binding_name) {
                 register_binding_triggers(
-                    &id, &binding_name, &binding.trigger_type, &binding.trigger_config, &fm, &state,
-                ).await;
+                    &id,
+                    &binding_name,
+                    &binding.trigger_type,
+                    &binding.trigger_config,
+                    &fm,
+                    binding.inputs.as_deref(),
+                    &state,
+                )
+                .await;
             }
         }
     } else {
         // Unregister triggers
         workflow::triggers::unregister_single_agent_trigger(&id, &binding_name, &state.store);
-        state.event_dispatcher.unsubscribe_binding(&id, &binding_name).await;
+        state
+            .event_dispatcher
+            .unsubscribe_binding(&id, &binding_name)
+            .await;
     }
 
     Ok(Json(serde_json::json!({
@@ -1783,32 +2458,433 @@ pub async fn delete_agent_workflow(
     State(state): State<AppState>,
     Path((id, binding_name)): Path<(String, String)>,
 ) -> HandlerResult<serde_json::Value> {
-    let agent = state.store.get_agent(&id).map_err(to_error_response)?
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     // Remove from frontmatter
-    let mut fm: serde_json::Value = serde_json::from_str(&agent.frontmatter).unwrap_or(serde_json::json!({}));
+    let mut fm: serde_json::Value =
+        serde_json::from_str(&agent.frontmatter).unwrap_or(serde_json::json!({}));
     if let Some(workflows) = fm.get_mut("workflows").and_then(|w| w.as_object_mut()) {
         workflows.remove(&binding_name);
     }
 
     // Update agent in DB
-    state.store.update_agent(
-        &id, &agent.name, &agent.description, &agent.agent_md,
-        &fm.to_string(), agent.pricing_model.as_deref(), agent.pricing_cost,
-    ).map_err(to_error_response)?;
+    state
+        .store
+        .update_agent(
+            &id,
+            &agent.name,
+            &agent.description,
+            &agent.agent_md,
+            &fm.to_string(),
+            agent.pricing_model.as_deref(),
+            agent.pricing_cost,
+        )
+        .map_err(to_error_response)?;
 
     // Delete tracking row
-    state.store.delete_single_agent_workflow(&id, &binding_name).map_err(to_error_response)?;
+    state
+        .store
+        .delete_single_agent_workflow(&id, &binding_name)
+        .map_err(to_error_response)?;
 
     // Unregister triggers
     workflow::triggers::unregister_single_agent_trigger(&id, &binding_name, &state.store);
-    state.event_dispatcher.unsubscribe_binding(&id, &binding_name).await;
+    state
+        .event_dispatcher
+        .unsubscribe_binding(&id, &binding_name)
+        .await;
 
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
 
     Ok(Json(serde_json::json!({
         "message": format!("Binding '{}' deleted", binding_name),
+    })))
+}
+
+/// GET /agents/{id}/surfaces — Return A2UI replay messages for active surfaces.
+///
+/// If no active surfaces exist but the agent has a `default` view in views.json,
+/// auto-creates the surface server-side so it persists across page refreshes.
+pub async fn get_agent_surfaces(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let existing = state.a2ui.list_agent_surfaces(&id).await;
+
+    if existing.is_empty() {
+        // Check if agent has a views.json with a "default" view
+        if let Some(views) = get_agent_views(&state, &id).await {
+            if let Some(default_view) = views.get("default") {
+                if let Some(components) = default_view.get("components").and_then(|c| c.as_array())
+                {
+                    let catalog_id = "https://a2ui.org/specification/v0_9/basic_catalog.json";
+                    let surface_type = default_view
+                        .get("surface_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("panel");
+
+                    match state
+                        .a2ui
+                        .create_surface(&id, "default", surface_type, catalog_id, None)
+                        .await
+                    {
+                        Ok(sid) => {
+                            if let Err(e) =
+                                state.a2ui.update_components(&sid, components.clone()).await
+                            {
+                                warn!(error = %e, "failed to push default view components");
+                            }
+                            // If view has initial data, push it too
+                            if let Some(data) = default_view.get("data") {
+                                if let Err(e) =
+                                    state.a2ui.update_data_model(&sid, None, data.clone()).await
+                                {
+                                    warn!(error = %e, "failed to push default view data model");
+                                }
+                            }
+                            // Start data bindings if defined
+                            state.a2ui.start_data_bindings(&sid, default_view).await;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, agent_id = %id, "failed to auto-create default surface");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let messages = state.a2ui.get_agent_replay_messages(&id).await;
+    Ok(Json(serde_json::json!({
+        "messages": messages,
+    })))
+}
+
+/// GET /agents/{id}/theme.css — Return the agent's theme CSS.
+///
+/// Returns the theme.css content from the agent's LoadedAgent (filesystem).
+/// 204 No Content if the agent has no theme.css.
+pub async fn get_agent_theme(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl axum::response::IntoResponse {
+    // Try DB agent → loader by name
+    if let Ok(Some(agent)) = state.store.get_agent(&id) {
+        if let Some(loaded) = state.agent_loader.get_by_name(&agent.name).await {
+            if let Some(ref css) = loaded.theme_css {
+                return axum::response::Response::builder()
+                    .status(200)
+                    .header("content-type", "text/css; charset=utf-8")
+                    .header("cache-control", "no-cache")
+                    .body(axum::body::Body::from(css.clone()))
+                    .unwrap();
+            }
+        }
+    }
+
+    // Last resort: try id as agent name
+    if let Some(loaded) = state.agent_loader.get_by_name(&id).await {
+        if let Some(ref css) = loaded.theme_css {
+            return axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "text/css; charset=utf-8")
+                .header("cache-control", "no-cache")
+                .body(axum::body::Body::from(css.clone()))
+                .unwrap();
+        }
+    }
+
+    axum::response::Response::builder()
+        .status(204)
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+/// Return the agent's `_nav` config from views.json.
+///
+/// If `_nav` is explicitly defined, returns it. Otherwise auto-generates
+/// nav items from the top-level view keys (excluding underscore-prefixed keys
+/// and child views like "document-review").
+pub async fn get_agent_nav(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let views = get_agent_views(&state, &id).await;
+    let Some(views) = views else {
+        return Ok(axum::Json(serde_json::json!([])));
+    };
+
+    // Check for explicit _nav config
+    if let Some(nav) = views.get("_nav") {
+        return Ok(axum::Json(nav.clone()));
+    }
+
+    // Auto-generate from view keys
+    let obj = views.as_object().cloned().unwrap_or_default();
+    let items: Vec<serde_json::Value> = obj
+        .keys()
+        .filter(|k| !k.starts_with('_'))
+        .map(|k| {
+            let label = k
+                .replace('-', " ")
+                .split_whitespace()
+                .map(|w| {
+                    let mut c = w.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().to_string() + c.as_str(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            serde_json::json!({
+                "viewId": k,
+                "label": if k == "default" { "Dashboard" } else { &label },
+            })
+        })
+        .collect();
+
+    Ok(axum::Json(serde_json::json!(items)))
+}
+
+/// Check all installed plugins for pending auth requirements.
+/// Returns a list of plugins that have auth config but aren't authenticated yet.
+/// Pure in-memory read from PluginStore's auth cache (populated at startup,
+/// updated on login/logout). No subprocess spawning, no polling.
+async fn check_plugins_auth_status(state: &AppState) -> Vec<serde_json::Value> {
+    // Lazy auth check: only query plugins that are actually installed and have
+    // auth configs. Previously this read from a pre-populated cache that took
+    // ~61s to build at startup. Now each plugin is checked on first access.
+    let installed = state.plugin_store.list_installed();
+    let mut result = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (slug, _, _, _) in installed {
+        if !seen.insert(slug.clone()) {
+            continue;
+        }
+        let Some(manifest) = state.plugin_store.get_manifest(&slug) else {
+            continue;
+        };
+        let Some(ref auth) = manifest.auth else {
+            continue;
+        };
+        if auth.commands.status.is_none() {
+            continue;
+        }
+        if !state.plugin_store.check_auth_lazy(&slug).await {
+            result.push(serde_json::json!({
+                "slug": slug,
+                "label": auth.label,
+                "description": auth.description,
+            }));
+        }
+    }
+    result
+}
+
+/// Look up an agent's views.json content.
+///
+/// Tries two sources:
+/// 1. DB agent record's napp_path (filesystem path to agent directory)
+/// 2. Agent loader's in-memory LoadedAgent (already parsed views.json)
+pub async fn get_agent_views(state: &AppState, agent_id: &str) -> Option<serde_json::Value> {
+    // Try DB agent's napp_path first
+    if let Ok(Some(agent)) = state.store.get_agent(agent_id) {
+        if let Some(napp_path) = agent.napp_path.as_ref() {
+            if !napp_path.is_empty() {
+                let views_path = std::path::PathBuf::from(napp_path).join("views.json");
+                if let Ok(content) = std::fs::read_to_string(&views_path) {
+                    if let Ok(views) = serde_json::from_str(&content) {
+                        return Some(views);
+                    }
+                }
+            }
+        }
+
+        // Fallback: look up via agent loader by name
+        if let Some(loaded) = state.agent_loader.get_by_name(&agent.name).await {
+            return loaded.views;
+        }
+    }
+
+    // Last resort: try agent_id as a name directly
+    if let Some(loaded) = state.agent_loader.get_by_name(agent_id).await {
+        return loaded.views;
+    }
+
+    None
+}
+
+// ── Agent Multi-Chat ─────────────────────────────────────────────────────────
+
+/// GET /api/v1/agents/{id}/chats — list all chats for an agent.
+pub async fn list_agent_chats(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
+
+    // Resolve active chat_id from session (if session exists).
+    let active_chat_id = state
+        .runner
+        .sessions()
+        .resolve_session_id_by_key(&session_key)
+        .ok()
+        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .unwrap_or_default();
+
+    // Single query: get all chats with message count + last message preview.
+    let mut enriched_chats = state
+        .store
+        .list_chats_by_session_enriched(&session_key)
+        .unwrap_or_default();
+
+    // Backfill: legacy agent chats store messages under the session key as chat_id
+    // but have no `chats` row. If we found no chats but messages exist, create the row.
+    if enriched_chats.is_empty() {
+        let legacy_chat_id = if active_chat_id.is_empty() {
+            &session_key
+        } else {
+            &active_chat_id
+        };
+        let msg_count = state.store.count_chat_messages(legacy_chat_id).unwrap_or(0);
+        if msg_count > 0 {
+            if let Ok(chat) =
+                state
+                    .store
+                    .create_chat_for_session(legacy_chat_id, &session_key, "Chat 1", None)
+            {
+                enriched_chats.push((chat, msg_count, String::new()));
+            }
+        }
+    }
+
+    // Format response
+    let now = chrono::Utc::now().timestamp();
+    let enriched: Vec<serde_json::Value> = enriched_chats
+        .iter()
+        .map(|(chat, msg_count, last_content)| {
+            let preview = if last_content.len() > 120 {
+                format!("{}...", last_content.chars().take(120).collect::<String>())
+            } else {
+                last_content.clone()
+            };
+            let updated_at_relative = format_relative_time(chat.updated_at, now);
+            serde_json::json!({
+                "id": chat.id,
+                "name": chat.title,
+                "title": chat.title,
+                "preview": preview,
+                "updatedAt": updated_at_relative,
+                "messages": msg_count,
+                "createdAt": chat.created_at,
+                "updatedAtEpoch": chat.updated_at,
+                "sessionName": chat.session_name,
+            })
+        })
+        .collect();
+
+    let total = enriched.len();
+    Ok(Json(serde_json::json!({
+        "chats": enriched,
+        "activeChatId": active_chat_id,
+        "total": total,
+    })))
+}
+
+/// Format an epoch timestamp as a relative time string.
+fn format_relative_time(epoch: i64, now: i64) -> String {
+    let diff = now - epoch;
+    if diff < 60 {
+        "just now".to_string()
+    } else if diff < 3600 {
+        let mins = diff / 60;
+        format!("{}m ago", mins)
+    } else if diff < 86400 {
+        let hours = diff / 3600;
+        format!("{}h ago", hours)
+    } else if diff < 604800 {
+        let days = diff / 86400;
+        format!("{}d ago", days)
+    } else {
+        chrono::DateTime::from_timestamp(epoch, 0)
+            .map(|dt| dt.format("%b %d").to_string())
+            .unwrap_or_default()
+    }
+}
+
+/// POST /api/v1/agents/{id}/chats — create a new chat under the agent's session.
+pub async fn create_new_agent_chat(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
+
+    // Ensure the session exists (get_or_create lazily creates it).
+    let session = state
+        .runner
+        .sessions()
+        .get_or_create(&session_key, "")
+        .map_err(to_error_response)?;
+
+    let new_chat_id = state
+        .runner
+        .sessions()
+        .rotate_chat(&session.id, None)
+        .map_err(to_error_response)?;
+
+    let chat = state
+        .store
+        .get_chat(&new_chat_id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    Ok(Json(serde_json::json!({
+        "chat": chat,
+        "messages": [],
+        "totalMessages": 0,
+        "sessionKey": session_key,
+    })))
+}
+
+/// POST /api/v1/agents/{id}/chats/{chat_id}/activate — switch to an existing chat.
+pub async fn activate_agent_chat(
+    State(state): State<AppState>,
+    Path((id, chat_id)): Path<(String, String)>,
+) -> HandlerResult<serde_json::Value> {
+    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
+
+    let session_id = state
+        .runner
+        .sessions()
+        .resolve_session_id_by_key(&session_key)
+        .map_err(to_error_response)?;
+
+    state
+        .runner
+        .sessions()
+        .set_active_chat(&session_id, &chat_id)
+        .map_err(to_error_response)?;
+
+    let mut messages = state
+        .store
+        .get_chat_messages_budgeted(&chat_id, 12000, None)
+        .unwrap_or_default();
+    super::chat::build_message_metadata(&mut messages);
+    let total = state
+        .store
+        .count_chat_messages(&chat_id)
+        .unwrap_or(messages.len() as i64);
+
+    Ok(Json(serde_json::json!({
+        "chatId": chat_id,
+        "messages": messages,
+        "totalMessages": total,
+        "sessionKey": session_key,
     })))
 }

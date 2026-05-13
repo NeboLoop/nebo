@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 
-use db::models::{AgentProfile, UserPreference, UserProfile};
 use db::Store;
+use db::models::{AgentProfile, UserPreference, UserProfile};
 use tracing::debug;
 
 use crate::memory::{self, ScoredMemory};
+use crate::sanitize;
 
 /// Rich context loaded from the database for prompt assembly.
 pub struct DBContext {
@@ -87,10 +88,7 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     // 3. Personality directive (learned from style observations)
     if let Some(ref directive) = ctx.personality_directive {
         if !directive.is_empty() {
-            sections.push(format!(
-                "# Personality (Learned)\n{}",
-                directive
-            ));
+            sections.push(format!("# Personality (Learned)\n{}", directive));
         }
     }
 
@@ -166,12 +164,15 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         }
         if let Some(ref goals) = user.goals {
             if !goals.is_empty() {
-                parts.push(format!("Goals: {}", goals));
+                parts.push(format!("Goals: {}", sanitize::sanitize_for_prompt(goals)));
             }
         }
         if let Some(ref context) = user.context {
             if !context.is_empty() {
-                parts.push(format!("Context: {}", context));
+                parts.push(format!(
+                    "Context: {}",
+                    sanitize::sanitize_for_prompt(context)
+                ));
             }
         }
         if !parts.is_empty() {
@@ -183,7 +184,8 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     if let Some(ref agent) = ctx.agent {
         if let Some(ref rules) = agent.agent_rules {
             if !rules.is_empty() {
-                let formatted = format_structured_or_raw(rules, "Rules");
+                let sanitized = sanitize::sanitize_for_prompt(rules);
+                let formatted = format_structured_or_raw(&sanitized, "Rules");
                 sections.push(format!("# Agent Rules\n{}", formatted));
             }
         }
@@ -193,7 +195,8 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     if let Some(ref agent) = ctx.agent {
         if let Some(ref notes) = agent.tool_notes {
             if !notes.is_empty() {
-                let formatted = format_structured_or_raw(notes, "Tool Notes");
+                let sanitized = sanitize::sanitize_for_prompt(notes);
+                let formatted = format_structured_or_raw(&sanitized, "Tool Notes");
                 sections.push(format!("# Tool Notes\n{}", formatted));
             }
         }
@@ -208,13 +211,14 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         sections.push(format!("# What You Know\n{}", lines.join("\n")));
     }
 
-    // 9. Memory tool instructions
+    // 9. Memory quick reference (aligns with SECTION_MEMORY_DOCS)
     sections.push(
-        "# Memory Instructions\n\
-         You have persistent memory. Facts are automatically extracted from conversations.\n\
-         Use agent(resource: memory, action: search) to find memories.\n\
-         Use agent(resource: memory, action: recall, key: \"...\") for specific facts.\n\
-         Only use explicit store when the user says \"remember this\"."
+        "# Memory Quick Reference\n\
+         Facts are automatically extracted from conversations.\n\
+         Proactively save: user corrections, preferences, environment facts, recurring patterns.\n\
+         Write as declarative facts (\"User prefers X\"), not directives (\"Always do X\").\n\
+         Use agent(resource: \"memory\", action: \"search\") to find memories.\n\
+         Use agent(resource: \"memory\", action: \"recall\", key: \"...\") for specific facts."
             .to_string(),
     );
 
@@ -323,11 +327,19 @@ fn language_display_name(code: &str) -> &'static str {
 /// Map personality preset names to prompt text.
 fn personality_preset_prompt(preset: Option<&str>) -> Option<&'static str> {
     match preset? {
-        "professional" => Some("You are professional, precise, and efficient. You focus on accuracy and clear communication."),
-        "friendly" => Some("You are warm, friendly, and approachable. You make people feel comfortable and supported."),
+        "professional" => Some(
+            "You are professional, precise, and efficient. You focus on accuracy and clear communication.",
+        ),
+        "friendly" => Some(
+            "You are warm, friendly, and approachable. You make people feel comfortable and supported.",
+        ),
         "casual" => Some("You are laid-back and casual. You keep things light and conversational."),
-        "creative" => Some("You are creative, imaginative, and expressive. You bring fresh perspectives and ideas."),
-        "analytical" => Some("You are methodical, detail-oriented, and data-driven. You think critically and provide thorough analysis."),
+        "creative" => Some(
+            "You are creative, imaginative, and expressive. You bring fresh perspectives and ideas.",
+        ),
+        "analytical" => Some(
+            "You are methodical, detail-oriented, and data-driven. You think critically and provide thorough analysis.",
+        ),
         _ => None,
     }
 }
@@ -346,7 +358,7 @@ mod tests {
             tacit_memories: vec![],
         };
         let result = format_for_system_prompt(&ctx, "Nebo");
-        assert!(result.contains("Memory Instructions"));
+        assert!(result.contains("Memory Quick Reference"));
     }
 
     #[test]

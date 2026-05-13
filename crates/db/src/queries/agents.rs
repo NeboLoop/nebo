@@ -1,8 +1,8 @@
 use rusqlite::params;
 
-use crate::models::{EmitSource, Agent, AgentWorkflow};
-use crate::OptionalExt;
+use crate::{DbErrExt, OptionalExt};
 use crate::Store;
+use crate::models::{Agent, AgentWorkflow, EmitSource};
 use types::NeboError;
 
 impl Store {
@@ -12,21 +12,21 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config
                  FROM agents ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+            .db_err("list_agents prepare")?;
         let rows = stmt
             .query_map(params![limit, offset], row_to_agent)
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+            .db_err("list_agents query")?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
+            .db_err("list_agents collect")
     }
 
     pub fn count_agents(&self) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))
-            .map_err(|e| NeboError::Database(e.to_string()))
+            .db_err("count_agents")
     }
 
     pub fn get_agent(&self, id: &str) -> Result<Option<Agent>, NeboError> {
@@ -34,13 +34,13 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config
              FROM agents WHERE id = ?1",
             params![id],
             row_to_agent,
         )
         .optional()
-        .map_err(|e| NeboError::Database(e.to_string()))
+        .db_err("get_agent")
     }
 
     pub fn create_agent(
@@ -61,7 +61,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              RETURNING id, kind, name, description, agent_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                       napp_path, input_values",
+                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config",
             params![id, kind, name, description, agent_md, frontmatter, pricing_model, pricing_cost],
             row_to_agent,
         )
@@ -84,7 +84,15 @@ impl Store {
                     frontmatter = ?4, pricing_model = ?5, pricing_cost = ?6,
                     updated_at = unixepoch()
              WHERE id = ?7",
-            params![name, description, agent_md, frontmatter, pricing_model, pricing_cost, id],
+            params![
+                name,
+                description,
+                agent_md,
+                frontmatter,
+                pricing_model,
+                pricing_cost,
+                id
+            ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -122,6 +130,31 @@ impl Store {
         let conn = self.conn()?;
         conn.execute("DELETE FROM agents WHERE id = ?1", params![id])
             .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn set_agent_app_fields(
+        &self,
+        id: &str,
+        is_app: bool,
+        app_ui_path: Option<&str>,
+        app_binary_path: Option<&str>,
+        app_window_config: Option<&str>,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agents SET is_app = ?1, app_ui_path = ?2, app_binary_path = ?3,
+                    app_window_config = ?4, updated_at = unixepoch()
+             WHERE id = ?5",
+            params![
+                is_app as i32,
+                app_ui_path,
+                app_binary_path,
+                app_window_config,
+                id
+            ],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -177,21 +210,23 @@ impl Store {
         inputs: Option<&str>,
         emit: Option<&str>,
         activities: Option<&str>,
+        connections: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO agent_workflows (agent_id, binding_name,
-                    trigger_type, trigger_config, description, inputs, emit, activities)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    trigger_type, trigger_config, description, inputs, emit, activities, connections)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(agent_id, binding_name) DO UPDATE SET
                 trigger_type = excluded.trigger_type,
                 trigger_config = excluded.trigger_config,
                 description = excluded.description,
                 inputs = excluded.inputs,
                 emit = excluded.emit,
-                activities = excluded.activities",
+                activities = excluded.activities,
+                connections = excluded.connections",
             params![agent_id, binding_name,
-                    trigger_type, trigger_config, description, inputs, emit, activities],
+                    trigger_type, trigger_config, description, inputs, emit, activities, connections],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -202,7 +237,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT id, agent_id, binding_name,
-                        trigger_type, trigger_config, description, inputs, is_active, emit, activities, last_fired
+                        trigger_type, trigger_config, description, inputs, is_active, emit, activities, last_fired, connections
                  FROM agent_workflows WHERE agent_id = ?1",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -260,7 +295,11 @@ impl Store {
     }
 
     /// Check if an agent workflow is active AND its parent agent is enabled.
-    pub fn is_agent_workflow_active(&self, agent_id: &str, binding_name: &str) -> Result<bool, NeboError> {
+    pub fn is_agent_workflow_active(
+        &self,
+        agent_id: &str,
+        binding_name: &str,
+    ) -> Result<bool, NeboError> {
         let conn = self.conn()?;
         let count: i64 = conn
             .query_row(
@@ -280,7 +319,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT aw.id, aw.agent_id, aw.binding_name,
-                        aw.trigger_type, aw.trigger_config, aw.description, aw.inputs, aw.is_active, aw.emit, aw.activities, aw.last_fired
+                        aw.trigger_type, aw.trigger_config, aw.description, aw.inputs, aw.is_active, aw.emit, aw.activities, aw.last_fired, aw.connections
                  FROM agent_workflows aw
                  JOIN agents a ON aw.agent_id = a.id
                  WHERE aw.trigger_type = 'event' AND aw.is_active = 1 AND a.is_enabled = 1",
@@ -337,10 +376,7 @@ impl Store {
         let conn = self.conn()?;
         let pattern = format!("{}%", prefix);
         let count = conn
-            .execute(
-                "DELETE FROM cron_jobs WHERE name LIKE ?1",
-                params![pattern],
-            )
+            .execute("DELETE FROM cron_jobs WHERE name LIKE ?1", params![pattern])
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(count as i64)
     }
@@ -400,6 +436,8 @@ impl Store {
 fn row_to_agent_workflow(row: &rusqlite::Row) -> rusqlite::Result<AgentWorkflow> {
     let activities_str: Option<String> = row.get(9)?;
     let activities = activities_str.and_then(|s| serde_json::from_str(&s).ok());
+    let connections_str: Option<String> = row.get(11)?;
+    let connections = connections_str.and_then(|s| serde_json::from_str(&s).ok());
     Ok(AgentWorkflow {
         id: row.get(0)?,
         agent_id: row.get(1)?,
@@ -412,6 +450,7 @@ fn row_to_agent_workflow(row: &rusqlite::Row) -> rusqlite::Result<AgentWorkflow>
         emit: row.get(8)?,
         activities,
         last_fired: row.get(10)?,
+        connections,
     })
 }
 
@@ -429,6 +468,12 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         installed_at: row.get(9)?,
         updated_at: row.get(10)?,
         napp_path: row.get(11)?,
-        input_values: row.get::<_, Option<String>>(12)?.unwrap_or_else(|| "{}".to_string()),
+        input_values: row
+            .get::<_, Option<String>>(12)?
+            .unwrap_or_else(|| "{}".to_string()),
+        is_app: row.get(13)?,
+        app_ui_path: row.get(14)?,
+        app_binary_path: row.get(15)?,
+        app_window_config: row.get(16)?,
     })
 }

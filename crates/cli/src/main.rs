@@ -1,9 +1,9 @@
 mod mcp_serve;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use clap::{Parser, Subcommand};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -123,12 +123,59 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+    // Initialize tracing — terminal + file
+    let env_filter =
+        || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let stdout_layer = fmt::layer().with_filter(env_filter());
+
+    let file_layer = config::data_dir().ok().and_then(|dir| {
+        let log_dir = dir.join("logs");
+        std::fs::create_dir_all(&log_dir).ok()?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("nebo.log"))
+            .ok()?;
+        Some(
+            fmt::layer()
+                .with_writer(Mutex::new(file))
+                .with_ansi(false)
+                .with_filter(env_filter()),
         )
+    });
+
+    tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(file_layer)
         .init();
+
+    // Install panic hook so panics are logged before the process dies
+    std::panic::set_hook(Box::new(|info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".into());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Box<dyn Any>".into()
+        };
+        tracing::error!(location = %location, "PANIC: {}", payload);
+        eprintln!("PANIC at {}: {}", location, payload);
+        // Also write to log file directly in case tracing is broken
+        if let Ok(dir) = config::data_dir() {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("logs/nebo-crash.log"))
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "PANIC at {}: {}", location, payload)
+                });
+        }
+    }));
 
     // Load .env file (if present) before config so env vars are available
     dotenvy::dotenv().ok();
@@ -162,7 +209,11 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Doctor) => {
             run_doctor(&cfg)?;
         }
-        Some(Commands::Chat { interactive, dangerously: _, prompt }) => {
+        Some(Commands::Chat {
+            interactive,
+            dangerously: _,
+            prompt,
+        }) => {
             run_chat(&cfg, interactive, prompt).await?;
         }
         Some(Commands::Agent) => {
@@ -178,7 +229,10 @@ async fn main() -> anyhow::Result<()> {
                     if sessions.is_empty() {
                         println!("No sessions found.");
                     } else {
-                        println!("{:<36}  {:<20}  {:<10}  {}", "ID", "Name", "Messages", "Created");
+                        println!(
+                            "{:<36}  {:<20}  {:<10}  {}",
+                            "ID", "Name", "Messages", "Created"
+                        );
                         println!("{}", "-".repeat(80));
                         for s in &sessions {
                             let name = s.name.as_deref().unwrap_or("-");
@@ -210,7 +264,9 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", "-".repeat(60));
                 for entry in std::fs::read_dir(&skills_dir)?.flatten() {
                     let path = entry.path();
-                    if !path.is_dir() { continue; }
+                    if !path.is_dir() {
+                        continue;
+                    }
                     let name = entry.file_name().to_string_lossy().to_string();
                     if path.join("SKILL.md").exists() {
                         println!("{:<20}  {:<8}  {}", name, "enabled", path.display());
@@ -228,28 +284,38 @@ async fn main() -> anyhow::Result<()> {
                     if profiles.is_empty() {
                         println!("No providers configured. Add one with the web UI.");
                     } else {
-                        println!("{:<36}  {:<15}  {:<12}  {:<8}  {}", "ID", "Name", "Provider", "Active", "Model");
+                        println!(
+                            "{:<36}  {:<15}  {:<12}  {:<8}  {}",
+                            "ID", "Name", "Provider", "Active", "Model"
+                        );
                         println!("{}", "-".repeat(90));
                         for p in &profiles {
-                            let active = if p.is_active.unwrap_or(0) != 0 { "yes" } else { "no" };
-                            let model = p.model.as_deref().unwrap_or("-");
-                            println!("{:<36}  {:<15}  {:<12}  {:<8}  {}", p.id, p.name, p.provider, active, model);
-                        }
-                    }
-                }
-                ProviderCommands::Test { id } => {
-                    match store.get_auth_profile(&id)? {
-                        Some(profile) => {
-                            println!("Testing provider: {} ({})", profile.name, profile.provider);
-                            if profile.api_key.is_empty() && profile.auth_type.as_deref() != Some("local") {
-                                println!("  FAIL: No API key configured");
+                            let active = if p.is_active.unwrap_or(0) != 0 {
+                                "yes"
                             } else {
-                                println!("  OK: Configuration looks valid");
-                            }
+                                "no"
+                            };
+                            let model = p.model.as_deref().unwrap_or("-");
+                            println!(
+                                "{:<36}  {:<15}  {:<12}  {:<8}  {}",
+                                p.id, p.name, p.provider, active, model
+                            );
                         }
-                        None => println!("Provider not found: {id}"),
                     }
                 }
+                ProviderCommands::Test { id } => match store.get_auth_profile(&id)? {
+                    Some(profile) => {
+                        println!("Testing provider: {} ({})", profile.name, profile.provider);
+                        if profile.api_key.is_empty()
+                            && profile.auth_type.as_deref() != Some("local")
+                        {
+                            println!("  FAIL: No API key configured");
+                        } else {
+                            println!("  OK: Configuration looks valid");
+                        }
+                    }
+                    None => println!("Provider not found: {id}"),
+                },
             }
         }
         Some(Commands::Onboard) => {
@@ -282,7 +348,10 @@ async fn main() -> anyhow::Result<()> {
             McpCommands::Config { target } => {
                 mcp_serve::print_config(&target);
             }
-            McpCommands::Serve { tools, exclude_tools } => {
+            McpCommands::Serve {
+                tools,
+                exclude_tools,
+            } => {
                 let server_url = format!("http://{}:{}", cfg.host, cfg.port);
                 let bridge = mcp_serve::McpStdioBridge::new(server_url, tools, exclude_tools);
                 bridge.run().await?;
@@ -318,7 +387,10 @@ fn run_doctor(cfg: &config::Config) -> anyhow::Result<()> {
             println!("  Users:     {users}");
             println!("  Chats:     {chats}");
             println!("  Memories:  {memories}");
-            println!("  Sessions:  {}", if sessions_list.is_empty() { 0 } else { 1 });
+            println!(
+                "  Sessions:  {}",
+                if sessions_list.is_empty() { 0 } else { 1 }
+            );
             println!("  Providers: {}", providers.len());
         }
         Err(e) => println!("Database: ERROR - {e}"),
@@ -329,10 +401,15 @@ fn run_doctor(cfg: &config::Config) -> anyhow::Result<()> {
     let skills_dir = data_dir.join("skills");
     if skills_dir.exists() {
         let count = std::fs::read_dir(&skills_dir)
-            .map(|d| d.flatten().filter(|e| {
-                let p = e.path();
-                p.is_dir() && (p.join("SKILL.md").exists() || p.join("SKILL.md.disabled").exists())
-            }).count())
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| {
+                        let p = e.path();
+                        p.is_dir()
+                            && (p.join("SKILL.md").exists() || p.join("SKILL.md.disabled").exists())
+                    })
+                    .count()
+            })
             .unwrap_or(0);
         println!("Skills dir: {} ({count} skills)", skills_dir.display());
     } else {
@@ -393,10 +470,7 @@ async fn run_chat(
     Ok(())
 }
 
-async fn send_chat_message(
-    provider: &dyn ai::Provider,
-    prompt: &str,
-) -> anyhow::Result<()> {
+async fn send_chat_message(provider: &dyn ai::Provider, prompt: &str) -> anyhow::Result<()> {
     let req = ai::ChatRequest {
         messages: vec![ai::Message {
             role: "user".into(),
@@ -415,7 +489,9 @@ async fn send_chat_message(
         cancel_token: None,
     };
 
-    let mut rx = provider.stream(&req).await
+    let mut rx = provider
+        .stream(&req)
+        .await
         .map_err(|e| anyhow::anyhow!("provider error: {e}"))?;
 
     while let Some(event) = rx.recv().await {
@@ -443,9 +519,9 @@ async fn send_chat_message(
 /// Extension ←stdin/stdout→ this process ←WebSocket→ Nebo server ←in-process→ Agent
 async fn run_native_messaging() -> anyhow::Result<()> {
     use futures::{SinkExt, StreamExt};
+    use std::sync::Arc;
     use tokio::io::AsyncReadExt;
     use tokio_tungstenite::connect_async;
-    use std::sync::Arc;
 
     // NOTE: stdout is the native messaging channel — ALL diagnostic logging goes to stderr.
     eprintln!("[nebo-relay] starting native messaging bridge");
@@ -635,15 +711,32 @@ fn detect_parent_browser() -> String {
             .args(["-p", &ppid.to_string(), "-o", "comm="])
             .output()
         {
-            let parent = String::from_utf8_lossy(&output.stdout).trim().to_string().to_lowercase();
-            if parent.contains("brave") { return "brave".to_string(); }
-            if parent.contains("chrome") { return "chrome".to_string(); }
-            if parent.contains("firefox") { return "firefox".to_string(); }
-            if parent.contains("safari") { return "safari".to_string(); }
-            if parent.contains("edge") { return "edge".to_string(); }
-            if parent.contains("arc") { return "arc".to_string(); }
+            let parent = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_string()
+                .to_lowercase();
+            if parent.contains("brave") {
+                return "brave".to_string();
+            }
+            if parent.contains("chrome") {
+                return "chrome".to_string();
+            }
+            if parent.contains("firefox") {
+                return "firefox".to_string();
+            }
+            if parent.contains("safari") {
+                return "safari".to_string();
+            }
+            if parent.contains("edge") {
+                return "edge".to_string();
+            }
+            if parent.contains("arc") {
+                return "arc".to_string();
+            }
             // Return the raw parent name if unrecognized
-            if !parent.is_empty() { return parent; }
+            if !parent.is_empty() {
+                return parent;
+            }
         }
     }
     "unknown".to_string()

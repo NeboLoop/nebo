@@ -11,18 +11,14 @@ pub fn register_schedule_trigger(workflow_id: &str, cron: &str, store: &Store) {
     match store.upsert_cron_job(
         &name,
         cron,
-        workflow_id,      // command = workflow ID
-        "workflow",       // task_type
-        None,             // message
-        None,             // deliver
-        None,             // instructions
-        true,             // enabled
+        workflow_id, // command = workflow ID
+        "workflow",  // task_type
+        None,        // message
+        None,        // deliver
+        None,        // instructions
+        true,        // enabled
     ) {
-        Ok(_) => info!(
-            workflow = workflow_id,
-            cron,
-            "registered schedule trigger"
-        ),
+        Ok(_) => info!(workflow = workflow_id, cron, "registered schedule trigger"),
         Err(e) => warn!(
             workflow = workflow_id,
             error = %e,
@@ -37,7 +33,11 @@ pub fn register_schedule_trigger(workflow_id: &str, cron: &str, store: &Store) {
 /// The command field stores `agent:{agent_id}:{binding_name}` so the scheduler
 /// can resolve the inline definition at execution time.
 /// For event triggers: stored in agent_workflows table, consumed by EventDispatcher.
-pub fn register_agent_triggers(agent_id: &str, bindings: &[db::models::AgentWorkflow], store: &Store) {
+pub fn register_agent_triggers(
+    agent_id: &str,
+    bindings: &[db::models::AgentWorkflow],
+    store: &Store,
+) {
     for binding in bindings {
         if binding.trigger_type == "schedule" && binding.is_active == 1 {
             let name = format!("agent-{}-{}", agent_id, binding.binding_name);
@@ -77,7 +77,11 @@ pub fn unregister_single_agent_trigger(agent_id: &str, binding_name: &str, store
     match store.delete_cron_job_by_name(&name) {
         Ok(count) => {
             if count > 0 {
-                info!(agent = agent_id, binding = binding_name, "unregistered single agent trigger");
+                info!(
+                    agent = agent_id,
+                    binding = binding_name,
+                    "unregistered single agent trigger"
+                );
             }
         }
         Err(e) => warn!(
@@ -95,7 +99,11 @@ pub fn unregister_agent_triggers(agent_id: &str, store: &Store) {
     match store.delete_cron_jobs_by_prefix(&prefix) {
         Ok(count) => {
             if count > 0 {
-                info!(agent = agent_id, deleted = count, "unregistered agent triggers");
+                info!(
+                    agent = agent_id,
+                    deleted = count,
+                    "unregistered agent triggers"
+                );
             }
         }
         Err(e) => warn!(

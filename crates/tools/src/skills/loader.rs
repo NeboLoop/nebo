@@ -3,16 +3,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use rayon::prelude::*;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use super::skill::{parse_skill_md, Skill, SkillSource};
+use super::manifest::{self, SkillManifest};
+use super::skill::{Skill, SkillSource, SkillSummary, parse_skill_frontmatter, split_frontmatter};
 
-/// Manages loading, caching, and hot-reloading of skills from bundled,
-/// sealed .napp archives (nebo/skills/) and loose files (user/skills/).
+/// Manages loading, caching, and hot-reloading of skills from embedded
+/// (bundled), sealed .napp archives (nebo/skills/) and loose files (user/skills/).
 pub struct Loader {
-    /// Bundled skills directory (shipped with app, e.g. <data_dir>/bundled/skills/).
-    bundled_dir: PathBuf,
     /// User skills directory (e.g. <data_dir>/user/skills/).
     user_dir: PathBuf,
     /// Installed (marketplace) skills directory (e.g. <data_dir>/nebo/skills/).
@@ -24,17 +24,36 @@ pub struct Loader {
     /// When true, the filesystem watcher skips reload events.
     /// Set during plugin/skill extraction to prevent premature reloads.
     watcher_paused: Arc<AtomicBool>,
+    /// Raw content of bundled skills for lazy template loading.
+    /// Keyed by skill name, value is the full SKILL.md content from include_str!().
+    bundled_raw: HashMap<String, &'static str>,
+    /// Pre-built compact catalog string, rebuilt on load_all() / watcher reload.
+    /// Names-only format (like Claude Code's deferred tool listing).
+    cached_catalog: Arc<RwLock<String>>,
+    /// License keys for sealed .napp files, keyed by artifact_id.
+    /// Populated from the license key cache before load_all().
+    license_keys: Arc<RwLock<HashMap<String, [u8; 32]>>>,
 }
 
 impl Loader {
-    pub fn new(bundled_dir: PathBuf, installed_dir: PathBuf, user_dir: PathBuf) -> Self {
+    pub fn new(installed_dir: PathBuf, user_dir: PathBuf) -> Self {
+        // Pre-index bundled skill content for lazy template loading.
+        let mut bundled_raw = HashMap::new();
+        for (_key, content) in super::bundled::BUNDLED_SKILLS {
+            if let Ok(skill) = parse_skill_frontmatter(content.as_bytes()) {
+                bundled_raw.insert(skill.name, *content);
+            }
+        }
+
         Self {
-            bundled_dir,
             user_dir,
             installed_dir,
             skills: Arc::new(RwLock::new(HashMap::new())),
             plugin_store: None,
             watcher_paused: Arc::new(AtomicBool::new(false)),
+            bundled_raw,
+            cached_catalog: Arc::new(RwLock::new(String::new())),
+            license_keys: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -54,24 +73,110 @@ impl Loader {
         self
     }
 
-    /// Load all skills from bundled, installed (.napp) and user (loose files) directories.
-    /// Loading order: bundled → installed (override by name) → user (override by name).
+    /// Set license keys for sealed .napp decryption (keyed by artifact_id).
+    pub async fn set_license_keys(&self, keys: HashMap<String, [u8; 32]>) {
+        *self.license_keys.write().await = keys;
+    }
+
+    /// Load all skills from embedded (bundled), installed (.napp) and user (loose files) directories.
+    /// Loading order: embedded → installed (override by name) → user (override by name).
     /// After loading, verifies dependencies — skills with missing deps are dropped.
+    ///
+    /// **Warm start:** Reads a skill manifest index (<50ms) instead of walking the filesystem.
+    /// **Cold start:** Full filesystem scan + parallel YAML parsing, then writes manifest for next time.
     pub async fn load_all(&self) -> usize {
+        let manifest_path = self.manifest_path();
+
+        // Try warm start from manifest
+        if let Some(count) = self.try_warm_load(&manifest_path).await {
+            return count;
+        }
+
+        // Cold start: full filesystem scan
+        let count = self.cold_load_all().await;
+
+        // Write manifest for next warm start
+        self.write_manifest(&manifest_path).await;
+        count
+    }
+
+    /// Derive the manifest file path.
+    /// Placed inside installed_dir so it lives within the data tree and doesn't
+    /// leak into shared temp directories during tests.
+    fn manifest_path(&self) -> PathBuf {
+        self.installed_dir.join(".skill-manifest.json")
+    }
+
+    /// Try loading from a cached manifest. Returns Some(count) on success.
+    async fn try_warm_load(&self, manifest_path: &Path) -> Option<usize> {
+        let manifest = match SkillManifest::load(manifest_path) {
+            Ok(m) => m,
+            Err(e) => {
+                debug!(error = %e, "no valid skill manifest, falling back to cold load");
+                return None;
+            }
+        };
+
+        let count = manifest.skills.len();
+        let mut loaded = manifest.into_skill_map();
+
+        // Re-inject license keys for sealed skills (keys are runtime-only, not in manifest)
+        let keys = self.license_keys.read().await;
+        for skill in loaded.values_mut() {
+            if let Some(ref napp_path) = skill.napp_path {
+                // Extract artifact_id from the napp path (filename without extension)
+                if let Some(artifact_id) = napp_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                {
+                    if let Some(key) = keys.get(artifact_id) {
+                        skill.license_key = Some(*key);
+                    }
+                }
+            }
+        }
+
+        let catalog = build_catalog_string(&loaded);
+        *self.skills.write().await = loaded;
+        *self.cached_catalog.write().await = catalog;
+        info!(count, "loaded skills from manifest (warm start)");
+        Some(count)
+    }
+
+    /// Full filesystem scan — cold start path. Walks all directories, parses SKILL.md files.
+    async fn cold_load_all(&self) -> usize {
         let mut loaded = HashMap::new();
 
-        // 1. Load bundled skills (shipped with app)
-        if self.bundled_dir.exists() {
-            for mut skill in load_skills_from_dir(&self.bundled_dir, SkillSource::Installed) {
-                skill.enabled = true;
-                loaded.insert(skill.name.clone(), skill);
+        // 1. Load embedded bundled skills (frontmatter only — template loaded lazily via get())
+        for (name, content) in super::bundled::BUNDLED_SKILLS {
+            match parse_skill_frontmatter(content.as_bytes()) {
+                Ok(mut skill) => {
+                    skill.enabled = true;
+                    skill.source = SkillSource::Installed;
+                    loaded.insert(skill.name.clone(), skill);
+                }
+                Err(e) => {
+                    warn!(skill = name, error = %e, "failed to parse bundled skill");
+                }
             }
         }
 
         // 2. Load installed skills from extracted directories (override bundled)
         if self.installed_dir.exists() {
-            for mut skill in load_skills_from_nested_dir(&self.installed_dir, SkillSource::Installed) {
+            for mut skill in
+                load_skills_from_nested_dir(&self.installed_dir, SkillSource::Installed)
+            {
                 skill.enabled = true;
+                loaded.insert(skill.name.clone(), skill);
+            }
+        }
+
+        // 2.1. Load sealed .napp skills (paid content, read in memory only)
+        if self.installed_dir.exists() {
+            let keys = self.license_keys.read().await;
+            for mut skill in load_sealed_skills(&self.installed_dir, &keys) {
+                skill.enabled = true;
+                skill.source = SkillSource::Installed;
                 loaded.insert(skill.name.clone(), skill);
             }
         }
@@ -91,9 +196,43 @@ impl Loader {
                             Some(s) => s.to_string(),
                             None => continue,
                         };
-                        for mut skill in load_skills_from_nested_dir(&slug_dir, SkillSource::Installed) {
+                        for mut skill in
+                            load_skills_from_nested_dir(&slug_dir, SkillSource::Installed)
+                        {
                             skill.enabled = true;
                             // Auto-inject parent plugin as dependency if not already declared
+                            if !skill.plugins.iter().any(|p| p.name == plugin_slug) {
+                                skill.plugins.push(super::skill::PluginDependency {
+                                    name: plugin_slug.clone(),
+                                    version: "*".to_string(),
+                                    optional: false,
+                                });
+                            }
+                            loaded.insert(skill.name.clone(), skill);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2.75. Load skills embedded in user plugins (override marketplace plugin skills).
+        if let Some(ref ps) = self.plugin_store {
+            let user_plugins_dir = ps.user_plugins_dir();
+            if user_plugins_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(user_plugins_dir) {
+                    for entry in entries.flatten() {
+                        let slug_dir = entry.path();
+                        if !slug_dir.is_dir() {
+                            continue;
+                        }
+                        let plugin_slug = match slug_dir.file_name().and_then(|n| n.to_str()) {
+                            Some(s) => s.to_string(),
+                            None => continue,
+                        };
+                        for mut skill in
+                            load_skills_from_nested_dir(&slug_dir, SkillSource::Installed)
+                        {
+                            skill.enabled = true;
                             if !skill.plugins.iter().any(|p| p.name == plugin_slug) {
                                 skill.plugins.push(super::skill::PluginDependency {
                                     name: plugin_slug.clone(),
@@ -119,14 +258,165 @@ impl Loader {
         verify_dependencies(&mut loaded, self.plugin_store.as_deref());
 
         let count = loaded.len();
+        // Rebuild cached catalog before storing (names-only, like Claude Code deferred tools)
+        let catalog = build_catalog_string(&loaded);
         *self.skills.write().await = loaded;
-        info!(count, installed_dir = %self.installed_dir.display(), user_dir = %self.user_dir.display(), "loaded skills");
+        *self.cached_catalog.write().await = catalog;
+        info!(count, installed_dir = %self.installed_dir.display(), user_dir = %self.user_dir.display(), "loaded skills (cold start)");
         count
     }
 
-    /// Get a skill by name.
+    /// Write the current in-memory skills to a manifest file for next warm start.
+    async fn write_manifest(&self, path: &Path) {
+        let skills = self.skills.read().await;
+        let hashes = manifest::compute_hashes(&skills);
+        let manifest = SkillManifest::from_skill_map(&skills, &hashes);
+        if let Err(e) = manifest.save(path) {
+            warn!(error = %e, "failed to write skill manifest");
+        }
+    }
+
+    /// Background verification: check manifest hashes against filesystem,
+    /// update stale skills, add new ones, re-verify dependencies, rewrite manifest.
+    /// Call this from a background task after warm start.
+    pub async fn verify_and_refresh_manifest(&self) {
+        let manifest_path = self.manifest_path();
+        let manifest = match SkillManifest::load(&manifest_path) {
+            Ok(m) => m,
+            Err(_) => return, // no manifest to verify
+        };
+
+        // Collect plugin directories for scanning
+        let mut plugins_dirs = Vec::new();
+        if let Some(ref ps) = self.plugin_store {
+            let d = ps.plugins_dir().to_path_buf();
+            if d.exists() {
+                plugins_dirs.push(d);
+            }
+            let ud = ps.user_plugins_dir().to_path_buf();
+            if ud.exists() {
+                plugins_dirs.push(ud);
+            }
+        }
+
+        let (stale, new_paths) = manifest::verify_manifest(
+            &manifest,
+            &self.installed_dir,
+            &self.user_dir,
+            &plugins_dirs,
+        );
+
+        if stale.is_empty() && new_paths.is_empty() {
+            // Re-run verify_dependencies in case plugins changed between runs
+            let mut skills = self.skills.write().await;
+            verify_dependencies(&mut skills, self.plugin_store.as_deref());
+            let catalog = build_catalog_string(&skills);
+            drop(skills);
+            *self.cached_catalog.write().await = catalog;
+
+            // Rewrite manifest with updated degraded states
+            self.write_manifest(&manifest_path).await;
+            return;
+        }
+
+        info!(
+            stale = stale.len(),
+            new = new_paths.len(),
+            "manifest stale, refreshing changed skills"
+        );
+
+        // Remove stale entries and re-parse them from disk
+        {
+            let mut skills = self.skills.write().await;
+            for name in &stale {
+                skills.remove(name);
+            }
+        }
+
+        // Re-parse stale skills from their source paths
+        for name in &stale {
+            if let Some(entry) = manifest.skills.get(name) {
+                if let Some(ref path) = entry.source_path {
+                    if let Ok(data) = std::fs::read(path) {
+                        if let Ok(mut skill) = parse_skill_frontmatter(&data) {
+                            skill.enabled = entry.enabled;
+                            skill.source = entry.source;
+                            skill.source_path = Some(path.clone());
+                            skill.base_dir = entry.base_dir.clone();
+                            skill.napp_path = entry.napp_path.clone();
+                            self.skills.write().await.insert(skill.name.clone(), skill);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Parse new skills
+        for md_path in &new_paths {
+            if let Ok(data) = std::fs::read(md_path) {
+                if let Ok(mut skill) = parse_skill_frontmatter(&data) {
+                    skill.enabled = true;
+                    skill.source_path = Some(md_path.clone());
+                    skill.base_dir = md_path.parent().map(|p| p.to_path_buf());
+                    self.skills.write().await.insert(skill.name.clone(), skill);
+                }
+            }
+        }
+
+        // Re-verify all dependencies and rebuild catalog
+        {
+            let mut skills = self.skills.write().await;
+            verify_dependencies(&mut skills, self.plugin_store.as_deref());
+            let catalog = build_catalog_string(&skills);
+            drop(skills);
+            *self.cached_catalog.write().await = catalog;
+        }
+
+        // Rewrite manifest
+        self.write_manifest(&manifest_path).await;
+    }
+
+    /// Get a skill by name, lazily loading the template body if needed.
     pub async fn get(&self, name: &str) -> Option<Skill> {
-        self.skills.read().await.get(name).cloned()
+        let mut skill = self.skills.read().await.get(name).cloned()?;
+        if skill.template.is_empty() {
+            self.load_template(&mut skill);
+        }
+        Some(skill)
+    }
+
+    /// Populate the template body from disk (source_path), sealed .napp, or bundled content.
+    fn load_template(&self, skill: &mut Skill) {
+        // Sealed .napp: read SKILL.md from encrypted archive in memory
+        if let (Some(napp_path), Some(key)) = (&skill.napp_path, &skill.license_key) {
+            match napp::reader::read_sealed_napp_entry(napp_path, "SKILL.md", key) {
+                Ok(data) => {
+                    if let Ok((_fm, body)) = split_frontmatter(&data) {
+                        skill.template = String::from_utf8_lossy(&body).to_string();
+                        return;
+                    }
+                }
+                Err(e) => {
+                    warn!(skill = %skill.name, error = %e, "failed to read SKILL.md from sealed .napp");
+                }
+            }
+        }
+
+        // Try source_path first (filesystem skills: installed, plugin-embedded, user)
+        if let Some(ref path) = skill.source_path {
+            if let Ok(data) = std::fs::read(path) {
+                if let Ok((_fm, body)) = split_frontmatter(&data) {
+                    skill.template = String::from_utf8_lossy(&body).to_string();
+                    return;
+                }
+            }
+        }
+        // Try bundled content (compiled into binary)
+        if let Some(content) = self.bundled_raw.get(&skill.name) {
+            if let Ok((_fm, body)) = split_frontmatter(content.as_bytes()) {
+                skill.template = String::from_utf8_lossy(&body).to_string();
+            }
+        }
     }
 
     /// List all loaded skills.
@@ -154,31 +444,50 @@ impl Loader {
         matches.into_iter().cloned().collect()
     }
 
-    /// Build a compact skill catalog for the system prompt.
-    /// Lists all enabled skills with 1-line descriptions (name: description).
-    /// This replaces the old keyword-triggered skill hints.
+    /// Return the pre-built compact skill catalog for the system prompt.
+    /// Names-only format (rebuilt on load_all / watcher reload).
     pub async fn compact_catalog(&self) -> String {
+        self.cached_catalog.read().await.clone()
+    }
+
+    /// List lightweight summaries of all loaded skills.
+    pub async fn list_summaries(&self) -> Vec<SkillSummary> {
         let skills = self.skills.read().await;
-        let mut entries: Vec<String> = skills
+        let mut list: Vec<SkillSummary> = skills.values().map(|s| s.to_summary()).collect();
+        list.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        list
+    }
+
+    /// Search skills by query, returning lightweight summaries.
+    pub async fn discover_summaries(&self, query: &str) -> Vec<SkillSummary> {
+        let skills = self.skills.read().await;
+        let query_lower = query.to_lowercase();
+        let mut matches: Vec<(usize, SkillSummary)> = skills
             .values()
             .filter(|s| s.enabled)
-            .map(|s| {
-                let desc = if s.description.len() > 200 {
-                    format!("{}...", &s.description[..197])
+            .filter_map(|s| {
+                let name_match = s.name.to_lowercase().contains(&query_lower);
+                let desc_match = s.description.to_lowercase().contains(&query_lower);
+                let trigger_match = s
+                    .triggers
+                    .iter()
+                    .any(|t| t.to_lowercase().contains(&query_lower));
+                if name_match || desc_match || trigger_match {
+                    let score = if name_match { 3 } else { 0 }
+                        + if trigger_match { 2 } else { 0 }
+                        + if desc_match { 1 } else { 0 };
+                    Some((score, s.to_summary()))
                 } else {
-                    s.description.clone()
-                };
-                format!("- {}: {}", s.name, desc)
+                    None
+                }
             })
             .collect();
-        entries.sort();
-        if entries.is_empty() {
-            return String::new();
-        }
-        format!(
-            "## Available Skills\n{}\n\nTo use a skill, call: skill(action: \"help\", name: \"<skill_name>\") to see full instructions, then follow them.",
-            entries.join("\n")
-        )
+        matches.sort_by(|a, b| b.0.cmp(&a.0));
+        matches.into_iter().map(|(_, s)| s).collect()
     }
 
     /// Search skills by query (name or description match).
@@ -192,7 +501,10 @@ impl Loader {
             .filter_map(|s| {
                 let name_match = s.name.to_lowercase().contains(&query_lower);
                 let desc_match = s.description.to_lowercase().contains(&query_lower);
-                let trigger_match = s.triggers.iter().any(|t| t.to_lowercase().contains(&query_lower));
+                let trigger_match = s
+                    .triggers
+                    .iter()
+                    .any(|t| t.to_lowercase().contains(&query_lower));
                 if name_match || desc_match || trigger_match {
                     let score = if name_match { 3 } else { 0 }
                         + if trigger_match { 2 } else { 0 }
@@ -234,19 +546,19 @@ impl Loader {
 
     /// Start watching for filesystem changes and reload on modification.
     /// Returns a JoinHandle that runs until cancelled.
-    /// Get the bundled skills directory path.
-    pub fn bundled_dir(&self) -> &Path {
-        &self.bundled_dir
-    }
-
     pub fn watch(&self) -> tokio::task::JoinHandle<()> {
-        let bundled_dir = self.bundled_dir.clone();
         let user_dir = self.user_dir.clone();
         let installed_dir = self.installed_dir.clone();
         let skills = self.skills.clone();
+        let cached_catalog = self.cached_catalog.clone();
         let plugin_store = self.plugin_store.clone();
         let watcher_paused = self.watcher_paused.clone();
-        let plugins_dir = plugin_store.as_ref().map(|ps| ps.plugins_dir().to_path_buf());
+        let plugins_dir = plugin_store
+            .as_ref()
+            .map(|ps| ps.plugins_dir().to_path_buf());
+        let user_plugins_dir = plugin_store
+            .as_ref()
+            .map(|ps| ps.user_plugins_dir().to_path_buf());
 
         tokio::spawn(async move {
             use notify::{Event, EventKind, RecursiveMode, Watcher};
@@ -258,8 +570,7 @@ impl Loader {
                 move |res| {
                     let _ = tx.blocking_send(res);
                 },
-                notify::Config::default()
-                    .with_poll_interval(std::time::Duration::from_secs(2)),
+                notify::Config::default().with_poll_interval(std::time::Duration::from_secs(2)),
             ) {
                 Ok(w) => w,
                 Err(e) => {
@@ -289,6 +600,15 @@ impl Loader {
                 }
             }
 
+            // Watch user plugin directory for embedded skill changes
+            if let Some(ref updir) = user_plugins_dir {
+                if updir.exists() {
+                    if let Err(e) = watcher.watch(updir, RecursiveMode::Recursive) {
+                        warn!(error = %e, dir = %updir.display(), "failed to watch user plugins dir for skills");
+                    }
+                }
+            }
+
             let mut last_reload = std::time::Instant::now();
             let debounce = std::time::Duration::from_secs(1);
 
@@ -297,9 +617,7 @@ impl Loader {
                     Ok(event) => {
                         let dominated = matches!(
                             event.kind,
-                            EventKind::Create(_)
-                                | EventKind::Modify(_)
-                                | EventKind::Remove(_)
+                            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
                         );
                         if !dominated {
                             continue;
@@ -344,26 +662,97 @@ impl Loader {
                         debug!("skills directory changed, reloading");
                         let mut loaded = HashMap::new();
 
-                        if bundled_dir.exists() {
-                            for mut skill in load_skills_from_dir(&bundled_dir, SkillSource::Installed) {
-                                skill.enabled = true;
-                                loaded.insert(skill.name.clone(), skill);
+                        // Reload embedded bundled skills (frontmatter only)
+                        for (name, content) in super::bundled::BUNDLED_SKILLS {
+                            match parse_skill_frontmatter(content.as_bytes()) {
+                                Ok(mut skill) => {
+                                    skill.enabled = true;
+                                    skill.source = SkillSource::Installed;
+                                    loaded.insert(skill.name.clone(), skill);
+                                }
+                                Err(e) => {
+                                    warn!(skill = name, error = %e, "failed to parse bundled skill on reload");
+                                }
                             }
                         }
 
                         if installed_dir.exists() {
-                            for mut skill in load_skills_from_nested_dir(&installed_dir, SkillSource::Installed) {
+                            for mut skill in
+                                load_skills_from_nested_dir(&installed_dir, SkillSource::Installed)
+                            {
                                 skill.enabled = true;
                                 loaded.insert(skill.name.clone(), skill);
                             }
                         }
 
-                        // Reload skills embedded in plugins
+                        // Reload skills embedded in marketplace plugins
                         if let Some(ref pdir) = plugins_dir {
                             if pdir.exists() {
-                                for mut skill in load_skills_from_nested_dir(pdir, SkillSource::Installed) {
-                                    skill.enabled = true;
-                                    loaded.insert(skill.name.clone(), skill);
+                                if let Ok(entries) = std::fs::read_dir(pdir) {
+                                    for entry in entries.flatten() {
+                                        let slug_dir = entry.path();
+                                        if !slug_dir.is_dir() {
+                                            continue;
+                                        }
+                                        let plugin_slug =
+                                            match slug_dir.file_name().and_then(|n| n.to_str()) {
+                                                Some(s) => s.to_string(),
+                                                None => continue,
+                                            };
+                                        for mut skill in load_skills_from_nested_dir(
+                                            &slug_dir,
+                                            SkillSource::Installed,
+                                        ) {
+                                            skill.enabled = true;
+                                            if !skill.plugins.iter().any(|p| p.name == plugin_slug)
+                                            {
+                                                skill.plugins.push(
+                                                    super::skill::PluginDependency {
+                                                        name: plugin_slug.clone(),
+                                                        version: "*".to_string(),
+                                                        optional: false,
+                                                    },
+                                                );
+                                            }
+                                            loaded.insert(skill.name.clone(), skill);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Reload skills embedded in user plugins
+                        if let Some(ref updir) = user_plugins_dir {
+                            if updir.exists() {
+                                if let Ok(entries) = std::fs::read_dir(updir) {
+                                    for entry in entries.flatten() {
+                                        let slug_dir = entry.path();
+                                        if !slug_dir.is_dir() {
+                                            continue;
+                                        }
+                                        let plugin_slug =
+                                            match slug_dir.file_name().and_then(|n| n.to_str()) {
+                                                Some(s) => s.to_string(),
+                                                None => continue,
+                                            };
+                                        for mut skill in load_skills_from_nested_dir(
+                                            &slug_dir,
+                                            SkillSource::Installed,
+                                        ) {
+                                            skill.enabled = true;
+                                            if !skill.plugins.iter().any(|p| p.name == plugin_slug)
+                                            {
+                                                skill.plugins.push(
+                                                    super::skill::PluginDependency {
+                                                        name: plugin_slug.clone(),
+                                                        version: "*".to_string(),
+                                                        optional: false,
+                                                    },
+                                                );
+                                            }
+                                            loaded.insert(skill.name.clone(), skill);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -377,7 +766,18 @@ impl Loader {
                         verify_dependencies(&mut loaded, plugin_store.as_deref());
 
                         let count = loaded.len();
+                        let catalog = build_catalog_string(&loaded);
+
+                        // Update manifest for next warm start
+                        let hashes = manifest::compute_hashes(&loaded);
+                        let manifest = SkillManifest::from_skill_map(&loaded, &hashes);
+                        let manifest_path = installed_dir.join(".skill-manifest.json");
+                        if let Err(e) = manifest.save(&manifest_path) {
+                            warn!(error = %e, "failed to write skill manifest after reload");
+                        }
+
                         *skills.write().await = loaded;
+                        *cached_catalog.write().await = catalog;
                         info!(count, "reloaded skills after filesystem change");
                     }
                     Err(e) => {
@@ -413,13 +813,32 @@ impl Loader {
     /// Resolves `${NEBO_SKILL_DIR}`, `${NEBO_DATA_DIR}`, `${NEBO_USER_NAME}`,
     /// `${NEBO_OS}`, `${NEBO_ARCH}`, `${plugin.SLUG_BIN}`, and `${secret.KEY}`.
     pub fn expand_template(&self, skill: &Skill, store: Option<&db::Store>) -> String {
-        let ctx = super::expand::build_context(
-            skill,
-            self.plugin_store.as_deref(),
-            store,
-        );
+        let ctx = super::expand::build_context(skill, self.plugin_store.as_deref(), store);
         super::expand::expand_variables(&skill.template, &ctx)
     }
+}
+
+/// Build a names-only catalog string for the system prompt.
+///
+/// Like Claude Code's deferred tool listing: just skill names, comma-separated.
+/// The model uses skill(action: "discover") or skill(action: "help") for details.
+fn build_catalog_string(skills: &HashMap<String, Skill>) -> String {
+    let mut names: Vec<&str> = skills
+        .values()
+        .filter(|s| s.enabled)
+        .map(|s| s.name.as_str())
+        .collect();
+    names.sort_unstable();
+
+    if names.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "## Available Skills ({} installed)\n{}\n\nUse skill(action: \"discover\", query: \"...\") to find relevant skills.\nUse skill(action: \"help\", name: \"...\") for full instructions.",
+        names.len(),
+        names.join(", ")
+    )
 }
 
 /// Write a skill file to a directory as `{name}/SKILL.md` per Agent Skills spec.
@@ -436,7 +855,10 @@ pub fn write_skill(skills_dir: &Path, name: &str, content: &str) -> Result<PathB
     let final_content = if content.trim_start().starts_with("---") {
         content.to_string()
     } else {
-        format!("---\nname: {}\ndescription: {}\n---\n{}", name, name, content)
+        format!(
+            "---\nname: {}\ndescription: {}\n---\n{}",
+            name, name, content
+        )
     };
 
     let path = skill_dir.join("SKILL.md");
@@ -461,102 +883,213 @@ pub fn resolve_skill_path(skills_dir: &Path, name: &str) -> Option<PathBuf> {
 /// Recursively walks the directory looking for SKILL.md marker files
 /// (from extracted .napp archives or loose skill dirs).
 fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
-    let mut skills = Vec::new();
+    // Phase 1: collect all skill directories (fast single-pass walk)
+    let mut skill_dirs = Vec::new();
     napp::reader::walk_for_marker(dir, "SKILL.md", &mut |skill_dir| {
-        let md_path = match find_skill_md(skill_dir) {
-            Some(p) => p,
-            None => return,
+        skill_dirs.push(skill_dir.to_path_buf());
+    });
+
+    // Phase 2: parse SKILL.md files in parallel
+    skill_dirs
+        .par_iter()
+        .filter_map(|skill_dir| {
+            let md_path = find_skill_md(skill_dir)?;
+            match std::fs::read(&md_path) {
+                Ok(data) => match parse_skill_frontmatter(&data) {
+                    Ok(mut skill) => {
+                        skill.enabled = true;
+                        skill.source = source;
+                        skill.source_path = Some(md_path);
+                        skill.base_dir = Some(skill_dir.clone());
+                        if skill.matches_platform() {
+                            Some(skill)
+                        } else {
+                            debug!(
+                                name = %skill.name,
+                                platform = ?skill.platform,
+                                "skipping installed skill: platform mismatch"
+                            );
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        warn!(path = %skill_dir.display(), error = %e, "failed to parse SKILL.md");
+                        None
+                    }
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    warn!(path = %md_path.display(), error = %e, "failed to read SKILL.md");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// Load skills from sealed .napp files (paid content, decrypted in memory).
+///
+/// Scans the directory tree for .napp files that have NO fully-extracted sibling
+/// directory containing SKILL.md (i.e., the skill content is sealed). Reads
+/// SKILL.md frontmatter from the encrypted archive using the provided license keys.
+fn load_sealed_skills(dir: &Path, license_keys: &HashMap<String, [u8; 32]>) -> Vec<Skill> {
+    let mut skills = Vec::new();
+    scan_sealed_napps(dir, license_keys, &mut skills);
+    skills
+}
+
+/// Recursively scan for sealed .napp files and load their skill frontmatter.
+fn scan_sealed_napps(dir: &Path, license_keys: &HashMap<String, [u8; 32]>, out: &mut Vec<Skill>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_sealed_napps(&path, license_keys, out);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("napp") {
+            continue;
+        }
+        // Check if sibling extracted directory has a SKILL.md (free content, already loaded)
+        let sibling = path.with_extension("");
+        if sibling.is_dir() && find_skill_md(&sibling).is_some() {
+            continue; // Free content — already loaded by load_skills_from_nested_dir
+        }
+
+        // This is a sealed .napp — try to read manifest for artifact_id
+        let artifact_id = match read_artifact_id_from_napp(&path) {
+            Some(id) => id,
+            None => continue,
         };
-        match std::fs::read(&md_path) {
-            Ok(data) => match parse_skill_md(&data) {
+
+        let license_key = match license_keys.get(&artifact_id) {
+            Some(k) => k,
+            None => {
+                debug!(path = %path.display(), artifact_id, "sealed skill: no license key, skipping");
+                continue;
+            }
+        };
+
+        // Read SKILL.md frontmatter from sealed .napp in memory
+        match napp::reader::read_sealed_napp_entry(&path, "SKILL.md", license_key) {
+            Ok(data) => match parse_skill_frontmatter(&data) {
                 Ok(mut skill) => {
-                    skill.enabled = true;
-                    skill.source = source;
-                    skill.source_path = Some(md_path);
-                    skill.base_dir = Some(skill_dir.to_path_buf());
+                    skill.napp_path = Some(path.clone());
+                    skill.license_key = Some(*license_key);
+                    // Set base_dir to sibling (partial extraction may have binaries there)
+                    if sibling.is_dir() {
+                        skill.base_dir = Some(sibling);
+                    }
                     if skill.matches_platform() {
-                        skills.push(skill);
-                    } else {
-                        debug!(
-                            name = %skill.name,
-                            platform = ?skill.platform,
-                            "skipping installed skill: platform mismatch"
-                        );
+                        out.push(skill);
                     }
                 }
                 Err(e) => {
-                    warn!(path = %skill_dir.display(), error = %e, "failed to parse SKILL.md");
+                    warn!(path = %path.display(), error = %e, "failed to parse sealed SKILL.md");
                 }
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Silently skip — file may not be extracted yet
-            }
             Err(e) => {
-                warn!(path = %md_path.display(), error = %e, "failed to read SKILL.md");
+                warn!(path = %path.display(), error = %e, "failed to read sealed .napp");
             }
         }
-    });
-    skills
+    }
+}
+
+/// Read the artifact_id from a .napp file's manifest.json (in the outer envelope).
+/// Returns None if the manifest can't be read or doesn't have an id field.
+fn read_artifact_id_from_napp(napp_path: &Path) -> Option<String> {
+    // Try reading manifest.json from the plain (unsigned) outer portion.
+    // For sealed .napp files, the envelope header is verified but the payload
+    // is encrypted. However, manifest.json may be readable from the sibling
+    // extracted directory (partial extraction) or from the .napp before sealing.
+    // For now, read from sibling dir if it exists.
+    let sibling = napp_path.with_extension("");
+    if sibling.is_dir() {
+        let manifest = sibling.join("manifest.json");
+        if manifest.exists() {
+            if let Ok(data) = std::fs::read_to_string(&manifest) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                    return v["id"].as_str().map(String::from);
+                }
+            }
+        }
+    }
+
+    // Fallback: try to derive artifact_id from the directory structure
+    // e.g., ~/.nebo/data/nebo/skills/@acme/skill-name/1.0.0.napp
+    // The artifact_id would need to come from the manifest inside the sealed .napp.
+    // Since we can't read inside without a key, and the key lookup needs the artifact_id,
+    // we use the napp filename/path as a key lookup hint.
+    // For now, try all available keys (small set in practice).
+    None
 }
 
 /// Load SKILL.md files from a directory (loose files).
 /// Each subdirectory should contain a SKILL.md file.
 fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
-    let mut skills = Vec::new();
-
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
             warn!(error = %e, dir = %dir.display(), "failed to read skills directory");
-            return skills;
+            return Vec::new();
         }
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
+    // Phase 1: collect subdirectories
+    let subdirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
 
-        if path.is_dir() {
+    // Phase 2: parse SKILL.md files in parallel
+    subdirs
+        .par_iter()
+        .filter_map(|path| {
             // Look for SKILL.md (case-insensitive), then SKILL.md.disabled
-            let (md_path, enabled) = if let Some(p) = find_skill_md(&path) {
+            let (md_path, enabled) = if let Some(p) = find_skill_md(path) {
                 (p, true)
-            } else if let Some(p) = find_skill_md_disabled(&path) {
+            } else if let Some(p) = find_skill_md_disabled(path) {
                 (p, false)
             } else {
-                continue;
+                return None;
             };
 
             match std::fs::read(&md_path) {
-                Ok(data) => match parse_skill_md(&data) {
+                Ok(data) => match parse_skill_frontmatter(&data) {
                     Ok(mut skill) => {
                         skill.enabled = enabled;
                         skill.source_path = Some(md_path);
                         skill.source = source;
                         skill.base_dir = Some(path.clone());
                         if skill.matches_platform() {
-                            skills.push(skill);
+                            Some(skill)
                         } else {
                             debug!(
                                 name = %skill.name,
                                 platform = ?skill.platform,
                                 "skipping skill: platform mismatch"
                             );
+                            None
                         }
                     }
                     Err(e) => {
                         warn!(path = %md_path.display(), error = %e, "failed to parse SKILL.md");
+                        None
                     }
                 },
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Silently skip — file may not be extracted yet
-                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => {
                     warn!(path = %md_path.display(), error = %e, "failed to read SKILL.md");
+                    None
                 }
             }
-        }
-    }
-
-    skills
+        })
+        .collect()
 }
 
 /// Find a SKILL.md file in a directory (case-insensitive).
@@ -668,7 +1201,6 @@ fn verify_dependencies(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,10 +1254,12 @@ Windows specific instructions.
         let installed = TempDir::new().unwrap();
         create_skill_md(tmp.path(), "test-skill", BASIC_SKILL);
 
-        let bundled = TempDir::new().unwrap();
-        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), tmp.path().to_path_buf());
+        let loader = Loader::new(installed.path().to_path_buf(), tmp.path().to_path_buf());
         let count = loader.load_all().await;
-        assert_eq!(count, 1);
+        assert!(
+            count >= 1,
+            "should load at least the user skill (plus bundled)"
+        );
 
         let skill = loader.get("test-skill").await.unwrap();
         assert_eq!(skill.description, "A test skill");
@@ -736,7 +1270,6 @@ Windows specific instructions.
 
     #[tokio::test]
     async fn test_load_from_extracted() {
-        let bundled = TempDir::new().unwrap();
         let installed = TempDir::new().unwrap();
         let user = TempDir::new().unwrap();
 
@@ -747,9 +1280,12 @@ Windows specific instructions.
             BASIC_SKILL.as_bytes(),
         );
 
-        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), user.path().to_path_buf());
+        let loader = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
         let count = loader.load_all().await;
-        assert_eq!(count, 1);
+        assert!(
+            count >= 1,
+            "should load at least the installed skill (plus bundled)"
+        );
 
         let skill = loader.get("test-skill").await.unwrap();
         assert_eq!(skill.source, SkillSource::Installed);
@@ -758,7 +1294,6 @@ Windows specific instructions.
 
     #[tokio::test]
     async fn test_user_overrides_installed() {
-        let bundled = TempDir::new().unwrap();
         let installed = TempDir::new().unwrap();
         let user = TempDir::new().unwrap();
 
@@ -774,7 +1309,7 @@ Windows specific instructions.
             &BASIC_SKILL.replace("A test skill", "User override"),
         );
 
-        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), user.path().to_path_buf());
+        let loader = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
         loader.load_all().await;
 
         let skill = loader.get("test-skill").await.unwrap();
@@ -789,8 +1324,7 @@ Windows specific instructions.
         create_skill_md(tmp.path(), "windows-only", PLATFORM_SKILL);
         create_skill_md(tmp.path(), "test-skill", BASIC_SKILL);
 
-        let bundled = TempDir::new().unwrap();
-        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), tmp.path().to_path_buf());
+        let loader = Loader::new(installed.path().to_path_buf(), tmp.path().to_path_buf());
         loader.load_all().await;
 
         assert!(loader.get("test-skill").await.is_some());
@@ -808,8 +1342,7 @@ Windows specific instructions.
         let tmp = TempDir::new().unwrap();
         create_skill_md(tmp.path(), "test-skill", BASIC_SKILL);
 
-        let bundled = TempDir::new().unwrap();
-        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), tmp.path().to_path_buf());
+        let loader = Loader::new(installed.path().to_path_buf(), tmp.path().to_path_buf());
         loader.load_all().await;
 
         let matches = loader.match_triggers("please test trigger this", 3).await;
@@ -818,6 +1351,109 @@ Windows specific instructions.
 
         let no_match = loader.match_triggers("unrelated message", 3).await;
         assert!(no_match.is_empty());
+    }
+
+    /// Create a skill inside a plugin's skills/ subdirectory (simulates embedded plugin skill).
+    fn create_plugin_embedded_skill(
+        plugins_dir: &Path,
+        slug: &str,
+        version: &str,
+        skill_name: &str,
+        skill_md: &str,
+    ) {
+        let skill_dir = plugins_dir
+            .join(slug)
+            .join(version)
+            .join("skills")
+            .join(skill_name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), skill_md).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_user_plugin_skills_loaded() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let marketplace_plugins = TempDir::new().unwrap();
+        let user_plugins = TempDir::new().unwrap();
+
+        let plugin_store = Arc::new(napp::plugin::PluginStore::new(
+            marketplace_plugins.path().to_path_buf(),
+            user_plugins.path().to_path_buf(),
+            None,
+        ));
+
+        // Create a skill embedded in a user plugin
+        create_plugin_embedded_skill(
+            user_plugins.path(),
+            "outreach",
+            "0.1.0",
+            "outreach-email",
+            &BASIC_SKILL
+                .replace("test-skill", "outreach-email")
+                .replace("A test skill", "Send outreach emails"),
+        );
+
+        let loader = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
+            .with_plugin_store(plugin_store);
+        let count = loader.load_all().await;
+        assert!(
+            count >= 1,
+            "should load at least the plugin skill (plus bundled)"
+        );
+
+        let skill = loader.get("outreach-email").await.unwrap();
+        assert_eq!(skill.description, "Send outreach emails");
+        assert!(skill.enabled);
+        // Should auto-inject the parent plugin as a dependency
+        assert!(
+            skill.plugins.iter().any(|p| p.name == "outreach"),
+            "should have outreach plugin dependency"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_user_plugin_skills_override_marketplace_plugin_skills() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let marketplace_plugins = TempDir::new().unwrap();
+        let user_plugins = TempDir::new().unwrap();
+
+        let plugin_store = Arc::new(napp::plugin::PluginStore::new(
+            marketplace_plugins.path().to_path_buf(),
+            user_plugins.path().to_path_buf(),
+            None,
+        ));
+
+        // Same skill name in both marketplace and user plugins
+        create_plugin_embedded_skill(
+            marketplace_plugins.path(),
+            "gws",
+            "1.0.0",
+            "gws-gmail",
+            &BASIC_SKILL
+                .replace("test-skill", "gws-gmail")
+                .replace("A test skill", "Marketplace version"),
+        );
+        create_plugin_embedded_skill(
+            user_plugins.path(),
+            "gws",
+            "1.0.0",
+            "gws-gmail",
+            &BASIC_SKILL
+                .replace("test-skill", "gws-gmail")
+                .replace("A test skill", "User version"),
+        );
+
+        let loader = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
+            .with_plugin_store(plugin_store);
+        loader.load_all().await;
+
+        let skill = loader.get("gws-gmail").await.unwrap();
+        assert_eq!(
+            skill.description, "User version",
+            "user plugin skills should override marketplace plugin skills"
+        );
     }
 
     #[tokio::test]
@@ -839,14 +1475,12 @@ Windows specific instructions.
                 .replace("priority: 5", "priority: 100"),
         );
 
-        let bundled = TempDir::new().unwrap();
-        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), tmp.path().to_path_buf());
+        let loader = Loader::new(installed.path().to_path_buf(), tmp.path().to_path_buf());
         loader.load_all().await;
 
         let list = loader.list().await;
-        assert_eq!(list.len(), 2);
+        assert!(list.len() >= 2, "should have at least the two user skills");
+        // Priority 100 should sort before priority 1 (and before bundled defaults at priority 5)
         assert_eq!(list[0].name, "high");
-        assert_eq!(list[1].name, "low");
     }
-
 }

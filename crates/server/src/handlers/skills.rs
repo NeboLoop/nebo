@@ -2,8 +2,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 
+use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
-use super::{to_error_response, HandlerResult};
 
 /// GET /api/v1/skills/:name/secrets
 /// Returns declared secrets and their configuration status (never exposes values).
@@ -18,10 +18,7 @@ pub async fn list_skill_secrets(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     let declarations = skill.secrets();
-    let stored = state
-        .store
-        .list_skill_secrets(&name)
-        .unwrap_or_default();
+    let stored = state.store.list_skill_secrets(&name).unwrap_or_default();
     let stored_keys: std::collections::HashSet<String> =
         stored.into_iter().map(|(k, _)| k).collect();
 
@@ -92,65 +89,68 @@ pub async fn delete_skill_secret(
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
-fn skills_dir() -> Result<std::path::PathBuf, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
+fn skills_dir()
+-> Result<std::path::PathBuf, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
     config::user_dir()
         .map(|d| d.join("skills"))
         .map_err(to_error_response)
 }
 
 /// GET /api/v1/extensions
-pub async fn list_extensions(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
-    let skills: Vec<serde_json::Value> = state
-        .skill_loader
-        .list()
-        .await
-        .into_iter()
-        .map(|s| {
-            let mut info = serde_json::json!({
-                "name": s.name,
-                "enabled": s.enabled,
-                "source": s.source,
-            });
-            if !s.description.is_empty() {
-                info["description"] = serde_json::json!(s.description);
-            }
-            if !s.version.is_empty() {
-                info["version"] = serde_json::json!(s.version);
-            }
-            if !s.triggers.is_empty() {
-                info["triggers"] = serde_json::json!(s.triggers);
-            }
-            if let Some(ref path) = s.source_path {
-                info["path"] = serde_json::json!(path.to_string_lossy());
-            }
-            // Include secret declarations so the UI knows what needs configuring
-            let declarations = s.secrets();
-            if !declarations.is_empty() {
-                let stored = state.store.list_skill_secrets(&s.name).unwrap_or_default();
-                let stored_keys: std::collections::HashSet<String> =
-                    stored.into_iter().map(|(k, _)| k).collect();
-                let secrets: Vec<serde_json::Value> = declarations
-                    .iter()
-                    .map(|d| {
-                        serde_json::json!({
-                            "key": d.key,
-                            "label": d.label,
-                            "hint": d.hint,
-                            "required": d.required,
-                            "configured": stored_keys.contains(&d.key),
+pub async fn list_extensions(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let summaries = state.skill_loader.list_summaries().await;
+    let mut skills: Vec<serde_json::Value> = Vec::with_capacity(summaries.len());
+
+    for s in &summaries {
+        let mut info = serde_json::json!({
+            "name": s.name,
+            "enabled": s.enabled,
+            "source": s.source,
+        });
+        if !s.description.is_empty() {
+            info["description"] = serde_json::json!(s.description);
+        }
+        if !s.version.is_empty() {
+            info["version"] = serde_json::json!(s.version);
+        }
+        if !s.triggers.is_empty() {
+            info["triggers"] = serde_json::json!(s.triggers);
+        }
+        if let Some(ref path) = s.source_path {
+            info["path"] = serde_json::json!(path.to_string_lossy());
+        }
+        // Lazy-load full skill only for those that declare secrets
+        if s.has_secrets {
+            if let Some(full) = state.skill_loader.get(&s.name).await {
+                let declarations = full.secrets();
+                if !declarations.is_empty() {
+                    let stored = state.store.list_skill_secrets(&s.name).unwrap_or_default();
+                    let stored_keys: std::collections::HashSet<String> =
+                        stored.into_iter().map(|(k, _)| k).collect();
+                    let secrets: Vec<serde_json::Value> = declarations
+                        .iter()
+                        .map(|d| {
+                            serde_json::json!({
+                                "key": d.key,
+                                "label": d.label,
+                                "hint": d.hint,
+                                "required": d.required,
+                                "configured": stored_keys.contains(&d.key),
+                            })
                         })
-                    })
-                    .collect();
-                info["secrets"] = serde_json::json!(secrets);
-                info["needsConfiguration"] = serde_json::json!(
-                    declarations.iter().any(|d| d.required && !stored_keys.contains(&d.key))
-                );
+                        .collect();
+                    info["secrets"] = serde_json::json!(secrets);
+                    info["needsConfiguration"] = serde_json::json!(
+                        declarations
+                            .iter()
+                            .any(|d| d.required && !stored_keys.contains(&d.key))
+                    );
+                }
             }
-            info
-        })
-        .collect();
+        }
+        skills.push(info);
+    }
+
     Ok(Json(serde_json::json!({"extensions": skills})))
 }
 
@@ -184,8 +184,8 @@ pub async fn get_skill(
     let path = tools::skills::resolve_skill_path(&dir, &name)
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| to_error_response(types::NeboError::Io(e)))?;
 
     Ok(Json(serde_json::json!({
         "name": name,
@@ -213,8 +213,7 @@ pub async fn update_skill(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     if let Some(content) = body["content"].as_str() {
-        std::fs::write(&path, content)
-            .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+        std::fs::write(&path, content).map_err(|e| to_error_response(types::NeboError::Io(e)))?;
     }
 
     Ok(Json(serde_json::json!({"name": name, "success": true})))
@@ -281,4 +280,3 @@ pub async fn toggle_skill(
 
     Err(to_error_response(types::NeboError::NotFound))
 }
-

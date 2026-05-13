@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::Advisor;
 use crate::Store;
+use crate::models::Advisor;
 use types::NeboError;
 
 impl Store {
@@ -104,34 +104,55 @@ impl Store {
         let conn = self.conn()?;
 
         if let Some(v) = role {
-            conn.execute("UPDATE advisors SET role = ?1, updated_at = unixepoch() WHERE id = ?2", params![v, id])
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE advisors SET role = ?1, updated_at = unixepoch() WHERE id = ?2",
+                params![v, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = description {
-            conn.execute("UPDATE advisors SET description = ?1, updated_at = unixepoch() WHERE id = ?2", params![v, id])
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE advisors SET description = ?1, updated_at = unixepoch() WHERE id = ?2",
+                params![v, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = priority {
-            conn.execute("UPDATE advisors SET priority = ?1, updated_at = unixepoch() WHERE id = ?2", params![v, id])
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE advisors SET priority = ?1, updated_at = unixepoch() WHERE id = ?2",
+                params![v, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = persona {
-            conn.execute("UPDATE advisors SET persona = ?1, updated_at = unixepoch() WHERE id = ?2", params![v, id])
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE advisors SET persona = ?1, updated_at = unixepoch() WHERE id = ?2",
+                params![v, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = enabled {
             let val: i64 = if v { 1 } else { 0 };
-            conn.execute("UPDATE advisors SET enabled = ?1, updated_at = unixepoch() WHERE id = ?2", params![val, id])
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE advisors SET enabled = ?1, updated_at = unixepoch() WHERE id = ?2",
+                params![val, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = memory_access {
             let val: i64 = if v { 1 } else { 0 };
-            conn.execute("UPDATE advisors SET memory_access = ?1, updated_at = unixepoch() WHERE id = ?2", params![val, id])
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE advisors SET memory_access = ?1, updated_at = unixepoch() WHERE id = ?2",
+                params![val, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = timeout_seconds {
-            conn.execute("UPDATE advisors SET timeout_seconds = ?1, updated_at = unixepoch() WHERE id = ?2", params![v, id])
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE advisors SET timeout_seconds = ?1, updated_at = unixepoch() WHERE id = ?2",
+                params![v, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         }
 
         Ok(())

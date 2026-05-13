@@ -59,7 +59,10 @@ impl DynTool for EmitTool {
                 _ => return ToolResult::error("source is required"),
             };
 
-            let payload = input.get("payload").cloned().unwrap_or(serde_json::json!({}));
+            let payload = input
+                .get("payload")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
 
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

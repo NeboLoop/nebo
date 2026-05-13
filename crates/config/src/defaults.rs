@@ -4,42 +4,43 @@ use std::path::PathBuf;
 use types::NeboError;
 use types::constants::files;
 
-/// Returns the platform-appropriate data directory.
+/// Returns the data directory: `~/.nebo/`.
 ///
-/// - macOS:   ~/Library/Application Support/Nebo/
-/// - Windows: %AppData%\Nebo\
-/// - Linux:   ~/.config/nebo/
+/// Unified across all platforms. Set `NEBO_DATA_DIR` to override.
 ///
-/// Set `NEBO_DATA_DIR` to override.
+/// Previous platform-specific paths are migrated automatically on startup
+/// (see `migration.rs` v5).
 pub fn data_dir() -> Result<PathBuf, NeboError> {
     if let Ok(dir) = std::env::var("NEBO_DATA_DIR") {
         return Ok(PathBuf::from(dir));
     }
 
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| NeboError::DataDir("cannot determine config directory".into()))?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| NeboError::DataDir("cannot determine home directory".into()))?;
 
-    // Linux: lowercase per XDG convention
-    // macOS/Windows: title case per platform convention
+    Ok(home.join(".nebo"))
+}
+
+/// Returns the old platform-specific data directory path (pre-v5).
+/// Used by the migration to find data to move.
+pub fn legacy_data_dir() -> Option<PathBuf> {
+    let config_dir = dirs::config_dir()?;
     let name = if cfg!(target_os = "linux") {
         "nebo"
     } else {
         "Nebo"
     };
-
-    Ok(config_dir.join(name))
+    Some(config_dir.join(name))
 }
 
 /// Creates the data directory if it doesn't exist and returns its path.
 pub fn ensure_data_dir() -> Result<PathBuf, NeboError> {
     let dir = data_dir()?;
-    fs::create_dir_all(&dir).map_err(|e| {
-        NeboError::DataDir(format!("failed to create data directory: {e}"))
-    })?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| NeboError::DataDir(format!("failed to create data directory: {e}")))?;
     // Ensure the data/ subdirectory exists for the database
-    fs::create_dir_all(dir.join("data")).map_err(|e| {
-        NeboError::DataDir(format!("failed to create data/data directory: {e}"))
-    })?;
+    fs::create_dir_all(dir.join("data"))
+        .map_err(|e| NeboError::DataDir(format!("failed to create data/data directory: {e}")))?;
     Ok(dir)
 }
 
@@ -96,34 +97,28 @@ pub fn user_dir() -> Result<PathBuf, NeboError> {
 /// Artifact type subdirectories.
 const ARTIFACT_TYPES: &[&str] = &["skills", "agents"];
 
-/// Returns the `bundled/` directory for skills shipped with the app.
-pub fn bundled_skills_dir() -> Result<PathBuf, NeboError> {
-    Ok(data_dir()?.join("bundled").join("skills"))
-}
-
 /// Ensure all artifact directories exist for both namespaces.
 ///
 /// Creates:
-/// - `<data_dir>/bundled/skills/`
-/// - `<data_dir>/nebo/{skills,tools,workflows,roles}/`
-/// - `<data_dir>/user/{skills,tools,workflows,roles}/`
+/// - `<data_dir>/nebo/{skills,agents}/`
+/// - `<data_dir>/user/{skills,agents}/`
 /// - `<data_dir>/data/`
+/// - `<data_dir>/files/large_inputs/`
+///
+/// Bundled skills/agents are embedded in the binary and loaded from memory
+/// — no filesystem directory needed.
 pub fn ensure_artifact_dirs() -> Result<(), NeboError> {
     let data = data_dir()?;
 
     // Ensure data/ for database
-    fs::create_dir_all(data.join("data")).map_err(|e| {
-        NeboError::DataDir(format!("failed to create data/ directory: {e}"))
-    })?;
-
-    // Ensure bundled skills directory
-    fs::create_dir_all(data.join("bundled").join("skills")).map_err(|e| {
-        NeboError::DataDir(format!("failed to create bundled/skills directory: {e}"))
-    })?;
+    fs::create_dir_all(data.join("data"))
+        .map_err(|e| NeboError::DataDir(format!("failed to create data/ directory: {e}")))?;
 
     // Ensure files/large_inputs directory for large input offloading
     fs::create_dir_all(data.join("files").join("large_inputs")).map_err(|e| {
-        NeboError::DataDir(format!("failed to create files/large_inputs directory: {e}"))
+        NeboError::DataDir(format!(
+            "failed to create files/large_inputs directory: {e}"
+        ))
     })?;
 
     // Create nebo/ and user/ subdirectories
@@ -169,6 +164,30 @@ pub fn artifact_napp_path(
 /// ```
 pub fn user_artifact_path(artifact_type: &str, name: &str) -> Result<PathBuf, NeboError> {
     Ok(user_dir()?.join(artifact_type).join(name))
+}
+
+// ── Bundled Resources ─────────────────────────────────────────────
+
+/// Returns the path to bundled `.napp` files inside the app bundle.
+///
+/// - macOS:   `<exe_dir>/../Resources/bundled-napps/`
+/// - Windows: `<exe_dir>/resources/bundled-napps/`
+/// - Linux:   `<exe_dir>/../resources/bundled-napps/`
+///
+/// Returns `None` if the directory doesn't exist (dev/CLI mode).
+pub fn bundled_napps_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+
+    let dir = if cfg!(target_os = "macos") {
+        // Nebo.app/Contents/MacOS/nebo → Nebo.app/Contents/Resources/bundled-napps/
+        exe_dir.join("../Resources/bundled-napps")
+    } else {
+        // Linux/Windows: <exe_dir>/resources/bundled-napps/
+        exe_dir.join("resources/bundled-napps")
+    };
+
+    if dir.is_dir() { Some(dir) } else { None }
 }
 
 /// Checks if the setup has been marked as complete.

@@ -4,6 +4,7 @@ export * from './nebo';
 // Import all functions and components
 import * as api from './nebo';
 import webapi from './gocliRequest';
+import type * as components from './neboComponents';
 
 // Export api object containing all API methods
 export const nebo = api;
@@ -39,13 +40,12 @@ export interface TranscribeResponse {
 }
 
 export async function transcribeAudio(audioBlob: Blob): Promise<TranscribeResponse> {
-	const formData = new FormData();
-	formData.append('audio', audioBlob, 'recording.webm');
-
 	const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
 	const token = typeof window !== 'undefined' ? localStorage.getItem('nebo_token') : null;
 
-	const headers: Record<string, string> = {};
+	const headers: Record<string, string> = {
+		'Content-Type': audioBlob.type || 'audio/webm'
+	};
 	if (token) {
 		headers['Authorization'] = `Bearer ${token}`;
 	}
@@ -54,7 +54,7 @@ export async function transcribeAudio(audioBlob: Blob): Promise<TranscribeRespon
 		method: 'POST',
 		credentials: 'include',
 		headers,
-		body: formData
+		body: audioBlob
 	});
 
 	if (!response.ok) {
@@ -126,24 +126,21 @@ export function togglePlugin(id: string, req: TogglePluginRequest): Promise<GetP
 
 // NeboLoop Marketplace — query-param variants (generated API lacks param support)
 
-export function listStoreProducts(params?: Record<string, string | number>): Promise<components.ListStoreAppsResponse> {
-	return webapi.get<components.ListStoreAppsResponse>('/api/v1/store/products', params);
+export function listStoreProducts(params?: Record<string, string | number>): Promise<unknown> {
+	return webapi.get<unknown>('/api/v1/store/products', params);
 }
 
-export function getStoreProduct(id: string): Promise<components.GetStoreAppResponse> {
-	return webapi.get<components.GetStoreAppResponse>(`/api/v1/store/products/${id}`);
+export function getStoreProduct(id: string): Promise<unknown> {
+	return webapi.get<unknown>(`/api/v1/store/products/${id}`);
 }
 
-export function getStoreProductReviews(id: string): Promise<components.GetStoreAppReviewsResponse> {
-	return webapi.get<components.GetStoreAppReviewsResponse>(`/api/v1/store/products/${id}/reviews`);
+export function getStoreProductReviews(id: string): Promise<unknown> {
+	return webapi.get<unknown>(`/api/v1/store/products/${id}/reviews`);
 }
-
 
 // NeboLoop OAuth with Janus opt-in
-import type * as components from './neboComponents';
-
 export function neboLoopOAuthStartWithJanus(janus: boolean) {
-	return webapi.get<components.NeboLoopOAuthStartResponse>(
+	return webapi.get<components.OAuthStartResponse>(
 		'/api/v1/neboloop/oauth/start',
 		janus ? { janus: 'true' } : undefined
 	);

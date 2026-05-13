@@ -8,8 +8,8 @@ use ai::{ChatRequest, StreamEventType};
 use db::Store;
 use tools::registry::DynTool;
 
-use crate::parser::{Activity, Fallback, WorkflowDef};
 use crate::WorkflowError;
+use crate::parser::{Activity, WorkflowDef};
 
 const MAX_ITERATIONS: u32 = 50;
 
@@ -23,12 +23,23 @@ const MAX_ITERATIONS: u32 = 50;
 /// `event_bus` — if provided, an `emit` tool is injected into every activity's tool set.
 /// Progress event emitted during workflow execution.
 #[derive(Debug, Clone)]
-pub struct WorkflowProgress {
-    pub activity_id: String,
-    pub activity_index: usize,
-    pub total_activities: usize,
+pub enum WorkflowProgress {
+    /// Activity-level progress (before each activity starts).
+    ActivityStarted {
+        activity_id: String,
+        activity_index: usize,
+        total_activities: usize,
+    },
+    /// Task-level progress (per-step within an activity).
+    TaskUpdated {
+        list_id: String,
+        task_id: String,
+        seq: i64,
+        status: String,
+    },
 }
 
+#[allow(unused_assignments)] // circuit breaker state is future-proofed for Fallback::Skip
 pub async fn execute_workflow(
     def: &WorkflowDef,
     inputs: serde_json::Value,
@@ -65,7 +76,8 @@ pub async fn execute_workflow(
 
     // Resolve emit source: prefer explicit parameter, fall back to _emit key in inputs
     let resolved_emit = emit_source.or_else(|| {
-        inputs.get("_emit")
+        inputs
+            .get("_emit")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     });
@@ -81,7 +93,11 @@ pub async fn execute_workflow(
 
     for (idx, activity) in def.activities.iter().enumerate() {
         let is_last = idx == activity_count - 1;
-        let activity_emit = if is_last { resolved_emit.as_deref() } else { None };
+        let activity_emit = if is_last {
+            resolved_emit.as_deref()
+        } else {
+            None
+        };
         // Check for cancellation before each activity
         if let Some(token) = cancel_token {
             if token.is_cancelled() {
@@ -97,7 +113,7 @@ pub async fn execute_workflow(
 
         // Send progress event
         if let Some(ref tx) = progress_tx {
-            let _ = tx.send(WorkflowProgress {
+            let _ = tx.send(WorkflowProgress::ActivityStarted {
                 activity_id: activity.id.clone(),
                 activity_index: idx,
                 total_activities: activity_count,
@@ -120,8 +136,8 @@ pub async fn execute_workflow(
         let mut activity_tools: Vec<&Box<dyn DynTool>> = resolved_tools.iter().collect();
 
         // Inject emit tool if event bus is available (always available, no declaration needed)
-        let emit_tool_box: Option<Box<dyn DynTool>> = event_bus
-            .map(|bus| Box::new(tools::EmitTool::new(bus.clone())) as Box<dyn DynTool>);
+        let emit_tool_box: Option<Box<dyn DynTool>> =
+            event_bus.map(|bus| Box::new(tools::EmitTool::new(bus.clone())) as Box<dyn DynTool>);
         if let Some(ref emit) = emit_tool_box {
             activity_tools.push(emit);
         }
@@ -140,6 +156,9 @@ pub async fn execute_workflow(
             &activity_tools,
             skill_content,
             activity_emit,
+            store,
+            &run_id,
+            progress_tx.as_ref(),
         )
         .await
         {
@@ -169,11 +188,22 @@ pub async fn execute_workflow(
             Err(WorkflowError::Exited(reason)) => {
                 let completed_at = chrono::Utc::now().timestamp();
                 let _ = store.create_activity_result(
-                    &run_id, &activity.id, "exited", 0, 1,
-                    Some(&reason), started_at, Some(completed_at),
+                    &run_id,
+                    &activity.id,
+                    "exited",
+                    0,
+                    1,
+                    Some(&reason),
+                    started_at,
+                    Some(completed_at),
                 );
                 let _ = store.complete_workflow_run(
-                    &run_id, "exited", total_tokens as i64, Some(&reason), Some(&activity.id), Some(&prior_context),
+                    &run_id,
+                    "exited",
+                    total_tokens as i64,
+                    Some(&reason),
+                    Some(&activity.id),
+                    Some(&prior_context),
                 );
                 info!(workflow = def.id.as_str(), run_id = %run_id, reason = %reason, "workflow exited early");
                 return Ok((run_id, prior_context));
@@ -194,9 +224,11 @@ pub async fn execute_workflow(
                     warn!(run_id = %run_id, activity = %activity.id, error = %db_err, "failed to record activity failure");
                 }
 
-                // Circuit breaker: track consecutive failures with same pattern
+                // Circuit breaker: track consecutive failures with same pattern.
+                // Note: currently dead (abort-on-error policy returns below),
+                // but wired for future Fallback::Skip support.
                 let pattern = extract_error_pattern(&err_msg);
-                if last_failure_pattern.as_deref() == Some(&pattern) {
+                if last_failure_pattern.as_deref() == Some(pattern.as_str()) {
                     consecutive_failures += 1;
                 } else {
                     consecutive_failures = 1;
@@ -210,37 +242,33 @@ pub async fn execute_workflow(
                     );
                     warn!(workflow = def.id.as_str(), run_id = %run_id, "{}", reason);
                     if let Err(db_err) = store.complete_workflow_run(
-                        &run_id, "failed", total_tokens as i64,
-                        Some(&reason), Some(&activity.id), None,
+                        &run_id,
+                        "failed",
+                        total_tokens as i64,
+                        Some(&reason),
+                        Some(&activity.id),
+                        None,
                     ) {
                         warn!(run_id = %run_id, error = %db_err, "failed to mark workflow run as circuit-broken");
                     }
                     return Err(WorkflowError::CircuitBreak(reason));
                 }
 
-                match activity.on_error.fallback {
-                    Fallback::Skip => {
-                        warn!(
-                            activity = activity.id.as_str(),
-                            error = %e,
-                            "activity failed, skipping"
-                        );
-                        continue;
-                    }
-                    Fallback::Abort | Fallback::NotifyOwner => {
-                        if let Err(db_err) = store.complete_workflow_run(
-                            &run_id,
-                            "failed",
-                            total_tokens as i64,
-                            Some(&err_msg),
-                            Some(&activity.id),
-                            None,
-                        ) {
-                            warn!(run_id = %run_id, error = %db_err, "failed to mark workflow run as failed");
-                        }
-                        return Err(e);
-                    }
+                // Always abort: downstream activities depend on prior results,
+                // so continuing after a failure produces garbage.
+                // Fallback::Skip is kept for future use (independent activities)
+                // but currently behaves the same as Abort.
+                if let Err(db_err) = store.complete_workflow_run(
+                    &run_id,
+                    "failed",
+                    total_tokens as i64,
+                    Some(&err_msg),
+                    Some(&activity.id),
+                    None,
+                ) {
+                    warn!(run_id = %run_id, error = %db_err, "failed to mark workflow run as failed");
                 }
+                return Err(e);
             }
         }
 
@@ -264,7 +292,14 @@ pub async fn execute_workflow(
         }
     }
 
-    if let Err(e) = store.complete_workflow_run(&run_id, "completed", total_tokens as i64, None, None, Some(&prior_context)) {
+    if let Err(e) = store.complete_workflow_run(
+        &run_id,
+        "completed",
+        total_tokens as i64,
+        None,
+        None,
+        Some(&prior_context),
+    ) {
         warn!(run_id = %run_id, error = %e, "failed to mark workflow run as completed");
     }
 
@@ -287,11 +322,27 @@ async fn execute_activity_with_retry(
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
     emit_source: Option<&str>,
+    store: &Arc<Store>,
+    run_id: &str,
+    progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
 ) -> Result<(String, u32), WorkflowError> {
     let max_attempts = activity.on_error.retry.max(1);
 
     for attempt in 0..max_attempts {
-        match execute_activity(activity, prior_context, inputs, provider, tools, skill_content, emit_source).await {
+        match execute_activity(
+            activity,
+            prior_context,
+            inputs,
+            provider,
+            tools,
+            skill_content,
+            emit_source,
+            store,
+            run_id,
+            progress_tx,
+        )
+        .await
+        {
             Ok(result) => return Ok(result),
             Err(e) if attempt + 1 < max_attempts => {
                 warn!(
@@ -309,6 +360,10 @@ async fn execute_activity_with_retry(
 }
 
 /// Execute a single activity (lean execution path — no steering, no memory).
+///
+/// If the activity has steps, each step is executed as a separate LLM turn within
+/// a shared conversation. Each step's input/output/tokens are tracked in `task_items`.
+/// If no steps, executes as a single intent (backward-compatible).
 pub async fn execute_activity(
     activity: &Activity,
     prior_context: &str,
@@ -317,22 +372,15 @@ pub async fn execute_activity(
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
     emit_source: Option<&str>,
+    store: &Arc<Store>,
+    run_id: &str,
+    progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
 ) -> Result<(String, u32), WorkflowError> {
-    let mut tokens_used: u32 = 0;
-    let mut iterations: u32 = 0;
-    let mut consecutive_all_not_found: u32 = 0;
-    // Track consecutive same-tool calls for loop detection
-    let mut last_tool_name: String = String::new();
-    let mut consecutive_same_tool: u32 = 0;
-
     // Detect if browser tool is available for this activity
     let has_browser = tools.iter().any(|t| t.name() == "web");
-
-    // Build system prompt: skill content + intent + steps (NO steering, NO memory)
     let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
-    let system = build_activity_prompt(activity, prior_context, inputs, skill_content, emit_source, has_browser, &tool_names);
 
-    // Build tool definitions
+    // Build tool definitions (shared across all steps)
     let tool_defs: Vec<ai::ToolDefinition> = tools
         .iter()
         .map(|t| ai::ToolDefinition {
@@ -342,11 +390,156 @@ pub async fn execute_activity(
         })
         .collect();
 
-    let mut messages = vec![ai::Message {
-        role: "user".into(),
-        content: activity.intent.clone(),
-        ..Default::default()
-    }];
+    // If activity has steps, execute per-step. Otherwise, single-turn legacy path.
+    if activity.steps.is_empty() {
+        // No steps — legacy single-turn execution
+        let system = build_activity_prompt(
+            activity,
+            prior_context,
+            inputs,
+            skill_content,
+            emit_source,
+            has_browser,
+            &tool_names,
+        );
+        let messages = vec![ai::Message {
+            role: "user".into(),
+            content: activity.intent.clone(),
+            ..Default::default()
+        }];
+        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages).await;
+    }
+
+    // --- Per-step execution ---
+    let list_id = format!("run:{}:{}", run_id, activity.id);
+    let step_strs: Vec<&str> = activity.steps.iter().map(|s| s.as_str()).collect();
+
+    // Seed task_items for all steps
+    let task_items = store
+        .seed_task_list(&list_id, &step_strs)
+        .map_err(|e| WorkflowError::Database(e.to_string()))?;
+
+    // Build system prompt WITHOUT steps (they'll come as individual user messages)
+    let system = build_activity_prompt_no_steps(
+        activity,
+        prior_context,
+        inputs,
+        skill_content,
+        emit_source,
+        has_browser,
+        &tool_names,
+    );
+
+    // Shared conversation — messages accumulate across steps
+    let mut messages = Vec::new();
+    let mut total_tokens: u32 = 0;
+    let mut step_outputs: Vec<String> = Vec::new();
+    let total_steps = activity.steps.len();
+
+    for (i, step) in activity.steps.iter().enumerate() {
+        let task_item = &task_items[i];
+        let task_seq = task_item.seq.unwrap_or((i + 1) as i64);
+
+        // Mark in_progress
+        if let Err(e) = store.start_task_item(&task_item.id) {
+            warn!(task_id = %task_item.id, error = %e, "failed to mark task_item in_progress");
+        }
+        if let Some(tx) = progress_tx {
+            let _ = tx.send(WorkflowProgress::TaskUpdated {
+                list_id: list_id.clone(),
+                task_id: task_item.id.clone(),
+                seq: task_seq,
+                status: "in_progress".to_string(),
+            });
+        }
+
+        // Send step as user message
+        let step_msg = format!("Step {}/{}: {}", i + 1, total_steps, step);
+        messages.push(ai::Message {
+            role: "user".into(),
+            content: step_msg,
+            ..Default::default()
+        });
+
+        // Run LLM loop for this step
+        let (step_result, step_tokens) = run_llm_loop(
+            activity,
+            provider,
+            tools,
+            &tool_defs,
+            &system,
+            messages.clone(),
+        )
+        .await
+        .map_err(|e| {
+            // Record failure
+            let _ =
+                store.update_task_item(&task_item.id, "failed", None, Some(&e.to_string()), 0, 0);
+            if let Some(tx) = progress_tx {
+                let _ = tx.send(WorkflowProgress::TaskUpdated {
+                    list_id: list_id.clone(),
+                    task_id: task_item.id.clone(),
+                    seq: task_seq,
+                    status: "failed".to_string(),
+                });
+            }
+            e
+        })?;
+
+        // Append assistant response to conversation for next step's context
+        messages.push(ai::Message {
+            role: "assistant".into(),
+            content: step_result.clone(),
+            ..Default::default()
+        });
+
+        // Record completion
+        total_tokens += step_tokens;
+        let tokens_in = (step_tokens as i64) / 2; // approximate split
+        let tokens_out = step_tokens as i64 - tokens_in;
+        if let Err(e) = store.update_task_item(
+            &task_item.id,
+            "completed",
+            Some(&step_result),
+            None,
+            tokens_in,
+            tokens_out,
+        ) {
+            warn!(task_id = %task_item.id, error = %e, "failed to update task_item completed");
+        }
+        if let Some(tx) = progress_tx {
+            let _ = tx.send(WorkflowProgress::TaskUpdated {
+                list_id: list_id.clone(),
+                task_id: task_item.id.clone(),
+                seq: task_seq,
+                status: "completed".to_string(),
+            });
+        }
+
+        step_outputs.push(step_result);
+    }
+
+    // Final result is the last step's output (or concatenation if needed for prior_context)
+    let final_output = step_outputs.last().cloned().unwrap_or_default();
+    Ok((final_output, total_tokens))
+}
+
+/// Core LLM multi-turn loop extracted from the original execute_activity.
+/// Runs until the LLM produces a response with no tool calls, then returns
+/// the final text response and total tokens used.
+async fn run_llm_loop(
+    activity: &Activity,
+    provider: &dyn ai::Provider,
+    tools: &[&Box<dyn DynTool>],
+    tool_defs: &[ai::ToolDefinition],
+    system: &str,
+    mut messages: Vec<ai::Message>,
+) -> Result<(String, u32), WorkflowError> {
+    let mut tokens_used: u32 = 0;
+    let mut iterations: u32 = 0;
+    let mut consecutive_all_not_found: u32 = 0;
+    let mut last_tool_name: String = String::new();
+    let mut consecutive_same_tool: u32 = 0;
 
     loop {
         if iterations >= MAX_ITERATIONS {
@@ -354,10 +547,10 @@ pub async fn execute_activity(
         }
         let req = ChatRequest {
             messages: messages.clone(),
-            tools: tool_defs.clone(),
+            tools: tool_defs.to_vec(),
             max_tokens: 16384,
             temperature: 0.0,
-            system: system.clone(),
+            system: system.to_string(),
             static_system: String::new(),
             model: activity.model.clone(),
             enable_thinking: false,
@@ -402,7 +595,10 @@ pub async fn execute_activity(
 
         // If no tool calls, check if we should force-continue (min_iterations budget)
         if tool_calls.is_empty() {
-            if activity.min_iterations > 0 && iterations < activity.min_iterations && !response_text.is_empty() {
+            if activity.min_iterations > 0
+                && iterations < activity.min_iterations
+                && !response_text.is_empty()
+            {
                 info!(
                     activity_id = %activity.id,
                     iteration = iterations,
@@ -418,7 +614,8 @@ pub async fn execute_activity(
                     role: "user".into(),
                     content: "You stopped early but your task is not complete. \
                               Keep working — use your tools to make more progress. \
-                              Do not summarize or ask to continue. Take the next action.".to_string(),
+                              Do not summarize or ask to continue. Take the next action."
+                        .to_string(),
                     ..Default::default()
                 });
                 iterations += 1;
@@ -439,8 +636,6 @@ pub async fn execute_activity(
         let ctx = tools::ToolContext::default();
         let mut tool_result_entries = Vec::new();
         for tc in &tool_calls {
-            // Try exact name first, then strip MCP prefix (LLMs sometimes
-            // hallucinate mcp__nebo-agent__<tool> even when given plain names).
             let tool = tools.iter().find(|t| t.name() == tc.name)
                 .or_else(|| {
                     let stripped = strip_mcp_prefix(&tc.name);
@@ -470,8 +665,7 @@ pub async fn execute_activity(
             }));
         }
 
-        // Same-tool loop detection: if the LLM calls the same tool 3+ times
-        // consecutively, inject a steering hint into the conversation.
+        // Same-tool loop detection
         if let Some(first_call) = tool_calls.first() {
             if first_call.name == last_tool_name {
                 consecutive_same_tool += 1;
@@ -481,7 +675,6 @@ pub async fn execute_activity(
             }
         }
         if consecutive_same_tool >= 3 {
-            // Inject a user-role steering message to break the loop
             messages.push(ai::Message {
                 role: "user".into(),
                 content: format!(
@@ -493,8 +686,7 @@ pub async fn execute_activity(
             });
         }
 
-        // Early termination: if ALL tool calls failed with "tool not found" for 3
-        // consecutive iterations, bail instead of looping to MAX_ITERATIONS.
+        // Early termination on repeated tool-not-found
         let all_not_found = tool_result_entries.iter().all(|e| {
             e.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false)
                 && e.get("content")
@@ -525,6 +717,30 @@ pub async fn execute_activity(
     }
 }
 
+/// Build the system prompt for a per-step activity (no steps section — steps come as user messages).
+fn build_activity_prompt_no_steps(
+    activity: &Activity,
+    prior_context: &str,
+    inputs: &serde_json::Value,
+    skill_content: Option<&HashMap<String, String>>,
+    emit_source: Option<&str>,
+    has_browser: bool,
+    tool_names: &[String],
+) -> String {
+    // Reuse the full builder but with an activity clone that has empty steps
+    let mut stepless = activity.clone();
+    stepless.steps = vec![];
+    build_activity_prompt(
+        &stepless,
+        prior_context,
+        inputs,
+        skill_content,
+        emit_source,
+        has_browser,
+        tool_names,
+    )
+}
+
 /// Build the system prompt for an activity.
 ///
 /// Spec order: Execution Rules → Skills → Tools → Task → Steps → Inputs → Prior Results → Browser Guide
@@ -551,7 +767,10 @@ fn build_activity_prompt(
         - If something fails, diagnose why before retrying. Do not retry the identical call blindly.\n\
         - Complete the ENTIRE task. Do not stop at 10% and ask whether to continue.\n\
         - Do NOT repeat information you already told the user. Each response must contain NEW information only.\n\
-        - Report the final result only. No status updates, no intermediate summaries.\n\n");
+        - Report the final result only. No status updates, no intermediate summaries.\n\
+        - If a prior step already resolved the task (e.g., 'no meeting found', 'not applicable', \
+          'nothing to do'), call the exit tool immediately instead of repeating the same conclusion. \
+          Do not waste steps re-analyzing data you already evaluated.\n\n");
 
     // Skills — injected from SKILL.md content
     if let Some(skills) = skill_content {
@@ -589,17 +808,19 @@ fn build_activity_prompt(
         prompt.push('\n');
     }
 
-    // Inputs (exclude _emit — it's an operational key, not a user input)
+    // Inputs — include event payload fields, exclude only internal operational keys
     if let serde_json::Value::Object(map) = inputs {
-        let user_inputs: Vec<_> = map.iter()
-            .filter(|(k, _)| !k.starts_with('_'))
+        let skip_keys = ["_emit"];
+        let user_inputs: Vec<_> = map
+            .iter()
+            .filter(|(k, _)| !skip_keys.contains(&k.as_str()))
             .collect();
         if !user_inputs.is_empty() {
             prompt.push_str("## Inputs\n");
-            for (key, val) in user_inputs {
-                prompt.push_str(&format!("- {}: {}\n", key, val));
+            for (key, val) in &user_inputs {
+                let formatted = format_input_value(val);
+                prompt.push_str(&format!("### {}\n{}\n\n", key, formatted));
             }
-            prompt.push('\n');
         }
     }
 
@@ -613,7 +834,9 @@ fn build_activity_prompt(
     // Command hints — only mention tools the step actually declares.
     // If emit_source is set (Path B will handle it specifically), skip the
     // generic emit hint to avoid redundant/conflicting instructions.
-    let effective_cmds: Vec<&str> = activity.cmds.iter()
+    let effective_cmds: Vec<&str> = activity
+        .cmds
+        .iter()
         .filter(|cmd| !(cmd.as_str() == "emit" && emit_source.is_some()))
         .map(|s| s.as_str())
         .collect();
@@ -625,12 +848,12 @@ fn build_activity_prompt(
             match *cmd {
                 "exit" => prompt.push_str(
                     "- exit(reason: \"...\") — call this to stop the workflow early if \
-                     the condition in your task is not met or there is nothing to do.\n"
+                     the condition in your task is not met or there is nothing to do.\n",
                 ),
                 "emit" => prompt.push_str(
                     "- emit(source: \"...\", payload: {...}) — call this to announce \
                      your result to other workflows. Can be called multiple times, \
-                     once per item, if processing a collection.\n"
+                     once per item, if processing a collection.\n",
                 ),
                 _ => {}
             }
@@ -661,6 +884,88 @@ fn build_activity_prompt(
     prompt
 }
 
+/// Format an input value for the activity prompt.
+///
+/// Scalar values are printed inline. JSON objects are smart-formatted: scalar
+/// fields first (always visible), then nested objects/arrays truncated if large.
+/// This ensures key data like `snippet`, `id`, `from` is never buried under
+/// massive nested structures (e.g. raw Gmail API responses with MIME/DKIM noise).
+const INPUT_VALUE_MAX_CHARS: usize = 4_000;
+
+fn format_input_value(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::String(s) => {
+            if s.len() <= INPUT_VALUE_MAX_CHARS {
+                s.clone()
+            } else {
+                format!(
+                    "{}\n\n... (truncated — {} total chars)",
+                    &s[..INPUT_VALUE_MAX_CHARS],
+                    s.len()
+                )
+            }
+        }
+        serde_json::Value::Object(map) => {
+            // Separate scalars from nested structures so key fields are always visible
+            let mut scalars = serde_json::Map::new();
+            let mut nested = serde_json::Map::new();
+            for (k, v) in map {
+                match v {
+                    serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+                        nested.insert(k.clone(), v.clone());
+                    }
+                    _ => {
+                        scalars.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            // Build: scalars always shown, nested truncated
+            let mut result = String::new();
+            if !scalars.is_empty() {
+                let scalar_obj = serde_json::Value::Object(scalars);
+                let pretty = serde_json::to_string_pretty(&scalar_obj)
+                    .unwrap_or_else(|_| scalar_obj.to_string());
+                result.push_str("```json\n");
+                result.push_str(&pretty);
+                result.push_str("\n```\n");
+            }
+            if !nested.is_empty() {
+                let nested_obj = serde_json::Value::Object(nested);
+                let pretty = serde_json::to_string_pretty(&nested_obj)
+                    .unwrap_or_else(|_| nested_obj.to_string());
+                if pretty.len() <= INPUT_VALUE_MAX_CHARS {
+                    result.push_str("```json\n");
+                    result.push_str(&pretty);
+                    result.push_str("\n```");
+                } else {
+                    result.push_str("```json\n");
+                    result.push_str(&pretty[..INPUT_VALUE_MAX_CHARS]);
+                    result.push_str("\n```\n");
+                    result.push_str(&format!(
+                        "... (nested data truncated — {} total chars)",
+                        pretty.len()
+                    ));
+                }
+            }
+            result
+        }
+        serde_json::Value::Array(_) => {
+            let pretty =
+                serde_json::to_string_pretty(val).unwrap_or_else(|_| val.to_string());
+            if pretty.len() <= INPUT_VALUE_MAX_CHARS {
+                format!("```json\n{}\n```", pretty)
+            } else {
+                format!(
+                    "```json\n{}\n```\n... (truncated — {} total chars)",
+                    &pretty[..INPUT_VALUE_MAX_CHARS],
+                    pretty.len()
+                )
+            }
+        }
+        other => other.to_string(),
+    }
+}
+
 /// Extract a normalized error pattern for circuit breaker comparison.
 ///
 /// Takes the first segment before `:`, lowercased, max 60 chars.
@@ -669,7 +974,9 @@ fn extract_error_pattern(err: &str) -> String {
     let pattern = seg.trim().to_lowercase();
     if pattern.len() > 60 {
         let mut end = 60;
-        while !pattern.is_char_boundary(end) { end -= 1; }
+        while !pattern.is_char_boundary(end) {
+            end -= 1;
+        }
         pattern[..end].to_string()
     } else {
         pattern
@@ -684,11 +991,7 @@ fn strip_mcp_prefix(name: &str) -> &str {
         return name;
     }
     let parts: Vec<&str> = name.splitn(3, "__").collect();
-    if parts.len() == 3 {
-        parts[2]
-    } else {
-        name
-    }
+    if parts.len() == 3 { parts[2] } else { name }
 }
 
 #[cfg(test)]

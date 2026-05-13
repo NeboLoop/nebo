@@ -2,8 +2,8 @@ use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use serde::Deserialize;
 
+use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
-use super::{to_error_response, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
@@ -22,7 +22,10 @@ pub async fn list_sessions(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    let sessions = state.store.list_sessions(q.limit, q.offset).map_err(to_error_response)?;
+    let sessions = state
+        .store
+        .list_sessions(q.limit, q.offset)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"sessions": sessions})))
 }
 
@@ -58,11 +61,17 @@ pub async fn get_session_messages(
         .unwrap_or(&id);
 
     let limit = q.limit.unwrap_or(50).min(200) as usize;
-    let all_messages = state.store.get_chat_messages(chat_id).map_err(to_error_response)?;
+    let all_messages = state
+        .store
+        .get_chat_messages(chat_id)
+        .map_err(to_error_response)?;
 
     if let Some(ref before_id) = q.before {
         // Find cursor position and return messages before it
-        let cursor_pos = all_messages.iter().position(|m| m.id == *before_id).unwrap_or(0);
+        let cursor_pos = all_messages
+            .iter()
+            .position(|m| m.id == *before_id)
+            .unwrap_or(0);
         let start = cursor_pos.saturating_sub(limit);
         let slice = &all_messages[start..cursor_pos];
         let has_more = start > 0;
@@ -90,9 +99,7 @@ pub struct SessionMessagesQuery {
 }
 
 /// GET /api/v1/agent/settings
-pub async fn get_settings(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn get_settings(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let settings = state.store.get_settings().map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"settings": settings})))
 }
@@ -122,9 +129,7 @@ pub async fn update_settings(
 }
 
 /// GET /api/v1/agent/profile
-pub async fn get_profile(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn get_profile(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     // Best-effort: ensure default profile row exists before reading
     let _ = state.store.ensure_agent_profile();
     let profile = state.store.get_agent_profile().map_err(to_error_response)?;
@@ -175,17 +180,19 @@ pub async fn update_profile(
 }
 
 /// GET /api/v1/agent/status
-pub async fn get_status(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn get_status(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let provider_count = state.runner.provider_count();
     let tool_names = state.tools.get_tool_names().await;
 
     // Get real task counts from the DB
-    let active_tasks = state.store.get_pending_tasks_by_status("in_progress")
+    let active_tasks = state
+        .store
+        .get_pending_tasks_by_status("in_progress")
         .map(|t| t.len())
         .unwrap_or(0);
-    let queued_tasks = state.store.get_pending_tasks_by_status("pending")
+    let queued_tasks = state
+        .store
+        .get_pending_tasks_by_status("pending")
         .map(|t| t.len())
         .unwrap_or(0);
 
@@ -298,7 +305,10 @@ pub async fn get_channel_messages(
 
     let messages = match session {
         Some(s) => {
-            let chat_id = s.name.as_deref().filter(|n| !n.is_empty())
+            let chat_id = s
+                .name
+                .as_deref()
+                .filter(|n| !n.is_empty())
                 .or(s.scope_id.as_deref())
                 .unwrap_or(&s.id);
             state.store.get_chat_messages(chat_id).unwrap_or_default()
@@ -315,9 +325,9 @@ pub async fn send_channel_message(
     Path(channel_id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    let content = body["content"]
-        .as_str()
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("content required".into())))?;
+    let content = body["content"].as_str().ok_or_else(|| {
+        to_error_response(types::NeboError::Validation("content required".into()))
+    })?;
 
     // Get or create session for channel
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -349,11 +359,10 @@ const LANE_DESCRIPTIONS: &[(&str, &str)] = &[
 ];
 
 /// GET /api/v1/agent/lanes
-pub async fn get_lanes(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn get_lanes(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let status = state.lanes.status();
-    let desc_map: std::collections::HashMap<&str, &str> = LANE_DESCRIPTIONS.iter().copied().collect();
+    let desc_map: std::collections::HashMap<&str, &str> =
+        LANE_DESCRIPTIONS.iter().copied().collect();
 
     let lanes: Vec<serde_json::Value> = status
         .iter()
@@ -373,9 +382,7 @@ pub async fn get_lanes(
 }
 
 /// GET /api/v1/agent/advisors
-pub async fn list_advisors(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn list_advisors(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let advisors = state.store.list_advisors().map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"advisors": advisors})))
 }
@@ -440,7 +447,10 @@ pub async fn update_advisor(
         )
         .map_err(to_error_response)?;
 
-    let updated = state.store.get_advisor_by_name(&name).map_err(to_error_response)?;
+    let updated = state
+        .store
+        .get_advisor_by_name(&name)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!(updated)))
 }
 
@@ -454,26 +464,33 @@ pub async fn delete_advisor(
         .get_advisor_by_name(&name)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
-    state.store.delete_advisor(advisor.id).map_err(to_error_response)?;
+    state
+        .store
+        .delete_advisor(advisor.id)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"success": true})))
 }
 
 /// GET /api/v1/agent/heartbeat
-pub async fn get_heartbeat(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn get_heartbeat(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let data_dir = config::data_dir().map_err(to_error_response)?;
     let path = data_dir.join("HEARTBEAT.md");
     let content = std::fs::read_to_string(&path).unwrap_or_default();
 
     // Resolve main heartbeat schedule
     let settings = state.store.get_settings().ok().flatten();
-    let interval_minutes = settings.as_ref().map(|s| s.heartbeat_interval_minutes).unwrap_or(0);
+    let interval_minutes = settings
+        .as_ref()
+        .map(|s| s.heartbeat_interval_minutes)
+        .unwrap_or(0);
     let enabled = interval_minutes > 0;
 
     let main_config = state.store.get_entity_config("main", "main").ok().flatten();
     let window = main_config.as_ref().and_then(|c| {
-        match (c.heartbeat_window_start.as_ref(), c.heartbeat_window_end.as_ref()) {
+        match (
+            c.heartbeat_window_start.as_ref(),
+            c.heartbeat_window_end.as_ref(),
+        ) {
             (Some(start), Some(end)) => Some(serde_json::json!({"start": start, "end": end})),
             _ => None,
         }
@@ -488,15 +505,20 @@ pub async fn get_heartbeat(
         .filter_map(|job| {
             let normalized = tools::PersonaTool::normalize_cron(&job.schedule);
             let schedule: cron::Schedule = normalized.parse().ok()?;
-            let last_run_ts = job.last_run.as_deref()
-                .and_then(|s| s.parse::<i64>().ok()
-                    .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()
-                        .map(|dt| dt.and_utc().timestamp())))
+            let last_run_ts = job
+                .last_run
+                .as_deref()
+                .and_then(|s| {
+                    s.parse::<i64>().ok().or_else(|| {
+                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                            .ok()
+                            .map(|dt| dt.and_utc().timestamp())
+                    })
+                })
                 .unwrap_or(0);
             let last_run = chrono::DateTime::from_timestamp(last_run_ts, 0)
                 .unwrap_or(chrono::DateTime::UNIX_EPOCH);
-            let next_run = schedule.after(&last_run).next()
-                .map(|t| t.to_rfc3339());
+            let next_run = schedule.after(&last_run).next().map(|t| t.to_rfc3339());
             Some(serde_json::json!({
                 "name": job.name,
                 "schedule": job.schedule,
@@ -538,9 +560,7 @@ pub async fn update_check() -> HandlerResult<serde_json::Value> {
 }
 
 /// POST /api/v1/update/apply
-pub async fn update_apply(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn update_apply(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     // Try to use a staged binary first (already downloaded + verified)
     let pending = state.update_pending.lock().await.take();
 
@@ -572,7 +592,8 @@ pub async fn update_apply(
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(60),
             tokio::task::spawn_blocking(move || updater::apply_update(&binary_path)),
-        ).await;
+        )
+        .await;
 
         match result {
             Ok(Ok(Ok(()))) => {
@@ -581,21 +602,30 @@ pub async fn update_apply(
             }
             Ok(Ok(Err(e))) => {
                 tracing::error!("update apply failed: {}", e);
-                hub.broadcast("update_error", serde_json::json!({
-                    "error": e.to_string(),
-                }));
+                hub.broadcast(
+                    "update_error",
+                    serde_json::json!({
+                        "error": e.to_string(),
+                    }),
+                );
             }
             Ok(Err(e)) => {
                 tracing::error!("update apply panicked: {}", e);
-                hub.broadcast("update_error", serde_json::json!({
-                    "error": format!("apply task panicked: {}", e),
-                }));
+                hub.broadcast(
+                    "update_error",
+                    serde_json::json!({
+                        "error": format!("apply task panicked: {}", e),
+                    }),
+                );
             }
             Err(_) => {
                 tracing::error!("update apply timed out after 60s");
-                hub.broadcast("update_error", serde_json::json!({
-                    "error": "Update timed out. Please restart Nebo manually.",
-                }));
+                hub.broadcast(
+                    "update_error",
+                    serde_json::json!({
+                        "error": "Update timed out. Please restart Nebo manually.",
+                    }),
+                );
             }
         }
     });

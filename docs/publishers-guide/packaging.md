@@ -6,6 +6,7 @@ For artifact-specific specs, see:
 
 - [Skills](skills.md)
 - [Plugins](plugins.md)
+- [Apps](apps.md)
 - [Platform Capabilities](platform-capabilities.md)
 - [Workflows](workflows.md)
 - [Agents](agents.md)
@@ -14,21 +15,24 @@ For artifact-specific specs, see:
 ## Hierarchy
 
 ```
-AGENT  >  WORK  >  SKILL
-(job)   (procedure) (knowledge + actions)
+APP  >  AGENT  >  WORK  >  SKILL
+(UI)   (job)   (procedure) (knowledge + actions)
 ```
 
-This is the **design direction** — the order in which you think about building. Start with knowledge and actions (Skill), chain those into procedures (Workflow), then compose procedures into a job (Agent). The `>` represents conceptual priority, not a runtime dependency.
+This is the **design direction** — the order in which you think about building. Start with knowledge and actions (Skill), chain those into procedures (Workflow), compose procedures into a job (Agent), and add a dedicated UI when chat isn't enough (App). The `>` represents conceptual priority, not a runtime dependency.
 
 Each layer auto-installs its dependencies downward:
 
+- **App** → an Agent with a frontend UI and optional sidecar binary
 - **Agent** → installs Workflows and Skills declared in `agent.json`
 - **Workflow** → installs Skills declared in `workflow.json` dependencies
 - **Skill** → leaf node. No dependencies to auto-install.
 
+**Plugins** are shared native binaries that bundle skills and provide platform capabilities (Google Workspace CLI, browser automation, etc.). They sit alongside the hierarchy — skills and agents declare which plugins they need.
+
 **Platform Capabilities** (storage, network, vision, calendar, email, browser) are provided by Nebo itself — they are infrastructure, not marketplace artifacts. Skills declare which capabilities they need; the platform provides them. See [Platform Capabilities](platform-capabilities.md).
 
-**Design direction:** Start with what the agent needs to *know* and *do* (Skill), chain skills into repeatable procedures (Workflow), and compose procedures into a job (Agent). Skills are the universal unit — a folder with a SKILL.md file, optionally bundling scripts, reference docs, and assets. This is the same format used by the broader Agent Skills ecosystem (agentskills.io), so skills from Anthropic, OpenAI, OpenClaw, and other compatible platforms work in Nebo without modification.
+**Design direction:** Start with what the agent needs to *know* and *do* (Skill), chain skills into repeatable procedures (Workflow), compose procedures into a job (Agent), and wrap in a dedicated UI if chat output isn't enough (App). Skills are the universal unit — a folder with a SKILL.md file, optionally bundling scripts, reference docs, and assets. This is the same format used by the broader Agent Skills ecosystem (agentskills.io), so skills from Anthropic, OpenAI, OpenClaw, and other compatible platforms work in Nebo without modification.
 
 ---
 
@@ -54,7 +58,7 @@ Read left to right: who published it, what kind of artifact it is, what it's cal
 | Segment | Description | Rules |
 |---------|-------------|-------|
 | `@org` | Publisher org (scoped) | Lowercase, alphanumeric + hyphens |
-| `type` | Artifact type | `skills`, `workflows`, `agents` |
+| `type` | Artifact type | `skills`, `workflows`, `agents` (apps use `agents` with `artifact_type: "app"`) |
 | `name` | Artifact name | Lowercase, alphanumeric + hyphens |
 | `@version` | Semver version (optional) | Omit for latest; supports semver ranges |
 
@@ -120,6 +124,54 @@ Skills from Anthropic, OpenAI, OpenClaw, and other Agent Skills-compatible platf
 
 **User/development path:** During development, place a skill directory directly in `user/skills/` and iterate. Hot-reload picks up changes with a 1-second debounce.
 
+### Apps — Agent + Frontend UI
+
+Apps are agents with their own UI. They use the `agents` qualified name type with `artifact_type: "app"` in their manifest. An app is a **directory** containing an `AGENT.md`, a `manifest.json`, and a `ui/` subdirectory with the frontend.
+
+```
+my-app/
+├── AGENT.md              # Required — persona + instructions
+├── manifest.json         # Required — identity, permissions, window config
+├── agent.json            # Optional — workflows, skills, pricing
+├── ui/                   # Required — static frontend
+│   ├── index.html
+│   ├── style.css
+│   └── app.js
+├── sidecar/              # Optional — native backend binary
+└── views.json            # Optional — A2UI view definitions
+```
+
+The `manifest.json` extends the standard agent manifest with app-specific fields:
+
+```json
+{
+  "id": "deal-tracker",
+  "name": "@acme/agents/deal-tracker",
+  "version": "1.0.0",
+  "description": "Track real estate deals with AI-powered analysis.",
+  "artifact_type": "app",
+  "permissions": ["storage:readwrite", "subagent:invoke", "network:outbound"],
+  "window": {
+    "title": "Deal Tracker",
+    "width": 1024,
+    "height": 768,
+    "resizable": true
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `artifact_type` | Must be `"app"` — this is what distinguishes apps from regular agents |
+| `permissions` | Capabilities the app requires (storage, network, subagent, etc.) |
+| `window` | Default window dimensions and title for the desktop app |
+
+Apps use the `@neboai/app-sdk` for storage, agent invocation, identity, embedded chat, and direct LLM calls. See [Apps](apps.md) for the full spec.
+
+**User/development path:** Place app directories in `~/.nebo/user/agents/` and iterate. Hot-reload picks up changes.
+
+**Marketplace distribution:** Apps are packaged as sealed `.napp` archives like agents. The `ui/` directory contents are included in the archive (max 5MB per file).
+
 ### Workflows and Agents — .napp Archive
 
 Workflows and agents are distributed as `.napp` files — signed `tar.gz` archives.
@@ -134,6 +186,7 @@ Workflows and agents are distributed as `.napp` files — signed `tar.gz` archiv
   → manifest.json
   → agent.json
   → AGENT.md
+  → views.json          # Optional — deterministic workspace UI
 ```
 
 ### Sealed Archives
@@ -145,6 +198,7 @@ For workflows and agents, the `.napp` is **never extracted**. Nebo reads files d
 | Skill | Directory on disk (marketplace: sealed `.napp`) | Frontmatter is source of truth; marketplace archives are signed |
 | Workflow | `.napp` sealed | Archive is the signed artifact — continuous integrity |
 | Agent | `.napp` sealed | Archive is the signed artifact — continuous integrity |
+| App | Directory (dev) / `.napp` sealed (marketplace) | Same as agent — includes `ui/` directory contents |
 
 ### Versioned Storage
 
@@ -177,6 +231,13 @@ user/                                    # User-created (dev/sideload path)
     my-agent/
       agent.json
       AGENT.md
+      views.json         # Optional — deterministic workspace UI
+    my-app/              # Apps live alongside agents
+      manifest.json      #   artifact_type: "app"
+      AGENT.md
+      ui/                #   Static frontend
+        index.html
+      sidecar/           #   Optional native binary
 ```
 
 **Marketplace artifacts** (`nebo/`) are sealed `.napp` files. Signed, versioned, read from archive at runtime.
@@ -202,13 +263,13 @@ Nebo reads `.napp` entries by name at runtime using a thin reader:
 fn read_napp_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>>
 ```
 
-The skill loader reads `SKILL.md` from marketplace archives. The workflow engine calls `read_napp_entry(path, "workflow.json")`. The agent loader calls `read_napp_entry(path, "agent.json")` and `read_napp_entry(path, "AGENT.md")`. One function, used everywhere.
+The skill loader reads `SKILL.md` from marketplace archives. The workflow engine calls `read_napp_entry(path, "workflow.json")`. The agent loader calls `read_napp_entry(path, "agent.json")`, `read_napp_entry(path, "AGENT.md")`, and optionally `read_napp_entry(path, "views.json")`. One function, used everywhere.
 
 ---
 
-## manifest.json — Workflows and Agents Only
+## manifest.json — Workflows, Agents, and Apps
 
-Workflows and agents ship a `manifest.json` as their marketplace identity envelope. **Skills do not use manifest.json** — their identity comes from SKILL.md frontmatter.
+Workflows, agents, and apps ship a `manifest.json` as their marketplace identity envelope. **Skills do not use manifest.json** — their identity comes from SKILL.md frontmatter.
 
 ```json
 {
@@ -233,6 +294,14 @@ Workflows and agents ship a `manifest.json` as their marketplace identity envelo
 | `signature` | object | no | — | ED25519 signing metadata |
 
 The `name` field is the canonical identifier. The org, type, and artifact name are all parsed from it. There is no separate `id`, `type`, or `author` field — the qualified name carries all of that.
+
+**App manifests** add these fields on top of the standard manifest:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `artifact_type` | string | Must be `"app"` to mark this agent as an app |
+| `permissions` | string[] | Required capabilities (`storage:readwrite`, `network:outbound`, etc.) |
+| `window` | object | Default window config (`title`, `width`, `height`, `min_width`, `min_height`, `resizable`) |
 
 > **Install codes** are not part of the package. They are assigned by NeboLoop when the manifest is submitted and are stored server-side as an alias that resolves to the qualified name. The publisher never sets the code — they submit their package and NeboLoop assigns one.
 
@@ -266,7 +335,8 @@ Each artifact type has a clear split between identity, domain logic, and prose:
 
 - **Skills** — `SKILL.md` frontmatter (identity + runtime config) + body (knowledge) + optional bundled resources (scripts, references, assets). No manifest.json. Frontmatter is the source of truth. Compatible with the Agent Skills standard.
 - **Workflows** — `manifest.json` (marketplace identity) + `workflow.json` (procedure definition) + `WORKFLOW.md` (agent docs). Marketplace identity lives in the manifest; the workflow.json carries its own `id` for the local engine (REST API, run records, the `work` tool). Sealed archive.
-- **Agents** — `manifest.json` (marketplace identity) + `agent.json` (event bindings, pricing, defaults) + `AGENT.md` (persona prose). Sealed archive.
+- **Agents** — `manifest.json` (marketplace identity) + `agent.json` (event bindings, pricing, defaults) + `AGENT.md` (persona prose) + optional `views.json` (deterministic workspace UI). Sealed archive.
+- **Apps** — everything an Agent has + `artifact_type: "app"` in manifest + `ui/` directory (static frontend) + optional sidecar binary. The `manifest.json` adds `permissions` and `window` config. Apps use the `@neboai/app-sdk` for storage, agent invocation, identity, embedded chat, and direct LLM calls.
 
 ---
 

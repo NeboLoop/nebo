@@ -91,7 +91,13 @@ impl McpStdioBridge {
     async fn health_check(&self) -> bool {
         let url = format!("{}/health", self.server_url);
         for attempt in 1..=3 {
-            match self.http.get(&url).timeout(Duration::from_secs(5)).send().await {
+            match self
+                .http
+                .get(&url)
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+            {
                 Ok(resp) if resp.status().is_success() => return true,
                 Ok(resp) => {
                     eprintln!(
@@ -101,10 +107,7 @@ impl McpStdioBridge {
                     );
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[nebo-mcp] health check attempt {}/3: {}",
-                        attempt, e
-                    );
+                    eprintln!("[nebo-mcp] health check attempt {}/3: {}", attempt, e);
                 }
             }
             if attempt < 3 {
@@ -126,7 +129,11 @@ impl McpStdioBridge {
             .await
         {
             Ok(resp) => resp.text().await.unwrap_or_else(|e| {
-                make_error_response(extract_request_id(json_line), -32603, &format!("read response: {e}"))
+                make_error_response(
+                    extract_request_id(json_line),
+                    -32603,
+                    &format!("read response: {e}"),
+                )
             }),
             Err(e) => make_error_response(
                 extract_request_id(json_line),
@@ -196,7 +203,9 @@ fn make_error_response(id: Option<serde_json::Value>, code: i32, message: &str) 
             "message": message,
         }
     }))
-    .unwrap_or_else(|_| r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"}}"#.to_string())
+    .unwrap_or_else(|_| {
+        r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"}}"#.to_string()
+    })
 }
 
 /// Target applications for MCP config generation.
@@ -228,7 +237,9 @@ pub fn print_config(target: &ConfigTarget) {
     match target {
         ConfigTarget::ClaudeDesktop => {
             eprintln!();
-            eprintln!("Add the above to ~/Library/Application Support/Claude/claude_desktop_config.json");
+            eprintln!(
+                "Add the above to ~/Library/Application Support/Claude/claude_desktop_config.json"
+            );
         }
         ConfigTarget::Cursor => {
             eprintln!();

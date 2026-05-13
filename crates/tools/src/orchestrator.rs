@@ -19,6 +19,8 @@ pub struct SpawnRequest {
     /// Parent's cancellation token — sub-agents derive a child token from this
     /// so that cancelling the parent cascades to all children.
     pub parent_cancel: Option<CancellationToken>,
+    /// Maximum agentic loop iterations for this sub-agent (0 = default 100).
+    pub max_iterations: usize,
 }
 
 /// Result from a sub-agent or DAG execution.

@@ -2,8 +2,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{State, WebSocketUpgrade};
-use axum::response::Response;
+use axum::extract::{Path, State, WebSocketUpgrade};
+use axum::response::{IntoResponse, Response};
+use futures::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -48,12 +49,186 @@ impl ClientHub {
 }
 
 /// GET /ws — Main client WebSocket endpoint.
-pub async fn client_ws_handler(
+pub async fn client_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    info!("ws upgrade request received");
+    ws.on_upgrade(move |socket| handle_client_ws(socket, state))
+}
+
+/// GET /ws/app/{agent_id} — App frontend WebSocket endpoint.
+pub async fn app_ws_handler(
+    Path(agent_id): Path<String>,
     State(state): State<AppState>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    info!("ws upgrade request received");
-    ws.on_upgrade(move |socket| handle_client_ws(socket, state))
+    match state.store.get_agent(&agent_id) {
+        Ok(Some(agent)) if agent.is_app.unwrap_or(0) != 0 => {
+            ws.on_upgrade(move |socket| handle_app_ws(socket, agent_id, state))
+        }
+        Ok(_) | Err(_) => axum::http::StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn handle_app_ws(socket: WebSocket, agent_id: String, state: AppState) {
+    info!(agent = %agent_id, "app ws client connected");
+    let mut hub_rx = state.hub.subscribe();
+    let (mut sender, mut receiver) = socket.split();
+
+    let welcome = serde_json::json!({
+        "type": "connected",
+        "data": { "agentId": agent_id },
+    });
+    if sender
+        .send(Message::Text(
+            serde_json::to_string(&welcome).unwrap().into(),
+        ))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            result = hub_rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        let msg = serde_json::json!({
+                            "type": event.event_type,
+                            "data": event.payload,
+                        });
+                        if sender
+                            .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(agent = %agent_id, lagged = n, "app ws client lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            Some(msg) = receiver.next() => {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        handle_app_ws_message(&state, &agent_id, &text).await;
+                    }
+                    Ok(Message::Ping(data)) => {
+                        if sender.send(Message::Pong(data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Message::Close(frame)) => {
+                        debug!(agent = %agent_id, ?frame, "app ws close");
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(agent = %agent_id, error = %e, "app ws error");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            else => break,
+        }
+    }
+    info!(agent = %agent_id, "app ws client disconnected");
+}
+
+async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
+    let parsed = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(v) => v,
+        Err(e) => {
+            debug!(agent = %agent_id, error = %e, "invalid app ws json");
+            return;
+        }
+    };
+    let msg_type = parsed["type"].as_str().unwrap_or("");
+    match msg_type {
+        "a2ui_action" => {
+            let data = &parsed["data"];
+            let surface_id = data["surfaceId"]
+                .as_str()
+                .or_else(|| data["surface_id"].as_str())
+                .or_else(|| data["message"]["action"]["surfaceId"].as_str())
+                .unwrap_or("")
+                .to_string();
+            let action = data["name"]
+                .as_str()
+                .or_else(|| data["message"]["action"]["name"].as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let component_id = data["sourceComponentId"]
+                .as_str()
+                .or_else(|| data["message"]["action"]["sourceComponentId"].as_str())
+                .unwrap_or("")
+                .to_string();
+            let context = data
+                .get("context")
+                .cloned()
+                .or_else(|| {
+                    data.get("message")
+                        .and_then(|m| m.get("action"))
+                        .and_then(|a| a.get("context"))
+                        .cloned()
+                })
+                .unwrap_or(serde_json::Value::Null);
+
+            if surface_id.is_empty() {
+                debug!(agent = %agent_id, "a2ui_action missing surface id");
+                return;
+            }
+
+            let state_clone = state.clone();
+            let agent_id = agent_id.to_string();
+            tokio::spawn(async move {
+                let views_json =
+                    crate::handlers::agents::get_agent_views(&state_clone, &agent_id).await;
+                let handled = crate::a2ui_actions::dispatch(
+                    &state_clone,
+                    &state_clone.a2ui,
+                    &agent_id,
+                    &surface_id,
+                    &action,
+                    &component_id,
+                    &context,
+                    views_json.as_ref(),
+                )
+                .await;
+
+                if !handled {
+                    state_clone.hub.broadcast(
+                        "app_action",
+                        serde_json::json!({
+                            "agentId": agent_id,
+                            "surfaceId": surface_id,
+                            "name": action,
+                            "sourceComponentId": component_id,
+                            "context": context,
+                        }),
+                    );
+                }
+            });
+        }
+        "action" => {
+            state.hub.broadcast(
+                "app_action",
+                serde_json::json!({
+                    "agentId": agent_id,
+                    "name": parsed["name"].clone(),
+                    "data": parsed,
+                }),
+            );
+        }
+        "ping" => {
+            state
+                .hub
+                .broadcast("app_ping", serde_json::json!({ "agentId": agent_id }));
+        }
+        _ => debug!(agent = %agent_id, msg_type, "unhandled app ws message"),
+    }
 }
 
 async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
@@ -63,6 +238,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
 
     // Spawn periodic cleanup of stale runs in the global registry (10 min expiry).
     let cleanup_registry = state.run_registry.clone();
+    let cleanup_bridge = state.extension_bridge.clone();
     let cleanup_token = CancellationToken::new();
     let cleanup_token_clone = cleanup_token.clone();
     tokio::spawn(async move {
@@ -71,9 +247,13 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
             tokio::select! {
                 _ = cleanup_token_clone.cancelled() => break,
                 _ = interval.tick() => {
-                    let cleaned = cleanup_registry.cleanup_stale(600).await;
-                    if cleaned > 0 {
-                        warn!(cleaned, "expired stale runs from global registry");
+                    let stale_sessions = cleanup_registry.cleanup_stale(600).await;
+                    if !stale_sessions.is_empty() {
+                        warn!(cleaned = stale_sessions.len(), "expired stale runs from global registry");
+                        // Clean up browser tab groups for expired sessions
+                        for sk in &stale_sessions {
+                            cleanup_bridge.send_command("hide_indicators", Some(sk)).await;
+                        }
                     }
                 }
             }
@@ -461,6 +641,229 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         let _ = tx.send(value);
                                     }
                                 }
+                                // A2UI: user action on a surface component — dispatch deterministically or route to agent
+                                "a2ui_action" => {
+                                    let data = &parsed["data"];
+                                    // ActionListener sends camelCase; try both forms
+                                    let surface_id = data["surfaceId"].as_str()
+                                        .or_else(|| data["surface_id"].as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let action_name = data["name"].as_str()
+                                        .unwrap_or("unknown")
+                                        .to_string();
+                                    let component_id = data["sourceComponentId"].as_str()
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let context = data["context"].clone();
+
+                                    if surface_id.is_empty() {
+                                        debug!("a2ui_action: missing surface_id, ignoring");
+                                        continue;
+                                    }
+
+                                    // Parse agent_id from surface_id "agent:{id}:{view}"
+                                    let parts: Vec<&str> = surface_id.split(':').collect();
+                                    let agent_id = if parts.len() >= 2 { parts[1].to_string() } else { String::new() };
+
+                                    if agent_id.is_empty() {
+                                        debug!("a2ui_action: could not extract agent_id from {}", surface_id);
+                                        continue;
+                                    }
+
+                                    debug!(surface_id = %surface_id, action = %action_name, component = %component_id, "a2ui_action received");
+
+                                    let state_clone = state.clone();
+                                    tokio::spawn(async move {
+                                        // Look up views.json for action bindings
+                                        let views_json = crate::handlers::agents::get_agent_views(&state_clone, &agent_id).await;
+
+                                        // Try deterministic dispatch first
+                                        let handled = crate::a2ui_actions::dispatch(
+                                            &state_clone,
+                                            &state_clone.a2ui,
+                                            &agent_id,
+                                            &surface_id,
+                                            &action_name,
+                                            &component_id,
+                                            &context,
+                                            views_json.as_ref(),
+                                        ).await;
+
+                                        if handled {
+                                            debug!(action = %action_name, "a2ui_action handled deterministically");
+                                            return;
+                                        }
+
+                                        // State-driven dedup: if this action is already being
+                                        // processed (e.g., user double-clicked before UI updated),
+                                        // reject the duplicate. Broadcasts "processing" status to
+                                        // frontend so the button can show a loading state.
+                                        if !state_clone.a2ui.try_begin_action(&surface_id, &action_name).await {
+                                            debug!(action = %action_name, surface = %surface_id, "a2ui_action already in progress, skipping");
+                                            return;
+                                        }
+
+                                        // Fall through to LLM: build ChatConfig and run_chat
+                                        let session_key = agent::keyparser::build_agent_session_key(&agent_id, "web");
+
+                                        let prompt = if context.is_null() || context == serde_json::json!({}) {
+                                            format!(
+                                                "[Workspace interaction] The user clicked the \"{}\" button (component: {}) in your workspace.",
+                                                action_name, component_id
+                                            )
+                                        } else {
+                                            format!(
+                                                "[Workspace interaction] The user triggered the \"{}\" action (component: {}) in your workspace. Context: {}",
+                                                action_name, component_id, context
+                                            )
+                                        };
+
+                                        let entity_config = crate::entity_config::resolve_for_chat(
+                                            &state_clone.store, "agent", &agent_id
+                                        );
+
+                                        let config = ChatConfig {
+                                            session_key,
+                                            prompt,
+                                            system: String::new(),
+                                            user_id: String::new(),
+                                            channel: "web".to_string(),
+                                            origin: Origin::User,
+                                            agent_id: agent_id.clone(),
+                                            cancel_token: CancellationToken::new(),
+                                            lane: types::constants::lanes::EVENTS.to_string(),
+                                            comm_reply: None,
+                                            entity_config,
+                                            images: vec![],
+                                            entity_name: String::new(),
+                                            origin_agent_id: None,
+                                            mention_context: None,
+                                        };
+
+                                        run_chat(&state_clone, config).await;
+
+                                        // Action complete — re-enable the button
+                                        state_clone.a2ui.end_action(&surface_id, &action_name).await;
+                                    });
+                                }
+                                // A2UI: auto-init default view when agent is selected
+                                "a2ui_init" => {
+                                    let agent_id = parsed["data"]["agentId"].as_str()
+                                        .or_else(|| parsed["data"]["agent_id"].as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+
+                                    if agent_id.is_empty() {
+                                        debug!("a2ui_init: missing agent_id");
+                                        continue;
+                                    }
+
+                                    let a2ui = state.a2ui.clone();
+                                    let state_clone = state.clone();
+                                    tokio::spawn(async move {
+                                        // If surfaces already exist for this agent, replay them
+                                        // (handles reconnects and pop-out windows)
+                                        let replay = a2ui.get_agent_replay_messages(&agent_id).await;
+                                        if !replay.is_empty() {
+                                            debug!(agent_id = %agent_id, count = replay.len(), "a2ui_init: replaying existing surfaces");
+                                            for msg in replay {
+                                                state_clone.hub.broadcast("a2ui_message", msg);
+                                            }
+                                            return;
+                                        }
+
+                                        let views = crate::handlers::agents::get_agent_views(&state_clone, &agent_id).await;
+                                        if let Some(views) = views {
+                                            // Find the default view: prefer "default" key, then
+                                            // first _nav item's viewId, then first non-underscore key
+                                            let default_key = if views.get("default").is_some() {
+                                                "default".to_string()
+                                            } else if let Some(nav) = views.get("_nav").and_then(|n| n.as_array()) {
+                                                nav.first()
+                                                    .and_then(|item| item["viewId"].as_str())
+                                                    .unwrap_or("default")
+                                                    .to_string()
+                                            } else {
+                                                views.as_object()
+                                                    .and_then(|m| m.keys().find(|k| !k.starts_with('_')).cloned())
+                                                    .unwrap_or_else(|| "default".to_string())
+                                            };
+                                            if let Err(e) = a2ui.navigate_view(
+                                                &agent_id, "__none__", &default_key, None, &views,
+                                            ).await {
+                                                warn!(error = %e, "a2ui_init failed");
+                                            }
+                                        } else {
+                                            debug!(agent_id = %agent_id, "a2ui_init: no views.json found");
+                                        }
+                                    });
+                                }
+                                // A2UI: navigate to a different view
+                                "a2ui_navigate" => {
+                                    let data = &parsed["data"];
+                                    let surface_id = data["surfaceId"].as_str()
+                                        .or_else(|| data["surface_id"].as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let target_view = data["targetView"].as_str()
+                                        .or_else(|| data["target_view"].as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let params = if data["params"].is_null() {
+                                        None
+                                    } else {
+                                        Some(data["params"].clone())
+                                    };
+
+                                    if surface_id.is_empty() || target_view.is_empty() {
+                                        debug!("a2ui_navigate: missing surface_id or targetView");
+                                        continue;
+                                    }
+
+                                    // Parse agent_id and current view from surface_id "agent:{id}:{view}"
+                                    let parts: Vec<&str> = surface_id.split(':').collect();
+                                    let agent_id = if parts.len() >= 2 { parts[1].to_string() } else { String::new() };
+                                    let from_view = if parts.len() >= 3 { parts[2].to_string() } else { "default".to_string() };
+
+                                    if agent_id.is_empty() {
+                                        debug!("a2ui_navigate: could not extract agent_id from {}", surface_id);
+                                        continue;
+                                    }
+
+                                    let a2ui = state.a2ui.clone();
+                                    let state_clone = state.clone();
+                                    tokio::spawn(async move {
+                                        // Look up views.json from agent filesystem
+                                        let views = crate::handlers::agents::get_agent_views(&state_clone, &agent_id).await;
+                                        if let Some(views) = views {
+                                            if let Err(e) = a2ui.navigate_view(
+                                                &agent_id, &from_view, &target_view, params, &views,
+                                            ).await {
+                                                warn!(error = %e, "a2ui_navigate failed");
+                                            }
+                                        } else {
+                                            warn!(agent_id = %agent_id, "a2ui_navigate: no views.json found");
+                                        }
+                                    });
+                                }
+                                // A2UI: user closed a surface panel
+                                "a2ui_close" => {
+                                    let surface_id = parsed["data"]["surfaceId"]
+                                        .as_str()
+                                        .or_else(|| parsed["data"]["surface_id"].as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    if !surface_id.is_empty() {
+                                        debug!(surface_id = %surface_id, "a2ui_close: deleting surface");
+                                        let a2ui = state.a2ui.clone();
+                                        tokio::spawn(async move {
+                                            if let Err(e) = a2ui.delete_surface(&surface_id).await {
+                                                warn!(error = %e, "failed to delete a2ui surface on close");
+                                            }
+                                        });
+                                    }
+                                }
                                 _ => {
                                     debug!("unhandled ws message type: {}", msg_type);
                                 }
@@ -518,8 +921,7 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
                     Some("tiff") => "image/tiff",
                     _ => "image/png",
                 };
-                let data =
-                    base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 images.push(ai::ImageContent {
                     media_type: media_type.to_string(),
                     data,
@@ -576,10 +978,7 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
 /// Dispatch a chat message to the agent runner via the unified chat pipeline.
 async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     let data = &msg["data"];
-    let session_id = data["session_id"]
-        .as_str()
-        .unwrap_or("default")
-        .to_string();
+    let session_id = data["session_id"].as_str().unwrap_or("default").to_string();
     let prompt = data["prompt"].as_str().unwrap_or("").to_string();
     let system = data["system"].as_str().unwrap_or("").to_string();
     let user_id = data["user_id"].as_str().unwrap_or("").to_string();
@@ -594,15 +993,42 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     );
 
     // Send ACK immediately so the client knows the message was received
-    state.hub.broadcast("chat_ack", serde_json::json!({
-        "session_id": &session_id,
-        "status": "accepted",
-    }));
+    state.hub.broadcast(
+        "chat_ack",
+        serde_json::json!({
+            "session_id": &session_id,
+            "status": "accepted",
+        }),
+    );
 
     // Intercept marketplace codes before they reach the agent
     if let Some((code_type, code)) = crate::codes::detect_code(&prompt) {
         crate::codes::handle_code(state, code_type, code, &session_id).await;
         return;
+    }
+
+    // Intercept plugin slash commands (e.g., "/gmail triage")
+    if prompt.starts_with('/') {
+        if let Some(result) =
+            crate::plugin_commands::try_dispatch(state, &prompt, &session_id).await
+        {
+            // Stream the plugin output as a chat response
+            state.hub.broadcast(
+                "chat_stream",
+                serde_json::json!({
+                    "session_id": &session_id,
+                    "content": &result,
+                }),
+            );
+            state.hub.broadcast(
+                "chat_complete",
+                serde_json::json!({
+                    "session_id": &session_id,
+                }),
+            );
+            return;
+        }
+        // Not a plugin command — fall through to normal agent processing
     }
 
     // Extract images from file paths in the prompt (drag/drop, paste)
@@ -618,6 +1044,44 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             serde_json::json!({"error": "empty prompt", "session_id": session_id}),
         );
         return;
+    }
+
+    // Auto-activate paused agents so their persona is loaded into the prompt.
+    // Without this, a paused agent's chat works but has no personality.
+    if !agent_id.is_empty() {
+        let needs_activation = !state.agent_registry.read().await.contains_key(&agent_id);
+        if needs_activation {
+            if let Ok(Some(agent)) = state.store.get_agent(&agent_id) {
+                let config = if !agent.frontmatter.is_empty() {
+                    napp::agent::parse_agent_config(&agent.frontmatter).ok()
+                } else {
+                    None
+                };
+                let active = tools::ActiveAgent {
+                    agent_id: agent.id.clone(),
+                    name: agent.name.clone(),
+                    agent_md: agent.agent_md.clone(),
+                    config,
+                    channel_id: None,
+                    degraded: None,
+                };
+                state
+                    .agent_registry
+                    .write()
+                    .await
+                    .insert(agent.id.clone(), active);
+                state.store.set_agent_enabled(&agent_id, true).ok();
+                state
+                    .agent_workers
+                    .start_agent(&agent_id, &agent.name, None)
+                    .await;
+                state.hub.broadcast(
+                    "agent_activated",
+                    serde_json::json!({ "agentId": &agent_id, "name": &agent.name }),
+                );
+                info!(agent_id = %agent_id, name = %agent.name, "auto-activated paused agent for chat");
+            }
+        }
     }
 
     // If agent_id is set, build an agent-scoped session key for isolation
@@ -646,7 +1110,9 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             // Custom agent: look up by slug
             let slug = {
                 let registry = state.agent_registry.read().await;
-                registry.get(&agent_id).map(|r| r.name.to_lowercase().replace(' ', "-"))
+                registry
+                    .get(&agent_id)
+                    .map(|r| r.name.to_lowercase().replace(' ', "-"))
             };
             if let Some(slug) = slug {
                 state.comm_manager.agent_space_conv_for_slug(&slug).await
@@ -657,7 +1123,10 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             // Companion (default bot): look up by bot_* slug
             if let Some(bot_id) = config::read_bot_id() {
                 let bot_slug = format!("bot_{}", &bot_id[..bot_id.len().min(12)]);
-                state.comm_manager.agent_space_conv_for_slug(&bot_slug).await
+                state
+                    .comm_manager
+                    .agent_space_conv_for_slug(&bot_slug)
+                    .await
             } else {
                 None
             }
@@ -698,30 +1167,263 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         }
     }
 
+    // Parse @mentions BEFORE primary chat so we can give the primary agent awareness
+    let mentioned = parse_mention_tokens(&prompt, &agent_id);
+
+    // Build routing context for the primary agent (injected as invisible system message)
+    let mention_context = if !mentioned.is_empty() {
+        let mut names: Vec<String> = Vec::new();
+        for mid in &mentioned {
+            let name = state
+                .store
+                .get_agent(mid)
+                .ok()
+                .flatten()
+                .map(|a| a.name)
+                .unwrap_or_else(|| mid.clone());
+            names.push(format!("@{}", name));
+        }
+        let roster = names.join(", ");
+        Some(format!(
+            "{} {} been @mentioned and will respond separately in this thread. \
+            Do not answer on their behalf — focus on your own response to the user.",
+            roster,
+            if names.len() == 1 { "has" } else { "have" },
+        ))
+    } else {
+        None
+    };
+
     let config = ChatConfig {
         session_key,
-        prompt,
+        prompt: prompt.clone(),
         system,
-        user_id,
-        channel,
+        user_id: user_id.clone(),
+        channel: channel.clone(),
         origin: Origin::User,
-        agent_id,
+        agent_id: agent_id.clone(),
         cancel_token: CancellationToken::new(),
         lane: lanes::MAIN.to_string(),
         comm_reply,
         entity_config,
         images,
         entity_name: String::new(), // resolved from agent_registry in run_chat
+        origin_agent_id: None,
+        mention_context,
     };
 
     run_chat(state, config).await;
+
+    // Fork async chats to each @mentioned agent
+    if !mentioned.is_empty() {
+        let state = state.clone();
+        tokio::spawn(async move {
+            for mid in mentioned {
+                fork_mention_chat(&state, &mid, &prompt, &user_id, &channel, &agent_id).await;
+            }
+        });
+    }
+}
+
+/// Extract unique agent IDs from `<@agent-id>` tokens in the prompt.
+/// Deduplicates and excludes `exclude_agent_id` (the primary agent).
+fn parse_mention_tokens(prompt: &str, exclude_agent_id: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut ids = Vec::new();
+    let bytes = prompt.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'<' && bytes[i + 1] == b'@' {
+            let start = i + 2;
+            if let Some(end) = prompt[start..].find('>') {
+                let id = &prompt[start..start + end];
+                if !id.is_empty()
+                    && id != exclude_agent_id
+                    && id
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
+                    && seen.insert(id.to_string())
+                {
+                    ids.push(id.to_string());
+                }
+                i = start + end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    ids
+}
+
+/// Dispatch an async chat to a mentioned agent.
+/// Uses the mentioned agent's own session for history isolation,
+/// but broadcasts WS events with `origin_agent_id` so the frontend
+/// routes them to the mentioning agent's thread.
+async fn fork_mention_chat(
+    state: &AppState,
+    mentioned_id: &str,
+    prompt: &str,
+    user_id: &str,
+    channel: &str,
+    origin_agent_id: &str,
+) {
+    use crate::chat_dispatch::{ChatConfig, run_chat};
+
+    // Auto-activate the mentioned agent if needed
+    let needs_activation = !state.agent_registry.read().await.contains_key(mentioned_id);
+    if needs_activation {
+        match state.store.get_agent(mentioned_id) {
+            Ok(Some(agent)) => {
+                let config = if !agent.frontmatter.is_empty() {
+                    napp::agent::parse_agent_config(&agent.frontmatter).ok()
+                } else {
+                    None
+                };
+                let active = tools::ActiveAgent {
+                    agent_id: agent.id.clone(),
+                    name: agent.name.clone(),
+                    agent_md: agent.agent_md.clone(),
+                    config,
+                    channel_id: None,
+                    degraded: None,
+                };
+                state
+                    .agent_registry
+                    .write()
+                    .await
+                    .insert(agent.id.clone(), active);
+                state.store.set_agent_enabled(mentioned_id, true).ok();
+                state
+                    .agent_workers
+                    .start_agent(mentioned_id, &agent.name, None)
+                    .await;
+                info!(agent_id = %mentioned_id, "auto-activated mentioned agent for @mention");
+            }
+            _ => {
+                warn!(agent_id = %mentioned_id, "mentioned agent not found, skipping");
+                return;
+            }
+        }
+    }
+
+    let session_key = agent::keyparser::build_agent_session_key(mentioned_id, channel);
+    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", mentioned_id);
+
+    let contextualized = format!(
+        "[You were @mentioned in a conversation. Respond helpfully.]\n\n{}",
+        prompt,
+    );
+
+    let delegate_session_key = session_key.clone();
+    let chat_config = ChatConfig {
+        session_key,
+        prompt: contextualized,
+        system: String::new(),
+        user_id: user_id.to_string(),
+        channel: channel.to_string(),
+        origin: Origin::User,
+        agent_id: mentioned_id.to_string(),
+        cancel_token: CancellationToken::new(),
+        lane: lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config,
+        images: vec![],
+        entity_name: String::new(),
+        origin_agent_id: Some(origin_agent_id.to_string()),
+        mention_context: None,
+    };
+
+    run_chat(state, chat_config).await;
+
+    // Inject the delegate's response back into the primary agent's session
+    // so the primary agent has context about what the mentioned agent said.
+    inject_delegate_response(
+        state,
+        mentioned_id,
+        &delegate_session_key,
+        origin_agent_id,
+        channel,
+    );
+}
+
+/// After a mentioned agent completes, read its last assistant message and
+/// inject it into the primary agent's session as context.
+fn inject_delegate_response(
+    state: &AppState,
+    mentioned_id: &str,
+    delegate_session_key: &str,
+    origin_agent_id: &str,
+    channel: &str,
+) {
+    let sessions = state.runner.sessions();
+
+    // Read the delegate's last assistant message
+    let delegate_response = match sessions.resolve_session_id_by_key(delegate_session_key) {
+        Ok(session_id) => {
+            match sessions.get_messages(&session_id) {
+                Ok(msgs) => {
+                    // Find the last assistant message
+                    msgs.into_iter()
+                        .rev()
+                        .find(|m| m.role == "assistant")
+                        .map(|m| m.content)
+                }
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    };
+
+    let response_text = match delegate_response {
+        Some(ref text) if !text.is_empty() => text.as_str(),
+        _ => {
+            debug!(mentioned_id = %mentioned_id, "no delegate response to inject");
+            return;
+        }
+    };
+
+    // Look up the mentioned agent's display name
+    let agent_name = state
+        .store
+        .get_agent(mentioned_id)
+        .ok()
+        .flatten()
+        .map(|a| a.name)
+        .unwrap_or_else(|| mentioned_id.to_string());
+
+    // Build the primary agent's session key
+    let primary_session_key = agent::keyparser::build_agent_session_key(origin_agent_id, channel);
+
+    // Inject as a system-context message in the primary agent's session
+    let injection = format!(
+        "[Response from @{} ({})]\n{}",
+        mentioned_id, agent_name, response_text,
+    );
+
+    match sessions.resolve_session_id_by_key(&primary_session_key) {
+        Ok(session_id) => {
+            match sessions.append_message(&session_id, "system", &injection, None, None, None) {
+                Ok(_) => {
+                    info!(
+                        mentioned = %mentioned_id,
+                        primary = %origin_agent_id,
+                        len = response_text.len(),
+                        "injected delegate response into primary session"
+                    );
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to inject delegate response");
+                }
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, primary = %origin_agent_id, "failed to resolve primary session for response injection");
+        }
+    }
 }
 
 /// GET /api/v1/agent/ws — Agent WebSocket endpoint for agent-to-server communication.
-pub async fn agent_ws_handler(
-    State(state): State<AppState>,
-    ws: WebSocketUpgrade,
-) -> Response {
+pub async fn agent_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     let hub = state.hub.clone();
     ws.on_upgrade(move |socket| handle_agent_ws(socket, hub))
 }
@@ -733,8 +1435,7 @@ async fn handle_agent_ws(mut socket: WebSocket, hub: Arc<ClientHub>) {
         match socket.recv().await {
             Some(Ok(Message::Text(text))) => {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                    let event_type =
-                        parsed["type"].as_str().unwrap_or("agent_event").to_string();
+                    let event_type = parsed["type"].as_str().unwrap_or("agent_event").to_string();
                     // Forward agent events to client hub
                     hub.broadcast(&event_type, parsed);
                 }
@@ -759,10 +1460,7 @@ async fn handle_agent_ws(mut socket: WebSocket, hub: Arc<ClientHub>) {
 /// GET /ws/extension — Chrome extension bridge WebSocket endpoint.
 /// The native messaging host process connects here to relay messages
 /// between the Chrome extension and the Nebo agent.
-pub async fn extension_ws_handler(
-    State(state): State<AppState>,
-    ws: WebSocketUpgrade,
-) -> Response {
+pub async fn extension_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     let bridge = state.extension_bridge.clone();
     ws.on_upgrade(move |socket| handle_extension_ws(socket, bridge))
 }
@@ -792,20 +1490,35 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     // Task 1: Read tool requests from this connection's channel → send to WS
     let send_task = tokio::spawn(async move {
         while let Some(req) = request_rx.recv().await {
-            let msg = if req.is_batch {
-                serde_json::json!({
+            let msg = if req.is_command {
+                // Fire-and-forget command (show_indicators, hide_indicators)
+                let mut m = serde_json::json!({ "type": req.tool });
+                if let Some(ref sid) = req.session_id {
+                    m["session_id"] = serde_json::Value::String(sid.clone());
+                }
+                m
+            } else if req.is_batch {
+                let mut m = serde_json::json!({
                     "type": "execute_batch",
                     "id": req.id,
                     "actions": req.args["actions"],
                     "stop_on_error": req.args["stop_on_error"],
-                })
+                });
+                if let Some(ref sid) = req.session_id {
+                    m["session_id"] = serde_json::Value::String(sid.clone());
+                }
+                m
             } else {
-                serde_json::json!({
+                let mut m = serde_json::json!({
                     "type": "execute_tool",
                     "id": req.id,
                     "tool": req.tool,
                     "args": req.args,
-                })
+                });
+                if let Some(ref sid) = req.session_id {
+                    m["session_id"] = serde_json::Value::String(sid.clone());
+                }
+                m
             };
             if ws_tx
                 .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
@@ -828,9 +1541,7 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                         match msg_type {
                             "tool_response" => {
                                 if let Some(id) = parsed["id"].as_i64() {
-                                    let result = if let Some(err) =
-                                        parsed["error"].as_str()
-                                    {
+                                    let result = if let Some(err) = parsed["error"].as_str() {
                                         Err(err.to_string())
                                     } else {
                                         Ok(parsed["result"].clone())
@@ -844,7 +1555,7 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                                     let result = if let Some(err) = parsed["error"].as_str() {
                                         Err(err.to_string())
                                     } else {
-                                        Ok(parsed["results"].clone())
+                                        Ok(parsed["result"].clone())
                                     };
                                     bridge_recv.deliver_result(id, result).await;
                                 }

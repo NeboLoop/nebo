@@ -20,6 +20,9 @@ members = [
     "crates/updater",
     "crates/cli",
     "src-tauri",
+    "crates/a2ui/a2ui-types",
+    "crates/a2ui/a2ui-core",
+    "crates/a2ui/a2ui-validation",
 ]
 
 [workspace.package]
@@ -63,7 +66,7 @@ anyhow = "1"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
 
 # Crypto
 rand = "0.8"
@@ -117,8 +120,16 @@ updater = { path = "crates/updater", package = "nebo-updater" }
 cli = { path = "crates/cli", package = "nebo-cli" }
 sandbox-runtime = { git = "https://github.com/NeboLoop/sandbox-runtime.git", branch = "master" }
 
+# A2UI protocol
+a2ui-types = { path = "crates/a2ui/a2ui-types" }
+a2ui-core = { path = "crates/a2ui/a2ui-core" }
+a2ui-validation = { path = "crates/a2ui/a2ui-validation" }
+async-trait = "0.1"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+jsonschema = "0.28"
+
 [profile.dev]
-debug = 1
+debug = 0
 split-debuginfo = "unpacked"
 
 [profile.release]

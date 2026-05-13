@@ -3,16 +3,18 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, oneshot};
 
+use agent::{LaneManager, Runner};
+use auth::AuthService;
 use config::Config;
 use db::Store;
-use auth::AuthService;
-use agent::{LaneManager, Runner};
 use tools::Registry;
 
 use comm::{ChannelProvider, PluginManager};
 
 use serde::Serialize;
 
+use crate::a2ui::A2UIManager;
+use crate::app_lifecycle::AppLifecycle;
 use crate::handlers::ws::ClientHub;
 use crate::run_registry::RunRegistry;
 use crate::workflow_manager::WorkflowManagerImpl;
@@ -68,7 +70,7 @@ pub struct AppState {
     /// Pending tool approval requests: tool_call_id -> sender
     pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     /// Pending ask requests: question_id -> sender
-    pub ask_channels: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
+    pub ask_channels: tools::AskChannels,
     /// Staged update binary ready for apply (path + version)
     pub update_pending: Arc<Mutex<Option<(std::path::PathBuf, String)>>>,
     /// Hook dispatcher for napp hook subscriptions
@@ -103,4 +105,10 @@ pub struct AppState {
     pub personal_loop_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Channel providers for routing agent responses (NeboLoop, future: Slack, Discord)
     pub channel_providers: Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn ChannelProvider>>>>,
+    /// A2UI surface manager — surface lifecycle, broadcasting, persistence
+    pub a2ui: Arc<A2UIManager>,
+    /// Running app sidecars keyed by agent ID.
+    pub app_lifecycles: Arc<tokio::sync::RwLock<HashMap<String, AppLifecycle>>>,
+    /// Local voice pipeline (Piper TTS, whisper.cpp STT) — initialized at startup
+    pub voice: Arc<voice::VoicePipeline>,
 }

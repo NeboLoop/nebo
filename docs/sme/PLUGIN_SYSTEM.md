@@ -4,6 +4,10 @@
 > manifest format, PluginStore lifecycle (resolve, ensure, verify, GC,
 > quarantine), SKILL.md integration, dependency cascade, code system,
 > env var injection, NeboLoop API, concurrency model, and storage layout.
+> Capability boundaries and comparison with OpenClaw/Hermes documented in §23.
+>
+> For OpenClaw capability parity analysis and roadmap, see
+> `docs/sme/OPENCLAW_PLUGIN_PARITY.md`.
 
 ---
 
@@ -31,6 +35,7 @@
 20. [Edge Cases](#20-edge-cases)
 21. [Key Files](#21-key-files)
 22. [NeboLoop MCP Server — Plugin Tool](#22-neboloop-mcp-server--plugin-tool)
+23. [Capability Boundaries](#23-capability-boundaries)
 
 ---
 
@@ -112,11 +117,16 @@ Plugin lifecycle belongs in **`crates/napp/`** — not `crates/tools/`. The napp
 | `PluginManifest`, `PlatformBinary` types | napp | `plugin.rs` | Binary artifact types |
 | `PluginStore` (download, verify, store) | napp | `plugin.rs` | Reuses SigningKeyProvider, version resolution |
 | `current_platform_key()`, `plugin_env_var()` | napp | `plugin.rs` | Platform detection for binaries |
+| `PluginDependency` (plugin-to-plugin) | napp | `plugin.rs` | Declared in plugin.json `dependencies[]` |
+| `PluginCapabilities`, sub-types | napp | `plugin.rs` | Structured tool/hook/command/route/provider defs |
+| `PluginManifest::validate()` | napp | `plugin.rs` | Slug, semver, binary name, auth/event validation |
 | `PluginDependency` on `Skill` struct | tools | `skills/skill.rs` | Skill schema definition |
 | `verify_dependencies()` plugin check | tools | `skills/loader.rs` | Calls into `napp::plugin` |
-| Env var injection | tools | `execute_tool.rs` | Runtime integration |
-| `PLUG-XXXX-XXXX` code handling | server | `codes.rs` | Code dispatch |
-| `DepType::Plugin` cascade | server | `deps.rs` | Dependency resolution |
+| Env var injection (skills) | tools | `execute_tool.rs` | Runtime integration for skill→plugin |
+| Env var injection (plugin deps) | tools | `plugin_tool.rs` | Runtime integration for plugin→plugin |
+| `PluginTool` (STRAP domain tool) | tools | `plugin_tool.rs` | Consolidated plugin tool with action routing (replaced Phase 1C `PluginCommandTool`) |
+| `PLUG-XXXX-XXXX` code handling | server | `codes.rs` | Code dispatch + tool registration |
+| `DepType::Plugin` cascade | server | `deps.rs` | Dependency resolution (incl. plugin→plugin) |
 | `plugin_store` on AppState | server | `state.rs` | Shared state |
 | Plugin init + loader wiring | server | `lib.rs` | Startup |
 | `get_plugin()`, `download_plugin_binary()` | comm | `api.rs` | NeboLoop REST API |
@@ -144,6 +154,8 @@ pub struct PluginManifest {
     pub env_var: String,                             // Custom env var name override (default: {SLUG}_BIN)
     pub auth: Option<PluginAuth>,                    // Optional authentication configuration
     pub events: Option<Vec<PluginEventDef>>,         // Optional event declarations (see §5)
+    pub dependencies: Vec<PluginDependency>,         // Plugin-to-plugin deps (see §4.5)
+    pub capabilities: Option<PluginCapabilities>,    // Structured capability declarations (see §4.6)
 }
 ```
 
@@ -171,6 +183,7 @@ pub struct PluginAuthCommands {
 
 ```json
 {
+  "id": "gws",
   "slug": "gws",
   "name": "Google Workspace CLI",
   "auth": {
@@ -208,7 +221,7 @@ pub struct PlatformBinary {
 }
 ```
 
-### PluginDependency
+### PluginDependency (Skill → Plugin)
 
 Declared in SKILL.md frontmatter. **Source:** `crates/tools/src/skills/skill.rs`
 
@@ -219,6 +232,162 @@ pub struct PluginDependency {
     pub optional: bool,     // Default false — if true, skill loads without this plugin
 }
 ```
+
+### PluginDependency (Plugin → Plugin)
+
+Declared in `plugin.json` `dependencies[]` field. **Source:** `crates/napp/src/plugin.rs`
+
+Same JSON shape as the skill `PluginDependency` above, but lives in the `napp` crate (tools depends on napp, not vice versa).
+
+```rust
+pub struct PluginDependency {
+    pub name: String,       // Dependency plugin slug
+    pub version: String,    // Semver range, default "*"
+    pub optional: bool,     // Default false — parent plugin loads without this dep if true
+}
+```
+
+**Example** (plugin.json for `digest`):
+
+```json
+{
+  "id": "digest",
+  "slug": "digest",
+  "version": "1.2.0",
+  "dependencies": [
+    { "name": "ffmpeg", "version": ">=5.0.0" }
+  ]
+}
+```
+
+When `digest` runs, it receives both `DIGEST_BIN` (its own binary) and `FFMPEG_BIN` (its dependency). See §11 for cascade behavior.
+
+### PluginCapabilities
+
+Declared in `plugin.json` `capabilities` field. **Source:** `crates/napp/src/plugin.rs`
+
+All sub-fields default to empty, backward compatible with existing plugin.json files.
+
+```rust
+pub struct PluginCapabilities {
+    pub tools: Vec<PluginToolDef>,           // Typed agent tools
+    pub hooks: Vec<PluginHookDef>,           // Lifecycle hook subscribers
+    pub commands: Vec<PluginCommandDef>,     // Slash/app commands
+    pub routes: Vec<PluginRouteDef>,         // HTTP route declarations
+    pub providers: Vec<PluginProviderDef>,   // AI provider adapters
+    pub config_schema: Vec<PluginConfigField>, // User-configurable settings
+}
+```
+
+### PluginConfigField
+
+User-configurable settings rendered as a form in the UI. Values stored in `plugin_settings`, injected as env vars on plugin execution.
+
+```rust
+pub struct PluginConfigField {
+    pub key: String,                         // Env var name (e.g., "MAX_RESULTS")
+    pub label: String,                       // Display label
+    pub description: String,                 // Help text
+    pub field_type: String,                  // "string", "number", "boolean", "select"
+    pub default: Option<String>,             // Default value
+    pub required: bool,                      // Whether the field must be set
+    pub secret: bool,                        // If true, stored encrypted via is_secret
+    pub options: Option<Vec<String>>,        // Options for "select" type fields
+}
+```
+
+### PluginPermissions
+
+Declares what env vars the plugin may read, whether it needs network access, and the maximum execution timeout. Enforced at tool execution time.
+
+```rust
+pub struct PluginPermissions {
+    pub env_allow: Vec<String>,              // Env vars plugin may read (empty = all)
+    pub env_deny: Vec<String>,               // Env vars always stripped before exec
+    pub network: bool,                       // Whether plugin needs network access
+    pub max_timeout_seconds: u64,            // Max timeout for any tool exec (default 300)
+}
+```
+
+### PluginToolDef
+
+```rust
+pub struct PluginToolDef {
+    pub name: String,                    // Tool name (e.g., "gws.gmail.triage")
+    pub description: String,             // Description for the model
+    pub command: String,                 // CLI args (e.g., "gmail +triage")
+    pub input_schema: Option<Value>,     // JSON Schema for typed input
+    pub approval: bool,                  // Requires user approval (default true)
+    pub timeout_seconds: u64,            // Max execution time (default 120)
+}
+```
+
+Plugin tools are exposed through the consolidated STRAP `PluginTool`, which routes `capabilities.tools[]` via action parameters. The tool resolves the plugin binary, runs the declared command as a subprocess, and returns stdout as the tool result.
+
+### PluginHookDef
+
+```rust
+pub struct PluginHookDef {
+    pub hook: String,                    // Hook point name (must be in VALID_HOOKS)
+    pub hook_type: String,               // "filter" or "action" (default "action")
+    pub priority: i32,                   // Lower = first (default 100)
+    pub command: String,                 // CLI subcommand for the handler
+    pub timeout_ms: u64,                 // Timeout in ms (default 500)
+}
+```
+
+### PluginCommandDef
+
+```rust
+pub struct PluginCommandDef {
+    pub name: String,                    // Command name (e.g., "/gmail")
+    pub description: String,             // Human-readable description
+    pub command: String,                 // CLI subcommand to execute
+    pub slash: bool,                     // Register as slash command in chat (default false)
+}
+```
+
+### PluginRouteDef
+
+```rust
+pub struct PluginRouteDef {
+    pub path: String,                    // Route path (e.g., "/gws/oauth/callback")
+    pub method: String,                  // HTTP method (GET, POST, etc.)
+    pub command: String,                 // CLI subcommand that handles the request
+    pub auth: String,                    // "public" or "jwt" (default "jwt")
+}
+```
+
+### PluginProviderDef
+
+```rust
+pub struct PluginProviderDef {
+    pub id: String,                      // Provider ID (e.g., "openrouter")
+    pub display_name: String,            // Display name
+    pub provider_type: String,           // "model", "speech", "image", etc.
+    pub models_command: String,          // CLI subcommand to list models (JSON output)
+    pub chat_command: String,            // CLI subcommand for streaming chat (NDJSON)
+    pub auth_command: Option<String>,    // CLI subcommand for auth setup
+}
+```
+
+### Manifest Validation
+
+**Source:** `PluginManifest::validate()` in `crates/napp/src/plugin.rs`
+
+Called during `install_from_napp_inner()` and `download_and_install()`. Validates:
+
+| Field | Rule |
+|-------|------|
+| `slug` | Non-empty, lowercase alphanumeric + hyphens, no leading/trailing hyphens, max 64 chars |
+| `version` | Valid semver (`semver::Version::parse()`) |
+| `platforms` | At least one entry |
+| `binary_name` (per platform) | No path separators (`/`, `\`), no `..`, non-empty |
+| `auth.commands.login` | Non-empty if `auth` is present |
+| `events[].name` | Non-empty, no path separators |
+| `events[].command` | Non-empty if event present |
+
+Validation failures return `NappError::PluginValidation(message)`.
 
 ---
 
@@ -243,6 +412,7 @@ Declared in `plugin.json` under the `events` array:
 
 ```json
 {
+  "id": "gws",
   "slug": "gws",
   "events": [
     {
@@ -605,12 +775,13 @@ Both the WebSocket handler and the REST `POST /api/v1/codes/redeem` handler disp
 
 **Source:** `crates/server/src/deps.rs`
 
-The dependency cascade resolver includes `DepType::Plugin` alongside `DepType::Skill` and `DepType::Workflow`. Plugins enter the cascade from two paths:
+The dependency cascade resolver includes `DepType::Plugin` alongside `DepType::Skill` and `DepType::Workflow`. Plugins enter the cascade from three paths:
 
 1. **From skills:** SKILL.md `plugins:` frontmatter → `extract_skill_deps()` → `DepType::Plugin`
 2. **From agents:** agent.json `requires.plugins[]` → `extract_agent_deps()` → `DepType::Plugin`
+3. **From plugins:** plugin.json `dependencies[]` → `install_plugin()` returns child `DepRef` entries → `DepType::Plugin`
 
-Plugins are always **leaf nodes** — they have no child dependencies of their own.
+Plugins with `dependencies[]` in their manifest produce child deps. After installing a plugin, `install_plugin()` reads the manifest, extracts non-optional dependencies, and returns them as `DepRef { dep_type: DepType::Plugin, reference: dep.name }` for recursive resolution. The cascade's visited set (`{dep_type}:{reference}`) prevents cycles and double-installs.
 
 ### How Plugins Enter the Agent Install Cascade
 
@@ -666,7 +837,9 @@ For plugins: calls `install_plugin()` which:
 1. Extracts the simple slug name from the reference
 2. Builds a NeboLoop API client
 3. Calls `plugin_store.ensure()` with a download callback
-4. Returns empty child deps (plugins are leaf nodes — they don't have further dependencies)
+4. Reads the installed manifest's `dependencies[]` field
+5. Returns non-optional deps as child `DepRef` entries for recursive resolution
+6. Plugin tools are available via the consolidated STRAP `PluginTool`
 
 ---
 
@@ -872,13 +1045,14 @@ Future events (not yet implemented):
 
 | File | Lines | What |
 |------|-------|------|
-| `crates/napp/src/plugin.rs` | ~1200 | Core module: types (incl. `PluginEventDef`), PluginStore (ensure + install_from_napp + get_events + resolve_event), helpers, tests |
+| `crates/napp/src/plugin.rs` | ~1400 | Core module: types (incl. capabilities, dependencies, validation), PluginStore, helpers, tests |
 | `crates/napp/src/agent.rs` | — | `AgentTrigger::Watch` with optional `event` field |
 | `crates/napp/src/napp.rs` | — | .napp extraction: ALLOWED_FILES includes PLUGIN.md/plugin.json, `skills/` prefix support |
 | `crates/napp/src/lib.rs` | — | `pub mod plugin;` + NappError variants |
 | `crates/agent/src/agent_worker.rs` | — | Watch loop auto-emission: resolves event from manifest, emits NDJSON into EventBus |
 | `crates/tools/src/events.rs` | — | `EventBus`, `Event` struct definitions |
 | `crates/tools/src/agent_tool.rs` | — | Serializes `event` field in watch trigger_config JSON |
+| `crates/tools/src/plugin_tool.rs` | — | `PluginTool` (STRAP domain tool), `run_plugin_command()` |
 | `crates/tools/src/skills/skill.rs` | — | `PluginDependency` struct, `plugins` field on `Skill` |
 | `crates/tools/src/skills/loader.rs` | — | `plugin_store` field, `verify_dependencies()` plugin check |
 | `crates/tools/src/execute_tool.rs` | — | `plugin_store` field, env var injection |
@@ -985,6 +1159,96 @@ Binary uploads go to `artifact_binaries` table with `(artifact_id, version, plat
 ### Access Control
 
 Plugin access uses the same namespace-based model as skills: `canAccessPlugin()` checks that the plugin's namespace matches the developer account's namespace, or the plugin is owned by the current user.
+
+---
+
+## 23. Capability Boundaries
+
+This section documents what plugins can and cannot do. Updated to reflect Phase 0+1 parity work (version install fix, manifest validation, plugin-to-plugin deps, structured capabilities manifest, generated tools).
+
+### What Plugins Are
+
+Nebo plugins are **managed native binaries** distributed via signed `.napp` archives, installed from the NeboLoop marketplace, and invoked as subprocesses by skills. The plugin system is the primary extensibility mechanism for Nebo — every capability is delivered out-of-process via CLI.
+
+| Capability | How It Works | Runtime |
+|---|---|---|
+| Binary distribution | `.napp` envelope with SHA256 + ED25519 verification | Install-time |
+| Subprocess execution | Skills invoke via `$GWS_BIN` env var or PATH lookup | Exec-time |
+| Shared across skills | One plugin binary, many skills depend on it | Resolve-time |
+| Semver resolution | Skills declare version ranges; PluginStore resolves highest match | Resolve-time |
+| OAuth auth lifecycle | Plugin declares login/status/logout CLI commands; Nebo captures OAuth URLs from stderr/stdout | Auth flow |
+| NDJSON event watches | Plugin declares events in manifest; watch processes auto-emit into EventBus | Long-running |
+| User overrides | `<data_dir>/user/plugins/` takes priority over marketplace installs | Resolve-time |
+| Quarantine/revocation | Binary deleted, `.quarantined` marker written, manifest preserved | Admin action |
+| Marketplace install codes | `PLUG-XXXX-XXXX` with dependency cascade | Install-time |
+| Embedded skills | Plugin `.napp` bundles `skills/` directory, auto-discovered by skill loader | Loader scan |
+| Agent-facing tool | Single generic `plugin(resource, action, command, args, topic, timeout)` | Exec-time |
+| Manifest validation | Validates slug format, semver, binary names (path traversal protection), auth/event consistency | Install-time |
+| Plugin-to-plugin dependencies | `dependencies[]` in plugin.json; cascade resolver installs deps recursively; env vars injected | Install-time |
+| **Structured tools** | `capabilities.tools[]` → routed through STRAP `PluginTool` | `plugin_tool.rs` |
+| **Lifecycle hooks** | `capabilities.hooks[]` → `HookDispatcher` with circuit breaker (3 failures → 5min recovery) | `hooks.rs` |
+| **Slash commands** | `capabilities.commands[]` → intercepted in chat, bypass LLM, 30s timeout | `plugin_commands.rs` |
+| **HTTP routes** | `capabilities.routes[]` → proxied through catch-all handler, public or JWT auth | Route layer |
+| **AI providers** | `capabilities.providers[]` → `PluginProvider` implements `Provider` trait, NDJSON streaming | `plugin_provider.rs` |
+| **Config schemas** | `capabilities.config_schema[]` → UI settings form, values injected as env vars | Settings UI |
+| **Permissions** | `permissions` manifest → env allow/deny lists, network flag, max timeout | Exec-time |
+
+### What Plugins Cannot Do
+
+| Capability | Status | Detail |
+|---|---|---|
+| Register channel adapters | Not possible | Communication locked to NeboLoop SDK in `crates/comm/` |
+| Expose reusable services | Not possible | No service registration model |
+| Contribute to memory/context | Not possible | Memory/prompt assembly has no plugin surface |
+
+### Hook System
+
+**Source:** `crates/napp/src/hooks.rs`
+
+The hook infrastructure is generic — `HookDispatcher` accepts any `Arc<dyn HookCaller>`. Plugins declare hooks via `capabilities.hooks[]` in their manifest with a `hook` name, `hook_type` (filter/action), `priority`, and `command`.
+
+**12 hook points:**
+
+| Hook | Type | When |
+|---|---|---|
+| `tool.pre_execute` | Filter | Before tool runs — can modify input or block |
+| `tool.post_execute` | Filter | After tool completes — can modify output |
+| `message.pre_send` | Filter | Before user message sent to agent |
+| `message.post_receive` | Filter | After agent message received |
+| `memory.pre_store` | Filter | Before memory persisted |
+| `memory.pre_recall` | Filter | Before memory retrieved |
+| `session.message_append` | Action | When message added to session |
+| `prompt.system_sections` | Filter | System prompt generation — can inject sections |
+| `steering.generate` | Filter | Steering signal generation |
+| `response.stream` | Action | During response streaming |
+| `agent.turn` | Action | Agent turn completion |
+| `agent.should_continue` | Filter | Decision to continue turn — can halt |
+
+**Hook types:**
+- **Filter** — chainable, modifies payload, returns `(modified_payload, handled)`
+- **Action** — fire-and-forget, results discarded
+
+**Circuit breaker:** 3 consecutive failures → hook disabled, auto-recovery after 5 minutes.
+
+### Comparison With OpenClaw and Hermes
+
+| Dimension | Nebo | OpenClaw | Hermes |
+|---|---|---|---|
+| Execution model | Out-of-process subprocess | In-process TypeScript module | In-process Python module |
+| Trust boundary | Signed `.napp` archive | npm package | pip package / directory import |
+| Binary verification | SHA256 + ED25519 | None | None |
+| Provider registration | Plugin-contributed via `capabilities.providers[]` | 10+ types (LLM, TTS, voice, image, video, music, search, fetch) | None |
+| Channel registration | None | 20+ adapters (messaging, threading, auth, security, etc.) | None |
+| Hook system | 12 hooks via `capabilities.hooks[]` + `HookDispatcher` | 29 hooks (all plugin-accessible) | 13 hooks (all plugin-accessible) |
+| Tool registration | Generic tool + manifest-declared typed tools via `capabilities.tools[]` | Per-plugin typed tools with schemas | Per-plugin tools in global registry |
+| Config schemas | `capabilities.config_schema[]` with UI form generation | Zod + UI hints + JSON Schema | plugin.yaml + config.yaml |
+| CLI commands | `capabilities.commands[]` with slash command dispatch | Top-level with lazy descriptors | Slash + CLI commands |
+| Memory/context | None | 8 registration methods | Context engine replacement |
+| Services | None | Reusable runtime components | None |
+| Dashboard UI | None | Separate web app | JS/CSS bundle loading with SDK |
+| Permissions | `permissions` manifest — env allow/deny, network, max timeout | Per-hook permissions | Minimal |
+
+Nebo's model is stronger for security and marketplace distribution. OpenClaw's is richer for extensibility. The recommended path is to add structured capability contracts to the existing `.napp` model without adopting in-process module loading. See `docs/sme/OPENCLAW_PLUGIN_PARITY.md` for the full analysis.
 
 ---
 

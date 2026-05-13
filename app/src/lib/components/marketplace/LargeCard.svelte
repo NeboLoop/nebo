@@ -11,7 +11,7 @@
 
 	let { item, label }: { item: AppItem; label?: string } = $props();
 
-	const typeLabel = label || (item.type === 'agent' ? 'AGENT' : item.type === 'workflow' ? 'WORKFLOW' : 'SKILL');
+	const typeLabel = $derived(label || (item.type === 'agent' ? 'AGENT' : item.type === 'workflow' ? 'WORKFLOW' : 'SKILL'));
 
 	let installing = $state(false);
 	let showSetupModal = $state(false);
@@ -25,7 +25,6 @@
 		installing = true;
 		try {
 			if (item.type === 'agent') {
-				// Fetch agent detail to check for inputs
 				const detail = await webapi.get<any>(`/api/v1/store/products/${item.id}`).catch(() => null);
 				const inputs = detail?.typeConfig?.inputs || detail?.inputs || {};
 
@@ -37,15 +36,13 @@
 				}
 			}
 
-			// No inputs or not an agent — install directly
 			await installStoreProduct(item.id);
 
 			if (item.type === 'agent') {
-				// Find and activate the agent
 				const agentsRes = await listAgents();
-				const allAgents = agentsRes?.agents || [];
+				const allAgents = (agentsRes?.agents || []) as Array<{ id: string; name?: string }>;
 				const matched = allAgents.find(
-					(r: any) => r.name?.toLowerCase() === item.name.toLowerCase()
+					(r) => r.name?.toLowerCase() === item.name.toLowerCase()
 				);
 
 				if (matched) {
@@ -55,7 +52,6 @@
 				}
 			}
 
-			// For non-agent items, just mark installed
 			item.installed = true;
 		} catch {
 			// ignore

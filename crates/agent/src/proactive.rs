@@ -150,9 +150,7 @@ impl ProactiveInbox {
     /// Add an item to a session's inbox.
     pub async fn push(&self, session_id: &str, item: ProactiveItem) {
         let mut map = self.items.write().await;
-        map.entry(session_id.to_string())
-            .or_default()
-            .push(item);
+        map.entry(session_id.to_string()).or_default().push(item);
     }
 
     /// Take all pending items for a session (empties the inbox for that session).

@@ -60,10 +60,7 @@ pub fn expand_variables(body: &str, ctx: &SkillContext) -> String {
 
     // Plugin binary paths: ${plugin.SLUG_BIN}
     for (slug, bin_path) in &ctx.plugin_bins {
-        let var_name = format!(
-            "${{plugin.{}_BIN}}",
-            slug.to_uppercase().replace('-', "_")
-        );
+        let var_name = format!("${{plugin.{}_BIN}}", slug.to_uppercase().replace('-', "_"));
         result = result.replace(&var_name, bin_path);
     }
 
@@ -126,10 +123,7 @@ pub fn build_context(
     if let Some(ps) = plugin_store {
         for dep in &skill.plugins {
             if let Some(bin_path) = ps.resolve(&dep.name, &dep.version) {
-                plugin_bins.insert(
-                    dep.name.clone(),
-                    bin_path.to_string_lossy().to_string(),
-                );
+                plugin_bins.insert(dep.name.clone(), bin_path.to_string_lossy().to_string());
             }
         }
     }

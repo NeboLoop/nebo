@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use ai::EmbeddingProvider;
-use db::models::ChatMessage;
 use db::Store;
+use db::models::ChatMessage;
 use tracing::{debug, info, warn};
 
 use crate::chunking;
@@ -121,8 +121,7 @@ pub async fn index_compacted_messages(
         } else {
             info!(
                 session_id,
-                highest_id,
-                "updated transcript index high-water mark"
+                highest_id, "updated transcript index high-water mark"
             );
         }
     }

@@ -61,11 +61,7 @@ impl Loader {
     /// List all enabled advisors, sorted by priority (highest first).
     pub async fn list_enabled(&self) -> Vec<Advisor> {
         let advisors = self.advisors.read().await;
-        let mut enabled: Vec<Advisor> = advisors
-            .values()
-            .filter(|a| a.enabled)
-            .cloned()
-            .collect();
+        let mut enabled: Vec<Advisor> = advisors.values().filter(|a| a.enabled).cloned().collect();
         enabled.sort_by(|a, b| b.priority.cmp(&a.priority));
         enabled
     }
@@ -74,7 +70,11 @@ impl Loader {
     pub async fn list_all(&self) -> Vec<Advisor> {
         let advisors = self.advisors.read().await;
         let mut all: Vec<Advisor> = advisors.values().cloned().collect();
-        all.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.name.cmp(&b.name)));
+        all.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then_with(|| a.name.cmp(&b.name))
+        });
         all
     }
 
@@ -94,8 +94,7 @@ impl Loader {
                 move |res| {
                     let _ = tx.blocking_send(res);
                 },
-                notify::Config::default()
-                    .with_poll_interval(std::time::Duration::from_secs(2)),
+                notify::Config::default().with_poll_interval(std::time::Duration::from_secs(2)),
             ) {
                 Ok(w) => w,
                 Err(e) => {
@@ -118,9 +117,7 @@ impl Loader {
                     Ok(event) => {
                         let dominated = matches!(
                             event.kind,
-                            EventKind::Create(_)
-                                | EventKind::Modify(_)
-                                | EventKind::Remove(_)
+                            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
                         );
                         if !dominated {
                             continue;

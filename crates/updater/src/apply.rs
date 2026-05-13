@@ -99,7 +99,9 @@ fn apply_app_bundle(dmg_path: &Path) -> Result<(), UpdateError> {
     // 2. Find Nebo.app in mounted DMG
     let source_app = std::path::PathBuf::from(&mount_point).join("Nebo.app");
     if !source_app.is_dir() {
-        let _ = Command::new("hdiutil").args(["detach", &mount_point]).output();
+        let _ = Command::new("hdiutil")
+            .args(["detach", &mount_point])
+            .output();
         return Err(UpdateError::Other(format!(
             "Nebo.app not found in DMG at {}",
             source_app.display()
@@ -127,7 +129,9 @@ fn apply_app_bundle(dmg_path: &Path) -> Result<(), UpdateError> {
         .map_err(|e| UpdateError::Other(format!("cp -R: {}", e)))?;
 
     if !cp_output.status.success() {
-        let _ = Command::new("hdiutil").args(["detach", &mount_point]).output();
+        let _ = Command::new("hdiutil")
+            .args(["detach", &mount_point])
+            .output();
         return Err(UpdateError::Other(format!(
             "failed to copy Nebo.app: {}",
             String::from_utf8_lossy(&cp_output.stderr)
@@ -135,7 +139,9 @@ fn apply_app_bundle(dmg_path: &Path) -> Result<(), UpdateError> {
     }
 
     // 5. Unmount DMG
-    let _ = Command::new("hdiutil").args(["detach", &mount_point]).output();
+    let _ = Command::new("hdiutil")
+        .args(["detach", &mount_point])
+        .output();
 
     // 6. Clean temp
     let _ = std::fs::remove_file(dmg_path);

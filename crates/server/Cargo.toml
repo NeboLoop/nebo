@@ -10,6 +10,7 @@ config = { workspace = true }
 db = { workspace = true }
 auth = { workspace = true }
 ai = { workspace = true }
+async-trait = "0.1"
 agent = { workspace = true }
 tools = { workspace = true }
 axum = { workspace = true }
@@ -45,8 +46,14 @@ napp = { workspace = true }
 notify_crate = { workspace = true }
 workflow = { workspace = true }
 tonic = "0.12"
+hyper-util = "0.1"
+proto = { workspace = true }
 sandbox-runtime = { workspace = true }
 rfd = { workspace = true }
+a2ui-types = { workspace = true }
+a2ui-core = { workspace = true }
+pulldown-cmark = { workspace = true }
+voice = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -63,3 +70,5 @@ agent = { workspace = true }
 chrono = { workspace = true }
 cron = { workspace = true }
 uuid = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = "0.3"

@@ -166,6 +166,9 @@ pub struct ChatMessage {
     pub tool_calls: Option<String>,
     pub tool_results: Option<String>,
     pub token_estimate: Option<i64>,
+    /// Server-rendered HTML from markdown content. Output-only — not stored in DB.
+    #[serde(skip_deserializing, default)]
+    pub html: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,6 +399,12 @@ pub struct PendingTask {
     pub completed_at: Option<i64>,
     pub parent_task_id: Option<String>,
     pub output: Option<String>,
+    // Tracking columns (task_type = 'tracking')
+    pub list_id: Option<String>,
+    pub seq: Option<i64>,
+    pub tokens_input: Option<i64>,
+    pub tokens_output: Option<i64>,
+    pub metadata: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -444,6 +453,19 @@ pub struct PluginRegistry {
     pub metadata: String,
     pub created_at: i64,
     pub updated_at: i64,
+    // .napp-specific fields (migration 0083)
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub binary_path: String,
+    #[serde(default)]
+    pub manifest_hash: String,
+    #[serde(default)]
+    pub signature_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -604,6 +626,17 @@ pub struct Agent {
     /// User-supplied input values as JSON (separate from the schema in frontmatter).
     #[serde(default = "default_input_values")]
     pub input_values: String,
+    /// Whether this agent is an app (has UI + optional sidecar).
+    #[serde(serialize_with = "opt_i64_as_bool", default)]
+    pub is_app: Option<i64>,
+    /// Path to static UI directory for app agents (internal, not exposed to frontend).
+    #[serde(skip_serializing)]
+    pub app_ui_path: Option<String>,
+    /// Path to sidecar binary for app agents (internal, not exposed to frontend).
+    #[serde(skip_serializing)]
+    pub app_binary_path: Option<String>,
+    /// JSON-serialized AppWindowConfig.
+    pub app_window_config: Option<String>,
 }
 
 fn default_input_values() -> String {
@@ -627,6 +660,9 @@ pub struct AgentWorkflow {
     #[serde(skip_deserializing)]
     pub activities: Option<serde_json::Value>,
     pub last_fired: Option<String>,
+    /// JSON array of workflow connections (edges between activities for the visual builder).
+    #[serde(skip_deserializing)]
+    pub connections: Option<serde_json::Value>,
 }
 
 // ── Emit Sources ──
@@ -684,8 +720,11 @@ pub struct EntityConfig {
     pub model_preference: Option<String>,
     pub personality_snippet: Option<String>,
     pub allowed_paths: Option<String>,
+    pub pinned: Option<i64>,
+    pub multi_chat: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub last_heartbeat_at: Option<String>,
 }
 
 // ── Commander ──────────────────────────────────────────────────────────────
@@ -726,4 +765,20 @@ pub struct CommanderEdge {
     pub edge_type: String,
     pub label: String,
     pub created_at: i64,
+}
+
+/// An A2UI surface persisted for state restoration across restarts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct A2UISurface {
+    pub id: String,
+    pub agent_id: String,
+    pub view_id: String,
+    pub surface_type: String,
+    pub components: Option<String>,
+    pub data_model: Option<String>,
+    pub window_geometry: Option<String>,
+    pub is_active: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }

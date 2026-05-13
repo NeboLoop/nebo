@@ -1,7 +1,9 @@
 ### execute — Script Execution
 USE THIS when: user wants to run a script (Python, Node.js, etc.) from an installed skill.
 
-- execute(skill_id: "SKILL-XXXX-XXXX", args: {...}) — Execute a skill's binary/script
-- execute(skill_id: "SKILL-XXXX-XXXX", action: "info") — Get skill execution info
+- execute(skill: "my-skill", script: "scripts/recalc.py") — Run a skill's script
+- execute(skill: "my-skill", script: "scripts/recalc.py", args: {...}) — Run with arguments (passed as SKILL_ARGS env var)
+- execute(skill: "my-skill", script: "binary") — Run the skill's pre-compiled executable
+- execute(skill: "my-skill", script: "scripts/recalc.py", timeout: 60) — Run with custom timeout (default: 30s)
 
 Scripts run in a sandboxed environment with managed runtimes (Python via uv, Node via bun).

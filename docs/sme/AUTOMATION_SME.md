@@ -4,7 +4,7 @@ Comprehensive Subject Matter Expert document covering the full Nebo automation
 pipeline: proactive heartbeats, cron scheduling, workflow execution, event-driven
 triggers, agent workers, and frontend UI.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-03-25
+**Status:** Current (Rust implementation) | **Last updated:** 2026-05-11
 
 ---
 
@@ -15,6 +15,7 @@ triggers, agent workers, and frontend UI.
 3. [Cron Scheduler](#3-cron-scheduler)
 4. [Heartbeat System](#4-heartbeat-system)
 5. [Event System](#5-event-system)
+5b. [Watch System](#5b-watch-system)
 6. [Workflow Manager](#6-workflow-manager)
 7. [Workflow Engine](#7-workflow-engine)
 8. [Agent Workers](#8-agent-workers)
@@ -76,22 +77,23 @@ chains.
 
 ---
 
-## 2. Three Scheduling Patterns
+## 2. Four Scheduling Patterns
 
 | Pattern | Source | Tick | Execution | Lane |
 |---------|--------|------|-----------|------|
 | **Cron** | `scheduler.rs` | 60s | Shell, agent, workflow, or agent_workflow | Varies |
-| **Heartbeat** | `heartbeat.rs` | 60s | `run_chat()` with heartbeat content | `HEARTBEAT` |
+| **Heartbeat** | `heartbeat.rs` / `agent_worker.rs` | 60s / custom | `run_chat()` / `run_inline()` | `HEARTBEAT` |
+| **Watch** | `agent_worker.rs` | Real-time (NDJSON) | Auto-emit to EventBus + optional `run_inline()` | Spawned |
 | **Event** | `EventDispatcher` | Real-time | `WorkflowManager.run_inline()` | Spawned |
 
-All three coexist as independent `tokio::spawn` loops started during server boot.
+All four coexist as independent `tokio::spawn` loops started during server boot.
 
 **Boot sequence:**
 1. Server starts, builds `AppState`
 2. `scheduler::spawn()` — 10s delay, then 60s tick
 3. `heartbeat::spawn()` — 15s delay, then 60s tick
 4. `EventDispatcher::spawn()` — immediate, consumes from EventBus channel
-5. `AgentWorkerRegistry` — starts workers for each active agent
+5. `AgentWorkerRegistry` — starts workers for each active agent (spawns watch, heartbeat, event triggers)
 
 ---
 
@@ -288,11 +290,18 @@ pub struct EventDispatcher {
 }
 ```
 
-**Spawn loop:**
+**Spawn loop (with rate limiting):**
+
+The dispatcher rate-limits each binding to at most one dispatch per 2 minutes, preventing the same workflow from firing repeatedly when a plugin emits duplicate events.
+
 ```rust
 while let Some(event) = rx.recv().await {
     let matches = self.match_event(&event).await;
     for sub in matches {
+        // Rate limit: skip if this binding fired within the last 2 minutes
+        if rate_limiter.should_skip(&sub.binding_name) { continue; }
+        rate_limiter.record(&sub.binding_name);
+
         let mut inputs = sub.default_inputs.clone();
         inputs["_event_source"] = json!(event.source);
         inputs["_event_payload"] = event.payload.clone();
@@ -302,9 +311,125 @@ while let Some(event) = rx.recv().await {
 }
 ```
 
+**Event dedup (watch_loop):**
+
+The agent worker's `watch_loop` deduplicates events before emitting to the EventBus. A `DedupeCache` with a 10-minute TTL hashes `source + payload` and skips duplicate emissions. This prevents the same plugin event (e.g., `gws.email.new` for the same email) from triggering multiple workflow runs.
+
 **Pattern matching:**
 - Exact: `"email.urgent"` matches `"email.urgent"`
 - Wildcard: `"email.*"` matches anything starting with `"email."`
+
+---
+
+## 5b. Watch System
+
+**File:** `crates/agent/src/agent_worker.rs` (`watch_loop` function)
+
+### Purpose
+
+Watch triggers spawn a long-running plugin binary that streams NDJSON events to
+stdout. Each line is auto-emitted into the EventBus for downstream event-triggered
+workflows. This is the bridge between plugin event sources (e.g., Gmail new email)
+and the event-driven workflow system.
+
+### Config
+
+Declared in `agent.json` workflows:
+```json
+{
+  "email-watcher": {
+    "trigger": {
+      "type": "watch",
+      "plugin": "gws",
+      "event": "email.new",
+      "restart_delay_secs": 5
+    },
+    "description": "Relay new email events..."
+  }
+}
+```
+
+Deserialized as `WatchTriggerConfig`:
+```rust
+struct WatchTriggerConfig {
+    plugin: String,
+    command: String,           // Resolved from plugin manifest event definition
+    event: Option<String>,     // Plugin event name → enables auto-emission
+    multiplexed: bool,         // If true, NDJSON lines contain "event" field for routing
+    restart_delay_secs: u64,   // Initial backoff (default: 5s)
+}
+```
+
+### Watch Loop Flow
+
+```
+1. Resolve plugin binary path via plugin_store.resolve()
+2. Resolve command from plugin manifest event definition
+3. Spawn child process with sanitized env + plugin auth env vars
+4. Read NDJSON lines from stdout in a loop:
+   a. Parse JSON payload
+   b. Auto-emit: hash (source + payload) → check DedupeCache (10min TTL, 2000 entries)
+      - If duplicate → skip
+      - If new → emit Event to EventBus
+   c. Run inline workflow if def_json activities defined
+5. On stdout close (process exit):
+   a. Check stderr for auth errors → if auth error, pause until re-auth (break loop)
+   b. Otherwise restart with exponential backoff (restart_delay → 2x → max 300s)
+   c. Reset backoff if process ran >30s (not a fast crash)
+6. On cancel token → kill child process, return
+```
+
+### Event Auto-Emission
+
+When `event` is set in the watch config:
+- Non-multiplexed: every NDJSON line emits as `"{plugin}.{event}"` (e.g., `gws.email.new`)
+- Multiplexed: the NDJSON line's `"event"` field determines the source (e.g., `gws.calendar.event.created`)
+
+### Dedup
+
+```rust
+let event_dedup = DedupeCache::new(Duration::from_secs(10 * 60), 2000);
+// Hash: hash_text("{source}:{payload}")
+// Skip if seen within TTL window
+```
+
+Prevents the same event (e.g., same email notification) from triggering multiple workflow runs when the watcher restarts.
+
+### Auth Error Handling
+
+When the watch process fails with an auth error (detected via `is_auth_error(stderr)`):
+1. Creates a notification: `"auth-required:{agent_id}:{plugin}"`
+2. Broadcasts notification via WebSocket for real-time bell update
+3. **Breaks the restart loop** — the watcher stops until the agent worker is restarted
+   (triggered by `plugin_auth_complete` WebSocket event)
+
+### Restart Backoff
+
+```
+Initial: restart_delay_secs (default 5)
+Growth:  backoff * 2 each restart
+Max:     300s (5 minutes)
+Reset:   if process ran >30s before exiting
+```
+
+### Interaction with Event System
+
+The watch trigger is the **producer** side. It emits events into the EventBus.
+Event-triggered workflows (type: `"event"`) are the **consumers** — they subscribe
+to patterns in the EventDispatcher and run when matching events arrive.
+
+Example (Chief of Staff agent):
+```
+email-watcher (watch) → emits "gws.email.new" → EventBus
+                                                    ↓
+EventDispatcher matches subscriptions:
+  - organize-emails   (event, sources: ["gws.email.new"])
+  - auto-reply         (event, sources: ["gws.email.new"])
+  - handle-meeting-requests (event, sources: ["gws.email.new"])
+```
+
+All three fire concurrently when a new email arrives. The EventDispatcher's
+2-minute rate limit per binding prevents rapid re-firing.
 
 ---
 
@@ -396,7 +521,7 @@ For each activity in `def.activities`:
 4. **Record result** — `workflow_activity_results` row
 5. **Accumulate context** — prior results passed to next activity
 6. **Budget check** — per-activity and global token limits
-7. **Error handling** — `Fallback::Skip` continues, `Abort` stops
+7. **Error handling** — always aborts on activity failure (downstream activities depend on prior results)
 
 ### Activity Execution (Single)
 
@@ -495,6 +620,7 @@ pub struct AgentWorker {
 |-------------|-----------------|
 | `schedule` | No-op (handled by cron scheduler via registered jobs) |
 | `heartbeat` | Spawns `tokio::interval` task → `run_inline()` on tick, with time window check |
+| `watch` | Spawns `watch_loop()` — long-running plugin process, reads NDJSON, emits to EventBus, optional `run_inline()` per line |
 | `event` | Subscribes patterns to `EventDispatcher` |
 | `manual` | No-op (user-triggered via REST) |
 
@@ -1081,17 +1207,28 @@ interface ResolvedEntityConfig {
 | Tool not found | Continue | `ToolResult::error()`, activity continues |
 | Cancellation | Before each activity | Return `WorkflowError::Cancelled` |
 | Exit tool | Propagate | Mark run "exited" (distinct from "failed") |
-| Retry exhausted | `on_error.fallback` | Skip / Abort / NotifyOwner |
+| Retry exhausted | Always abort | Fail entire workflow + create failure notification |
 
-### Fallback Strategies
+### Fallback Behavior
+
+All fallback variants now abort the workflow on activity failure. Downstream activities depend on prior results, so continuing after a failure produces incorrect output. A failure notification is created and pushed via WebSocket, deep-linked to the failed run.
 
 ```rust
 pub enum Fallback {
-    Skip,          // Continue to next activity
+    Skip,          // Historical — now treated as Abort
     Abort,         // Fail entire workflow
-    NotifyOwner,   // Same as Abort (notification stubbed)
+    NotifyOwner,   // Same as Abort
 }
 ```
+
+### Failure Notifications
+
+When a workflow run fails, `notify_workflow_failure()` in `workflow_manager.rs`:
+1. Creates a DB notification with `id = "wf-fail:{run_id}"` and `action_url = "/{agent_id}/runs/{run_id}"`
+2. Broadcasts `notification_created` via WebSocket for instant push to the frontend
+3. The frontend deep-links the notification to the failed run's detail page
+
+Notifications are push-only — the frontend never polls for notifications. The `NotificationBell` component receives new notifications via WebSocket listener and prepends them to the in-memory store.
 
 ---
 
@@ -1156,6 +1293,26 @@ workflow chains produce events faster than they're consumed, memory could grow.
 All cron jobs share a 60s tick — jobs due within the same minute all fire in one
 batch. No per-job scheduling granularity below 1 minute.
 
+### Watch Process Restart Emits Stale Events
+
+When a watch process (e.g., `gws gmail +watch`) crashes and restarts, the plugin
+may emit a snapshot of current state on startup (e.g., recent unread emails). This
+triggers all event-subscribed workflows even though no new event occurred. The
+DedupeCache (10-minute TTL) mitigates this if the payload hasn't changed, but if
+the process restarts after the TTL window, the same events fire again. This can
+cause organize-emails, auto-reply, and handle-meeting-requests to fire
+simultaneously every few minutes when the watch process is unstable (e.g., due to
+auth failures or network issues).
+
+### Concurrent Event-Triggered Workflows
+
+When a single event fires (e.g., `gws.email.new`), all subscribed workflows run
+concurrently with no coordination. Three workflows all reading/modifying the same
+email (organize, auto-reply, handle-meeting-requests) may race. The 2-minute
+per-binding rate limit in EventDispatcher prevents rapid re-firing of the same
+binding, but does not prevent multiple different bindings from firing simultaneously
+for the same event.
+
 ---
 
-*Last updated: 2026-03-16*
+*Last updated: 2026-05-11*

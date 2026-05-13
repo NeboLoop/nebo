@@ -297,7 +297,6 @@ impl Default for EmailConfig {
     }
 }
 
-
 impl Default for FeaturesConfig {
     fn default() -> Self {
         Self {
@@ -317,7 +316,6 @@ impl Default for NeboLoopConfig {
         }
     }
 }
-
 
 impl Default for LogConfig {
     fn default() -> Self {
@@ -366,10 +364,14 @@ impl Config {
             self.auth.refresh_token_expire = DEFAULT_REFRESH_TOKEN_EXPIRE;
         }
         if self.database.sqlite_path.is_empty()
-            && let Ok(dir) = defaults::data_dir() {
-                self.database.sqlite_path =
-                    dir.join("data").join("nebo.db").to_string_lossy().into_owned();
-            }
+            && let Ok(dir) = defaults::data_dir()
+        {
+            self.database.sqlite_path = dir
+                .join("data")
+                .join("nebo.db")
+                .to_string_lossy()
+                .into_owned();
+        }
         // Apply NeboLoop env var overrides
         if let Ok(v) = env::var("NEBOLOOP_API_URL") {
             self.neboloop.api_url = v;

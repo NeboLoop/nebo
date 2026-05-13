@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use db::models::{ChatMessage, Session};
 use db::Store;
+use db::models::{ChatMessage, Session};
 use types::NeboError;
 
 /// Manages agent sessions backed by the database.
@@ -18,6 +18,8 @@ pub struct SessionManager {
     chat_ids: Arc<RwLock<HashMap<String, String>>>,
     /// Cache: session_id -> session_key (name) for routing lookups.
     session_keys: Arc<RwLock<HashMap<String, String>>>,
+    /// In-memory: session_id -> detected mode (e.g. "research"). Ephemeral, not persisted.
+    detected_modes: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl SessionManager {
@@ -26,6 +28,7 @@ impl SessionManager {
             store,
             chat_ids: Arc::new(RwLock::new(HashMap::new())),
             session_keys: Arc::new(RwLock::new(HashMap::new())),
+            detected_modes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -39,13 +42,9 @@ impl SessionManager {
             ("user", user_id)
         };
 
-        let session = self.store.get_or_create_scoped_session(
-            &id,
-            session_key,
-            scope,
-            scope_id,
-            None,
-        )?;
+        let session =
+            self.store
+                .get_or_create_scoped_session(&id, session_key, scope, scope_id, None)?;
 
         // Ensure active_chat_id is set. Existing sessions get it from the migration
         // backfill; truly new sessions or missed migrations need a runtime fallback.
@@ -55,8 +54,15 @@ impl SessionManager {
             // Legacy session without active_chat_id — use session name (= old behavior).
             let fallback = session.name.clone().unwrap_or_default();
             if !fallback.is_empty() {
-                if let Err(e) = self.store.set_session_active_chat_id(&session.id, &fallback) {
-                    tracing::warn!("failed to backfill active_chat_id for session {}: {}", session.id, e);
+                if let Err(e) = self
+                    .store
+                    .set_session_active_chat_id(&session.id, &fallback)
+                {
+                    tracing::warn!(
+                        "failed to backfill active_chat_id for session {}: {}",
+                        session.id,
+                        e
+                    );
                 }
             }
             fallback
@@ -105,9 +111,7 @@ impl SessionManager {
 
         // Fallback to DB
         let session = self.store.get_session(session_id)?;
-        let key = session
-            .and_then(|s| s.name)
-            .unwrap_or_default();
+        let key = session.and_then(|s| s.name).unwrap_or_default();
 
         if let Ok(mut cache) = self.session_keys.write() {
             cache.insert(session_id.to_string(), key.clone());
@@ -128,7 +132,9 @@ impl SessionManager {
         }
 
         // Load from DB — prefer active_chat_id, fall back to name
-        let chat_id = self.store.get_session(session_id)
+        let chat_id = self
+            .store
+            .get_session(session_id)
             .ok()
             .flatten()
             .and_then(|s| s.active_chat_id.or(s.name))
@@ -224,35 +230,59 @@ impl SessionManager {
         self.store.clear_session_active_task(session_id)
     }
 
-    /// Get work tasks JSON.
-    pub fn get_work_tasks(&self, session_id: &str) -> Result<String, NeboError> {
-        self.store.get_session_work_tasks(session_id)
+    /// Get the detected mode for a session (e.g. "research"). Returns empty string if none.
+    pub fn get_detected_mode(&self, session_id: &str) -> String {
+        self.detected_modes
+            .read()
+            .ok()
+            .and_then(|m| m.get(session_id).cloned())
+            .unwrap_or_default()
     }
 
-    /// Set work tasks JSON.
-    pub fn set_work_tasks(&self, session_id: &str, tasks_json: &str) -> Result<(), NeboError> {
-        self.store.set_session_work_tasks(session_id, tasks_json)
+    /// Set the detected mode for a session.
+    pub fn set_detected_mode(&self, session_id: &str, mode: &str) {
+        if let Ok(mut m) = self.detected_modes.write() {
+            if mode.is_empty() {
+                m.remove(session_id);
+            } else {
+                m.insert(session_id.to_string(), mode.to_string());
+            }
+        }
+    }
+
+    /// Switch the active chat for a session (updates DB and in-memory cache).
+    pub fn set_active_chat(&self, session_id: &str, chat_id: &str) -> Result<(), NeboError> {
+        self.store.set_session_active_chat_id(session_id, chat_id)?;
+        if let Ok(mut cache) = self.chat_ids.write() {
+            cache.insert(session_id.to_string(), chat_id.to_string());
+        }
+        Ok(())
     }
 
     /// Create a new conversation under the same session, preserving old messages.
     /// Returns the new chat_id. Pass `user_id` to carry forward ownership (e.g. companion chats).
-    pub fn rotate_chat(&self, session_id: &str, user_id: Option<&str>) -> Result<String, NeboError> {
-        let session = self.store.get_session(session_id)?
+    pub fn rotate_chat(
+        &self,
+        session_id: &str,
+        user_id: Option<&str>,
+    ) -> Result<String, NeboError> {
+        let session = self
+            .store
+            .get_session(session_id)?
             .ok_or(NeboError::NotFound)?;
 
         let session_name = session.name.clone().unwrap_or_default();
         let new_chat_id = uuid::Uuid::new_v4().to_string();
 
+        let title = "New Chat".to_string();
+
         // Create a new chat row linked to this session.
-        self.store.create_chat_for_session(
-            &new_chat_id,
-            &session_name,
-            "New Chat",
-            user_id,
-        )?;
+        self.store
+            .create_chat_for_session(&new_chat_id, &session_name, &title, user_id)?;
 
         // Point the session to the new chat.
-        self.store.set_session_active_chat_id(session_id, &new_chat_id)?;
+        self.store
+            .set_session_active_chat_id(session_id, &new_chat_id)?;
 
         // Reset conversation-scoped counters; preserve session-level preferences.
         self.store.reset_session_counters(session_id)?;
@@ -271,7 +301,9 @@ impl SessionManager {
     /// remains discoverable by get_companion_chat_by_user().
     pub fn reset(&self, session_id: &str) -> Result<String, NeboError> {
         let current_chat_id = self.resolve_chat_id(session_id);
-        let user_id = self.store.get_chat(&current_chat_id)
+        let user_id = self
+            .store
+            .get_chat(&current_chat_id)
             .ok()
             .flatten()
             .and_then(|c| c.user_id);

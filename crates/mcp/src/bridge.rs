@@ -44,7 +44,7 @@ pub struct IntegrationInfo {
 pub struct Bridge {
     connections: Mutex<HashMap<String, Connection>>,
     client: Arc<McpClient>,
-    registry: Arc<dyn ProxyToolRegistry>,
+    _registry: Arc<dyn ProxyToolRegistry>,
 }
 
 impl Bridge {
@@ -52,7 +52,7 @@ impl Bridge {
         Self {
             connections: Mutex::new(HashMap::new()),
             client,
-            registry,
+            _registry: registry,
         }
     }
 
@@ -62,10 +62,7 @@ impl Bridge {
     }
 
     /// Sync all enabled integrations. Disconnects stale, connects new.
-    pub async fn sync_all(
-        &self,
-        integrations: &[IntegrationInfo],
-    ) -> Result<(), McpError> {
+    pub async fn sync_all(&self, integrations: &[IntegrationInfo]) -> Result<(), McpError> {
         let enabled: HashMap<&str, &IntegrationInfo> = integrations
             .iter()
             .filter(|i| i.is_enabled)
@@ -98,7 +95,10 @@ impl Bridge {
                 continue;
             }
 
-            if let Err(e) = self.connect(&info.id, &info.server_type, &server_url, None).await {
+            if let Err(e) = self
+                .connect(&info.id, &info.server_type, &server_url, None)
+                .await
+            {
                 error!(name = info.name.as_str(), id = info.id.as_str(), error = %e, "failed to connect integration");
                 last_err = Some(e);
             }
@@ -129,7 +129,10 @@ impl Bridge {
 
         // Track connection and tool names (tools are exposed via the mcp STRAP tool,
         // not as individual proxy tools in the registry)
-        let tool_names: Vec<String> = tools.iter().map(|t| make_tool_name(server_type, &t.name)).collect();
+        let tool_names: Vec<String> = tools
+            .iter()
+            .map(|t| make_tool_name(server_type, &t.name))
+            .collect();
         let original_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
 
         let mut conns = self.connections.lock().await;
@@ -215,7 +218,9 @@ impl Bridge {
         tool_name: &str,
         input: serde_json::Value,
     ) -> Result<McpToolResult, McpError> {
-        self.client.call_tool(integration_id, tool_name, input).await
+        self.client
+            .call_tool(integration_id, tool_name, input)
+            .await
     }
 
     /// List connected integration IDs.

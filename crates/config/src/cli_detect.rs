@@ -105,7 +105,11 @@ pub fn ensure_full_path() {
 
         // Append only dirs not already in PATH
         let mut new_path = current.clone();
-        let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+        let sep = if cfg!(target_os = "windows") {
+            ";"
+        } else {
+            ":"
+        };
         for dir in extra_dirs {
             if !dir.is_empty() && !current.contains(&dir) {
                 new_path.push_str(sep);
@@ -155,12 +159,10 @@ fn check_cli_status(command: &str) -> CliStatus {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    if let Ok(output) = cmd.spawn()
-        .and_then(|child| {
-            // Wait with timeout by polling
-            wait_with_timeout(child, Duration::from_secs(3))
-        })
-    {
+    if let Ok(output) = cmd.spawn().and_then(|child| {
+        // Wait with timeout by polling
+        wait_with_timeout(child, Duration::from_secs(3))
+    }) {
         if output.status.success() {
             status.authenticated = true;
             status.version = String::from_utf8_lossy(&output.stdout).trim().to_string();

@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::Session;
 use crate::Store;
+use crate::models::Session;
 use types::NeboError;
 
 impl Store {
@@ -260,26 +260,6 @@ impl Store {
         conn.execute(
             "UPDATE sessions SET active_task = NULL, updated_at = unixepoch() WHERE id = ?1",
             params![id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    pub fn get_session_work_tasks(&self, id: &str) -> Result<String, NeboError> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT COALESCE(work_tasks, '') FROM sessions WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
-    pub fn set_session_work_tasks(&self, id: &str, work_tasks: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE sessions SET work_tasks = ?2, updated_at = unixepoch() WHERE id = ?1",
-            params![id, work_tasks],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())

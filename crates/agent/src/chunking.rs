@@ -15,8 +15,16 @@ const SHORT_CIRCUIT_SIZE: usize = 1920;
 
 /// Split text into chunks at sentence boundaries with overlap.
 pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<TextChunk> {
-    let chunk_size = if chunk_size == 0 { DEFAULT_CHUNK_SIZE } else { chunk_size };
-    let overlap = if overlap == 0 { DEFAULT_OVERLAP } else { overlap };
+    let chunk_size = if chunk_size == 0 {
+        DEFAULT_CHUNK_SIZE
+    } else {
+        chunk_size
+    };
+    let overlap = if overlap == 0 {
+        DEFAULT_OVERLAP
+    } else {
+        overlap
+    };
 
     if text.len() <= SHORT_CIRCUIT_SIZE {
         return vec![TextChunk {
@@ -188,7 +196,8 @@ mod tests {
 
     #[test]
     fn test_paragraph_boundaries() {
-        let text = "Paragraph one has content.\n\nParagraph two has content.\n\nParagraph three.".repeat(40);
+        let text = "Paragraph one has content.\n\nParagraph two has content.\n\nParagraph three."
+            .repeat(40);
         let chunks = chunk_text_default(&text);
         assert!(chunks.len() >= 1);
     }

@@ -1,8 +1,1 @@
-// Components
-export * from './components/auth';
-
-// Utilities
-export * from './utils/validation';
-
-// Stores
-export * from './stores';
+// place files you want to import through the `$lib` alias in this folder.

@@ -91,8 +91,7 @@ impl GeminiProvider {
                                     continue;
                                 }
                                 let args: HashMap<String, serde_json::Value> =
-                                    serde_json::from_value(tc.input.clone())
-                                        .unwrap_or_default();
+                                    serde_json::from_value(tc.input.clone()).unwrap_or_default();
                                 parts.push(GeminiPart::FunctionCall {
                                     function_call: GeminiFunctionCall {
                                         name: tc.name,
@@ -117,8 +116,7 @@ impl GeminiProvider {
                         {
                             let mut parts = Vec::new();
                             for r in &results {
-                                let tool_name =
-                                    extract_tool_name(&r.tool_call_id, &req.messages);
+                                let tool_name = extract_tool_name(&r.tool_call_id, &req.messages);
                                 let mut response = HashMap::new();
                                 response.insert(
                                     "result".to_string(),
@@ -229,10 +227,7 @@ impl Provider for GeminiProvider {
             );
         }
         if req.max_tokens > 0 {
-            gen_config.insert(
-                "maxOutputTokens".into(),
-                serde_json::json!(req.max_tokens),
-            );
+            gen_config.insert("maxOutputTokens".into(), serde_json::json!(req.max_tokens));
         }
         if !gen_config.is_empty() {
             body["generationConfig"] = serde_json::Value::Object(gen_config);
@@ -287,7 +282,9 @@ async fn handle_gemini_stream(response: reqwest::Response, tx: mpsc::Sender<Stre
             Ok(b) => b,
             Err(e) => {
                 warn!(error = %e, "Gemini stream read error");
-                let _ = tx.send(StreamEvent::error(format!("stream error: {e}"))).await;
+                let _ = tx
+                    .send(StreamEvent::error(format!("stream error: {e}")))
+                    .await;
                 break;
             }
         };
@@ -311,7 +308,8 @@ async fn handle_gemini_stream(response: reqwest::Response, tx: mpsc::Sender<Stre
                             // Check for error response
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
                                 if let Some(err) = val.get("error") {
-                                    let msg = err.get("message")
+                                    let msg = err
+                                        .get("message")
                                         .and_then(|m| m.as_str())
                                         .unwrap_or("Gemini API error");
                                     let _ = tx.send(StreamEvent::error(msg.to_string())).await;
@@ -339,7 +337,10 @@ async fn handle_gemini_stream(response: reqwest::Response, tx: mpsc::Sender<Stre
                                                 .unwrap_or(serde_json::json!({}));
                                             let _ = tx
                                                 .send(StreamEvent::tool_call(ToolCall {
-                                                    id: format!("gemini-call-{}", tool_call_counter),
+                                                    id: format!(
+                                                        "gemini-call-{}",
+                                                        tool_call_counter
+                                                    ),
                                                     name: function_call.name.clone(),
                                                     input,
                                                 }))
@@ -353,17 +354,23 @@ async fn handle_gemini_stream(response: reqwest::Response, tx: mpsc::Sender<Stre
                             if let Some(ref reason) = candidate.finish_reason {
                                 match reason.as_str() {
                                     "STOP" => {
-                                        let _ = tx.send(StreamEvent::done_with_reason("end_turn")).await;
+                                        let _ = tx
+                                            .send(StreamEvent::done_with_reason("end_turn"))
+                                            .await;
                                         return;
                                     }
                                     "MAX_TOKENS" => {
-                                        let _ = tx.send(StreamEvent::done_with_reason("max_tokens")).await;
+                                        let _ = tx
+                                            .send(StreamEvent::done_with_reason("max_tokens"))
+                                            .await;
                                         return;
                                     }
                                     "SAFETY" => {
-                                        let _ = tx.send(StreamEvent::error(
-                                            "Response blocked by safety filters".to_string(),
-                                        )).await;
+                                        let _ = tx
+                                            .send(StreamEvent::error(
+                                                "Response blocked by safety filters".to_string(),
+                                            ))
+                                            .await;
                                         return;
                                     }
                                     _ => {}
@@ -430,9 +437,7 @@ fn extract_tool_name(tool_call_id: &str, messages: &[Message]) -> String {
     for msg in messages {
         if msg.role == "assistant" {
             if let Some(ref tc_val) = msg.tool_calls {
-                if let Ok(calls) =
-                    serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone())
-                {
+                if let Ok(calls) = serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone()) {
                     for c in calls {
                         if c.id == tool_call_id {
                             return c.name;
@@ -452,10 +457,7 @@ fn convert_json_schema(schema: &serde_json::Value) -> GeminiSchema {
         None => return GeminiSchema::default_object(),
     };
 
-    let type_str = obj
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("OBJECT");
+    let type_str = obj.get("type").and_then(|v| v.as_str()).unwrap_or("OBJECT");
 
     let schema_type = match type_str.to_uppercase().as_str() {
         "STRING" => "STRING",
@@ -467,7 +469,10 @@ fn convert_json_schema(schema: &serde_json::Value) -> GeminiSchema {
         _ => "STRING",
     };
 
-    let description = obj.get("description").and_then(|v| v.as_str()).map(String::from);
+    let description = obj
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     let enum_values = obj.get("enum").and_then(|v| v.as_array()).map(|arr| {
         arr.iter()
@@ -475,12 +480,15 @@ fn convert_json_schema(schema: &serde_json::Value) -> GeminiSchema {
             .collect()
     });
 
-    let properties = obj.get("properties").and_then(|v| v.as_object()).map(|props| {
-        props
-            .iter()
-            .map(|(name, prop_val)| (name.clone(), convert_json_schema(prop_val)))
-            .collect()
-    });
+    let properties = obj
+        .get("properties")
+        .and_then(|v| v.as_object())
+        .map(|props| {
+            props
+                .iter()
+                .map(|(name, prop_val)| (name.clone(), convert_json_schema(prop_val)))
+                .collect()
+        });
 
     let required = obj.get("required").and_then(|v| v.as_array()).map(|arr| {
         arr.iter()
@@ -488,9 +496,7 @@ fn convert_json_schema(schema: &serde_json::Value) -> GeminiSchema {
             .collect()
     });
 
-    let items = obj
-        .get("items")
-        .map(|v| Box::new(convert_json_schema(v)));
+    let items = obj.get("items").map(|v| Box::new(convert_json_schema(v)));
 
     GeminiSchema {
         schema_type: schema_type.to_string(),
@@ -505,10 +511,7 @@ fn convert_json_schema(schema: &serde_json::Value) -> GeminiSchema {
 /// Map Gemini HTTP errors to ProviderError.
 fn map_gemini_error(status: u16, body: &str) -> ProviderError {
     let msg = if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
-        v["error"]["message"]
-            .as_str()
-            .unwrap_or(body)
-            .to_string()
+        v["error"]["message"].as_str().unwrap_or(body).to_string()
     } else {
         body.to_string()
     };
@@ -575,9 +578,8 @@ impl<'de> Deserialize<'de> for GeminiPart {
                 text: val["text"].as_str().unwrap_or("").to_string(),
             })
         } else if val.get("functionCall").is_some() {
-            let fc: GeminiFunctionCall =
-                serde_json::from_value(val["functionCall"].clone())
-                    .map_err(serde::de::Error::custom)?;
+            let fc: GeminiFunctionCall = serde_json::from_value(val["functionCall"].clone())
+                .map_err(serde::de::Error::custom)?;
             Ok(GeminiPart::FunctionCall { function_call: fc })
         } else if val.get("functionResponse").is_some() {
             let fr: GeminiFunctionResponse =
@@ -587,9 +589,8 @@ impl<'de> Deserialize<'de> for GeminiPart {
                 function_response: fr,
             })
         } else if val.get("inlineData").is_some() {
-            let id: GeminiInlineData =
-                serde_json::from_value(val["inlineData"].clone())
-                    .map_err(serde::de::Error::custom)?;
+            let id: GeminiInlineData = serde_json::from_value(val["inlineData"].clone())
+                .map_err(serde::de::Error::custom)?;
             Ok(GeminiPart::InlineData { inline_data: id })
         } else {
             // Default to empty text

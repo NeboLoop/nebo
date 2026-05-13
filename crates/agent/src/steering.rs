@@ -76,15 +76,17 @@ impl Pipeline {
             Box::new(ChannelAdapter),
             Box::new(ToolNudge),
             Box::new(PendingTaskAction),
-            Box::new(ActionBias),
             Box::new(OutputDiscipline),
             Box::new(NarrationSuppressor),
             Box::new(RepetitionDetector),
             Box::new(LoopDetector),
-            Box::new(AutomationSpeed),
+            Box::new(ErrorRecovery),
             Box::new(PresenceAwareness),
             Box::new(ContextPressure),
             Box::new(JanusQuotaWarning),
+            Box::new(TaskTrackingNudge),
+            Box::new(TaskCompletionNudge),
+            Box::new(AskToolNudge),
         ];
 
         Self { generators }
@@ -114,7 +116,15 @@ impl Pipeline {
 
         for g in &self.generators {
             // Skip narration/discipline generators for direct Claude only — Claude follows system prompt well
-            if is_claude && matches!(g.name(), "action_bias" | "narration_suppressor" | "output_discipline" | "repetition_detector") {
+            if is_claude
+                && matches!(
+                    g.name(),
+                    "narration_suppressor"
+                        | "output_discipline"
+                        | "repetition_detector"
+                        | "ask_tool_nudge"
+                )
+            {
                 continue;
             }
             // Skip JanusQuotaWarning for Ollama
@@ -123,9 +133,7 @@ impl Pipeline {
             }
 
             // Panic recovery per generator
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                g.generate(ctx)
-            }));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.generate(ctx)));
 
             match result {
                 Ok(dirs) => {
@@ -163,7 +171,11 @@ fn count_turns_since_any_tool_use(messages: &[ChatMessage]) -> i32 {
     let mut count = 0;
     for msg in messages.iter().rev() {
         if msg.role == "assistant" {
-            if msg.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null") {
+            if msg
+                .tool_calls
+                .as_ref()
+                .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null")
+            {
                 return count;
             }
             if !msg.content.is_empty() {
@@ -176,9 +188,28 @@ fn count_turns_since_any_tool_use(messages: &[ChatMessage]) -> i32 {
 
 /// Detect if recent user messages contain stop/cancel/abort requests.
 fn user_requested_stop(messages: &[ChatMessage]) -> bool {
-    let stop_patterns = [
-        "stop", "cancel", "abort", "halt", "quit",
-        "enough", "break out", "stop stop",
+    // Exact stop commands — the ENTIRE message (trimmed) must match one of these.
+    // This prevents false positives like "stop submitting the form" or
+    // "and stop doing that" which are instructions, not stop commands.
+    let exact_commands = [
+        "stop",
+        "stop.",
+        "stop!",
+        "stop it",
+        "stop it.",
+        "stop now",
+        "cancel",
+        "abort",
+        "halt",
+        "quit",
+        "enough",
+        "enough.",
+        "that's enough",
+        "break out",
+        "stop stop",
+        "please stop",
+        "just stop",
+        "ok stop",
     ];
     // Check last 3 user messages
     let recent_user: Vec<&ChatMessage> = messages
@@ -190,11 +221,11 @@ fn user_requested_stop(messages: &[ChatMessage]) -> bool {
 
     for msg in &recent_user {
         let lower = msg.content.to_lowercase();
-        // Short messages that are clearly stop commands (not long messages that happen
-        // to contain the word "stop" in a different context)
-        if lower.len() < 80 {
-            for p in &stop_patterns {
-                if lower.contains(p) {
+        let trimmed = lower.trim();
+        // Only match if the entire message is a stop command (< 30 chars)
+        if trimmed.len() < 30 {
+            for p in &exact_commands {
+                if trimmed == *p {
                     return true;
                 }
             }
@@ -206,43 +237,13 @@ fn user_requested_stop(messages: &[ChatMessage]) -> bool {
 /// Check if the loop should be force-broken. Called by the runner BEFORE
 /// making the next LLM call. Returns Some(reason) if the loop must stop.
 pub fn should_force_break(ctx: &Context) -> Option<String> {
-    // 1. Consecutive error iterations — hard limit
-    if ctx.consecutive_error_iterations >= 5 {
-        return Some(format!(
-            "Circuit breaker: {} consecutive iterations where all tool calls failed. \
-             Breaking loop to prevent runaway execution.",
-            ctx.consecutive_error_iterations,
-        ));
-    }
-
-    // 2. Same-tool-same-args loop at extreme count — the LLM is ignoring steering.
-    // Uses hash-based detection: (name_hash, args_hash) must match for it to count.
-    // This correctly allows web(navigate)→web(click)→web(fill) while catching
-    // web(search, "flights") × 6 with identical args.
-    if ctx.recent_tool_result_hashes.len() >= 2 {
-        let last = ctx.recent_tool_result_hashes.last().unwrap();
-        let mut same_call_count = 1usize;
-        for entry in ctx.recent_tool_result_hashes.iter().rev().skip(1) {
-            if entry.0 == last.0 && entry.1 == last.1 {
-                same_call_count += 1;
-            } else {
-                break;
-            }
-        }
-        if same_call_count >= 6 {
-            return Some(format!(
-                "Circuit breaker: same tool called with identical arguments {} times. \
-                 The agent is stuck in a loop and steering was ignored.",
-                same_call_count,
-            ));
-        }
-    }
-
-    // 3. User explicitly asked to stop — unconditional hard break
+    // Only hard-stop on explicit user stop command.
+    // Everything else is handled by the iteration budget (100 iterations).
+    // Hermes uses budget-only (90 iterations, no error/loop tracking) and it works.
+    // The model is smart enough to self-correct — aggressive circuit breakers
+    // kill legitimate browser automation (Google Flights, Amazon, etc.).
     if user_requested_stop(&ctx.messages) && ctx.iteration > 2 {
-        return Some(
-            "Circuit breaker: user requested stop. Halting agent loop.".to_string()
-        );
+        return Some("Circuit breaker: user requested stop. Halting agent loop.".to_string());
     }
 
     None
@@ -253,7 +254,9 @@ pub fn should_force_break(ctx: &Context) -> Option<String> {
 // 1. Identity Guard
 struct IdentityGuard;
 impl Generator for IdentityGuard {
-    fn name(&self) -> &str { "identity_guard" }
+    fn name(&self) -> &str {
+        "identity_guard"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         let turns = count_assistant_turns(&ctx.messages);
         if turns >= 8 && turns % 8 == 0 {
@@ -273,7 +276,9 @@ impl Generator for IdentityGuard {
 // 2. Channel Adapter
 struct ChannelAdapter;
 impl Generator for ChannelAdapter {
-    fn name(&self) -> &str { "channel_adapter" }
+    fn name(&self) -> &str {
+        "channel_adapter"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         let content = match ctx.channel.as_str() {
             "dm" => "Keep responses concise for direct messages. Avoid markdown formatting.",
@@ -292,7 +297,9 @@ impl Generator for ChannelAdapter {
 // 3. Tool Nudge
 struct ToolNudge;
 impl Generator for ToolNudge {
-    fn name(&self) -> &str { "tool_nudge" }
+    fn name(&self) -> &str {
+        "tool_nudge"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if ctx.active_task.is_empty() {
             return vec![];
@@ -316,7 +323,9 @@ impl Generator for ToolNudge {
 // 4. Pending Task Action
 struct PendingTaskAction;
 impl Generator for PendingTaskAction {
-    fn name(&self) -> &str { "pending_task_action" }
+    fn name(&self) -> &str {
+        "pending_task_action"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if ctx.active_task.is_empty() || ctx.iteration < 2 {
             return vec![];
@@ -339,120 +348,50 @@ impl Generator for PendingTaskAction {
     }
 }
 
-// 5. Action Bias — language-agnostic structural detection of narration
-struct ActionBias;
-impl Generator for ActionBias {
-    fn name(&self) -> &str { "action_bias" }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.active_task.is_empty() || ctx.iteration < 2 {
-            return vec![];
-        }
-
-        // Count consecutive text-only assistant responses (no tool calls)
-        let mut consecutive_text_only = 0usize;
-        for msg in ctx.messages.iter().rev() {
-            if msg.role == "user" { break; }
-            if msg.role != "assistant" { continue; }
-            let has_tool_calls = msg.tool_calls.as_ref()
-                .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
-            if has_tool_calls { break; }
-            if !msg.content.is_empty() {
-                consecutive_text_only += 1;
-            }
-        }
-
-        if consecutive_text_only >= 2 {
-            return vec![SteeringDirective {
-                label: "Action Bias".to_string(),
-                content: format!(
-                    "You have responded with text {} times without calling any tool. \
-                     You have an active task — call a tool NOW to make progress. \
-                     Do not describe what you plan to do — just do it.",
-                    consecutive_text_only
-                ),
-                priority: 8,
-            }];
-        }
-
-        // Detect: long text response (>200 chars) with no tool call during active task
-        if let Some(last) = ctx.messages.iter().rev()
-            .find(|m| m.role == "assistant")
-        {
-            let has_tool_calls = last.tool_calls.as_ref()
-                .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
-            if !has_tool_calls && last.content.len() > 200 && ctx.iteration >= 3 {
-                return vec![SteeringDirective {
-                    label: "Action Bias".to_string(),
-                    content: "Your last response was long text with no tool call. \
-                             Keep responses brief — the user can see your tool calls. \
-                             Take the next action instead of explaining.".to_string(),
-                    priority: 7,
-                }];
-            }
-        }
-
-        vec![]
-    }
-}
-
-// 6. Output Discipline — proactive reinforcement for non-Claude models.
+// 5. Output Discipline — proactive reinforcement for non-Claude models.
 // Modeled after Hermes TOOL_USE_ENFORCEMENT_GUIDANCE which uses forceful
 // language ("MUST", "immediately", "not acceptable") targeted at GPT/Codex.
 struct OutputDiscipline;
 impl Generator for OutputDiscipline {
-    fn name(&self) -> &str { "output_discipline" }
+    fn name(&self) -> &str {
+        "output_discipline"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        let mut directives = Vec::new();
-
-        // Always-on tool enforcement (fires from iteration 0).
-        // Hermes-strength language — "MUST", "immediately", "not acceptable".
-        directives.push(SteeringDirective {
-            label: "Tool Enforcement".to_string(),
-            content: "You MUST use your tools to take action — do not describe what you would do \
-                     or plan to do without actually doing it. When you say you will perform an \
-                     action (e.g. 'I will search', 'Let me check', 'I will look up'), you MUST \
-                     immediately make the corresponding tool call in the same response. \
-                     Never end your turn with a promise of future action — execute it now.\n\
-                     Keep working until the task is actually complete. Do not stop with a summary \
-                     of what you plan to do next. If you have tools available that can accomplish \
-                     the task, use them instead of telling the user what you would do.\n\
-                     Every response MUST either (a) contain tool calls that make progress, or \
-                     (b) deliver a final result to the user. Responses that only describe \
-                     intentions without acting are not acceptable.".to_string(),
-            priority: 9,
-        });
-
-        // Check if last assistant message was excessively long
-        if ctx.iteration >= 1 {
-            let last_len = ctx.messages.iter().rev()
-                .find(|m| m.role == "assistant")
-                .map(|m| m.content.len())
-                .unwrap_or(0);
-
-            if last_len > 300 {
-                directives.push(SteeringDirective {
-                    label: "Output Violation".to_string(),
-                    content: "Your last response was too long. STRICT CORRECTIONS:\n\
-                             1. When calling tools: output ZERO text. No preamble, no summary, no status update.\n\
-                             2. When reporting results: 1-3 sentences maximum. No bullet lists of \"what I tried\".\n\
-                             3. NEVER repeat information you already said.\n\
-                             4. NEVER say \"if you want, I can...\" — just continue working.\n\
-                             5. NEVER announce timeouts, errors, or limitations — handle them silently or try a different approach.\n\
-                             6. NEVER explain what blocked you. The user cares about results, not your process.\n\
-                             7. Cut your output by 80%.".to_string(),
-                    priority: 9,
-                });
-            }
+        // Only fire when the last response was excessively long
+        if ctx.iteration < 1 {
+            return vec![];
         }
+        let last_len = ctx
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant")
+            .map(|m| m.content.len())
+            .unwrap_or(0);
 
-        directives
+        if last_len > 300 {
+            vec![SteeringDirective {
+                label: "Output Discipline".to_string(),
+                content: "Your last response was too long. Corrections:\n\
+                         1. Tool calls: output ZERO text alongside them.\n\
+                         2. Results: 1-3 sentences maximum.\n\
+                         3. Never repeat information you already said.\n\
+                         4. Never announce errors or limitations — handle them silently or try a different approach."
+                    .to_string(),
+                priority: 9,
+            }]
+        } else {
+            vec![]
+        }
     }
 }
 
 // 6b. Narration Suppressor — detects text+tool narration pattern
 struct NarrationSuppressor;
 impl Generator for NarrationSuppressor {
-    fn name(&self) -> &str { "narration_suppressor" }
+    fn name(&self) -> &str {
+        "narration_suppressor"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if ctx.iteration < 1 {
             return vec![];
@@ -461,8 +400,12 @@ impl Generator for NarrationSuppressor {
         // Count recent assistant messages that have BOTH text (>50 chars) AND tool calls
         let mut narrating_turns = 0usize;
         for msg in ctx.messages.iter().rev().take(6) {
-            if msg.role != "assistant" { continue; }
-            let has_tool_calls = msg.tool_calls.as_ref()
+            if msg.role != "assistant" {
+                continue;
+            }
+            let has_tool_calls = msg
+                .tool_calls
+                .as_ref()
                 .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
             if has_tool_calls && msg.content.len() > 50 {
                 narrating_turns += 1;
@@ -486,14 +429,19 @@ impl Generator for NarrationSuppressor {
 // 6c. Repetition Detector — catches GPT's habit of restating the same info
 struct RepetitionDetector;
 impl Generator for RepetitionDetector {
-    fn name(&self) -> &str { "repetition_detector" }
+    fn name(&self) -> &str {
+        "repetition_detector"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if ctx.iteration < 3 {
             return vec![];
         }
 
         // Collect recent non-empty assistant text responses
-        let recent_texts: Vec<&str> = ctx.messages.iter().rev()
+        let recent_texts: Vec<&str> = ctx
+            .messages
+            .iter()
+            .rev()
             .filter(|m| m.role == "assistant" && m.content.len() > 100)
             .take(4)
             .map(|m| m.content.as_str())
@@ -512,10 +460,12 @@ impl Generator for RepetitionDetector {
                 continue;
             }
             // Count shared 3-grams
-            let a_trigrams: std::collections::HashSet<String> = a_words.windows(3)
+            let a_trigrams: std::collections::HashSet<String> = a_words
+                .windows(3)
                 .map(|w| w.join(" ").to_lowercase())
                 .collect();
-            let b_trigrams: std::collections::HashSet<String> = b_words.windows(3)
+            let b_trigrams: std::collections::HashSet<String> = b_words
+                .windows(3)
                 .map(|w| w.join(" ").to_lowercase())
                 .collect();
             let shared = a_trigrams.intersection(&b_trigrams).count();
@@ -546,146 +496,16 @@ impl Generator for RepetitionDetector {
 // This correctly distinguishes web(navigate, google.com) → web(click, button)
 // (legitimate browser work) from web(search, "flights") × 5 (actual loop).
 struct LoopDetector;
-impl LoopDetector {
-    /// Check if the tool involved in the detected loop is the plugin tool.
-    /// Returns true when the most recent entry in recent_tool_names is "plugin".
-    fn is_plugin_loop(names: &[String]) -> bool {
-        names.last().is_some_and(|n| n == "plugin")
-    }
-
-    /// Extra guidance when the looping tool is a plugin CLI command.
-    fn plugin_hint() -> &'static str {
-        "\n--- PLUGIN-SPECIFIC RECOVERY ---\n\
-         The failing tool is a plugin (external CLI). The command syntax may be wrong. Try:\n\
-         - Run the plugin with --help to discover the correct subcommands and flags \
-         (e.g. plugin(resource: \"gws\", command: \"gmail users messages --help\"))\n\
-         - Check if you're passing the right parameter format (JSON vs positional args)\n\
-         - Try a simpler variant of the command first to confirm the subcommand exists"
-    }
-}
 impl Generator for LoopDetector {
-    fn name(&self) -> &str { "loop_detector" }
+    fn name(&self) -> &str {
+        "loop_detector"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         let mut directives = Vec::new();
-        let hashes = &ctx.recent_tool_result_hashes;
 
-        // A. Same-tool-same-args detection (OpenClaw "generic repeat" pattern).
-        // Counts consecutive calls with identical (name_hash, args_hash).
-        // Different args = different action = not a loop.
-        if hashes.len() >= 2 {
-            let last = hashes.last().unwrap();
-            let mut same_call_count = 1usize;
-            for entry in hashes.iter().rev().skip(1) {
-                if entry.0 == last.0 && entry.1 == last.1 {
-                    same_call_count += 1;
-                } else {
-                    break;
-                }
-            }
-
-            if same_call_count >= 4 {
-                let plugin_extra = if Self::is_plugin_loop(&ctx.recent_tool_names) {
-                    Self::plugin_hint()
-                } else { "" };
-                directives.push(SteeringDirective {
-                    label: "Loop Warning".to_string(),
-                    content: format!(
-                        "LOOP DETECTED: You have called the same tool with identical arguments {} times. \
-                         You are in an infinite loop and MUST break out NOW. Do one of the following:\n\
-                         1. Check if a skill can handle this: skill(action: \"catalog\") — a specialized skill may solve this differently.\n\
-                         2. Ask your advisors for help: agent(resource: \"advisors\", action: \"deliberate\", task: \"I am stuck in a loop trying to [describe what you're doing]. What alternative approach should I take?\")\n\
-                         3. Try a COMPLETELY different tool or approach — not the same tool with different args.\n\
-                         4. If none of the above work, tell the user what's blocking you and ask for guidance.\n\
-                         Do NOT call the same tool again.{}",
-                        same_call_count, plugin_extra
-                    ),
-                    priority: 10,
-                });
-            } else if same_call_count >= 2 {
-                let plugin_extra = if Self::is_plugin_loop(&ctx.recent_tool_names) {
-                    Self::plugin_hint()
-                } else { "" };
-                directives.push(SteeringDirective {
-                    label: "Loop Warning".to_string(),
-                    content: format!(
-                        "You have called the same tool with identical arguments {} times and the result will not change. \
-                         Before repeating, consider:\n\
-                         - Is there a skill for this? Try skill(action: \"catalog\") to check.\n\
-                         - Try different parameters, a different tool, or a different approach entirely.{}",
-                        same_call_count, plugin_extra
-                    ),
-                    priority: 8,
-                });
-            }
-        }
-
-        // B. Stale-result detection — same tool, same args, AND same result.
-        // Stronger signal: even the output is identical.
-        if hashes.len() >= 2 {
-            let last = hashes.last().unwrap();
-            let prev = &hashes[hashes.len() - 2];
-            if last.0 == prev.0 && last.1 == prev.1 && last.2 == prev.2 {
-                directives.push(SteeringDirective {
-                    label: "Stale Results".to_string(),
-                    content: format!("You called the same tool with the same arguments and got \
-                             identical results. You are NOT making progress. STOP and pivot:\n\
-                             1. Check for a skill: skill(action: \"catalog\") — a specialized skill may handle this.\n\
-                             2. Consult advisors: agent(resource: \"advisors\", action: \"deliberate\", task: \"describe your stuck situation\") for a fresh perspective.\n\
-                             3. Use a completely different tool or approach.\n\
-                             Do NOT repeat the same call.{}",
-                             if Self::is_plugin_loop(&ctx.recent_tool_names) { Self::plugin_hint() } else { "" }),
-                    priority: 9,
-                });
-            }
-        }
-
-        // C. Ping-pong detection (OpenClaw pattern) — A→B→A→B alternating.
-        if hashes.len() >= 4 {
-            let len = hashes.len();
-            let a1 = &hashes[len - 4];
-            let b1 = &hashes[len - 3];
-            let a2 = &hashes[len - 2];
-            let b2 = &hashes[len - 1];
-            // Check: (name+args of position -4) == (name+args of position -2)
-            //    AND (name+args of position -3) == (name+args of position -1)
-            //    AND they're different from each other
-            let a_matches = a1.0 == a2.0 && a1.1 == a2.1;
-            let b_matches = b1.0 == b2.0 && b1.1 == b2.1;
-            let a_differs_from_b = a1.0 != b1.0 || a1.1 != b1.1;
-            if a_matches && b_matches && a_differs_from_b {
-                directives.push(SteeringDirective {
-                    label: "Ping-Pong".to_string(),
-                    content: format!("You are alternating between two tool calls in a loop (A→B→A→B). \
-                             Neither is making progress. STOP this pattern immediately.\n\
-                             1. Check if a skill can handle this differently: skill(action: \"catalog\")\n\
-                             2. Ask advisors for a fresh approach: agent(resource: \"advisors\", action: \"deliberate\", task: \"describe the problem you're trying to solve\")\n\
-                             3. Try a completely different strategy — not a variation of the same two tools.\n\
-                             4. If truly stuck, tell the user what's blocking you.{}",
-                             if Self::is_plugin_loop(&ctx.recent_tool_names) { Self::plugin_hint() } else { "" }),
-                    priority: 9,
-                });
-            }
-        }
-
-        // D. All-error iteration detection (catches varied-tool loops)
-        if ctx.consecutive_error_iterations >= 3 {
-            directives.push(SteeringDirective {
-                label: "Error Loop".to_string(),
-                content: format!(
-                    "The last {} iterations all produced errors. You are stuck. STOP retrying and pivot:\n\
-                     1. A skill might handle this better: skill(action: \"catalog\") to check.\n\
-                     2. Get advice: agent(resource: \"advisors\", action: \"deliberate\", task: \"I keep getting errors trying to [describe task]. What should I try instead?\")\n\
-                     3. Try a fundamentally different approach — not the same action with tweaks.\n\
-                     4. If nothing works, tell the user what's failing and ask for guidance.{}",
-                    ctx.consecutive_error_iterations,
-                    if Self::is_plugin_loop(&ctx.recent_tool_names) { Self::plugin_hint() } else { "" }
-                ),
-                priority: 10,
-            });
-        }
-
-        // E. Budget pressure warnings (Hermes pattern — 70%/90% thresholds).
-        // Max iterations is 100 (from runner).
+        // Budget pressure warnings (Hermes pattern — 70%/90% thresholds).
+        // This is the only loop-related steering we keep. Hermes has no explicit
+        // loop detection — just an iteration budget of 90. We match that approach.
         const MAX_ITERATIONS: usize = 100;
         let pct = (ctx.iteration * 100) / MAX_ITERATIONS;
         if pct >= 90 {
@@ -711,7 +531,7 @@ impl Generator for LoopDetector {
             });
         }
 
-        // F. User stop detection
+        // User stop detection (soft steering — hard stop is in should_force_break)
         if user_requested_stop(&ctx.messages) {
             directives.push(SteeringDirective {
                 label: "User Stop".to_string(),
@@ -726,122 +546,17 @@ impl Generator for LoopDetector {
     }
 }
 
-// 8. Automation Speed — nudges agent to stop wasting time in automation loops
-struct AutomationSpeed;
-impl Generator for AutomationSpeed {
-    fn name(&self) -> &str { "automation_speed" }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.iteration < 4 {
-            return vec![];
-        }
-
-        // Inspect recent assistant messages for automation inefficiencies
-        let recent: Vec<&ChatMessage> = ctx.messages.iter().rev()
-            .filter(|m| m.role == "assistant")
-            .take(8)
-            .collect();
-
-        if recent.is_empty() {
-            return vec![];
-        }
-
-        // Count wait() calls, redundant read_page/see calls, and single-tool responses
-        let mut wait_calls = 0usize;
-        let mut consecutive_reads = 0usize;
-        let mut max_consecutive_reads = 0usize;
-        let mut single_tool_responses = 0usize;
-
-        for msg in &recent {
-            if let Some(ref tc_json) = msg.tool_calls {
-                if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) {
-                    if calls.len() == 1 {
-                        single_tool_responses += 1;
-                    }
-
-                    let mut has_mutation = false;
-                    let mut has_read = false;
-                    for call in &calls {
-                        let name = call.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        let input = call.get("input").or_else(|| call.get("arguments"));
-
-                        // Detect wait() calls
-                        if name == "web" {
-                            if let Some(args) = input {
-                                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                                if action == "wait" {
-                                    wait_calls += 1;
-                                } else if action == "read_page" || action == "screenshot" {
-                                    has_read = true;
-                                } else if matches!(action,
-                                    "click" | "double_click" | "triple_click" | "right_click"
-                                    | "fill" | "form_input" | "type" | "select" | "press"
-                                    | "navigate" | "go_back" | "go_forward" | "evaluate"
-                                    | "drag" | "new_tab" | "close_tab" | "scroll"
-                                ) {
-                                    has_mutation = true;
-                                }
-                            }
-                        } else if name == "desktop" || name == "os" {
-                            if let Some(args) = input {
-                                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                                if action == "see" || action == "screenshot" {
-                                    has_read = true;
-                                } else if matches!(action,
-                                    "click" | "double_click" | "right_click" | "type"
-                                    | "press" | "hotkey" | "scroll" | "drag" | "paste"
-                                ) {
-                                    has_mutation = true;
-                                }
-                            }
-                        }
-                    }
-
-                    // Track consecutive read-only responses (no mutation between reads)
-                    if has_read && !has_mutation {
-                        consecutive_reads += 1;
-                        if consecutive_reads > max_consecutive_reads {
-                            max_consecutive_reads = consecutive_reads;
-                        }
-                    } else if has_mutation {
-                        consecutive_reads = 0;
-                    }
-                }
-            }
-        }
-
-        // Fire if: 2+ wait calls, or 2+ consecutive reads without mutation, or mostly single-tool responses
-        let should_fire = wait_calls >= 2
-            || max_consecutive_reads >= 2
-            || (single_tool_responses >= 4 && recent.len() >= 5);
-
-        if !should_fire {
-            return vec![];
-        }
-
-        let mut tips = String::from("You are in an automation loop. Speed tips:");
-        if wait_calls >= 2 {
-            tips.push_str(" (1) Don't call wait() unless you see a loading spinner.");
-        }
-        if single_tool_responses >= 4 {
-            tips.push_str(" (2) Chain multiple tool calls in one response when possible.");
-        }
-        if max_consecutive_reads >= 2 {
-            tips.push_str(" (3) Don't re-read the page unless you performed an action that changes it.");
-        }
-        tips.push_str(" Work efficiently.");
-
-        vec![SteeringDirective {
-            label: "Automation Speed".to_string(),
-            content: tips,
-            priority: 6,
-        }]
-    }
-}
+// 8. AutomationSpeed — REMOVED.
+// Hermes has no equivalent. It penalized legitimate browser workflows
+// (snapshot→click→snapshot→click is how browser automation works).
+// The iteration budget is sufficient to prevent runaway execution.
 
 // 9. Presence Awareness — adapts behavior based on user focus state
 struct PresenceAwareness;
 impl Generator for PresenceAwareness {
-    fn name(&self) -> &str { "presence_awareness" }
+    fn name(&self) -> &str {
+        "presence_awareness"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if ctx.user_presence.is_empty() || ctx.iteration < 2 {
             return vec![];
@@ -851,9 +566,10 @@ impl Generator for PresenceAwareness {
             "unfocused" | "away" => {
                 vec![SteeringDirective {
                     label: "Presence".to_string(),
-                    content: "The user stepped away. Continue working autonomously on active tasks. \
+                    content:
+                        "The user stepped away. Continue working autonomously on active tasks. \
                               Be thorough but concise in your output."
-                        .to_string(),
+                            .to_string(),
                     priority: 4,
                 }]
             }
@@ -874,7 +590,9 @@ impl Generator for PresenceAwareness {
 // 10. Context Pressure
 struct ContextPressure;
 impl Generator for ContextPressure {
-    fn name(&self) -> &str { "context_pressure" }
+    fn name(&self) -> &str {
+        "context_pressure"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         // Fire every 15 iterations starting at 15 as a proxy for high context usage
         if ctx.iteration < 15 || ctx.iteration % 15 != 0 {
@@ -882,9 +600,8 @@ impl Generator for ContextPressure {
         }
         vec![SteeringDirective {
             label: "Context Pressure".to_string(),
-            content: "Context window is filling up. Keep responses concise. \
-                      Summarize tool results instead of echoing them verbatim. \
-                      If you need earlier results, re-run the tool."
+            content: "Context window is filling up. Summarize tool results instead of echoing them verbatim. \
+                      If you need earlier results, re-run the tool rather than quoting from memory."
                 .to_string(),
             priority: 6,
         }]
@@ -894,7 +611,9 @@ impl Generator for ContextPressure {
 // 12. Janus Quota Warning
 struct JanusQuotaWarning;
 impl Generator for JanusQuotaWarning {
-    fn name(&self) -> &str { "janus_quota_warning" }
+    fn name(&self) -> &str {
+        "janus_quota_warning"
+    }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         if let Some(ref warning) = ctx.quota_warning {
             if !warning.is_empty() {
@@ -910,6 +629,196 @@ impl Generator for JanusQuotaWarning {
             }
         }
         vec![]
+    }
+}
+
+// 14. Error Recovery — soft advisory after sustained errors.
+// Hermes has no error recovery steering at all. We keep a light nudge at 3+
+// consecutive errors as an advisory, not a command. Single failures are normal
+// (browser timeouts, transient network issues).
+struct ErrorRecovery;
+impl Generator for ErrorRecovery {
+    fn name(&self) -> &str {
+        "error_recovery"
+    }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        // Don't fire on 1-2 errors — single failures are normal, especially
+        // in browser automation (click timeouts, page loading, etc.)
+        if ctx.consecutive_error_iterations < 3 {
+            return vec![];
+        }
+
+        // At 3+: soft advisory suggesting a different approach
+        vec![SteeringDirective {
+            label: "Error Recovery".to_string(),
+            content: format!(
+                "Note: {} consecutive iterations had errors. Consider reading the error messages \
+                 carefully and trying a different approach if the current one isn't working.",
+                ctx.consecutive_error_iterations
+            ),
+            priority: 6,
+        }]
+    }
+}
+
+// 15. Task Tracking Nudge — steer the LLM to break complex requests into tracked tasks
+struct TaskTrackingNudge;
+impl Generator for TaskTrackingNudge {
+    fn name(&self) -> &str {
+        "task_tracking_nudge"
+    }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        // Only fire on first iteration (when user just sent a request)
+        if ctx.iteration != 1 {
+            return vec![];
+        }
+        // Don't fire if tasks already exist (LLM already tracking)
+        if !ctx.work_tasks.is_empty() {
+            return vec![];
+        }
+
+        // Detect multi-step complexity in the user prompt
+        let lower = ctx.user_prompt.to_lowercase();
+        let complexity_signals = [
+            "and then",
+            "after that",
+            "first",
+            "next",
+            "finally",
+            "step 1",
+            "step 2",
+            "1.",
+            "2.",
+            "3.",
+            "multiple",
+            "each",
+            "all of",
+            "every",
+            "research",
+            "compare",
+            "analyze",
+            "plan",
+            "set up",
+            "configure",
+            "build",
+            "create a",
+            "organize",
+            "clean up",
+            "migrate",
+        ];
+        let signal_count = complexity_signals
+            .iter()
+            .filter(|s| lower.contains(*s))
+            .count();
+
+        // Also check message length as a proxy for complexity
+        let is_long = ctx.user_prompt.len() > 200;
+
+        if signal_count < 2 && !is_long {
+            return vec![];
+        }
+
+        vec![SteeringDirective {
+            label: "Task Tracking".to_string(),
+            content: "This looks like a multi-step request. Break it into trackable tasks so the user \
+                     can see your progress:\n\
+                     1. Create tasks: bot(resource: \"task\", action: \"create\", subject: \"...\")\n\
+                     2. Update as you work: bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
+                     3. Mark complete with output: bot(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
+                     Create all tasks upfront, then work through them one at a time."
+                .to_string(),
+            priority: 6,
+        }]
+    }
+}
+
+// 16. Task Completion Nudge — remind to update tasks when work is being done but tasks aren't progressing
+struct TaskCompletionNudge;
+impl Generator for TaskCompletionNudge {
+    fn name(&self) -> &str {
+        "task_completion_nudge"
+    }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        // Only fire if there ARE tasks and tools are being used
+        if ctx.work_tasks.is_empty() || ctx.iteration < 3 {
+            return vec![];
+        }
+        // Check: all tasks still pending despite tool usage
+        let all_pending = ctx.work_tasks.iter().all(|t| t.status == "pending");
+        let has_tool_use = count_turns_since_any_tool_use(&ctx.messages) == 0;
+
+        if all_pending && has_tool_use {
+            vec![SteeringDirective {
+                label: "Task Progress".to_string(),
+                content: "You have tasks but none are marked in_progress or completed. \
+                         Update task status as you work: \
+                         bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\") \
+                         before starting, then status: \"completed\" with output when done."
+                    .to_string(),
+                priority: 5,
+            }]
+        } else {
+            vec![]
+        }
+    }
+}
+
+// 17. Ask Tool Nudge — steer the LLM to use the interactive ask widget instead of plain-text questions
+struct AskToolNudge;
+impl Generator for AskToolNudge {
+    fn name(&self) -> &str {
+        "ask_tool_nudge"
+    }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        // Find the last assistant message
+        let last_assistant = ctx
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant" && !m.content.is_empty());
+        let msg = match last_assistant {
+            Some(m) => m,
+            None => return vec![],
+        };
+
+        // Skip if this turn already had an ask tool call
+        if let Some(ref tc) = msg.tool_calls {
+            if tc.contains("\"ask\"") {
+                return vec![];
+            }
+        }
+
+        // Detect question patterns in the assistant's text
+        let text = &msg.content;
+        let has_question_mark = text.lines().any(|line| line.trim_end().ends_with('?'));
+        let lower = text.to_lowercase();
+        let has_choice_phrase = [
+            "which do you prefer",
+            "what would you like",
+            "please choose",
+            "let me know",
+            "would you rather",
+            "which option",
+            "pick one",
+            "choose from",
+        ]
+        .iter()
+        .any(|p| lower.contains(p));
+
+        if !has_question_mark && !has_choice_phrase {
+            return vec![];
+        }
+
+        vec![SteeringDirective {
+            label: "Ask Tool".to_string(),
+            content: "When you need user input, ALWAYS use the ask tool instead of asking in plain text.\n\
+                     - Yes/no: agent(resource: \"ask\", action: \"confirm\", text: \"...\")\n\
+                     - Choices: agent(resource: \"ask\", action: \"select\", text: \"...\", options: [\"A\", \"B\", \"C\"])\n\
+                     - Open-ended: agent(resource: \"ask\", action: \"prompt\", text: \"...\")\n\
+                     Never ask questions as plain text �� use the ask tool so the user gets interactive buttons."
+                .to_string(),
+            priority: 7,
+        }]
     }
 }
 
@@ -929,6 +838,7 @@ mod tests {
             tool_calls: None,
             tool_results: None,
             token_estimate: None,
+            html: None,
         }
     }
 
@@ -998,10 +908,7 @@ mod tests {
 
     #[test]
     fn test_presence_awareness_away() {
-        let messages = vec![
-            make_msg("user", "hello"),
-            make_msg("assistant", "hi"),
-        ];
+        let messages = vec![make_msg("user", "hello"), make_msg("assistant", "hi")];
         let generator = PresenceAwareness;
         let mut ctx = make_ctx(messages);
         ctx.iteration = 3;
@@ -1013,10 +920,7 @@ mod tests {
 
     #[test]
     fn test_presence_awareness_returned() {
-        let messages = vec![
-            make_msg("user", "hello"),
-            make_msg("assistant", "hi"),
-        ];
+        let messages = vec![make_msg("user", "hello"), make_msg("assistant", "hi")];
         let generator = PresenceAwareness;
         let mut ctx = make_ctx(messages);
         ctx.iteration = 3;
@@ -1031,52 +935,39 @@ mod tests {
     fn test_pipeline_generates_proactive_context() {
         let pipeline = Pipeline::new();
         let mut ctx = make_ctx(vec![make_msg("user", "hello")]);
-        ctx.proactive_items = vec![
-            crate::proactive::ProactiveItem {
-                source: "heartbeat:gws-email".to_string(),
-                summary: "3 urgent emails from your boss".to_string(),
-                priority: crate::proactive::Priority::Urgent,
-                created_at: 1000,
-            },
-        ];
+        ctx.proactive_items = vec![crate::proactive::ProactiveItem {
+            source: "heartbeat:gws-email".to_string(),
+            summary: "3 urgent emails from your boss".to_string(),
+            priority: crate::proactive::Priority::Urgent,
+            created_at: 1000,
+        }];
         let (_, proactive) = pipeline.generate(&ctx);
         assert_eq!(proactive.len(), 1);
         assert!(proactive[0].contains("3 urgent emails"));
     }
 
     #[test]
-    fn test_pipeline_skips_action_bias_for_claude() {
+    fn test_pipeline_skips_ask_tool_nudge_for_claude() {
         let pipeline = Pipeline::new();
         let mut ctx = make_ctx(vec![
-            make_msg("user", "do something"),
-            make_msg("assistant", "I will explain what I plan to do in great detail here and here and here and more text"),
-            make_msg("assistant", "I will explain what I plan to do in great detail here and here and here and more text again"),
+            make_msg("user", "help me pick a color"),
+            make_msg("assistant", "Which color do you prefer? Red or blue?"),
         ]);
-        ctx.active_task = "test task".to_string();
-        ctx.iteration = 3;
+        ctx.iteration = 2;
 
-        // OpenAI should get ActionBias
+        // OpenAI should get AskToolNudge
         ctx.provider_id = "openai".to_string();
         let (dirs_openai, _) = pipeline.generate(&ctx);
-        let has_action_bias = dirs_openai.iter().any(|d| d.label == "Action Bias");
+        let has_ask_nudge_openai = dirs_openai.iter().any(|d| d.label == "Ask Tool");
 
-        // Claude should NOT get ActionBias
+        // Claude should NOT get AskToolNudge
         ctx.provider_id = "anthropic".to_string();
         let (dirs_claude, _) = pipeline.generate(&ctx);
-        let has_action_bias_claude = dirs_claude.iter().any(|d| d.label == "Action Bias");
+        let has_ask_nudge_claude = dirs_claude.iter().any(|d| d.label == "Ask Tool");
 
-        // Janus is a gateway — should NOT skip ActionBias (may proxy to GPT)
-        ctx.provider_id = "janus".to_string();
-        let (dirs_janus, _) = pipeline.generate(&ctx);
-        let has_action_bias_janus = dirs_janus.iter().any(|d| d.label == "Action Bias");
-
-        // ActionBias fires for openai and janus but not claude
-        // (Note: it may not fire in these exact conditions, but the skip rule is exercised)
-        assert!(!has_action_bias_claude || !has_action_bias,
-            "Claude should skip action_bias when openai doesn't");
-        // Janus should behave like openai, not like anthropic
-        assert_eq!(has_action_bias, has_action_bias_janus,
-            "Janus should not skip action_bias — it's a gateway, not Claude");
+        // AskToolNudge fires for openai but not claude
+        assert!(has_ask_nudge_openai, "OpenAI should get ask_tool_nudge");
+        assert!(!has_ask_nudge_claude, "Claude should skip ask_tool_nudge");
     }
 
     #[test]
@@ -1089,19 +980,238 @@ mod tests {
         let mut ctx = make_ctx(messages);
         ctx.iteration = 3;
         let result = should_force_break(&ctx);
-        assert!(result.is_some(), "user stop should force break even with zero errors");
+        assert!(
+            result.is_some(),
+            "user stop should force break even with zero errors"
+        );
         assert!(result.unwrap().contains("user requested stop"));
     }
 
     #[test]
     fn test_user_stop_no_break_at_iteration_2() {
-        let messages = vec![
-            make_msg("user", "stop"),
-            make_msg("assistant", "ok"),
-        ];
+        let messages = vec![make_msg("user", "stop"), make_msg("assistant", "ok")];
         let mut ctx = make_ctx(messages);
         ctx.iteration = 2;
         let result = should_force_break(&ctx);
         assert!(result.is_none(), "should NOT break at iteration 2");
+    }
+
+    #[test]
+    fn test_no_hard_stop_on_consecutive_errors() {
+        // Hermes approach: no hard stops on errors, only budget.
+        let mut ctx = make_ctx(vec![]);
+        ctx.consecutive_error_iterations = 3;
+        assert!(
+            should_force_break(&ctx).is_none(),
+            "should NOT break on errors"
+        );
+        ctx.consecutive_error_iterations = 10;
+        assert!(
+            should_force_break(&ctx).is_none(),
+            "should NOT break even at 10 errors"
+        );
+    }
+
+    #[test]
+    fn test_no_hard_stop_on_same_tool() {
+        // Hermes approach: no hard stops on same-tool calls, only budget.
+        let mut ctx = make_ctx(vec![]);
+        ctx.recent_tool_result_hashes = vec![(1, 2, 3), (1, 2, 3), (1, 2, 3), (1, 2, 3)];
+        assert!(
+            should_force_break(&ctx).is_none(),
+            "should NOT break on same-tool calls"
+        );
+    }
+
+    #[test]
+    fn test_error_recovery_silent_at_1_and_2() {
+        let recovery = ErrorRecovery;
+        let mut ctx = make_ctx(vec![]);
+
+        ctx.consecutive_error_iterations = 1;
+        assert!(
+            recovery.generate(&ctx).is_empty(),
+            "should NOT fire at 1 error"
+        );
+
+        ctx.consecutive_error_iterations = 2;
+        assert!(
+            recovery.generate(&ctx).is_empty(),
+            "should NOT fire at 2 errors"
+        );
+    }
+
+    #[test]
+    fn test_error_recovery_soft_advisory_at_3() {
+        let recovery = ErrorRecovery;
+        let mut ctx = make_ctx(vec![]);
+        ctx.consecutive_error_iterations = 3;
+        let result = recovery.generate(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].priority, 6, "should be low priority advisory");
+        assert!(result[0].content.contains("different approach"));
+    }
+
+    // --- Level 2: Failure-mode scenario tests ---
+
+    fn make_assistant_with_tools(content: &str, tool_calls_json: &str) -> ChatMessage {
+        ChatMessage {
+            tool_calls: Some(tool_calls_json.to_string()),
+            html: None,
+            ..make_msg("assistant", content)
+        }
+    }
+
+    #[test]
+    fn test_fm1_plain_text_question() {
+        // Assistant asks a question on its own line ending with ? → AskToolNudge fires (OpenAI), skipped (Claude)
+        let pipeline = Pipeline::new();
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "Help me redecorate my living room"),
+            make_msg(
+                "assistant",
+                "I can suggest a few options.\nWhich do you prefer?",
+            ),
+        ]);
+        ctx.iteration = 2;
+
+        // OpenAI: should fire
+        ctx.provider_id = "openai".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(
+            dirs.iter().any(|d| d.label == "Ask Tool"),
+            "AskToolNudge should fire for OpenAI when assistant asks plain-text question"
+        );
+
+        // Claude: should be skipped
+        ctx.provider_id = "anthropic".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(
+            !dirs.iter().any(|d| d.label == "Ask Tool"),
+            "AskToolNudge should be skipped for Claude"
+        );
+    }
+
+    #[test]
+    fn test_fm2_narration_with_tools() {
+        // Assistant says "Let me search for flights..." + tool call (>50 chars text)
+        let pipeline = Pipeline::new();
+        let narration = "Let me search for flights from Denver to Tokyo. I'll check multiple airlines for the best prices and dates.";
+        let tool_call = r#"[{"name":"web","input":{"action":"search","query":"flights Denver to Tokyo June"}}]"#;
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "Search for flights"),
+            make_assistant_with_tools(narration, tool_call),
+        ]);
+        ctx.iteration = 2;
+
+        // OpenAI: NarrationSuppressor should fire
+        ctx.provider_id = "openai".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(
+            dirs.iter().any(|d| d.label == "Narration"),
+            "NarrationSuppressor should fire for OpenAI when text+tool call detected"
+        );
+
+        // Claude: should be skipped
+        ctx.provider_id = "anthropic".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(
+            !dirs.iter().any(|d| d.label == "Narration"),
+            "NarrationSuppressor should be skipped for Claude"
+        );
+    }
+
+    #[test]
+    fn test_fm3_verbose_output() {
+        // Assistant response > 300 chars, no tool call → OutputDiscipline fires (OpenAI), skipped (Claude)
+        let pipeline = Pipeline::new();
+        let verbose = "I'd be happy to help you with that! Let me explain in detail what I'm going to do. First, I'll search the web for the latest information. Then I'll compile all the results into a comprehensive summary. After that, I'll format everything nicely for you. This process might take a moment, so please bear with me while I work through each step carefully and thoroughly.";
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "What's the weather?"),
+            make_msg("assistant", verbose),
+        ]);
+        ctx.iteration = 2;
+
+        // OpenAI: OutputDiscipline should fire
+        ctx.provider_id = "openai".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(
+            dirs.iter().any(|d| d.label == "Output Discipline"),
+            "OutputDiscipline should fire for OpenAI when response > 300 chars"
+        );
+
+        // Claude: should be skipped
+        ctx.provider_id = "anthropic".to_string();
+        let (dirs, _) = pipeline.generate(&ctx);
+        assert!(
+            !dirs.iter().any(|d| d.label == "Output Discipline"),
+            "OutputDiscipline should be skipped for Claude"
+        );
+    }
+
+    #[test]
+    fn test_fm4_pending_task_text_only() {
+        // Active task, iteration 3, last response text-only → PendingTaskAction fires
+        let generator = PendingTaskAction;
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "Clean up my inbox"),
+            make_msg("assistant", "I'll start cleaning up your inbox now."),
+            make_msg("assistant", "I found 50 emails to archive."),
+        ]);
+        ctx.active_task = "Clean up inbox".to_string();
+        ctx.iteration = 3;
+
+        let result = generator.generate(&ctx);
+        assert_eq!(
+            result.len(),
+            1,
+            "PendingTaskAction should fire when active task + text-only response"
+        );
+        assert_eq!(result[0].label, "Action Required");
+    }
+
+    #[test]
+    fn test_fm5_consecutive_errors_no_fire_at_1() {
+        // Hermes approach: single error is normal, no steering needed
+        let generator = ErrorRecovery;
+        let mut ctx = make_ctx(vec![]);
+        ctx.consecutive_error_iterations = 1;
+        assert!(
+            generator.generate(&ctx).is_empty(),
+            "ErrorRecovery should NOT fire at 1 error (single failures are normal)"
+        );
+    }
+
+    #[test]
+    fn test_fm6_no_same_tool_loop_detection() {
+        // Hermes approach: no same-tool detection, model self-corrects
+        let generator = LoopDetector;
+        let mut ctx = make_ctx(vec![]);
+        ctx.recent_tool_result_hashes = vec![(100, 200, 300), (100, 200, 301), (100, 200, 302)];
+
+        let result = generator.generate(&ctx);
+        assert!(
+            !result.iter().any(|d| d.label == "Loop Warning"),
+            "LoopDetector should NOT fire on same-tool calls (removed)"
+        );
+    }
+
+    #[test]
+    fn test_fm7_no_ping_pong_detection() {
+        // Hermes approach: no ping-pong detection
+        let generator = LoopDetector;
+        let mut ctx = make_ctx(vec![]);
+        ctx.recent_tool_result_hashes = vec![
+            (1, 2, 10), // A
+            (3, 4, 20), // B
+            (1, 2, 11), // A again
+            (3, 4, 21), // B again
+        ];
+
+        let result = generator.generate(&ctx);
+        assert!(
+            !result.iter().any(|d| d.label == "Ping-Pong"),
+            "LoopDetector should NOT have ping-pong detection (removed)"
+        );
     }
 }

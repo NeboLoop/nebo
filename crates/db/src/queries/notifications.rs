@@ -1,7 +1,7 @@
 use rusqlite::params;
 
+use crate::{DbErrExt, Store};
 use crate::models::Notification;
-use crate::Store;
 use types::NeboError;
 
 impl Store {
@@ -22,7 +22,7 @@ impl Store {
             params![id, user_id, notification_type, title, body, action_url, icon],
             row_to_notification,
         )
-        .map_err(|e| NeboError::Database(e.to_string()))
+        .db_err("notifications")
     }
 
     pub fn get_notification(
@@ -37,7 +37,7 @@ impl Store {
             row_to_notification,
         )
         .optional()
-        .map_err(|e| NeboError::Database(e.to_string()))
+        .db_err("notifications")
     }
 
     pub fn list_user_notifications(
@@ -52,14 +52,14 @@ impl Store {
                 "SELECT * FROM notifications WHERE user_id = ?1
                  ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
             )
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+            .db_err("notifications")?;
         let rows = stmt
             .query_map(params![user_id, page_size, page_offset], |row| {
                 row_to_notification(row)
             })
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+            .db_err("notifications")?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
+            .db_err("notifications")
     }
 
     pub fn list_unread_notifications(
@@ -73,14 +73,12 @@ impl Store {
                 "SELECT * FROM notifications WHERE user_id = ?1 AND read_at IS NULL
                  ORDER BY created_at DESC LIMIT ?2",
             )
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+            .db_err("notifications")?;
         let rows = stmt
-            .query_map(params![user_id, page_size], |row| {
-                row_to_notification(row)
-            })
-            .map_err(|e| NeboError::Database(e.to_string()))?;
+            .query_map(params![user_id, page_size], |row| row_to_notification(row))
+            .db_err("notifications")?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
+            .db_err("notifications")
     }
 
     pub fn count_unread_notifications(&self, user_id: &str) -> Result<i64, NeboError> {
@@ -90,7 +88,7 @@ impl Store {
             params![user_id],
             |row| row.get(0),
         )
-        .map_err(|e| NeboError::Database(e.to_string()))
+        .db_err("notifications")
     }
 
     pub fn mark_notification_read(&self, id: &str, user_id: &str) -> Result<(), NeboError> {
@@ -99,7 +97,7 @@ impl Store {
             "UPDATE notifications SET read_at = strftime('%s', 'now') WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
         )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
+        .db_err("notifications")?;
         Ok(())
     }
 
@@ -109,7 +107,7 @@ impl Store {
             "UPDATE notifications SET read_at = strftime('%s', 'now') WHERE user_id = ?1 AND read_at IS NULL",
             params![user_id],
         )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
+        .db_err("notifications")?;
         Ok(())
     }
 
@@ -119,7 +117,29 @@ impl Store {
             "DELETE FROM notifications WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
         )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
+        .db_err("notifications")?;
+        Ok(())
+    }
+
+    /// Insert a notification only if one with the same `id` doesn't already exist.
+    /// Uses `INSERT OR IGNORE` (notifications.id is PRIMARY KEY) for deduplication.
+    pub fn create_notification_if_not_exists(
+        &self,
+        id: &str,
+        user_id: &str,
+        notification_type: &str,
+        title: &str,
+        body: Option<&str>,
+        action_url: Option<&str>,
+        icon: Option<&str>,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO notifications (id, user_id, type, title, body, action_url, icon, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s', 'now'))",
+            params![id, user_id, notification_type, title, body, action_url, icon],
+        )
+        .db_err("notifications")?;
         Ok(())
     }
 
@@ -129,7 +149,7 @@ impl Store {
             "DELETE FROM notifications WHERE created_at < ?1",
             params![before],
         )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
+        .db_err("notifications")?;
         Ok(())
     }
 }

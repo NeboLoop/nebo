@@ -13,8 +13,8 @@
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::types::*;
 use super::local::LocalProvider;
+use crate::types::*;
 
 impl LocalProvider {
     /// Stream inference from a local GGUF model via llama.cpp.
@@ -25,8 +25,8 @@ impl LocalProvider {
         use llama_cpp_2::context::params::LlamaContextParams;
         use llama_cpp_2::llama_backend::LlamaBackend;
         use llama_cpp_2::llama_batch::LlamaBatch;
-        use llama_cpp_2::model::params::LlamaModelParams;
         use llama_cpp_2::model::LlamaModel;
+        use llama_cpp_2::model::params::LlamaModelParams;
         use llama_cpp_2::token::data_array::LlamaTokenDataArray;
 
         let (tx, rx) = mpsc::channel::<StreamEvent>(64);
@@ -96,9 +96,8 @@ impl LocalProvider {
 
             info!(model = %model_path, "loaded GGUF model for local inference");
 
-            let ctx_params = LlamaContextParams::default().with_n_ctx(
-                std::num::NonZeroU32::new(4096).unwrap(),
-            );
+            let ctx_params =
+                LlamaContextParams::default().with_n_ctx(std::num::NonZeroU32::new(4096).unwrap());
             let mut ctx = match model.new_context(&backend, ctx_params) {
                 Ok(c) => c,
                 Err(e) => {
@@ -115,10 +114,8 @@ impl LocalProvider {
             let tokens = match model.str_to_token(&prompt, llama_cpp_2::model::AddBos::Always) {
                 Ok(t) => t,
                 Err(e) => {
-                    let _ = tx_clone.blocking_send(StreamEvent::error(format!(
-                        "tokenization failed: {}",
-                        e
-                    )));
+                    let _ = tx_clone
+                        .blocking_send(StreamEvent::error(format!("tokenization failed: {}", e)));
                     let _ = tx_clone.blocking_send(StreamEvent::done());
                     return;
                 }
@@ -126,8 +123,7 @@ impl LocalProvider {
 
             debug!(
                 prompt_tokens = tokens.len(),
-                max_tokens,
-                "starting local inference"
+                max_tokens, "starting local inference"
             );
 
             // Feed prompt tokens
@@ -138,9 +134,8 @@ impl LocalProvider {
             }
 
             if ctx.decode(&mut batch).is_err() {
-                let _ = tx_clone.blocking_send(StreamEvent::error(
-                    "failed to process prompt".to_string(),
-                ));
+                let _ = tx_clone
+                    .blocking_send(StreamEvent::error("failed to process prompt".to_string()));
                 let _ = tx_clone.blocking_send(StreamEvent::done());
                 return;
             }
@@ -152,10 +147,8 @@ impl LocalProvider {
             for _ in 0..max_tokens {
                 // Sample next token
                 let candidates = ctx.candidates_ith(batch.n_tokens() - 1);
-                let mut candidates_array = LlamaTokenDataArray::from_iter(
-                    candidates.iter().cloned(),
-                    false,
-                );
+                let mut candidates_array =
+                    LlamaTokenDataArray::from_iter(candidates.iter().cloned(), false);
 
                 // Apply temperature
                 candidates_array.sample_temp(temperature);
@@ -169,13 +162,17 @@ impl LocalProvider {
                 }
 
                 // Decode token to text
-                let token_str = model.token_to_str(new_token, llama_cpp_2::model::Special::Tokenize)
+                let token_str = model
+                    .token_to_str(new_token, llama_cpp_2::model::Special::Tokenize)
                     .unwrap_or_default();
 
                 full_response.push_str(&token_str);
 
                 // Stream the token
-                if tx_clone.blocking_send(StreamEvent::text(&token_str)).is_err() {
+                if tx_clone
+                    .blocking_send(StreamEvent::text(&token_str))
+                    .is_err()
+                {
                     break; // Receiver dropped
                 }
 

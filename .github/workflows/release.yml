@@ -94,6 +94,33 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
 
+      - name: Prepare bundled .napp files
+        if: ${{ secrets.NEBOLOOP_CDN_URL != '' }}
+        env:
+          NEBOLOOP_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL }}
+        run: |
+          mkdir -p src-tauri/bundled-napps/{skills,agents,plugins}
+          # Download platform-specific plugin .napp files
+          PLATFORM="${{ matrix.arch == 'arm64' && 'darwin-arm64' || 'darwin-amd64' }}"
+          echo "Downloading bundled .napp files for $PLATFORM..."
+          # Skills and agents are platform-agnostic
+          for type in skills agents; do
+            if [ -f "src-tauri/bundled-napps/${type}/.manifest" ]; then
+              while read -r url; do
+                curl -sSfL -o "src-tauri/bundled-napps/${type}/$(basename "$url")" "$url" || true
+              done < "src-tauri/bundled-napps/${type}/.manifest"
+            fi
+          done
+          # Plugins are platform-specific
+          if [ -f "src-tauri/bundled-napps/plugins/.manifest" ]; then
+            while read -r slug; do
+              url="${NEBOLOOP_CDN_URL}/plugins/${slug}/${PLATFORM}.napp"
+              curl -sSfL -o "src-tauri/bundled-napps/plugins/${slug}.napp" "$url" || echo "  SKIP $slug (not available for $PLATFORM)"
+            done < "src-tauri/bundled-napps/plugins/.manifest"
+          fi
+          echo "Bundled .napp files:"
+          find src-tauri/bundled-napps -name "*.napp" -type f | sort
+
       - name: Build Tauri desktop app
         run: cargo tauri build --target ${{ matrix.target }}
 
@@ -243,6 +270,21 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
+      - name: Prepare bundled .napp files
+        if: ${{ secrets.NEBOLOOP_CDN_URL != '' }}
+        env:
+          NEBOLOOP_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL }}
+        run: |
+          mkdir -p src-tauri/bundled-napps/{skills,agents,plugins}
+          PLATFORM="linux-${{ matrix.arch }}"
+          echo "Downloading bundled .napp files for $PLATFORM..."
+          if [ -f "src-tauri/bundled-napps/plugins/.manifest" ]; then
+            while read -r slug; do
+              url="${NEBOLOOP_CDN_URL}/plugins/${slug}/${PLATFORM}.napp"
+              curl -sSfL -o "src-tauri/bundled-napps/plugins/${slug}.napp" "$url" || echo "  SKIP $slug"
+            done < "src-tauri/bundled-napps/plugins/.manifest"
+          fi
+
       - name: Build Tauri desktop app
         run: cargo tauri build
 
@@ -308,6 +350,22 @@ jobs:
 
       - name: Install WiX Toolset v3
         run: choco install wixtoolset -y --no-progress || echo "WiX already installed, continuing"
+
+      - name: Prepare bundled .napp files
+        if: ${{ secrets.NEBOLOOP_CDN_URL != '' }}
+        shell: bash
+        env:
+          NEBOLOOP_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL }}
+        run: |
+          mkdir -p src-tauri/bundled-napps/{skills,agents,plugins}
+          PLATFORM="windows-amd64"
+          echo "Downloading bundled .napp files for $PLATFORM..."
+          if [ -f "src-tauri/bundled-napps/plugins/.manifest" ]; then
+            while read -r slug; do
+              url="${NEBOLOOP_CDN_URL}/plugins/${slug}/${PLATFORM}.napp"
+              curl -sSfL -o "src-tauri/bundled-napps/plugins/${slug}.napp" "$url" || echo "  SKIP $slug"
+            done < "src-tauri/bundled-napps/plugins/.manifest"
+          fi
 
       - name: Build Tauri desktop app
         run: cargo tauri build

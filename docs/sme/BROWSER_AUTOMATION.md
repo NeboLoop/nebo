@@ -1,6 +1,6 @@
 # Browser Automation System — Comprehensive SME Reference
 
-Source: `crates/browser/`, `crates/tools/src/web_tool.rs`, `crates/cli/src/main.rs`, `chrome-extension/`
+Source: `crates/browser/`, `crates/tools/src/web_tool.rs`, `crates/cli/src/main.rs`, `src-tauri/src/main.rs`, sibling repo `/Users/almatuck/workspaces/nebo/chrome-extension/`
 
 This document covers the full browser automation pipeline in the Rust rewrite: every crate, struct, function, message type, content script, and failure mode.
 
@@ -32,12 +32,13 @@ This document covers the full browser automation pipeline in the Rust rewrite: e
 22. [Audit Logging](#22-audit-logging)
 23. [Known Issues and Failure Modes](#23-known-issues-and-failure-modes)
 24. [Debugging Guide](#24-debugging-guide)
+25. [Headless Fallback](#25-headless-fallback)
 
 ---
 
 ## 1. Architecture Overview
 
-Browser automation uses a **four-hop relay chain**. The agent never talks to Chrome directly — everything flows through the Chrome extension's native messaging bridge.
+Extension-backed browser automation uses a **four-hop relay chain**. The agent never talks to Chrome directly in this path — everything flows through the Chrome extension's native messaging bridge. If the extension is not connected and `agent-browser` is installed, `ActionExecutor` falls back to the headless path described in [Headless Fallback](#25-headless-fallback).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
@@ -100,10 +101,11 @@ Browser automation uses a **four-hop relay chain**. The agent never talks to Chr
    b. Calls ensureAgentTab() to get/create dedicated agent tab
    c. Calls executeTool("navigate", args, tabId)
 8. tools.ts navigate():
-   a. ensureDebuggerAttached(tabId) — attaches CDP 1.3
-   b. chrome.debugger.sendCommand(tabId, "Page.navigate", {url})
-   c. Waits 1000ms for page load
-   d. Returns ok("Navigated to ...")
+   a. Normalizes URL (adds https:// if no protocol)
+   b. Attaches debugger + Page.enable for beforeunload detection
+   c. chrome.tabs.update(tabId, {url}) with beforeunload handling
+   d. waitForTabLoad(tabId) — waits up to 15s for tab status "complete"
+   e. Returns ok("Navigated to ...")
 ```
 
 ### Response (extension → agent)
@@ -123,7 +125,7 @@ Browser automation uses a **four-hop relay chain**. The agent never talks to Chr
 
 ## 3. Chrome Extension
 
-**Location:** `chrome-extension/`
+**Location:** sibling repo `/Users/almatuck/workspaces/nebo/chrome-extension/` (not checked into this repo)
 **Manifest:** MV3, version 0.2.0
 **Extension IDs:**
 - Production (Web Store): `heaeiepdllbncnnlfniglgmbfmmemkcg`
@@ -137,8 +139,9 @@ Browser automation uses a **four-hop relay chain**. The agent never talks to Chr
 |-----------|---------|
 | `debugger` | CDP access for navigate, click, screenshot, evaluate |
 | `tabs` | Create/close/query tabs for agent tab lifecycle |
+| `tabGroups` | Group per-session agent tabs so multiple agents can browse independently |
 | `activeTab` | Fallback tab access |
-| `storage` | Extension settings persistence |
+| `storage` | Extension settings and `chrome.storage.session` persistence for agent tab/group state |
 | `alarms` | Keep-alive alarm (every 24s) to prevent service worker suspension |
 | `scripting` | Inject content scripts and execute functions in tab context |
 | `nativeMessaging` | Connect to `dev.neboloop.nebo` native messaging host |
@@ -149,8 +152,8 @@ Browser automation uses a **four-hop relay chain**. The agent never talks to Chr
 | File | Purpose |
 |------|---------|
 | `src/background.ts` | Service worker entry point. Connects native messaging on startup, handles toolbar click, keep-alive alarm, stop-agent messages. |
-| `src/native.ts` | Native messaging connection management. Handles `execute_tool`, `show_indicators`, `hide_indicators`, `ping` messages. Manages agent tab lifecycle (create/reuse/close). |
-| `src/tools.ts` | Tool implementations. 17+ tools using CDP and content scripts. |
+| `src/native.ts` | Native messaging connection management. Handles `execute_tool`, `execute_batch`, indicators, ping, reconnects, and per-session tab/group lifecycle. |
+| `src/tools.ts` | Tool implementations. 25+ tools using CDP and content scripts. |
 | `src/badge.ts` | Extension badge UI (ON/OFF/connecting/error states). |
 | `src/types.ts` | Badge state types and color config. |
 | `src/options.ts` | Options page — connection test (opens native port, sends hello, checks for response). |
@@ -159,46 +162,54 @@ Browser automation uses a **four-hop relay chain**. The agent never talks to Chr
 
 ### 3.3 Agent Tab Lifecycle
 
-The extension maintains a dedicated **agent tab** (`agentTabId` in `native.ts`):
+The extension maintains dedicated **agent tabs by session** (`agentSessions: Map<session_id, {tabId, groupId}>` in `native.ts`). This lets multiple agents work simultaneously without fighting over a single browser tab.
 
-1. **Creation:** First tool request triggers `ensureAgentTab()`, which creates `about:blank` tab
-2. **Reuse:** Subsequent requests reuse the same tab (checked via `chrome.tabs.get()`)
-3. **Tracking:** `chrome.tabs.onRemoved` clears `agentTabId` if user closes the tab
-4. **Cleanup:** `hide_indicators` message closes the agent tab after a 400ms delay
-5. **Visual indicators:** Shown on agent tab only (glow + stop button), hidden during tool execution to avoid screenshot noise
+1. **Session key:** Server forwards `session_id`; extension falls back to `_default` if absent.
+2. **Creation:** If the first tool is `navigate`, the extension creates the tab directly at the target URL. Otherwise `ensureAgentTab()` creates a normal new-tab page.
+3. **Grouping:** New agent tabs are added to a Chrome tab group named `Nebo` or `Nebo: <suffix>`, with rotating group colors.
+4. **Persistence:** `agentSessions` is saved in `chrome.storage.session` and restored on service worker startup if the tab still exists.
+5. **Reuse:** Subsequent requests for the same `session_id` reuse the same tab after `chrome.tabs.get()` verifies it still exists.
+6. **Tracking:** `chrome.tabs.onRemoved` clears that session if the user closes the tab.
+7. **Cleanup:** `hide_indicators` without a session cleans all sessions; with a session it hides indicators and closes every tab in that session's tab group after a short delay.
+8. **Visual indicators:** Shown on the session's agent tab only, hidden during tool execution to avoid screenshot noise.
 
 ### 3.4 Tool Implementations
 
 | Tool | Method | Mechanism |
 |------|--------|-----------|
-| `navigate` | CDP `Page.navigate` | Attaches debugger, sends command, waits 1s |
+| `navigate` | `chrome.tabs.update` + `waitForTabLoad` (15s) | Normalizes URL (adds https://), handles beforeunload dialogs (force option), supports `back`/`forward` as URL |
 | `read_page` | `chrome.scripting.executeScript` | Calls accessibility tree content script, retries by injecting manually if not loaded |
-| `click` | CDP `Input.dispatchMouseEvent` | Resolves element via WeakRef map, gets bounding rect, dispatches mousePressed + mouseReleased |
-| `double_click` | CDP `Input.dispatchMouseEvent` | Two rapid click sequences |
-| `triple_click` | CDP `Input.dispatchMouseEvent` | Three rapid click sequences (selects all text in a field) |
-| `right_click` | CDP `Input.dispatchMouseEvent` | Click with `button: 2` (context menu) |
-| `hover` | CDP `Input.dispatchMouseEvent` | mouseMoved to element center |
-| `fill` / `form_input` | `chrome.scripting.executeScript` | Sets `.value` + dispatches input/change events |
-| `type` | CDP `Input.dispatchKeyEvent` | Character-by-character keyDown/keyUp |
+| `click` | CDP `Input.dispatchMouseEvent` | Domain drift check, resolves ref via WeakRef (or metadata re-query fallback), CDP `DOM.getContentQuads` for coordinates, mouseMoved (100ms pause) + mousePressed/Released (12ms gap). Supports `ref`, `coordinate`, or `x,y` + `modifiers` |
+| `double_click` | CDP `Input.dispatchMouseEvent` | Two press/release cycles with incrementing clickCount, 100ms between cycles |
+| `triple_click` | CDP `Input.dispatchMouseEvent` | Three press/release cycles (selects entire line/paragraph in a field) |
+| `right_click` | CDP `Input.dispatchMouseEvent` | Click with `button: "right"`, `buttons: 2` (context menu) |
+| `hover` | CDP `Input.dispatchMouseEvent` | Domain drift check, mouseMoved to element center. Supports ref, coordinate, or x,y |
+| `fill` / `form_input` | `chrome.scripting.executeScript` | Domain drift check. Handles: select (option lookup by value/text), checkbox (boolean), radio, date/time, range (numeric), number, text input/textarea (native setter to bypass React/Vue/Angular), contenteditable. WeakRef + metadata fallback for element resolution |
+| `type` | CDP `Input.dispatchKeyEvent` | Domain drift check. Character-by-character keyDown/keyUp with macOS command mapping. Falls back to `Input.insertText` for unmapped characters |
 | `select` | `chrome.scripting.executeScript` | Sets `<select>.value` + dispatches change event |
-| `screenshot` | CDP `Page.captureScreenshot` | Returns base64 PNG |
-| `scroll` | `chrome.scripting.executeScript` | `window.scrollBy(x, y)` |
-| `scroll_to` | `chrome.scripting.executeScript` | Element `.scrollIntoView()` |
-| `press` | CDP `Input.dispatchKeyEvent` | Mapped key names (Enter, Tab, etc.) to CDP key codes, supports chords (cmd+a) and sequences |
+| `screenshot` | CDP `Page.captureScreenshot` | Returns base64 JPEG. Adaptive token optimization: probes viewport + DPR, calculates optimal dimensions within Anthropic token budget (28px/token, max 1568 tokens), CDP capture with clip + scale. Oversized images (>1.4M base64 chars) fall back to Canvas-based resize + quality reduction loop (75% → 10% JPEG) |
+| `scroll` | CDP `Input.dispatchMouseEvent` (mouseWheel) | Primary: CDP mouseWheel at viewport center or provided coordinate, with 5s race timeout. Fallback: `window.scrollBy()` via content script. Direction: up/down/left/right, amount in ticks (100px per tick, default 3 ticks) |
+| `scroll_to` | `chrome.scripting.executeScript` | Element `.scrollIntoView({ behavior: 'instant', block: 'center' })` |
+| `press` | CDP `Input.dispatchKeyEvent` | 50+ key mappings (Enter, Tab, Escape, F1-F12, arrow keys, Home/End, etc.). Supports modifier chords (cmd+a, ctrl+c, shift+enter). macOS: sends NSStandardKeyBindingResponding commands for proper renderer handling |
 | `drag` | CDP `Input.dispatchMouseEvent` | mousePressed at start → mouseMoved to end → mouseReleased |
-| `go_back` | CDP `Page.navigateToHistoryEntry(-1)` | Falls back to `history.back()` |
-| `go_forward` | CDP `Page.navigateToHistoryEntry(1)` | Falls back to `history.forward()` |
-| `wait` | `setTimeout` | Capped at 10s |
-| `evaluate` | CDP `Runtime.evaluate` | Runs arbitrary JS, returns value |
-| `new_tab` | `chrome.tabs.create` | Updates agentTabId to the new tab |
-| `close_tab` | `chrome.tabs.remove` | Clears agentTabId if closing agent tab |
+| `go_back` | `chrome.tabs.goBack(tabId)` | Attaches debugger for beforeunload detection, handles "Leave site?" dialogs |
+| `go_forward` | `chrome.tabs.goForward(tabId)` | Attaches debugger for beforeunload detection, handles "Leave site?" dialogs |
+| `wait` | `setTimeout` | Takes `duration` in seconds (or `ms` in milliseconds). Capped at 30s |
+| `evaluate` | CDP `Runtime.evaluate` | Domain drift check. Runs JS expression with `returnByValue: true, awaitPromise: true` |
+| `new_tab` | `chrome.tabs.create` | Sets the session's tracked agent tab and tab group |
+| `close_tab` | `chrome.tabs.remove` | Clears session tracking when closing that session's agent tab |
 | `list_tabs` | `chrome.tabs.query({})` | Returns all tabs (no agent tab needed) |
-| `devtools_console` | CDP | Browser console logs |
-| `devtools_source` | CDP | Page source |
-| `devtools_storage` | CDP | localStorage/sessionStorage |
-| `devtools_dom` | CDP | DOM inspection |
-| `devtools_cookies` | CDP | Cookie inspection |
-| `devtools_performance` | CDP | Performance metrics |
+| `zoom` | CDP `Page.captureScreenshot` | Takes `region [x0, y0, x1, y1]` — crops and captures a zoomed screenshot of the specified viewport region. Transforms screenshot-space to viewport-space coordinates |
+| `get_page_text` | `chrome.scripting.executeScript` | Extracts page text using semantic selectors (article, main, .content, #content, [role="main"]) for best content. Falls back to body with truncation to `max_chars` (default 50000) |
+| `read_console_messages` | CDP `Runtime.enable` | Lazy-enabled: tracking starts on first call. Returns console logs/errors/exceptions. Supports `onlyErrors`, `pattern` (regex), `limit`, `clear` filters. Capped at 1000 messages per tab |
+| `read_network_requests` | CDP `Network.enable` | Lazy-enabled: tracking starts on first call. Returns requests with URL, method, status. Supports `urlPattern`, `limit`, `clear` filters. Capped at 1000 requests per tab. Domain-scoped (resets on navigation) |
+| `resize_window` | `chrome.windows.update` | Sets window dimensions. Max 7680x4320 (8K limit) |
+| `file_upload` | CDP `DOM.setFileInputFiles` | Domain drift check. Finds file input via ref, marks with data attribute, resolves via CDP DOM query, sets files. Takes `paths` array and `ref` |
+| `find` | `chrome.scripting.executeScript` | Generates full accessibility tree, searches for text matches across element lines. Returns matching lines with ref IDs for subsequent actions |
+
+**Devtools tools** (mapped by Rust `web_tool.rs`, sent as `devtools_*` tool names): `devtools_console`, `devtools_source`, `devtools_storage`, `devtools_dom`, `devtools_cookies`, `devtools_performance`. **Note:** These tool names are NOT implemented in the extension's `executeTool` switch — the extension has `read_console_messages` and `read_network_requests` instead. Calling devtools actions via the web tool currently returns "Unknown tool" from the extension. This is a known mapping gap.
+
+`execute_batch` runs a sequence of tool actions on the session tab and returns a `batch_response` array.
 
 ### 3.5 Keep-Alive Mechanism
 
@@ -342,6 +353,8 @@ pub struct ExtensionBridge {
     default_browser: Arc<Mutex<Option<String>>>,
     /// Timestamp of last active connection (for grace period on reconnect).
     last_connected: Arc<Mutex<Option<Instant>>>,
+    /// Single-slot cache for read_page results (2.5s TTL).
+    page_cache: Arc<Mutex<Option<PageCacheEntry>>>,
 }
 ```
 
@@ -362,7 +375,7 @@ Creates the bridge and spawns a background task to detect the default browser vi
 Creates a new `BrowserConnection` with a per-browser mpsc channel. Returns the connection ID and the receiver (consumed by the WS handler). Updates `last_connected` timestamp.
 
 **`disconnect(conn_id: i64)`**
-Removes the connection. If last connection drops, updates `last_connected` but does NOT reject pending requests — individual 30s timeouts handle truly dead connections. This prevents false rejections during the ~2s reconnect window.
+Removes the connection. If last connection drops, updates `last_connected` but does NOT reject pending requests — individual 60s timeouts handle truly dead connections. This prevents false rejections during the ~2s reconnect window.
 
 **`is_connected() -> bool`**
 Non-blocking check via `try_lock()` on connections map. If locked, assumes connected.
@@ -373,14 +386,19 @@ Returns true if connected OR if `last_connected` is within the given duration. U
 **`wait_for_connection(timeout: Duration) -> bool`**
 Polls `is_connected()` every 100ms up to the timeout. Used by WebTool to wait for reconnection.
 
-**`execute(tool, args) -> Result<Value, String>`**
-1. Lock connections, find one matching default browser (or fall back to any)
-2. Clone the target connection's `tx` channel
-3. Assign request ID, create oneshot channel, store in pending
-4. Send `ToolRequest` via the connection's channel
-5. Wait with **30s timeout** on oneshot receiver
-6. On timeout: remove from pending, return error with pending count
-7. On receive: return the result
+**`execute(tool, args, session_id) -> Result<Value, String>`**
+1. Return cached `read_page` if it is younger than 2.5s
+2. Invalidate the cache before mutation tools (`click`, `navigate`, `evaluate`, tab actions, etc.)
+3. Lock connections, find one matching default browser (or fall back to any)
+4. Clone the target connection's `tx` channel
+5. Assign request ID, create oneshot channel, store in pending
+6. Send `ToolRequest` via the connection's channel, including optional `session_id`
+7. Wait with **60s timeout** on oneshot receiver
+8. On timeout: remove from pending, return error with pending count
+9. Cache successful `read_page` results and return the result
+
+**`batch_execute(actions, opts, session_id) -> Result<Vec<Result<Value, String>>, String>`**
+Sends `execute_batch` to the extension with an action list and `stop_on_error`. Any mutation in the batch invalidates the `read_page` cache. A successful `read_page` inside the batch refreshes the cache.
 
 **`deliver_result(id, result)`**
 Looks up oneshot sender in pending map, sends result. Called by WS handler.
@@ -392,6 +410,8 @@ pub struct ToolRequest {
     pub id: i64,
     pub tool: String,
     pub args: serde_json::Value,
+    pub is_batch: bool,
+    pub session_id: Option<String>,
 }
 ```
 
@@ -399,20 +419,25 @@ pub struct ToolRequest {
 
 ## 7. ActionExecutor
 
-**File:** `crates/browser/src/executor.rs` (58 lines)
+**File:** `crates/browser/src/executor.rs`
 
-Thin wrapper around `ExtensionBridge`. Used by `WebTool` to execute browser actions.
+Thin wrapper around `ExtensionBridge` plus optional headless fallback. Used by `WebTool` to execute browser actions.
 
 ```rust
 pub struct ActionExecutor {
     bridge: Arc<ExtensionBridge>,
+    headless: Option<Arc<HeadlessBridge>>,
 }
 ```
 
-- `is_connected()`: Delegates to `bridge.is_connected()`
-- `was_recently_connected(within)`: Delegates to `bridge.was_recently_connected()`
-- `wait_for_connection(timeout)`: Delegates to `bridge.wait_for_connection()`
-- `execute(tool, args) -> Result<Value, BrowserError>`: Logs action, delegates to `bridge.execute()`, maps `String` errors to `BrowserError::Other`
+- `is_connected()`: true if extension is connected or headless backend is available
+- `extension_connected()`: true only for the Chrome extension path
+- `headless_available()`: true if `agent-browser` was detected
+- `was_recently_connected(within)`: true if extension recently connected or headless exists
+- `wait_for_connection(timeout)`: waits for extension unless headless exists
+- `execute(tool, args, session_id)`: routes to extension first; otherwise routes to headless; returns `ExtensionNotConnected` if neither exists
+- `batch_execute(actions, opts, session_id)`: extension uses one round-trip; headless executes sequentially
+- `click_and_read`, `fill_and_read`, `navigate_and_read`: convenience batches for common flows
 
 ---
 
@@ -747,14 +772,14 @@ web(action: "navigate", url: "...")
 
 Maps user-facing actions to extension tool names:
 
-| Action | Extension Tool |
-|--------|---------------|
-| `console` | `devtools_console` |
-| `source` | `devtools_source` |
-| `storage` | `devtools_storage` |
-| `dom` | `devtools_dom` |
-| `cookies` | `devtools_cookies` |
-| `performance` | `devtools_performance` |
+| Action | Extension Tool | Status |
+|--------|---------------|--------|
+| `console` | `read_console_messages` | Working. `filter` param translated to `pattern` |
+| `source` | — | Not yet implemented (returns clear error) |
+| `storage` | — | Not yet implemented (returns clear error) |
+| `dom` | — | Not yet implemented (returns clear error) |
+| `cookies` | — | Not yet implemented (returns clear error) |
+| `performance` | — | Not yet implemented (returns clear error) |
 
 ### 16.6 HTTP Resource
 
@@ -925,6 +950,37 @@ page "Hacker News" url="https://news.ycombinator.com"
 - Both elements created lazily on first `show()` call
 - Cleaned up on `beforeunload`
 
+### 18.3 Post-Action Screenshots
+
+Interaction tools (`click`, `double_click`, `triple_click`, `right_click`, `form_input`, `fill`, `type`, `select`, `scroll`, `scroll_to`, `press`, `drag`, `hover`) automatically capture a JPEG screenshot after execution for sidecar vision verification. The screenshot is raced against a 3-second timeout — if the page is re-rendering (e.g., Google Maps after click), the screenshot is silently dropped rather than blocking the tool response.
+
+The result is attached as `{ text: "...", screenshot: { data, format } }` alongside the tool's text output.
+
+### 18.4 Domain Drift Security
+
+Tools that interact with page content (`click`, `hover`, `form_input`, `type`, `evaluate`, `file_upload`) perform a domain drift check before execution. This verifies the tab is still on the same origin as when the action was initiated, preventing the agent from accidentally interacting with a wrong page after redirects or navigation. If the origin has changed, the tool returns a security error.
+
+### 18.5 Element Reference Resolution
+
+The extension uses a two-tier element resolution system:
+
+1. **Primary: WeakRef map** — `window.__neboElementMap[ref_N]` stores `WeakRef<Element>`. Fast O(1) lookup, but refs die when elements are garbage collected (common in SPAs).
+2. **Fallback: Metadata re-query** — `window.__neboElementMeta[ref_N]` stores `{ tag, role, name, href?, type? }`. When WeakRef is dead, re-queries DOM by tag + filters by role/name/href/type. Only used if exactly one match is found (prevents ambiguous clicks).
+3. **Auto-re-snapshot** — If both fail, `resolveRef()` regenerates the accessibility tree and retries once before returning "not found".
+4. **CDP coordinates** — After finding the element, `DOM.getContentQuads` (like Playwright's `_clickablePoint`) is used for accurate coordinates that account for CSS transforms, iframes, and viewport clipping. Falls back to `getBoundingClientRect` center if CDP quads fail.
+
+### 18.6 Beforeunload Dialog Handling
+
+Navigation tools (`navigate`, `go_back`, `go_forward`) use `withBeforeunloadHandling()`:
+
+1. Set policy (`accept` if `force: true`, otherwise `dismiss`) BEFORE running the action
+2. CDP `Page.javascriptDialogOpening` event handler reads the policy and responds
+3. Wait 300ms for potential dialog to fire
+4. Three outcomes:
+   - `none` — no dialog appeared, navigation succeeded
+   - `accepted` — dialog appeared, was accepted (user loses unsaved changes), result includes warning suffix
+   - `blocked` — dialog appeared, was dismissed (page stays, user told to address unsaved state or retry with `force: true`)
+
 ---
 
 ## 19. Native Message Protocol
@@ -961,9 +1017,11 @@ Convenience constructors: `ok()`, `pong()`, `connected()`, `error_msg()`, `tool_
 | `ping` | either | (none) | Keepalive |
 | `pong` | either | (none) | Keepalive response |
 | `execute_tool` | host → ext | `id`, `tool`, `args` | Request tool execution |
+| `execute_batch` | host → ext | `id`, `actions`, `stop_on_error`, optional `session_id` | Request sequential execution of multiple tools in one extension round-trip |
 | `tool_response` | ext → host | `id`, `result` OR `error` | Tool execution result |
-| `show_indicators` | host → ext | (none) | Show visual indicators on agent tab |
-| `hide_indicators` | host → ext | (none) | Hide indicators and close agent tab |
+| `batch_response` | ext → host | `id`, `result[]` OR `error` | Batch execution result array |
+| `show_indicators` | host → ext | optional `session_id` | Show visual indicators on that session's agent tab |
+| `hide_indicators` | host → ext | optional `session_id` | Hide indicators and close that session's tab group; no session closes all agent sessions |
 | `tab_attached` | ext → host | `args` | Tab debugger attached (informational) |
 | `tab_detached` | ext → host | `args` | Tab debugger detached (informational) |
 | `stop_agent` | ext → host | (none) | User clicked "Stop Nebo" button |
@@ -976,19 +1034,25 @@ Convenience constructors: `ok()`, `pong()`, `connected()`, `error_msg()`, `tool_
 
 | Component | Timeout | Location |
 |-----------|---------|----------|
-| ExtensionBridge.execute() | **30 seconds** | `extension_bridge.rs:170` |
-| NativeHost.execute_tool() | **30 seconds** | `native_host.rs:179` |
-| Reconnect grace period | **3 seconds** | `web_tool.rs:344-349` |
-| Reconnect polling interval | **100ms** | `extension_bridge.rs:123` |
-| Relay WS connection backoff | 500ms → 5s (10 attempts) | `cli/main.rs:428` |
-| Extension reconnect | 2 seconds | `native.ts:224` |
-| Extension keep-alive alarm | 24 seconds | `background.ts:42` |
-| Navigate page load wait | 1 second (fixed) | `tools.ts:184` |
-| CDP port wait (Chrome launch) | 15 seconds (200ms poll) | `chrome.rs:161` |
-| HTTP client timeout | 30 seconds | `web_tool.rs:17` |
-| Options page connection test | 3 seconds | `options.ts:38` |
-| Indicator hide animation | 350ms | `visual-indicator.ts:178` |
-| Agent tab close delay | 400ms | `native.ts:201` |
+| ExtensionBridge.execute() / batch_execute() | **60 seconds** | `extension_bridge.rs` |
+| NativeHost.execute_tool() | **30 seconds** | `native_host.rs` |
+| Reconnect grace period | **3 seconds** | `web_tool.rs` |
+| Reconnect polling interval | **100ms** | `extension_bridge.rs` |
+| Relay WS connection backoff | 500ms → 5s (10 attempts) | `cli/main.rs`, `src-tauri/main.rs` |
+| Extension reconnect | 2 seconds | sibling `chrome-extension/src/native.ts` |
+| Extension keep-alive alarm | 24 seconds | sibling `chrome-extension/src/background.ts` |
+| `read_page` cache TTL | 2.5 seconds | `extension_bridge.rs`, `headless_bridge.rs` |
+| Debugger attach timeout | **8 seconds** | sibling `chrome-extension/src/tools.ts` (`DEBUGGER_ATTACH_TIMEOUT`) |
+| Content-script execution timeout | 45 seconds | sibling `chrome-extension/src/tools.ts` (`EXECUTE_SCRIPT_TIMEOUT`) |
+| CDP command timeout | 30 seconds | sibling `chrome-extension/src/tools.ts` (`CDP_COMMAND_TIMEOUT`) |
+| Post-action screenshot capture | 3 seconds | sibling `chrome-extension/src/tools.ts` (`capturePostActionScreenshot` race) |
+| Scroll CDP mouseWheel race | 5 seconds | sibling `chrome-extension/src/tools.ts` |
+| Page load wait helper | 15 seconds | sibling `chrome-extension/src/tools.ts` (`waitForTabLoad`) |
+| CDP port wait (Chrome launch) | 15 seconds (200ms poll) | `chrome.rs` |
+| HTTP client timeout | 30 seconds | `web_tool.rs` |
+| Options page connection test | 3 seconds | sibling `chrome-extension/src/options.ts` |
+| Indicator hide animation | ~350ms | sibling `chrome-extension/src/content/visual-indicator.ts` |
+| Agent tab/group cleanup delay | ~200ms | sibling `chrome-extension/src/native.ts` |
 | Snapshot store TTL | 1 hour | `snapshot_store.rs:39` |
 
 ### 20.2 Error Propagation
@@ -1010,7 +1074,7 @@ When the relay bridge process dies (WS closes):
 1. WS handler's recv task exits → `tokio::select!` fires
 2. `bridge.disconnect(conn_id)` called
 3. If last connection: updates `last_connected` timestamp but does NOT reject pending requests
-4. Individual tool 30s timeouts handle truly dead connections
+4. Individual tool 60s timeouts handle truly dead connections
 5. Extension's `onDisconnect` fires → schedules 2s reconnect
 6. WebTool's 3s grace period catches transient reconnects
 
@@ -1061,7 +1125,17 @@ This handles:
 - Multiple browsers running the Nebo extension simultaneously
 - Overlap during reconnection — a new relay can connect before the old one fully disconnects
 
-### 21.3 Server Restart Recovery
+### 21.3 Run Lifecycle Integration
+
+The browser tab lifecycle is wired to the agent run lifecycle:
+
+1. **Run start (browser tool use):** `web_tool.rs` sends `show_indicators` with `session_id` before dispatching browser/search/devtools actions. Idempotent — safe on every call.
+2. **Run completion:** `chat_dispatch.rs` sends `hide_indicators` with `session_id` before dropping the RunHandle. Covers success, error, and cancellation — all paths converge here.
+3. **Stale run cleanup:** The periodic stale-run cleanup task (every 60s, 600s idle threshold) sends `hide_indicators` for each expired session key.
+
+The `ExtensionBridge.send_command()` method broadcasts fire-and-forget commands to all active extension connections. The WS handler serializes these as `{ "type": "<command>", "session_id": "..." }` — exactly the format the extension's `native.ts` expects for `show_indicators` and `hide_indicators`.
+
+### 21.4 Server Restart Recovery
 
 1. Server restarts → WS breaks
 2. Relay's recv task sees WS close → `process::exit(0)`
@@ -1084,9 +1158,9 @@ Called from `NativeHost.execute_tool()` only (the direct desktop path). The exte
 
 ## 23. Known Issues and Failure Modes
 
-### 23.1 30s Timeout Too Short for Complex Pages
+### 23.1 Page Load Timing on Complex Pages
 
-**Issue:** Navigation to heavy pages (e.g., SPAs that load async content) may exceed the 30s timeout. The navigate tool in `tools.ts` only waits 1s after `Page.navigate` — but the agent may call `read_page` before the page is fully loaded, getting partial or empty content. The *real* timeout is the 30s on the ExtensionBridge, which is appropriate for the round-trip but doesn't help with page-load timing.
+**Issue:** Navigation to heavy pages (e.g., SPAs that load async content) can return before all client-side content has settled. The bridge timeout is now 60s, and extension-side helpers wait for tab load, but that still does not guarantee every async render or API call has finished. Agents should `read_page`, and if content is incomplete, `wait` briefly and read again.
 
 ### 23.2 Manifest Path Staleness
 
@@ -1094,11 +1168,11 @@ Called from `NativeHost.execute_tool()` only (the direct desktop path). The exte
 
 ### 23.3 Extension Disconnection During Tool Execution
 
-If the extension or relay disconnects mid-tool-execution, the pending oneshot channel times out after 30s. The tool may have partially executed (e.g., navigation started but result never returned). The bridge no longer immediately rejects pending requests on disconnect — it lets timeouts handle truly dead connections.
+If the extension or relay disconnects mid-tool-execution, the pending oneshot channel times out after 60s. The tool may have partially executed (e.g., navigation started but result never returned). The bridge no longer immediately rejects pending requests on disconnect — it lets timeouts handle truly dead connections.
 
-### 23.4 Agent Tab and about:blank
+### 23.4 Agent Tab Creation and Empty Pages
 
-The agent tab starts as `about:blank`. The first `navigate` command changes it to the target URL. If `read_page` is called before navigate, it reads `about:blank` — which returns an empty tree.
+The current extension avoids creating `about:blank` agent tabs because extensions cannot reliably access them. If the first action is `navigate`, it creates the session tab directly at the requested URL. Other first actions create a normal new-tab page, which may still produce little useful content until navigation happens.
 
 ### 23.5 CDP Debugger Permission Dialog
 
@@ -1115,6 +1189,10 @@ This is Chrome's error when trying to execute scripts on restricted pages: `chro
 ### 23.8 Default Browser Detection Limited to macOS
 
 The `detect_default_browser()` function only works on macOS (reads LSHandlers). On Linux and Windows, it falls back to "unknown", which means tool requests go to any available connection rather than the user's default browser. Not a problem when only one browser runs the extension.
+
+### 23.9 DevTools Tool Coverage
+
+**Status: Partially fixed.** `web(action: "console")` now correctly maps to the extension's `read_console_messages` tool (previously mapped to nonexistent `devtools_console`). The `filter` param is translated to `pattern` for backward compatibility. Devtools actions `source`, `storage`, `dom`, `cookies`, and `performance` have no extension implementation yet — the Rust side now returns a clear "not yet available" error instead of the previous "Unknown tool" from the extension.
 
 ---
 
@@ -1167,7 +1245,7 @@ ps aux | grep nebo | grep chrome-extension
 |---------|-------------|
 | "Chrome extension not connected" | Extension not installed, or native messaging host not found |
 | "Browser extension reconnecting" | Transient disconnect, will auto-recover in ~2s |
-| "Tool 'X' timed out after 30s" | Relay not running, WS not connected, or extension service worker suspended |
+| "Tool 'X' timed out after 60s" | Relay not running, WS not connected, extension service worker suspended, or extension-side tool hung |
 | "Cannot access contents of url" | Trying to access chrome:// or extension pages |
 | "Element ref_N not found" | Page changed since last read_page (WeakRef was GC'd) |
 | Badge shows empty (disconnected) | Nebo server not running, or manifest path wrong |
@@ -1183,8 +1261,8 @@ ps aux | grep nebo | grep chrome-extension
 | `browser/src/config.rs` | 106 | BrowserConfig, ProfileConfig, ResolvedProfile — profile detection, defaults, resolution |
 | `browser/src/chrome.rs` | 208 | Chrome binary detection (macOS/Linux/Windows), RunningChrome launch, CDP port wait, process lifecycle |
 | `browser/src/session.rs` | 185 | Session (multi-page, active target) and Page (state, refs, console, errors) |
-| `browser/src/extension_bridge.rs` | 261 | Multi-browser bridge — per-browser channels, default browser routing, grace period, 30s timeout |
-| `browser/src/executor.rs` | 58 | Thin wrapper — delegates to ExtensionBridge, adds grace period helpers |
+| `browser/src/extension_bridge.rs` | current | Multi-browser bridge — per-browser channels, default browser routing, session IDs, batch execution, read_page cache, grace period, 60s timeout |
+| `browser/src/executor.rs` | current | Routes to ExtensionBridge first, then headless agent-browser fallback |
 | `browser/src/manager.rs` | 193 | Manager — owns ExtensionBridge, managed Chrome profiles, sessions |
 | `browser/src/native_host.rs` | 550 | Native messaging host — manifest install/update/validate, stdin/stdout protocol, Windows registry, direct path |
 | `browser/src/native_types.rs` | 112 | NativeMessage struct — all message types with convenience constructors |
@@ -1197,12 +1275,72 @@ ps aux | grep nebo | grep chrome-extension
 | `cli/src/main.rs` (~170 lines) | — | Relay bridge — stdin/stdout ↔ WebSocket, browser detection, hello handshake |
 | `server/src/handlers/ws.rs` (~95 lines) | — | WS handler for /ws/extension — per-browser connection, tool relay |
 | `server/src/lib.rs` (~30 lines) | — | Browser init + manifest install/update |
-| `chrome-extension/src/background.ts` | 63 | Service worker — startup, keep-alive, toolbar |
-| `chrome-extension/src/native.ts` | 255 | Native messaging — connection, agent tab, tool dispatch |
-| `chrome-extension/src/tools.ts` | 455 | Tool implementations — CDP + content scripts |
-| `chrome-extension/src/badge.ts` | 32 | Badge state management |
-| `chrome-extension/src/types.ts` | 18 | Badge type definitions |
-| `chrome-extension/src/options.ts` | 69 | Options page — connection test |
-| `chrome-extension/src/content/accessibility-tree.ts` | 340 | Content script — a11y tree generation |
-| `chrome-extension/src/content/visual-indicator.ts` | 226 | Content script — glow + stop button |
-| `chrome-extension/manifest.json` | 51 | MV3 manifest — permissions, content scripts |
+| sibling `chrome-extension/src/background.ts` | current | Service worker — startup connect, keep-alive, toolbar, stop-agent relay |
+| sibling `chrome-extension/src/native.ts` | current | Native messaging — connection, reconnect, session tab groups, batch dispatch, cleanup |
+| sibling `chrome-extension/src/tools.ts` | current | Tool implementations — CDP + content scripts |
+| sibling `chrome-extension/src/badge.ts` | current | Badge state management |
+| sibling `chrome-extension/src/types.ts` | current | Badge type definitions |
+| sibling `chrome-extension/src/options.ts` | current | Options page — connection test |
+| sibling `chrome-extension/src/content/accessibility-tree.ts` | current | Content script — a11y tree generation |
+| sibling `chrome-extension/src/content/visual-indicator.ts` | current | Content script — glow + stop button |
+| sibling `chrome-extension/manifest.json` | current | MV3 manifest — permissions, tabGroups, content scripts |
+
+---
+
+## 25. Headless Fallback
+
+### 25.1 Current Implementation
+
+Browser automation no longer hard-requires the Nebo Chrome extension. `browser::Manager::new()` calls `HeadlessBridge::detect_binary()`, which checks for an `agent-browser` executable on PATH. If present, the same `web(action: ...)` interface can run against that headless backend when the extension is disconnected.
+
+Two execution paths sit behind the same tool interface:
+
+```
+web(action: "click", ref: "ref_1")
+    ↓
+ExtensionBridge connected?
+    YES → Chrome extension path (CDP via extension, visible browser, JPEG screenshots)
+    NO  → HeadlessBridge if agent-browser is installed
+    ELSE → no browser backend error with install guidance
+```
+
+`HeadlessBridge` does not implement its own CDP client. It shells out to `agent-browser` with a persistent session name (`nebo_default`) and normalizes refs between Nebo's `ref_N` format and agent-browser's `@eN` format. It also mirrors the 2.5s `read_page` cache and runs batch actions sequentially.
+
+### 25.2 Supported Headless Mapping
+
+| Nebo action | agent-browser command |
+|-------------|-----------------------|
+| `navigate` | `open <url>` |
+| `read_page` / `snapshot` | `snapshot -c`, plus `-i` for interactive filter |
+| `click` | `click @eN` |
+| `double_click` | `dblclick @eN` |
+| `hover` | `hover @eN` |
+| `fill` / `form_input` | `fill @eN <value>` |
+| `type` | `type <text>` |
+| `select` | `select @eN <value>` |
+| `press` / `key` | `press <key>` |
+| `scroll` | `scroll <direction> <amount>` |
+| `scroll_to` | `scrollintoview @eN` |
+| `screenshot` | `screenshot --json` |
+| `evaluate` | `eval <expression>` |
+| `wait` | `wait <ms>` |
+| `go_back` / `go_forward` | `back` / `forward` |
+| `get_page_text` | `text` |
+| `find` | `find text <query>` |
+| `file_upload` | `upload @eN <path>` |
+| `drag` | `drag @eN @eM` |
+
+Unsupported headless actions return a clear error asking the user to connect the Nebo Chrome extension for full browser control. Current unsupported examples include `triple_click`, `right_click`, `zoom`, `list_tabs`, `new_tab`, console/network inspection, and window resizing.
+
+### 25.3 Differences from Extension Path
+
+| Capability | Extension | Headless |
+|-----------|-----------|----------|
+| Visible browser | Yes (user sees actions) | No (invisible) |
+| Screenshots | Extension-processed screenshots | Via `agent-browser screenshot --json` |
+| User's cookies/logins | Yes (user's Chrome profile) | No (clean profile, unless `--user-data-dir` specified) |
+| Extension install required | Yes | No |
+| Requires `agent-browser` | No | Yes |
+| Tab/session model | Per-Nebo-session Chrome tab groups | Single persistent `nebo_default` headless session |
+| Browser-specific DevTools actions | Yes | Mostly unsupported |
+| Performance | Relay chain, but real user browser | Subprocess calls, no native messaging relay |

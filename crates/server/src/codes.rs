@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use comm::api::NeboLoopApi;
 use types::NeboError;
@@ -23,6 +23,7 @@ pub enum CodeType {
     Agent,
     Loop,
     Plugin,
+    App,
 }
 
 /// Crockford Base32 charset (no I, L, O, U).
@@ -52,6 +53,8 @@ pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
         ("LOOP-", CodeType::Loop)
     } else if upper.starts_with("PLUG-") {
         ("PLUG-", CodeType::Plugin)
+    } else if upper.starts_with("APPX-") {
+        ("APPX-", CodeType::App)
     } else {
         return None;
     };
@@ -95,6 +98,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         CodeType::Agent => ("agent", "Installing agent..."),
         CodeType::Loop => ("loop", "Joining loop..."),
         CodeType::Plugin => ("plugin", "Installing plugin..."),
+        CodeType::App => ("app", "Installing app..."),
     };
 
     state.hub.broadcast(
@@ -114,6 +118,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         CodeType::Agent => handle_agent_code(state, code).await,
         CodeType::Loop => handle_loop_code(state, code).await,
         CodeType::Plugin => handle_plugin_code(state, code).await,
+        CodeType::App => handle_app_code(state, code).await,
     };
 
     match result {
@@ -193,19 +198,29 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         name = resp.artifact.name.clone();
     } else {
         // Redemption failed (likely already redeemed) — look up by code
-        warn!(code, "skill redeem failed, attempting to look up artifact by code");
-        let products = api.list_products(Some("skill"), None, None, None, None).await
+        warn!(
+            code,
+            "skill redeem failed, attempting to look up artifact by code"
+        );
+        let products = api
+            .list_products(Some("skill"), None, None, None, None)
+            .await
             .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
-        let items = products.get("results").and_then(|v| v.as_array())
+        let items = products
+            .get("results")
+            .and_then(|v| v.as_array())
             .or_else(|| products.get("skills").and_then(|v| v.as_array()));
-        let found = items.and_then(|arr| arr.iter().find(|item| {
-            item.get("code").and_then(|c| c.as_str()) == Some(code)
-        }));
+        let found = items.and_then(|arr| {
+            arr.iter()
+                .find(|item| item.get("code").and_then(|c| c.as_str()) == Some(code))
+        });
         if let Some(item) = found {
             artifact_id = item["id"].as_str().unwrap_or("").to_string();
             name = item["name"].as_str().unwrap_or("").to_string();
         } else {
-            return Err(NeboError::Internal(format!("install_skill: code not found: {code}")));
+            return Err(NeboError::Internal(format!(
+                "install_skill: code not found: {code}"
+            )));
         }
     }
 
@@ -274,24 +289,36 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
         artifact_name = resp.artifact.name.clone();
     } else {
         // Redemption failed (likely already redeemed) — look up by code
-        warn!(code, "workflow redeem failed, attempting to look up artifact by code");
-        let products = api.list_products(Some("workflow"), None, None, None, None).await
+        warn!(
+            code,
+            "workflow redeem failed, attempting to look up artifact by code"
+        );
+        let products = api
+            .list_products(Some("workflow"), None, None, None, None)
+            .await
             .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
-        let items = products.get("results").and_then(|v| v.as_array())
+        let items = products
+            .get("results")
+            .and_then(|v| v.as_array())
             .or_else(|| products.get("workflows").and_then(|v| v.as_array()));
-        let found = items.and_then(|arr| arr.iter().find(|item| {
-            item.get("code").and_then(|c| c.as_str()) == Some(code)
-        }));
+        let found = items.and_then(|arr| {
+            arr.iter()
+                .find(|item| item.get("code").and_then(|c| c.as_str()) == Some(code))
+        });
         if let Some(item) = found {
             artifact_id = item["id"].as_str().unwrap_or("").to_string();
             artifact_name = item["name"].as_str().unwrap_or("").to_string();
         } else {
-            return Err(NeboError::Internal(format!("install_workflow: code not found: {code}")));
+            return Err(NeboError::Internal(format!(
+                "install_workflow: code not found: {code}"
+            )));
         }
     }
 
     // Fetch artifact content from NeboLoop and persist to DB + filesystem
-    if let Err(e) = persist_workflow_artifact(&api, &artifact_id, &artifact_name, code, &state.store).await {
+    if let Err(e) =
+        persist_workflow_artifact(&api, &artifact_id, &artifact_name, code, &state.store).await
+    {
         warn!(code, error = %e, "failed to persist workflow artifact after redeem");
     }
 
@@ -344,20 +371,30 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     } else {
         // Redemption failed (likely already redeemed) — look up by code in local DB
         // or fetch detail from NeboLoop to get the artifact ID
-        warn!(code, "redeem failed, attempting to look up artifact by code");
+        warn!(
+            code,
+            "redeem failed, attempting to look up artifact by code"
+        );
         // Search products to find the artifact by code
-        let products = api.list_products(Some("agent"), None, None, None, None).await
+        let products = api
+            .list_products(Some("agent"), None, None, None, None)
+            .await
             .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
-        let items = products.get("results").and_then(|v| v.as_array())
+        let items = products
+            .get("results")
+            .and_then(|v| v.as_array())
             .or_else(|| products.get("skills").and_then(|v| v.as_array()));
-        let found = items.and_then(|arr| arr.iter().find(|item| {
-            item.get("code").and_then(|c| c.as_str()) == Some(code)
-        }));
+        let found = items.and_then(|arr| {
+            arr.iter()
+                .find(|item| item.get("code").and_then(|c| c.as_str()) == Some(code))
+        });
         if let Some(item) = found {
             artifact_id = item["id"].as_str().unwrap_or("").to_string();
             artifact_name = item["name"].as_str().unwrap_or("").to_string();
         } else {
-            return Err(NeboError::Internal(format!("install_agent: code not found: {code}")));
+            return Err(NeboError::Internal(format!(
+                "install_agent: code not found: {code}"
+            )));
         }
     }
 
@@ -383,17 +420,23 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     }
 
     // Fetch artifact content from NeboLoop and persist to DB + filesystem
-    let persist_result = match tools::persist_agent_from_api(&api, &artifact_id, &artifact_name, code, &state.store).await {
-        Ok(result) => Some(result),
-        Err(e) => {
-            warn!(code, error = %e, "failed to persist agent artifact after redeem");
-            None
-        }
-    };
+    let persist_result =
+        match tools::persist_agent_from_api(&api, &artifact_id, &artifact_name, code, &state.store)
+            .await
+        {
+            Ok(result) => Some(result),
+            Err(e) => {
+                warn!(code, error = %e, "failed to persist agent artifact after redeem");
+                None
+            }
+        };
 
     // Cascade: resolve agent deps (plugins, skills) BEFORE activating the agent
     {
-        let has_type_config = persist_result.as_ref().and_then(|r| r.type_config.as_ref()).is_some();
+        let has_type_config = persist_result
+            .as_ref()
+            .and_then(|r| r.type_config.as_ref())
+            .is_some();
         info!(agent = %artifact_name, has_type_config, "cascade: checking for deps");
         let frontmatter = persist_result
             .as_ref()
@@ -450,7 +493,12 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             match napp::agent::parse_agent_config(&tc_str) {
                 Ok(agent_config) => {
                     info!(agent = %artifact_name, workflows = agent_config.workflows.len(), "processing workflow bindings from typeConfig");
-                    let _ = crate::handlers::agents::process_agent_bindings(&artifact_id, &agent_config, state).await;
+                    let _ = crate::handlers::agents::process_agent_bindings(
+                        &artifact_id,
+                        &agent_config,
+                        state,
+                    )
+                    .await;
                     bindings_processed = true;
                 }
                 Err(e) => {
@@ -469,7 +517,12 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 match napp::agent::parse_agent_config(&agent.frontmatter) {
                     Ok(agent_config) => {
                         info!(agent = %artifact_name, workflows = agent_config.workflows.len(), "processing workflow bindings from DB frontmatter (fallback)");
-                        let _ = crate::handlers::agents::process_agent_bindings(&artifact_id, &agent_config, state).await;
+                        let _ = crate::handlers::agents::process_agent_bindings(
+                            &artifact_id,
+                            &agent_config,
+                            state,
+                        )
+                        .await;
                     }
                     Err(e) => {
                         warn!(agent = %artifact_name, error = %e, "failed to parse agent config from DB frontmatter");
@@ -496,7 +549,11 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 channel_id: None,
                 degraded: None,
             };
-            state.agent_registry.write().await.insert(artifact_id.clone(), active);
+            state
+                .agent_registry
+                .write()
+                .await
+                .insert(artifact_id.clone(), active);
             state.hub.broadcast(
                 "agent_activated",
                 serde_json::json!({ "agentId": artifact_id, "name": agent.name }),
@@ -564,19 +621,29 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         name = resp.artifact.name.clone();
     } else {
         // Redemption failed (likely already redeemed) — look up by code
-        warn!(code, "plugin redeem failed, attempting to look up artifact by code");
-        let products = api.list_products(Some("plugin"), None, None, None, None).await
+        warn!(
+            code,
+            "plugin redeem failed, attempting to look up artifact by code"
+        );
+        let products = api
+            .list_products(Some("plugin"), None, None, None, None)
+            .await
             .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
-        let items = products.get("results").and_then(|v| v.as_array())
+        let items = products
+            .get("results")
+            .and_then(|v| v.as_array())
             .or_else(|| products.get("plugins").and_then(|v| v.as_array()));
-        let found = items.and_then(|arr| arr.iter().find(|item| {
-            item.get("code").and_then(|c| c.as_str()) == Some(code)
-        }));
+        let found = items.and_then(|arr| {
+            arr.iter()
+                .find(|item| item.get("code").and_then(|c| c.as_str()) == Some(code))
+        });
         if let Some(item) = found {
             artifact_id = item["id"].as_str().unwrap_or("").to_string();
             name = item["name"].as_str().unwrap_or("").to_string();
         } else {
-            return Err(NeboError::Internal(format!("install_plugin: code not found: {code}")));
+            return Err(NeboError::Internal(format!(
+                "install_plugin: code not found: {code}"
+            )));
         }
     }
 
@@ -593,23 +660,33 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
 
     // Fetch plugin manifest from NeboLoop (platform-specific binary info)
     let slug = name.to_lowercase().replace(' ', "-");
-    let detail = api.get_plugin(&slug, &platform).await
+    let detail = api
+        .get_plugin(&slug, &platform)
+        .await
         .map_err(|e| NeboError::Internal(format!("fetch plugin detail: {e}")))?;
 
-    let version = if detail.version.is_empty() { "1.0.0".to_string() } else { detail.version.clone() };
+    let version = if detail.version.is_empty() {
+        "1.0.0".to_string()
+    } else {
+        detail.version.clone()
+    };
 
     let plugin_store = state.plugin_store.clone();
 
     // Get platform-specific download URL from the manifest
-    let platform_binary = detail.platforms.get(&platform)
-        .ok_or_else(|| NeboError::Internal(format!(
-            "plugin {} has no binary for platform {}", slug, platform
-        )))?;
+    let platform_binary = detail.platforms.get(&platform).ok_or_else(|| {
+        NeboError::Internal(format!(
+            "plugin {} has no binary for platform {}",
+            slug, platform
+        ))
+    })?;
     let download_url = &platform_binary.download_url;
 
     info!(plugin = %name, url = %download_url, "downloading plugin .napp");
 
-    let napp_data = api.download_napp(download_url).await
+    let napp_data = api
+        .download_napp(download_url)
+        .await
         .map_err(|e| NeboError::Internal(format!("download .napp for {}: {}", name, e)))?;
 
     info!(plugin = %name, size = napp_data.len(), "downloaded .napp archive");
@@ -620,7 +697,9 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     // Remove existing version AFTER download completes — avoids killing active watch processes
     let _ = plugin_store.remove(&slug);
 
-    let install_result = plugin_store.install_from_napp(&slug, &version, &napp_data).await;
+    let install_result = plugin_store
+        .install_from_napp(&slug, &version, &napp_data)
+        .await;
 
     match install_result {
         Ok(path) => {
@@ -631,6 +710,74 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
                 }),
             );
             info!(code, plugin = %name, artifact_id = %artifact_id, path = %path.display(), "installed plugin");
+
+            // Persist plugin to DB registry for querying, enable/disable, diagnostics.
+            let manifest_hash = platform_binary.sha256.clone();
+            let sig_status = if platform_binary.signature.is_empty() {
+                "unverified"
+            } else {
+                "verified"
+            };
+            if let Err(e) = state.store.upsert_installed_plugin(
+                &slug,
+                &name,
+                &version,
+                &detail.author,
+                &path.display().to_string(),
+                &manifest_hash,
+                sig_status,
+            ) {
+                warn!(plugin = %slug, error = %e, "failed to upsert plugin into DB registry");
+            }
+
+            // Cascade plugin-to-plugin dependencies (e.g., digest → ffmpeg).
+            if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
+                if !manifest.dependencies.is_empty() {
+                    let ps = plugin_store.clone();
+                    if let Ok(api2) = build_api_client(state) {
+                        let api2 = std::sync::Arc::new(api2);
+                        match ps
+                            .ensure_deps(&manifest, |dep_slug, _dep_version| {
+                                let api_inner = api2.clone();
+                                async move {
+                                    let platform = napp::plugin::current_platform_key();
+                                    let m = api_inner
+                                        .get_plugin(&dep_slug, &platform)
+                                        .await
+                                        .map_err(|e| {
+                                            napp::NappError::PluginDownloadFailed(e.to_string())
+                                        })?;
+                                    let url = m
+                                        .platforms
+                                        .get(&platform)
+                                        .map(|pb| pb.download_url.clone())
+                                        .ok_or_else(|| {
+                                            napp::NappError::PluginDownloadFailed(format!(
+                                                "dep {} has no binary for {}",
+                                                dep_slug, platform
+                                            ))
+                                        })?;
+                                    let data =
+                                        api_inner.download_napp(&url).await.map_err(|e| {
+                                            napp::NappError::PluginDownloadFailed(e.to_string())
+                                        })?;
+                                    Ok((m, data))
+                                }
+                            })
+                            .await
+                        {
+                            Ok(installed) => {
+                                for dep_slug in &installed {
+                                    info!(plugin = %slug, dep = %dep_slug, "installed dependency plugin");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(plugin = %slug, error = %e, "failed to install plugin dependencies");
+                            }
+                        }
+                    }
+                }
+            }
 
             // Check if plugin requires authentication
             if let Some(auth) = state.plugin_store.get_manifest(&slug).and_then(|m| m.auth) {
@@ -664,14 +811,76 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     // Re-register plugin tool so the new plugin appears as a resource
     state.tools.unregister("plugin").await;
     if !plugin_store.list_installed().is_empty() {
-        state.tools.register(Box::new(
-            tools::plugin_tool::PluginTool::new(plugin_store.clone())
-        )).await;
+        state
+            .tools
+            .register(Box::new(tools::plugin_tool::PluginTool::new(
+                plugin_store.clone(),
+            )))
+            .await;
+    }
+
+    // Plugin command tools are discovered via the `plugin` STRAP tool (lookup),
+    // not registered individually (13K+ tools overwhelm the LLM context).
+
+    // Register plugin hooks with the hook dispatcher
+    if let Some(manifest) = plugin_store.get_manifest(&slug) {
+        if let Some(binary) = plugin_store.resolve(&slug, "*") {
+            let count = napp::register_plugin_hooks(&manifest, &binary, &state.hooks);
+            if count > 0 {
+                info!(plugin = %slug, hooks = count, "registered plugin hooks");
+            }
+        }
     }
 
     Ok(CodeHandlerResult {
         message: format!("Installed plugin: {}", name),
         artifact_name: Some(name),
+        ..Default::default()
+    })
+}
+
+async fn handle_app_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+    // Apps use the same install flow as agents — they ARE agents with artifact_type="app"
+    let result = handle_agent_code(state, code).await?;
+
+    // After agent install, mark it as an app and reload to detect UI/binary paths
+    if let Some(ref artifact_id) = result.artifact_id {
+        // The agent was installed by handle_agent_code; now reload from filesystem
+        // to detect app-specific paths (ui/, bin/)
+        state.agent_loader.load_all().await;
+        if let Some(loaded) = state
+            .agent_loader
+            .get_by_name(result.artifact_name.as_deref().unwrap_or(""))
+            .await
+        {
+            if loaded.is_app {
+                let ui_path = loaded.app_ui_path.as_ref().map(|p| p.display().to_string());
+                let bin_path = loaded
+                    .app_binary_path
+                    .as_ref()
+                    .map(|p| p.display().to_string());
+                let window_cfg = loaded
+                    .app_window_config
+                    .as_ref()
+                    .and_then(|w| serde_json::to_string(w).ok());
+                let _ = state.store.set_agent_app_fields(
+                    artifact_id,
+                    true,
+                    ui_path.as_deref(),
+                    bin_path.as_deref(),
+                    window_cfg.as_deref(),
+                );
+            }
+        }
+    }
+
+    Ok(CodeHandlerResult {
+        message: format!(
+            "Installed app: {}",
+            result.artifact_name.as_deref().unwrap_or("unknown")
+        ),
+        artifact_name: result.artifact_name,
+        artifact_id: result.artifact_id,
         ..Default::default()
     })
 }
@@ -687,18 +896,19 @@ pub async fn submit_code(
     axum::response::Json(body): axum::response::Json<serde_json::Value>,
 ) -> Result<
     axum::response::Json<serde_json::Value>,
-    (axum::http::StatusCode, axum::response::Json<types::api::ErrorResponse>),
+    (
+        axum::http::StatusCode,
+        axum::response::Json<types::api::ErrorResponse>,
+    ),
 > {
-    let code = body["code"]
-        .as_str()
-        .ok_or_else(|| {
-            (
-                axum::http::StatusCode::BAD_REQUEST,
-                axum::response::Json(types::api::ErrorResponse {
-                    error: "code is required".into(),
-                }),
-            )
-        })?;
+    let code = body["code"].as_str().ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::response::Json(types::api::ErrorResponse {
+                error: "code is required".into(),
+            }),
+        )
+    })?;
 
     let (code_type, validated_code) = detect_code(code).ok_or_else(|| {
         (
@@ -716,6 +926,7 @@ pub async fn submit_code(
         CodeType::Agent => handle_agent_code(&state, validated_code).await,
         CodeType::Loop => handle_loop_code(&state, validated_code).await,
         CodeType::Plugin => handle_plugin_code(&state, validated_code).await,
+        CodeType::App => handle_app_code(&state, validated_code).await,
     };
 
     match result {
@@ -773,8 +984,8 @@ async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
 // ── API Client Helper ───────────────────────────────────────────────
 
 pub(crate) fn build_api_client(state: &AppState) -> Result<NeboLoopApi, NeboError> {
-    let bot_id = config::read_bot_id()
-        .ok_or_else(|| NeboError::Internal("no bot_id configured".into()))?;
+    let bot_id =
+        config::read_bot_id().ok_or_else(|| NeboError::Internal("no bot_id configured".into()))?;
     let profiles = state
         .store
         .list_all_active_auth_profiles_by_provider("neboloop")
@@ -783,7 +994,11 @@ pub(crate) fn build_api_client(state: &AppState) -> Result<NeboLoopApi, NeboErro
         .first()
         .ok_or_else(|| NeboError::Internal("not connected to NeboLoop".into()))?;
     let api_server = state.config.neboloop.api_url.clone();
-    Ok(NeboLoopApi::new(api_server, bot_id, profile.api_key.clone()))
+    Ok(NeboLoopApi::new(
+        api_server,
+        bot_id,
+        profile.api_key.clone(),
+    ))
 }
 
 // ── Artifact Persistence ────────────────────────────────────────────
@@ -807,58 +1022,73 @@ async fn persist_workflow_artifact(
     code: &str,
     store: &db::Store,
 ) -> Result<(), String> {
-    let detail = api.get_skill(artifact_id).await
+    let detail = api
+        .get_skill(artifact_id)
+        .await
         .map_err(|e| format!("fetch workflow detail: {e}"))?;
 
-    let manifest_text = tools::extract_manifest_text(&detail)
-        .unwrap_or_default();
+    let manifest_text = tools::extract_manifest_text(&detail).unwrap_or_default();
 
     // For workflows, manifest is WORKFLOW.md and type_config may hold the definition
-    let definition = detail.type_config
+    let definition = detail
+        .type_config
         .as_ref()
         .map(|v| serde_json::to_string(v).unwrap_or_default())
         .unwrap_or_default();
 
     // Persist to DB
-    let _ = store.create_workflow(
-        artifact_id,
-        Some(code),
-        name,
-        &detail.item.version,
-        &definition,
-        if manifest_text.is_empty() { None } else { Some(&manifest_text) },
-        None,
-    ).map_err(|e| format!("create_workflow: {e}"))?;
+    let _ = store
+        .create_workflow(
+            artifact_id,
+            Some(code),
+            name,
+            &detail.item.version,
+            &definition,
+            if manifest_text.is_empty() {
+                None
+            } else {
+                Some(&manifest_text)
+            },
+            None,
+        )
+        .map_err(|e| format!("create_workflow: {e}"))?;
 
     // Marketplace artifacts go to nebo/ namespace (installed)
-    let nebo_dir = config::nebo_dir()
-        .map_err(|e| format!("nebo_dir: {e}"))?;
+    let nebo_dir = config::nebo_dir().map_err(|e| format!("nebo_dir: {e}"))?;
     let slug = &detail.item.slug;
     let dir_name = if slug.is_empty() { name } else { slug.as_str() };
-    let version = if detail.item.version.is_empty() { "1.0.0" } else { &detail.item.version };
+    let version = if detail.item.version.is_empty() {
+        "1.0.0"
+    } else {
+        &detail.item.version
+    };
 
     // Try sealed .napp download — use API-provided URL or construct from artifact ID.
     // Include platform so the server can serve the right binary for this OS/arch.
     let platform = napp::plugin::current_platform_key();
-    let download_url = detail.download_url.clone()
-        .or_else(|| Some(format!("/api/v1/apps/{}/download/{}", artifact_id, platform)));
+    let download_url = detail.download_url.clone().or_else(|| {
+        Some(format!(
+            "/api/v1/apps/{}/download/{}",
+            artifact_id, platform
+        ))
+    });
     if let Some(ref download_url) = download_url {
         let napp_dir = nebo_dir.join("workflows").join(dir_name);
-        std::fs::create_dir_all(&napp_dir)
-            .map_err(|e| format!("create workflow dir: {e}"))?;
+        std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create workflow dir: {e}"))?;
         let napp_path = napp_dir.join(format!("{}.napp", version));
 
         match api.download_napp(download_url).await {
             Ok(data) => {
-                std::fs::write(&napp_path, &data)
-                    .map_err(|e| format!("write .napp: {e}"))?;
+                std::fs::write(&napp_path, &data).map_err(|e| format!("write .napp: {e}"))?;
                 tracing::info!(workflow = name, path = %napp_path.display(), size = data.len(), "stored sealed .napp");
 
                 match napp::reader::extract_napp_alongside(&napp_path) {
                     Ok(extract_dir) => {
                         tracing::info!(workflow = name, dir = %extract_dir.display(), "extracted .napp");
                         // Set napp_path on DB record to the sealed archive
-                        if let Err(e) = store.set_workflow_napp_path(artifact_id, &napp_path.to_string_lossy()) {
+                        if let Err(e) =
+                            store.set_workflow_napp_path(artifact_id, &napp_path.to_string_lossy())
+                        {
                             warn!(workflow = name, error = %e, "failed to set napp_path");
                         }
                         return Ok(());
@@ -876,8 +1106,7 @@ async fn persist_workflow_artifact(
 
     // Fallback: write loose WORKFLOW.md + workflow.json
     let wf_dir = nebo_dir.join("workflows").join(dir_name);
-    std::fs::create_dir_all(&wf_dir)
-        .map_err(|e| format!("create workflow dir: {e}"))?;
+    std::fs::create_dir_all(&wf_dir).map_err(|e| format!("create workflow dir: {e}"))?;
 
     if !manifest_text.is_empty() {
         if let Err(e) = std::fs::write(wf_dir.join("WORKFLOW.md"), &manifest_text) {
@@ -911,8 +1140,7 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
         return Ok(());
     }
 
-    let bot_id = config::read_bot_id()
-        .ok_or_else(|| NeboError::Internal("no bot_id".into()))?;
+    let bot_id = config::read_bot_id().ok_or_else(|| NeboError::Internal("no bot_id".into()))?;
     let profiles = state
         .store
         .list_all_active_auth_profiles_by_provider("neboloop")
@@ -971,7 +1199,9 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
                     .await
                     .map_err(|e| NeboError::Internal(format!("connect after refresh: {e}")))?;
             } else {
-                return Err(NeboError::Internal(format!("connect: {err_msg} (refresh failed)")));
+                return Err(NeboError::Internal(format!(
+                    "connect: {err_msg} (refresh failed)"
+                )));
             }
         } else {
             return Err(NeboError::Internal(format!("connect: {err_msg}")));
@@ -980,7 +1210,10 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
 
     // Persist rotated JWT so next reconnect uses the fresh token
     if let Some(new_token) = state.comm_manager.take_rotated_token().await {
-        if let Ok(profs) = state.store.list_all_active_auth_profiles_by_provider("neboloop") {
+        if let Ok(profs) = state
+            .store
+            .list_all_active_auth_profiles_by_provider("neboloop")
+        {
             if let Some(p) = profs.first() {
                 let _ = state.store.update_auth_profile(
                     &p.id,
@@ -997,12 +1230,11 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
         }
     }
 
-    state.hub.broadcast(
-        "settings_updated",
-        serde_json::json!({"commEnabled": true}),
-    );
+    state
+        .hub
+        .broadcast("settings_updated", serde_json::json!({"commEnabled": true}));
 
-    // Reconcile agents + sync bot identity in background (non-blocking)
+    // Reconcile agents + sync bot identity + refresh license keys in background (non-blocking)
     {
         let st = state.clone();
         tokio::spawn(async move {
@@ -1011,6 +1243,10 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
             }
             // Sync bot identity (name) to NeboLoop
             sync_bot_identity(&st).await;
+            // Refresh content protection license keys for sealed .napp files
+            if let Err(e) = refresh_license_keys(&st).await {
+                warn!(error = %e, "license key refresh failed");
+            }
         });
     }
 
@@ -1096,7 +1332,11 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         for agent in &agents {
             let slug = agent.name.to_lowercase().replace(' ', "-");
             if !remote_slugs.contains(&slug) {
-                let status = if agent.is_enabled != 0 { "active" } else { "paused" };
+                let status = if agent.is_enabled != 0 {
+                    "active"
+                } else {
+                    "paused"
+                };
                 info!(agent = %agent.name, slug = %slug, status = %status, "reconcile: registering missing agent");
                 if let Err(e) = api
                     .register_agent(&personal.loop_id, &agent.name, &slug, None)
@@ -1210,12 +1450,12 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
     crate::handlers::neboloop::store_neboloop_profile(
         state,
         &api_server,
-        &resp.id,               // owner_id from redeem response
-        &resp.owner_email,      // owner email from redeem response
+        &resp.id,                 // owner_id from redeem response
+        &resp.owner_email,        // owner email from redeem response
         &resp.owner_display_name, // owner display name from redeem response
         &resp.connection_token,
-        "",             // no refresh token from code redemption
-        false,          // not a janus provider
+        "",    // no refresh token from code redemption
+        false, // not a janus provider
     )
     .map_err(|e| NeboError::Internal(format!("store profile: {e}")))?;
 
@@ -1278,11 +1518,102 @@ pub(crate) async fn deregister_agent_from_loop(
     let remote = agents
         .iter()
         .find(|a| a.slug == agent_slug)
-        .ok_or_else(|| NeboError::Internal(format!("agent '{}' not found on NeboLoop", agent_slug)))?;
+        .ok_or_else(|| {
+            NeboError::Internal(format!("agent '{}' not found on NeboLoop", agent_slug))
+        })?;
     api.deregister_agent(&personal.loop_id, &remote.id)
         .await
         .map_err(|e| NeboError::Internal(format!("deregister agent: {e}")))?;
     info!(agent = %agent_slug, remote_id = %remote.id, loop_id = %personal.loop_id, "deregistered agent from loop");
+    Ok(())
+}
+
+/// Refresh license keys for sealed .napp files from NeboLoop.
+///
+/// Called after NeboLoop connection is established (in activate_neboloop).
+/// Fetches fresh keys for all sealed artifacts, stores them in the DB cache,
+/// and triggers a skill reload so newly unlocked content becomes available.
+pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboError> {
+    use base64::Engine;
+
+    // Collect artifact_ids from installed sealed .napp files
+    let artifact_ids: Vec<String> = state
+        .store
+        .list_license_key_artifact_ids()
+        .unwrap_or_default();
+
+    if artifact_ids.is_empty() {
+        return Ok(());
+    }
+
+    let api = build_api_client(state)?;
+
+    // Register bot (idempotent) before fetching keys
+    let platform = napp::plugin::current_platform_key();
+    let version = env!("CARGO_PKG_VERSION");
+    if let Err(e) = api.register_bot(&platform, version).await {
+        debug!(error = %e, "bot registration failed (non-fatal)");
+    }
+
+    // Fetch fresh license keys
+    let response = api
+        .fetch_license_keys(&artifact_ids)
+        .await
+        .map_err(|e| NeboError::Internal(format!("fetch license keys: {e}")))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut refreshed = 0;
+    for (artifact_id, entry) in &response.keys {
+        // Decode base64 key
+        let key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&entry.key)
+            .map_err(|e| NeboError::Internal(format!("base64 decode: {e}")))?;
+        if key_bytes.len() != 32 {
+            warn!(
+                artifact_id,
+                len = key_bytes.len(),
+                "invalid license key length"
+            );
+            continue;
+        }
+
+        // Encrypt with keyring master key before storing
+        let encrypted = auth::credential::encrypt(&entry.key)
+            .map_err(|e| NeboError::Internal(format!("encrypt key: {e}")))?;
+
+        let expires_at = now + entry.ttl;
+        if let Err(e) = state.store.upsert_license_key(
+            artifact_id,
+            "skill", // artifact_type — refined later when we know the type
+            "user",  // scope
+            &encrypted,
+            expires_at as i64,
+        ) {
+            warn!(artifact_id, error = %e, "failed to store license key");
+        } else {
+            refreshed += 1;
+        }
+    }
+
+    if refreshed > 0 {
+        info!(
+            refreshed,
+            total = artifact_ids.len(),
+            "refreshed license keys"
+        );
+        // Reload skills to pick up newly unlocked sealed content
+        // The skill loader is accessed via the tool registry
+        // Trigger a reload by touching the watcher (skills will be reloaded)
+        state.hub.broadcast(
+            "license_keys_refreshed",
+            serde_json::json!({"count": refreshed}),
+        );
+    }
+
     Ok(())
 }
 
@@ -1292,23 +1623,50 @@ mod tests {
 
     #[test]
     fn test_detect_code_valid() {
-        assert!(matches!(detect_code("NEBO-A1B2-C3D4"), Some((CodeType::Nebo, _))));
-        assert!(matches!(detect_code("SKIL-0000-ZZZZ"), Some((CodeType::Skill, _))));
-        assert!(matches!(detect_code("WORK-1234-5678"), Some((CodeType::Work, _))));
-        assert!(matches!(detect_code("AGNT-9999-AAAA"), Some((CodeType::Agent, _))));
-        assert!(matches!(detect_code("LOOP-QRST-VWXY"), Some((CodeType::Loop, _))));
-        assert!(matches!(detect_code("PLUG-A1B2-C3D4"), Some((CodeType::Plugin, _))));
+        assert!(matches!(
+            detect_code("NEBO-A1B2-C3D4"),
+            Some((CodeType::Nebo, _))
+        ));
+        assert!(matches!(
+            detect_code("SKIL-0000-ZZZZ"),
+            Some((CodeType::Skill, _))
+        ));
+        assert!(matches!(
+            detect_code("WORK-1234-5678"),
+            Some((CodeType::Work, _))
+        ));
+        assert!(matches!(
+            detect_code("AGNT-9999-AAAA"),
+            Some((CodeType::Agent, _))
+        ));
+        assert!(matches!(
+            detect_code("LOOP-QRST-VWXY"),
+            Some((CodeType::Loop, _))
+        ));
+        assert!(matches!(
+            detect_code("PLUG-A1B2-C3D4"),
+            Some((CodeType::Plugin, _))
+        ));
     }
 
     #[test]
     fn test_detect_code_case_insensitive() {
-        assert!(matches!(detect_code("nebo-a1b2-c3d4"), Some((CodeType::Nebo, _))));
-        assert!(matches!(detect_code("skil-0000-ZZZZ"), Some((CodeType::Skill, _))));
+        assert!(matches!(
+            detect_code("nebo-a1b2-c3d4"),
+            Some((CodeType::Nebo, _))
+        ));
+        assert!(matches!(
+            detect_code("skil-0000-ZZZZ"),
+            Some((CodeType::Skill, _))
+        ));
     }
 
     #[test]
     fn test_detect_code_trimmed() {
-        assert!(matches!(detect_code("  NEBO-A1B2-C3D4  "), Some((CodeType::Nebo, _))));
+        assert!(matches!(
+            detect_code("  NEBO-A1B2-C3D4  "),
+            Some((CodeType::Nebo, _))
+        ));
     }
 
     #[test]

@@ -1,17 +1,23 @@
+pub mod a2ui;
+pub mod a2ui_actions;
+pub mod a2ui_bindings;
+pub mod app_lifecycle;
 pub mod chat_dispatch;
 pub mod codes;
 pub mod deps;
 pub mod entity_config;
 pub mod handlers;
+mod heartbeat;
 pub mod middleware;
+mod migration;
+mod plugin_commands;
+mod plugin_provider;
 pub mod routes;
 pub mod run_registry;
-pub mod workflow_manager;
-mod heartbeat;
-mod migration;
 mod scheduler;
 mod spa;
 mod state;
+pub mod workflow_manager;
 
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
 /// UTF-8 character.
@@ -29,9 +35,9 @@ pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
 use std::net::TcpListener;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::http::Method;
 use axum::response::Json;
-use axum::Router;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -116,6 +122,39 @@ fn seed_models_from_catalog(store: &db::Store, models_cfg: &config::ModelsConfig
     }
 }
 
+/// Inject Ollama models from DB into the selector's runtime models.
+/// Ollama models are auto-discovered and stored in the DB, not in models.yaml,
+/// so the selector needs them injected separately.
+pub fn inject_ollama_models(store: &db::Store, selector: &agent::ModelSelector) {
+    if let Ok(ollama_models) = store.list_active_provider_models("ollama") {
+        if !ollama_models.is_empty() {
+            let infos: Vec<agent::selector::ModelInfo> = ollama_models
+                .iter()
+                .map(|m| agent::selector::ModelInfo {
+                    id: m.model_id.clone(),
+                    display_name: m.display_name.clone(),
+                    context_window: m.context_window.unwrap_or(128_000) as i32,
+                    input_price: 0.0,
+                    output_price: 0.0,
+                    capabilities: m
+                        .capabilities
+                        .as_ref()
+                        .and_then(|c| serde_json::from_str(c).ok())
+                        .unwrap_or_default(),
+                    kind: m
+                        .kind
+                        .as_ref()
+                        .and_then(|k| serde_json::from_str(k).ok())
+                        .unwrap_or_default(),
+                    preferred: false,
+                    active: true,
+                })
+                .collect();
+            selector.inject_provider_models("ollama", infos);
+        }
+    }
+}
+
 /// Build a map of "provider/model_id" → is_active from the DB provider_models table.
 /// Used to override the yaml catalog defaults so the selector respects user toggles.
 pub fn build_model_overrides(store: &db::Store) -> std::collections::HashMap<String, bool> {
@@ -131,7 +170,11 @@ pub fn build_model_overrides(store: &db::Store) -> std::collections::HashMap<Str
 
 /// Build AI providers from auth_profiles in the database.
 /// Config is needed for NeboLoop's Janus URL (not stored in auth_profile).
-pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&config::AllCliStatuses>) -> Vec<Arc<dyn ai::Provider>> {
+pub fn build_providers(
+    store: &db::Store,
+    cfg: &Config,
+    cli_statuses: Option<&config::AllCliStatuses>,
+) -> Vec<Arc<dyn ai::Provider>> {
     let profiles = match store.list_auth_profiles() {
         Ok(p) => p,
         Err(e) => {
@@ -150,7 +193,8 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
         }
         let provider: Option<Arc<dyn ai::Provider>> = match profile.provider.as_str() {
             "anthropic" => {
-                let default_model = models_cfg.default_model_for_provider("anthropic")
+                let default_model = models_cfg
+                    .default_model_for_provider("anthropic")
                     .unwrap_or_default();
                 Some(Arc::new(ai::AnthropicProvider::new(
                     profile.api_key.clone(),
@@ -158,7 +202,8 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                 )))
             }
             "openai" => {
-                let default_model = models_cfg.default_model_for_provider("openai")
+                let default_model = models_cfg
+                    .default_model_for_provider("openai")
                     .unwrap_or_default();
                 Some(Arc::new(ai::OpenAIProvider::new(
                     profile.api_key.clone(),
@@ -166,18 +211,23 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                 )))
             }
             "deepseek" => {
-                let default_model = models_cfg.default_model_for_provider("deepseek")
+                let default_model = models_cfg
+                    .default_model_for_provider("deepseek")
                     .unwrap_or_default();
                 let mut p = ai::OpenAIProvider::with_base_url(
                     profile.api_key.clone(),
                     profile.model.clone().unwrap_or(default_model),
-                    profile.base_url.clone().unwrap_or_else(|| "https://api.deepseek.com/v1".into()),
+                    profile
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.deepseek.com/v1".into()),
                 );
                 p.set_provider_id("deepseek");
                 Some(Arc::new(p))
             }
             "google" => {
-                let default_model = models_cfg.default_model_for_provider("google")
+                let default_model = models_cfg
+                    .default_model_for_provider("google")
                     .unwrap_or_default();
                 Some(Arc::new(ai::GeminiProvider::new(
                     profile.api_key.clone(),
@@ -185,7 +235,8 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                 )))
             }
             "ollama" => {
-                let default_model = models_cfg.default_model_for_provider("ollama")
+                let default_model = models_cfg
+                    .default_model_for_provider("ollama")
                     .unwrap_or_default();
                 Some(Arc::new(ai::OllamaProvider::new(
                     profile
@@ -212,44 +263,47 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                     // Fail-safe: if DB query fails, skip Janus (don't burn tokens).
                     let has_active_chat = store
                         .list_active_provider_models("janus")
-                        .map(|models| models.iter().any(|m| {
-                            let caps: Vec<String> = m.capabilities
-                                .as_ref()
-                                .and_then(|c| serde_json::from_str(c).ok())
-                                .unwrap_or_default();
-                            caps.iter().any(|c| c == "streaming" || c == "tools")
-                        }))
+                        .map(|models| {
+                            models.iter().any(|m| {
+                                let caps: Vec<String> = m
+                                    .capabilities
+                                    .as_ref()
+                                    .and_then(|c| serde_json::from_str(c).ok())
+                                    .unwrap_or_default();
+                                caps.iter().any(|c| c == "streaming" || c == "tools")
+                            })
+                        })
                         .unwrap_or(false);
                     if !has_active_chat {
                         info!("janus provider has no active models in catalog, skipping");
                         None
                     } else {
-                    // Janus URL comes from config (NeboLoop.JanusURL), NOT auth_profile base_url
-                    let janus_url = &cfg.neboloop.janus_url;
-                    let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
-                    let bot_id = config::read_bot_id().unwrap_or_default();
-                    // Janus authenticates via X-Bot-ID header; api_key (OAuth token) is optional
-                    let api_key = if profile.api_key.is_empty() {
-                        bot_id.clone()
-                    } else {
-                        profile.api_key.clone()
-                    };
-                    info!(
-                        model = %model,
-                        janus_url = %janus_url,
-                        bot_id = %bot_id,
-                        "loaded Janus provider via NeboLoop"
-                    );
-                    let mut p = ai::OpenAIProvider::with_base_url(
-                        api_key,
-                        model,
-                        format!("{}/v1", janus_url),
-                    );
-                    p.set_provider_id("janus");
-                    if !bot_id.is_empty() {
-                        p.set_bot_id(bot_id);
-                    }
-                    Some(Arc::new(p))
+                        // Janus URL comes from config (NeboLoop.JanusURL), NOT auth_profile base_url
+                        let janus_url = &cfg.neboloop.janus_url;
+                        let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
+                        let bot_id = config::read_bot_id().unwrap_or_default();
+                        // Janus authenticates via X-Bot-ID header; api_key (OAuth token) is optional
+                        let api_key = if profile.api_key.is_empty() {
+                            bot_id.clone()
+                        } else {
+                            profile.api_key.clone()
+                        };
+                        info!(
+                            model = %model,
+                            janus_url = %janus_url,
+                            bot_id = %bot_id,
+                            "loaded Janus provider via NeboLoop"
+                        );
+                        let mut p = ai::OpenAIProvider::with_base_url(
+                            api_key,
+                            model,
+                            format!("{}/v1", janus_url),
+                        );
+                        p.set_provider_id("janus");
+                        if !bot_id.is_empty() {
+                            p.set_bot_id(bot_id);
+                        }
+                        Some(Arc::new(p))
                     }
                 } else {
                     info!(
@@ -277,6 +331,24 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                 gateway_providers.push(p);
             } else {
                 providers.push(p);
+            }
+        }
+    }
+
+    // Auto-create Ollama provider if Ollama is running and has active models,
+    // even without an auth_profile (Ollama needs no API key).
+    let has_ollama_profile = profiles
+        .iter()
+        .any(|p| p.provider == "ollama" && p.is_active.unwrap_or(0) == 1);
+    if !has_ollama_profile {
+        if let Ok(active_models) = store.list_active_provider_models("ollama") {
+            if !active_models.is_empty() {
+                let model = active_models[0].model_id.clone();
+                info!(model = %model, "auto-creating Ollama provider (no auth profile needed)");
+                providers.push(Arc::new(ai::OllamaProvider::new(
+                    "http://localhost:11434".into(),
+                    model,
+                )));
             }
         }
     }
@@ -317,7 +389,9 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
     providers.extend(gateway_providers);
 
     if providers.is_empty() {
-        warn!("no active AI providers configured — agent will be unavailable until providers are added");
+        warn!(
+            "no active AI providers configured — agent will be unavailable until providers are added"
+        );
     }
 
     providers
@@ -347,7 +421,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Clean up orphaned workflow runs from previous shutdown
     match store.cleanup_orphaned_runs() {
         Ok(0) => {}
-        Ok(n) => info!(count = n, "cancelled orphaned workflow runs from previous session"),
+        Ok(n) => info!(
+            count = n,
+            "cancelled orphaned workflow runs from previous session"
+        ),
         Err(e) => warn!(error = %e, "failed to clean up orphaned workflow runs"),
     }
 
@@ -400,12 +477,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     );
 
     // Build AI providers from database auth profiles + active CLI providers
-    let providers = build_providers(&store, &cfg, Some(&cli_statuses));
+    let mut providers = build_providers(&store, &cfg, Some(&cli_statuses));
 
     // Build tool registry with default tools
     let mut policy = tools::Policy::new();
     policy.level = tools::PolicyLevel::Full;
     policy.ask_mode = tools::AskMode::Off;
+    // Migrate data directory from old platform-specific paths to ~/.nebo/ (one-time)
+    migration::migrate_data_dir();
+
     let data_dir = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     let tool_registry = Arc::new(tools::Registry::new(policy));
@@ -415,13 +495,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Initialize browser manager (with built-in ExtensionBridge for Chrome extension relay)
     let browser_config = browser::BrowserConfig::default();
-    let browser_data_dir = data_dir
-        .join("browser")
-        .to_string_lossy()
-        .to_string();
-    let browser_manager = Arc::new(
-        browser::Manager::new(browser_config, browser_data_dir)
-    );
+    let browser_data_dir = data_dir.join("browser").to_string_lossy().to_string();
+    let browser_manager = Arc::new(browser::Manager::new(browser_config, browser_data_dir));
     let extension_bridge = browser_manager.bridge();
 
     // Install/update native messaging host manifest for Chrome extension.
@@ -456,7 +531,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Run one-time migration from old layout to nebo/user split
     migration::migrate_if_needed(&data_dir);
 
+    // Seed bundled .napp files from app resources (re-runs on app version upgrade)
+    migration::seed_bundled_napps(&data_dir);
+
     // Extract sealed .napp archives to sibling directories (one-time)
+    // Must run AFTER seeding so newly seeded .napp files are picked up.
     migration::migrate_napp_extraction(&data_dir);
 
     // Initialize plugin store for shared binary management
@@ -464,20 +543,96 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let _ = std::fs::create_dir_all(&plugins_dir);
     let user_plugins_dir = data_dir.join("user").join("plugins");
     let _ = std::fs::create_dir_all(&user_plugins_dir);
-    let plugin_store = Arc::new(napp::plugin::PluginStore::new(plugins_dir, user_plugins_dir, None));
+    let plugin_store = Arc::new(napp::plugin::PluginStore::new(
+        plugins_dir,
+        user_plugins_dir,
+        None,
+    ));
 
-    // Initialize skill loader (bundled + extracted dirs from nebo/skills/ + loose files from user/skills/)
-    let bundled_skills_dir = config::bundled_skills_dir().unwrap_or_else(|_| data_dir.join("bundled").join("skills"));
+    // Append plugin-provided AI providers (e.g., openrouter, local model servers)
+    {
+        let installed = plugin_store.list_installed();
+        let mut seen = std::collections::HashSet::new();
+        for (slug, _version, _path, _source) in &installed {
+            if !seen.insert(slug.clone()) {
+                continue;
+            }
+            if let Some(manifest) = plugin_store.get_manifest(slug) {
+                if let Some(ref caps) = manifest.capabilities {
+                    for pdef in &caps.providers {
+                        if let Some(binary) = plugin_store.resolve(slug, "*") {
+                            providers.push(Arc::new(plugin_provider::PluginProvider::new(
+                                pdef,
+                                slug,
+                                binary,
+                                plugin_store.clone(),
+                            )));
+                            info!(plugin = %slug, provider = %pdef.id, "registered plugin provider");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Initialize skill loader (embedded bundled + marketplace nebo/skills/ + user/skills/)
     let installed_skills_dir = data_dir.join("nebo").join("skills");
     let user_skills_dir = data_dir.join("user").join("skills");
-    let _ = std::fs::create_dir_all(&bundled_skills_dir);
-    let skill_loader = Arc::new(tools::skills::Loader::new(
-        bundled_skills_dir,
-        installed_skills_dir,
-        user_skills_dir,
-    ).with_plugin_store(plugin_store.clone()));
+    let skill_loader = Arc::new(
+        tools::skills::Loader::new(installed_skills_dir, user_skills_dir)
+            .with_plugin_store(plugin_store.clone()),
+    );
+
+    // Load cached license keys from DB for sealed .napp decryption.
+    // Keys were fetched from NeboLoop on a previous startup and cached with TTL.
+    {
+        use base64::Engine;
+        let cached_keys = store.list_license_key_artifact_ids().unwrap_or_default();
+        if !cached_keys.is_empty() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let mut keys = std::collections::HashMap::new();
+            for artifact_id in &cached_keys {
+                if let Ok(Some(row)) = store.get_license_key(artifact_id) {
+                    if row.expires_at > now {
+                        // Decrypt the stored key with keyring master key
+                        if let Ok(plaintext) = auth::credential::decrypt(&row.encrypted_key) {
+                            if let Ok(key_bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(&plaintext)
+                            {
+                                if key_bytes.len() == 32 {
+                                    let mut key = [0u8; 32];
+                                    key.copy_from_slice(&key_bytes);
+                                    keys.insert(artifact_id.clone(), key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !keys.is_empty() {
+                info!(
+                    count = keys.len(),
+                    "loaded cached license keys for sealed .napp files"
+                );
+                skill_loader.set_license_keys(keys).await;
+            }
+        }
+    }
+
     skill_loader.load_all().await;
     skill_loader.watch();
+
+    // Background: verify skill manifest hashes + re-check dependencies.
+    // On warm start this catches skills that changed while the server was down.
+    {
+        let bg_loader = skill_loader.clone();
+        tokio::spawn(async move {
+            bg_loader.verify_and_refresh_manifest().await;
+        });
+    }
 
     // Initialize advisor loader and runner (ADVISOR.md + DB advisors, LLM deliberation)
     let advisors_dir = data_dir.join("advisors");
@@ -487,7 +642,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Build a second provider set for advisor deliberation (includes CLI providers)
     let advisor_providers = build_providers(&store, &cfg, Some(&cli_statuses));
-    let advisor_runner: Option<Arc<dyn tools::AdvisorDeliberator>> = if advisor_providers.is_empty() {
+    let advisor_runner: Option<Arc<dyn tools::AdvisorDeliberator>> = if advisor_providers.is_empty()
+    {
         None
     } else {
         Some(Arc::new(agent::advisors::Runner::new(
@@ -539,7 +695,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     };
 
     // Create shared agent registry — multiple agents can be active concurrently, each with isolated persona
-    let active_role_state: tools::AgentRegistry = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    let active_role_state: tools::AgentRegistry =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
     // Create broadcaster closure for tools to emit WS events
     let hub_for_tools = hub.clone();
@@ -569,6 +726,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             Some(broadcaster),
             Some(run_querier_handle.clone()),
         )
+        .await;
+
+    // ToolSearch meta-tool — always active, lets LLM discover deferred tools on demand.
+    // Must be registered after register_all_with_permissions since it needs Arc<Registry>.
+    tool_registry
+        .register(Box::new(tools::ToolSearchTool::new(tool_registry.clone())))
         .await;
 
     // Initialize encryption: try OS keyring → file key → generate new
@@ -634,17 +797,31 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     let access_token = if i.auth_type == "oauth" {
                         match store_init.get_mcp_credential_full(&i.id, "oauth_token") {
                             Ok(Some(cred)) => {
-                                if tools::mcp_tool::is_token_expired(cred.expires_at) && cred.refresh_token.is_some() {
+                                if tools::mcp_tool::is_token_expired(cred.expires_at)
+                                    && cred.refresh_token.is_some()
+                                {
                                     info!(name = %i.name, "MCP token expired on startup, attempting refresh");
-                                    match tools::mcp_tool::refresh_mcp_token(&store_init, bridge_init.client(), &i.id).await {
+                                    match tools::mcp_tool::refresh_mcp_token(
+                                        &store_init,
+                                        bridge_init.client(),
+                                        &i.id,
+                                    )
+                                    .await
+                                    {
                                         Ok(new_token) => Some(new_token),
                                         Err(e) => {
                                             warn!(name = %i.name, error = %e, "MCP token refresh on startup failed");
-                                            bridge_init.client().decrypt_token(&cred.credential_value).ok()
+                                            bridge_init
+                                                .client()
+                                                .decrypt_token(&cred.credential_value)
+                                                .ok()
                                         }
                                     }
                                 } else {
-                                    bridge_init.client().decrypt_token(&cred.credential_value).ok()
+                                    bridge_init
+                                        .client()
+                                        .decrypt_token(&cred.credential_value)
+                                        .ok()
                                 }
                             }
                             _ => None,
@@ -652,15 +829,24 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     } else {
                         None
                     };
-                    let tool_prefix = i.name.to_lowercase()
+                    let tool_prefix = i
+                        .name
+                        .to_lowercase()
                         .chars()
                         .map(|c| if c.is_alphanumeric() { c } else { '_' })
                         .collect::<String>()
                         .trim_matches('_')
                         .to_string();
-                    match bridge_init.connect(&i.id, &tool_prefix, &server_url, access_token.as_deref()).await {
+                    match bridge_init
+                        .connect(&i.id, &tool_prefix, &server_url, access_token.as_deref())
+                        .await
+                    {
                         Ok(tools) => {
-                            let _ = store_init.set_mcp_connection_status(&i.id, "connected", tools.len() as i64);
+                            let _ = store_init.set_mcp_connection_status(
+                                &i.id,
+                                "connected",
+                                tools.len() as i64,
+                            );
                             info!(name = %i.name, tools = tools.len(), "MCP reconnected on startup");
                         }
                         Err(e) => {
@@ -686,15 +872,22 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
+    // Auth cache is populated later (awaited before agent workers start, see below).
+
     // Set quarantine handler to broadcast via hub
     {
         let hub = hub.clone();
-        napp_registry.set_quarantine_handler(move |event| {
-            hub.broadcast("tool_quarantined", serde_json::json!({
-                "toolId": event.tool_id,
-                "reason": event.reason,
-            }));
-        }).await;
+        napp_registry
+            .set_quarantine_handler(move |event| {
+                hub.broadcast(
+                    "tool_quarantined",
+                    serde_json::json!({
+                        "toolId": event.tool_id,
+                        "reason": event.reason,
+                    }),
+                );
+            })
+            .await;
     }
 
     // Spawn tool supervisor (15s health check)
@@ -708,13 +901,18 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 interval.tick().await;
                 let tools = registry.list_processes().await;
                 for tool in &tools {
-                    if tool.running { continue; }
+                    if tool.running {
+                        continue;
+                    }
                     if supervisor.should_restart(&tool.id).await {
                         supervisor.record_restart(&tool.id).await;
-                        hub_ref.broadcast("tool_error", serde_json::json!({
-                            "toolId": tool.id,
-                            "error": "process died",
-                        }));
+                        hub_ref.broadcast(
+                            "tool_error",
+                            serde_json::json!({
+                                "toolId": tool.id,
+                                "error": "process died",
+                            }),
+                        );
                     }
                 }
             }
@@ -739,15 +937,22 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 Arc::new(move |msg: comm::CommMessage| {
                     // Route install events to napp registry
                     if msg.topic == "installs" {
-                        if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
+                        if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content)
+                        {
                             let reg = registry.clone();
                             let hub = comm_hub.clone();
                             tokio::spawn(async move {
                                 match reg.handle_install_event(event).await {
-                                    Ok(()) => hub.broadcast("tool_event", serde_json::json!({"status": "ok"})),
+                                    Ok(()) => hub.broadcast(
+                                        "tool_event",
+                                        serde_json::json!({"status": "ok"}),
+                                    ),
                                     Err(e) => {
                                         tracing::warn!("install event handling failed: {}", e);
-                                        hub.broadcast("tool_error", serde_json::json!({"error": e.to_string()}));
+                                        hub.broadcast(
+                                            "tool_error",
+                                            serde_json::json!({"error": e.to_string()}),
+                                        );
                                     }
                                 }
                             });
@@ -783,7 +988,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Load models catalog from embedded models.yaml (needed for selector before runner)
     let models_cfg = config::ModelsConfig::load();
     let model_count: usize = models_cfg.providers.values().map(|v| v.len()).sum();
-    info!(providers = models_cfg.providers.len(), models = model_count, "loaded models catalog");
+    info!(
+        providers = models_cfg.providers.len(),
+        models = model_count,
+        "loaded models catalog"
+    );
 
     // Collect active provider IDs from auth profiles
     let active_provider_ids: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
@@ -792,8 +1001,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let model_overrides = build_model_overrides(&store);
 
     // Build real routing config from models catalog
-    let routing_config = agent::selector::ModelRoutingConfig::from_models_config(&models_cfg, &active_provider_ids, &model_overrides);
+    let routing_config = agent::selector::ModelRoutingConfig::from_models_config(
+        &models_cfg,
+        &active_provider_ids,
+        &model_overrides,
+    );
     let selector = agent::ModelSelector::new(routing_config);
+
+    // Inject Ollama models from DB (they're auto-discovered, not in the yaml)
+    inject_ollama_models(&store, &selector);
 
     // Set loaded providers and rebuild fuzzy with user aliases
     selector.set_loaded_providers(active_provider_ids);
@@ -814,24 +1030,32 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         ..Default::default()
     }));
 
-    let runner = Arc::new(agent::Runner::new(
-        store.clone(),
-        tool_registry.clone(),
-        providers,
-        selector,
-        concurrency.clone(),
-        hooks.clone(),
-        Some(mcp_context.clone()),
-        active_role_state.clone(),
-        Some(skill_loader.clone()),
-    ));
+    let ask_channels: tools::AskChannels =
+        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
+    let runner = Arc::new(
+        agent::Runner::new(
+            store.clone(),
+            tool_registry.clone(),
+            providers,
+            selector,
+            concurrency.clone(),
+            hooks.clone(),
+            Some(mcp_context.clone()),
+            active_role_state.clone(),
+            Some(skill_loader.clone()),
+        )
+        .set_ask_channels(ask_channels.clone()),
+    );
 
     // Create event bus and dispatcher for workflow-to-workflow events
     let (event_bus, event_rx) = tools::EventBus::new();
     let event_dispatcher = Arc::new(workflow::events::EventDispatcher::new());
 
     // Register EmitTool so it appears in tools list and is available to all origins
-    tool_registry.register(Box::new(tools::EmitTool::new(event_bus.clone()))).await;
+    tool_registry
+        .register(Box::new(tools::EmitTool::new(event_bus.clone())))
+        .await;
 
     // Create workflow manager (needs runner's shared providers for background execution)
     let workflow_manager = Arc::new(workflow_manager::WorkflowManagerImpl::new(
@@ -844,17 +1068,22 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(skill_loader.clone()),
     ));
     // Register WorkTool now that the manager exists
-    tool_registry.register(Box::new(tools::WorkTool::new(
-        workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
-    ))).await;
+    tool_registry
+        .register(Box::new(tools::WorkTool::new(
+            workflow_manager.clone() as Arc<dyn tools::WorkflowManager>
+        )))
+        .await;
 
-    // Create agent loader — filesystem content scanner for nebo/agents/ and user/agents/
-    let agent_loader = Arc::new(napp::AgentLoader::new(
-        data_dir.join("nebo").join("agents"),
-        data_dir.join("user").join("agents"),
-    ));
+    // Create agent loader — embedded bundled + nebo/agents/ + user/agents/
+    let agent_loader = Arc::new(
+        napp::AgentLoader::new(
+            data_dir.join("nebo").join("agents"),
+            data_dir.join("user").join("agents"),
+        )
+        .with_bundled(tools::skills::bundled::BUNDLED_AGENTS),
+    );
     agent_loader.load_all().await;
-    agent_loader.watch();
+    let (_watcher_handle, agent_fs_rx) = agent_loader.watch();
     tool_registry.set_agent_loader(agent_loader.clone());
 
     // Sync filesystem agent content → DB (keeps DB content columns fresh + recovers missing records)
@@ -866,9 +1095,16 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let mut created = 0usize;
         for loaded in &fs_agents {
             // Match by manifest ID first (marketplace agents), then by name
-            let db_agent = loaded.id.as_deref()
+            let db_agent = loaded
+                .id
+                .as_deref()
                 .and_then(|id| store.get_agent(id).ok().flatten())
-                .or_else(|| store.get_agent_by_name(&loaded.agent_def.name).ok().flatten());
+                .or_else(|| {
+                    store
+                        .get_agent_by_name(&loaded.agent_def.name)
+                        .ok()
+                        .flatten()
+                });
 
             let agent_id_for_bindings;
             if let Some(db_agent) = db_agent {
@@ -886,17 +1122,23 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 synced += 1;
             } else {
                 // Agent on filesystem but not in DB — create DB record so it appears in UI
-                let agent_id = loaded.id.clone()
+                let agent_id = loaded
+                    .id
+                    .clone()
                     .unwrap_or_else(|| loaded.agent_def.name.clone());
                 let kind = match loaded.source {
                     napp::AgentSource::Installed => Some("installed"),
                     napp::AgentSource::User => Some("user"),
                 };
                 match store.create_agent(
-                    &agent_id, kind,
-                    &loaded.agent_def.name, &loaded.description,
-                    &loaded.agent_md, &loaded.frontmatter,
-                    None, None,
+                    &agent_id,
+                    kind,
+                    &loaded.agent_def.name,
+                    &loaded.description,
+                    &loaded.agent_md,
+                    &loaded.frontmatter,
+                    None,
+                    None,
                 ) {
                     Ok(_) => {
                         agent_id_for_bindings = agent_id;
@@ -910,63 +1152,127 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 }
             }
 
+            // Sync app fields (ui path, binary path, window config) to DB
+            if loaded.is_app {
+                let _ = store.set_agent_app_fields(
+                    &agent_id_for_bindings,
+                    true,
+                    loaded.app_ui_path.as_ref().and_then(|p| p.to_str()),
+                    loaded.app_binary_path.as_ref().and_then(|p| p.to_str()),
+                    loaded
+                        .app_window_config
+                        .as_ref()
+                        .and_then(|wc| serde_json::to_string(wc).ok())
+                        .as_deref(),
+                );
+            }
+
             // Sync workflow bindings from agent.json
             if let Some(ref config) = loaded.config {
                 sync_agent_workflows(&store, &agent_id_for_bindings, config);
             }
         }
+        // Filesystem is the source of truth. Remove any DB agent not on the filesystem.
+        let fs_ids: std::collections::HashSet<String> = fs_agents
+            .iter()
+            .map(|a| a.id.clone().unwrap_or_else(|| a.agent_def.name.clone()))
+            .collect();
+        if let Ok(db_agents) = store.list_agents(1000, 0) {
+            let mut removed = 0usize;
+            for db_agent in &db_agents {
+                if !fs_ids.contains(&db_agent.id) {
+                    let _ = store.delete_agent_chats(&db_agent.id);
+                    let _ = store.delete_agent_sessions(&db_agent.id);
+                    let _ = store.delete_agent_memories(&db_agent.id);
+                    let _ = store.delete_agent_workflow_runs(&db_agent.id);
+                    let _ = store.delete_agent(&db_agent.id);
+                    removed += 1;
+                    info!(id = %db_agent.id, name = %db_agent.name, "removed orphan agent and associated data from DB");
+                }
+            }
+            if removed > 0 {
+                info!(removed, "cleaned up orphan agents from DB");
+            }
+        }
+
         if synced > 0 || created > 0 {
-            info!(synced, created, "synced agent content from filesystem to DB");
+            info!(
+                synced,
+                created, "synced agent content from filesystem to DB"
+            );
         }
     }
 
     // Create agent worker registry — manages autonomous trigger lifecycle for each agent
+    let hub_for_workers = hub.clone();
+    let worker_notify_fn: agent::agent_worker::NotifyFn = Arc::new(move |event_type, payload| {
+        hub_for_workers.broadcast(event_type, payload);
+    });
     let agent_workers = Arc::new(agent::AgentWorkerRegistry::new(
         store.clone(),
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
         event_dispatcher.clone(),
         plugin_store.clone(),
         event_bus.clone(),
+        Some(worker_notify_fn),
     ));
 
-    // Start workers for all enabled agents (replaces manual trigger reconciliation)
+    // Auth cache is populated lazily on first access (check_auth_lazy).
+    // Watch processes handle auth failures at runtime via stderr detection,
+    // so they don't need the cache pre-populated. This eliminates ~61s of
+    // spawning 137 plugin binaries at startup.
+
+    // Parse agent configs once, then reuse for both worker startup and registry population.
+    // This eliminates 3x redundant parse_agent_config calls (and their duplicate warnings).
     {
         if let Ok(agents) = store.list_agents(1000, 0) {
+            // Build config cache: parse each enabled agent's frontmatter once
+            let agent_configs: std::collections::HashMap<String, napp::agent::AgentConfig> = agents
+                .iter()
+                .filter(|a| a.is_enabled != 0 && !a.frontmatter.is_empty())
+                .filter_map(|a| {
+                    napp::agent::parse_agent_config(&a.frontmatter)
+                        .ok()
+                        .map(|cfg| (a.id.clone(), cfg))
+                })
+                .collect();
+
+            // Start workers for all enabled agents (pass pre-parsed config)
             let mut started = 0usize;
             for agent in &agents {
                 if agent.is_enabled == 0 {
                     continue;
                 }
-                agent_workers.start_agent(&agent.id, &agent.name).await;
+                agent_workers
+                    .start_agent(
+                        &agent.id,
+                        &agent.name,
+                        agent_configs.get(&agent.id).cloned(),
+                    )
+                    .await;
                 started += 1;
             }
             if started > 0 {
                 info!(count = started, "started agent workers for enabled agents");
             }
-        }
-    }
 
-    // Populate agent_registry from DB so enabled agents appear in sidebar after restart
-    {
-        if let Ok(agents) = store.list_agents(1000, 0) {
+            // Populate agent_registry from same cache (sidebar + runtime lookups)
             let mut registry = active_role_state.write().await;
             for agent in &agents {
                 if agent.is_enabled == 0 {
                     continue;
                 }
-                let config = if !agent.frontmatter.is_empty() {
-                    napp::agent::parse_agent_config(&agent.frontmatter).ok()
-                } else {
-                    None
-                };
-                registry.insert(agent.id.clone(), tools::ActiveAgent {
-                    agent_id: agent.id.clone(),
-                    name: agent.name.clone(),
-                    agent_md: agent.agent_md.clone(),
-                    config,
-                    channel_id: None,
-                    degraded: None,
-                });
+                registry.insert(
+                    agent.id.clone(),
+                    tools::ActiveAgent {
+                        agent_id: agent.id.clone(),
+                        name: agent.name.clone(),
+                        agent_md: agent.agent_md.clone(),
+                        config: agent_configs.get(&agent.id).cloned(),
+                        channel_id: None,
+                        degraded: None,
+                    },
+                );
             }
             if !registry.is_empty() {
                 info!(count = registry.len(), "restored active agents from DB");
@@ -1004,6 +1310,26 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Create snapshot store for browser accessibility snapshots
     let snapshot_store = Arc::new(browser::SnapshotStore::new());
 
+    // A2UI surface manager
+    let a2ui_catalog = Arc::new(a2ui::NeboCatalogProvider::new());
+    let a2ui_manager = Arc::new(a2ui::A2UIManager::new(
+        hub.clone(),
+        store.clone(),
+        a2ui_catalog,
+    ));
+    a2ui_manager.restore_surfaces().await;
+    // Wire data binding manager (MCP tool polling for A2UI surfaces)
+    let binding_manager = Arc::new(a2ui_bindings::DataBindingManager::new(
+        a2ui_manager.clone(),
+        bridge.clone(),
+    ));
+    a2ui_manager.set_binding_manager(binding_manager).await;
+    tool_registry
+        .register(Box::new(tools::A2UIDomainTool::new(
+            a2ui_manager.clone() as Arc<dyn tools::A2UIHost>
+        )))
+        .await;
+
     let jwt_secret = JwtSecret(cfg.auth.access_secret.clone());
 
     let state = AppState {
@@ -1023,7 +1349,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         extension_bridge,
         comm_manager,
         approval_channels: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-        ask_channels: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        ask_channels: ask_channels.clone(),
         update_pending: Arc::new(tokio::sync::Mutex::new(None)),
         hooks,
         mcp_context,
@@ -1041,22 +1367,52 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         run_registry: run_registry::RunRegistry::new(),
         personal_loop_id: Arc::new(tokio::sync::RwLock::new(None)),
         channel_providers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        a2ui: a2ui_manager,
+        app_lifecycles: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        voice: Arc::new(voice::VoicePipeline::new(
+            voice::VoicePipelineConfig::default(),
+        )),
     };
 
     // Wire RunRegistry into the tool-layer run querier (late binding via OnceLock)
     let _ = run_querier_handle.set(Box::new(state.run_registry.clone()));
 
+    // Register structured tools + hooks for all installed plugins (startup recovery).
+    {
+        let installed = state.plugin_store.list_installed();
+        let mut seen = std::collections::HashSet::new();
+        for (slug, _version, _path, _source) in &installed {
+            if !seen.insert(slug.clone()) {
+                continue;
+            }
+            // Plugin command tools are discovered via the `plugin` STRAP tool (lookup),
+            // not registered individually (13K+ tools overwhelm the LLM context).
+            // Hooks
+            if let Some(manifest) = state.plugin_store.get_manifest(slug) {
+                if let Some(binary) = state.plugin_store.resolve(slug, "*") {
+                    let count = napp::register_plugin_hooks(&manifest, &binary, &state.hooks);
+                    if count > 0 {
+                        info!(plugin = %slug, hooks = count, "registered plugin hooks at startup");
+                    }
+                }
+            }
+        }
+    }
+
     // Replace comm message handler with full version that routes chat/DM to agent runner
     {
         let handler_state = state.clone();
-        state.comm_manager.set_message_handler({
-            Arc::new(move |msg: comm::CommMessage| {
-                let st = handler_state.clone();
-                tokio::spawn(async move {
-                    handle_comm_message(st, msg).await;
-                });
+        state
+            .comm_manager
+            .set_message_handler({
+                Arc::new(move |msg: comm::CommMessage| {
+                    let st = handler_state.clone();
+                    tokio::spawn(async move {
+                        handle_comm_message(st, msg).await;
+                    });
+                })
             })
-        }).await;
+            .await;
     }
 
     // Resolve dependency cascade for agents that were just created from filesystem
@@ -1068,6 +1424,47 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 if !deps.is_empty() {
                     let mut visited = std::collections::HashSet::new();
                     crate::deps::resolve_cascade(&cascade_state, deps, &mut visited).await;
+                }
+            }
+        });
+    }
+
+    // Spawn filesystem agent watcher → DB + registry + WS sync
+    {
+        let fs_state = state.clone();
+        tokio::spawn(async move {
+            handle_agent_fs_events(fs_state, agent_fs_rx).await;
+        });
+    }
+
+    // Spawn filesystem plugin watcher → log changes, notify via WS
+    {
+        let (_plugin_watcher_handle, mut plugin_fs_rx) = state.plugin_store.watch();
+        let ps_state = state.clone();
+        tokio::spawn(async move {
+            while let Some(event) = plugin_fs_rx.recv().await {
+                match event {
+                    napp::plugin::PluginFsEvent::Added { slug, binary_path } => {
+                        info!(slug = %slug, path = %binary_path.display(), "plugin hot-loaded (added)");
+                        ps_state.hub.broadcast(
+                            "plugin_changed",
+                            serde_json::json!({"slug": slug, "action": "added"}),
+                        );
+                    }
+                    napp::plugin::PluginFsEvent::Changed { slug, binary_path } => {
+                        info!(slug = %slug, path = %binary_path.display(), "plugin hot-loaded (changed)");
+                        ps_state.hub.broadcast(
+                            "plugin_changed",
+                            serde_json::json!({"slug": slug, "action": "changed"}),
+                        );
+                    }
+                    napp::plugin::PluginFsEvent::Removed { slug } => {
+                        info!(slug = %slug, "plugin removed from filesystem");
+                        ps_state.hub.broadcast(
+                            "plugin_changed",
+                            serde_json::json!({"slug": slug, "action": "removed"}),
+                        );
+                    }
                 }
             }
         });
@@ -1129,8 +1526,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     Ok(()) => {
                         info!("neboloop: reconnected to gateway");
                         // Persist rotated JWT so next reconnect uses the fresh token
-                        if let Some(new_token) = reconnect_state.comm_manager.take_rotated_token().await {
-                            if let Err(e) = reconnect_state.store.update_auth_profile_token_by_provider("neboloop", &new_token) {
+                        if let Some(new_token) =
+                            reconnect_state.comm_manager.take_rotated_token().await
+                        {
+                            if let Err(e) = reconnect_state
+                                .store
+                                .update_auth_profile_token_by_provider("neboloop", &new_token)
+                            {
                                 warn!("neboloop: failed to persist rotated token: {}", e);
                             }
                         }
@@ -1148,87 +1550,95 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     if cfg!(debug_assertions) {
         tracing::debug!("skipping background update checker in dev build");
     } else {
-    let update_hub = state.hub.clone();
-    let download_hub = state.hub.clone();
-    let update_store = state.store.clone();
-    let update_pending = state.update_pending.clone();
-    tokio::spawn(async move {
-        let checker = updater::BackgroundChecker::new(
-            VERSION.to_string(),
-            std::time::Duration::from_secs(3600),
-            move |result| {
-                // Check user preference before auto-downloading
-                let auto_update_enabled = update_store
-                    .get_settings()
-                    .ok()
-                    .flatten()
-                    .map(|s| s.auto_update != 0)
-                    .unwrap_or(true);
+        let update_hub = state.hub.clone();
+        let download_hub = state.hub.clone();
+        let update_store = state.store.clone();
+        let update_pending = state.update_pending.clone();
+        tokio::spawn(async move {
+            let checker = updater::BackgroundChecker::new(
+                VERSION.to_string(),
+                std::time::Duration::from_secs(3600),
+                move |result| {
+                    // Check user preference before auto-downloading
+                    let auto_update_enabled = update_store
+                        .get_settings()
+                        .ok()
+                        .flatten()
+                        .map(|s| s.auto_update != 0)
+                        .unwrap_or(true);
 
-                update_hub.broadcast(
-                    "update_available",
-                    serde_json::json!({
-                        "latestVersion": result.latest_version,
-                        "currentVersion": result.current_version,
-                        "installMethod": result.install_method,
-                        "canAutoUpdate": result.can_auto_update,
-                        "autoUpdateEnabled": auto_update_enabled,
-                    }),
-                );
+                    update_hub.broadcast(
+                        "update_available",
+                        serde_json::json!({
+                            "latestVersion": result.latest_version,
+                            "currentVersion": result.current_version,
+                            "installMethod": result.install_method,
+                            "canAutoUpdate": result.can_auto_update,
+                            "autoUpdateEnabled": auto_update_enabled,
+                        }),
+                    );
 
-                // Auto-download for direct installs only when preference is ON
-                if result.can_auto_update && auto_update_enabled {
-                    let tag = result.latest_version.clone();
-                    let hub = download_hub.clone();
-                    let progress_hub = download_hub.clone();
-                    let pending = update_pending.clone();
-                    tokio::spawn(async move {
-                        let progress_fn: updater::ProgressFn = Box::new(move |downloaded, total| {
-                            let percent = if total > 0 { (downloaded * 100) / total } else { 0 };
-                            progress_hub.broadcast(
-                                "update_progress",
-                                serde_json::json!({
-                                    "downloaded": downloaded,
-                                    "total": total,
-                                    "percent": percent,
-                                }),
-                            );
-                        });
-                        match updater::download(&tag, Some(progress_fn)).await {
-                            Ok(path) => {
-                                // Verify checksum before staging
-                                match updater::verify_checksum(&path, &tag).await {
-                                    Ok(()) => {
-                                        pending.lock().await.replace((path, tag.clone()));
-                                        hub.broadcast(
-                                            "update_ready",
-                                            serde_json::json!({ "version": tag }),
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("update checksum verification failed: {}", e);
-                                        let _ = std::fs::remove_file(&path);
-                                        hub.broadcast(
-                                            "update_error",
-                                            serde_json::json!({ "error": e.to_string() }),
-                                        );
+                    // Auto-download for direct installs only when preference is ON
+                    if result.can_auto_update && auto_update_enabled {
+                        let tag = result.latest_version.clone();
+                        let hub = download_hub.clone();
+                        let progress_hub = download_hub.clone();
+                        let pending = update_pending.clone();
+                        tokio::spawn(async move {
+                            let progress_fn: updater::ProgressFn =
+                                Box::new(move |downloaded, total| {
+                                    let percent = if total > 0 {
+                                        (downloaded * 100) / total
+                                    } else {
+                                        0
+                                    };
+                                    progress_hub.broadcast(
+                                        "update_progress",
+                                        serde_json::json!({
+                                            "downloaded": downloaded,
+                                            "total": total,
+                                            "percent": percent,
+                                        }),
+                                    );
+                                });
+                            match updater::download(&tag, Some(progress_fn)).await {
+                                Ok(path) => {
+                                    // Verify checksum before staging
+                                    match updater::verify_checksum(&path, &tag).await {
+                                        Ok(()) => {
+                                            pending.lock().await.replace((path, tag.clone()));
+                                            hub.broadcast(
+                                                "update_ready",
+                                                serde_json::json!({ "version": tag }),
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "update checksum verification failed: {}",
+                                                e
+                                            );
+                                            let _ = std::fs::remove_file(&path);
+                                            hub.broadcast(
+                                                "update_error",
+                                                serde_json::json!({ "error": e.to_string() }),
+                                            );
+                                        }
                                     }
                                 }
+                                Err(e) => {
+                                    hub.broadcast(
+                                        "update_error",
+                                        serde_json::json!({ "error": e.to_string() }),
+                                    );
+                                }
                             }
-                            Err(e) => {
-                                hub.broadcast(
-                                    "update_error",
-                                    serde_json::json!({ "error": e.to_string() }),
-                                );
-                            }
-                        }
-                    });
-                }
-            },
-        );
-        let cancel = tokio_util::sync::CancellationToken::new();
-        checker.run(cancel).await;
-    });
+                        });
+                    }
+                },
+            );
+            let cancel = tokio_util::sync::CancellationToken::new();
+            checker.run(cancel).await;
+        });
     } // end if !debug_assertions
 
     // Spawn cron scheduler
@@ -1268,21 +1678,32 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/health", axum::routing::get(health_handler))
         .route("/server.json", axum::routing::get(spa::server_json))
         // MCP endpoint for CLI providers (Claude Code, Codex, Gemini)
-        .route("/agent/mcp", axum::routing::post(handlers::mcp_server::agent_mcp_handler)
-            .layer(axum::middleware::from_fn(middleware::mcp_api_key_auth)))
+        .route(
+            "/agent/mcp",
+            axum::routing::post(handlers::mcp_server::agent_mcp_handler)
+                .layer(axum::middleware::from_fn(middleware::mcp_api_key_auth)),
+        )
         // NeboLoop OAuth callback — top-level because the browser navigates here directly
         .route(
             "/auth/neboloop/callback",
             axum::routing::get(handlers::neboloop::oauth_callback),
         )
-        .nest("/api/v1", routes::api_routes(jwt_secret)
-            .layer(axum::middleware::from_fn(middleware::api_security_headers)))
+        .nest(
+            "/api/v1",
+            routes::api_routes(jwt_secret)
+                .layer(axum::middleware::from_fn(middleware::api_security_headers)),
+        )
         .fallback(spa::spa_handler)
         .layer(CompressionLayer::new());
 
     let app = Router::new()
         .route("/ws", axum::routing::get(handlers::ws::client_ws_handler))
+        .route("/ws/app/{agent_id}", axum::routing::get(handlers::ws::app_ws_handler))
         .route("/ws/extension", axum::routing::get(handlers::ws::extension_ws_handler))
+        .route("/ws/voice/dictation", axum::routing::get(handlers::voice::dictation_ws_handler))
+        .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
+        .route("/apps/{agent_id}/ui/{*path}", axum::routing::get(handlers::apps::serve_app_ui))
+        .route("/sdk/nebo.global.js", axum::routing::get(handlers::apps::serve_sdk_iife))
         .merge(http_routes)
         .layer(axum::middleware::from_fn(middleware::security_headers))
         .layer(cors_layer())
@@ -1314,8 +1735,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             )));
         }
         eprintln!("WARNING: Server binding to {bind_addr} — remote access enabled");
-        if std::env::var("NEBO_MCP_API_KEY").ok().filter(|k| !k.is_empty()).is_none() {
-            eprintln!("WARNING: MCP endpoint is UNAUTHENTICATED. Set NEBO_MCP_API_KEY to secure it.");
+        if std::env::var("NEBO_MCP_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .is_none()
+        {
+            eprintln!(
+                "WARNING: MCP endpoint is UNAUTHENTICATED. Set NEBO_MCP_API_KEY to secure it."
+            );
         }
     }
 
@@ -1344,10 +1771,8 @@ async fn shutdown_signal() {
 
     #[cfg(unix)]
     {
-        let mut sigterm = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )
-        .expect("failed to install SIGTERM handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
 
         tokio::select! {
             _ = ctrl_c => { info!("received Ctrl+C"); }
@@ -1362,11 +1787,233 @@ async fn shutdown_signal() {
     }
 }
 
+/// Process filesystem agent change events: sync DB, update registry, broadcast WS.
+async fn handle_agent_fs_events(
+    state: AppState,
+    mut rx: tokio::sync::mpsc::Receiver<napp::AgentFsEvent>,
+) {
+    while let Some(event) = rx.recv().await {
+        match event {
+            napp::AgentFsEvent::Added(loaded) => {
+                // Look up DB by manifest ID first, then by name
+                let db_agent = loaded
+                    .id
+                    .as_deref()
+                    .and_then(|id| state.store.get_agent(id).ok().flatten())
+                    .or_else(|| {
+                        state
+                            .store
+                            .get_agent_by_name(&loaded.agent_def.name)
+                            .ok()
+                            .flatten()
+                    });
+
+                let final_id = if let Some(ref existing) = db_agent {
+                    // Update existing record with fresh filesystem content
+                    let _ = state.store.update_agent(
+                        &existing.id,
+                        &loaded.agent_def.name,
+                        &loaded.description,
+                        &loaded.agent_md,
+                        &loaded.frontmatter,
+                        None,
+                        None,
+                    );
+                    existing.id.clone()
+                } else {
+                    // Create new DB record
+                    let agent_id = loaded
+                        .id
+                        .clone()
+                        .unwrap_or_else(|| loaded.agent_def.name.clone());
+                    let kind = match loaded.source {
+                        napp::AgentSource::Installed => Some("installed"),
+                        napp::AgentSource::User => Some("user"),
+                    };
+                    match state.store.create_agent(
+                        &agent_id,
+                        kind,
+                        &loaded.agent_def.name,
+                        &loaded.description,
+                        &loaded.agent_md,
+                        &loaded.frontmatter,
+                        None,
+                        None,
+                    ) {
+                        Ok(_) => {
+                            // Resolve dependency cascade if agent has frontmatter
+                            if !loaded.frontmatter.is_empty() {
+                                let cascade_state = state.clone();
+                                let fm = loaded.frontmatter.clone();
+                                tokio::spawn(async move {
+                                    let deps =
+                                        crate::deps::extract_agent_deps_from_frontmatter(&fm);
+                                    if !deps.is_empty() {
+                                        let mut visited = std::collections::HashSet::new();
+                                        crate::deps::resolve_cascade(
+                                            &cascade_state,
+                                            deps,
+                                            &mut visited,
+                                        )
+                                        .await;
+                                    }
+                                });
+                            }
+                            agent_id
+                        }
+                        Err(e) => {
+                            warn!(name = %loaded.agent_def.name, error = %e,
+                                  "fs watcher: failed to create agent in DB");
+                            continue;
+                        }
+                    }
+                };
+
+                // Sync workflow bindings
+                if let Some(ref config) = loaded.config {
+                    sync_agent_workflows(&state.store, &final_id, config);
+                }
+
+                // If agent was previously enabled, restore to registry + start worker
+                if let Ok(Some(db)) = state.store.get_agent(&final_id) {
+                    if db.is_enabled != 0 {
+                        let config = if !db.frontmatter.is_empty() {
+                            napp::agent::parse_agent_config(&db.frontmatter).ok()
+                        } else {
+                            None
+                        };
+                        state.agent_registry.write().await.insert(
+                            final_id.clone(),
+                            tools::ActiveAgent {
+                                agent_id: final_id.clone(),
+                                name: db.name.clone(),
+                                agent_md: db.agent_md.clone(),
+                                config,
+                                channel_id: None,
+                                degraded: None,
+                            },
+                        );
+                        state.agent_workers.start_agent(&final_id, &db.name, None).await;
+                    }
+                }
+
+                info!(name = %loaded.agent_def.name, id = %final_id, "fs watcher: agent added");
+                state.hub.broadcast(
+                    "agent_installed",
+                    serde_json::json!({ "agentId": final_id, "name": loaded.agent_def.name }),
+                );
+            }
+
+            napp::AgentFsEvent::Changed(loaded) => {
+                // Find DB record
+                let db_agent = loaded
+                    .id
+                    .as_deref()
+                    .and_then(|id| state.store.get_agent(id).ok().flatten())
+                    .or_else(|| {
+                        state
+                            .store
+                            .get_agent_by_name(&loaded.agent_def.name)
+                            .ok()
+                            .flatten()
+                    });
+
+                let Some(db_agent) = db_agent else {
+                    warn!(name = %loaded.agent_def.name, "fs watcher: changed agent not in DB, skipping");
+                    continue;
+                };
+
+                // Update DB content
+                let _ = state.store.update_agent(
+                    &db_agent.id,
+                    &loaded.agent_def.name,
+                    &loaded.description,
+                    &loaded.agent_md,
+                    &loaded.frontmatter,
+                    None,
+                    None,
+                );
+
+                // Re-sync workflow bindings
+                if let Some(ref config) = loaded.config {
+                    sync_agent_workflows(&state.store, &db_agent.id, config);
+                }
+
+                // Patch in-memory registry if active
+                {
+                    let mut registry = state.agent_registry.write().await;
+                    if let Some(active) = registry.get_mut(&db_agent.id) {
+                        active.name = loaded.agent_def.name.clone();
+                        active.agent_md = loaded.agent_md.clone();
+                        active.config = loaded.config.clone();
+                    }
+                }
+
+                // Restart worker if running (picks up new triggers)
+                if db_agent.is_enabled != 0 {
+                    state.agent_workers.stop_agent(&db_agent.id).await;
+                    state
+                        .agent_workers
+                        .start_agent(&db_agent.id, &loaded.agent_def.name, None)
+                        .await;
+                }
+
+                info!(name = %loaded.agent_def.name, id = %db_agent.id, "fs watcher: agent content updated");
+                state.hub.broadcast(
+                    "agent_updated",
+                    serde_json::json!({
+                        "agentId": db_agent.id,
+                        "name": loaded.agent_def.name,
+                        "description": loaded.description,
+                    }),
+                );
+            }
+
+            napp::AgentFsEvent::Removed { name_key: _, agent } => {
+                // Find DB record
+                let db_agent = agent
+                    .id
+                    .as_deref()
+                    .and_then(|id| state.store.get_agent(id).ok().flatten())
+                    .or_else(|| {
+                        state
+                            .store
+                            .get_agent_by_name(&agent.agent_def.name)
+                            .ok()
+                            .flatten()
+                    });
+
+                let Some(db_agent) = db_agent else {
+                    info!(name = %agent.agent_def.name, "fs watcher: removed agent not in DB, nothing to do");
+                    continue;
+                };
+
+                // Soft-deactivate (do NOT delete — user may re-add directory)
+                let _ = state.store.set_agent_enabled(&db_agent.id, false);
+
+                // Stop worker and remove from registry
+                state.agent_workers.stop_agent(&db_agent.id).await;
+                state.agent_registry.write().await.remove(&db_agent.id);
+
+                info!(name = %agent.agent_def.name, id = %db_agent.id, "fs watcher: agent removed from filesystem");
+                state.hub.broadcast(
+                    "agent_deactivated",
+                    serde_json::json!({ "agentId": db_agent.id, "name": agent.agent_def.name }),
+                );
+            }
+        }
+    }
+
+    warn!("agent filesystem event channel closed");
+}
+
 /// Sync workflow bindings from an AgentConfig into the agent_workflows table.
 fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent::AgentConfig) {
     for (binding_name, binding) in &config.workflows {
         let (trigger_type, trigger_config) = match &binding.trigger {
-            napp::agent::AgentTrigger::Schedule { cron } => ("schedule", tools::PersonaTool::normalize_cron(cron)),
+            napp::agent::AgentTrigger::Schedule { cron, .. } => {
+                ("schedule", tools::PersonaTool::normalize_cron(cron))
+            }
             napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                 let cfg = match window {
                     Some(w) => format!("{}|{}", interval, w),
@@ -1375,7 +2022,12 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
                 ("heartbeat", cfg)
             }
             napp::agent::AgentTrigger::Event { sources } => ("event", sources.join(",")),
-            napp::agent::AgentTrigger::Watch { plugin, command, event, restart_delay_secs } => {
+            napp::agent::AgentTrigger::Watch {
+                plugin,
+                command,
+                event,
+                restart_delay_secs,
+            } => {
                 let mut cfg = serde_json::json!({
                     "plugin": plugin,
                     "command": command,
@@ -1388,12 +2040,36 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
             }
             napp::agent::AgentTrigger::Manual => ("manual", String::new()),
         };
-        let inputs_json = if binding.inputs.is_empty() { None } else { serde_json::to_string(&binding.inputs).ok() };
-        let desc = if binding.description.is_empty() { None } else { Some(binding.description.as_str()) };
-        let activities_json = if binding.activities.is_empty() { None } else { serde_json::to_string(&binding.activities).ok() };
+        let inputs_json = if binding.inputs.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&binding.inputs).ok()
+        };
+        let desc = if binding.description.is_empty() {
+            None
+        } else {
+            Some(binding.description.as_str())
+        };
+        let activities_json = if binding.activities.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&binding.activities).ok()
+        };
+        let connections_json = if binding.connections.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&binding.connections).ok()
+        };
         let _ = store.upsert_agent_workflow(
-            agent_id, binding_name, trigger_type, &trigger_config,
-            desc, inputs_json.as_deref(), binding.emit.as_deref(), activities_json.as_deref(),
+            agent_id,
+            binding_name,
+            trigger_type,
+            &trigger_config,
+            desc,
+            inputs_json.as_deref(),
+            binding.emit.as_deref(),
+            activities_json.as_deref(),
+            connections_json.as_deref(),
         );
     }
 }
@@ -1417,7 +2093,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     tracing::info!(plan = plan, "Account: plan updated via tokenRefresh");
 
                     // Persist fresh JWT to SQLite auth_profiles — next Janus request uses it
-                    if let Ok(profiles) = state.store.list_all_active_auth_profiles_by_provider("neboloop") {
+                    if let Ok(profiles) = state
+                        .store
+                        .list_all_active_auth_profiles_by_provider("neboloop")
+                    {
                         if let Some(profile) = profiles.first() {
                             let _ = state.store.update_auth_profile(
                                 &profile.id,
@@ -1436,7 +2115,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     *state.plan_tier.write().await = plan.to_string();
 
                     // Notify UI
-                    state.hub.broadcast("plan_changed", serde_json::json!({"plan": plan}));
+                    state
+                        .hub
+                        .broadcast("plan_changed", serde_json::json!({"plan": plan}));
                 }
             }
         }
@@ -1498,7 +2179,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         };
 
         // Check if this is the owner's personal loop → unify session with local agent chat
-        let space_loop_id = state.comm_manager.agent_space_loop_id(&msg.conversation_id).await;
+        let space_loop_id = state
+            .comm_manager
+            .agent_space_loop_id(&msg.conversation_id)
+            .await;
         let personal_id = state.personal_loop_id.read().await.clone();
         let is_personal = if is_default_bot {
             // Default bot is always personal
@@ -1542,20 +2226,29 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 .unwrap_or_else(|| agent_slug.clone())
         };
         if !is_default_bot {
-            let _ = state.store.create_chat(&session_key, &format!("Agent: {}", agent_name));
+            let _ = state
+                .store
+                .create_chat(&session_key, &format!("Agent: {}", agent_name));
         }
 
-        let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
+        let preview = if text.len() > 80 {
+            format!("{}...", truncate_str(&text, 80))
+        } else {
+            text.clone()
+        };
         notify_crate::send(&format!("Agent space: {}", agent_name), &preview);
 
         // Broadcast inbound user message to local frontend for real-time display
         if is_personal {
-            state.hub.broadcast("chat_inbound", serde_json::json!({
-                "session_id": session_key,
-                "content": text,
-                "agentId": agent_id,
-                "source": "neboloop",
-            }));
+            state.hub.broadcast(
+                "chat_inbound",
+                serde_json::json!({
+                    "session_id": session_key,
+                    "content": text,
+                    "agentId": agent_id,
+                    "source": "neboloop",
+                }),
+            );
         }
 
         // Use entity config matching the session: agent config for custom agents,
@@ -1586,6 +2279,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             entity_config,
             images: vec![],
             entity_name: agent_name.clone(),
+            origin_agent_id: None,
+            mention_context: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -1610,7 +2305,11 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     // Route chat and DM messages to the agent runner via unified chat pipeline
     if msg.topic == "chat" || msg.topic == "dm" {
         // Check if this conversation is actually an agent_space (gateway sends stream=dm for these)
-        if let Some(agent_slug) = state.comm_manager.agent_slug_for_conv(&msg.conversation_id).await {
+        if let Some(agent_slug) = state
+            .comm_manager
+            .agent_slug_for_conv(&msg.conversation_id)
+            .await
+        {
             let text = extract_message_text(&msg.content);
             if text.is_empty() {
                 return;
@@ -1634,7 +2333,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             };
 
             // Check if this is the owner's personal loop → unify session with local agent chat
-            let space_loop_id = state.comm_manager.agent_space_loop_id(&msg.conversation_id).await;
+            let space_loop_id = state
+                .comm_manager
+                .agent_space_loop_id(&msg.conversation_id)
+                .await;
             let personal_id = state.personal_loop_id.read().await.clone();
             let is_personal = if is_default_bot {
                 space_loop_id.is_some() && (personal_id.is_none() || space_loop_id == personal_id)
@@ -1673,20 +2375,29 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     .unwrap_or_else(|| agent_slug.clone())
             };
             if !is_default_bot {
-                let _ = state.store.create_chat(&session_key, &format!("Agent: {}", agent_name));
+                let _ = state
+                    .store
+                    .create_chat(&session_key, &format!("Agent: {}", agent_name));
             }
 
-            let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
+            let preview = if text.len() > 80 {
+                format!("{}...", truncate_str(&text, 80))
+            } else {
+                text.clone()
+            };
             notify_crate::send(&format!("Agent space: {}", agent_name), &preview);
 
             // Broadcast inbound user message to local frontend for real-time display
             if is_personal {
-                state.hub.broadcast("chat_inbound", serde_json::json!({
-                    "session_id": session_key,
-                    "content": text,
-                    "agentId": agent_id,
-                    "source": "neboloop",
-                }));
+                state.hub.broadcast(
+                    "chat_inbound",
+                    serde_json::json!({
+                        "session_id": session_key,
+                        "content": text,
+                        "agentId": agent_id,
+                        "source": "neboloop",
+                    }),
+                );
             }
 
             // Use entity config matching the session
@@ -1716,6 +2427,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 entity_config,
                 images: vec![],
                 entity_name: agent_name.clone(),
+                origin_agent_id: None,
+                mention_context: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;
@@ -1743,21 +2456,18 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
 
         // Notify the user about the inbound message
-        let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
+        let preview = if text.len() > 80 {
+            format!("{}...", truncate_str(&text, 80))
+        } else {
+            text.clone()
+        };
         notify_crate::send(&format!("Message from {}", msg.from), &preview);
 
-        let session_key = agent::keyparser::build_session_key(
-            "neboloop",
-            &msg.topic,
-            &msg.conversation_id,
-        );
+        let session_key =
+            agent::keyparser::build_session_key("neboloop", &msg.topic, &msg.conversation_id);
 
         // Resolve entity config for the channel
-        let entity_config = entity_config::resolve_for_chat(
-            &state.store,
-            "channel",
-            &msg.topic,
-        );
+        let entity_config = entity_config::resolve_for_chat(&state.store, "channel", &msg.topic);
 
         // Check for @mention routing — if agent_slug is present, resolve to agent_id
         let agent_id = {
@@ -1768,7 +2478,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // Pre-create chat with @mention context if applicable
         if !agent_id.is_empty() {
             let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
-            let _ = state.store.create_chat(&session_key, &format!("@{} (channel)", agent_slug));
+            let _ = state
+                .store
+                .create_chat(&session_key, &format!("@{} (channel)", agent_slug));
         }
 
         let config = chat_dispatch::ChatConfig {
@@ -1789,6 +2501,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             entity_config,
             images: vec![],
             entity_name: String::new(),
+            origin_agent_id: None,
+            mention_context: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -1889,7 +2603,7 @@ fn cors_layer() -> CorsLayer {
     use axum::http::HeaderValue;
     use tower_http::cors::AllowOrigin;
 
-    let origins: Vec<HeaderValue> = [
+    let static_origins: Vec<HeaderValue> = [
         "http://localhost:27895",
         "http://127.0.0.1:27895",
         "http://localhost:5173",
@@ -1902,7 +2616,15 @@ fn cors_layer() -> CorsLayer {
     .collect();
 
     CorsLayer::new()
-        .allow_origin(AllowOrigin::list(origins))
+        .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, _| {
+            // Allow neboapp:// origins (Tauri custom protocol for app windows)
+            if let Ok(s) = origin.to_str() {
+                if s.starts_with("neboapp://") {
+                    return true;
+                }
+            }
+            static_origins.contains(origin)
+        }))
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -1911,11 +2633,6 @@ fn cors_layer() -> CorsLayer {
             Method::OPTIONS,
             Method::PATCH,
         ])
-        .allow_headers([
-            axum::http::header::AUTHORIZATION,
-            axum::http::header::CONTENT_TYPE,
-            axum::http::header::ACCEPT,
-            axum::http::header::ORIGIN,
-        ])
+        .allow_headers(tower_http::cors::AllowHeaders::mirror_request())
         .allow_credentials(true)
 }

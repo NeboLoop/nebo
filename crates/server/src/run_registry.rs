@@ -5,8 +5,8 @@
 //! enabling visibility, cancellation, and progress tracking for all agents.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -59,7 +59,11 @@ impl RunEntry {
             channel: self.channel.clone(),
             iteration_count: self.iteration_count.load(Ordering::Relaxed),
             tool_call_count: self.tool_call_count.load(Ordering::Relaxed),
-            current_tool: self.current_tool.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            current_tool: self
+                .current_tool
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
             elapsed_secs: self.started_at.elapsed().as_secs(),
             parent_run_id: self.parent_run_id.clone(),
             child_count,
@@ -257,7 +261,8 @@ impl RunRegistry {
     pub async fn get(&self, run_id: &str) -> Option<RunSnapshot> {
         let runs = self.inner.runs.read().await;
         let child_counts = count_children(&runs);
-        runs.get(run_id).map(|e| e.snapshot(*child_counts.get(&e.run_id).unwrap_or(&0)))
+        runs.get(run_id)
+            .map(|e| e.snapshot(*child_counts.get(&e.run_id).unwrap_or(&0)))
     }
 
     /// Find a run by session key.
@@ -275,7 +280,8 @@ impl RunRegistry {
         let child_counts = count_children(&runs);
 
         // Find all run_ids that belong to this entity (top-level runs for this entity)
-        let entity_run_ids: Vec<String> = runs.values()
+        let entity_run_ids: Vec<String> = runs
+            .values()
             .filter(|e| e.entity_id == entity_id && e.parent_run_id.is_none())
             .map(|e| e.run_id.clone())
             .collect();
@@ -352,27 +358,29 @@ impl RunRegistry {
     }
 
     /// Clean up stale runs that have been idle for too long.
-    pub async fn cleanup_stale(&self, max_idle_secs: u64) -> usize {
+    /// Returns the session keys of cleaned-up runs (for browser tab cleanup).
+    pub async fn cleanup_stale(&self, max_idle_secs: u64) -> Vec<String> {
         let runs = self.inner.runs.read().await;
-        let stale_ids: Vec<String> = runs.values()
+        let stale: Vec<(String, String)> = runs
+            .values()
             .filter(|e| e.idle_secs() > max_idle_secs)
             .map(|e| {
                 e.cancel_token.cancel();
-                e.run_id.clone()
+                (e.run_id.clone(), e.session_key.clone())
             })
             .collect();
         drop(runs);
 
-        if stale_ids.is_empty() {
-            return 0;
+        if stale.is_empty() {
+            return vec![];
         }
 
-        let count = stale_ids.len();
+        let session_keys: Vec<String> = stale.iter().map(|(_, sk)| sk.clone()).collect();
         let mut runs = self.inner.runs.write().await;
-        for id in &stale_ids {
+        for (id, _) in &stale {
             runs.remove(id);
         }
-        count
+        session_keys
     }
 }
 
@@ -394,11 +402,7 @@ fn count_children(runs: &HashMap<String, RunEntry>) -> HashMap<String, usize> {
 }
 
 /// Check if a run_id is a descendant of any of the target run IDs.
-fn is_descendant_of(
-    runs: &HashMap<String, RunEntry>,
-    run_id: &str,
-    target_ids: &[String],
-) -> bool {
+fn is_descendant_of(runs: &HashMap<String, RunEntry>, run_id: &str, target_ids: &[String]) -> bool {
     let mut current = run_id.to_string();
     // Walk up the parent chain (with cycle protection)
     for _ in 0..10 {
@@ -419,7 +423,9 @@ impl tools::run_querier::RunQuerier for RunRegistry {
     fn list_runs(
         &self,
         caller_entity_id: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<tools::run_querier::RunInfo>> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Vec<tools::run_querier::RunInfo>> + Send + '_>,
+    > {
         let caller = caller_entity_id.to_string();
         Box::pin(async move {
             let snapshots = if caller == "main" {
@@ -427,16 +433,19 @@ impl tools::run_querier::RunQuerier for RunRegistry {
             } else {
                 self.find_by_entity(&caller).await
             };
-            snapshots.into_iter().map(|s| tools::run_querier::RunInfo {
-                run_id: s.run_id,
-                entity_id: s.entity_id,
-                entity_name: s.entity_name,
-                origin: s.origin,
-                tool_call_count: s.tool_call_count,
-                current_tool: s.current_tool,
-                elapsed_secs: s.elapsed_secs,
-                parent_run_id: s.parent_run_id,
-            }).collect()
+            snapshots
+                .into_iter()
+                .map(|s| tools::run_querier::RunInfo {
+                    run_id: s.run_id,
+                    entity_id: s.entity_id,
+                    entity_name: s.entity_name,
+                    origin: s.origin,
+                    tool_call_count: s.tool_call_count,
+                    current_tool: s.current_tool,
+                    elapsed_secs: s.elapsed_secs,
+                    parent_run_id: s.parent_run_id,
+                })
+                .collect()
         })
     }
 
@@ -444,7 +453,8 @@ impl tools::run_querier::RunQuerier for RunRegistry {
         &self,
         run_id: &str,
         caller_entity_id: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send + '_>>
+    {
         let run_id = run_id.to_string();
         let caller = caller_entity_id.to_string();
         Box::pin(async move {
@@ -462,13 +472,15 @@ impl tools::run_querier::RunQuerier for RunRegistry {
                             true
                         } else {
                             // Check if it's a descendant of one of the caller's runs
-                            let caller_run_ids: Vec<String> = runs.values()
+                            let caller_run_ids: Vec<String> = runs
+                                .values()
                                 .filter(|e| e.entity_id == caller)
                                 .map(|e| e.run_id.clone())
                                 .collect();
-                            entry.parent_run_id.as_ref().map_or(false, |pid| {
-                                is_descendant_of(&runs, pid, &caller_run_ids)
-                            })
+                            entry
+                                .parent_run_id
+                                .as_ref()
+                                .map_or(false, |pid| is_descendant_of(&runs, pid, &caller_run_ids))
                         }
                     }
                     None => return Ok(false),
@@ -493,15 +505,17 @@ mod tests {
         let registry = RunRegistry::new();
         let token = CancellationToken::new();
 
-        let handle = registry.register(RegisterParams {
-            session_key: "agent:test:main".to_string(),
-            entity_id: "test-agent".to_string(),
-            entity_name: "Test Agent".to_string(),
-            origin: "ws".to_string(),
-            channel: "main".to_string(),
-            cancel_token: token.clone(),
-            parent_run_id: None,
-        }).await;
+        let handle = registry
+            .register(RegisterParams {
+                session_key: "agent:test:main".to_string(),
+                entity_id: "test-agent".to_string(),
+                entity_name: "Test Agent".to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: token.clone(),
+                parent_run_id: None,
+            })
+            .await;
 
         // Should appear in listings
         let all = registry.list_all().await;
@@ -525,26 +539,30 @@ mod tests {
         let registry = RunRegistry::new();
         let parent_token = CancellationToken::new();
 
-        let parent_handle = registry.register(RegisterParams {
-            session_key: "agent:parent:main".to_string(),
-            entity_id: "parent".to_string(),
-            entity_name: "Parent Agent".to_string(),
-            origin: "ws".to_string(),
-            channel: "main".to_string(),
-            cancel_token: parent_token.clone(),
-            parent_run_id: None,
-        }).await;
+        let parent_handle = registry
+            .register(RegisterParams {
+                session_key: "agent:parent:main".to_string(),
+                entity_id: "parent".to_string(),
+                entity_name: "Parent Agent".to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: parent_token.clone(),
+                parent_run_id: None,
+            })
+            .await;
 
         let child_token = parent_token.child_token();
-        let _child_handle = registry.register(RegisterParams {
-            session_key: "subagent:parent:child1".to_string(),
-            entity_id: "parent".to_string(),
-            entity_name: "Child Explorer".to_string(),
-            origin: "ws".to_string(),
-            channel: "main".to_string(),
-            cancel_token: child_token,
-            parent_run_id: Some(parent_handle.run_id.clone()),
-        }).await;
+        let _child_handle = registry
+            .register(RegisterParams {
+                session_key: "subagent:parent:child1".to_string(),
+                entity_id: "parent".to_string(),
+                entity_name: "Child Explorer".to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: child_token,
+                parent_run_id: Some(parent_handle.run_id.clone()),
+            })
+            .await;
 
         // Top-level should only show parent
         let top = registry.list_top_level().await;
@@ -567,25 +585,29 @@ mod tests {
         let parent_token = CancellationToken::new();
         let child_token = parent_token.child_token();
 
-        let _parent = registry.register(RegisterParams {
-            session_key: "agent:p:main".to_string(),
-            entity_id: "p".to_string(),
-            entity_name: "Parent".to_string(),
-            origin: "ws".to_string(),
-            channel: "main".to_string(),
-            cancel_token: parent_token.clone(),
-            parent_run_id: None,
-        }).await;
+        let _parent = registry
+            .register(RegisterParams {
+                session_key: "agent:p:main".to_string(),
+                entity_id: "p".to_string(),
+                entity_name: "Parent".to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: parent_token.clone(),
+                parent_run_id: None,
+            })
+            .await;
 
-        let _child = registry.register(RegisterParams {
-            session_key: "subagent:p:c".to_string(),
-            entity_id: "p".to_string(),
-            entity_name: "Child".to_string(),
-            origin: "ws".to_string(),
-            channel: "main".to_string(),
-            cancel_token: child_token.clone(),
-            parent_run_id: Some(_parent.run_id.clone()),
-        }).await;
+        let _child = registry
+            .register(RegisterParams {
+                session_key: "subagent:p:c".to_string(),
+                entity_id: "p".to_string(),
+                entity_name: "Child".to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: child_token.clone(),
+                parent_run_id: Some(_parent.run_id.clone()),
+            })
+            .await;
 
         // Cancel parent should cascade to child
         registry.cancel(&_parent.run_id).await;
@@ -598,15 +620,17 @@ mod tests {
         let registry = RunRegistry::new();
         let token = CancellationToken::new();
 
-        let _handle = registry.register(RegisterParams {
-            session_key: "agent:test:main".to_string(),
-            entity_id: "test".to_string(),
-            entity_name: "Test".to_string(),
-            origin: "ws".to_string(),
-            channel: "main".to_string(),
-            cancel_token: token.clone(),
-            parent_run_id: None,
-        }).await;
+        let _handle = registry
+            .register(RegisterParams {
+                session_key: "agent:test:main".to_string(),
+                entity_id: "test".to_string(),
+                entity_name: "Test".to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: token.clone(),
+                parent_run_id: None,
+            })
+            .await;
 
         assert!(registry.cancel_by_session("agent:test:main").await);
         assert!(token.is_cancelled());
@@ -617,25 +641,29 @@ mod tests {
     async fn test_isolation_between_entities() {
         let registry = RunRegistry::new();
 
-        let _agent_a = registry.register(RegisterParams {
-            session_key: "agent:a:main".to_string(),
-            entity_id: "agent-a".to_string(),
-            entity_name: "Agent A".to_string(),
-            origin: "ws".to_string(),
-            channel: "main".to_string(),
-            cancel_token: CancellationToken::new(),
-            parent_run_id: None,
-        }).await;
+        let _agent_a = registry
+            .register(RegisterParams {
+                session_key: "agent:a:main".to_string(),
+                entity_id: "agent-a".to_string(),
+                entity_name: "Agent A".to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: CancellationToken::new(),
+                parent_run_id: None,
+            })
+            .await;
 
-        let _agent_b = registry.register(RegisterParams {
-            session_key: "agent:b:main".to_string(),
-            entity_id: "agent-b".to_string(),
-            entity_name: "Agent B".to_string(),
-            origin: "ws".to_string(),
-            channel: "main".to_string(),
-            cancel_token: CancellationToken::new(),
-            parent_run_id: None,
-        }).await;
+        let _agent_b = registry
+            .register(RegisterParams {
+                session_key: "agent:b:main".to_string(),
+                entity_id: "agent-b".to_string(),
+                entity_name: "Agent B".to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: CancellationToken::new(),
+                parent_run_id: None,
+            })
+            .await;
 
         // Entity A should only see its own runs
         let a_runs = registry.find_by_entity("agent-a").await;
@@ -656,15 +684,17 @@ mod tests {
     async fn test_counter_updates() {
         let registry = RunRegistry::new();
 
-        let handle = registry.register(RegisterParams {
-            session_key: "test".to_string(),
-            entity_id: "test".to_string(),
-            entity_name: "Test".to_string(),
-            origin: "ws".to_string(),
-            channel: "main".to_string(),
-            cancel_token: CancellationToken::new(),
-            parent_run_id: None,
-        }).await;
+        let handle = registry
+            .register(RegisterParams {
+                session_key: "test".to_string(),
+                entity_id: "test".to_string(),
+                entity_name: "Test".to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: CancellationToken::new(),
+                parent_run_id: None,
+            })
+            .await;
 
         handle.inc_iteration();
         handle.inc_iteration();
@@ -682,20 +712,22 @@ mod tests {
     async fn test_cleanup_stale() {
         let registry = RunRegistry::new();
 
-        let _handle = registry.register(RegisterParams {
-            session_key: "stale".to_string(),
-            entity_id: "test".to_string(),
-            entity_name: "Stale".to_string(),
-            origin: "cron".to_string(),
-            channel: "cron".to_string(),
-            cancel_token: CancellationToken::new(),
-            parent_run_id: None,
-        }).await;
+        let _handle = registry
+            .register(RegisterParams {
+                session_key: "stale".to_string(),
+                entity_id: "test".to_string(),
+                entity_name: "Stale".to_string(),
+                origin: "cron".to_string(),
+                channel: "cron".to_string(),
+                cancel_token: CancellationToken::new(),
+                parent_run_id: None,
+            })
+            .await;
 
         // With 0 max_idle, everything is stale
         // But the run just started, so idle_secs is 0 — it won't be cleaned up with max_idle=1
         // This just tests the mechanism works without actually waiting
         let cleaned = registry.cleanup_stale(999999).await;
-        assert_eq!(cleaned, 0);
+        assert!(cleaned.is_empty());
     }
 }

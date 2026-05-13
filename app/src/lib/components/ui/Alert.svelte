@@ -1,8 +1,3 @@
-<!--
-  Reusable Alert Component
-  Uses DaisyUI alert classes
--->
-
 <script lang="ts">
 	import {
 		Info,
@@ -18,11 +13,11 @@
 
 	let {
 		type = 'info',
-		variant, // alias for type
+		variant,
 		icon,
 		title,
 		dismissible = false,
-		dismissable, // alias for dismissible
+		dismissable,
 		onclose,
 		children,
 		class: extraClass = ''
@@ -38,9 +33,7 @@
 		class?: string;
 	} = $props();
 
-	// Support both 'type' and 'variant' props
 	const alertType = $derived(variant || type);
-	// Support both 'dismissible' and 'dismissable' props, or infer from onclose
 	const canDismiss = $derived(dismissible || dismissable || !!onclose);
 	let visible = $state(true);
 

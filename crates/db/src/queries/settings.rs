@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::Setting;
 use crate::Store;
+use crate::models::Setting;
 use types::NeboError;
 
 impl Store {
@@ -49,11 +49,8 @@ impl Store {
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         // Ensure settings row exists
-        conn.execute(
-            "INSERT OR IGNORE INTO settings (id) VALUES (1)",
-            [],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)", [])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
 
         let mut updates = Vec::new();
         let mut param_idx = 1u32;
@@ -63,7 +60,9 @@ impl Store {
                 if $field.is_some() {
                     updates.push(format!("{} = ?{}", $col, param_idx));
                     #[allow(unused_assignments)]
-                    { param_idx += 1; }
+                    {
+                        param_idx += 1;
+                    }
                 }
             };
         }
@@ -85,54 +84,70 @@ impl Store {
         updates.push(format!("updated_at = unixepoch()"));
 
         let sql = format!("UPDATE settings SET {} WHERE id = 1", updates.join(", "));
-        let mut stmt = conn.prepare(&sql).map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
 
         // Build params dynamically
         let mut idx = 1;
         if let Some(v) = autonomous_mode {
-            stmt.raw_bind_parameter(idx, v as i64).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.raw_bind_parameter(idx, v as i64)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
             idx += 1;
         }
         if let Some(v) = auto_approve_read {
-            stmt.raw_bind_parameter(idx, v as i64).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.raw_bind_parameter(idx, v as i64)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
             idx += 1;
         }
         if let Some(v) = auto_approve_write {
-            stmt.raw_bind_parameter(idx, v as i64).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.raw_bind_parameter(idx, v as i64)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
             idx += 1;
         }
         if let Some(v) = auto_approve_bash {
-            stmt.raw_bind_parameter(idx, v as i64).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.raw_bind_parameter(idx, v as i64)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
             idx += 1;
         }
         if let Some(v) = heartbeat_interval_minutes {
-            stmt.raw_bind_parameter(idx, v).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.raw_bind_parameter(idx, v)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
             idx += 1;
         }
         if let Some(v) = comm_enabled {
-            stmt.raw_bind_parameter(idx, v as i64).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.raw_bind_parameter(idx, v as i64)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
             idx += 1;
         }
         if let Some(v) = comm_plugin {
-            stmt.raw_bind_parameter(idx, v).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.raw_bind_parameter(idx, v)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
             idx += 1;
         }
         if let Some(v) = developer_mode {
-            stmt.raw_bind_parameter(idx, v as i64).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.raw_bind_parameter(idx, v as i64)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
             idx += 1;
         }
         if let Some(v) = auto_update {
-            stmt.raw_bind_parameter(idx, v as i64).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.raw_bind_parameter(idx, v as i64)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
             let _ = idx + 1;
         }
 
-        stmt.raw_execute().map_err(|e| NeboError::Database(e.to_string()))?;
+        stmt.raw_execute()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
     /// Read a plugin setting by plugin name and key.
     /// Used for bot_id migration from Go's plugin_settings table.
-    pub fn get_plugin_setting(&self, plugin_name: &str, key: &str) -> Result<Option<String>, NeboError> {
+    pub fn get_plugin_setting(
+        &self,
+        plugin_name: &str,
+        key: &str,
+    ) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;
         match conn.query_row(
             "SELECT ps.setting_value FROM plugin_settings ps
@@ -148,7 +163,12 @@ impl Store {
     }
 
     /// Write a plugin setting by plugin name and key.
-    pub fn set_plugin_setting(&self, plugin_name: &str, key: &str, value: &str) -> Result<(), NeboError> {
+    pub fn set_plugin_setting(
+        &self,
+        plugin_name: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO plugin_settings (id, plugin_id, setting_key, setting_value)
@@ -174,8 +194,50 @@ impl Store {
         Ok(())
     }
 
+    /// Ensure a plugin_registry entry exists for a given name (used by app storage).
+    pub fn ensure_plugin_registry_entry(&self, name: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO plugin_registry (id, name, plugin_type, display_name, is_installed)
+             VALUES (?1, ?2, 'app', ?2, 1)",
+            params![name, name],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// List all non-secret settings for a plugin by name.
+    pub fn list_plugin_settings(
+        &self,
+        plugin_name: &str,
+    ) -> Result<Vec<(String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT ps.setting_key, ps.setting_value FROM plugin_settings ps
+                 JOIN plugin_registry pr ON ps.plugin_id = pr.id
+                 WHERE pr.name = ?1 AND ps.is_secret = 0
+                 ORDER BY ps.setting_key",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![plugin_name], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| NeboError::Database(e.to_string()))?);
+        }
+        Ok(results)
+    }
+
     /// Get a skill secret (decrypted by caller).
-    pub fn get_skill_secret(&self, skill_name: &str, key: &str) -> Result<Option<String>, NeboError> {
+    pub fn get_skill_secret(
+        &self,
+        skill_name: &str,
+        key: &str,
+    ) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;
         match conn.query_row(
             "SELECT ps.setting_value FROM plugin_settings ps
@@ -191,7 +253,12 @@ impl Store {
     }
 
     /// Store a skill secret (caller encrypts before passing).
-    pub fn set_skill_secret(&self, skill_name: &str, key: &str, encrypted_value: &str) -> Result<(), NeboError> {
+    pub fn set_skill_secret(
+        &self,
+        skill_name: &str,
+        key: &str,
+        encrypted_value: &str,
+    ) -> Result<(), NeboError> {
         self.ensure_skill_plugin(skill_name)?;
         let conn = self.conn()?;
         let plugin_id = format!("skill-{}", skill_name);

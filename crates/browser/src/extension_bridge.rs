@@ -10,11 +10,11 @@
 //! only to the system default browser's connection.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 /// A tool request from the agent to the extension.
@@ -27,6 +27,13 @@ pub struct ToolRequest {
     /// the actions array and options.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_batch: bool,
+    /// If true, this is a fire-and-forget command (show_indicators, hide_indicators).
+    /// No response is expected — the WS handler serializes it as `{ "type": tool }`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_command: bool,
+    /// Session/agent identifier — extension uses this to scope tab groups per agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// A single action in a batch request.
@@ -58,10 +65,21 @@ struct PageCacheEntry {
 
 /// Tools that mutate page state — read_page cache is invalidated before these.
 const MUTATION_TOOLS: &[&str] = &[
-    "click", "double_click", "triple_click", "right_click",
-    "form_input", "type", "select", "press", "navigate",
-    "go_back", "go_forward", "evaluate", "drag",
-    "new_tab", "close_tab",
+    "click",
+    "double_click",
+    "triple_click",
+    "right_click",
+    "form_input",
+    "type",
+    "select",
+    "press",
+    "navigate",
+    "go_back",
+    "go_forward",
+    "evaluate",
+    "drag",
+    "new_tab",
+    "close_tab",
 ];
 
 /// The extension bridge — shared via AppState and Manager.
@@ -116,7 +134,13 @@ impl ExtensionBridge {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel(64);
         let mut conns = self.connections.lock().await;
-        conns.insert(id, BrowserConnection { tx, browser: browser.clone() });
+        conns.insert(
+            id,
+            BrowserConnection {
+                tx,
+                browser: browser.clone(),
+            },
+        );
         info!(conn_id = id, browser = %browser, active = conns.len(), "extension connected");
         *self.last_connected.lock().await = Some(Instant::now());
         (id, rx)
@@ -125,7 +149,10 @@ impl ExtensionBridge {
     /// Remove a browser connection.
     pub async fn disconnect(&self, conn_id: i64) {
         let mut conns = self.connections.lock().await;
-        let browser = conns.remove(&conn_id).map(|c| c.browser).unwrap_or_default();
+        let browser = conns
+            .remove(&conn_id)
+            .map(|c| c.browser)
+            .unwrap_or_default();
         let remaining = conns.len();
         drop(conns);
         info!(conn_id = conn_id, browser = %browser, remaining = remaining, "extension disconnected");
@@ -166,16 +193,19 @@ impl ExtensionBridge {
 
     /// Execute a browser tool via the extension. Routes to the default browser.
     /// read_page results are cached for 2.5s; mutation tools invalidate the cache.
+    /// `session_id` scopes the tab group in the extension (each agent gets its own tabs).
     pub async fn execute(
         &self,
         tool: &str,
         args: &serde_json::Value,
+        session_id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         // Check read_page cache (snapshot-then-release)
         if tool == "read_page" {
             let cached = {
                 let guard = self.page_cache.lock().await;
-                guard.as_ref()
+                guard
+                    .as_ref()
                     .filter(|e| e.timestamp.elapsed() < Duration::from_millis(2500))
                     .map(|e| e.result.clone())
             };
@@ -196,8 +226,14 @@ impl ExtensionBridge {
         }
 
         // Find the connection matching the default browser, or fall back to any
-        let default = self.default_browser.lock().await.clone().unwrap_or_default();
-        let target = conns.values()
+        let default = self
+            .default_browser
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default();
+        let target = conns
+            .values()
             .find(|c| !default.is_empty() && c.browser.contains(&default))
             .or_else(|| conns.values().next());
 
@@ -216,6 +252,8 @@ impl ExtensionBridge {
             tool: tool.to_string(),
             args: args.clone(),
             is_batch: false,
+            is_command: false,
+            session_id: session_id.map(|s| s.to_string()),
         };
 
         if tx.send(request).await.is_err() {
@@ -223,8 +261,11 @@ impl ExtensionBridge {
             return Err("Failed to send tool request to browser".to_string());
         }
 
-        // Wait with timeout
-        let result = match tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx).await {
+        // Wait with timeout — 60s accommodates extension-side timeouts
+        // (executeScript 45s + CDP sendCommand 30s + overhead).
+        // Claude's extension uses the same values; they don't have a bridge
+        // timeout because they use native messaging, so we must be generous.
+        let result = match tokio::time::timeout(std::time::Duration::from_secs(60), resp_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
                 self.pending.lock().await.remove(&id);
@@ -238,10 +279,10 @@ impl ExtensionBridge {
                 warn!(
                     tool = tool,
                     pending = pending_count,
-                    "browser tool timed out after 30s"
+                    "browser tool timed out after 60s"
                 );
                 Err(format!(
-                    "Tool '{}' timed out after 30s (pending: {})",
+                    "Tool '{}' timed out after 60s (pending: {})",
                     tool, pending_count
                 ))
             }
@@ -266,13 +307,16 @@ impl ExtensionBridge {
         &self,
         actions: Vec<BatchAction>,
         opts: BatchOptions,
+        session_id: Option<&str>,
     ) -> Result<Vec<Result<serde_json::Value, String>>, String> {
         if actions.is_empty() {
             return Ok(vec![]);
         }
 
         // Invalidate page cache if any mutation tool is in the batch
-        let has_mutation = actions.iter().any(|a| MUTATION_TOOLS.contains(&a.tool.as_str()));
+        let has_mutation = actions
+            .iter()
+            .any(|a| MUTATION_TOOLS.contains(&a.tool.as_str()));
         if has_mutation {
             *self.page_cache.lock().await = None;
         }
@@ -282,8 +326,14 @@ impl ExtensionBridge {
             return Err("Chrome extension not connected".to_string());
         }
 
-        let default = self.default_browser.lock().await.clone().unwrap_or_default();
-        let target = conns.values()
+        let default = self
+            .default_browser
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default();
+        let target = conns
+            .values()
             .find(|c| !default.is_empty() && c.browser.contains(&default))
             .or_else(|| conns.values().next());
 
@@ -305,6 +355,8 @@ impl ExtensionBridge {
                 "stop_on_error": opts.stop_on_error,
             }),
             is_batch: true,
+            is_command: false,
+            session_id: session_id.map(|s| s.to_string()),
         };
 
         if tx.send(request).await.is_err() {
@@ -328,20 +380,28 @@ impl ExtensionBridge {
         // Parse batch response: expect array of { result?, error? } objects
         match raw_result {
             Ok(value) => {
-                let results_arr = value.as_array()
+                let results_arr = value
+                    .as_array()
                     .ok_or_else(|| "Batch response is not an array".to_string())?;
-                let results = results_arr.iter().map(|item| {
-                    if let Some(err) = item["error"].as_str() {
-                        Err(err.to_string())
-                    } else {
-                        Ok(item["result"].clone())
-                    }
-                }).collect();
+                let results = results_arr
+                    .iter()
+                    .map(|item| {
+                        if let Some(err) = item["error"].as_str() {
+                            Err(err.to_string())
+                        } else {
+                            Ok(item["result"].clone())
+                        }
+                    })
+                    .collect();
 
                 // Populate read_page cache from last successful read_page in batch
                 if let Some(last_read) = actions.iter().rposition(|a| a.tool == "read_page") {
                     if let Some(Ok(ref value)) = results_arr.get(last_read).map(|item| {
-                        if item["error"].is_null() { Ok(item["result"].clone()) } else { Err(()) }
+                        if item["error"].is_null() {
+                            Ok(item["result"].clone())
+                        } else {
+                            Err(())
+                        }
                     }) {
                         *self.page_cache.lock().await = Some(PageCacheEntry {
                             result: value.clone(),
@@ -365,6 +425,26 @@ impl ExtensionBridge {
             debug!(id, "no pending request for tool result");
         }
     }
+
+    /// Send a fire-and-forget command to the extension (e.g., show_indicators, hide_indicators).
+    /// Broadcasts to all active connections. No response is expected.
+    pub async fn send_command(&self, command: &str, session_id: Option<&str>) {
+        let conns = self.connections.lock().await;
+        if conns.is_empty() {
+            return;
+        }
+        let request = ToolRequest {
+            id: 0,
+            tool: command.to_string(),
+            args: serde_json::Value::Null,
+            is_batch: false,
+            is_command: true,
+            session_id: session_id.map(|s| s.to_string()),
+        };
+        for conn in conns.values() {
+            let _ = conn.tx.send(request.clone()).await;
+        }
+    }
 }
 
 /// Detect the system default browser on macOS.
@@ -374,7 +454,11 @@ async fn detect_default_browser() -> String {
     {
         // Use macOS defaults command to read the HTTPS handler
         let output = tokio::process::Command::new("defaults")
-            .args(["read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"])
+            .args([
+                "read",
+                "com.apple.LaunchServices/com.apple.launchservices.secure",
+                "LSHandlers",
+            ])
             .output()
             .await;
 
@@ -385,20 +469,26 @@ async fn detect_default_browser() -> String {
             let mut in_https_block = false;
             for line in text.lines() {
                 let trimmed = line.trim();
-                if trimmed.contains("LSHandlerURLScheme") && trimmed.to_lowercase().contains("https") {
+                if trimmed.contains("LSHandlerURLScheme")
+                    && trimmed.to_lowercase().contains("https")
+                {
                     in_https_block = true;
                 }
                 if in_https_block && trimmed.contains("LSHandlerRoleAll") {
                     // Extract the bundle ID
                     if let Some(start) = trimmed.find('"') {
-                        if let Some(end) = trimmed[start+1..].find('"') {
-                            let bundle_id = &trimmed[start+1..start+1+end];
+                        if let Some(end) = trimmed[start + 1..].find('"') {
+                            let bundle_id = &trimmed[start + 1..start + 1 + end];
                             return bundle_id_to_name(bundle_id);
                         }
                     }
                     // Try without quotes (some plist formats)
                     if let Some(eq) = trimmed.find('=') {
-                        let val = trimmed[eq+1..].trim().trim_end_matches(';').trim().trim_matches('"');
+                        let val = trimmed[eq + 1..]
+                            .trim()
+                            .trim_end_matches(';')
+                            .trim()
+                            .trim_matches('"');
                         return bundle_id_to_name(val);
                     }
                 }
@@ -416,11 +506,19 @@ async fn detect_default_browser() -> String {
 
 fn bundle_id_to_name(bundle_id: &str) -> String {
     let lower = bundle_id.to_lowercase();
-    if lower.contains("chrome") { "chrome".to_string() }
-    else if lower.contains("brave") { "brave".to_string() }
-    else if lower.contains("firefox") { "firefox".to_string() }
-    else if lower.contains("safari") { "safari".to_string() }
-    else if lower.contains("edge") { "edge".to_string() }
-    else if lower.contains("arc") { "arc".to_string() }
-    else { bundle_id.to_string() }
+    if lower.contains("chrome") {
+        "chrome".to_string()
+    } else if lower.contains("brave") {
+        "brave".to_string()
+    } else if lower.contains("firefox") {
+        "firefox".to_string()
+    } else if lower.contains("safari") {
+        "safari".to_string()
+    } else if lower.contains("edge") {
+        "edge".to_string()
+    } else if lower.contains("arc") {
+        "arc".to_string()
+    } else {
+        bundle_id.to_string()
+    }
 }

@@ -38,8 +38,11 @@ impl LoopbackPlugin {
 
         match handler {
             None => warn!("loopback: no handler set, dropping message"),
-            Some(h) if !subscribed => {
-                warn!(topic = msg.topic.as_str(), "loopback: not subscribed to topic, dropping message");
+            Some(_) if !subscribed => {
+                warn!(
+                    topic = msg.topic.as_str(),
+                    "loopback: not subscribed to topic, dropping message"
+                );
             }
             Some(h) => h(msg),
         }
@@ -85,7 +88,12 @@ impl CommPlugin for LoopbackPlugin {
         if !inner.connected {
             return Err(CommError::NotConnected);
         }
-        debug!(from = msg.from.as_str(), to = msg.to.as_str(), topic = msg.topic.as_str(), "loopback message sent");
+        debug!(
+            from = msg.from.as_str(),
+            to = msg.to.as_str(),
+            topic = msg.topic.as_str(),
+            "loopback message sent"
+        );
         Ok(())
     }
 
@@ -112,7 +120,11 @@ impl CommPlugin for LoopbackPlugin {
     async fn register(&self, agent_id: &str, card: &AgentCard) -> Result<(), CommError> {
         let mut inner = self.inner.write().unwrap();
         inner.agent_id = agent_id.to_string();
-        info!(agent = agent_id, skills = card.skills.len(), "loopback registered agent");
+        info!(
+            agent = agent_id,
+            skills = card.skills.len(),
+            "loopback registered agent"
+        );
         Ok(())
     }
 

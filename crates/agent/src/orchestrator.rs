@@ -4,9 +4,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
+
+/// Per-worker wall-clock timeout for parallel spawns.
+const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 use ai::StreamEventType;
 use db::Store;
@@ -39,7 +42,11 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    pub fn new(runner: Arc<Runner>, store: Arc<Store>, concurrency: Arc<ConcurrencyController>) -> Self {
+    pub fn new(
+        runner: Arc<Runner>,
+        store: Arc<Store>,
+        concurrency: Arc<ConcurrencyController>,
+    ) -> Self {
         Self {
             runner,
             store,
@@ -56,22 +63,24 @@ impl Orchestrator {
 
     /// Spawn a single sub-agent.
     async fn spawn_internal(&self, req: SpawnRequest) -> Result<SpawnResult, String> {
-
         let task_id = format!("sa-{}", uuid::Uuid::new_v4());
         let session_key = format!("subagent:{}:{}", req.parent_session_key, task_id);
         // Derive a child token from the parent so cancelling the parent cascades.
-        let cancel = req.parent_cancel.as_ref()
+        let cancel = req
+            .parent_cancel
+            .as_ref()
             .map(|p| p.child_token())
             .unwrap_or_else(CancellationToken::new);
 
         // Persist to pending_tasks
+        let agent_type = AgentType::from_str(&req.agent_type);
         let _ = self.store.create_pending_task(
             &task_id,
             "subagent",
             &session_key,
             Some(&req.user_id),
             &req.prompt,
-            Some(&system_prompt_for_type(&AgentType::from_str(&req.agent_type))),
+            Some(task_prefix_for_type(&agent_type).trim()),
             Some(&req.description),
             Some("subagent"),
             0,
@@ -91,20 +100,21 @@ impl Orchestrator {
             );
         }
 
-        let system = system_prompt_for_type(&AgentType::from_str(&req.agent_type));
+        let task_prefix = task_prefix_for_type(&agent_type);
+        let prefixed_prompt = format!("{}{}", task_prefix, req.prompt);
 
         if req.wait {
             // Blocking: run and return result
             let result = self
                 .run_subagent(
                     &task_id,
-                    &req.prompt,
-                    &system,
+                    &prefixed_prompt,
                     &req.model_override,
                     &req.user_id,
                     "",
                     cancel.clone(),
                     &format!("subagent:{}:{}", req.parent_session_key, task_id),
+                    req.max_iterations,
                 )
                 .await;
 
@@ -137,9 +147,10 @@ impl Orchestrator {
             let store = self.store.clone();
             let active = self.active.clone();
             let task_id_clone = task_id.clone();
-            let prompt = req.prompt.clone();
+            let prompt = prefixed_prompt;
             let model_override = req.model_override.clone();
             let user_id = req.user_id.clone();
+            let max_iterations = req.max_iterations;
             let concurrency = self.concurrency.clone();
 
             let bg_session_key = format!("subagent:{}:{}", req.parent_session_key, task_id_clone);
@@ -148,7 +159,12 @@ impl Orchestrator {
                 let _permit = concurrency.acquire_llm_permit().await;
 
                 let run_req = build_subagent_request(
-                    &bg_session_key, &prompt, &system, &model_override, &user_id, &cancel,
+                    &bg_session_key,
+                    &prompt,
+                    &model_override,
+                    &user_id,
+                    &cancel,
+                    max_iterations,
                 );
 
                 let result = run_and_collect(&runner, run_req, cancel, None).await;
@@ -179,12 +195,12 @@ impl Orchestrator {
         &self,
         task_id: &str,
         prompt: &str,
-        system_prompt: &str,
         model_override: &str,
         user_id: &str,
         dep_context: &str,
         cancel: CancellationToken,
         session_key: &str,
+        max_iterations: usize,
     ) -> Result<String, String> {
         let _ = self.store.update_task_running(task_id);
 
@@ -194,7 +210,14 @@ impl Orchestrator {
             format!("{}\n\n{}", dep_context, prompt)
         };
 
-        let req = build_subagent_request(session_key, &full_prompt, system_prompt, model_override, user_id, &cancel);
+        let req = build_subagent_request(
+            session_key,
+            &full_prompt,
+            model_override,
+            user_id,
+            &cancel,
+            max_iterations,
+        );
         run_and_collect(&self.runner, req, cancel, None).await
     }
 
@@ -224,6 +247,7 @@ impl Orchestrator {
                 user_id: user_id.to_string(),
                 wait: true,
                 parent_cancel: parent_cancel.clone(),
+                max_iterations: 0,
             };
             return self.spawn_internal(req).await;
         }
@@ -254,7 +278,8 @@ impl Orchestrator {
 
         // 4. Shared cancellation for the entire DAG — derived from parent so
         //    cancelling the parent cascades to all DAG tasks.
-        let dag_cancel = parent_cancel.as_ref()
+        let dag_cancel = parent_cancel
+            .as_ref()
             .map(|p| p.child_token())
             .unwrap_or_else(CancellationToken::new);
 
@@ -269,13 +294,12 @@ impl Orchestrator {
             for task_id in ready {
                 let node = graph.nodes.get(&task_id).unwrap();
                 let dep_context = format_dep_context(&graph.collect_dependency_results(&task_id));
-                let system = system_prompt_for_type(&node.agent_type);
-                let prompt = node.prompt.clone();
+                let task_prefix = task_prefix_for_type(&node.agent_type);
+                let prompt = format!("{}{}", task_prefix, node.prompt);
                 let model_override = node.model_override.clone();
                 let user_id = user_id.to_string();
                 let cancel = dag_cancel.clone();
-                let session_key =
-                    format!("subagent:{}:{}", parent_session_id, task_id);
+                let session_key = format!("subagent:{}:{}", parent_session_id, task_id);
 
                 let runner = self.runner.clone();
                 let store = self.store.clone();
@@ -289,7 +313,7 @@ impl Orchestrator {
                     &session_key,
                     Some(&user_id),
                     &prompt,
-                    Some(&system),
+                    Some(task_prefix.trim()),
                     graph.nodes.get(&task_id).map(|n| n.description.as_str()),
                     Some("subagent"),
                     0,
@@ -311,14 +335,20 @@ impl Orchestrator {
                     };
 
                     let req = build_subagent_request(
-                        &session_key, &full_prompt, &system, &model_override, &user_id, &cancel,
+                        &session_key,
+                        &full_prompt,
+                        &model_override,
+                        &user_id,
+                        &cancel,
+                        0,
                     );
 
                     let result = run_and_collect(&runner, req, cancel, None).await;
 
                     match &result {
                         Ok(output) => {
-                            let _ = store.update_task_completed(&child_task_id, Some(output.as_str()));
+                            let _ =
+                                store.update_task_completed(&child_task_id, Some(output.as_str()));
                         }
                         Err(e) => {
                             let _ = store.update_task_failed(&child_task_id, e);
@@ -357,7 +387,8 @@ impl Orchestrator {
         let success = !graph.has_failures();
 
         let _ = if success {
-            self.store.update_task_completed(&parent_task_id, Some(&output))
+            self.store
+                .update_task_completed(&parent_task_id, Some(&output))
         } else {
             self.store
                 .update_task_failed(&parent_task_id, "One or more sub-tasks failed")
@@ -439,13 +470,7 @@ impl Orchestrator {
         let active = self.active.read().await;
         active
             .values()
-            .map(|a| {
-                (
-                    a.task_id.clone(),
-                    a.description.clone(),
-                    a.status.clone(),
-                )
-            })
+            .map(|a| (a.task_id.clone(), a.description.clone(), a.status.clone()))
             .collect()
     }
 
@@ -465,54 +490,75 @@ impl Orchestrator {
         let (prog_tx, mut prog_rx) = mpsc::channel::<SubagentProgress>(64);
 
         // Spawn all sub-agents
-        let mut running: FuturesUnordered<Pin<Box<dyn Future<Output = (String, String, Result<String, String>, usize, i32)> + Send>>> = FuturesUnordered::new();
+        let mut running: FuturesUnordered<
+            Pin<
+                Box<
+                    dyn Future<Output = (String, String, Result<String, String>, usize, i32)>
+                        + Send,
+                >,
+            >,
+        > = FuturesUnordered::new();
 
         for req in requests {
             let task_id = format!("sa-{}", uuid::Uuid::new_v4());
             let session_key = format!("subagent:{}:{}", req.parent_session_key, task_id);
-            let cancel = req.parent_cancel.as_ref()
+            let cancel = req
+                .parent_cancel
+                .as_ref()
                 .map(|p| p.child_token())
                 .unwrap_or_else(CancellationToken::new);
 
-            let system = system_prompt_for_type(&AgentType::from_str(&req.agent_type));
+            let agent_type = AgentType::from_str(&req.agent_type);
+            let task_prefix = task_prefix_for_type(&agent_type);
+            let prefixed_prompt = format!("{}{}", task_prefix, req.prompt);
             let description = req.description.clone();
 
             // Persist to DB
             let _ = self.store.create_pending_task(
-                &task_id, "subagent", &session_key,
-                Some(&req.user_id), &req.prompt,
-                Some(&system), Some(&description),
-                Some("subagent"), 0,
+                &task_id,
+                "subagent",
+                &session_key,
+                Some(&req.user_id),
+                &prefixed_prompt,
+                Some(task_prefix.trim()),
+                Some(&description),
+                Some("subagent"),
+                0,
             );
 
             // Register active
             {
                 let mut active = self.active.write().await;
-                active.insert(task_id.clone(), ActiveAgent {
-                    task_id: task_id.clone(),
-                    description: description.clone(),
-                    status: "running".to_string(),
-                    cancel: cancel.clone(),
-                });
+                active.insert(
+                    task_id.clone(),
+                    ActiveAgent {
+                        task_id: task_id.clone(),
+                        description: description.clone(),
+                        status: "running".to_string(),
+                        cancel: cancel.clone(),
+                    },
+                );
             }
 
             // Send SubagentStart event
-            let _ = progress_tx.send(StreamEvent {
-                event_type: StreamEventType::SubagentStart,
-                text: description.clone(),
-                tool_call: None,
-                error: Some(task_id.clone()),
-                usage: None,
-                rate_limit: None,
-                widgets: Some(serde_json::json!({
-                    "task_id": task_id,
-                    "description": description,
-                    "agent_type": req.agent_type,
-                    "total_count": total,
-                })),
-                provider_metadata: None,
-                stop_reason: None,
-            }).await;
+            let _ = progress_tx
+                .send(StreamEvent {
+                    event_type: StreamEventType::SubagentStart,
+                    text: description.clone(),
+                    tool_call: None,
+                    error: Some(task_id.clone()),
+                    usage: None,
+                    rate_limit: None,
+                    widgets: Some(serde_json::json!({
+                        "task_id": task_id,
+                        "description": description,
+                        "agent_type": req.agent_type,
+                        "total_count": total,
+                    })),
+                    provider_metadata: None,
+                    stop_reason: None,
+                })
+                .await;
 
             let runner = self.runner.clone();
             let store = self.store.clone();
@@ -523,15 +569,30 @@ impl Orchestrator {
             let prog_tx_clone = prog_tx.clone();
 
             let run_req = build_subagent_request(
-                &session_key, &req.prompt, &system, &req.model_override, &req.user_id, &cancel,
+                &session_key,
+                &prefixed_prompt,
+                &req.model_override,
+                &req.user_id,
+                &cancel,
+                req.max_iterations,
             );
 
             running.push(Box::pin(async move {
                 let _permit = concurrency.acquire_llm_permit().await;
-                let result = run_and_collect(
-                    &runner, run_req, cancel,
-                    Some((tid.clone(), prog_tx_clone)),
-                ).await;
+                let result = match tokio::time::timeout(
+                    WORKER_TIMEOUT,
+                    run_and_collect(
+                        &runner, run_req, cancel.clone(),
+                        Some((tid.clone(), prog_tx_clone)),
+                    ),
+                ).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        warn!(task_id = %tid, "worker timed out after {}s", WORKER_TIMEOUT.as_secs());
+                        cancel.cancel();
+                        Err(format!("Worker timed out after {}s", WORKER_TIMEOUT.as_secs()))
+                    }
+                };
 
                 let (tool_count, token_count) = (0usize, 0i32); // final counts come from progress events
                 match &result {
@@ -636,7 +697,11 @@ impl Orchestrator {
             task_id: parent_task_id,
             success: all_success,
             output: combined,
-            error: if all_success { None } else { Some("One or more sub-agents failed".to_string()) },
+            error: if all_success {
+                None
+            } else {
+                Some("One or more sub-agents failed".to_string())
+            },
         })
     }
 
@@ -773,24 +838,27 @@ fn check_completion_heuristic(messages: &[db::models::ChatMessage]) -> bool {
 }
 
 /// Build a RunRequest for a sub-agent. Single source of truth for sub-agent request construction.
+/// Uses PromptMode::Minimal — sub-agents get identity + capabilities + behavior core,
+/// but skip memory docs, tool routing guide, etiquette, comm style, and autonomy sections.
 fn build_subagent_request(
     session_key: &str,
     prompt: &str,
-    system: &str,
     model_override: &str,
     user_id: &str,
     cancel: &CancellationToken,
+    max_iterations: usize,
 ) -> RunRequest {
     RunRequest {
         session_key: session_key.to_string(),
         prompt: prompt.to_string(),
-        system: system.to_string(),
         model_override: model_override.to_string(),
         user_id: user_id.to_string(),
         skip_memory_extract: true,
         origin: tools::Origin::System,
         channel: "subagent".to_string(),
         cancel_token: cancel.clone(),
+        prompt_mode: crate::prompt::PromptMode::Minimal,
+        max_iterations,
         ..Default::default()
     }
 }
@@ -906,31 +974,19 @@ fn format_dep_context(deps: &[(String, String)]) -> String {
     parts.join("\n")
 }
 
-/// Generate a system prompt based on agent type.
-fn system_prompt_for_type(agent_type: &AgentType) -> String {
-    let base = "You are a focused sub-agent working on a specific task. \
-                Complete your assigned task and report results concisely. \
-                Do not take on work outside your task scope. \
-                Maximum 50 iterations.";
-
+/// Generate a task prefix based on agent type.
+/// These constraints are prepended to the user's prompt rather than the system prompt,
+/// so sub-agents get the standard Minimal system prompt (identity, capabilities, behavior)
+/// plus task-specific instructions in the user message.
+fn task_prefix_for_type(agent_type: &AgentType) -> &'static str {
     match agent_type {
-        AgentType::Explore => format!(
-            "{}\n\nYou are an EXPLORATION agent. \
-             Search, read, and research. Do NOT modify files or execute destructive commands. \
-             Report your findings clearly.",
-            base
-        ),
-        AgentType::Plan => format!(
-            "{}\n\nYou are a PLANNING agent. \
-             Analyze the task, break down steps, identify files and patterns. \
-             Produce a clear actionable plan. Do NOT implement anything.",
-            base
-        ),
-        AgentType::General => format!(
-            "{}\n\nYou have full tool access. \
-             Execute the task using whatever tools are needed.",
-            base
-        ),
+        AgentType::Explore => {
+            "[EXPLORATION agent — search, read, research only. Do NOT modify files or execute destructive commands. Report findings clearly.]\n\n"
+        }
+        AgentType::Plan => {
+            "[PLANNING agent — analyze, break down steps, identify files and patterns. Produce a clear actionable plan. Do NOT implement anything.]\n\n"
+        }
+        AgentType::General => "[Execute the task using whatever tools are needed.]\n\n",
     }
 }
 
@@ -1026,17 +1082,17 @@ mod tests {
     }
 
     #[test]
-    fn test_system_prompts() {
-        let explore = system_prompt_for_type(&AgentType::Explore);
+    fn test_task_prefixes() {
+        let explore = task_prefix_for_type(&AgentType::Explore);
         assert!(explore.contains("EXPLORATION"));
         assert!(explore.contains("Do NOT modify"));
 
-        let plan = system_prompt_for_type(&AgentType::Plan);
+        let plan = task_prefix_for_type(&AgentType::Plan);
         assert!(plan.contains("PLANNING"));
         assert!(plan.contains("Do NOT implement"));
 
-        let general = system_prompt_for_type(&AgentType::General);
-        assert!(general.contains("full tool access"));
+        let general = task_prefix_for_type(&AgentType::General);
+        assert!(general.contains("Execute the task"));
     }
 
     fn make_msg(role: &str, content: &str, tool_calls: Option<&str>) -> db::models::ChatMessage {
@@ -1051,6 +1107,7 @@ mod tests {
             tool_calls: tool_calls.map(String::from),
             tool_results: None,
             token_estimate: None,
+            html: None,
         }
     }
 

@@ -1,8 +1,27 @@
 import { writable, derived, get } from 'svelte/store';
 import { goto } from '$app/navigation';
 import * as api from '$lib/api/nebo';
-import type { User, LoginRequest, RegisterRequest, LoginResponse } from '$lib/api/neboComponents';
+import type { User, LoginResponse, UserGetCurrentUserResponse, UserUpdateCurrentUserResponse } from '$lib/api/neboComponents';
 import { logger } from '$lib/monitoring';
+
+/**
+ * Login request — matches the backend auth/login payload.
+ */
+export interface LoginRequest {
+	email: string;
+	password: string;
+	[key: string]: unknown;
+}
+
+/**
+ * Registration request — matches the backend auth/register payload.
+ */
+export interface RegisterRequest {
+	email: string;
+	password: string;
+	name?: string;
+	[key: string]: unknown;
+}
 
 /**
  * Authentication state interface
@@ -164,7 +183,7 @@ function createAuthStore() {
 			update((state) => ({ ...state, isLoading: true, error: null }));
 
 			try {
-				const response: LoginResponse = await api.login(credentials);
+				const response = (await api.login(credentials)) as LoginResponse;
 
 				storeTokens(response.token, response.refreshToken, response.expiresAt);
 
@@ -202,7 +221,7 @@ function createAuthStore() {
 			update((state) => ({ ...state, isLoading: true, error: null }));
 
 			try {
-				const response: LoginResponse = await api.register(userData);
+				const response = (await api.register(userData)) as LoginResponse;
 
 				storeTokens(response.token, response.refreshToken, response.expiresAt);
 
@@ -257,9 +276,20 @@ function createAuthStore() {
 			}
 
 			try {
-				const response = await api.getCurrentUser();
-				update((s) => ({ ...s, user: response.user }));
-				storeUser(response.user);
+				const response = await api.userGetCurrentUser() as UserGetCurrentUserResponse;
+				const user: User = {
+					id: response.id,
+					email: response.email,
+					name: response.name,
+					avatarUrl: response.avatarUrl,
+					role: response.role,
+					createdAt: response.createdAt,
+					passwordHash: '',
+					emailVerified: 0,
+					updatedAt: 0,
+				};
+				update((s) => ({ ...s, user }));
+				storeUser(user);
 				logger.debug('Fetched current user profile');
 			} catch (error) {
 				logger.error('Failed to fetch current user', error);
@@ -275,14 +305,25 @@ function createAuthStore() {
 			update((state) => ({ ...state, isLoading: true, error: null }));
 
 			try {
-				const response = await api.updateCurrentUser(data);
+				const response = await api.userUpdateCurrentUser(data) as UserUpdateCurrentUserResponse;
+				const user: User = {
+					id: response.id,
+					email: response.email,
+					name: response.name,
+					avatarUrl: response.avatarUrl,
+					role: response.role,
+					createdAt: response.createdAt,
+					passwordHash: '',
+					emailVerified: 0,
+					updatedAt: 0,
+				};
 				update((state) => ({
 					...state,
-					user: response.user,
+					user,
 					isLoading: false,
 					error: null
 				}));
-				storeUser(response.user);
+				storeUser(user);
 				logger.info('User profile updated successfully');
 				return true;
 			} catch (error) {
@@ -305,7 +346,7 @@ function createAuthStore() {
 			if (!state.refreshToken) return false;
 
 			try {
-				const response = await api.refreshToken({ refreshToken: state.refreshToken });
+				const response = (await api.refresh({ refreshToken: state.refreshToken })) as LoginResponse;
 
 				// Keep the same refresh token, update access token
 				storeTokens(response.token, state.refreshToken, response.expiresAt);
@@ -318,12 +359,15 @@ function createAuthStore() {
 
 				logger.debug('Auth token refreshed');
 				return true;
-			} catch (error: any) {
+			} catch (error: unknown) {
 				logger.error('Token refresh failed', error);
 
 				// Only logout if the server explicitly rejected the token (401/403)
 				// Don't logout on network errors (backend might just be restarting)
-				const status = error?.response?.status;
+				const status =
+					error instanceof Object && 'response' in error
+						? (error.response as { status?: number })?.status
+						: undefined;
 				if (status === 401 || status === 403) {
 					this.logout();
 				}

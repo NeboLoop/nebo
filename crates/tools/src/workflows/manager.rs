@@ -1,5 +1,5 @@
-use std::pin::Pin;
 use std::future::Future;
+use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
 
@@ -38,13 +38,22 @@ pub trait WorkflowManager: Send + Sync {
     fn list(&self) -> Pin<Box<dyn Future<Output = Vec<WorkflowInfo>> + Send + '_>>;
 
     /// Install a workflow from a marketplace code (WORK-XXXX-XXXX).
-    fn install<'a>(&'a self, code: &'a str) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
+    fn install<'a>(
+        &'a self,
+        code: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
     /// Uninstall a workflow by ID.
-    fn uninstall<'a>(&'a self, id: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    fn uninstall<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
     /// Resolve a workflow name or ID to full info.
-    fn resolve<'a>(&'a self, name_or_id: &'a str) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
+    fn resolve<'a>(
+        &'a self,
+        name_or_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
     /// Run a workflow. Returns run_id immediately; execution happens in a spawned task.
     fn run<'a>(
@@ -55,13 +64,23 @@ pub trait WorkflowManager: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
     /// Get the status of a workflow run.
-    fn run_status<'a>(&'a self, run_id: &'a str) -> Pin<Box<dyn Future<Output = Result<WorkflowRunInfo, String>> + Send + 'a>>;
+    fn run_status<'a>(
+        &'a self,
+        run_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<WorkflowRunInfo, String>> + Send + 'a>>;
 
     /// List recent runs for a workflow.
-    fn list_runs<'a>(&'a self, workflow_id: &'a str, limit: i64) -> Pin<Box<dyn Future<Output = Vec<WorkflowRunInfo>> + Send + 'a>>;
+    fn list_runs<'a>(
+        &'a self,
+        workflow_id: &'a str,
+        limit: i64,
+    ) -> Pin<Box<dyn Future<Output = Vec<WorkflowRunInfo>> + Send + 'a>>;
 
     /// Toggle a workflow's enabled state. Returns new is_enabled.
-    fn toggle<'a>(&'a self, id: &'a str) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
+    fn toggle<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
 
     /// Create a new workflow from a name and JSON definition.
     fn create<'a>(
@@ -84,10 +103,16 @@ pub trait WorkflowManager: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
     /// Cancel a running workflow by run_id.
-    fn cancel<'a>(&'a self, run_id: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    fn cancel<'a>(
+        &'a self,
+        run_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
     /// Cancel all running workflows for a given agent. Default no-op.
-    fn cancel_runs_for_agent<'a>(&'a self, _agent_id: &'a str) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn cancel_runs_for_agent<'a>(
+        &'a self,
+        _agent_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
 }

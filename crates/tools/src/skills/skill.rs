@@ -69,6 +69,27 @@ pub enum SkillSource {
     User,
 }
 
+/// Lightweight view of a skill for list/search/catalog operations.
+///
+/// Avoids cloning heavy fields (metadata HashMap, plugins Vec, requires Vec, etc.)
+/// that list/discover consumers never read.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub enabled: bool,
+    pub source: SkillSource,
+    pub triggers: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub source_path: Option<PathBuf>,
+    pub base_dir: Option<PathBuf>,
+    pub priority: i32,
+    /// True if the skill declares secrets in metadata.
+    pub has_secrets: bool,
+    pub degraded: Option<String>,
+}
+
 /// A skill parsed from a SKILL.md file with YAML frontmatter.
 ///
 /// Implements the Agent Skills standard (https://skill.md) plus Nebo extensions.
@@ -136,6 +157,12 @@ pub struct Skill {
     /// Root directory of the skill (parent of SKILL.md).
     #[serde(skip)]
     pub base_dir: Option<PathBuf>,
+    /// Path to the sealed .napp archive (for paid content read in memory).
+    #[serde(skip)]
+    pub napp_path: Option<PathBuf>,
+    /// License key for reading from sealed .napp (kept in memory only).
+    #[serde(skip)]
+    pub license_key: Option<[u8; 32]>,
 }
 
 fn default_source() -> SkillSource {
@@ -147,13 +174,34 @@ fn default_version() -> String {
 }
 
 impl Skill {
+    /// Create a lightweight summary for list/search operations.
+    pub fn to_summary(&self) -> SkillSummary {
+        SkillSummary {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            version: self.version.clone(),
+            enabled: self.enabled,
+            source: self.source,
+            triggers: self.triggers.clone(),
+            capabilities: self.capabilities.clone(),
+            source_path: self.source_path.clone(),
+            base_dir: self.base_dir.clone(),
+            priority: self.priority,
+            has_secrets: self.metadata.contains_key("secrets"),
+            degraded: self.degraded.clone(),
+        }
+    }
+
     /// Validate that required fields are present and conform to the Agent Skills standard.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.is_empty() {
             return Err("skill name is required".into());
         }
         if self.name.len() > 64 {
-            return Err(format!("skill name exceeds 64 characters: {}", self.name.len()));
+            return Err(format!(
+                "skill name exceeds 64 characters: {}",
+                self.name.len()
+            ));
         }
         if self.name.starts_with('-') || self.name.ends_with('-') {
             return Err("skill name must not start or end with a hyphen".into());
@@ -161,17 +209,29 @@ impl Skill {
         if self.name.contains("--") {
             return Err("skill name must not contain consecutive hyphens".into());
         }
-        if !self.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-            return Err("skill name must contain only lowercase letters, digits, and hyphens".into());
+        if !self
+            .name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(
+                "skill name must contain only lowercase letters, digits, and hyphens".into(),
+            );
         }
         if self.description.is_empty() {
             return Err("skill description is required".into());
         }
         if self.description.len() > 1024 {
-            return Err(format!("skill description exceeds 1024 characters: {}", self.description.len()));
+            return Err(format!(
+                "skill description exceeds 1024 characters: {}",
+                self.description.len()
+            ));
         }
         if self.compatibility.len() > 500 {
-            return Err(format!("compatibility exceeds 500 characters: {}", self.compatibility.len()));
+            return Err(format!(
+                "compatibility exceeds 500 characters: {}",
+                self.compatibility.len()
+            ));
         }
         Ok(())
     }
@@ -217,8 +277,16 @@ impl Skill {
                 let key = v.get("key")?.as_str()?.to_string();
                 Some(SecretDeclaration {
                     key,
-                    label: v.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    hint: v.get("hint").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    label: v
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    hint: v
+                        .get("hint")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     required: v.get("required").and_then(|v| v.as_bool()).unwrap_or(false),
                 })
             })
@@ -226,7 +294,22 @@ impl Skill {
     }
 
     /// List resource files (not SKILL.md itself).
+    ///
+    /// For sealed skills, lists entries from the encrypted .napp archive in memory,
+    /// filtering out SKILL.md and metadata files. For free skills, walks the
+    /// extracted directory on disk.
     pub fn list_resources(&self) -> Result<Vec<String>, String> {
+        // Sealed .napp: list from archive in memory
+        if let (Some(napp_path), Some(key)) = (&self.napp_path, &self.license_key) {
+            let entries = napp::reader::list_sealed_napp_entries(napp_path, key)
+                .map_err(|e| format!("failed to list sealed resources: {}", e))?;
+            return Ok(entries
+                .into_iter()
+                .filter(|name| !is_metadata_entry(name))
+                .collect());
+        }
+
+        // Free content: walk extracted directory
         if let Some(ref base_dir) = self.base_dir {
             let mut resources = Vec::new();
             walk_resources(base_dir, base_dir, &mut resources);
@@ -238,11 +321,22 @@ impl Skill {
 
     /// Read a resource file by relative path.
     /// Path traversal (`..`) is rejected.
+    ///
+    /// For sealed skills, reads from the encrypted .napp archive in memory
+    /// (plaintext never touches disk). For free skills, reads from the
+    /// extracted directory on disk.
     pub fn read_resource(&self, relative_path: &str) -> Result<Vec<u8>, String> {
         if relative_path.contains("..") {
             return Err("path traversal not allowed".into());
         }
 
+        // Sealed .napp: read from archive in memory
+        if let (Some(napp_path), Some(key)) = (&self.napp_path, &self.license_key) {
+            return napp::reader::read_sealed_napp_entry(napp_path, relative_path, key)
+                .map_err(|e| format!("failed to read sealed resource: {}", e));
+        }
+
+        // Free content: read from extracted directory
         if let Some(ref base_dir) = self.base_dir {
             let full = base_dir.join(relative_path);
             // Guard against symlink escapes
@@ -255,6 +349,11 @@ impl Skill {
         }
     }
 
+    /// Whether this skill's content is sealed (paid, encrypted at rest).
+    pub fn is_sealed(&self) -> bool {
+        self.napp_path.is_some() && self.license_key.is_some()
+    }
+
     /// Check if a message matches any of this skill's triggers (case-insensitive substring).
     pub fn matches_trigger(&self, message: &str) -> bool {
         if self.triggers.is_empty() {
@@ -264,6 +363,41 @@ impl Skill {
         self.triggers
             .iter()
             .any(|t| msg_lower.contains(&t.to_lowercase()))
+    }
+}
+
+/// Recursively walk a directory collecting only executable paths (scripts/, bin/, binary).
+///
+/// Used by `ExecuteTool::extract_resources()` for sealed skills: only copy
+/// executables to the temp dir — SKILL.md, references/, assets/ stay sealed.
+pub fn walk_resources_filtered(base: &Path, dir: &Path, out: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            // Only recurse into executable directories
+            if matches!(name_str.as_ref(), "scripts" | "bin") {
+                walk_resources_filtered(base, &path, out);
+            }
+        } else if let Ok(rel) = path.strip_prefix(base) {
+            let rel_str = rel.to_string_lossy().to_string();
+            // Only include executables
+            if rel_str == "binary"
+                || rel_str == "app"
+                || rel_str.starts_with("scripts/")
+                || rel_str.starts_with("bin/")
+            {
+                out.push(rel_str);
+            }
+        }
     }
 }
 
@@ -291,6 +425,15 @@ fn walk_resources(base: &Path, dir: &Path, out: &mut Vec<String>) {
             out.push(rel.to_string_lossy().to_string());
         }
     }
+}
+
+/// Check if a tar entry name is metadata/packaging (should be excluded from resource listings).
+fn is_metadata_entry(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower == "skill.md"
+        || lower == "manifest.json"
+        || lower == "signatures.json"
+        || lower.starts_with('.')
 }
 
 /// Get the current platform name matching the Go convention.
@@ -338,7 +481,7 @@ pub fn split_frontmatter(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     ))
 }
 
-/// Parse a SKILL.md file into a Skill struct.
+/// Parse a SKILL.md file into a Skill struct (frontmatter + body).
 pub fn parse_skill_md(data: &[u8]) -> Result<Skill, String> {
     let (frontmatter, body) = split_frontmatter(data)?;
 
@@ -346,6 +489,22 @@ pub fn parse_skill_md(data: &[u8]) -> Result<Skill, String> {
         serde_yaml::from_slice(&frontmatter).map_err(|e| format!("YAML parse error: {}", e))?;
 
     skill.template = String::from_utf8_lossy(&body).to_string();
+    skill.validate()?;
+    Ok(skill)
+}
+
+/// Parse only the YAML frontmatter of a SKILL.md file, skipping the body.
+///
+/// Returns a Skill with an empty template. Use this for metadata-only loading
+/// (search, list, catalog) where the template body is not needed. The template
+/// can be loaded lazily via `Loader::get()` when actually required.
+pub fn parse_skill_frontmatter(data: &[u8]) -> Result<Skill, String> {
+    let (frontmatter, _body) = split_frontmatter(data)?;
+
+    let skill: Skill =
+        serde_yaml::from_slice(&frontmatter).map_err(|e| format!("YAML parse error: {}", e))?;
+
+    // template stays as default empty string (from #[serde(skip)])
     skill.validate()?;
     Ok(skill)
 }
@@ -439,6 +598,8 @@ You are a research specialist. When activated, focus on:
             source_path: None,
             source: SkillSource::User,
             base_dir: None,
+            napp_path: None,
+            license_key: None,
         };
         assert!(skill.validate().is_err());
         skill.name = "test".into();
@@ -497,7 +658,11 @@ Process spreadsheets.
         let base = tmp.path();
 
         // Create skill structure
-        std::fs::write(base.join("SKILL.md"), "---\nname: test\ndescription: t\n---\nbody").unwrap();
+        std::fs::write(
+            base.join("SKILL.md"),
+            "---\nname: test\ndescription: t\n---\nbody",
+        )
+        .unwrap();
         std::fs::create_dir_all(base.join("scripts")).unwrap();
         std::fs::write(base.join("scripts/run.py"), "print('hello')").unwrap();
         std::fs::create_dir_all(base.join("references")).unwrap();
@@ -604,9 +769,19 @@ Process PDFs here.
 
     #[test]
     fn test_name_validation_valid_names() {
-        for name in &["a", "pdf-processing", "data-analysis", "code-review", "a1b2"] {
+        for name in &[
+            "a",
+            "pdf-processing",
+            "data-analysis",
+            "code-review",
+            "a1b2",
+        ] {
             let md = format!("---\nname: {}\ndescription: test\n---\nbody", name);
-            assert!(parse_skill_md(md.as_bytes()).is_ok(), "should accept name: {}", name);
+            assert!(
+                parse_skill_md(md.as_bytes()).is_ok(),
+                "should accept name: {}",
+                name
+            );
         }
     }
 

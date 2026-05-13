@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::AgentProfile;
 use crate::Store;
+use crate::models::AgentProfile;
 use types::NeboError;
 
 impl Store {

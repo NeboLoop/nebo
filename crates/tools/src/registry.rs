@@ -53,7 +53,6 @@ impl ResourcePermits {
     }
 }
 
-
 /// Result of a tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
@@ -327,7 +326,10 @@ impl Registry {
         // ── Phase 1: Validate + determine resource permit ──────────
         let permit_kind = {
             let tools = self.tools.read().await;
-            let tool = match tools.get(name).or_else(|| tools.get(strip_mcp_prefix(name))) {
+            let tool = match tools
+                .get(name)
+                .or_else(|| tools.get(strip_mcp_prefix(name)))
+            {
                 Some(t) => t,
                 None => {
                     warn!(tool = %name, "unknown tool");
@@ -335,7 +337,9 @@ impl Registry {
                     let correction = tool_correction(name);
                     return ToolResult::error(format!(
                         "TOOL ERROR: {:?} does not exist. You do NOT have that tool. Do NOT call it again.\n\n{}\nYour available tools are: {}",
-                        name, correction, available.join(", ")
+                        name,
+                        correction,
+                        available.join(", ")
                     ));
                 }
             };
@@ -353,9 +357,7 @@ impl Registry {
             }
 
             // Check origin-based deny list
-            let resource = input
-                .get("resource")
-                .and_then(|v| v.as_str());
+            let resource = input.get("resource").and_then(|v| v.as_str());
             {
                 let policy = self.policy.read().await;
                 if policy.is_denied_for_origin(ctx.origin, name, resource) {
@@ -410,7 +412,10 @@ impl Registry {
 
         // ── Phase 3: Re-acquire lock and execute ───────────────────
         let tools = self.tools.read().await;
-        match tools.get(name).or_else(|| tools.get(strip_mcp_prefix(name))) {
+        match tools
+            .get(name)
+            .or_else(|| tools.get(strip_mcp_prefix(name)))
+        {
             Some(tool) => tool.execute_dyn(ctx, input).await,
             None => ToolResult::error(format!(
                 "Tool '{}' was unregistered during permit acquisition",
@@ -446,8 +451,13 @@ impl Registry {
     }
 
     /// Register all domain tools including those that need DB access.
-    pub async fn register_all(&self, store: Arc<db::Store>, orchestrator: crate::OrchestratorHandle) {
-        self.register_all_with_browser(store, None, orchestrator, None, None, None).await;
+    pub async fn register_all(
+        &self,
+        store: Arc<db::Store>,
+        orchestrator: crate::OrchestratorHandle,
+    ) {
+        self.register_all_with_browser(store, None, orchestrator, None, None, None)
+            .await;
     }
 
     /// Register all domain tools with optional browser manager.
@@ -508,7 +518,8 @@ impl Registry {
 
         // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — always registered
         let policy = self.policy.read().await.clone();
-        let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
+        let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone())
+            .with_store(store.clone());
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
@@ -550,14 +561,17 @@ impl Registry {
 
         // Skill tool (skill management) — always registered (core)
         if let Some(ref loader) = skill_loader {
-            self.register(Box::new(crate::skill_tool::SkillTool::new(loader.clone()).with_store(store.clone()))).await;
+            self.register(Box::new(
+                crate::skill_tool::SkillTool::new(loader.clone()).with_store(store.clone()),
+            ))
+            .await;
         } else {
             let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let bundled_dir = data.join("bundled").join("skills");
             let installed_dir = data.join("nebo").join("skills");
             let user_dir = data.join("user").join("skills");
-            let loader_default = Arc::new(crate::skills::Loader::new(bundled_dir, installed_dir, user_dir));
-            self.register(Box::new(crate::skill_tool::SkillTool::new(loader_default))).await;
+            let loader_default = Arc::new(crate::skills::Loader::new(installed_dir, user_dir));
+            self.register(Box::new(crate::skill_tool::SkillTool::new(loader_default)))
+                .await;
         }
 
         // Execute tool (script execution) — deferred (only activated when user mentions scripts/code)
@@ -574,11 +588,15 @@ impl Registry {
         }
 
         // Message tool (owner notifications) — always registered (core)
-        self.register(Box::new(crate::message_tool::MessageTool::new(store.clone()))).await;
+        self.register(Box::new(crate::message_tool::MessageTool::new(
+            store.clone(),
+        )))
+        .await;
 
         // Work tool (workflow lifecycle + execution) — deferred (only activated when user mentions workflows)
         if let Some(manager) = workflow_manager {
-            self.register_deferred(Box::new(crate::workflows::WorkTool::new(manager))).await;
+            self.register_deferred(Box::new(crate::workflows::WorkTool::new(manager)))
+                .await;
         }
 
         // Persona tool (agent management: list, activate, deactivate, info, create, install) — always registered
@@ -586,7 +604,11 @@ impl Registry {
             let agent_reg = active_agent.unwrap_or_else(|| {
                 std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
             });
-            let agent_loader = self.agent_loader.read().unwrap().clone()
+            let agent_loader = self
+                .agent_loader
+                .read()
+                .unwrap()
+                .clone()
                 .unwrap_or_else(|| {
                     let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     Arc::new(napp::AgentLoader::new(
@@ -594,8 +616,16 @@ impl Registry {
                         data.join("user").join("agents"),
                     ))
                 });
-            self.register(Box::new(crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader))).await;
-            self.register_deferred(Box::new(crate::publisher_tool::PublisherTool::new(store.clone()))).await;
+            self.register(Box::new(crate::agent_tool::PersonaTool::new(
+                store.clone(),
+                agent_reg,
+                agent_loader,
+            )))
+            .await;
+            self.register_deferred(Box::new(crate::publisher_tool::PublisherTool::new(
+                store.clone(),
+            )))
+            .await;
         }
 
         // Plugin tool (installed plugin binaries as STRAP resources) — deferred (activated by skill docs or keyword)
@@ -613,7 +643,8 @@ impl Registry {
         // Loop tool (NeboLoop comms: dm, channel, group, topic) — requires "loop" permission + comm plugin
         if allowed("loop") {
             if let Some(ref comm) = comm_plugin {
-                self.register(Box::new(crate::loop_tool::LoopTool::new(comm.clone()))).await;
+                self.register(Box::new(crate::loop_tool::LoopTool::new(comm.clone())))
+                    .await;
             } else {
                 // Register a stub so the tool appears in /integrations/tools even before NeboLoop connects
                 self.register(Box::new(LoopStubTool)).await;
@@ -642,14 +673,14 @@ impl DynTool for LoopStubTool {
                 "resource": {
                     "type": "string",
                     "enum": ["dm", "channel", "group", "topic"],
-                    "description": "Communication resource"
+                    "description": "REQUIRED. The communication resource category — determines which actions are available."
                 },
                 "action": {
                     "type": "string",
-                    "description": "Action to perform"
+                    "description": "The operation to perform on the selected resource. Never put a resource name here."
                 }
             },
-            "required": ["action"]
+            "required": ["resource", "action"]
         })
     }
 
@@ -663,7 +694,9 @@ impl DynTool for LoopStubTool {
         _input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            ToolResult::error("NeboLoop is not connected. Connect to NeboLoop first to use communication features.")
+            ToolResult::error(
+                "NeboLoop is not connected. Connect to NeboLoop first to use communication features.",
+            )
         })
     }
 }
@@ -736,7 +769,13 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
             tool_description: description.to_string(),
             tool_schema: schema,
             integration_id: integration_id.to_string(),
-            bridge: self.bridge.read().unwrap().as_ref().expect("bridge not set").clone(),
+            bridge: self
+                .bridge
+                .read()
+                .unwrap()
+                .as_ref()
+                .expect("bridge not set")
+                .clone(),
         };
         // MCP proxy tools are deferred — activated by keyword matching or direct call
         if tokio::runtime::Handle::try_current().is_ok() {
@@ -782,11 +821,7 @@ fn strip_mcp_prefix(name: &str) -> &str {
         return name;
     }
     let parts: Vec<&str> = name.splitn(3, "__").collect();
-    if parts.len() == 3 {
-        parts[2]
-    } else {
-        name
-    }
+    if parts.len() == 3 { parts[2] } else { name }
 }
 
 /// Provide specific correction for known hallucinated tool names.

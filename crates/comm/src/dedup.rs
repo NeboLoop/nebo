@@ -44,7 +44,10 @@ impl DedupWindow {
             entries.remove(0);
         }
 
-        entries.push(Entry { id: msg_id, seen: now });
+        entries.push(Entry {
+            id: msg_id,
+            seen: now,
+        });
         false
     }
 

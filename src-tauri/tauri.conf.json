@@ -4,6 +4,8 @@
   "version": "0.9.0",
   "identifier": "dev.neboloop.nebo",
   "build": {
+    "beforeDevCommand": "cd ../app && pnpm dev",
+    "devUrl": "http://localhost:5173",
     "frontendDist": "../app/build"
   },
   "bundle": {
@@ -15,7 +17,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "bundled-napps/**/*": "bundled-napps/"
+    }
   },
   "app": {
     "security": {

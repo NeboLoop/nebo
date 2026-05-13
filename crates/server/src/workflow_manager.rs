@@ -11,8 +11,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use ai::Provider;
-use tools::registry::{DynTool, ToolResult};
 use tools::origin::ToolContext;
+use tools::registry::{DynTool, ToolResult};
 use tools::workflows::{WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 
 use crate::handlers::ws::ClientHub;
@@ -100,14 +100,20 @@ impl WorkflowManagerImpl {
             }
         }
         if !run_ids.is_empty() {
-            info!(agent_id, count = run_ids.len(), "cancelled running workflows for agent");
+            info!(
+                agent_id,
+                count = run_ids.len(),
+                "cancelled running workflows for agent"
+            );
         }
     }
 
     fn build_api_client(&self) -> Result<comm::api::NeboLoopApi, String> {
-        let bot_id = config::read_bot_id()
-            .ok_or_else(|| "no bot_id configured".to_string())?;
-        let profiles = match self.store.list_all_active_auth_profiles_by_provider("neboloop") {
+        let bot_id = config::read_bot_id().ok_or_else(|| "no bot_id configured".to_string())?;
+        let profiles = match self
+            .store
+            .list_all_active_auth_profiles_by_provider("neboloop")
+        {
             Ok(p) => p,
             Err(e) => {
                 warn!(error = %e, "failed to list auth profiles for neboloop");
@@ -118,7 +124,11 @@ impl WorkflowManagerImpl {
             .first()
             .ok_or_else(|| "not connected to NeboLoop".to_string())?;
         let api_server = self.config.neboloop.api_url.clone();
-        Ok(comm::api::NeboLoopApi::new(api_server, bot_id, profile.api_key.clone()))
+        Ok(comm::api::NeboLoopApi::new(
+            api_server,
+            bot_id,
+            profile.api_key.clone(),
+        ))
     }
 
     fn workflow_to_info(&self, wf: &db::models::Workflow) -> WorkflowInfo {
@@ -147,24 +157,24 @@ impl WorkflowManagerImpl {
     }
 
     /// Load workflow definition from filesystem directory or fall back to DB.
-    fn load_workflow_def(&self, wf: &db::models::Workflow) -> Result<workflow::WorkflowDef, String> {
+    fn load_workflow_def(
+        &self,
+        wf: &db::models::Workflow,
+    ) -> Result<workflow::WorkflowDef, String> {
         // Try loading from napp_path first (always a directory after migration)
         if let Some(ref napp_path) = wf.napp_path {
             let path = std::path::Path::new(napp_path);
             if path.is_dir() {
                 let json_path = path.join("workflow.json");
                 if json_path.exists() {
-                    let json = std::fs::read_to_string(&json_path)
-                        .map_err(|e| e.to_string())?;
-                    return workflow::parser::parse_workflow(&json)
-                        .map_err(|e| e.to_string());
+                    let json = std::fs::read_to_string(&json_path).map_err(|e| e.to_string())?;
+                    return workflow::parser::parse_workflow(&json).map_err(|e| e.to_string());
                 }
             }
         }
 
         // Fall back to definition stored in DB
-        workflow::parser::parse_workflow(&wf.definition)
-            .map_err(|e| e.to_string())
+        workflow::parser::parse_workflow(&wf.definition).map_err(|e| e.to_string())
     }
 
     fn run_to_info(run: &db::models::WorkflowRun) -> WorkflowRunInfo {
@@ -182,10 +192,15 @@ impl WorkflowManagerImpl {
 }
 
 impl WorkflowManager for WorkflowManagerImpl {
-    fn list(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<WorkflowInfo>> + Send + '_>> {
+    fn list(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<WorkflowInfo>> + Send + '_>> {
         Box::pin(async move {
             match self.store.list_workflows(100, 0) {
-                Ok(workflows) => workflows.iter().map(|wf| self.workflow_to_info(wf)).collect(),
+                Ok(workflows) => workflows
+                    .iter()
+                    .map(|wf| self.workflow_to_info(wf))
+                    .collect(),
                 Err(e) => {
                     warn!(error = %e, "failed to list workflows");
                     Vec::new()
@@ -194,7 +209,12 @@ impl WorkflowManager for WorkflowManagerImpl {
         })
     }
 
-    fn install<'a>(&'a self, code: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>> {
+    fn install<'a>(
+        &'a self,
+        code: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let api = self.build_api_client()?;
             let resp = api
@@ -207,15 +227,23 @@ impl WorkflowManager for WorkflowManagerImpl {
             // If not found, the install may have been handled via the codes path
             match self.store.get_workflow(&resp.artifact.id) {
                 Ok(Some(wf)) => Ok(self.workflow_to_info(&wf)),
-                _ => Err(format!("workflow installed but not found in local DB (id: {})", resp.artifact.id)),
+                _ => Err(format!(
+                    "workflow installed but not found in local DB (id: {})",
+                    resp.artifact.id
+                )),
             }
         })
     }
 
-    fn uninstall<'a>(&'a self, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    fn uninstall<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
             // Resolve workflow — try by ID first, then by name
-            let wf = self.store.get_workflow(id)
+            let wf = self
+                .store
+                .get_workflow(id)
                 .ok()
                 .flatten()
                 .or_else(|| {
@@ -242,7 +270,8 @@ impl WorkflowManager for WorkflowManagerImpl {
             if let Err(e) = self.store.delete_workflow_bindings(&wf_id) {
                 warn!(workflow_id = %wf_id, error = %e, "failed to delete workflow bindings");
             }
-            self.store.delete_workflow(&wf_id)
+            self.store
+                .delete_workflow(&wf_id)
                 .map_err(|e| format!("delete_workflow: {}", e))?;
 
             // Clean up filesystem directory if it exists
@@ -259,7 +288,12 @@ impl WorkflowManager for WorkflowManagerImpl {
         })
     }
 
-    fn resolve<'a>(&'a self, name_or_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>> {
+    fn resolve<'a>(
+        &'a self,
+        name_or_id: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // Try by ID first
             if let Ok(Some(wf)) = self.store.get_workflow(name_or_id) {
@@ -287,9 +321,12 @@ impl WorkflowManager for WorkflowManagerImpl {
         id: &'a str,
         inputs: serde_json::Value,
         trigger_type: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
+    {
         Box::pin(async move {
-            let wf = self.store.get_workflow(id)
+            let wf = self
+                .store
+                .get_workflow(id)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("workflow not found: {}", id))?;
 
@@ -297,20 +334,23 @@ impl WorkflowManager for WorkflowManagerImpl {
                 return Err("workflow is disabled".into());
             }
 
-            let def = self.load_workflow_def(&wf)
+            let def = self
+                .load_workflow_def(&wf)
                 .map_err(|e| format!("parse error: {}", e))?;
 
             // Create run record
             let run_id = uuid::Uuid::new_v4().to_string();
             let session_key = format!("workflow-{}-{}", id, run_id);
-            self.store.create_workflow_run(
-                &run_id,
-                id,
-                trigger_type,
-                None,
-                Some(&inputs.to_string()),
-                Some(&session_key),
-            ).map_err(|e| format!("create_workflow_run: {}", e))?;
+            self.store
+                .create_workflow_run(
+                    &run_id,
+                    id,
+                    trigger_type,
+                    None,
+                    Some(&inputs.to_string()),
+                    Some(&session_key),
+                )
+                .map_err(|e| format!("create_workflow_run: {}", e))?;
 
             // Create cancellation token
             let cancel_token = CancellationToken::new();
@@ -351,6 +391,14 @@ impl WorkflowManager for WorkflowManagerImpl {
                         ) {
                             warn!(run_id = %run_id_clone, error = %e, "failed to update workflow run status");
                         }
+                        notify_workflow_failure(
+                            &store,
+                            &hub,
+                            &wf_id,
+                            &run_id_clone,
+                            &wf_id,
+                            "no AI provider available",
+                        );
                         hub.broadcast(
                             "workflow_run_failed",
                             serde_json::json!({
@@ -420,7 +468,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                     event_bus.as_ref(),
                     None,
                     None,
-                ).await {
+                )
+                .await
+                {
                     Ok((_engine_run_id, _output)) => {
                         // Engine already called complete_workflow_run with output
                         hub.broadcast(
@@ -457,6 +507,14 @@ impl WorkflowManager for WorkflowManagerImpl {
                         ) {
                             warn!(run_id = %run_id_clone, error = %e, "failed to mark workflow run failed");
                         }
+                        notify_workflow_failure(
+                            &store,
+                            &hub,
+                            &wf_id,
+                            &run_id_clone,
+                            &wf_id,
+                            &err_msg,
+                        );
                         hub.broadcast(
                             "workflow_run_failed",
                             serde_json::json!({
@@ -490,16 +548,27 @@ impl WorkflowManager for WorkflowManagerImpl {
         })
     }
 
-    fn run_status<'a>(&'a self, run_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<WorkflowRunInfo, String>> + Send + 'a>> {
+    fn run_status<'a>(
+        &'a self,
+        run_id: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<WorkflowRunInfo, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
-            self.store.get_workflow_run(run_id)
+            self.store
+                .get_workflow_run(run_id)
                 .map_err(|e| e.to_string())?
                 .map(|r| Self::run_to_info(&r))
                 .ok_or_else(|| format!("run not found: {}", run_id))
         })
     }
 
-    fn list_runs<'a>(&'a self, workflow_id: &'a str, limit: i64) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<WorkflowRunInfo>> + Send + 'a>> {
+    fn list_runs<'a>(
+        &'a self,
+        workflow_id: &'a str,
+        limit: i64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<WorkflowRunInfo>> + Send + 'a>>
+    {
         Box::pin(async move {
             match self.store.list_workflow_runs(workflow_id, limit, 0) {
                 Ok(runs) => runs.iter().map(Self::run_to_info).collect(),
@@ -511,11 +580,18 @@ impl WorkflowManager for WorkflowManagerImpl {
         })
     }
 
-    fn toggle<'a>(&'a self, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send + 'a>> {
+    fn toggle<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send + 'a>>
+    {
         Box::pin(async move {
-            self.store.toggle_workflow(id)
+            self.store
+                .toggle_workflow(id)
                 .map_err(|e| format!("toggle: {}", e))?;
-            let wf = self.store.get_workflow(id)
+            let wf = self
+                .store
+                .get_workflow(id)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "workflow not found after toggle".to_string())?;
             Ok(wf.is_enabled != 0)
@@ -526,7 +602,9 @@ impl WorkflowManager for WorkflowManagerImpl {
         &'a self,
         name: &'a str,
         definition: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // Validate the workflow definition
             let _def = workflow::parser::parse_workflow(definition)
@@ -534,7 +612,8 @@ impl WorkflowManager for WorkflowManagerImpl {
 
             let id = uuid::Uuid::new_v4().to_string();
 
-            let wf = self.store
+            let wf = self
+                .store
                 .create_workflow(&id, None, name, "1.0", definition, None, None)
                 .map_err(|e| format!("create_workflow: {}", e))?;
 
@@ -544,7 +623,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                 if std::fs::create_dir_all(&wf_dir).is_ok() {
                     let json_path = wf_dir.join("workflow.json");
                     if std::fs::write(&json_path, definition).is_ok() {
-                        let _ = self.store.set_workflow_napp_path(&id, &wf_dir.to_string_lossy());
+                        let _ = self
+                            .store
+                            .set_workflow_napp_path(&id, &wf_dir.to_string_lossy());
                     }
                 }
             }
@@ -568,7 +649,8 @@ impl WorkflowManager for WorkflowManagerImpl {
         trigger_detail: Option<String>,
         agent_id: &'a str,
         emit_source: Option<String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
+    {
         Box::pin(async move {
             let def = workflow::parser::parse_workflow(&definition_json)
                 .map_err(|e| format!("parse inline workflow: {}", e))?;
@@ -577,8 +659,12 @@ impl WorkflowManager for WorkflowManagerImpl {
             let inputs = {
                 let mut merged = inputs;
                 if let Ok(Some(agent_rec)) = self.store.get_agent(agent_id) {
-                    if let Ok(agent_inputs) = serde_json::from_str::<serde_json::Value>(&agent_rec.input_values) {
-                        if let (Some(m), Some(r)) = (merged.as_object_mut(), agent_inputs.as_object()) {
+                    if let Ok(agent_inputs) =
+                        serde_json::from_str::<serde_json::Value>(&agent_rec.input_values)
+                    {
+                        if let (Some(m), Some(r)) =
+                            (merged.as_object_mut(), agent_inputs.as_object())
+                        {
                             for (k, v) in r {
                                 m.entry(k.clone()).or_insert_with(|| v.clone());
                             }
@@ -588,17 +674,31 @@ impl WorkflowManager for WorkflowManagerImpl {
                 merged
             };
 
+            // Dedup: skip if the same agent+binding already has a running workflow
+            if let Some(ref detail) = trigger_detail {
+                let binding_name = detail.split(':').next().unwrap_or(detail);
+                let workflow_id = format!("agent:{}", agent_id);
+                if let Ok(true) = self.store.has_running_run(&workflow_id, binding_name) {
+                    return Err(format!(
+                        "skipped: binding '{}' already has a running workflow",
+                        binding_name
+                    ));
+                }
+            }
+
             // Create run record using agent_id for tracking
             let run_id = uuid::Uuid::new_v4().to_string();
             let session_key = format!("agent-{}-{}", agent_id, run_id);
-            self.store.create_workflow_run(
-                &run_id,
-                &format!("agent:{}", agent_id),
-                trigger_type,
-                trigger_detail.as_deref(),
-                Some(&inputs.to_string()),
-                Some(&session_key),
-            ).map_err(|e| format!("create_workflow_run: {}", e))?;
+            self.store
+                .create_workflow_run(
+                    &run_id,
+                    &format!("agent:{}", agent_id),
+                    trigger_type,
+                    trigger_detail.as_deref(),
+                    Some(&inputs.to_string()),
+                    Some(&session_key),
+                )
+                .map_err(|e| format!("create_workflow_run: {}", e))?;
 
             // Create cancellation token
             let cancel_token = CancellationToken::new();
@@ -608,7 +708,10 @@ impl WorkflowManager for WorkflowManagerImpl {
             }
             {
                 let mut agent_map = self.agent_runs.lock().unwrap();
-                agent_map.entry(agent_id.to_string()).or_default().push(run_id.clone());
+                agent_map
+                    .entry(agent_id.to_string())
+                    .or_default()
+                    .push(run_id.clone());
             }
 
             // Clone Arcs for the spawned task
@@ -637,14 +740,34 @@ impl WorkflowManager for WorkflowManagerImpl {
                     Some(p) => p,
                     None => {
                         let _ = store.update_workflow_run(
-                            &run_id_clone, Some("failed"), None, None,
-                            Some("no AI provider available"), None,
+                            &run_id_clone,
+                            Some("failed"),
+                            None,
+                            None,
+                            Some("no AI provider available"),
+                            None,
                         );
                         // Post failure to agent chat
                         post_automation_message(
-                            &store, &hub, &chat_session,
-                            &format!("**Automation failed** — {} ({}): no AI provider available", binding_name, trigger),
+                            &store,
+                            &hub,
+                            &chat_session,
+                            &format!(
+                                "**Automation failed** — {} ({}): no AI provider available",
+                                binding_name, trigger
+                            ),
                         );
+
+                        // Create notification deep-linked to the failed run
+                        notify_workflow_failure(
+                            &store,
+                            &hub,
+                            &agent_id_owned,
+                            &run_id_clone,
+                            &binding_name,
+                            "no AI provider available",
+                        );
+
                         hub.broadcast(
                             "workflow_run_failed",
                             serde_json::json!({
@@ -655,7 +778,11 @@ impl WorkflowManager for WorkflowManagerImpl {
                             }),
                         );
                         let now = chrono::Utc::now().to_rfc3339();
-                        let _ = store.update_agent_workflow_last_fired(&agent_id_owned, &binding_name, &now);
+                        let _ = store.update_agent_workflow_last_fired(
+                            &agent_id_owned,
+                            &binding_name,
+                            &now,
+                        );
                         return;
                     }
                 };
@@ -683,13 +810,16 @@ impl WorkflowManager for WorkflowManagerImpl {
 
                 // Post "started" message to agent chat
                 post_automation_message(
-                    &store, &hub, &chat_session,
+                    &store,
+                    &hub,
+                    &chat_session,
                     &format!("**Automation started** — {} ({})", binding_name, trigger),
                 );
 
                 // Record last_fired timestamp
                 let now = chrono::Utc::now().to_rfc3339();
-                let _ = store.update_agent_workflow_last_fired(&agent_id_owned, &binding_name, &now);
+                let _ =
+                    store.update_agent_workflow_last_fired(&agent_id_owned, &binding_name, &now);
 
                 hub.broadcast(
                     "workflow_run_started",
@@ -719,8 +849,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None
                 };
 
-                // Create progress channel for live activity updates
-                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<workflow::WorkflowProgress>();
+                // Create progress channel for live activity + task updates
+                let (progress_tx, mut progress_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<workflow::WorkflowProgress>();
                 {
                     let hub = hub.clone();
                     let agent_id_for_progress = agent_id_owned.clone();
@@ -728,27 +859,62 @@ impl WorkflowManager for WorkflowManagerImpl {
                     let binding = binding_name.clone();
                     tokio::spawn(async move {
                         while let Some(progress) = progress_rx.recv().await {
-                            hub.broadcast(
-                                "workflow_activity_update",
-                                serde_json::json!({
-                                    "agentId": agent_id_for_progress,
-                                    "runId": run_id,
-                                    "bindingName": binding,
-                                    "activityId": progress.activity_id,
-                                    "step": progress.activity_index + 1,
-                                    "totalSteps": progress.total_activities,
-                                }),
-                            );
+                            match progress {
+                                workflow::WorkflowProgress::ActivityStarted {
+                                    activity_id,
+                                    activity_index,
+                                    total_activities,
+                                } => {
+                                    hub.broadcast(
+                                        "workflow_activity_update",
+                                        serde_json::json!({
+                                            "agentId": agent_id_for_progress,
+                                            "runId": run_id,
+                                            "bindingName": binding,
+                                            "activityId": activity_id,
+                                            "step": activity_index + 1,
+                                            "totalSteps": total_activities,
+                                        }),
+                                    );
+                                }
+                                workflow::WorkflowProgress::TaskUpdated {
+                                    list_id,
+                                    task_id,
+                                    seq,
+                                    status,
+                                } => {
+                                    hub.broadcast(
+                                        "task_updated",
+                                        serde_json::json!({
+                                            "listId": list_id,
+                                            "taskId": task_id,
+                                            "seq": seq,
+                                            "status": status,
+                                        }),
+                                    );
+                                }
+                            }
                         }
                     });
                 }
 
                 match workflow::engine::execute_workflow(
-                    &def, inputs, &trigger, None, &store, &*provider,
-                    &resolved_tools, Some(&run_id_clone), Some(&cancel_token),
-                    skill_content.as_ref(), event_bus.as_ref(),
-                    emit_source, Some(progress_tx),
-                ).await {
+                    &def,
+                    inputs,
+                    &trigger,
+                    None,
+                    &store,
+                    &*provider,
+                    &resolved_tools,
+                    Some(&run_id_clone),
+                    Some(&cancel_token),
+                    skill_content.as_ref(),
+                    event_bus.as_ref(),
+                    emit_source,
+                    Some(progress_tx),
+                )
+                .await
+                {
                     Ok((_engine_run_id, output)) => {
                         // Engine already called complete_workflow_run with output
 
@@ -759,10 +925,17 @@ impl WorkflowManager for WorkflowManagerImpl {
                             // Truncate output to ~4000 chars to keep chat messages reasonable
                             let truncated = if output.len() > 4000 {
                                 let mut end = 4000;
-                                while !output.is_char_boundary(end) { end -= 1; }
+                                while !output.is_char_boundary(end) {
+                                    end -= 1;
+                                }
                                 &output[..end]
-                            } else { &output };
-                            format!("**Automation completed** — {} ({})\n\n{}", binding_name, trigger, truncated)
+                            } else {
+                                &output
+                            };
+                            format!(
+                                "**Automation completed** — {} ({})\n\n{}",
+                                binding_name, trigger, truncated
+                            )
                         };
                         post_automation_message(&store, &hub, &chat_session, &summary);
 
@@ -779,13 +952,33 @@ impl WorkflowManager for WorkflowManagerImpl {
                     Err(e) => {
                         let err_msg = e.to_string();
                         let _ = store.update_workflow_run(
-                            &run_id_clone, Some("failed"), None, None, Some(&err_msg), None,
+                            &run_id_clone,
+                            Some("failed"),
+                            None,
+                            None,
+                            Some(&err_msg),
+                            None,
                         );
 
                         // Post failure message to agent chat
                         post_automation_message(
-                            &store, &hub, &chat_session,
-                            &format!("**Automation failed** — {} ({}): {}", binding_name, trigger, err_msg),
+                            &store,
+                            &hub,
+                            &chat_session,
+                            &format!(
+                                "**Automation failed** — {} ({}): {}",
+                                binding_name, trigger, err_msg
+                            ),
+                        );
+
+                        // Create notification deep-linked to the failed run
+                        notify_workflow_failure(
+                            &store,
+                            &hub,
+                            &agent_id_owned,
+                            &run_id_clone,
+                            &binding_name,
+                            &err_msg,
                         );
 
                         hub.broadcast(
@@ -821,16 +1014,18 @@ impl WorkflowManager for WorkflowManagerImpl {
         })
     }
 
-    fn cancel<'a>(&'a self, run_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
-        Box::pin(async move {
-            self.cancel_run(run_id).await
-        })
+    fn cancel<'a>(
+        &'a self,
+        run_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move { self.cancel_run(run_id).await })
     }
 
-    fn cancel_runs_for_agent<'a>(&'a self, agent_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            self.cancel_runs_for_agent_impl(agent_id).await
-        })
+    fn cancel_runs_for_agent<'a>(
+        &'a self,
+        agent_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move { self.cancel_runs_for_agent_impl(agent_id).await })
     }
 }
 
@@ -867,28 +1062,82 @@ impl DynTool for RegistryTool {
         ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
-        Box::pin(async move {
-            self.registry.execute(ctx, &self.tool_name, input).await
-        })
+        Box::pin(async move { self.registry.execute(ctx, &self.tool_name, input).await })
+    }
+}
+
+/// Create an in-app notification for a workflow run failure, deep-linked to the run.
+fn notify_workflow_failure(
+    store: &db::Store,
+    hub: &ClientHub,
+    agent_id: &str,
+    run_id: &str,
+    binding_name: &str,
+    error: &str,
+) {
+    let notif_id = format!("wf-fail:{}", run_id);
+    let title = format!("{} failed", binding_name);
+    // Truncate error to keep the notification body concise
+    let body = if error.len() > 200 {
+        &error[..error.ceil_char_boundary(200)]
+    } else {
+        error
+    };
+    let action_url = format!("/{}/runs/{}", agent_id, run_id);
+
+    let user_id = store.ensure_local_user_id().unwrap_or_default();
+    if let Err(e) = store.create_notification(
+        &notif_id,
+        &user_id,
+        "error",
+        &title,
+        Some(body),
+        Some(&action_url),
+        None,
+    ) {
+        warn!(run_id = %run_id, error = %e, "failed to create workflow failure notification");
+    } else {
+        hub.broadcast(
+            "notification_created",
+            serde_json::json!({
+                "id": notif_id,
+                "type": "error",
+                "title": title,
+                "body": body,
+                "actionUrl": action_url,
+                "readAt": null,
+                "createdAt": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            }),
+        );
     }
 }
 
 /// Post an automation lifecycle message to an agent's chat session.
-fn post_automation_message(
-    store: &db::Store,
-    hub: &ClientHub,
-    session_key: &str,
-    content: &str,
-) {
+fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str, content: &str) {
     let msg_id = uuid::Uuid::new_v4().to_string();
-    match store.create_chat_message_for_runner(&msg_id, session_key, "assistant", content, None, None, None, None) {
+    match store.create_chat_message_for_runner(
+        &msg_id,
+        session_key,
+        "assistant",
+        content,
+        None,
+        None,
+        None,
+        None,
+    ) {
         Ok(_msg) => {
             // Broadcast as chat_complete so the chat UI picks it up in real time
-            hub.broadcast("chat_complete", serde_json::json!({
-                "chatId": session_key,
-                "content": content,
-                "role": "assistant",
-            }));
+            hub.broadcast(
+                "chat_complete",
+                serde_json::json!({
+                    "chatId": session_key,
+                    "content": content,
+                    "role": "assistant",
+                }),
+            );
         }
         Err(e) => {
             warn!(session = %session_key, error = %e, "failed to post automation message to chat");

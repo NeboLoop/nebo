@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::{Chat, ChatMessage};
 use crate::Store;
+use crate::models::{Chat, ChatMessage};
 use types::NeboError;
 
 impl Store {
@@ -118,7 +118,9 @@ impl Store {
     pub fn get_chat_messages(&self, chat_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT * FROM chat_messages WHERE chat_id = ?1 ORDER BY created_at ASC, rowid ASC")
+            .prepare(
+                "SELECT * FROM chat_messages WHERE chat_id = ?1 ORDER BY created_at ASC, rowid ASC",
+            )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![chat_id], row_to_chat_message)
@@ -129,35 +131,49 @@ impl Store {
 
     /// Get the most recent N messages for a chat. If `before` is provided, fetch messages older
     /// than that message ID (for "load more" pagination). Returns messages in ascending order.
-    pub fn get_chat_messages_paginated(&self, chat_id: &str, limit: i64, before: Option<&str>) -> Result<Vec<ChatMessage>, NeboError> {
+    pub fn get_chat_messages_paginated(
+        &self,
+        chat_id: &str,
+        limit: i64,
+        before: Option<&str>,
+    ) -> Result<Vec<ChatMessage>, NeboError> {
         let conn = self.conn()?;
         let messages = if let Some(before_id) = before {
             // Get the created_at of the cursor message
-            let cursor_ts: i64 = conn.query_row(
-                "SELECT created_at FROM chat_messages WHERE id = ?1",
-                params![before_id],
-                |row| row.get(0),
-            ).map_err(|e| NeboError::Database(e.to_string()))?;
-
-            let mut stmt = conn.prepare(
-                "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
-                 ORDER BY created_at DESC, id DESC LIMIT ?3"
-            ).map_err(|e| NeboError::Database(e.to_string()))?;
-            let rows = stmt.query_map(params![chat_id, cursor_ts, limit], row_to_chat_message)
+            let cursor_ts: i64 = conn
+                .query_row(
+                    "SELECT created_at FROM chat_messages WHERE id = ?1",
+                    params![before_id],
+                    |row| row.get(0),
+                )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
-            let mut msgs: Vec<ChatMessage> = rows.collect::<Result<Vec<_>, _>>()
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
+                 ORDER BY created_at DESC, id DESC LIMIT ?3",
+                )
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![chat_id, cursor_ts, limit], row_to_chat_message)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let mut msgs: Vec<ChatMessage> = rows
+                .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             msgs.reverse(); // back to ascending order
             msgs
         } else {
             // Get the last N messages (most recent)
-            let mut stmt = conn.prepare(
-                "SELECT * FROM (
+            let mut stmt = conn
+                .prepare(
+                    "SELECT * FROM (
                     SELECT * FROM chat_messages WHERE chat_id = ?1
                     ORDER BY created_at DESC, id DESC LIMIT ?2
-                ) ORDER BY created_at ASC, id ASC"
-            ).map_err(|e| NeboError::Database(e.to_string()))?;
-            let rows = stmt.query_map(params![chat_id, limit], row_to_chat_message)
+                ) ORDER BY created_at ASC, id ASC",
+                )
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![chat_id, limit], row_to_chat_message)
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| NeboError::Database(e.to_string()))?
@@ -170,30 +186,46 @@ impl Store {
     /// length, and stops when the budget is exceeded. Always returns at least 1 message.
     /// If `before` is provided, fetches messages older than that message ID.
     /// Returns messages in ascending chronological order.
-    pub fn get_chat_messages_budgeted(&self, chat_id: &str, max_chars: i64, before: Option<&str>) -> Result<Vec<ChatMessage>, NeboError> {
+    pub fn get_chat_messages_budgeted(
+        &self,
+        chat_id: &str,
+        max_chars: i64,
+        before: Option<&str>,
+    ) -> Result<Vec<ChatMessage>, NeboError> {
         let conn = self.conn()?;
         // Fetch a generous batch newest-first (50 is plenty — budget will cut it short)
         let batch_limit: i64 = 50;
         let mut msgs: Vec<ChatMessage> = if let Some(before_id) = before {
-            let cursor_ts: i64 = conn.query_row(
-                "SELECT created_at FROM chat_messages WHERE id = ?1",
-                params![before_id],
-                |row| row.get(0),
-            ).map_err(|e| NeboError::Database(e.to_string()))?;
-            let mut stmt = conn.prepare(
-                "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
-                 ORDER BY created_at DESC, id DESC LIMIT ?3"
-            ).map_err(|e| NeboError::Database(e.to_string()))?;
-            let rows = stmt.query_map(params![chat_id, cursor_ts, batch_limit], row_to_chat_message)
+            let cursor_ts: i64 = conn
+                .query_row(
+                    "SELECT created_at FROM chat_messages WHERE id = ?1",
+                    params![before_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
+                 ORDER BY created_at DESC, id DESC LIMIT ?3",
+                )
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map(
+                    params![chat_id, cursor_ts, batch_limit],
+                    row_to_chat_message,
+                )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| NeboError::Database(e.to_string()))?
         } else {
-            let mut stmt = conn.prepare(
-                "SELECT * FROM chat_messages WHERE chat_id = ?1
-                 ORDER BY created_at DESC, id DESC LIMIT ?2"
-            ).map_err(|e| NeboError::Database(e.to_string()))?;
-            let rows = stmt.query_map(params![chat_id, batch_limit], row_to_chat_message)
+            let mut stmt = conn
+                .prepare(
+                    "SELECT * FROM chat_messages WHERE chat_id = ?1
+                 ORDER BY created_at DESC, id DESC LIMIT ?2",
+                )
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![chat_id, batch_limit], row_to_chat_message)
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| NeboError::Database(e.to_string()))?
@@ -297,8 +329,7 @@ impl Store {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let is_error =
-                            r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let is_error = r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
                         return Ok(Some((content, is_error)));
                     }
                 }
@@ -419,6 +450,44 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// List all chats belonging to a session with message count and last-message
+    /// preview in a single query (avoids N+1).
+    pub fn list_chats_by_session_enriched(
+        &self,
+        session_name: &str,
+    ) -> Result<Vec<(Chat, i64, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.*,
+                        COALESCE(s.cnt, 0) AS msg_count,
+                        COALESCE(s.last_content, '') AS last_content
+                 FROM chats c
+                 LEFT JOIN (
+                     SELECT m.chat_id,
+                            COUNT(*) AS cnt,
+                            (SELECT m2.content FROM chat_messages m2
+                             WHERE m2.chat_id = m.chat_id
+                             ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1) AS last_content
+                     FROM chat_messages m
+                     GROUP BY m.chat_id
+                 ) s ON s.chat_id = c.id
+                 WHERE c.session_name = ?1
+                 ORDER BY c.updated_at DESC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![session_name], |row| {
+                let chat = row_to_chat(row)?;
+                let msg_count: i64 = row.get("msg_count")?;
+                let last_content: String = row.get("last_content")?;
+                Ok((chat, msg_count, last_content))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// List all chats belonging to a session, newest first.
     pub fn list_chats_by_session(&self, session_name: &str) -> Result<Vec<Chat>, NeboError> {
         let conn = self.conn()?;
@@ -433,11 +502,7 @@ impl Store {
     }
 
     /// Create a new companion chat for the given user_id.
-    pub fn create_companion_chat(
-        &self,
-        id: &str,
-        user_id: &str,
-    ) -> Result<Chat, NeboError> {
+    pub fn create_companion_chat(&self, id: &str, user_id: &str) -> Result<Chat, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
             "INSERT INTO chats (id, user_id, title, created_at, updated_at)
@@ -516,9 +581,7 @@ impl Store {
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
-            .query_map(params![chat_id, created_at], |row| {
-                row_to_chat_message(row)
-            })
+            .query_map(params![chat_id, created_at], |row| row_to_chat_message(row))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
@@ -548,6 +611,7 @@ fn row_to_chat_message(row: &rusqlite::Row) -> rusqlite::Result<ChatMessage> {
         tool_calls: row.get("tool_calls")?,
         tool_results: row.get("tool_results")?,
         token_estimate: row.get("token_estimate")?,
+        html: None,
     })
 }
 

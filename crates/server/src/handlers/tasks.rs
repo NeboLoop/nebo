@@ -2,8 +2,8 @@ use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use serde::Deserialize;
 
+use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
-use super::{to_error_response, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
@@ -22,7 +22,10 @@ pub async fn list_tasks(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    let tasks = state.store.list_cron_jobs(q.limit, q.offset).map_err(to_error_response)?;
+    let tasks = state
+        .store
+        .list_cron_jobs(q.limit, q.offset)
+        .map_err(to_error_response)?;
     let total = state.store.count_cron_jobs().unwrap_or(0);
     Ok(Json(serde_json::json!({
         "tasks": tasks,
@@ -38,9 +41,9 @@ pub async fn create_task(
     let name = body["name"]
         .as_str()
         .ok_or_else(|| to_error_response(types::NeboError::Validation("name required".into())))?;
-    let schedule = body["schedule"]
-        .as_str()
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("schedule required".into())))?;
+    let schedule = body["schedule"].as_str().ok_or_else(|| {
+        to_error_response(types::NeboError::Validation("schedule required".into()))
+    })?;
     let command = body["command"].as_str().unwrap_or("");
     let task_type = body["taskType"].as_str().unwrap_or("agent");
     let message = body["message"].as_str();
@@ -50,7 +53,16 @@ pub async fn create_task(
 
     let task = state
         .store
-        .create_cron_job(name, schedule, command, task_type, message, deliver, instructions, enabled)
+        .create_cron_job(
+            name,
+            schedule,
+            command,
+            task_type,
+            message,
+            deliver,
+            instructions,
+            enabled,
+        )
         .map_err(to_error_response)?;
     Ok(Json(serde_json::json!(task)))
 }
@@ -85,17 +97,31 @@ pub async fn update_task(
     let task_type = body["taskType"].as_str().unwrap_or(&existing.task_type);
     let message = body["message"].as_str().or(existing.message.as_deref());
     let deliver = body["deliver"].as_str().or(existing.deliver.as_deref());
-    let instructions = body["instructions"].as_str().or(existing.instructions.as_deref());
+    let instructions = body["instructions"]
+        .as_str()
+        .or(existing.instructions.as_deref());
     let enabled = body["enabled"]
         .as_bool()
         .unwrap_or(existing.enabled.map(|e| e != 0).unwrap_or(true));
 
     state
         .store
-        .upsert_cron_job(&name, schedule, command, task_type, message, deliver, instructions, enabled)
+        .upsert_cron_job(
+            &name,
+            schedule,
+            command,
+            task_type,
+            message,
+            deliver,
+            instructions,
+            enabled,
+        )
         .map_err(to_error_response)?;
 
-    let updated = state.store.get_cron_job_by_name(&name).map_err(to_error_response)?;
+    let updated = state
+        .store
+        .get_cron_job_by_name(&name)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!(updated)))
 }
 
@@ -104,7 +130,10 @@ pub async fn delete_task(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    state.store.delete_cron_job_by_name(&name).map_err(to_error_response)?;
+    state
+        .store
+        .delete_cron_job_by_name(&name)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"success": true})))
 }
 
@@ -118,8 +147,14 @@ pub async fn toggle_task(
         .get_cron_job_by_name(&name)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
-    state.store.toggle_cron_job(task.id).map_err(to_error_response)?;
-    let updated = state.store.get_cron_job_by_name(&name).map_err(to_error_response)?;
+    state
+        .store
+        .toggle_cron_job(task.id)
+        .map_err(to_error_response)?;
+    let updated = state
+        .store
+        .get_cron_job_by_name(&name)
+        .map_err(to_error_response)?;
     Ok(Json(serde_json::json!(updated)))
 }
 
@@ -184,7 +219,10 @@ pub async fn run_task(
                 // Execute via agent runner
                 let prompt = message.as_deref().unwrap_or("");
                 if prompt.is_empty() {
-                    (false, "No prompt/message configured for agent task".to_string())
+                    (
+                        false,
+                        "No prompt/message configured for agent task".to_string(),
+                    )
                 } else {
                     match runner.chat(prompt).await {
                         Ok(response) => (true, response),

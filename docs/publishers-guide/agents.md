@@ -2,7 +2,9 @@
 
 An Agent is a job description with a schedule. It bundles workflows and skills into a complete job profile — and it defines *when* each workflow runs. The Agent is the only artifact type that owns event bindings.
 
-An Agent is three files: `manifest.json` (identity), `agent.json` (operational wiring), and `AGENT.md` (persona).
+An Agent is three files: `manifest.json` (identity), `agent.json` (operational wiring), and `AGENT.md` (persona). Optionally:
+- `views.json` declares deterministic workspace UIs that render immediately without LLM involvement
+- `theme.css` provides agent-specific CSS styling for workspace UIs
 
 For packaging format and manifest.json, see [Packaging](packaging.md).
 
@@ -59,6 +61,25 @@ The `agent.json` carries the operational structure: which workflows to run, when
     "model": "monthly_fixed",
     "cost": 47.0
   },
+  "inputs": [
+    {
+      "key": "timezone",
+      "label": "Your Timezone",
+      "type": "select",
+      "required": true,
+      "default": "US/Eastern",
+      "options": [
+        { "value": "US/Eastern", "label": "Eastern" },
+        { "value": "US/Pacific", "label": "Pacific" }
+      ]
+    },
+    {
+      "key": "briefing_focus",
+      "label": "What should briefings focus on?",
+      "type": "textarea",
+      "placeholder": "e.g., sales pipeline, client deadlines, market news"
+    }
+  ],
   "defaults": {
     "timezone": "user_local",
     "configurable": ["workflows.morning-briefing.trigger.cron", "workflows.evening-wrap.trigger.cron", "workflows.day-monitor.trigger.interval"]
@@ -77,6 +98,7 @@ The `agent.json` carries the operational structure: which workflows to run, when
 | `workflows` | map | no | `{}` | Workflow bindings with triggers (keyed by binding name) |
 | `requires` | object | no | `{}` | Hard dependencies. `requires.plugins` is an array of plugin install codes (e.g., `["PLUG-PJ3Z-ECFV"]`) that are auto-installed before skills during agent install. |
 | `skills` | string[] | no | `[]` | Additional skill qualified names (beyond what workflows declare) |
+| `inputs` | array | no | `[]` | Input field definitions for the agent's Configure tab (see [Input Fields](#input-fields) below) |
 | `pricing` | object | no | — | Pricing configuration (see below) |
 | `defaults` | object | no | `{}` | Default settings and user-configurable fields (see below) |
 
@@ -94,247 +116,55 @@ The `agent.json` carries the operational structure: which workflows to run, when
 | `timezone` | string | Timezone for schedule triggers. `user_local` resolves to the user's system timezone at install time. Also accepts IANA timezone names (e.g., `America/New_York`). |
 | `configurable` | string[] | JSON paths within `agent.json` that the user can override after installation. |
 
-### Workflow Binding
+### Input Fields
 
-Each entry in the `workflows` map binds a workflow to a trigger:
+Input fields define a dynamic form rendered in the agent's Configure tab. Users fill in values after installation; the agent uses them at runtime.
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `ref` | string | yes | — | Workflow qualified name (`@org/workflows/name@version`) |
-| `trigger` | object | yes | — | When this workflow runs |
-| `description` | string | no | `""` | Human-readable description of this binding |
-| `inputs` | map | no | `{}` | Default inputs passed to the workflow on trigger |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `key` | string | yes | Unique reference key (used in `{{key}}` template substitution and system prompt injection) |
+| `label` | string | yes | Display label shown to the user |
+| `type` | string | yes | Field type: `text`, `textarea`, `number`, `select`, `checkbox`, `radio` |
+| `description` | string | no | Help text displayed below the field |
+| `required` | boolean | no | Whether the field must be filled before the agent can activate |
+| `default` | any | no | Default value pre-filled in the form |
+| `placeholder` | string | no | Placeholder text for text/textarea fields |
+| `options` | array | no | For `select`/`radio` fields: `[{ "value": "...", "label": "..." }]` |
 
-### Trigger Types
+**How input values are used:**
 
-| Type | Fields | Description |
-|------|--------|-------------|
-| `schedule` | `cron` (string) | Fires on a cron schedule. Standard 5-field cron expression. |
-| `heartbeat` | `interval` (string), `window` (string, optional) | Fires at a recurring interval. Window limits active hours (e.g., `"08:00-18:00"`). |
-| `event` | `sources` (string[]) | Fires when a matching event occurs. See [Event System](#event-system) below. |
-| `watch` | `plugin` (string), `event` (string, optional), `command` (string, optional), `restart_delay_secs` (u64, optional) | Long-running plugin process that emits NDJSON events. See [Watch Triggers](#watch-triggers) below. |
-| `manual` | — | Only fires by explicit user request or API call. |
+1. **System prompt injection** — All filled input values are appended to the agent's system prompt as a "Configured Inputs" section. The LLM sees them and uses them without asking the user again.
+2. **Watch trigger template substitution** — `{{key}}` placeholders in watch trigger commands are replaced with the corresponding input value at runtime. Example: `gmail +watch --project {{gcp_project}}`. **The placeholder name must exactly match an input `key`** — if the command uses `{{gcp_project}}`, there must be an input with `"key": "gcp_project"`. Unmatched placeholders are left as literal text (e.g., `--project {{gcp_project}}`), which will cause the watch command to fail or behave unexpectedly.
+3. **Stored separately from schema** — The input field *schema* lives in `agent.json`. The user-supplied *values* are stored in the `input_values` DB column and updated via `PUT /agents/{id}/inputs`.
 
-> **Key principle:** The workflow doesn't decide when it runs. The Agent does. The same `@acme/workflows/lead-qualification` workflow could run at 7am in one Agent and 9am in another. The procedure doesn't change just because you want your briefing at a different time.
+### Workflows Overview
 
----
+The `workflows` map pairs triggers (when to run) with activities (what to do). Each binding connects a trigger to either inline activities or an external workflow reference.
 
-## Event System
+For the full reference — trigger types, activities, event system, watch triggers, budget math, and examples — see **[Workflows & Automation](workflows.md)**.
 
-Event triggers let workflows react to things that happen — an email arriving, a workflow completing, a platform capability detecting a change. The `sources` array in a trigger subscription is a filter: when an event's source string matches, the bound workflow fires.
+### Trigger Types (Summary)
 
-### Event Sources
-
-Events come from three places:
-
-| Source | Mechanism | Example `source` values |
-|--------|-----------|------------------------|
-| **emit** | A workflow activity calls the built-in `emit` tool during execution | `email.customer-service`, `lead.qualified` |
-| **platform** | Platform capabilities emit events for external changes | `calendar.changed`, `email.received` |
-| **system** | Nebo emits lifecycle events automatically | `workflow.email-triage.completed`, `workflow.email-triage.failed` |
-
-> **Webhooks** (external HTTP POST → NeboLoop → agent) are planned but not yet available. Because Nebo runs on the user's computer, inbound webhooks require NeboLoop as a relay, which is post-MVP.
-
-### Event Envelope
-
-Every event has the same shape:
-
-```json
-{
-  "source": "email.customer-service",
-  "payload": {
-    "from": "j@example.com",
-    "subject": "Order issue",
-    "body": "..."
-  },
-  "origin": "workflow:email-triage:run-550e8400",
-  "timestamp": 1709740800
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `source` | string | Event type string — matched against trigger `sources` |
-| `payload` | map | Arbitrary data — becomes the triggered workflow's `inputs` |
-| `origin` | string | Traceability — who emitted the event (workflow run ID, tool ID, or `system`) |
-| `timestamp` | u64 | Unix epoch seconds |
-
-### Emitting Events from Workflows
-
-Workflow activities can emit events using the built-in `emit` tool. Each `emit` call is a discrete event. If an activity emits 5 events, each one is matched independently against all active trigger subscriptions.
-
-```
-emit(source: "email.customer-service", payload: {"from": "j@example.com", "subject": "..."})
-```
-
-This enables **fan-out pipelines**: a triage workflow reads a batch of emails, classifies them, and emits one event per classified email. Each event triggers the appropriate handler workflow with that email's data as inputs.
-
-### Platform Events
-
-Platform capabilities emit events for external changes they detect. The `calendar` capability emits events like `calendar.changed`, `calendar.conflict`. The `email` capability emits `email.received`, `email.urgent`.
-
-The event namespace follows the capability name: capability `X` → `X.*` events.
-
-### System Events
-
-Nebo emits lifecycle events automatically:
-
-| Event | When |
-|-------|------|
-| `workflow.{id}.completed` | A workflow run finishes successfully |
-| `workflow.{id}.failed` | A workflow run fails |
-
-System events enable **workflow chaining**: workflow A completes, its completion event triggers workflow B.
-
-### Source Matching
-
-The `sources` array in a trigger subscription supports two matching modes:
-
-| Pattern | Matches |
-|---------|---------|
-| `email.urgent` | Exact match only |
-| `email.*` | Any event starting with `email.` |
-
-When an event is emitted, Nebo checks all active event trigger subscriptions across all installed Agents. Every matching subscription spawns a new workflow run with the event's `payload` as inputs.
-
-### Example: Email Triage Pipeline
-
-```json
-{
-  "workflows": {
-    "email-triage": {
-      "ref": "@acme/workflows/email-triage@^1.0.0",
-      "trigger": {
-        "type": "schedule",
-        "cron": "*/30 * * * *"
-      },
-      "description": "Read inbox, classify emails, route to handlers"
-    },
-    "handle-cs": {
-      "ref": "@acme/workflows/handle-cs-email@^1.0.0",
-      "trigger": {
-        "type": "event",
-        "sources": ["email.customer-service"]
-      },
-      "description": "Handle customer service emails"
-    },
-    "handle-sales": {
-      "ref": "@acme/workflows/handle-sales-email@^1.0.0",
-      "trigger": {
-        "type": "event",
-        "sources": ["email.sales-inquiry"]
-      },
-      "description": "Handle inbound sales inquiries"
-    }
-  }
-}
-```
-
-Read top to bottom: triage runs every 30 minutes. For each email it classifies, it calls `emit` with the appropriate source (`email.customer-service`, `email.sales-inquiry`). Each emit triggers the matching handler workflow with the email data as inputs.
+| Type | Description |
+|------|-------------|
+| `schedule` | Fires on a cron schedule |
+| `heartbeat` | Fires at a recurring interval (with optional time window) |
+| `event` | Fires when a matching event occurs |
+| `watch` | Long-running plugin process emitting NDJSON |
+| `manual` | Only fires by explicit user request or API call |
 
 ---
 
-## Watch Triggers
+## views.json & theme.css — Workspace UI (Optional)
 
-Watch triggers run a long-lived plugin process that outputs NDJSON to stdout. Each JSON line triggers the bound activities and optionally auto-emits into the EventBus so other agents can subscribe.
+Agents can declare deterministic workspace UIs that render immediately — no LLM call required. This is for agents with a known interface: dashboards, control panels, status displays, input forms.
 
-### With a Plugin Event (Recommended)
+- `views.json` — declares components, data bindings, and actions
+- `theme.css` — agent-specific CSS styling for the workspace
 
-Reference an event declared in the plugin's `plugin.json`. The CLI command is resolved from the manifest automatically:
+Agents without `views.json` are chat-only (or can create UIs dynamically via the `a2ui` tool during conversation).
 
-```json
-{
-  "email-watcher": {
-    "trigger": {
-      "type": "watch",
-      "plugin": "gws",
-      "event": "email.new",
-      "restart_delay_secs": 5
-    },
-    "description": "React to new emails in real-time",
-    "activities": [
-      {
-        "id": "triage",
-        "intent": "Triage the incoming email",
-        "steps": ["Classify urgency", "Draft response if needed"]
-      }
-    ]
-  }
-}
-```
-
-### With an Explicit Command
-
-Specify the CLI args directly instead of referencing a manifest event:
-
-```json
-{
-  "trigger": {
-    "type": "watch",
-    "plugin": "gws",
-    "command": "gmail +watch --format ndjson",
-    "restart_delay_secs": 5
-  }
-}
-```
-
-### Watch Trigger Fields
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `plugin` | string | Yes | — | Plugin slug (e.g., `"gws"`) |
-| `event` | string | No | — | Plugin event name. Resolves command from the plugin manifest's `events` array |
-| `command` | string | No | `""` | CLI args appended to the plugin binary. Required if `event` is not set |
-| `restart_delay_secs` | u64 | No | `5` | Seconds to wait before restarting the process on crash |
-
-### How It Works
-
-1. The `AgentWorker` spawns `<plugin-binary> <command>` as a long-running subprocess
-2. The plugin outputs NDJSON (one JSON object per line) to stdout
-3. Each parsed JSON line triggers the bound activities (if any)
-4. If `event` is set, each line also auto-emits into the EventBus as `{plugin}.{event}` (e.g., `gws.email.new`)
-5. If the process crashes, it restarts after `restart_delay_secs`
-
-### Event-Only Watches
-
-A watch with `event` set but no activities is valid. It auto-emits into the EventBus without processing anything inline. Other agents can subscribe to these events via `event` triggers:
-
-```json
-{
-  "email-relay": {
-    "trigger": {
-      "type": "watch",
-      "plugin": "gws",
-      "event": "email.new"
-    },
-    "description": "Relay new email events into the EventBus for other agents"
-  }
-}
-```
-
-Another agent subscribes:
-
-```json
-{
-  "handle-emails": {
-    "trigger": {
-      "type": "event",
-      "sources": ["gws.email.new"]
-    },
-    "activities": [...]
-  }
-}
-```
-
-### Template Substitution
-
-Event commands from the plugin manifest support `{{key}}` placeholders, substituted from the agent's `input_values` at runtime:
-
-```json
-"command": "gmail +watch --format ndjson --project {{gcp_project}}"
-```
-
-For more on plugin events and the NDJSON protocol, see [Plugins — Plugin Events](plugins.md#plugin-events).
+For the full component catalog, data binding reference, and action types, see **[Workspace Views](views.md)**.
 
 ---
 
@@ -390,14 +220,29 @@ When a user installs an Agent:
 
 The user installs a job. Everything else cascades — plugins first, then skills.
 
+### Filesystem Watcher (Development)
+
+During development, agents placed in `~/.nebo/user/agents/` are detected automatically by the filesystem watcher:
+
+- **Added:** New agent directory or symlink with `AGENT.md` → appears in sidebar and Apps page
+- **Changed:** Edits to `AGENT.md`, `agent.json`, `manifest.json`, `views.json`, or `theme.css` → metadata updated in DB, worker restarted if active
+- **Removed:** Deleted directory → agent soft-deactivated (DB record preserved with `is_enabled=0`)
+
+Changes are debounced at 1 second. No restart needed. Symlinks are fully supported — you can symlink an entire app directory from your source repo into `~/.nebo/user/agents/` and changes take effect immediately.
+
 ---
 
 ## Validation Rules
 
-- Each workflow binding must have a valid `ref` (qualified name: `@org/workflows/name@version`) and a `trigger`
-- Trigger type must be one of: `schedule`, `heartbeat`, `event`, `manual`
+- Each workflow binding must have a `trigger`
+- Trigger type must be one of: `schedule`, `heartbeat`, `event`, `watch`, `manual`
+- Workflow bindings with invalid triggers are skipped with a warning — they do not prevent the agent from loading
 - Schedule triggers must have a valid `cron` expression
 - Heartbeat triggers must have a valid `interval` (e.g., `"30m"`, `"1h"`)
-- Event triggers must have at least one entry in `sources`
+- Event triggers should have at least one entry in `sources` — an empty array is accepted but the trigger will never fire
 - Skill refs must be qualified names (`@org/skills/name`)
+- Watch triggers must have a `plugin` and either `event` or `command` (both recommended — `command` as fallback for when `event` resolution fails)
+- Activity IDs must be unique within each binding
+- If `budget.total_per_run > 0`, the sum of all activity `token_budget.max` values must not exceed it
+- All `{{key}}` placeholders in watch trigger commands must match an input `key` exactly
 - An Agent with no workflows is valid — it provides only a persona and skill declarations

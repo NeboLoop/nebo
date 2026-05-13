@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::Memory;
 use crate::Store;
+use crate::models::Memory;
 use types::NeboError;
 
 impl Store {
@@ -201,11 +201,8 @@ impl Store {
     /// Delete a memory by key alone (no namespace/user_id filter).
     pub fn delete_memory_by_key_only(&self, key: &str) -> Result<usize, NeboError> {
         let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM memories WHERE key = ?1",
-            params![key],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))
+        conn.execute("DELETE FROM memories WHERE key = ?1", params![key])
+            .map_err(|e| NeboError::Database(e.to_string()))
     }
 
     pub fn delete_memories_by_namespace_and_user(
@@ -413,7 +410,10 @@ impl Store {
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
-            .query_map(params![pattern, user_id, min_confidence, limit], row_to_memory)
+            .query_map(
+                params![pattern, user_id, min_confidence, limit],
+                row_to_memory,
+            )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
@@ -440,7 +440,10 @@ impl Store {
 
         // Integrity check: try a simple FTS query
         let fts_ok = conn
-            .execute("INSERT INTO memories_fts(memories_fts) VALUES('integrity-check')", [])
+            .execute(
+                "INSERT INTO memories_fts(memories_fts) VALUES('integrity-check')",
+                [],
+            )
             .is_ok();
 
         if !fts_ok {
@@ -484,8 +487,9 @@ impl Store {
              CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
                  INSERT INTO memories_fts(memories_fts, rowid, key, value, tags)
                  VALUES ('delete', old.id, old.key, old.value, old.tags);
-             END;"
-        ).map_err(|e| NeboError::Database(format!("rebuild_fts failed: {}", e)))?;
+             END;",
+        )
+        .map_err(|e| NeboError::Database(format!("rebuild_fts failed: {}", e)))?;
 
         tracing::info!("memories_fts rebuilt successfully");
         Ok(())

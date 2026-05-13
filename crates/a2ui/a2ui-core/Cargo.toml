@@ -1,0 +1,17 @@
+[package]
+name = "a2ui-core"
+description = "Core logic for the A2UI protocol: traits, negotiation, validation, prompt building"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+a2ui-types = { workspace = true }
+a2ui-validation = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

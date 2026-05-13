@@ -1,0 +1,41 @@
+{
+  "name": "@neboai/app-sdk",
+  "version": "0.1.0",
+  "description": "SDK for building Nebo apps — mirrors native browser APIs (fetch, WebSocket, localStorage)",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build && tsc --emitDeclarationOnly",
+    "dev": "vite build --watch"
+  },
+  "peerDependencies": {
+    "@a2ui/web_core": ">=0.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@a2ui/web_core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "typescript": "^5.9.0",
+    "vite": "^6.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/neboai/nebo"
+  }
+}

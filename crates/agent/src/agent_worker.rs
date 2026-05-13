@@ -19,6 +19,11 @@ use tools::events::EventBus;
 use tools::workflows::WorkflowManager;
 use workflow::events::{EventDispatcher, EventSubscription};
 
+use crate::dedupe::hash_text;
+
+/// Cross-crate callback for broadcasting WebSocket events from agent workers.
+pub type NotifyFn = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 /// A single autonomous agent worker. Owns all trigger tasks for one agent.
 pub struct AgentWorker {
     pub agent_id: String,
@@ -26,20 +31,27 @@ pub struct AgentWorker {
     cancel: CancellationToken,
     event_dispatcher: Arc<EventDispatcher>,
     workflow_manager: Arc<dyn WorkflowManager>,
-    plugin_store: Arc<PluginStore>,
-    event_bus: EventBus,
+    _plugin_store: Arc<PluginStore>,
+    _event_bus: EventBus,
 }
 
 impl AgentWorker {
     /// Start the worker: read bindings from DB, resolve agent config, spawn trigger tasks.
+    ///
+    /// When `config` is `Some`, uses the pre-parsed agent config directly (avoids
+    /// redundant DB reads and `parse_agent_config` calls during startup).
+    /// When `None`, falls back to loading and parsing from DB.
     pub fn start(
         agent_id: String,
         name: String,
-        store: &Store,
+        store: Arc<Store>,
         workflow_manager: Arc<dyn WorkflowManager>,
         event_dispatcher: Arc<EventDispatcher>,
         plugin_store: Arc<PluginStore>,
         event_bus: EventBus,
+        notify_fn: Option<NotifyFn>,
+        config: Option<napp::agent::AgentConfig>,
+        watch_semaphore: Arc<tokio::sync::Semaphore>,
     ) -> Self {
         let cancel = CancellationToken::new();
 
@@ -47,31 +59,41 @@ impl AgentWorker {
             Ok(b) => b,
             Err(e) => {
                 warn!(agent = %agent_id, error = %e, "failed to load agent workflow bindings");
-                return Self { agent_id, name, cancel, event_dispatcher, workflow_manager, plugin_store, event_bus };
+                return Self {
+                    agent_id,
+                    name,
+                    cancel,
+                    event_dispatcher,
+                    workflow_manager,
+                    _plugin_store: plugin_store,
+                    _event_bus: event_bus,
+                };
             }
         };
 
-        // Load agent config from DB frontmatter to get inline activities
-        let agent_config = match store.get_agent(&agent_id) {
-            Ok(Some(r)) => match napp::agent::parse_agent_config(&r.frontmatter) {
-                Ok(cfg) => Some(cfg),
-                Err(e) => {
-                    warn!(agent = %agent_id, error = %e, "failed to parse agent config frontmatter");
+        // Use pre-parsed config if provided, otherwise load from DB
+        let agent_config = config.or_else(|| {
+            match store.get_agent(&agent_id) {
+                Ok(Some(r)) => match napp::agent::parse_agent_config(&r.frontmatter) {
+                    Ok(cfg) => Some(cfg),
+                    Err(e) => {
+                        warn!(agent = %agent_id, error = %e, "failed to parse agent config frontmatter");
+                        None
+                    }
+                },
+                Ok(None) => {
+                    warn!(agent = %agent_id, "agent not found in DB");
                     None
                 }
-            },
-            Ok(None) => {
-                warn!(agent = %agent_id, "agent not found in DB");
-                None
+                Err(e) => {
+                    warn!(agent = %agent_id, error = %e, "failed to load agent from DB");
+                    None
+                }
             }
-            Err(e) => {
-                warn!(agent = %agent_id, error = %e, "failed to load agent from DB");
-                None
-            }
-        };
+        });
 
         // Schedule triggers: delegate to existing cron system
-        workflow::triggers::register_agent_triggers(&agent_id, &bindings, store);
+        workflow::triggers::register_agent_triggers(&agent_id, &bindings, &store);
 
         for binding in &bindings {
             // Look up the WorkflowBinding from agent config to get activities
@@ -93,7 +115,9 @@ impl AgentWorker {
                     }
                     // Build inline definition JSON from agent config
                     let def_json = match wf_binding {
-                        Some(wb) if wb.has_activities() => wb.to_workflow_json(&binding.binding_name),
+                        Some(wb) if wb.has_activities() => {
+                            wb.to_workflow_json(&binding.binding_name)
+                        }
                         _ => {
                             warn!(agent = %agent_id, binding = %binding.binding_name, "no inline activities found, skipping heartbeat");
                             continue;
@@ -103,14 +127,12 @@ impl AgentWorker {
                         .inputs
                         .as_ref()
                         .and_then(|s| serde_json::from_str(s).ok())
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| serde_json::json!({}));
                     // Build emit_source from binding: "{agent-slug}.{emit-name}"
-                    let emit_source = wf_binding
-                        .and_then(|wb| wb.emit.as_ref())
-                        .map(|emit_name| {
-                            let slug = name.to_lowercase().replace(' ', "-");
-                            format!("{}.{}", slug, emit_name)
-                        });
+                    let emit_source = wf_binding.and_then(|wb| wb.emit.as_ref()).map(|emit_name| {
+                        let slug = name.to_lowercase().replace(' ', "-");
+                        format!("{}.{}", slug, emit_name)
+                    });
                     let mgr = workflow_manager.clone();
                     let agent = agent_id.clone();
                     let bname = binding.binding_name.clone();
@@ -175,12 +197,11 @@ impl AgentWorker {
                         .inputs
                         .as_ref()
                         .and_then(|s| serde_json::from_str(s).ok())
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| serde_json::json!({}));
 
                     // Build emit_source from binding: "{agent-slug}.{emit-name}"
-                    let event_emit_source = wf_binding
-                        .and_then(|wb| wb.emit.as_ref())
-                        .map(|emit_name| {
+                    let event_emit_source =
+                        wf_binding.and_then(|wb| wb.emit.as_ref()).map(|emit_name| {
                             let slug = name.to_lowercase().replace(' ', "-");
                             format!("{}.{}", slug, emit_name)
                         });
@@ -206,21 +227,24 @@ impl AgentWorker {
                 }
                 "watch" => {
                     // Parse watch config from trigger_config JSON
-                    let mut watch_cfg: WatchTriggerConfig = match serde_json::from_str(&binding.trigger_config) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            warn!(
-                                agent = %agent_id,
-                                binding = %binding.binding_name,
-                                error = %e,
-                                "invalid watch trigger config, skipping"
-                            );
-                            continue;
-                        }
-                    };
+                    let mut watch_cfg: WatchTriggerConfig =
+                        match serde_json::from_str(&binding.trigger_config) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!(
+                                    agent = %agent_id,
+                                    binding = %binding.binding_name,
+                                    error = %e,
+                                    "invalid watch trigger config, skipping"
+                                );
+                                continue;
+                            }
+                        };
 
                     // If event is specified, resolve command from plugin manifest
-                    let auto_emit: Option<(String, bool)> = if let Some(ref event_name) = watch_cfg.event {
+                    let auto_emit: Option<(String, bool)> = if let Some(ref event_name) =
+                        watch_cfg.event
+                    {
                         match plugin_store.resolve_event(&watch_cfg.plugin, event_name) {
                             Some(event_def) => {
                                 if watch_cfg.command.is_empty() {
@@ -278,21 +302,19 @@ impl AgentWorker {
                         .inputs
                         .as_ref()
                         .and_then(|s| serde_json::from_str(s).ok())
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| serde_json::json!({}));
 
                     // Substitute agent input values into the command template
                     let input_values: serde_json::Value = match store.get_agent(&agent_id) {
-                        Ok(Some(r)) => serde_json::from_str(&r.input_values).unwrap_or_default(),
-                        _ => serde_json::Value::default(),
+                        Ok(Some(r)) => serde_json::from_str(&r.input_values).unwrap_or_else(|_| serde_json::json!({})),
+                        _ => serde_json::json!({}),
                     };
                     let command = substitute_inputs(&watch_cfg.command, &input_values);
 
-                    let emit_source = wf_binding
-                        .and_then(|wb| wb.emit.as_ref())
-                        .map(|emit_name| {
-                            let slug = name.to_lowercase().replace(' ', "-");
-                            format!("{}.{}", slug, emit_name)
-                        });
+                    let emit_source = wf_binding.and_then(|wb| wb.emit.as_ref()).map(|emit_name| {
+                        let slug = name.to_lowercase().replace(' ', "-");
+                        format!("{}.{}", slug, emit_name)
+                    });
 
                     let token = cancel.clone();
                     let mgr = workflow_manager.clone();
@@ -301,6 +323,9 @@ impl AgentWorker {
                     let ps = plugin_store.clone();
                     let watch_plugin = watch_cfg.plugin.clone();
                     let bus = event_bus.clone();
+                    let watch_store = store.clone();
+                    let watch_notify = notify_fn.clone();
+                    let watch_sem = watch_semaphore.clone();
 
                     tokio::spawn(watch_loop(
                         binary_path,
@@ -316,6 +341,9 @@ impl AgentWorker {
                         token,
                         auto_emit,
                         bus,
+                        watch_store,
+                        watch_notify,
+                        watch_sem,
                     ));
 
                     info!(
@@ -344,7 +372,15 @@ impl AgentWorker {
 
         info!(agent = %agent_id, name = %name, bindings = bindings.len(), "agent worker started");
 
-        Self { agent_id, name, cancel, event_dispatcher, workflow_manager, plugin_store, event_bus }
+        Self {
+            agent_id,
+            name,
+            cancel,
+            event_dispatcher,
+            workflow_manager,
+            _plugin_store: plugin_store,
+            _event_bus: event_bus,
+        }
     }
 
     /// Stop the worker: cancel all spawned tasks, running workflows, cron jobs and event subscriptions.
@@ -375,6 +411,10 @@ pub struct AgentWorkerRegistry {
     event_dispatcher: Arc<EventDispatcher>,
     plugin_store: Arc<PluginStore>,
     event_bus: EventBus,
+    notify_fn: Option<NotifyFn>,
+    /// Serializes watch process spawning to prevent concurrent keychain prompts
+    /// on macOS. Permits = 1 means only one watch process starts at a time.
+    watch_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl AgentWorkerRegistry {
@@ -384,6 +424,7 @@ impl AgentWorkerRegistry {
         event_dispatcher: Arc<EventDispatcher>,
         plugin_store: Arc<PluginStore>,
         event_bus: EventBus,
+        notify_fn: Option<NotifyFn>,
     ) -> Self {
         Self {
             workers: RwLock::new(HashMap::new()),
@@ -392,11 +433,21 @@ impl AgentWorkerRegistry {
             event_dispatcher,
             plugin_store,
             event_bus,
+            notify_fn,
+            watch_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
     /// Start an agent worker. If already running, stops the old one first.
-    pub async fn start_agent(&self, agent_id: &str, name: &str) {
+    ///
+    /// Pass `config` to avoid redundant `parse_agent_config` calls. When `None`,
+    /// the worker loads and parses from DB (used by handlers that don't cache configs).
+    pub async fn start_agent(
+        &self,
+        agent_id: &str,
+        name: &str,
+        config: Option<napp::agent::AgentConfig>,
+    ) {
         // Stop existing worker if any
         {
             let mut workers = self.workers.write().await;
@@ -408,14 +459,20 @@ impl AgentWorkerRegistry {
         let worker = AgentWorker::start(
             agent_id.to_string(),
             name.to_string(),
-            &self.store,
+            self.store.clone(),
             self.workflow_manager.clone(),
             self.event_dispatcher.clone(),
             self.plugin_store.clone(),
             self.event_bus.clone(),
+            self.notify_fn.clone(),
+            config,
+            self.watch_semaphore.clone(),
         );
 
-        self.workers.write().await.insert(agent_id.to_string(), worker);
+        self.workers
+            .write()
+            .await
+            .insert(agent_id.to_string(), worker);
     }
 
     /// Stop an agent worker.
@@ -440,7 +497,12 @@ impl AgentWorkerRegistry {
 /// Format: `"30m"` or `"30m|08:00-18:00"`
 ///
 /// Returns `(Duration, Option<(NaiveTime, NaiveTime)>)`.
-fn parse_heartbeat(config: &str) -> (std::time::Duration, Option<(chrono::NaiveTime, chrono::NaiveTime)>) {
+fn parse_heartbeat(
+    config: &str,
+) -> (
+    std::time::Duration,
+    Option<(chrono::NaiveTime, chrono::NaiveTime)>,
+) {
     let parts: Vec<&str> = config.split('|').collect();
     let duration = parse_duration(parts[0].trim());
     let window = if parts.len() > 1 {
@@ -552,9 +614,15 @@ async fn watch_loop(
     cancel: CancellationToken,
     auto_emit: Option<(String, bool)>,
     event_bus: EventBus,
+    store: Arc<Store>,
+    notify_fn: Option<NotifyFn>,
+    watch_semaphore: Arc<tokio::sync::Semaphore>,
 ) {
     let mut backoff_secs = cfg.restart_delay_secs;
     let max_backoff_secs = 300; // 5 minutes
+
+    // Clean stale dedup entries on (re)start
+    let _ = store.cleanup_event_dedup(10 * 60);
 
     loop {
         if cancel.is_cancelled() {
@@ -618,6 +686,11 @@ async fn watch_loop(
             "spawning watch process"
         );
 
+        // Serialize watch process spawning to prevent concurrent keychain
+        // prompts on macOS. The permit is held only during spawn + initial
+        // setup, then released so other watches can start.
+        let _spawn_permit = watch_semaphore.acquire().await;
+
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -637,16 +710,21 @@ async fn watch_loop(
             }
         };
 
+        // Release spawn permit — process is running, keychain access is past
+        drop(_spawn_permit);
+
         // Track spawn time so we only reset backoff if process ran long enough
         let spawn_time = std::time::Instant::now();
 
         let stdout = child.stdout.take().expect("stdout piped");
         let mut lines = BufReader::new(stdout).lines();
 
-        // Spawn a task to log stderr
+        // Spawn a task to log and collect stderr for auth error detection
         let stderr = child.stderr.take();
         let stderr_agent = agent_id.clone();
         let stderr_binding = binding_name.clone();
+        let stderr_collected = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let stderr_buf = stderr_collected.clone();
         let stderr_handle = tokio::spawn(async move {
             if let Some(stderr) = stderr {
                 let mut stderr_lines = BufReader::new(stderr).lines();
@@ -657,6 +735,9 @@ async fn watch_loop(
                         "watch stderr: {}",
                         line
                     );
+                    let mut buf = stderr_buf.lock().await;
+                    buf.push_str(&line);
+                    buf.push('\n');
                 }
             }
         });
@@ -688,6 +769,18 @@ async fn watch_loop(
                             };
 
                             // Auto-emit into EventBus if event-based watch
+                            // Skip error payloads — plugins may output errors (e.g. DNS
+                            // failures, auth errors) as JSON on stdout. These should NOT
+                            // be emitted as events that trigger workflows.
+                            if payload.get("error").is_some() {
+                                warn!(
+                                    agent = %agent_id,
+                                    binding = %binding_name,
+                                    "skipping error payload from watch process (not an event)"
+                                );
+                                continue;
+                            }
+
                             if let Some((ref base_source, multiplexed)) = auto_emit {
                                 let (event_source, event_payload) = if multiplexed {
                                     if let Some(event_name) = payload.get("event").and_then(|v| v.as_str()) {
@@ -704,24 +797,39 @@ async fn watch_loop(
                                     (base_source.clone(), payload.clone())
                                 };
 
-                                let timestamp = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs();
+                                // Deduplicate: hash the (source + payload) and skip if seen recently.
+                                // Uses DB-backed dedup so fingerprints survive restarts.
+                                let fingerprint = hash_text(&format!("{}:{}", event_source, event_payload));
+                                let is_dup = store.check_event_dedup(&fingerprint, 10 * 60).unwrap_or(false);
+                                if is_dup {
+                                    debug!(
+                                        agent = %agent_id,
+                                        binding = %binding_name,
+                                        event_source = %event_source,
+                                        "skipping duplicate event (seen within dedup window)"
+                                    );
+                                } else {
+                                    let _ = store.record_event_dedup(&fingerprint, &event_source);
 
-                                event_bus.emit(tools::events::Event {
-                                    source: event_source.clone(),
-                                    payload: event_payload,
-                                    origin: format!("plugin:{}:{}", cfg.plugin, binding_name),
-                                    timestamp,
-                                });
+                                    let timestamp = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs();
 
-                                debug!(
-                                    agent = %agent_id,
-                                    binding = %binding_name,
-                                    event_source = %event_source,
-                                    "auto-emitted plugin event"
-                                );
+                                    event_bus.emit(tools::events::Event {
+                                        source: event_source.clone(),
+                                        payload: event_payload,
+                                        origin: format!("plugin:{}:{}", cfg.plugin, binding_name),
+                                        timestamp,
+                                    });
+
+                                    debug!(
+                                        agent = %agent_id,
+                                        binding = %binding_name,
+                                        event_source = %event_source,
+                                        "auto-emitted plugin event"
+                                    );
+                                }
                             }
 
                             // Run inline workflow if activities are defined
@@ -783,10 +891,57 @@ async fn watch_loop(
 
         // Wait for the child to finish
         let _ = child.wait().await;
+        // Give stderr task a moment to flush, then stop it
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         stderr_handle.abort();
 
         if cancel.is_cancelled() {
             break;
+        }
+
+        // Check if the process failed due to a plugin auth error
+        {
+            let stderr_text = stderr_collected.lock().await;
+            if tools::plugin_tool::is_auth_error(&stderr_text) {
+                warn!(
+                    agent = %agent_id,
+                    binding = %binding_name,
+                    plugin = %cfg.plugin,
+                    "watch failed: plugin not authenticated, pausing until auth completes"
+                );
+
+                let notif_id = format!("auth-required:{}:{}", agent_id, cfg.plugin);
+                if let Err(e) = store.create_notification_if_not_exists(
+                    &notif_id,
+                    "",
+                    "warning",
+                    &format!("{} needs authentication", cfg.plugin),
+                    Some(&format!(
+                        "Connect your {} account to enable automated workflows. Go to Settings → Plugins.",
+                        cfg.plugin
+                    )),
+                    Some("/settings/plugins"),
+                    None,
+                ) {
+                    warn!(error = %e, "failed to create auth notification");
+                }
+
+                // Broadcast so notification bell updates in real-time
+                if let Some(ref notify) = notify_fn {
+                    notify(
+                        "notification",
+                        serde_json::json!({
+                            "id": notif_id,
+                            "type": "warning",
+                            "title": format!("{} needs authentication", cfg.plugin),
+                            "body": format!("Connect your {} account to enable automated workflows.", cfg.plugin),
+                            "link": "/settings/plugins",
+                        }),
+                    );
+                }
+
+                break; // Stop retrying — worker restarted via plugin_auth_complete
+            }
         }
 
         // Only reset backoff if process ran for >30s (not a fast crash)
@@ -825,7 +980,10 @@ mod tests {
 
     #[test]
     fn test_parse_duration_combined() {
-        assert_eq!(parse_duration("1h30m"), std::time::Duration::from_secs(5400));
+        assert_eq!(
+            parse_duration("1h30m"),
+            std::time::Duration::from_secs(5400)
+        );
     }
 
     #[test]
@@ -874,7 +1032,10 @@ mod tests {
         });
         let template = "gmail +watch --project {{gcp_project}} --poll-interval {{poll_interval}}";
         let result = substitute_inputs(template, &inputs);
-        assert_eq!(result, "gmail +watch --project my-project-123 --poll-interval 30");
+        assert_eq!(
+            result,
+            "gmail +watch --project my-project-123 --poll-interval 30"
+        );
     }
 
     #[test]

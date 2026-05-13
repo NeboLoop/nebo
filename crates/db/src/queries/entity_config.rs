@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::EntityConfig;
 use crate::Store;
+use crate::models::EntityConfig;
 use types::NeboError;
 
 fn row_to_entity_config(row: &rusqlite::Row) -> rusqlite::Result<EntityConfig> {
@@ -19,8 +19,11 @@ fn row_to_entity_config(row: &rusqlite::Row) -> rusqlite::Result<EntityConfig> {
         model_preference: row.get("model_preference")?,
         personality_snippet: row.get("personality_snippet")?,
         allowed_paths: row.get("allowed_paths")?,
+        pinned: row.get("pinned")?,
+        multi_chat: row.get("multi_chat")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        last_heartbeat_at: row.get("last_heartbeat_at")?,
     })
 }
 
@@ -70,6 +73,8 @@ impl Store {
             ("model_preference", "modelPreference"),
             ("personality_snippet", "personalitySnippet"),
             ("allowed_paths", "allowedPaths"),
+            ("pinned", "pinned"),
+            ("multi_chat", "multiChat"),
         ];
 
         for (col, json_key) in &columns {
@@ -148,5 +153,22 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Update last heartbeat timestamp for an entity.
+    pub fn update_heartbeat_at(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+        fired_at: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE entity_config SET last_heartbeat_at = ?1
+             WHERE entity_type = ?2 AND entity_id = ?3",
+            params![fired_at, entity_type, entity_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
     }
 }

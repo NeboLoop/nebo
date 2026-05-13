@@ -175,8 +175,14 @@ pub async fn read_frame<R: tokio::io::AsyncReadExt + Unpin>(
         msg_id,
         conversation_id,
         seq: u64::from_be_bytes([
-            hdr_buf[39], hdr_buf[40], hdr_buf[41], hdr_buf[42], hdr_buf[43], hdr_buf[44],
-            hdr_buf[45], hdr_buf[46],
+            hdr_buf[39],
+            hdr_buf[40],
+            hdr_buf[41],
+            hdr_buf[42],
+            hdr_buf[43],
+            hdr_buf[44],
+            hdr_buf[45],
+            hdr_buf[46],
         ]),
     };
 

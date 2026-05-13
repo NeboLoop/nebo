@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use crate::models::AuthProfile;
 use crate::Store;
+use crate::models::AuthProfile;
 use types::NeboError;
 
 impl Store {
@@ -109,10 +109,7 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    pub fn get_best_auth_profile(
-        &self,
-        provider: &str,
-    ) -> Result<Option<AuthProfile>, NeboError> {
+    pub fn get_best_auth_profile(&self, provider: &str) -> Result<Option<AuthProfile>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT * FROM auth_profiles

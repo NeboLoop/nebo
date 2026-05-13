@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use chrono::Local;
-use db::Store;
 use crate::domain::DomainInput;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
+use chrono::Local;
+use db::Store;
 
 /// EventTool manages scheduled tasks and cron jobs.
 /// Flat domain (no resources, actions map directly).
@@ -15,7 +15,10 @@ pub struct EventTool {
 
 impl EventTool {
     pub fn new(store: Arc<Store>) -> Self {
-        Self { store, runner: None }
+        Self {
+            store,
+            runner: None,
+        }
     }
 
     pub fn with_runner(mut self, runner: Arc<dyn crate::bot_tool::AdvisorDeliberator>) -> Self {
@@ -105,13 +108,17 @@ impl DynTool for EventTool {
                     } else if !at_val.is_empty() {
                         match parse_relative_time(at_val) {
                             Some(s) => s,
-                            None => return ToolResult::error(format!(
-                                "Could not parse '{}'. Use format like 'in 5 minutes', 'in 1 hour', 'in 30 seconds'.",
-                                at_val
-                            )),
+                            None => {
+                                return ToolResult::error(format!(
+                                    "Could not parse '{}'. Use format like 'in 5 minutes', 'in 1 hour', 'in 30 seconds'.",
+                                    at_val
+                                ));
+                            }
                         }
                     } else {
-                        return ToolResult::error("Either 'cron' or 'at' is required. Use cron: \"0 30 9 * * *\" or at: \"in 5 minutes\".");
+                        return ToolResult::error(
+                            "Either 'cron' or 'at' is required. Use cron: \"0 30 9 * * *\" or at: \"in 5 minutes\".",
+                        );
                     };
 
                     let (cmd, msg) = if task_type == "agent" {
@@ -123,16 +130,10 @@ impl DynTool for EventTool {
                         (command, None::<&str>)
                     };
 
-                    match self.store.create_cron_job(
-                        name,
-                        &schedule,
-                        cmd,
-                        task_type,
-                        msg,
-                        None,
-                        None,
-                        true,
-                    ) {
+                    match self
+                        .store
+                        .create_cron_job(name, &schedule, cmd, task_type, msg, None, None, true)
+                    {
                         Ok(job) => ToolResult::ok(format!(
                             "Created scheduled task '{}' (id={}): {} ({})",
                             name, job.id, schedule, task_type
@@ -214,7 +215,12 @@ impl DynTool for EventTool {
                             // Create history entry
                             let history = match self.store.create_cron_history(job.id) {
                                 Ok(h) => h,
-                                Err(e) => return ToolResult::error(format!("Failed to create history: {}", e)),
+                                Err(e) => {
+                                    return ToolResult::error(format!(
+                                        "Failed to create history: {}",
+                                        e
+                                    ));
+                                }
                             };
                             let _ = self.store.update_cron_job_last_run(job.id, None);
 
@@ -228,8 +234,10 @@ impl DynTool for EventTool {
                                         .await
                                     {
                                         Ok(result) => {
-                                            let stdout = String::from_utf8_lossy(&result.stdout).to_string();
-                                            let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+                                            let stdout =
+                                                String::from_utf8_lossy(&result.stdout).to_string();
+                                            let stderr =
+                                                String::from_utf8_lossy(&result.stderr).to_string();
                                             let out = if stderr.is_empty() {
                                                 stdout
                                             } else {
@@ -250,7 +258,13 @@ impl DynTool for EventTool {
                                             Err(e) => (false, format!("Agent task failed: {}", e)),
                                         }
                                     } else {
-                                        (false, format!("Agent task '{}' — runner not available. Run via the scheduler or API.", name))
+                                        (
+                                            false,
+                                            format!(
+                                                "Agent task '{}' — runner not available. Run via the scheduler or API.",
+                                                name
+                                            ),
+                                        )
                                     }
                                 }
                                 other => (false, format!("Unknown task type: {}", other)),
@@ -261,11 +275,16 @@ impl DynTool for EventTool {
                             } else {
                                 (None, Some(output.as_str()))
                             };
-                            let _ = self.store.update_cron_history(history.id, success, out, err);
+                            let _ = self
+                                .store
+                                .update_cron_history(history.id, success, out, err);
                             let _ = self.store.update_cron_job_last_run(job.id, Some(&output));
 
                             if success {
-                                ToolResult::ok(format!("Task '{}' executed successfully:\n{}", name, output))
+                                ToolResult::ok(format!(
+                                    "Task '{}' executed successfully:\n{}",
+                                    name, output
+                                ))
                             } else {
                                 ToolResult::error(format!("Task '{}' failed:\n{}", name, output))
                             }
@@ -294,7 +313,11 @@ impl DynTool for EventTool {
                                             } else {
                                                 "FAIL"
                                             };
-                                            format!("- [{}] {}", status, h.output.as_deref().unwrap_or("-"))
+                                            format!(
+                                                "- [{}] {}",
+                                                status,
+                                                h.output.as_deref().unwrap_or("-")
+                                            )
                                         })
                                         .collect();
                                     ToolResult::ok(format!(

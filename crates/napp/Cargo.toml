@@ -18,12 +18,16 @@ ed25519-dalek = { version = "2", features = ["pkcs8"] }
 flate2 = "1"
 tar = "0.4"
 base64 = "0.22"
+aes-gcm = "0.10"
+hkdf = "0.12"
+rand = { workspace = true }
 libc = "0.2"
 serde_yaml = { workspace = true }
 semver = { workspace = true }
 async-trait = "0.1"
 tempfile = "3"
 notify = "7"
+futures = { workspace = true }
 
 [dev-dependencies]
 

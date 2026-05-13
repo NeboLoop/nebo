@@ -30,8 +30,16 @@ impl GrepTool {
         if let Ok(abs) = std::path::absolute(Path::new(path)) {
             let abs_str = abs.to_string_lossy();
             let dangerous = [
-                "/", "/usr", "/var", "/etc", "/System", "/Library",
-                "/Applications", "/bin", "/sbin", "/opt",
+                "/",
+                "/usr",
+                "/var",
+                "/etc",
+                "/System",
+                "/Library",
+                "/Applications",
+                "/bin",
+                "/sbin",
+                "/opt",
             ];
             for d in &dangerous {
                 if abs_str.as_ref() == *d {
@@ -195,8 +203,7 @@ struct GrepMatch {
 fn find_files(dir: &str, file_glob: Option<&str>) -> Vec<String> {
     let mut files = Vec::new();
     let binary_exts = [
-        ".exe", ".bin", ".so", ".dylib", ".png", ".jpg", ".gif", ".ico",
-        ".zip", ".tar", ".gz",
+        ".exe", ".bin", ".so", ".dylib", ".png", ".jpg", ".gif", ".ico", ".zip", ".tar", ".gz",
     ];
 
     let walker = walkdir::WalkDir::new(dir)

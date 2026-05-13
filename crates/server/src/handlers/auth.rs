@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::response::Json;
 
-use crate::handlers::{to_error_response, HandlerResult};
+use crate::handlers::{HandlerResult, to_error_response};
 use crate::state::AppState;
 
 /// POST /api/v1/auth/login

@@ -77,9 +77,11 @@ mod tests {
         // Schedule 3 times rapidly — only the last should fire
         for _ in 0..3 {
             let c = counter.clone();
-            debouncer.schedule("session1", move || async move {
-                c.fetch_add(1, Ordering::SeqCst);
-            }).await;
+            debouncer
+                .schedule("session1", move || async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                })
+                .await;
         }
 
         // Wait for debounce to fire
@@ -94,14 +96,18 @@ mod tests {
 
         // Different sessions should fire independently
         let c1 = counter.clone();
-        debouncer.schedule("session1", move || async move {
-            c1.fetch_add(1, Ordering::SeqCst);
-        }).await;
+        debouncer
+            .schedule("session1", move || async move {
+                c1.fetch_add(1, Ordering::SeqCst);
+            })
+            .await;
 
         let c2 = counter.clone();
-        debouncer.schedule("session2", move || async move {
-            c2.fetch_add(1, Ordering::SeqCst);
-        }).await;
+        debouncer
+            .schedule("session2", move || async move {
+                c2.fetch_add(1, Ordering::SeqCst);
+            })
+            .await;
 
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 2);

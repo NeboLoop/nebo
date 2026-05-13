@@ -164,17 +164,22 @@ impl Store {
     }
 
     /// Get a memory chunk's text and source by chunk ID.
-    pub fn get_memory_chunk(&self, chunk_id: i64) -> Result<Option<(i64, Option<i64>, String, Option<String>)>, NeboError> {
+    pub fn get_memory_chunk(
+        &self,
+        chunk_id: i64,
+    ) -> Result<Option<(i64, Option<i64>, String, Option<String>)>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT id, memory_id, text, source FROM memory_chunks WHERE id = ?1",
             params![chunk_id],
-            |row| Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Option<i64>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            )),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
         )
         .optional()
         .map_err(|e| NeboError::Database(e.to_string()))
@@ -187,7 +192,10 @@ fn sanitize_fts_query(query: &str) -> String {
     query
         .split_whitespace()
         .map(|word| {
-            let clean: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+            let clean: String = word
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
             if clean.is_empty() {
                 String::new()
             } else {

@@ -1,8 +1,8 @@
+use crate::origin::ToolContext;
+use crate::registry::ToolResult;
 use serde::Deserialize;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use crate::origin::ToolContext;
-use crate::registry::ToolResult;
 
 /// File operations: read, write, edit, glob, grep.
 pub struct FileTool {
@@ -202,7 +202,12 @@ impl FileTool {
         match result {
             Ok(()) => {
                 let action = if input.append { "Appended" } else { "Wrote" };
-                ToolResult::ok(format!("{} {} bytes to {}", action, input.content.len(), path))
+                ToolResult::ok(format!(
+                    "{} {} bytes to {}",
+                    action,
+                    input.content.len(),
+                    path
+                ))
             }
             Err(e) => ToolResult::error(format!("Error writing file: {}", e)),
         }
@@ -266,7 +271,10 @@ impl FileTool {
     }
 
     fn handle_glob(&self, input: &FileInput) -> ToolResult {
-        if input.pattern.is_empty() {
+        // Accept "glob" as alias for "pattern" — LLMs frequently use the field name
+        // matching the action name instead of the schema field name.
+        let pattern = if input.pattern.is_empty() { &input.glob } else { &input.pattern };
+        if pattern.is_empty() {
             return ToolResult::error("Error: pattern is required");
         }
 
@@ -278,10 +286,10 @@ impl FileTool {
 
         let limit = if input.limit <= 0 { 1000 } else { input.limit } as usize;
 
-        let matches = if input.pattern.contains("**") {
-            recursive_glob(&base_path, &input.pattern, limit)
+        let matches = if pattern.contains("**") {
+            recursive_glob(&base_path, pattern, limit)
         } else {
-            let full_pattern = PathBuf::from(&base_path).join(&input.pattern);
+            let full_pattern = PathBuf::from(&base_path).join(pattern);
             glob::glob(&full_pattern.to_string_lossy())
                 .map(|paths| {
                     paths
@@ -484,8 +492,8 @@ fn sensitive_paths() -> Vec<String> {
 /// Validate that a file path is safe to access.
 fn validate_file_path(raw_path: &str, action: &str) -> Result<(), String> {
     let expanded = expand_path(raw_path);
-    let abs_path = std::path::absolute(Path::new(&expanded))
-        .map_err(|e| format!("invalid path: {}", e))?;
+    let abs_path =
+        std::path::absolute(Path::new(&expanded)).map_err(|e| format!("invalid path: {}", e))?;
     let abs_str = abs_path.to_string_lossy().to_string();
 
     // Also resolve symlinks
@@ -494,7 +502,9 @@ fn validate_file_path(raw_path: &str, action: &str) -> Result<(), String> {
         .unwrap_or_else(|_| abs_str.clone());
 
     for sensitive in sensitive_paths() {
-        if path_matches_or_inside(&abs_str, &sensitive) || path_matches_or_inside(&real_path, &sensitive) {
+        if path_matches_or_inside(&abs_str, &sensitive)
+            || path_matches_or_inside(&real_path, &sensitive)
+        {
             return Err(format!(
                 "blocked: {} access to {:?} is restricted (sensitive path)",
                 action, raw_path
@@ -525,5 +535,7 @@ pub fn expand_path(path: &str) -> String {
 
 /// Find ripgrep binary on the system.
 fn find_ripgrep() -> Option<String> {
-    which::which("rg").ok().map(|p| p.to_string_lossy().to_string())
+    which::which("rg")
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
 }

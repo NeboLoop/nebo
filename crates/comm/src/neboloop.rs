@@ -3,14 +3,14 @@
 //! and dispatches typed messages (installs, chat, DMs, loop channels, voice).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, Notify, RwLock};
-use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio::sync::{Notify, RwLock, mpsc};
 use tokio_tungstenite::MaybeTlsStream;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, info, warn};
 
 use crate::api::NeboLoopApi;
@@ -21,8 +21,8 @@ use crate::frame::{self, Header};
 use crate::ulid::UlidGen;
 use crate::wire;
 use crate::{
-    AgentCard, ChannelMemberItem, ChannelMessageItem, CommError, CommMessage,
-    CommMessageType, CommPlugin, LoopChannelInfo, LoopInfo, MessageHandler,
+    AgentCard, ChannelMemberItem, ChannelMessageItem, CommError, CommMessage, CommMessageType,
+    CommPlugin, LoopChannelInfo, LoopInfo, MessageHandler,
 };
 
 type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -115,7 +115,12 @@ impl NeboLoopPlugin {
 
     /// Get the conversation ID for a channel.
     pub async fn conversation_for_channel(&self, channel_id: &str) -> Option<String> {
-        self.conv_maps.read().await.channel_convs.get(channel_id).cloned()
+        self.conv_maps
+            .read()
+            .await
+            .channel_convs
+            .get(channel_id)
+            .cloned()
     }
 
     /// Snapshot of channel metadata.
@@ -135,7 +140,12 @@ impl NeboLoopPlugin {
 
     /// Get the agent space conversation ID for an agent slug.
     pub async fn agent_space_for_slug(&self, slug: &str) -> Option<String> {
-        self.conv_maps.read().await.agent_space_by_slug.get(slug).cloned()
+        self.conv_maps
+            .read()
+            .await
+            .agent_space_by_slug
+            .get(slug)
+            .cloned()
     }
 
     /// Queue a raw encoded frame for sending.
@@ -161,7 +171,10 @@ impl NeboLoopPlugin {
         .map_err(|e| CommError::Other(e.to_string()))?;
 
         let encoded = frame::encode(
-            Header { frame_type: frame::TYPE_JOIN_CONVERSATION, ..Default::default() },
+            Header {
+                frame_type: frame::TYPE_JOIN_CONVERSATION,
+                ..Default::default()
+            },
             &payload,
         )
         .map_err(|e| CommError::Other(e.to_string()))?;
@@ -178,7 +191,10 @@ impl NeboLoopPlugin {
         .map_err(|e| CommError::Other(e.to_string()))?;
 
         let encoded = frame::encode(
-            Header { frame_type: frame::TYPE_JOIN_CONVERSATION, ..Default::default() },
+            Header {
+                frame_type: frame::TYPE_JOIN_CONVERSATION,
+                ..Default::default()
+            },
             &payload,
         )
         .map_err(|e| CommError::Other(e.to_string()))?;
@@ -222,7 +238,10 @@ impl NeboLoopPlugin {
         .map_err(|e| CommError::Other(e.to_string()))?;
 
         let encoded = frame::encode(
-            Header { frame_type: frame::TYPE_ACK, ..Default::default() },
+            Header {
+                frame_type: frame::TYPE_ACK,
+                ..Default::default()
+            },
             &payload,
         )
         .map_err(|e| CommError::Other(e.to_string()))?;
@@ -233,7 +252,8 @@ impl NeboLoopPlugin {
     /// Send a DM on a conversation.
     pub async fn send_dm(&self, conversation_id: &str, text: &str) -> Result<(), CommError> {
         let content = serde_json::json!({ "text": text });
-        self.send_on_conversation(conversation_id, "dm", content).await
+        self.send_on_conversation(conversation_id, "dm", content)
+            .await
     }
 
     /// Send a chat message.
@@ -306,7 +326,9 @@ impl CommPlugin for NeboLoopPlugin {
 
         // Init devlog (appends with session separator)
         if let Some(dir) = config.get("data_dir") {
-            let log_path = std::path::PathBuf::from(dir).join("logs").join("neboloop.log");
+            let log_path = std::path::PathBuf::from(dir)
+                .join("logs")
+                .join("neboloop.log");
             if let Some(dl) = DevLog::open(&log_path) {
                 dl.event("────────────────────────────────────────");
                 dl.event(&format!("CONNECT {} bot={}", gateway, &bot_id));
@@ -331,7 +353,10 @@ impl CommPlugin for NeboLoopPlugin {
         })
         .map_err(|e| CommError::Other(e.to_string()))?;
         let connect_frame = frame::encode(
-            Header { frame_type: frame::TYPE_CONNECT, ..Default::default() },
+            Header {
+                frame_type: frame::TYPE_CONNECT,
+                ..Default::default()
+            },
             &connect_payload,
         )
         .map_err(|e| CommError::Other(e.to_string()))?;
@@ -351,12 +376,15 @@ impl CommPlugin for NeboLoopPlugin {
         let auth_data = match auth_msg {
             WsMessage::Binary(data) => data.to_vec(),
             other => {
-                return Err(CommError::Other(format!("unexpected ws message: {:?}", other)));
+                return Err(CommError::Other(format!(
+                    "unexpected ws message: {:?}",
+                    other
+                )));
             }
         };
 
-        let (auth_header, auth_payload) =
-            frame::decode(&auth_data).map_err(|e| CommError::Other(format!("decode auth: {}", e)))?;
+        let (auth_header, auth_payload) = frame::decode(&auth_data)
+            .map_err(|e| CommError::Other(format!("decode auth: {}", e)))?;
 
         if auth_header.frame_type == frame::TYPE_AUTH_FAIL {
             let result: wire::AuthResultPayload =
@@ -369,7 +397,10 @@ impl CommPlugin for NeboLoopPlugin {
 
         if auth_header.frame_type != frame::TYPE_AUTH_OK {
             if let Some(ref dl) = *self.devlog.read().await {
-                dl.error(&format!("unexpected frame type {} during auth", auth_header.frame_type));
+                dl.error(&format!(
+                    "unexpected frame type {} during auth",
+                    auth_header.frame_type
+                ));
             }
             return Err(CommError::Other(format!(
                 "unexpected frame type {}",
@@ -474,7 +505,8 @@ impl CommPlugin for NeboLoopPlugin {
             }
             {
                 let mut maps = self.conv_maps.write().await;
-                maps.pending_joins.push(format!("{}:{}", bot_id, stream_name));
+                maps.pending_joins
+                    .push(format!("{}:{}", bot_id, stream_name));
             }
             let payload = serde_json::to_vec(&wire::JoinPayload {
                 bot_id: bot_id.clone(),
@@ -483,7 +515,10 @@ impl CommPlugin for NeboLoopPlugin {
             })
             .map_err(|e| CommError::Other(e.to_string()))?;
             let encoded = frame::encode(
-                Header { frame_type: frame::TYPE_JOIN_CONVERSATION, ..Default::default() },
+                Header {
+                    frame_type: frame::TYPE_JOIN_CONVERSATION,
+                    ..Default::default()
+                },
                 &payload,
             )
             .map_err(|e| CommError::Other(e.to_string()))?;
@@ -569,7 +604,10 @@ impl CommPlugin for NeboLoopPlugin {
         .map_err(|e| CommError::Other(e.to_string()))?;
 
         let encoded = frame::encode(
-            Header { frame_type: frame::TYPE_SEND_MESSAGE, ..Default::default() },
+            Header {
+                frame_type: frame::TYPE_SEND_MESSAGE,
+                ..Default::default()
+            },
             &payload,
         )
         .map_err(|e| CommError::Other(e.to_string()))?;
@@ -710,7 +748,11 @@ impl CommPlugin for NeboLoopPlugin {
             .map(|m| ChannelMemberItem {
                 bot_id: m.bot_id,
                 bot_name: m.bot_name,
-                role: if m.role.is_empty() { None } else { Some(m.role) },
+                role: if m.role.is_empty() {
+                    None
+                } else {
+                    Some(m.role)
+                },
                 is_online: m.is_online,
             })
             .collect())
@@ -735,7 +777,12 @@ impl CommPlugin for NeboLoopPlugin {
     }
 
     async fn agent_space_conv_for_slug(&self, slug: &str) -> Option<String> {
-        self.conv_maps.read().await.agent_space_by_slug.get(slug).cloned()
+        self.conv_maps
+            .read()
+            .await
+            .agent_space_by_slug
+            .get(slug)
+            .cloned()
     }
 
     async fn wait_disconnect(&self) {
@@ -747,10 +794,13 @@ impl CommPlugin for NeboLoopPlugin {
 
 /// Join result update sent from read loop to the maps processor.
 enum JoinUpdate {
-    BotStream { key: String, conversation_id: String },
-    Channel(ChannelMeta, String),        // meta, conversation_id
-    Dm(DmPeer, String),                  // peer, conversation_id
-    AgentSpace(AgentSpaceMeta, String),  // meta, conversation_id
+    BotStream {
+        key: String,
+        conversation_id: String,
+    },
+    Channel(ChannelMeta, String),       // meta, conversation_id
+    Dm(DmPeer, String),                 // peer, conversation_id
+    AgentSpace(AgentSpaceMeta, String), // meta, conversation_id
 }
 
 /// Shared conversation maps updated by the join processor task.
@@ -763,15 +813,18 @@ struct ConvMaps {
     channel_meta: HashMap<String, ChannelMeta>,
     dm_convs: HashMap<String, DmPeer>,
     dm_by_peer: HashMap<String, String>,
-    agent_space_convs: HashMap<String, AgentSpaceMeta>,  // conv_id → meta
-    agent_space_by_slug: HashMap<String, String>,         // slug → conv_id
-    agent_space_by_id: HashMap<String, String>,            // agent_id → conv_id
+    agent_space_convs: HashMap<String, AgentSpaceMeta>, // conv_id → meta
+    agent_space_by_slug: HashMap<String, String>,       // slug → conv_id
+    agent_space_by_id: HashMap<String, String>,         // agent_id → conv_id
 }
 
 impl ConvMaps {
     fn apply(&mut self, update: JoinUpdate) {
         match update {
-            JoinUpdate::BotStream { key, conversation_id } => {
+            JoinUpdate::BotStream {
+                key,
+                conversation_id,
+            } => {
                 // If key is empty, pop from pending_joins queue (read loop
                 // doesn't know which stream the result belongs to).
                 let resolved_key = if key.is_empty() {
@@ -791,10 +844,8 @@ impl ConvMaps {
                 }
                 self.channel_by_conv
                     .insert(conv_id.clone(), meta.channel_id.clone());
-                self.channel_convs
-                    .insert(meta.channel_id.clone(), conv_id);
-                self.channel_meta
-                    .insert(meta.channel_id.clone(), meta);
+                self.channel_convs.insert(meta.channel_id.clone(), conv_id);
+                self.channel_meta.insert(meta.channel_id.clone(), meta);
             }
             JoinUpdate::Dm(peer, conv_id) => {
                 self.dm_by_peer
@@ -824,7 +875,10 @@ async fn read_loop(
     disconnect_notify: Arc<Notify>,
 ) {
     if let Some(ref dl) = devlog {
-        dl.event(&format!("READ_LOOP started handler={}", if handler.is_some() { "SET" } else { "NONE" }));
+        dl.event(&format!(
+            "READ_LOOP started handler={}",
+            if handler.is_some() { "SET" } else { "NONE" }
+        ));
     }
 
     loop {
@@ -1195,8 +1249,22 @@ async fn write_loop(
 fn uuid_from_bytes(b: &[u8; 16]) -> String {
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
+        b[0],
+        b[1],
+        b[2],
+        b[3],
+        b[4],
+        b[5],
+        b[6],
+        b[7],
+        b[8],
+        b[9],
+        b[10],
+        b[11],
+        b[12],
+        b[13],
+        b[14],
+        b[15],
     )
 }
 

@@ -5,9 +5,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
 
-use db::Store;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
+use db::Store;
 
 /// A single active agent — its own bot with isolated persona and scoped capabilities.
 #[derive(Debug, Clone)]
@@ -48,7 +48,7 @@ pub async fn validate_agent_dependencies(
     agent_registry: &AgentRegistry,
     skill_loader: &crate::skills::Loader,
 ) {
-    let loaded_skills = skill_loader.list().await;
+    let loaded_skills = skill_loader.list_summaries().await;
     let skill_names: HashSet<String> = loaded_skills.iter().map(|s| s.name.clone()).collect();
 
     let mut registry = agent_registry.write().await;
@@ -120,7 +120,11 @@ pub struct PersonaTool {
 }
 
 impl PersonaTool {
-    pub fn new(store: Arc<Store>, agent_registry: AgentRegistry, agent_loader: Arc<napp::AgentLoader>) -> Self {
+    pub fn new(
+        store: Arc<Store>,
+        agent_registry: AgentRegistry,
+        agent_loader: Arc<napp::AgentLoader>,
+    ) -> Self {
         Self {
             store,
             agent_registry,
@@ -131,8 +135,16 @@ impl PersonaTool {
     async fn handle_list(&self) -> ToolResult {
         // Get agents from loader cache
         let fs_agents = self.agent_loader.list().await;
-        let installed: Vec<_> = fs_agents.iter().filter(|a| a.source == napp::AgentSource::Installed).cloned().collect();
-        let user: Vec<_> = fs_agents.iter().filter(|a| a.source == napp::AgentSource::User).cloned().collect();
+        let installed: Vec<_> = fs_agents
+            .iter()
+            .filter(|a| a.source == napp::AgentSource::Installed)
+            .cloned()
+            .collect();
+        let user: Vec<_> = fs_agents
+            .iter()
+            .filter(|a| a.source == napp::AgentSource::User)
+            .cloned()
+            .collect();
 
         // Also check DB for agents
         let db_agents = self.store.list_agents(100, 0).unwrap_or_default();
@@ -147,28 +159,46 @@ impl PersonaTool {
             lines.push(format!(
                 "- [installed] {} — {}",
                 agent.agent_def.name,
-                if agent.agent_def.description.is_empty() { "-" } else { &agent.agent_def.description }
+                if agent.agent_def.description.is_empty() {
+                    "-"
+                } else {
+                    &agent.agent_def.description
+                }
             ));
         }
         for agent in &user {
             lines.push(format!(
                 "- [user] {} — {}",
                 agent.agent_def.name,
-                if agent.agent_def.description.is_empty() { "-" } else { &agent.agent_def.description }
+                if agent.agent_def.description.is_empty() {
+                    "-"
+                } else {
+                    &agent.agent_def.description
+                }
             ));
         }
         // Add DB-only agents not already in filesystem list
-        let fs_names: Vec<&str> = installed.iter().chain(user.iter())
+        let fs_names: Vec<&str> = installed
+            .iter()
+            .chain(user.iter())
             .map(|r| r.agent_def.name.as_str())
             .collect();
         for agent in &db_agents {
             if !fs_names.contains(&agent.name.as_str()) {
-                let enabled = if agent.is_enabled != 0 { "enabled" } else { "disabled" };
+                let enabled = if agent.is_enabled != 0 {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
                 lines.push(format!(
                     "- [db/{}] {} — {}",
                     enabled,
                     agent.name,
-                    if agent.description.is_empty() { "-" } else { &agent.description }
+                    if agent.description.is_empty() {
+                        "-"
+                    } else {
+                        &agent.description
+                    }
                 ));
             }
         }
@@ -182,7 +212,12 @@ impl PersonaTool {
             String::new()
         };
 
-        ToolResult::ok(format!("{} agents available{}:\n{}", lines.len(), status, lines.join("\n")))
+        ToolResult::ok(format!(
+            "{} agents available{}:\n{}",
+            lines.len(),
+            status,
+            lines.join("\n")
+        ))
     }
 
     async fn handle_activate(&self, input: &serde_json::Value) -> ToolResult {
@@ -209,17 +244,32 @@ impl PersonaTool {
                     } else {
                         // No DB entry yet — create one
                         let id = uuid::Uuid::new_v4().to_string();
-                        let frontmatter = loaded.config.as_ref()
+                        let frontmatter = loaded
+                            .config
+                            .as_ref()
                             .and_then(|c| serde_json::to_string(c).ok())
                             .unwrap_or_else(|| "{}".to_string());
-                        match self.store.create_agent(&id, None, &agent_name, &loaded.agent_def.description, &body, &frontmatter, None, None) {
+                        match self.store.create_agent(
+                            &id,
+                            None,
+                            &agent_name,
+                            &loaded.agent_def.description,
+                            &body,
+                            &frontmatter,
+                            None,
+                            None,
+                        ) {
                             Ok(_) => {
                                 let agent_dir = self.agent_loader.user_dir().join(&agent_name);
                                 if agent_dir.exists() {
-                                    let _ = self.store.set_agent_napp_path(&id, &agent_dir.to_string_lossy());
+                                    let _ = self
+                                        .store
+                                        .set_agent_napp_path(&id, &agent_dir.to_string_lossy());
                                 }
                             }
-                            Err(e) => warn!(name = %agent_name, error = %e, "failed to create DB entry for agent"),
+                            Err(e) => {
+                                warn!(name = %agent_name, error = %e, "failed to create DB entry for agent")
+                            }
                         }
                         id
                     }
@@ -238,7 +288,10 @@ impl PersonaTool {
                     channel_id: None,
                     degraded: None,
                 };
-                self.agent_registry.write().await.insert(agent_id.clone(), active);
+                self.agent_registry
+                    .write()
+                    .await
+                    .insert(agent_id.clone(), active);
 
                 let mut result = format!("Activated agent: {} (id: {})", agent_name, agent_id);
                 if let Some(ref config) = loaded.config {
@@ -280,7 +333,8 @@ impl PersonaTool {
         } else {
             // Deactivate a specific agent by name or id
             let lower = name.to_lowercase();
-            let key = registry.iter()
+            let key = registry
+                .iter()
                 .find(|(k, v)| k.to_lowercase() == lower || v.name.to_lowercase() == lower)
                 .map(|(k, _)| k.clone());
             match key {
@@ -294,7 +348,11 @@ impl PersonaTool {
                     if registry.is_empty() {
                         "none".to_string()
                     } else {
-                        registry.values().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
+                        registry
+                            .values()
+                            .map(|r| r.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     }
                 )),
             }
@@ -318,7 +376,11 @@ impl PersonaTool {
                 };
                 lines.push(format!("**{}** (id: {})\n{}", agent.name, id, preview));
             }
-            return ToolResult::ok(format!("Active agents ({}):\n\n{}", registry.len(), lines.join("\n\n---\n\n")));
+            return ToolResult::ok(format!(
+                "Active agents ({}):\n\n{}",
+                registry.len(),
+                lines.join("\n\n---\n\n")
+            ));
         }
 
         match self.find_agent(name).await {
@@ -328,7 +390,11 @@ impl PersonaTool {
                     "Name: {}\nVersion: {}\nDescription: {}\nSource: {}\n",
                     loaded.agent_def.name,
                     version_str,
-                    if loaded.agent_def.description.is_empty() { "-" } else { &loaded.agent_def.description },
+                    if loaded.agent_def.description.is_empty() {
+                        "-"
+                    } else {
+                        &loaded.agent_def.description
+                    },
                     match loaded.source {
                         napp::agent_loader::AgentSource::Installed => "marketplace",
                         napp::agent_loader::AgentSource::User => "user-created",
@@ -340,34 +406,53 @@ impl PersonaTool {
                         info.push_str("\nWorkflows:\n");
                         for (binding, wf) in &config.workflows {
                             let trigger_desc = match &wf.trigger {
-                                napp::agent::AgentTrigger::Schedule { cron } => format!("schedule({})", cron),
+                                napp::agent::AgentTrigger::Schedule { cron, .. } => {
+                                    format!("schedule({})", cron)
+                                }
                                 napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                                     match window {
                                         Some(w) => format!("heartbeat({}, {})", interval, w),
                                         None => format!("heartbeat({})", interval),
                                     }
                                 }
-                                napp::agent::AgentTrigger::Event { sources } => format!("event({})", sources.join(", ")),
-                                napp::agent::AgentTrigger::Watch { plugin, event, command, .. } => match event {
+                                napp::agent::AgentTrigger::Event { sources } => {
+                                    format!("event({})", sources.join(", "))
+                                }
+                                napp::agent::AgentTrigger::Watch {
+                                    plugin,
+                                    event,
+                                    command,
+                                    ..
+                                } => match event {
                                     Some(ev) => format!("watch({}, event:{})", plugin, ev),
                                     None => format!("watch({}, {})", plugin, command),
                                 },
                                 napp::agent::AgentTrigger::Manual => "manual".to_string(),
                             };
-                            let desc = if wf.description.is_empty() { "" } else { &wf.description };
+                            let desc = if wf.description.is_empty() {
+                                ""
+                            } else {
+                                &wf.description
+                            };
                             let activities_note = if wf.has_activities() {
                                 format!(" ({} activities)", wf.activities.len())
                             } else {
                                 String::new()
                             };
-                            info.push_str(&format!("  - {} [{}]{} {}\n", binding, trigger_desc, activities_note, desc));
+                            info.push_str(&format!(
+                                "  - {} [{}]{} {}\n",
+                                binding, trigger_desc, activities_note, desc
+                            ));
                         }
                     }
                     if !config.skills.is_empty() {
                         info.push_str(&format!("\nSkills: {}\n", config.skills.join(", ")));
                     }
                     if let Some(ref pricing) = config.pricing {
-                        info.push_str(&format!("\nPricing: {} (${:.2})\n", pricing.model, pricing.cost));
+                        info.push_str(&format!(
+                            "\nPricing: {} (${:.2})\n",
+                            pricing.model, pricing.cost
+                        ));
                     }
                 }
 
@@ -402,10 +487,16 @@ impl PersonaTool {
                 Some(Self::build_agent_json_from_automations(autos).to_string())
             }
         } else {
-            input["agent_json"].as_str().map(|s| s.to_string())
+            input["agent_json"]
+                .as_str()
+                .map(|s| s.to_string())
                 .or_else(|| {
                     let v = &input["agent_json"];
-                    if v.is_object() { Some(v.to_string()) } else { None }
+                    if v.is_object() {
+                        Some(v.to_string())
+                    } else {
+                        None
+                    }
                 })
         };
 
@@ -413,9 +504,14 @@ impl PersonaTool {
         let agent_md_raw = input["agent_md"].as_str().unwrap_or("");
         let agent_md = if agent_md_raw.is_empty() {
             if description.is_empty() {
-                return ToolResult::error("either 'agent_md' or 'description' is required to create an agent");
+                return ToolResult::error(
+                    "either 'agent_md' or 'description' is required to create an agent",
+                );
             }
-            format!("---\nname: {}\ndescription: {}\n---\nYou are {}. {}", name, description, name, description)
+            format!(
+                "---\nname: {}\ndescription: {}\n---\nYou are {}. {}",
+                name, description, name, description
+            )
         } else {
             // LLMs often send literal \n instead of real newlines in tool call strings.
             // Unescape so AGENT.md frontmatter parses correctly.
@@ -424,7 +520,11 @@ impl PersonaTool {
 
         let agent_dir = self.agent_loader.user_dir().join(name);
         if agent_dir.exists() {
-            return ToolResult::error(format!("Agent '{}' already exists at {}", name, agent_dir.display()));
+            return ToolResult::error(format!(
+                "Agent '{}' already exists at {}",
+                name,
+                agent_dir.display()
+            ));
         }
 
         if let Err(e) = std::fs::create_dir_all(&agent_dir) {
@@ -450,15 +550,29 @@ impl PersonaTool {
                 "type": "agent",
                 "description": description,
             });
-            let _ = std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap_or_default());
+            let _ = std::fs::write(
+                &manifest_path,
+                serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+            );
         }
 
         // Create DB entry so the agent has a proper UUID
         let id = uuid::Uuid::new_v4().to_string();
         let frontmatter = agent_json_str.as_deref().unwrap_or("{}");
-        match self.store.create_agent(&id, None, name, description, &agent_md, frontmatter, None, None) {
+        match self.store.create_agent(
+            &id,
+            None,
+            name,
+            description,
+            &agent_md,
+            frontmatter,
+            None,
+            None,
+        ) {
             Ok(_) => {
-                let _ = self.store.set_agent_napp_path(&id, &agent_dir.to_string_lossy());
+                let _ = self
+                    .store
+                    .set_agent_napp_path(&id, &agent_dir.to_string_lossy());
             }
             Err(e) => {
                 warn!(name, error = %e, "failed to create DB entry for agent");
@@ -475,28 +589,34 @@ impl PersonaTool {
                     self.register_config_triggers(&id, &config);
 
                     // Describe what was registered
-                    let trigger_descs: Vec<String> = config.workflows.iter().map(|(name, wf)| {
-                        let t = match &wf.trigger {
-                            napp::agent::AgentTrigger::Schedule { cron } => format!("schedule({})", cron),
-                            napp::agent::AgentTrigger::Heartbeat { interval, window } => {
-                                has_heartbeat_or_event = true;
-                                match window {
-                                    Some(w) => format!("heartbeat({}, {})", interval, w),
-                                    None => format!("heartbeat({})", interval),
+                    let trigger_descs: Vec<String> = config
+                        .workflows
+                        .iter()
+                        .map(|(name, wf)| {
+                            let t = match &wf.trigger {
+                                napp::agent::AgentTrigger::Schedule { cron, .. } => {
+                                    format!("schedule({})", cron)
                                 }
-                            }
-                            napp::agent::AgentTrigger::Event { sources } => {
-                                has_heartbeat_or_event = true;
-                                format!("event({})", sources.join(", "))
-                            }
-                            napp::agent::AgentTrigger::Watch { plugin, .. } => {
-                                has_heartbeat_or_event = true;
-                                format!("watch({})", plugin)
-                            }
-                            napp::agent::AgentTrigger::Manual => "manual".to_string(),
-                        };
-                        format!("{} [{}]", name, t)
-                    }).collect();
+                                napp::agent::AgentTrigger::Heartbeat { interval, window } => {
+                                    has_heartbeat_or_event = true;
+                                    match window {
+                                        Some(w) => format!("heartbeat({}, {})", interval, w),
+                                        None => format!("heartbeat({})", interval),
+                                    }
+                                }
+                                napp::agent::AgentTrigger::Event { sources } => {
+                                    has_heartbeat_or_event = true;
+                                    format!("event({})", sources.join(", "))
+                                }
+                                napp::agent::AgentTrigger::Watch { plugin, .. } => {
+                                    has_heartbeat_or_event = true;
+                                    format!("watch({})", plugin)
+                                }
+                                napp::agent::AgentTrigger::Manual => "manual".to_string(),
+                            };
+                            format!("{} [{}]", name, t)
+                        })
+                        .collect();
                     if !trigger_descs.is_empty() {
                         result.push_str(&format!("\nAutomations: {}", trigger_descs.join(", ")));
                     }
@@ -541,13 +661,20 @@ impl PersonaTool {
         let db_agent = match self.store.list_agents(500, 0) {
             Ok(agents) => {
                 let lower = name.to_lowercase();
-                agents.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name)
+                agents
+                    .into_iter()
+                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
             }
             Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
         };
         let db_agent = match db_agent {
             Some(r) => r,
-            None => return ToolResult::error(format!("Agent '{}' not found. Use persona(action: \"list\") to see available agents.", name)),
+            None => {
+                return ToolResult::error(format!(
+                    "Agent '{}' not found. Use persona(action: \"list\") to see available agents.",
+                    name
+                ));
+            }
         };
 
         let agent_id = &db_agent.id;
@@ -565,12 +692,17 @@ impl PersonaTool {
                 let new_dir = self.agent_loader.user_dir().join(new_name);
                 if old_dir.exists() {
                     if new_dir.exists() {
-                        return ToolResult::error(format!("Cannot rename: '{}' already exists", new_name));
+                        return ToolResult::error(format!(
+                            "Cannot rename: '{}' already exists",
+                            new_name
+                        ));
                     }
                     if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
                         return ToolResult::error(format!("Failed to rename directory: {}", e));
                     }
-                    let _ = self.store.set_agent_napp_path(agent_id, &new_dir.to_string_lossy());
+                    let _ = self
+                        .store
+                        .set_agent_napp_path(agent_id, &new_dir.to_string_lossy());
                 }
                 changes.push(format!("renamed to '{}'", new_name));
                 current_name = new_name.to_string();
@@ -612,7 +744,8 @@ impl PersonaTool {
         // Update input schema (field definitions in agent.json)
         if let Some(schema) = input.get("inputs") {
             if schema.is_array() {
-                let mut fm: serde_json::Value = serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
+                let mut fm: serde_json::Value =
+                    serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
                 fm["inputs"] = schema.clone();
                 current_frontmatter = fm.to_string();
                 let agent_dir = self.agent_loader.user_dir().join(&current_name);
@@ -637,12 +770,17 @@ impl PersonaTool {
         // update_automation: update a single binding by name (non-destructive)
         if let Some(update_obj) = input.get("update_automation") {
             if let Some(binding_name) = update_obj["name"].as_str() {
-                let mut fm: serde_json::Value = serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
+                let mut fm: serde_json::Value =
+                    serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
 
-                if let Some(existing_binding) = fm.get_mut("workflows").and_then(|w| w.get_mut(binding_name)) {
+                if let Some(existing_binding) = fm
+                    .get_mut("workflows")
+                    .and_then(|w| w.get_mut(binding_name))
+                {
                     // Merge individual fields into the existing binding
                     if let Some(desc) = update_obj["description"].as_str() {
-                        existing_binding["description"] = serde_json::Value::String(desc.to_string());
+                        existing_binding["description"] =
+                            serde_json::Value::String(desc.to_string());
                     }
                     if let Some(emit) = update_obj.get("emit") {
                         existing_binding["emit"] = emit.clone();
@@ -685,10 +823,14 @@ impl PersonaTool {
                                 t
                             }
                             "event" => {
-                                let sources: Vec<serde_json::Value> = if let Some(arr) = update_obj["sources"].as_array() {
+                                let sources: Vec<serde_json::Value> = if let Some(arr) =
+                                    update_obj["sources"].as_array()
+                                {
                                     arr.clone()
                                 } else if let Some(s) = update_obj["sources"].as_str() {
-                                    s.split(',').map(|s| serde_json::Value::String(s.trim().to_string())).collect()
+                                    s.split(',')
+                                        .map(|s| serde_json::Value::String(s.trim().to_string()))
+                                        .collect()
                                 } else {
                                     vec![]
                                 };
@@ -717,22 +859,39 @@ impl PersonaTool {
                     // Upsert the workflow binding row in DB
                     if let Ok(config) = napp::agent::parse_agent_config(&current_frontmatter) {
                         if let Some(binding) = config.workflows.get(binding_name) {
-                            let (trigger_type, trigger_config) = Self::flatten_trigger(&binding.trigger);
+                            let (trigger_type, trigger_config) =
+                                Self::flatten_trigger(&binding.trigger);
                             let activities_json = serde_json::to_string(&binding.activities).ok();
-                            let inputs_json = if binding.inputs.is_empty() { None } else {
+                            let inputs_json = if binding.inputs.is_empty() {
+                                None
+                            } else {
                                 serde_json::to_string(&binding.inputs).ok()
                             };
+                            let connections_json = if binding.connections.is_empty() {
+                                None
+                            } else {
+                                serde_json::to_string(&binding.connections).ok()
+                            };
                             let _ = self.store.upsert_agent_workflow(
-                                agent_id, binding_name, &trigger_type, &trigger_config,
-                                Some(&binding.description), inputs_json.as_deref(),
-                                binding.emit.as_deref(), activities_json.as_deref(),
+                                agent_id,
+                                binding_name,
+                                &trigger_type,
+                                &trigger_config,
+                                Some(&binding.description),
+                                inputs_json.as_deref(),
+                                binding.emit.as_deref(),
+                                activities_json.as_deref(),
+                                connections_json.as_deref(),
                             );
                         }
                     }
 
                     changes.push(format!("updated automation '{}'", binding_name));
                 } else {
-                    changes.push(format!("automation '{}' not found — use add_automations to create it", binding_name));
+                    changes.push(format!(
+                        "automation '{}' not found — use add_automations to create it",
+                        binding_name
+                    ));
                 }
             }
         }
@@ -744,7 +903,10 @@ impl PersonaTool {
         if let Some(removals) = input["remove_automations"].as_array() {
             for removal in removals {
                 if let Some(binding_name) = removal.as_str() {
-                    match self.store.delete_single_agent_workflow(agent_id, binding_name) {
+                    match self
+                        .store
+                        .delete_single_agent_workflow(agent_id, binding_name)
+                    {
                         Ok(_) => {
                             // Also remove cron job if it was a schedule trigger
                             let cron_name = format!("agent-{}-{}", agent_id, binding_name);
@@ -779,7 +941,10 @@ impl PersonaTool {
 
                 if let Ok(config) = napp::agent::parse_agent_config(&current_frontmatter) {
                     self.register_config_triggers(agent_id, &config);
-                    changes.push(format!("replaced all automations ({} total)", config.workflows.len()));
+                    changes.push(format!(
+                        "replaced all automations ({} total)",
+                        config.workflows.len()
+                    ));
                 }
             } else {
                 current_frontmatter = "{}".to_string();
@@ -800,9 +965,13 @@ impl PersonaTool {
                 }
 
                 // Merge into frontmatter for DB storage
-                let mut existing: serde_json::Value = serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
+                let mut existing: serde_json::Value =
+                    serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
                 if let Some(new_wfs) = new_json["workflows"].as_object() {
-                    let existing_wfs = existing["workflows"].as_object().cloned().unwrap_or_default();
+                    let existing_wfs = existing["workflows"]
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default();
                     let mut merged = existing_wfs;
                     for (k, v) in new_wfs {
                         merged.insert(k.clone(), v.clone());
@@ -847,7 +1016,12 @@ impl PersonaTool {
             return ToolResult::ok(format!("No changes made to agent '{}'.", current_name));
         }
 
-        ToolResult::ok(format!("Updated agent '{}' (id: {}):\n- {}", current_name, agent_id, changes.join("\n- ")))
+        ToolResult::ok(format!(
+            "Updated agent '{}' (id: {}):\n- {}",
+            current_name,
+            agent_id,
+            changes.join("\n- ")
+        ))
     }
 
     async fn handle_delete(&self, input: &serde_json::Value) -> ToolResult {
@@ -860,7 +1034,9 @@ impl PersonaTool {
         let db_agent = match self.store.list_agents(500, 0) {
             Ok(agents) => {
                 let lower = name.to_lowercase();
-                agents.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name)
+                agents
+                    .into_iter()
+                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
             }
             Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
         };
@@ -893,18 +1069,25 @@ impl PersonaTool {
             if let Err(e) = std::fs::remove_dir_all(&user_dir) {
                 return ToolResult::ok(format!(
                     "Deleted agent '{}' from DB and registry, but failed to remove directory {}: {}",
-                    agent_name, user_dir.display(), e
+                    agent_name,
+                    user_dir.display(),
+                    e
                 ));
             }
         }
 
-        ToolResult::ok(format!("Deleted agent '{}' (id: {}). Removed from DB, registry, and filesystem.", agent_name, agent_id))
+        ToolResult::ok(format!(
+            "Deleted agent '{}' (id: {}). Removed from DB, registry, and filesystem.",
+            agent_name, agent_id
+        ))
     }
 
     async fn handle_install(&self, input: &serde_json::Value) -> ToolResult {
         let code = input["code"].as_str().unwrap_or("");
         if code.is_empty() || !code.starts_with("AGNT-") {
-            return ToolResult::error("'code' is required and must start with AGNT- (e.g. AGNT-ABCD-1234)");
+            return ToolResult::error(
+                "'code' is required and must start with AGNT- (e.g. AGNT-ABCD-1234)",
+            );
         }
 
         // Check if already installed
@@ -932,7 +1115,10 @@ impl PersonaTool {
                 let artifact_id = resp.artifact.id.clone();
 
                 // Fetch and persist artifact content
-                if let Err(e) = crate::persist_agent_from_api(&api, &artifact_id, &name, code, &self.store).await {
+                if let Err(e) =
+                    crate::persist_agent_from_api(&api, &artifact_id, &name, code, &self.store)
+                        .await
+                {
                     warn!(code, error = %e, "failed to persist agent after install");
                 }
 
@@ -954,7 +1140,9 @@ impl PersonaTool {
         let db_agent = match self.store.list_agents(500, 0) {
             Ok(agents) => {
                 let lower = name.to_lowercase();
-                agents.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name)
+                agents
+                    .into_iter()
+                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
             }
             Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
         };
@@ -978,9 +1166,12 @@ impl PersonaTool {
                         Ok(detail) => {
                             let remote_version = &detail.item.version;
                             // Get local version from manifest.json if it exists
-                            let local_version = db_agent.napp_path.as_ref()
+                            let local_version = db_agent
+                                .napp_path
+                                .as_ref()
                                 .and_then(|p| {
-                                    let manifest_path = std::path::PathBuf::from(p).join("manifest.json");
+                                    let manifest_path =
+                                        std::path::PathBuf::from(p).join("manifest.json");
                                     std::fs::read_to_string(manifest_path).ok()
                                 })
                                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -990,16 +1181,29 @@ impl PersonaTool {
                             if remote_version != &local_version && !remote_version.is_empty() {
                                 if apply_update {
                                     // Re-fetch and apply the update
-                                    match crate::persist_agent_from_api(&api, agent_id, &db_agent.name, db_agent.kind.as_deref().unwrap_or(""), &self.store).await {
+                                    match crate::persist_agent_from_api(
+                                        &api,
+                                        agent_id,
+                                        &db_agent.name,
+                                        db_agent.kind.as_deref().unwrap_or(""),
+                                        &self.store,
+                                    )
+                                    .await
+                                    {
                                         Ok(_) => {
                                             // Re-read from DB after persist
-                                            if let Ok(Some(updated)) = self.store.get_agent(agent_id) {
+                                            if let Ok(Some(updated)) =
+                                                self.store.get_agent(agent_id)
+                                            {
                                                 current_md = updated.agent_md;
                                                 current_frontmatter = updated.frontmatter;
                                                 current_name = updated.name;
                                                 current_desc = updated.description;
                                             }
-                                            changes.push(format!("upgraded from {} → {}", local_version, remote_version));
+                                            changes.push(format!(
+                                                "upgraded from {} → {}",
+                                                local_version, remote_version
+                                            ));
                                         }
                                         Err(e) => changes.push(format!("upgrade failed: {}", e)),
                                     }
@@ -1013,12 +1217,18 @@ impl PersonaTool {
                         Err(e) => changes.push(format!("failed to check for updates: {}", e)),
                     }
                 }
-                Err(_) => changes.push("NeboLoop not connected — cannot check for updates".to_string()),
+                Err(_) => {
+                    changes.push("NeboLoop not connected — cannot check for updates".to_string())
+                }
             }
 
             if check_update && !apply_update {
                 // Just checking, don't reload from filesystem
-                return ToolResult::ok(format!("Agent '{}':\n- {}", db_agent.name, changes.join("\n- ")));
+                return ToolResult::ok(format!(
+                    "Agent '{}':\n- {}",
+                    db_agent.name,
+                    changes.join("\n- ")
+                ));
             }
         }
 
@@ -1073,7 +1283,9 @@ impl PersonaTool {
                                         config.inputs.len()
                                     ));
                                 }
-                                Err(e) => changes.push(format!("agent.json invalid, skipped: {}", e)),
+                                Err(e) => {
+                                    changes.push(format!("agent.json invalid, skipped: {}", e))
+                                }
                             }
                         }
                     }
@@ -1088,8 +1300,13 @@ impl PersonaTool {
 
         // Persist to DB
         if let Err(e) = self.store.update_agent(
-            agent_id, &current_name, &current_desc, &current_md,
-            &current_frontmatter, db_agent.pricing_model.as_deref(), db_agent.pricing_cost,
+            agent_id,
+            &current_name,
+            &current_desc,
+            &current_md,
+            &current_frontmatter,
+            db_agent.pricing_model.as_deref(),
+            db_agent.pricing_cost,
         ) {
             return ToolResult::error(format!("Failed to update DB: {}", e));
         }
@@ -1103,7 +1320,11 @@ impl PersonaTool {
             changes.push("live agent updated".to_string());
         }
 
-        ToolResult::ok(format!("Agent '{}':\n- {}", current_name, changes.join("\n- ")))
+        ToolResult::ok(format!(
+            "Agent '{}':\n- {}",
+            current_name,
+            changes.join("\n- ")
+        ))
     }
 
     async fn handle_repair(&self, input: &serde_json::Value) -> ToolResult {
@@ -1116,7 +1337,10 @@ impl PersonaTool {
             agents.iter().collect()
         } else {
             let lower = name_filter.to_lowercase();
-            agents.iter().filter(|r| r.name.to_lowercase() == lower || r.id == name_filter).collect()
+            agents
+                .iter()
+                .filter(|r| r.name.to_lowercase() == lower || r.id == name_filter)
+                .collect()
         };
 
         if target_agents.is_empty() && !name_filter.is_empty() {
@@ -1124,7 +1348,10 @@ impl PersonaTool {
         }
 
         for agent in &target_agents {
-            let bindings = self.store.list_agent_workflows(&agent.id).unwrap_or_default();
+            let bindings = self
+                .store
+                .list_agent_workflows(&agent.id)
+                .unwrap_or_default();
             for binding in &bindings {
                 if binding.trigger_type != "schedule" {
                     continue;
@@ -1141,8 +1368,12 @@ impl PersonaTool {
                         None,
                         None,
                         None,
+                        None,
                     ) {
-                        fixes.push(format!("FAILED {}/{}: {} ({})", agent.name, binding.binding_name, normalized, e));
+                        fixes.push(format!(
+                            "FAILED {}/{}: {} ({})",
+                            agent.name, binding.binding_name, normalized, e
+                        ));
                         continue;
                     }
 
@@ -1151,10 +1382,20 @@ impl PersonaTool {
                     let command = format!("agent:{}:{}", agent.id, binding.binding_name);
                     let _ = self.store.delete_cron_job_by_name(&cron_name);
                     let _ = self.store.upsert_cron_job(
-                        &cron_name, &normalized, &command, "agent_workflow", None, None, None, true,
+                        &cron_name,
+                        &normalized,
+                        &command,
+                        "agent_workflow",
+                        None,
+                        None,
+                        None,
+                        true,
                     );
 
-                    fixes.push(format!("fixed {}/{}: '{}' → '{}'", agent.name, binding.binding_name, binding.trigger_config, normalized));
+                    fixes.push(format!(
+                        "fixed {}/{}: '{}' → '{}'",
+                        agent.name, binding.binding_name, binding.trigger_config, normalized
+                    ));
                 }
             }
 
@@ -1165,14 +1406,20 @@ impl PersonaTool {
                     let mut updated_workflows = config.workflows.clone();
 
                     for (wf_name, binding) in &config.workflows {
-                        if let napp::agent::AgentTrigger::Schedule { cron } = &binding.trigger {
+                        if let napp::agent::AgentTrigger::Schedule { cron, .. } = &binding.trigger {
                             let normalized = Self::normalize_cron(cron);
                             if normalized != *cron {
                                 let mut updated = binding.clone();
-                                updated.trigger = napp::agent::AgentTrigger::Schedule { cron: normalized.clone() };
+                                updated.trigger = napp::agent::AgentTrigger::Schedule {
+                                    cron: normalized.clone(),
+                                    schedule: None,
+                                };
                                 updated_workflows.insert(wf_name.clone(), updated);
                                 frontmatter_changed = true;
-                                fixes.push(format!("fixed {}/{} frontmatter: '{}' → '{}'", agent.name, wf_name, cron, normalized));
+                                fixes.push(format!(
+                                    "fixed {}/{} frontmatter: '{}' → '{}'",
+                                    agent.name, wf_name, cron, normalized
+                                ));
                             }
                         }
                     }
@@ -1181,8 +1428,13 @@ impl PersonaTool {
                         config.workflows = updated_workflows;
                         if let Ok(new_fm) = serde_json::to_string(&config) {
                             let _ = self.store.update_agent(
-                                &agent.id, &agent.name, &agent.description, &agent.agent_md,
-                                &new_fm, agent.pricing_model.as_deref(), agent.pricing_cost,
+                                &agent.id,
+                                &agent.name,
+                                &agent.description,
+                                &agent.agent_md,
+                                &new_fm,
+                                agent.pricing_model.as_deref(),
+                                agent.pricing_cost,
                             );
 
                             // Also update agent.json on disk
@@ -1216,7 +1468,10 @@ impl PersonaTool {
                         let aid = &rest[..36];
                         if !all_agent_ids.contains(&aid) {
                             let _ = self.store.delete_cron_job_by_name(&job.name);
-                            fixes.push(format!("removed orphan cron job: {} (agent deleted)", job.name));
+                            fixes.push(format!(
+                                "removed orphan cron job: {} (agent deleted)",
+                                job.name
+                            ));
                         }
                     }
                 }
@@ -1224,10 +1479,18 @@ impl PersonaTool {
         }
 
         if fixes.is_empty() {
-            let scope = if name_filter.is_empty() { "all agents" } else { name_filter };
+            let scope = if name_filter.is_empty() {
+                "all agents"
+            } else {
+                name_filter
+            };
             ToolResult::ok(format!("No repairs needed for {}.", scope))
         } else {
-            ToolResult::ok(format!("Repaired {} issues:\n- {}", fixes.len(), fixes.join("\n- ")))
+            ToolResult::ok(format!(
+                "Repaired {} issues:\n- {}",
+                fixes.len(),
+                fixes.join("\n- ")
+            ))
         }
     }
 
@@ -1235,7 +1498,9 @@ impl PersonaTool {
     fn register_config_triggers(&self, agent_id: &str, config: &napp::agent::AgentConfig) {
         for (binding_name, binding) in &config.workflows {
             let (trigger_type, trigger_config) = match &binding.trigger {
-                napp::agent::AgentTrigger::Schedule { cron } => ("schedule", Self::normalize_cron(cron)),
+                napp::agent::AgentTrigger::Schedule { cron, .. } => {
+                    ("schedule", Self::normalize_cron(cron))
+                }
                 napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                     let cfg = match window {
                         Some(w) => format!("{}|{}", interval, w),
@@ -1244,7 +1509,12 @@ impl PersonaTool {
                     ("heartbeat", cfg)
                 }
                 napp::agent::AgentTrigger::Event { sources } => ("event", sources.join(",")),
-                napp::agent::AgentTrigger::Watch { plugin, command, event, restart_delay_secs } => {
+                napp::agent::AgentTrigger::Watch {
+                    plugin,
+                    command,
+                    event,
+                    restart_delay_secs,
+                } => {
                     let mut cfg = serde_json::json!({
                         "plugin": plugin,
                         "command": command,
@@ -1275,6 +1545,12 @@ impl PersonaTool {
                 serde_json::to_string(&binding.activities).ok()
             };
 
+            let connections_json = if binding.connections.is_empty() {
+                None
+            } else {
+                serde_json::to_string(&binding.connections).ok()
+            };
+
             if let Err(e) = self.store.upsert_agent_workflow(
                 agent_id,
                 binding_name,
@@ -1284,6 +1560,7 @@ impl PersonaTool {
                 inputs_json.as_deref(),
                 binding.emit.as_deref(),
                 activities_json.as_deref(),
+                connections_json.as_deref(),
             ) {
                 warn!(agent = agent_id, binding = %binding_name, error = %e, "failed to upsert agent workflow");
             }
@@ -1334,7 +1611,12 @@ impl PersonaTool {
 
         // Handle human-readable expressions like "every 30 seconds", "every 2 minutes", etc.
         let lower = trimmed.to_lowercase();
-        if lower.starts_with("every ") || lower.starts_with("at ") || lower.contains("daily") || lower.contains("weekly") || lower.contains("hourly") {
+        if lower.starts_with("every ")
+            || lower.starts_with("at ")
+            || lower.contains("daily")
+            || lower.contains("weekly")
+            || lower.contains("hourly")
+        {
             return Self::human_to_cron(&lower);
         }
 
@@ -1343,10 +1625,10 @@ impl PersonaTool {
         let fields: Vec<&str> = processed.split_whitespace().collect();
 
         match fields.len() {
-            5 => format!("0 {} *", processed),       // standard 5-field → 7-field
-            6 => format!("0 {}", processed),          // 6-field (missing seconds) → 7-field
-            7 => processed,                           // already 7-field
-            _ => format!("0 {} * * * *", processed),  // best effort
+            5 => format!("0 {} *", processed), // standard 5-field → 7-field
+            6 => format!("0 {}", processed),   // 6-field (missing seconds) → 7-field
+            7 => processed,                    // already 7-field
+            _ => format!("0 {} * * * *", processed), // best effort
         }
     }
 
@@ -1471,8 +1753,12 @@ impl PersonaTool {
             if is_pm || is_am {
                 let num_part = word.trim_end_matches(|c: char| !c.is_ascii_digit());
                 if let Ok(mut h) = num_part.parse::<u32>() {
-                    if is_pm && h < 12 { h += 12; }
-                    if is_am && h == 12 { h = 0; }
+                    if is_pm && h < 12 {
+                        h += 12;
+                    }
+                    if is_am && h == 12 {
+                        h = 0;
+                    }
                     return (h.to_string(), "0".to_string());
                 }
             }
@@ -1497,7 +1783,9 @@ impl PersonaTool {
     /// Convert a parsed AgentTrigger into flat (type, config) strings for DB storage.
     fn flatten_trigger(trigger: &napp::agent::AgentTrigger) -> (String, String) {
         match trigger {
-            napp::agent::AgentTrigger::Schedule { cron } => ("schedule".to_string(), cron.clone()),
+            napp::agent::AgentTrigger::Schedule { cron, .. } => {
+                ("schedule".to_string(), cron.clone())
+            }
             napp::agent::AgentTrigger::Heartbeat { interval, window } => {
                 let config = match window {
                     Some(w) => format!("{}|{}", interval, w),
@@ -1505,8 +1793,15 @@ impl PersonaTool {
                 };
                 ("heartbeat".to_string(), config)
             }
-            napp::agent::AgentTrigger::Event { sources } => ("event".to_string(), sources.join(",")),
-            napp::agent::AgentTrigger::Watch { plugin, command, event, restart_delay_secs } => {
+            napp::agent::AgentTrigger::Event { sources } => {
+                ("event".to_string(), sources.join(","))
+            }
+            napp::agent::AgentTrigger::Watch {
+                plugin,
+                command,
+                event,
+                restart_delay_secs,
+            } => {
                 let mut cfg = serde_json::json!({
                     "plugin": plugin,
                     "command": command,
@@ -1555,13 +1850,16 @@ impl PersonaTool {
                     t
                 }
                 "event" => {
-                    let sources: Vec<serde_json::Value> = if let Some(arr) = auto["sources"].as_array() {
-                        arr.clone()
-                    } else if let Some(s) = auto["sources"].as_str() {
-                        s.split(',').map(|s| serde_json::Value::String(s.trim().to_string())).collect()
-                    } else {
-                        vec![]
-                    };
+                    let sources: Vec<serde_json::Value> =
+                        if let Some(arr) = auto["sources"].as_array() {
+                            arr.clone()
+                        } else if let Some(s) = auto["sources"].as_str() {
+                            s.split(',')
+                                .map(|s| serde_json::Value::String(s.trim().to_string()))
+                                .collect()
+                        } else {
+                            vec![]
+                        };
                     serde_json::json!({ "type": "event", "sources": sources })
                 }
                 _ => serde_json::json!({ "type": "manual" }),
@@ -1569,13 +1867,17 @@ impl PersonaTool {
 
             // Build activities from steps array
             let activities: Vec<serde_json::Value> = if let Some(steps) = auto["steps"].as_array() {
-                steps.iter().enumerate().map(|(i, step)| {
-                    let intent = step.as_str().unwrap_or("Execute step");
-                    serde_json::json!({
-                        "id": format!("step-{}", i + 1),
-                        "intent": intent
+                steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, step)| {
+                        let intent = step.as_str().unwrap_or("Execute step");
+                        serde_json::json!({
+                            "id": format!("step-{}", i + 1),
+                            "intent": intent
+                        })
                     })
-                }).collect()
+                    .collect()
             } else {
                 vec![]
             };
@@ -1608,16 +1910,20 @@ impl PersonaTool {
         let db_agent = match self.store.list_agents(500, 0) {
             Ok(agents) => {
                 let lower = name.to_lowercase();
-                agents.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name)
+                agents
+                    .into_iter()
+                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
             }
             Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
         };
         let db_agent = match db_agent {
             Some(r) => r,
-            None => return ToolResult::error(format!(
-                "Agent '{}' not found. Use persona(action: \"list\") to see available agents.",
-                name
-            )),
+            None => {
+                return ToolResult::error(format!(
+                    "Agent '{}' not found. Use persona(action: \"list\") to see available agents.",
+                    name
+                ));
+            }
         };
 
         let agent_id = &db_agent.id;
@@ -1628,7 +1934,10 @@ impl PersonaTool {
         };
 
         if stats.total_runs == 0 {
-            return ToolResult::ok(format!("## Stats for {}\n\nNo workflow runs recorded yet.", db_agent.name));
+            return ToolResult::ok(format!(
+                "## Stats for {}\n\nNo workflow runs recorded yet.",
+                db_agent.name
+            ));
         }
 
         let now = std::time::SystemTime::now()
@@ -1648,10 +1957,15 @@ impl PersonaTool {
             match ts {
                 Some(t) => {
                     let diff = now - t;
-                    if diff < 60 { format!("{}s ago", diff) }
-                    else if diff < 3600 { format!("{}m ago", diff / 60) }
-                    else if diff < 86400 { format!("{}h ago", diff / 3600) }
-                    else { format!("{}d ago", diff / 86400) }
+                    if diff < 60 {
+                        format!("{}s ago", diff)
+                    } else if diff < 3600 {
+                        format!("{}m ago", diff / 60)
+                    } else if diff < 86400 {
+                        format!("{}h ago", diff / 3600)
+                    } else {
+                        format!("{}d ago", diff / 86400)
+                    }
                 }
                 None => "-".to_string(),
             }
@@ -1664,7 +1978,11 @@ impl PersonaTool {
              Avg duration: {}\n\
              Last run: {}",
             db_agent.name,
-            stats.total_runs, stats.completed, stats.failed, stats.cancelled, stats.running,
+            stats.total_runs,
+            stats.completed,
+            stats.failed,
+            stats.cancelled,
+            stats.running,
             stats.total_tokens,
             duration_str,
             relative(stats.last_run_at),
@@ -1675,7 +1993,10 @@ impl PersonaTool {
         }
 
         // Recent errors
-        let errors = self.store.agent_recent_errors(agent_id, 5).unwrap_or_default();
+        let errors = self
+            .store
+            .agent_recent_errors(agent_id, 5)
+            .unwrap_or_default();
         if !errors.is_empty() {
             out.push_str("\n\n### Recent Errors");
             for (i, e) in errors.iter().enumerate() {
@@ -1702,7 +2023,9 @@ impl PersonaTool {
         let db_agent = match self.store.list_agents(500, 0) {
             Ok(agents) => {
                 let lower = name.to_lowercase();
-                agents.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name)
+                agents
+                    .into_iter()
+                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
             }
             Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
         };
@@ -1753,6 +2076,12 @@ impl PersonaTool {
                         frontmatter: r.frontmatter.clone(),
                         description: r.description.clone(),
                         id: Some(r.id.clone()),
+                        views: None,
+                        theme_css: None,
+                        is_app: false,
+                        app_ui_path: None,
+                        app_binary_path: None,
+                        app_window_config: None,
                     });
                 }
             }
@@ -2030,10 +2359,7 @@ mod tests {
 
     #[test]
     fn test_extract_skill_name_bare() {
-        assert_eq!(
-            extract_skill_name_from_ref("my-skill"),
-            "my-skill"
-        );
+        assert_eq!(extract_skill_name_from_ref("my-skill"), "my-skill");
     }
 
     #[test]
@@ -2044,10 +2370,7 @@ mod tests {
             "web-search"
         );
         // No version suffix
-        assert_eq!(
-            extract_skill_name_from_ref("@org/skills/name"),
-            "name"
-        );
+        assert_eq!(extract_skill_name_from_ref("@org/skills/name"), "name");
     }
 
     #[tokio::test]
@@ -2055,7 +2378,6 @@ mod tests {
         use tempfile::TempDir;
 
         // Set up a skill loader with one skill loaded
-        let bundled = TempDir::new().unwrap();
         let installed = TempDir::new().unwrap();
         let user = TempDir::new().unwrap();
 
@@ -2065,13 +2387,11 @@ mod tests {
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "---\nname: briefing-writer\ndescription: test\n---\nTemplate",
-        ).unwrap();
+        )
+        .unwrap();
 
-        let loader = crate::skills::Loader::new(
-            bundled.path().to_path_buf(),
-            installed.path().to_path_buf(),
-            user.path().to_path_buf(),
-        );
+        let loader =
+            crate::skills::Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
         loader.load_all().await;
 
         // Create agent registry with an agent that requires two skills —
@@ -2090,14 +2410,17 @@ mod tests {
                 degraded: None,
             });
             // Agent with no config — should remain non-degraded
-            reg.insert("agent-2".to_string(), ActiveAgent {
-                agent_id: "agent-2".to_string(),
-                name: "No Config Agent".to_string(),
-                agent_md: String::new(),
-                config: None,
-                channel_id: None,
-                degraded: None,
-            });
+            reg.insert(
+                "agent-2".to_string(),
+                ActiveAgent {
+                    agent_id: "agent-2".to_string(),
+                    name: "No Config Agent".to_string(),
+                    agent_md: String::new(),
+                    config: None,
+                    channel_id: None,
+                    degraded: None,
+                },
+            );
         }
 
         // Run validation
@@ -2121,7 +2444,6 @@ mod tests {
     async fn test_validate_agent_dependencies_all_satisfied() {
         use tempfile::TempDir;
 
-        let bundled = TempDir::new().unwrap();
         let installed = TempDir::new().unwrap();
         let user = TempDir::new().unwrap();
 
@@ -2131,34 +2453,41 @@ mod tests {
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "---\nname: briefing-writer\ndescription: test\n---\nTemplate",
-        ).unwrap();
+        )
+        .unwrap();
 
-        let loader = crate::skills::Loader::new(
-            bundled.path().to_path_buf(),
-            installed.path().to_path_buf(),
-            user.path().to_path_buf(),
-        );
+        let loader =
+            crate::skills::Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
         loader.load_all().await;
 
         let registry: AgentRegistry = Arc::new(RwLock::new(HashMap::new()));
         {
             let mut reg = registry.write().await;
-            reg.insert("agent-ok".to_string(), ActiveAgent {
-                agent_id: "agent-ok".to_string(),
-                name: "Happy Agent".to_string(),
-                agent_md: String::new(),
-                config: Some(napp::agent::parse_agent_config(
-                    r#"{"skills": ["@nebo/skills/briefing-writer@^1.0.0"]}"#
-                ).unwrap()),
-                channel_id: None,
-                degraded: None,
-            });
+            reg.insert(
+                "agent-ok".to_string(),
+                ActiveAgent {
+                    agent_id: "agent-ok".to_string(),
+                    name: "Happy Agent".to_string(),
+                    agent_md: String::new(),
+                    config: Some(
+                        napp::agent::parse_agent_config(
+                            r#"{"skills": ["@nebo/skills/briefing-writer@^1.0.0"]}"#,
+                        )
+                        .unwrap(),
+                    ),
+                    channel_id: None,
+                    degraded: None,
+                },
+            );
         }
 
         validate_agent_dependencies(&registry, &loader).await;
 
         let reg = registry.read().await;
         let agent = reg.get("agent-ok").unwrap();
-        assert!(agent.degraded.is_none(), "agent with all deps satisfied should not be degraded");
+        assert!(
+            agent.degraded.is_none(),
+            "agent with all deps satisfied should not be degraded"
+        );
     }
 }

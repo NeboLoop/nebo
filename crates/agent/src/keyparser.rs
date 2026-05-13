@@ -303,10 +303,7 @@ mod tests {
 
     #[test]
     fn test_build_agent_session_key() {
-        assert_eq!(
-            build_agent_session_key("bot1", "main"),
-            "agent:bot1:main"
-        );
+        assert_eq!(build_agent_session_key("bot1", "main"), "agent:bot1:main");
         assert_eq!(build_agent_session_key("bot1", ""), "agent:bot1");
         assert_eq!(build_agent_session_key("", "main"), "main");
     }
@@ -317,10 +314,7 @@ mod tests {
             build_subagent_session_key("parent", "child"),
             "subagent:parent:child"
         );
-        assert_eq!(
-            build_subagent_session_key("", "child"),
-            "subagent:child"
-        );
+        assert_eq!(build_subagent_session_key("", "child"), "subagent:child");
     }
 
     #[test]
@@ -347,5 +341,4 @@ mod tests {
         );
         assert_eq!(resolve_thread_parent_key("discord:group:123"), "");
     }
-
 }

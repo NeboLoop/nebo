@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package apps.v0;
 
-option go_package = "github.com/NeboLoop/nebo/internal/apps/pb";
+// Language-specific options set by build tooling.
 
 import "proto/apps/v0/common.proto";
 

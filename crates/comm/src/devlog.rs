@@ -46,7 +46,14 @@ impl DevLog {
     }
 
     /// Log an inbound message delivery.
-    pub fn inbound(&self, stream: &str, from: &str, agent_slug: &str, conv_id: &str, content: &str) {
+    pub fn inbound(
+        &self,
+        stream: &str,
+        from: &str,
+        agent_slug: &str,
+        conv_id: &str,
+        content: &str,
+    ) {
         let agent_part = if agent_slug.is_empty() {
             String::new()
         } else {
@@ -55,7 +62,10 @@ impl DevLog {
         let truncated = truncate_content(content);
         self.write_line(&format!(
             "← IN  stream={} from={}{} conv={}",
-            stream, from, agent_part, short_id(conv_id)
+            stream,
+            from,
+            agent_part,
+            short_id(conv_id)
         ));
         self.write_line(&format!("            \"{}\"", truncated));
     }
@@ -70,7 +80,8 @@ impl DevLog {
         let truncated = truncate_content(content);
         self.write_line(&format!(
             "→ OUT stream={} conv={}",
-            stream, short_id(conv_id)
+            stream,
+            short_id(conv_id)
         ));
         self.write_line(&format!("            \"{}\"", truncated));
     }

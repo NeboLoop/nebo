@@ -120,7 +120,10 @@ pub struct ModelDownloader {
 impl ModelDownloader {
     /// Create a downloader that stores models in the given directory.
     /// `progress_tx` receives download progress updates.
-    pub fn new(models_dir: PathBuf, progress_tx: Option<mpsc::UnboundedSender<DownloadProgress>>) -> Self {
+    pub fn new(
+        models_dir: PathBuf,
+        progress_tx: Option<mpsc::UnboundedSender<DownloadProgress>>,
+    ) -> Self {
         Self {
             models_dir,
             progress_tx,
@@ -203,7 +206,11 @@ impl ModelDownloader {
     }
 
     /// Download a single model with resume support and progress tracking.
-    pub async fn download(&self, cancel: CancellationToken, spec: &LocalModelSpec) -> Result<(), String> {
+    pub async fn download(
+        &self,
+        cancel: CancellationToken,
+        spec: &LocalModelSpec,
+    ) -> Result<(), String> {
         // Check if already downloading
         {
             let mut active = self.active.lock().unwrap();
@@ -224,7 +231,11 @@ impl ModelDownloader {
         result
     }
 
-    async fn do_download(&self, cancel: CancellationToken, spec: &LocalModelSpec) -> Result<(), String> {
+    async fn do_download(
+        &self,
+        cancel: CancellationToken,
+        spec: &LocalModelSpec,
+    ) -> Result<(), String> {
         std::fs::create_dir_all(&self.models_dir)
             .map_err(|e| format!("cannot create models directory: {}", e))?;
 
@@ -296,7 +307,8 @@ impl ModelDownloader {
                 return Err("download cancelled".into());
             }
 
-            let chunk = chunk_result.map_err(|e| format!("read error at {} bytes: {}", downloaded, e))?;
+            let chunk =
+                chunk_result.map_err(|e| format!("read error at {} bytes: {}", downloaded, e))?;
             writer
                 .write_all(&chunk)
                 .map_err(|e| format!("write error: {}", e))?;

@@ -2,13 +2,11 @@ use axum::extract::{Path, State};
 use axum::response::Json;
 use serde::Deserialize;
 
+use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
-use super::{to_error_response, HandlerResult};
 
 /// GET /commander/graph — full graph: nodes, computed + user edges, teams, positions.
-pub async fn get_graph(
-    State(state): State<AppState>,
-) -> HandlerResult<serde_json::Value> {
+pub async fn get_graph(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     // 1. Active agents from the in-memory registry
     let registry = state.agent_registry.read().await;
     let mut nodes: Vec<serde_json::Value> = Vec::new();
@@ -123,10 +121,7 @@ pub async fn get_graph(
 }
 
 /// Compute event edges by matching emit sources to event trigger subscriptions.
-fn compute_event_edges(
-    state: &AppState,
-    active_agent_ids: &[String],
-) -> Vec<serde_json::Value> {
+fn compute_event_edges(state: &AppState, active_agent_ids: &[String]) -> Vec<serde_json::Value> {
     let mut edges = Vec::new();
 
     let emit_sources = match state.store.list_emit_sources() {
@@ -207,7 +202,11 @@ pub async fn save_layout(
     let positions = body
         .get("positions")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("missing positions array".into())))?;
+        .ok_or_else(|| {
+            to_error_response(types::NeboError::Validation(
+                "missing positions array".into(),
+            ))
+        })?;
 
     let parsed: Vec<(String, f64, f64)> = positions
         .iter()
@@ -345,7 +344,13 @@ pub async fn create_edge(
     let id = uuid::Uuid::new_v4().to_string();
     let edge = state
         .store
-        .create_commander_edge(&id, &body.source, &body.target, &body.edge_type, &body.label)
+        .create_commander_edge(
+            &id,
+            &body.source,
+            &body.target,
+            &body.edge_type,
+            &body.label,
+        )
         .map_err(to_error_response)?;
 
     Ok(Json(serde_json::json!({ "edge": edge })))

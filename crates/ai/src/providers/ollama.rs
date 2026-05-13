@@ -20,8 +20,16 @@ pub struct OllamaProvider {
 
 impl OllamaProvider {
     pub fn new(base_url: String, model: String) -> Self {
-        let base_url = if base_url.is_empty() { DEFAULT_OLLAMA_URL.to_string() } else { base_url };
-        let model = if model.is_empty() { DEFAULT_OLLAMA_MODEL.to_string() } else { model };
+        let base_url = if base_url.is_empty() {
+            DEFAULT_OLLAMA_URL.to_string()
+        } else {
+            base_url
+        };
+        let model = if model.is_empty() {
+            DEFAULT_OLLAMA_MODEL.to_string()
+        } else {
+            model
+        };
 
         Self {
             client: Client::builder()
@@ -51,11 +59,13 @@ impl OllamaProvider {
         for msg in &req.messages {
             if msg.role == "tool"
                 && let Some(ref tr_val) = msg.tool_results
-                    && let Ok(results) = serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone()) {
-                        for r in &results {
-                            responded_tool_ids.insert(r.tool_call_id.clone());
-                        }
-                    }
+                && let Ok(results) =
+                    serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone())
+            {
+                for r in &results {
+                    responded_tool_ids.insert(r.tool_call_id.clone());
+                }
+            }
         }
 
         for msg in &req.messages {
@@ -71,27 +81,33 @@ impl OllamaProvider {
                     let mut ollama_tool_calls = Vec::new();
 
                     if let Some(ref tc_val) = msg.tool_calls
-                        && let Ok(tcs) = serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone()) {
-                            for tc in tcs {
-                                if !responded_tool_ids.contains(&tc.id) {
-                                    continue;
-                                }
-                                let args: HashMap<String, serde_json::Value> =
-                                    serde_json::from_value(tc.input.clone()).unwrap_or_default();
-                                ollama_tool_calls.push(OllamaToolCallOut {
-                                    function: OllamaFunctionCallOut {
-                                        name: tc.name,
-                                        arguments: args,
-                                    },
-                                });
+                        && let Ok(tcs) =
+                            serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone())
+                    {
+                        for tc in tcs {
+                            if !responded_tool_ids.contains(&tc.id) {
+                                continue;
                             }
+                            let args: HashMap<String, serde_json::Value> =
+                                serde_json::from_value(tc.input.clone()).unwrap_or_default();
+                            ollama_tool_calls.push(OllamaToolCallOut {
+                                function: OllamaFunctionCallOut {
+                                    name: tc.name,
+                                    arguments: args,
+                                },
+                            });
                         }
+                    }
 
                     if !msg.content.is_empty() || !ollama_tool_calls.is_empty() {
                         messages.push(OllamaMessage {
                             role: "assistant".to_string(),
                             content: msg.content.clone(),
-                            tool_calls: if ollama_tool_calls.is_empty() { None } else { Some(ollama_tool_calls) },
+                            tool_calls: if ollama_tool_calls.is_empty() {
+                                None
+                            } else {
+                                Some(ollama_tool_calls)
+                            },
                         });
                     }
                 }
@@ -104,15 +120,17 @@ impl OllamaProvider {
                 }
                 "tool" => {
                     if let Some(ref tr_val) = msg.tool_results
-                        && let Ok(results) = serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone()) {
-                            for r in results {
-                                messages.push(OllamaMessage {
-                                    role: "tool".to_string(),
-                                    content: r.content,
-                                    tool_calls: None,
-                                });
-                            }
+                        && let Ok(results) =
+                            serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone())
+                    {
+                        for r in results {
+                            messages.push(OllamaMessage {
+                                role: "tool".to_string(),
+                                content: r.content,
+                                tool_calls: None,
+                            });
                         }
+                    }
                 }
                 _ => {}
             }
@@ -122,10 +140,7 @@ impl OllamaProvider {
     }
 
     /// Handle the NDJSON stream from Ollama.
-    async fn handle_stream(
-        response: reqwest::Response,
-        tx: mpsc::Sender<StreamEvent>,
-    ) {
+    async fn handle_stream(response: reqwest::Response, tx: mpsc::Sender<StreamEvent>) {
         let mut tool_call_counter = 0;
         let mut byte_stream = response.bytes_stream();
         let mut line_buf = String::new();
@@ -134,7 +149,9 @@ impl OllamaProvider {
             let chunk = match chunk_result {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = tx.send(StreamEvent::error(format!("stream read error: {e}"))).await;
+                    let _ = tx
+                        .send(StreamEvent::error(format!("stream read error: {e}")))
+                        .await;
                     return;
                 }
             };
@@ -142,7 +159,9 @@ impl OllamaProvider {
             let text = match std::str::from_utf8(&chunk) {
                 Ok(t) => t,
                 Err(e) => {
-                    let _ = tx.send(StreamEvent::error(format!("invalid utf8: {e}"))).await;
+                    let _ = tx
+                        .send(StreamEvent::error(format!("invalid utf8: {e}")))
+                        .await;
                     return;
                 }
             };
@@ -176,11 +195,13 @@ impl OllamaProvider {
                         tool_call_counter += 1;
                         let input = serde_json::to_value(&tc.function.arguments)
                             .unwrap_or(serde_json::Value::Object(Default::default()));
-                        let _ = tx.send(StreamEvent::tool_call(ToolCall {
-                            id: format!("ollama-call-{}", tool_call_counter),
-                            name: tc.function.name.clone(),
-                            input,
-                        })).await;
+                        let _ = tx
+                            .send(StreamEvent::tool_call(ToolCall {
+                                id: format!("ollama-call-{}", tool_call_counter),
+                                name: tc.function.name.clone(),
+                                input,
+                            }))
+                            .await;
                     }
                 }
 
@@ -202,18 +223,22 @@ impl Provider for OllamaProvider {
         "ollama"
     }
 
-    async fn stream(
-        &self,
-        req: &ChatRequest,
-    ) -> Result<EventReceiver, ProviderError> {
+    async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         let messages = self.build_messages(req);
 
-        let model = if req.model.is_empty() { &self.model } else { &req.model };
+        let model = if req.model.is_empty() {
+            &self.model
+        } else {
+            &req.model
+        };
 
         // Build options
         let mut options: HashMap<String, serde_json::Value> = HashMap::new();
         if req.temperature > 0.0 {
-            options.insert("temperature".to_string(), serde_json::json!(req.temperature));
+            options.insert(
+                "temperature".to_string(),
+                serde_json::json!(req.temperature),
+            );
         }
         if req.max_tokens > 0 {
             options.insert("num_predict".to_string(), serde_json::json!(req.max_tokens));
@@ -223,39 +248,56 @@ impl Provider for OllamaProvider {
         let tools: Option<Vec<OllamaTool>> = if req.tools.is_empty() {
             None
         } else {
-            Some(req.tools.iter().filter_map(|t| {
-                let schema: HashMap<String, serde_json::Value> =
-                    serde_json::from_value(t.input_schema.clone()).ok()?;
-                Some(OllamaTool {
-                    tool_type: "function".to_string(),
-                    function: OllamaFunctionDef {
-                        name: t.name.clone(),
-                        description: t.description.clone(),
-                        parameters: OllamaFunctionParams {
-                            param_type: "object".to_string(),
-                            properties: schema.get("properties").cloned(),
-                            required: schema.get("required").and_then(|v| {
-                                v.as_array().map(|arr| {
-                                    arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-                                })
-                            }),
-                        },
-                    },
-                })
-            }).collect())
+            Some(
+                req.tools
+                    .iter()
+                    .filter_map(|t| {
+                        let schema: HashMap<String, serde_json::Value> =
+                            serde_json::from_value(t.input_schema.clone()).ok()?;
+                        Some(OllamaTool {
+                            tool_type: "function".to_string(),
+                            function: OllamaFunctionDef {
+                                name: t.name.clone(),
+                                description: t.description.clone(),
+                                parameters: OllamaFunctionParams {
+                                    param_type: "object".to_string(),
+                                    properties: schema.get("properties").cloned(),
+                                    required: schema.get("required").and_then(|v| {
+                                        v.as_array().map(|arr| {
+                                            arr.iter()
+                                                .filter_map(|v| v.as_str().map(String::from))
+                                                .collect()
+                                        })
+                                    }),
+                                },
+                            },
+                        })
+                    })
+                    .collect(),
+            )
         };
 
         let api_req = OllamaApiRequest {
             model: model.to_string(),
             messages,
             stream: true,
-            options: if options.is_empty() { None } else { Some(options) },
+            options: if options.is_empty() {
+                None
+            } else {
+                Some(options)
+            },
             tools,
         };
 
-        info!(model = model, messages = api_req.messages.len(), tools = req.tools.len(), "sending Ollama request");
+        info!(
+            model = model,
+            messages = api_req.messages.len(),
+            tools = req.tools.len(),
+            "sending Ollama request"
+        );
 
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/api/chat", self.base_url))
             .header("content-type", "application/json")
             .json(&api_req)
@@ -282,13 +324,18 @@ impl Provider for OllamaProvider {
 
 /// Check if Ollama is running at the given base URL.
 pub async fn check_ollama_available(base_url: &str) -> bool {
-    let base_url = if base_url.is_empty() { DEFAULT_OLLAMA_URL } else { base_url };
+    let base_url = if base_url.is_empty() {
+        DEFAULT_OLLAMA_URL
+    } else {
+        base_url
+    };
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()
         .unwrap_or_default();
 
-    client.get(format!("{base_url}/api/tags"))
+    client
+        .get(format!("{base_url}/api/tags"))
         .send()
         .await
         .map(|r| r.status().is_success())
@@ -297,13 +344,18 @@ pub async fn check_ollama_available(base_url: &str) -> bool {
 
 /// List available models from Ollama.
 pub async fn list_ollama_models(base_url: &str) -> Result<Vec<String>, ProviderError> {
-    let base_url = if base_url.is_empty() { DEFAULT_OLLAMA_URL } else { base_url };
+    let base_url = if base_url.is_empty() {
+        DEFAULT_OLLAMA_URL
+    } else {
+        base_url
+    };
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap_or_default();
 
-    let resp = client.get(format!("{base_url}/api/tags"))
+    let resp = client
+        .get(format!("{base_url}/api/tags"))
         .send()
         .await
         .map_err(|e| ProviderError::Request(e.to_string()))?;
@@ -312,7 +364,9 @@ pub async fn list_ollama_models(base_url: &str) -> Result<Vec<String>, ProviderE
         return Err(ProviderError::Request("failed to list models".to_string()));
     }
 
-    let body: OllamaTagsResponse = resp.json().await
+    let body: OllamaTagsResponse = resp
+        .json()
+        .await
         .map_err(|e| ProviderError::Request(e.to_string()))?;
 
     Ok(body.models.into_iter().map(|m| m.name).collect())
@@ -326,20 +380,28 @@ pub async fn ensure_ollama_model(base_url: &str, model: &str) -> Result<(), Prov
 
     let models = list_ollama_models(base_url).await?;
     for m in &models {
-        if m == model || m.starts_with(&format!("{model}:")) || m.trim_end_matches(":latest") == model {
+        if m == model
+            || m.starts_with(&format!("{model}:"))
+            || m.trim_end_matches(":latest") == model
+        {
             return Ok(());
         }
     }
 
     info!(model = model, "model not found locally, pulling");
 
-    let base_url = if base_url.is_empty() { DEFAULT_OLLAMA_URL } else { base_url };
+    let base_url = if base_url.is_empty() {
+        DEFAULT_OLLAMA_URL
+    } else {
+        base_url
+    };
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(1800)) // 30 min for large models
         .build()
         .unwrap_or_default();
 
-    let resp = client.post(format!("{base_url}/api/pull"))
+    let resp = client
+        .post(format!("{base_url}/api/pull"))
         .json(&serde_json::json!({ "name": model, "stream": false }))
         .send()
         .await
@@ -347,7 +409,9 @@ pub async fn ensure_ollama_model(base_url: &str, model: &str) -> Result<(), Prov
 
     if !resp.status().is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(ProviderError::Request(format!("failed to pull {model}: {body}")));
+        return Err(ProviderError::Request(format!(
+            "failed to pull {model}: {body}"
+        )));
     }
 
     info!(model = model, "model ready");

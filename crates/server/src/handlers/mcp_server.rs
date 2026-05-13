@@ -219,7 +219,10 @@ async fn execute_nebo_tool(state: &AppState, input: &serde_json::Value) -> (Stri
         (id, "history") if !id.is_empty() => handle_session_history(state, id).await,
         (id, "reset") if !id.is_empty() => handle_session_reset(state, id).await,
         _ => (
-            format!("Unknown nebo action '{}' on resource '{}'", action, resource),
+            format!(
+                "Unknown nebo action '{}' on resource '{}'",
+                action, resource
+            ),
             true,
         ),
     }
@@ -238,10 +241,7 @@ async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (Strin
         .to_string();
     let session_key = format!("mcp-{}", session_id);
 
-    let timeout_secs = input["timeout_secs"]
-        .as_u64()
-        .unwrap_or(300)
-        .min(600);
+    let timeout_secs = input["timeout_secs"].as_u64().unwrap_or(300).min(600);
 
     let cancel_token = CancellationToken::new();
 
@@ -333,10 +333,7 @@ async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (Strin
 
     // Append tool usage summary if any tools were called
     if !tools_used.is_empty() {
-        response.push_str(&format!(
-            "\n\n[Tools used: {}]",
-            tools_used.join(", ")
-        ));
+        response.push_str(&format!("\n\n[Tools used: {}]", tools_used.join(", ")));
     }
 
     (response, had_error)

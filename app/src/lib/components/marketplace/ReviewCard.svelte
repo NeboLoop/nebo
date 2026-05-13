@@ -57,7 +57,6 @@
 	</div>
 	<p class="text-base text-base-content/60 leading-relaxed line-clamp-4 flex-1">{reviewBody}</p>
 
-	<!-- Publisher reply -->
 	{#if reply}
 		<div class="mt-3 pt-3 border-t border-base-content/10">
 			<p class="text-sm font-semibold text-base-content/40 mb-1">Developer Response</p>

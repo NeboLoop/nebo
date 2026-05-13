@@ -1,16 +1,100 @@
 use std::io::Read;
 use std::path::Path;
 
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use flate2::read::GzDecoder;
+use sha2::{Digest, Sha256};
 use tar::Archive;
 use tracing::info;
 
-use crate::manifest::Manifest;
 use crate::NappError;
+use crate::manifest::Manifest;
 
 const MAX_BINARY_SIZE: u64 = 500 * 1024 * 1024; // 500MB
-const MAX_UI_FILE_SIZE: u64 = 5 * 1024 * 1024;  // 5MB
-const MAX_METADATA_SIZE: u64 = 1024 * 1024;      // 1MB
+const MAX_UI_FILE_SIZE: u64 = 5 * 1024 * 1024; // 5MB
+const MAX_METADATA_SIZE: u64 = 1024 * 1024; // 1MB
+
+// .napp envelope constants
+const NAPP_MAGIC: &[u8; 4] = b"NAPP";
+const NAPP_VERSION: u8 = 0x01;
+const NAPP_HEADER_SIZE: usize = 4 + 1 + 64 + 32; // 101 bytes
+
+/// Verify and unwrap a .napp envelope, returning the inner tar.gz payload.
+///
+/// Checks magic bytes, SHA256 integrity, and ED25519 signature before
+/// returning the payload. If verification fails, nothing is extracted.
+pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, NappError> {
+    if data.len() < NAPP_HEADER_SIZE {
+        return Err(NappError::Extraction(format!(
+            "file too small to be a valid .napp ({} bytes)",
+            data.len()
+        )));
+    }
+
+    // Check magic
+    if &data[0..4] != NAPP_MAGIC {
+        return Err(NappError::Extraction(format!(
+            "invalid .napp magic: {:?}",
+            &data[0..4]
+        )));
+    }
+
+    // Check version
+    let version = data[4];
+    if version != NAPP_VERSION {
+        return Err(NappError::Extraction(format!(
+            "unsupported .napp version: {}",
+            version
+        )));
+    }
+
+    let sig_bytes = &data[5..69];
+    let expected_hash = &data[69..101];
+    let payload = &data[101..];
+
+    // Verify SHA256 first (cheap)
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let actual_hash = hasher.finalize();
+    if actual_hash.as_slice() != expected_hash {
+        return Err(NappError::Extraction(
+            "payload hash mismatch: file corrupted or tampered".into(),
+        ));
+    }
+
+    // Verify ED25519 signature (proves origin)
+    let signature = Signature::from_slice(sig_bytes)
+        .map_err(|e| NappError::Extraction(format!("invalid signature: {}", e)))?;
+
+    let mut signed = Vec::with_capacity(32 + payload.len());
+    signed.extend_from_slice(expected_hash);
+    signed.extend_from_slice(payload);
+
+    public_key.verify(&signed, &signature).map_err(|_| {
+        NappError::Extraction("signature verification failed: not signed by NeboLoop".into())
+    })?;
+
+    info!("napp envelope verified");
+    Ok(payload.to_vec())
+}
+
+/// Verify and unwrap a .napp envelope using the embedded NeboLoop public key.
+///
+/// Convenience wrapper around `unwrap_napp` + `builtin_verifying_key()` for
+/// verifying first-party bundled `.napp` files without network access.
+pub fn unwrap_napp_builtin(data: &[u8]) -> Result<Vec<u8>, NappError> {
+    let key = crate::signing::builtin_verifying_key()?;
+    unwrap_napp(data, &key)
+}
+
+/// Verify envelope and unseal: unwrap .napp header → decrypt AES-256-GCM → return plain tar.gz.
+///
+/// Full pipeline for sealed .napp files. Returns the decrypted tar.gz payload
+/// that can be parsed in memory. Uses the embedded NeboLoop public key.
+pub fn unwrap_sealed_napp(data: &[u8], license_key: &[u8; 32]) -> Result<Vec<u8>, NappError> {
+    let sealed_payload = unwrap_napp_builtin(data)?;
+    crate::sealed::unseal_payload(&sealed_payload, license_key)
+}
 
 /// Allowed file names in a .napp archive.
 const ALLOWED_FILES: &[&str] = &[
@@ -43,7 +127,10 @@ pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappE
 
     let mut found_manifest = false;
 
-    for entry_result in archive.entries().map_err(|e| NappError::Extraction(e.to_string()))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| NappError::Extraction(e.to_string()))?
+    {
         let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
         let path = entry
             .path()
@@ -77,8 +164,12 @@ pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappE
         let base_name = name.trim_start_matches("./");
 
         // Determine if this is the native binary (plugin .napp uses real binary name, not "binary")
-        let is_binary = base_name == "binary" || base_name == "app"
-            || (!is_ui && !is_skill && !ALLOWED_FILES.contains(&base_name) && !base_name.contains('/'));
+        let is_binary = base_name == "binary"
+            || base_name == "app"
+            || (!is_ui
+                && !is_skill
+                && !ALLOWED_FILES.contains(&base_name)
+                && !base_name.contains('/'));
 
         if is_skill {
             // Skills directory: only allow SKILL.md or skill.md files
@@ -168,14 +259,20 @@ pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappE
     }
 
     if !found_manifest {
-        return Err(NappError::Extraction("manifest.json not found in .napp".into()));
+        return Err(NappError::Extraction(
+            "manifest.json not found in .napp".into(),
+        ));
     }
 
     // Load and validate manifest
     let manifest = Manifest::load(&dest_dir.join("manifest.json"))?;
     manifest.validate()?;
 
-    info!(app = manifest.id.as_str(), version = manifest.version.as_str(), "extracted .napp");
+    info!(
+        app = manifest.id.as_str(),
+        version = manifest.version.as_str(),
+        "extracted .napp"
+    );
     Ok(manifest)
 }
 
@@ -191,8 +288,8 @@ fn validate_binary_format(content: &[u8]) -> Result<(), NappError> {
         || content.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])         // Mach-O 64
         || content.starts_with(&[0xce, 0xfa, 0xed, 0xfe])         // Mach-O 32 (swapped)
         || content.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])         // Mach-O 64 (swapped)
-        || content.starts_with(&[0xca, 0xfe, 0xba, 0xbe]);        // Universal
-    let is_pe = content.starts_with(&[0x4d, 0x5a]);               // PE/COFF
+        || content.starts_with(&[0xca, 0xfe, 0xba, 0xbe]); // Universal
+    let is_pe = content.starts_with(&[0x4d, 0x5a]); // PE/COFF
 
     if !is_elf && !is_macho && !is_pe {
         // Reject scripts

@@ -96,10 +96,7 @@ impl AuthService {
     }
 
     /// Get a user by email.
-    pub fn get_user_by_email(
-        &self,
-        email: &str,
-    ) -> Result<Option<db::models::User>, NeboError> {
+    pub fn get_user_by_email(&self, email: &str) -> Result<Option<db::models::User>, NeboError> {
         self.store.get_user_by_email(email)
     }
 

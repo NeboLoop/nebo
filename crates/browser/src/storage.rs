@@ -67,7 +67,11 @@ pub fn js_get_all_storage(kind: StorageKind) -> String {
 
 /// JavaScript snippet to get a single key from storage.
 pub fn js_get_storage(kind: StorageKind, key: &str) -> String {
-    format!("window.{}.getItem('{}')", kind.js_name(), key.replace('\'', "\\'"))
+    format!(
+        "window.{}.getItem('{}')",
+        kind.js_name(),
+        key.replace('\'', "\\'")
+    )
 }
 
 /// JavaScript snippet to set a key in storage.
@@ -82,7 +86,11 @@ pub fn js_set_storage(kind: StorageKind, key: &str, value: &str) -> String {
 
 /// JavaScript snippet to remove a key from storage.
 pub fn js_remove_storage(kind: StorageKind, key: &str) -> String {
-    format!("window.{}.removeItem('{}')", kind.js_name(), key.replace('\'', "\\'"))
+    format!(
+        "window.{}.removeItem('{}')",
+        kind.js_name(),
+        key.replace('\'', "\\'")
+    )
 }
 
 /// JavaScript snippet to clear all storage.

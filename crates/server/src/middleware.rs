@@ -20,10 +20,7 @@ pub struct AuthClaims {
 
 /// Axum middleware that validates JWT from the Authorization header.
 /// On success, inserts `AuthClaims` into request extensions.
-pub async fn jwt_auth(
-    mut request: Request,
-    next: Next,
-) -> Response {
+pub async fn jwt_auth(mut request: Request, next: Next) -> Response {
     let secret = request
         .extensions()
         .get::<JwtSecret>()
@@ -78,6 +75,7 @@ fn auth_error(message: &str) -> Response {
 /// HSTS, Permissions-Policy, X-Frame-Options, X-Content-Type-Options,
 /// X-XSS-Protection, Referrer-Policy.
 pub async fn security_headers(request: Request, next: Next) -> Response {
+    let is_embed = request.uri().path().starts_with("/chat-embed/");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert(
@@ -93,7 +91,9 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
             .unwrap(),
     );
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
-    headers.insert("x-frame-options", "DENY".parse().unwrap());
+    if !is_embed {
+        headers.insert("x-frame-options", "DENY".parse().unwrap());
+    }
     headers.insert("x-xss-protection", "1; mode=block".parse().unwrap());
     headers.insert(
         "referrer-policy",
@@ -195,10 +195,7 @@ impl RateLimiter {
 /// Uses ConnectInfo (RemoteAddr) only — intentionally ignores X-Forwarded-For
 /// because it is trivially spoofable by any client. Matches Go's DefaultKeyFunc.
 pub async fn rate_limit(request: Request, next: Next) -> Response {
-    let limiter = request
-        .extensions()
-        .get::<RateLimiter>()
-        .cloned();
+    let limiter = request.extensions().get::<RateLimiter>().cloned();
 
     let limiter = match limiter {
         Some(l) => l,

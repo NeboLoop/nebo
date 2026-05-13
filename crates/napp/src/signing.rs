@@ -7,6 +7,18 @@ use tracing::{info, warn};
 
 use crate::NappError;
 
+/// NeboLoop's ED25519 public key, embedded at compile time for offline verification.
+///
+/// Used to verify `.napp` envelopes from bundled resources when the network
+/// may not be available (first launch, air-gapped installs).
+pub const NEBOLOOP_PUBLIC_KEY: &[u8; 32] = include_bytes!("../neboloop_public_key.bin");
+
+/// Build a `VerifyingKey` from the embedded NeboLoop public key.
+pub fn builtin_verifying_key() -> Result<VerifyingKey, NappError> {
+    VerifyingKey::from_bytes(NEBOLOOP_PUBLIC_KEY)
+        .map_err(|e| NappError::Signing(format!("invalid embedded public key: {}", e)))
+}
+
 /// Cached ED25519 public key from NeboLoop.
 pub struct SigningKeyProvider {
     neboloop_url: String,
@@ -90,10 +102,7 @@ pub struct SignaturesFile {
 }
 
 /// Verify .napp signatures.
-pub fn verify_signatures(
-    key: &VerifyingKey,
-    app_dir: &std::path::Path,
-) -> Result<(), NappError> {
+pub fn verify_signatures(key: &VerifyingKey, app_dir: &std::path::Path) -> Result<(), NappError> {
     let sigs_path = app_dir.join("signatures.json");
     let sigs_data = std::fs::read_to_string(&sigs_path)
         .map_err(|e| NappError::Signing(format!("read signatures.json: {}", e)))?;
@@ -172,7 +181,9 @@ fn find_binary(app_dir: &std::path::Path) -> Result<std::path::PathBuf, NappErro
             }
         }
     }
-    Err(NappError::NotFound("no binary found in app directory".into()))
+    Err(NappError::NotFound(
+        "no binary found in app directory".into(),
+    ))
 }
 
 /// Checks NeboLoop's revocation list with caching.
@@ -219,7 +230,9 @@ impl RevocationChecker {
                     #[serde(default)]
                     revoked: Vec<String>,
                 }
-                let list: RevocationList = r.json().await
+                let list: RevocationList = r
+                    .json()
+                    .await
                     .map_err(|e| NappError::Signing(format!("parse revocations: {}", e)))?;
 
                 let set: std::collections::HashSet<String> = list.revoked.into_iter().collect();

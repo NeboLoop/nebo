@@ -1,100 +1,79 @@
-<!--
-  Slash Command Menu
-  Floating dropdown that appears above the textarea when user types "/".
--->
-
 <script lang="ts">
-	import { getSlashCommandCompletions, type SlashCommand } from './slash-commands';
+  import { filterCommands, type SlashCommand } from './slashCommands.js';
 
-	interface Props {
-		query: string;
-		visible: boolean;
-		onselect: (command: SlashCommand) => void;
-		onclose: () => void;
-	}
+  let { query = '', onselect, onclose }: {
+    query?: string;
+    onselect?: (cmd: SlashCommand) => void;
+    onclose?: () => void;
+  } = $props();
 
-	let { query, visible, onselect, onclose }: Props = $props();
+  const groups = $derived(filterCommands(query));
+  const flat = $derived(groups.flatMap(g => g.items));
 
-	let selectedIndex = $state(0);
+  let activeIdx = $state(0);
 
-	const completions = $derived(getSlashCommandCompletions(query));
+  // Reset index when results change
+  $effect(() => {
+    if (flat.length) activeIdx = 0;
+  });
 
-	// Group by category
-	const grouped = $derived.by(() => {
-		const groups: { category: string; items: SlashCommand[] }[] = [];
-		for (const cmd of completions) {
-			const existing = groups.find((g) => g.category === cmd.category);
-			if (existing) {
-				existing.items.push(cmd);
-			} else {
-				groups.push({ category: cmd.category, items: [cmd] });
-			}
-		}
-		return groups;
-	});
+  function scrollSelectedIntoView() {
+    requestAnimationFrame(() => {
+      const el = document.querySelector('[data-slash-idx="' + activeIdx + '"]');
+      if (el) el.scrollIntoView({ block: 'nearest' });
+    });
+  }
 
-	// Reset selection when query changes
-	$effect(() => {
-		query;
-		selectedIndex = 0;
-	});
+  export function handleKey(e: KeyboardEvent): boolean {
+    if (!flat.length) return false;
 
-	// Close if no completions
-	$effect(() => {
-		if (visible && completions.length === 0) {
-			onclose();
-		}
-	});
-
-	export function navigate(direction: 'up' | 'down') {
-		if (completions.length === 0) return;
-		if (direction === 'down') {
-			selectedIndex = (selectedIndex + 1) % completions.length;
-		} else {
-			selectedIndex = (selectedIndex - 1 + completions.length) % completions.length;
-		}
-		scrollSelectedIntoView();
-	}
-
-	export function selectCurrent(): SlashCommand | null {
-		if (completions[selectedIndex]) {
-			return completions[selectedIndex];
-		}
-		return null;
-	}
-
-	function scrollSelectedIntoView() {
-		requestAnimationFrame(() => {
-			const el = document.querySelector('.slash-command-item.selected');
-			if (el) el.scrollIntoView({ block: 'nearest' });
-		});
-	}
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeIdx = (activeIdx + 1) % flat.length;
+      scrollSelectedIntoView();
+      return true;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeIdx = (activeIdx - 1 + flat.length) % flat.length;
+      scrollSelectedIntoView();
+      return true;
+    }
+    if (e.key === 'Tab' || e.key === 'Enter') {
+      e.preventDefault();
+      onselect?.(flat[activeIdx]);
+      return true;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onclose?.();
+      return true;
+    }
+    return false;
+  }
 </script>
 
-{#if visible && completions.length > 0}
-	<div class="slash-command-menu scrollbar-thin">
-		{#each grouped as group}
-			<div class="slash-command-category">{group.category}</div>
-			{#each group.items as cmd}
-				{@const globalIndex = completions.indexOf(cmd)}
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<!-- svelte-ignore a11y_click_events_have_key_events -->
-				<div
-					class="slash-command-item {globalIndex === selectedIndex ? 'selected' : ''}"
-					onmouseenter={() => { selectedIndex = globalIndex; }}
-					onclick={() => onselect(cmd)}
-				>
-					<div class="flex flex-col min-w-0">
-						<div class="flex items-baseline gap-1">
-							<span class="slash-command-name">/{cmd.name}</span>
-							{#if cmd.args}
-								<span class="slash-command-args">{cmd.args}</span>
-							{/if}
-						</div>
-						<span class="slash-command-desc">{cmd.description}</span>
-					</div>
-				</div>
-			{/each}
-		{/each}
-	</div>
+{#if flat.length > 0}
+  <div class="absolute bottom-full left-0 right-0 mb-2 z-20 bg-base-100 border border-base-300 rounded-xl shadow-lg max-h-[320px] overflow-y-auto">
+    {#each groups as group}
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-4 pt-3 pb-1">{group.category}</div>
+      {#each group.items as cmd}
+        {@const idx = flat.indexOf(cmd)}
+        <button
+          data-slash-idx={idx}
+          class="flex items-start gap-3 px-4 py-2.5 w-full text-left cursor-pointer transition-colors border-none {idx === activeIdx ? 'bg-base-200' : 'bg-transparent hover:bg-base-200'}"
+          onmouseenter={() => activeIdx = idx}
+          onclick={() => onselect?.(cmd)}
+        >
+          <span class="text-xs font-semibold text-primary whitespace-nowrap">{cmd.name}</span>
+          <span class="text-xs text-base-content/70">
+            {cmd.desc}
+            {#if cmd.args}
+              <span class="font-mono text-base-content/50 ml-1">{cmd.args}</span>
+            {/if}
+          </span>
+        </button>
+      {/each}
+    {/each}
+  </div>
 {/if}

@@ -21,18 +21,24 @@ else
     ARCH = $(UNAME_M)
 endif
 
-.PHONY: help dev build build-desktop test clean release release-darwin release-linux release-windows app-bundle dmg notarize install github-release
+.PHONY: help dev run build build-desktop test clean seed-plugins bundle-napps plugin-status release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
 	@echo "Nebo — AI Agent Platform (Rust)"
 	@echo ""
+	@echo "Code Generation:"
+	@echo "  make gen            - Generate TS API client from Rust routes"
+	@echo ""
 	@echo "Development:"
-	@echo "  make dev            - Hot reload headless server (cargo watch)"
+	@echo "  make dev            - Hot reload desktop (cargo tauri dev)"
+	@echo "  make run            - Build + run CLI once (no file watching)"
 	@echo "  make build          - Build headless CLI binary"
 	@echo "  make build-desktop  - Build Tauri desktop app"
 	@echo "  make test           - Run all tests"
 	@echo "  make clean          - Clean build artifacts"
+	@echo "  make seed-plugins   - Copy plugin binaries from sibling repos"
+	@echo "  make plugin-status  - Show build/bundle status of all 14 plugins"
 	@echo ""
 	@echo "Desktop (macOS):"
 	@echo "  make app-bundle     - Re-sign Tauri .app with Developer ID"
@@ -47,17 +53,46 @@ help:
 	@echo "  make release-windows      - Windows .exe + .msi"
 	@echo "  make github-release TAG=v0.1.0  - Create GitHub release"
 
+# ─── Code Generation ────────────────────────────────────────────────────────
+gen:
+	@echo "Generating API client from Rust routes..."
+	@cd app && pnpm run gen:api
+
 # ─── Development ─────────────────────────────────────────────────────────────
 
 dev:
-	@echo "Starting Nebo with hot reload..."
-	cargo watch -x 'run -p nebo'
+	@echo "Starting Nebo (Tauri + Vite)..."
+	@echo "  Vite HMR for frontend, Tauri watch for backend"
+	@echo "  Proxy errors during Rust build are normal — Tauri window waits for build."
+	@echo "  NOTE: File changes trigger restart — use 'make run' to test workflows."
+	@echo "  Ctrl-C to stop all processes."
+	@echo ""
+	@cargo tauri dev; \
+		lsof -ti :5173 -ti :27895 2>/dev/null | xargs kill -9 2>/dev/null; \
+		pkill -9 -f "cargo-tauri" 2>/dev/null; \
+		pkill -9 -f "target/debug/nebo" 2>/dev/null; \
+		pkill -9 -f "target/release/nebo" 2>/dev/null; \
+		true
+
+# Full Tauri app + Vite HMR, but NO Rust file watching — safe for workflow testing
+run:
+	@echo "Starting Nebo (Tauri + Vite, no Rust hot-reload)..."
+	@echo "  Frontend HMR works. Rust backend won't restart on file changes."
+	@echo "  Use this when testing workflows/agents."
+	@echo "  Ctrl-C to stop all processes."
+	@echo ""
+	@cargo tauri dev --no-watch; \
+		lsof -ti :5173 -ti :27895 2>/dev/null | xargs kill -9 2>/dev/null; \
+		pkill -9 -f "cargo-tauri" 2>/dev/null; \
+		pkill -9 -f "target/debug/nebo" 2>/dev/null; \
+		pkill -9 -f "target/release/nebo" 2>/dev/null; \
+		true
 
 build:
 	@echo "Building headless CLI binary..."
 	cargo build --release -p nebo-cli
 
-build-desktop:
+build-desktop: bundle-napps
 	@echo "Building Tauri desktop app..."
 	@cd app && pnpm build
 	cargo tauri build
@@ -69,6 +104,71 @@ test:
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf target/ dist/
+
+# Copy plugin binaries + manifests from sibling repos into the local plugin store.
+# Prerequisites: build each plugin first (cargo build --release in each repo).
+REPOS_DIR ?= $(shell cd .. && pwd)/repos/plugins
+PLUGIN_DIR ?= $(HOME)/.nebo/nebo/plugins
+PLUGINS = gws nebo-pdf nebo-office ffmpeg outreach sfdc social warm-market nuskin
+
+seed-plugins:
+	@echo "Seeding plugin binaries from $(REPOS_DIR)..."
+	@for slug in $(PLUGINS); do \
+		src="$(REPOS_DIR)/$$slug"; \
+		if [ ! -d "$$src" ]; then \
+			echo "  SKIP $$slug (repo not found)"; \
+			continue; \
+		fi; \
+		manifest="$$src/plugin.json"; \
+		if [ ! -f "$$manifest" ]; then \
+			echo "  SKIP $$slug (no plugin.json)"; \
+			continue; \
+		fi; \
+		version=$$(python3 -c "import json; print(json.load(open('$$manifest'))['version'])" 2>/dev/null || echo "0.1.0"); \
+		dst="$(PLUGIN_DIR)/$$slug/$$version"; \
+		binary_name=$$(python3 -c "import json; p=json.load(open('$$manifest')).get('platforms',{}).get('darwin-arm64',{}); print(p.get('binaryName','$$slug'))" 2>/dev/null || echo "$$slug"); \
+		binary="$$src/target/release/$$binary_name"; \
+		if [ ! -f "$$binary" ]; then \
+			echo "  SKIP $$slug (binary not built at $$binary)"; \
+			continue; \
+		fi; \
+		mkdir -p "$$dst"; \
+		cp "$$manifest" "$$dst/plugin.json"; \
+		cp "$$binary" "$$dst/$$binary_name"; \
+		chmod +x "$$dst/$$binary_name"; \
+		if [ -d "$$src/skills" ]; then \
+			rm -rf "$$dst/skills"; \
+			cp -R "$$src/skills" "$$dst/skills"; \
+			skill_count=$$(ls "$$dst/skills" 2>/dev/null | wc -l | tr -d ' '); \
+			echo "  OK   $$slug $$version → $$dst ($$skill_count skills)"; \
+		else \
+			echo "  OK   $$slug $$version → $$dst"; \
+		fi; \
+	done
+	@echo "Done. Restart Nebo to pick up plugins."
+
+# Show build/bundle status of all 14 bundled plugins.
+plugin-status:
+	@scripts/publish-plugins.sh status
+
+# ─── Bundled .napp Files ─────────────────────────────────────────────────────
+
+BUNDLED_NAPPS_DIR = src-tauri/bundled-napps
+
+# Download signed .napp files from NeboLoop CDN into the Tauri bundle.
+# Skills and agents are platform-agnostic. Plugins are per-platform.
+# Override NEBOLOOP_CDN_URL if using a staging environment.
+NEBOLOOP_CDN_URL ?= https://cdn.neboloop.com
+
+bundle-napps:
+	@echo "Preparing bundled .napp directory..."
+	@mkdir -p $(BUNDLED_NAPPS_DIR)/{skills,agents,plugins}
+	@echo "Place signed .napp files in $(BUNDLED_NAPPS_DIR)/{skills,agents,plugins}/"
+	@echo "  Skills/agents: platform-agnostic (one .napp per artifact)"
+	@echo "  Plugins: platform-specific (download for target arch)"
+	@echo ""
+	@echo "Current contents:"
+	@find $(BUNDLED_NAPPS_DIR) -name "*.napp" -type f 2>/dev/null | sort || echo "  (none)"
 
 # ─── Release Targets ────────────────────────────────────────────────────────
 

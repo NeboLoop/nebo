@@ -1,8 +1,3 @@
-<!--
-  Spinner Component
-  Uses DaisyUI loading classes
--->
-
 <script lang="ts">
 	interface Props {
 		class?: string;

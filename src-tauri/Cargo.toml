@@ -18,6 +18,11 @@ tauri-plugin-global-shortcut = "2"
 server = { workspace = true }
 config = { workspace = true }
 
+# HTTP types (re-export from tauri for protocol handler)
+http = "1"
+# Sync HTTP client for proxying non-file requests in custom protocol
+ureq = "2"
+
 # System browser
 open = "5"
 
