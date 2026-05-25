@@ -320,7 +320,6 @@ jobs:
 
   # ─── Windows desktop build (Tauri 2 — WebView2) ──────────────────────
   build-windows:
-    needs: frontend
     runs-on: windows-latest
     env:
       HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
@@ -336,12 +335,18 @@ jobs:
         with:
           workspaces: ". -> target"
 
-      - name: Download frontend build
-        uses: actions/cache/restore@v4
+      - uses: actions/setup-node@v4
         with:
-          key: frontend-build-${{ github.sha }}
-          path: app/build/
-          fail-on-cache-miss: true
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build frontend
+        shell: bash
+        run: |
+          npm install -g pnpm
+          cd app
+          pnpm install --frozen-lockfile
+          pnpm exec svelte-kit sync
+          pnpm run build
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
