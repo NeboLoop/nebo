@@ -43,6 +43,7 @@ jobs:
   build-macos:
     needs: frontend
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: macos-latest
@@ -65,9 +66,13 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
 
+      - name: Ensure target is installed
+        run: rustup target add ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          prefix-key: v1-${{ matrix.arch }}
 
       - name: Download frontend build
         uses: actions/cache/restore@v4
@@ -233,6 +238,7 @@ jobs:
   build-linux:
     needs: frontend
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: ubuntu-latest
@@ -253,6 +259,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          prefix-key: v1-linux-${{ matrix.arch }}
 
       - name: Install Tauri Linux dependencies
         run: |
