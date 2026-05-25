@@ -28,6 +28,8 @@ jobs:
             arch: arm64
             docker_platform: linux/arm64
     runs-on: ${{ matrix.runner }}
+    env:
+      HAS_CDN_CREDS: ${{ secrets.DO_SPACES_ACCESS_KEY != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -77,7 +79,7 @@ jobs:
           retention-days: 30
 
       - name: Publish to CDN
-        if: ${{ inputs.publish && secrets.DO_SPACES_ACCESS_KEY != '' }}
+        if: ${{ inputs.publish && env.HAS_CDN_CREDS == 'true' }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
