@@ -41,9 +41,12 @@ pub enum StreamEventType {
     RateLimit,
     ApprovalRequest,
     AskRequest,
+    PlanApproval,
+    FollowupSuggestions,
     SubagentStart,
     SubagentProgress,
     SubagentComplete,
+    ToolSummary,
 }
 
 /// Token usage statistics from a streaming response.
@@ -208,6 +211,20 @@ impl StreamEvent {
         }
     }
 
+    pub fn tool_summary(text: impl Into<String>) -> Self {
+        Self {
+            event_type: StreamEventType::ToolSummary,
+            text: text.into(),
+            tool_call: None,
+            error: None,
+            usage: None,
+            rate_limit: None,
+            widgets: None,
+            provider_metadata: None,
+            stop_reason: None,
+        }
+    }
+
     pub fn ask_request(
         question_id: impl Into<String>,
         prompt: impl Into<String>,
@@ -221,6 +238,39 @@ impl StreamEvent {
             usage: None,
             rate_limit: None,
             widgets,
+            provider_metadata: None,
+            stop_reason: None,
+        }
+    }
+
+    /// Plan approval request: sends plan text and proposed tool names to the frontend.
+    pub fn plan_approval_request(
+        request_id: impl Into<String>,
+        plan: impl Into<String>,
+        tools: Vec<String>,
+    ) -> Self {
+        Self {
+            event_type: StreamEventType::PlanApproval,
+            text: plan.into(),
+            tool_call: None,
+            error: Some(request_id.into()),
+            usage: None,
+            rate_limit: None,
+            widgets: Some(serde_json::json!(tools)),
+            provider_metadata: None,
+            stop_reason: None,
+        }
+    }
+
+    pub fn followup_suggestions(suggestions: Vec<String>) -> Self {
+        Self {
+            event_type: StreamEventType::FollowupSuggestions,
+            text: String::new(),
+            tool_call: None,
+            error: None,
+            usage: None,
+            rate_limit: None,
+            widgets: Some(serde_json::json!(suggestions)),
             provider_metadata: None,
             stop_reason: None,
         }
@@ -390,6 +440,20 @@ pub fn is_context_overflow(err: &ProviderError) -> bool {
         || matches!(err, ProviderError::Api { code, message, .. }
             if code == "context_length_exceeded"
                 || (message.contains("context") && message.contains("exceeded")))
+}
+
+/// Check if an error indicates the model is overloaded (HTTP 529 or "overloaded" in message).
+pub fn is_overloaded(err: &ProviderError) -> bool {
+    match err {
+        ProviderError::Api { code, message, .. } => {
+            code == "529" || message.to_lowercase().contains("overloaded")
+        }
+        ProviderError::Stream(msg) | ProviderError::Request(msg) => {
+            let lower = msg.to_lowercase();
+            lower.contains("529") || lower.contains("overloaded")
+        }
+        _ => false,
+    }
 }
 
 /// Check if an error is a transient network issue safe to retry.

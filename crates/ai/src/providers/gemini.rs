@@ -245,7 +245,7 @@ impl Provider for GeminiProvider {
             "sending Gemini request"
         );
 
-        let client = reqwest::Client::new();
+        let client = crate::http::streaming_client();
         let response = client
             .post(&url)
             .header("Content-Type", "application/json")

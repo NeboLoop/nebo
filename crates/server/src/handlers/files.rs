@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::response::Json;
 
 use super::{HandlerResult, to_error_response};
@@ -94,6 +94,53 @@ pub async fn pick_folder() -> HandlerResult<serde_json::Value> {
     let path = result.and_then(|p| p.to_str().map(|s| s.to_string()));
 
     Ok(Json(serde_json::json!({ "path": path })))
+}
+
+/// POST /api/v1/files/upload — Proxy file upload to NeboLoop API
+pub async fn upload_file(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> HandlerResult<serde_json::Value> {
+    let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
+
+    let mut filename = String::new();
+    let mut mime_type = String::new();
+    let mut data: Vec<u8> = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Validation(e.to_string())))?
+    {
+        if field.name() == Some("file") {
+            filename = field
+                .file_name()
+                .unwrap_or("upload")
+                .to_string();
+            mime_type = field
+                .content_type()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            data = field
+                .bytes()
+                .await
+                .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?
+                .to_vec();
+        }
+    }
+
+    if data.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation(
+            "no file provided".into(),
+        )));
+    }
+
+    let attachment = api
+        .upload_file(&filename, &mime_type, data)
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+
+    Ok(Json(serde_json::to_value(attachment).unwrap_or_default()))
 }
 
 /// GET /api/v1/files/*path

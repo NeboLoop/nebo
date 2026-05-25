@@ -1,9 +1,12 @@
 # A2UI Integration Architecture for Nebo
 
-> Last updated: 2026-04-13
-> Status: **Phase 1 implemented** (core infrastructure shipped in fcb850a)
+> Last updated: 2026-05-18
+> Status: **Superseded.** Apps build their own frontends using `@neboai/app-sdk`. The backend A2UI surface system (`a2ui.rs`, `a2ui_actions.rs`) still exists for agent-pushed dynamic UIs. The declarative `views.json` path, `a2ui_bindings.rs`, and `app/src/lib/a2ui/` frontend renderer have been removed.
+>
+> For the current app approach, see `docs/publishers-guide/apps.md`.
+>
 > Protocol target: A2UI v0.9
-> Dependencies: `a2ui-rs` (MIT), `@a2ui/lit` (Apache 2.0)
+> Dependencies: `a2ui-rs` (MIT)
 
 ---
 

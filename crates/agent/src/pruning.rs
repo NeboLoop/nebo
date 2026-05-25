@@ -222,7 +222,10 @@ pub fn micro_compact(
             continue; // Not worth compacting small results
         }
 
-        let trimmed_content = format!("[trimmed: {} result]", tool_name);
+        // Build informative summary instead of generic "[trimmed: X result]"
+        let (_call_name, call_input) = find_tool_call_for_result(messages, *idx);
+        let trimmed_content =
+            build_tool_summary(tool_name, call_input.as_ref(), &msg.content);
 
         // Preserve original tool_call_ids so the orphan filter in build_messages
         // can still match compacted results with their corresponding tool_calls.
@@ -412,8 +415,11 @@ fn trim_priority(tool_name: &str) -> usize {
     }
 }
 
-/// Find the tool name for a tool result message by looking at preceding tool calls.
-fn find_tool_name_for_result(messages: &[ChatMessage], result_idx: usize) -> String {
+/// Find the tool name and input for a tool result message by looking at preceding tool calls.
+fn find_tool_call_for_result(
+    messages: &[ChatMessage],
+    result_idx: usize,
+) -> (String, Option<serde_json::Value>) {
     // Look backwards for an assistant message with tool_calls
     for i in (0..result_idx).rev() {
         let msg = &messages[i];
@@ -421,18 +427,187 @@ fn find_tool_name_for_result(messages: &[ChatMessage], result_idx: usize) -> Str
             if let Some(ref tc_json) = msg.tool_calls {
                 if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) {
                     if let Some(first) = calls.first() {
-                        return first
+                        let name = first
                             .get("name")
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown")
                             .to_string();
+                        let input = first.get("input").cloned();
+                        return (name, input);
                     }
                 }
             }
             break; // Stop at first assistant message
         }
     }
-    "unknown".to_string()
+    ("unknown".to_string(), None)
+}
+
+/// Backward-compat wrapper used by micro_compact.
+fn find_tool_name_for_result(messages: &[ChatMessage], result_idx: usize) -> String {
+    find_tool_call_for_result(messages, result_idx).0
+}
+
+/// Build an informative one-line summary of a tool call + result.
+/// Pure string ops — no LLM.
+fn build_tool_summary(
+    tool_name: &str,
+    tool_input: Option<&serde_json::Value>,
+    tool_result: &str,
+) -> String {
+    let line_count = tool_result.lines().count();
+
+    let input = tool_input.unwrap_or(&serde_json::Value::Null);
+    let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+
+    match tool_name {
+        "system" if resource == "shell" => {
+            let cmd = input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let cmd_short = if cmd.len() > 60 {
+                format!("{}...", &cmd[..57])
+            } else {
+                cmd.to_string()
+            };
+            let status = if tool_result.contains("error") || tool_result.contains("Error") {
+                "error"
+            } else {
+                "ok"
+            };
+            format!(
+                "[system:shell] {} → {}, {} lines",
+                cmd_short, status, line_count
+            )
+        }
+        "system" if resource == "file" && action == "read" => {
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("[system:file:read] {} ({} lines)", path, line_count)
+        }
+        "system" if resource == "file" => {
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("[system:file:{}] {} ({} lines)", action, path, line_count)
+        }
+        "web" if action == "search" => {
+            let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("?");
+            // Count results (rough: count "title" occurrences or similar)
+            let result_count = tool_result.matches("\"title\"").count().max(1);
+            format!("[web:search] '{}' ({} results)", query, result_count)
+        }
+        "web" if action == "fetch" => {
+            let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+            let url_short = if url.len() > 60 {
+                format!("{}...", &url[..57])
+            } else {
+                url.to_string()
+            };
+            format!("[web:fetch] {} ({} lines)", url_short, line_count)
+        }
+        "bot" => {
+            format!("[bot:{}] {} lines", action, line_count)
+        }
+        _ => {
+            if !resource.is_empty() {
+                format!("[{}:{}] {} lines", tool_name, resource, line_count)
+            } else {
+                format!("[{}] {} lines", tool_name, line_count)
+            }
+        }
+    }
+}
+
+/// Message summarization: truncate old user/assistant messages to reduce context
+/// without eviction. Keeps recent `keep_recent` messages intact; truncates older
+/// user/assistant text to first sentence(s). No LLM — pure heuristic.
+pub fn message_summarize(
+    messages: &[ChatMessage],
+    warning_threshold: usize,
+    keep_recent: usize,
+) -> (Vec<ChatMessage>, usize) {
+    let total_tokens = estimate_total_tokens(messages);
+    if total_tokens <= warning_threshold || messages.len() <= keep_recent {
+        return (messages.to_vec(), 0);
+    }
+
+    let mut result = messages.to_vec();
+    let mut tokens_saved = 0usize;
+    let cutoff = messages.len().saturating_sub(keep_recent);
+
+    for i in 0..cutoff {
+        let msg = &result[i];
+
+        // Only truncate user and assistant prose — skip tool/system messages
+        if msg.role != "user" && msg.role != "assistant" {
+            continue;
+        }
+
+        // Skip already-summarized messages
+        if msg.content.starts_with("[summarized]") || msg.content.starts_with("[cleared]") {
+            continue;
+        }
+
+        let (max_chars, max_sentences) = if msg.role == "user" {
+            (200usize, 1usize)
+        } else {
+            (500, 2)
+        };
+
+        if msg.content.len() <= max_chars {
+            continue;
+        }
+
+        let old_tokens = estimate_message_tokens(msg);
+        let truncated = truncate_to_sentences(&msg.content, max_sentences, max_chars);
+        let new_content = format!("[summarized] {}", truncated);
+
+        result[i] = ChatMessage {
+            id: msg.id.clone(),
+            chat_id: msg.chat_id.clone(),
+            role: msg.role.clone(),
+            content: new_content,
+            metadata: msg.metadata.clone(),
+            created_at: msg.created_at,
+            day_marker: msg.day_marker.clone(),
+            tool_calls: msg.tool_calls.clone(),
+            tool_results: msg.tool_results.clone(),
+            token_estimate: None,
+            html: None,
+        };
+        let new_tokens = estimate_message_tokens(&result[i]);
+        tokens_saved += old_tokens.saturating_sub(new_tokens);
+    }
+
+    (result, tokens_saved)
+}
+
+/// Truncate text to at most `max_sentences` sentences, with a hard char cap.
+fn truncate_to_sentences(text: &str, max_sentences: usize, max_chars: usize) -> String {
+    let mut end = 0usize;
+    let mut sentences = 0usize;
+
+    // Walk through text finding sentence boundaries (. or \n after 20+ chars)
+    for (i, ch) in text.char_indices() {
+        if i >= max_chars {
+            break;
+        }
+        if (ch == '.' || ch == '\n') && i >= 20 {
+            end = i + 1;
+            sentences += 1;
+            if sentences >= max_sentences {
+                break;
+            }
+        }
+    }
+
+    if end == 0 || end < 20 {
+        // No sentence boundary found — hard truncate at max_chars
+        let truncated: String = text.chars().take(max_chars).collect();
+        format!("{}...", truncated)
+    } else {
+        format!("{}...", &text[..end].trim())
+    }
 }
 
 /// Build a quick plaintext fallback summary for first eviction (no LLM call).
@@ -549,39 +724,45 @@ pub async fn build_llm_summary(
     let system = "\
 You are a conversation compaction engine. Produce a structured summary of the conversation transcript below. \
 If an existing summary is provided, PRESERVE all existing information and ADD new completed actions, decisions, and context. \
-Be concise but preserve critical context needed to resume work.
+Be concise but preserve critical context needed to resume work. Every section MUST have content — write \"None\" if empty.
 
 Output format (use these exact headings):
 
 ## Active Task
-One sentence: what is the user currently trying to accomplish?
+One sentence: what is currently being worked on.
 
 ## Goal
-The end state the user wants to reach.
-
-## Constraints
-Any constraints, preferences, or requirements the user has stated.
+The end state being pursued.
 
 ## Completed Actions
 Bullet list of actions taken and their outcomes (tools called, files modified, commands run).
 
 ## Key Decisions
-Decisions made and approaches chosen or rejected.
+Decisions made and their rationale. Critical for not re-deciding.
+
+## Remaining Work
+What still needs to happen, ordered by priority. Include blocked items and why.
 
 ## Files & Resources
-Full paths of files read, written, or referenced.
+Full paths of files read, written, or modified. URLs accessed.
 
 ## Errors & Resolutions
-Any errors encountered and how they were resolved (or if still open).
-
-## Pending Items
-What remains to be done. Include blocked items and why they're blocked.
+Errors encountered and how they were resolved (or if still open).
 
 ## User Requests
-Verbatim key requests from the user (quoted, max 3 most recent).
+Explicit things the user asked for that haven't been addressed yet.
+
+## Key Entities
+Names, IDs, versions, endpoints, and other specific values referenced in conversation.
+
+## Environment Context
+OS, working directory, tools used, active connections, relevant config.
+
+## Constraints
+Rules, limitations, or preferences the user stated.
 
 ## Critical Context
-Any other context needed to resume this work (environment details, API endpoints, credentials hints, etc.).";
+Anything else essential for resuming this work that doesn't fit above.";
 
     let req = ChatRequest {
         messages: vec![Message {
@@ -852,14 +1033,130 @@ mod tests {
         );
 
         // Should keep 3 most recent, compact older 3
+        // Tool summaries now use informative format like "[search_emails] N lines"
         let compacted_count = result
             .iter()
-            .filter(|m| m.content.contains("[trimmed:"))
+            .filter(|m| m.content.contains("[search_emails]"))
             .count();
         assert!(
             compacted_count >= 2,
             "should compact at least 2 old results, got {}",
             compacted_count
         );
+    }
+
+    #[test]
+    fn test_build_tool_summary_shell() {
+        let input = serde_json::json!({
+            "resource": "shell",
+            "command": "ls -la /tmp"
+        });
+        let result = "file1.txt\nfile2.txt\nfile3.txt\n";
+        let summary = build_tool_summary("system", Some(&input), result);
+        assert!(summary.starts_with("[system:shell]"));
+        assert!(summary.contains("ls -la /tmp"));
+        assert!(summary.contains("3 lines"));
+    }
+
+    #[test]
+    fn test_build_tool_summary_file_read() {
+        let input = serde_json::json!({
+            "resource": "file",
+            "action": "read",
+            "path": "/home/user/code.rs"
+        });
+        let result = "line1\nline2\n";
+        let summary = build_tool_summary("system", Some(&input), result);
+        assert!(summary.contains("[system:file:read]"));
+        assert!(summary.contains("/home/user/code.rs"));
+    }
+
+    #[test]
+    fn test_build_tool_summary_web_search() {
+        let input = serde_json::json!({
+            "action": "search",
+            "query": "rust async tutorial"
+        });
+        let result = r#"{"title": "Async Rust", "url": "..."}, {"title": "Tokio Guide", "url": "..."}"#;
+        let summary = build_tool_summary("web", Some(&input), result);
+        assert!(summary.contains("[web:search]"));
+        assert!(summary.contains("rust async tutorial"));
+        assert!(summary.contains("2 results"));
+    }
+
+    #[test]
+    fn test_build_tool_summary_fallback() {
+        let input = serde_json::json!({});
+        let result = "some output\n";
+        let summary = build_tool_summary("custom_tool", Some(&input), result);
+        assert!(summary.starts_with("[custom_tool]"));
+        assert!(summary.contains("lines"));
+    }
+
+    #[test]
+    fn test_message_summarize_truncates_old() {
+        let long_user = "This is a long user message that goes on and on. ".repeat(20);
+        let long_assistant = "Here is a detailed response with lots of information. ".repeat(30);
+        let mut messages = Vec::new();
+
+        // 20 old messages (10 user + 10 assistant)
+        for i in 0..10 {
+            let mut u = make_old_msg("user", &long_user);
+            u.created_at = 1000 + i;
+            messages.push(u);
+            let mut a = make_old_msg("assistant", &long_assistant);
+            a.created_at = 1000 + i;
+            messages.push(a);
+        }
+        // 5 recent messages (within keep_recent=15)
+        for i in 0..5 {
+            let mut u = make_old_msg("user", &long_user);
+            u.created_at = 2000 + i;
+            messages.push(u);
+        }
+
+        // warning_threshold = 0 to force activation
+        let (result, tokens_saved) = message_summarize(&messages, 0, 15);
+        assert!(tokens_saved > 0, "should save tokens");
+
+        // Check that old messages got summarized
+        let summarized_count = result
+            .iter()
+            .filter(|m| m.content.starts_with("[summarized]"))
+            .count();
+        assert!(
+            summarized_count > 0,
+            "should have summarized some old messages"
+        );
+
+        // Check that recent messages (last 15) are untouched
+        for i in (result.len() - 5)..result.len() {
+            assert!(
+                !result[i].content.starts_with("[summarized]"),
+                "recent messages should not be summarized"
+            );
+        }
+    }
+
+    #[test]
+    fn test_message_summarize_skips_short() {
+        let messages = vec![
+            make_old_msg("user", "hi"),
+            make_old_msg("assistant", "hello"),
+            make_old_msg("user", "how are you?"),
+        ];
+        // warning_threshold = 0 to force activation, keep_recent = 1
+        let (_, tokens_saved) = message_summarize(&messages, 0, 1);
+        assert_eq!(tokens_saved, 0, "short messages should not be summarized");
+    }
+
+    #[test]
+    fn test_truncate_to_sentences() {
+        // Sentences must be > 20 chars for the boundary to be recognized
+        let text = "This is the first long sentence that matters. Here is the second sentence. And a third.";
+        let result = truncate_to_sentences(text, 1, 200);
+        assert!(result.contains("first long sentence"));
+        assert!(result.ends_with("..."));
+        assert!(!result.contains("second sentence"));
     }
 }

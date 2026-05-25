@@ -18,7 +18,7 @@
 - [ ] **Push tag** to trigger pipeline: `git push origin vX.Y.Z`
 - [ ] **Monitor pipeline** — `gh run list --limit 1` should show the release run
 - [ ] **Verify CDN** after pipeline completes: `curl -s https://cdn.neboloop.com/releases/version.json`
-- [ ] **Verify GitHub Release** — `gh release view vX.Y.Z` should list all 14 assets
+- [ ] **Verify GitHub Release** — `gh release view vX.Y.Z` should list all 13 assets
 - [ ] **Smoke test** — install on at least one platform and confirm:
   - About page shows correct version
   - Marketplace loads
@@ -41,8 +41,8 @@
 
 ```
 Cargo.toml [workspace.package]
-  └── version = "0.4.1"
-        ├── All crates inherit via `version.workspace = true`
+  └── version = "0.9.0"
+        ├── Most crates inherit via `version.workspace = true`
         ├── Injected at compile time: env!("CARGO_PKG_VERSION")
         └── Used by: server (const VERSION), cli (--version), updater
 ```
@@ -94,7 +94,7 @@ frontend ─────────┬─→ build-macos (arm64 + amd64)  ─�
 
 **Total pipeline time: ~37 minutes**
 
-### Release Assets (14 files)
+### Release Assets (13 files)
 
 ```
 checksums.txt
@@ -130,7 +130,7 @@ releases/
 │   ├── nebo-linux-amd64-headless
 │   ├── nebo-linux-arm64
 │   ├── nebo-linux-arm64-headless
-│   ├── nebo-windows-amd64.exe
+│   ├── Nebo-X.Y.Z-setup.exe
 │   ├── Nebo-X.Y.Z-arm64.dmg
 │   ├── Nebo-X.Y.Z-amd64.dmg
 │   └── Nebo-X.Y.Z-amd64.msi
@@ -236,6 +236,7 @@ releases/
 | `AZURE_CLIENT_ID` | Azure signing client |
 | `AZURE_CLIENT_SECRET` | Azure signing secret |
 | `APT_GPG_PRIVATE_KEY` | GPG key for APT signing (optional) |
+| `NEBOLOOP_CDN_URL` | CDN base URL for bundled .napp downloads during build |
 
 ### Variables
 
@@ -258,11 +259,11 @@ releases/
 | `.github/workflows/release.yml` | Full CI/CD pipeline |
 | `crates/updater/src/lib.rs` | Version check, download, verify, background checker |
 | `crates/updater/src/apply.rs` | Platform-specific binary replacement + restart |
-| `crates/server/src/lib.rs:913-998` | BackgroundChecker wiring + WS events |
-| `crates/server/src/handlers/agent.rs:477-519` | `/update/check` + `/update/apply` handlers |
+| `crates/server/src/lib.rs` | BackgroundChecker wiring + WS events |
+| `crates/server/src/handlers/agent.rs` | `/update/check` + `/update/apply` handlers |
 | `app/src/lib/stores/update.ts` | Frontend update store |
-| `app/src/routes/(app)/+layout.svelte` | WS event listeners for updates |
-| `app/src/routes/(app)/settings/about/+page.svelte` | Update UI |
+| `app/src/lib/websocket/listeners.ts` | WS event listeners for updates |
+| `app/src/routes/settings/about/+page.svelte` | Update UI |
 | `app/src/lib/components/UpdateBanner.svelte` | In-app update notification banner |
 | `scripts/nebo.rb.tmpl` | Homebrew cask template |
 | `assets/macos/nebo.entitlements` | macOS code signing entitlements |

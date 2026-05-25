@@ -1,11 +1,22 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="clean">
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
+		<script>
+			// Prevent Backspace from navigating back when not in an input (Tauri webview issue)
+			document.addEventListener('keydown', function(e) {
+				if (e.key === 'Backspace') {
+					var t = e.target;
+					if (!t.matches('input, textarea, select, [contenteditable="true"]')) {
+						e.preventDefault();
+					}
+				}
+			}, true);
+		</script>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>

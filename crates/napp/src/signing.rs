@@ -32,6 +32,7 @@ struct CachedKey {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SigningKeyResponse {
     public_key: String, // base64-encoded ED25519 public key
 }
@@ -227,15 +228,15 @@ impl RevocationChecker {
             Ok(r) if r.status().is_success() => {
                 #[derive(serde::Deserialize)]
                 struct RevocationList {
-                    #[serde(default)]
-                    revoked: Vec<String>,
+                    #[serde(default, alias = "revoked")]
+                    revocations: Vec<String>,
                 }
                 let list: RevocationList = r
                     .json()
                     .await
                     .map_err(|e| NappError::Signing(format!("parse revocations: {}", e)))?;
 
-                let set: std::collections::HashSet<String> = list.revoked.into_iter().collect();
+                let set: std::collections::HashSet<String> = list.revocations.into_iter().collect();
                 let is_revoked = set.contains(app_id);
 
                 let mut cache = self.cache.write().unwrap();

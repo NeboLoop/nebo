@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import Power from 'lucide-svelte/icons/power';
   import Plus from 'lucide-svelte/icons/plus';
   import Trash2 from 'lucide-svelte/icons/trash-2';
@@ -7,6 +7,7 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import X from 'lucide-svelte/icons/x';
   import ChevronLeft from 'lucide-svelte/icons/chevron-left';
+  import KeyRound from 'lucide-svelte/icons/key-round';
   import type { McpIntegration } from '$lib/api/nebo';
 
   interface MCPIntegration { id: string; name: string; serverUrl: string; authType: 'oauth' | 'api_key' | 'none'; isEnabled: boolean; connectionStatus: 'connected' | 'disconnected' | 'error'; toolCount: number; lastConnectedAt: string; lastError: string | null }
@@ -119,17 +120,70 @@
     { value: 'none' as const, label: 'None', description: 'No authentication required' },
   ];
 
+  let oauthPollingId: ReturnType<typeof setInterval> | null = null;
+
+  onDestroy(() => {
+    if (oauthPollingId) clearInterval(oauthPollingId);
+  });
+
+  function updateIntegrationById(id: string, patch: Partial<MCPIntegration>) {
+    integrations = integrations.map(i => i.id === id ? { ...i, ...patch } : i);
+  }
+
+  /** Open auth URL and poll for OAuth completion. If authUrl is provided, use it directly; otherwise fetch via getOauthUrl. */
+  async function startOAuthFlow(id: string, authUrl?: string) {
+    // Prevent double-open if already polling
+    if (oauthPollingId) return;
+    const api = await import('$lib/api/nebo');
+    if (!authUrl) {
+      const oauthResp = await api.getOauthUrl(id) as { authUrl?: string };
+      authUrl = oauthResp?.authUrl;
+    }
+    if (!authUrl) return;
+    window.open(authUrl, '_blank');
+    updateIntegrationById(id, { connectionStatus: 'disconnected', lastError: 'Waiting for OAuth authorization...' });
+    // Poll for OAuth completion — the callback stores tokens and the connect call succeeds
+    oauthPollingId = setInterval(async () => {
+      try {
+        const resp = await api.connectIntegration(id);
+        const result = resp as { success?: boolean; toolCount?: number; message?: string };
+        if (result?.success) {
+          if (oauthPollingId) { clearInterval(oauthPollingId); oauthPollingId = null; }
+          updateIntegrationById(id, {
+            isEnabled: true,
+            connectionStatus: 'connected',
+            toolCount: result.toolCount ?? 0,
+            lastError: null,
+          });
+        }
+      } catch {
+        // OAuth not complete yet — keep polling
+      }
+    }, 3000);
+    // Stop polling after 3 minutes
+    setTimeout(() => {
+      if (oauthPollingId) {
+        clearInterval(oauthPollingId);
+        oauthPollingId = null;
+        const item = integrations.find(i => i.id === id);
+        if (item?.connectionStatus !== 'connected') {
+          updateIntegrationById(id, { lastError: 'OAuth timed out. Try reconnecting.' });
+        }
+      }
+    }, 180_000);
+  }
+
   async function addIntegration() {
     if (!selectedRegistry) return;
     const name = isCustom ? newServerName : selectedRegistry.name;
     if (!name.trim() || !newServerUrl.trim()) return;
-    const newItem = {
+    const newItem: MCPIntegration = {
       id: `int_${Date.now()}`,
       name,
       serverUrl: newServerUrl,
-      authType: newAuthType as 'oauth' | 'api_key',
+      authType: newAuthType as 'oauth' | 'api_key' | 'none',
       isEnabled: false,
-      connectionStatus: 'disconnected' as const,
+      connectionStatus: 'disconnected',
       toolCount: 0,
       lastConnectedAt: 'Never',
       lastError: null,
@@ -145,24 +199,84 @@
         apiKey: newAuthType === 'api_key' ? newApiKey : undefined,
       });
       if (resp?.integration?.id) {
-        integrations = integrations.map(i => i.id === newItem.id ? { ...i, id: resp.integration.id } : i);
+        const realId = resp.integration.id;
+        updateIntegrationById(newItem.id, { id: realId });
+        // For OAuth integrations, start the OAuth flow immediately
+        if (newAuthType === 'oauth') {
+          await startOAuthFlow(realId);
+        } else {
+          // For non-OAuth, connect directly
+          await api.connectIntegration(realId);
+          updateIntegrationById(realId, { isEnabled: true, connectionStatus: 'connected' });
+        }
       }
     } catch { /* local state already has the item */ }
   }
 
   async function toggleEnabled(id: string) {
-    integrations = integrations.map(i =>
-      i.id === id ? { ...i, isEnabled: !i.isEnabled, connectionStatus: i.isEnabled ? 'disconnected' as const : 'connected' as const, lastError: null } : i
-    );
+    const item = integrations.find(i => i.id === id);
+    if (!item) return;
+
+    if (item.isEnabled) {
+      // Disconnecting
+      updateIntegrationById(id, { isEnabled: false, connectionStatus: 'disconnected', lastError: null });
+      try {
+        const api = await import('$lib/api/nebo');
+        await api.updateIntegration(id, { isEnabled: false });
+      } catch { /* local state already updated */ }
+    } else {
+      // Connecting
+      updateIntegrationById(id, { lastError: null });
+      try {
+        const api = await import('$lib/api/nebo');
+        if (item.authType === 'oauth') {
+          // Try connecting first (tokens may already exist from previous OAuth)
+          const resp = await api.connectIntegration(id) as { success?: boolean; toolCount?: number };
+          if (resp?.success) {
+            updateIntegrationById(id, { isEnabled: true, connectionStatus: 'connected', toolCount: resp.toolCount ?? 0 });
+          } else {
+            // No tokens — start OAuth flow
+            await startOAuthFlow(id);
+          }
+        } else {
+          await api.connectIntegration(id);
+          updateIntegrationById(id, { isEnabled: true, connectionStatus: 'connected' });
+        }
+      } catch {
+        // Connect failed — for OAuth, try starting the flow
+        if (item.authType === 'oauth') {
+          try { await startOAuthFlow(id); } catch { updateIntegrationById(id, { lastError: 'Failed to start OAuth' }); }
+        } else {
+          updateIntegrationById(id, { connectionStatus: 'error', lastError: 'Connection failed' });
+        }
+      }
+    }
+  }
+
+  async function testConnection(id: string) {
     try {
       const api = await import('$lib/api/nebo');
-      const item = integrations.find(i => i.id === id);
-      if (item?.isEnabled) {
-        await api.connectIntegration(id);
+      const resp = await api.testIntegration(id) as { success?: boolean; message?: string };
+      if (resp?.success) {
+        updateIntegrationById(id, { lastError: null });
       } else {
-        await api.updateIntegration(id, { isEnabled: false });
+        updateIntegrationById(id, { lastError: resp?.message || 'Test failed' });
       }
-    } catch { /* local state already updated */ }
+    } catch {
+      updateIntegrationById(id, { lastError: 'Test request failed' });
+    }
+  }
+
+  async function reauthenticate(id: string) {
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.reauthenticateIntegration(id) as { authUrl?: string };
+      if (resp?.authUrl) {
+        await startOAuthFlow(id, resp.authUrl);
+      }
+    } catch {
+      updateIntegrationById(id, { lastError: 'Reauthentication failed' });
+    }
   }
 
   async function removeIntegration(id: string) {
@@ -239,6 +353,15 @@
           {/if}
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
+          {#if integration.authType === 'oauth' && integration.connectionStatus === 'error'}
+            <button
+              onclick={() => reauthenticate(integration.id)}
+              class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
+              title="Reauthenticate OAuth"
+            >
+              <KeyRound class="w-4 h-4 text-warning" />
+            </button>
+          {/if}
           <button
             onclick={() => toggleEnabled(integration.id)}
             class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
@@ -247,6 +370,7 @@
             <Power class="w-4 h-4 {integration.isEnabled ? 'text-success' : 'text-base-content/30'}" />
           </button>
           <button
+            onclick={() => testConnection(integration.id)}
             class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
             title="Test connection"
           >

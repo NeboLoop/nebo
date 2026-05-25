@@ -876,6 +876,49 @@ impl NeboLoopApi {
         .await
     }
 
+    // ── Marketplace Subscriptions ──────────────────────────────────
+
+    /// Create a marketplace subscription (triggers Stripe Checkout).
+    pub async fn marketplace_create_subscription(
+        &self,
+        target_id: &str,
+        target_type: &str,
+        bot_count: i32,
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::POST,
+            "/api/v1/marketplace/subscriptions",
+            Some(&serde_json::json!({
+                "targetId": target_id,
+                "targetType": target_type,
+                "botCount": bot_count,
+            })),
+        )
+        .await
+    }
+
+    /// List active marketplace subscriptions for the current owner.
+    pub async fn marketplace_list_subscriptions(
+        &self,
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::GET,
+            "/api/v1/marketplace/subscriptions",
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// Cancel a marketplace subscription.
+    pub async fn marketplace_cancel_subscription(
+        &self,
+        id: &str,
+    ) -> Result<serde_json::Value, CommError> {
+        let path = format!("/api/v1/marketplace/subscriptions/{}/cancel", id);
+        self.do_json(reqwest::Method::POST, &path, None::<&()>)
+            .await
+    }
+
     // ── Plugins ─────────────────────────────────────────────────────
 
     /// Get plugin manifest from NeboLoop for a specific platform.
@@ -940,6 +983,61 @@ impl NeboLoopApi {
         });
         self.do_json(reqwest::Method::POST, "/api/v1/licenses/keys", Some(&body))
             .await
+    }
+
+    // ── File Upload / Download ────────────────────────────────────────
+
+    /// Upload a file to NeboLoop for attachment to a message.
+    /// Returns attachment metadata including the file_id and download URL.
+    pub async fn upload_file(
+        &self,
+        filename: &str,
+        mime_type: &str,
+        data: Vec<u8>,
+    ) -> Result<crate::wire::Attachment, CommError> {
+        let part = reqwest::multipart::Part::bytes(data)
+            .file_name(filename.to_string())
+            .mime_str(mime_type)
+            .map_err(|e| CommError::Other(format!("invalid mime type: {}", e)))?;
+
+        let form = reqwest::multipart::Form::new().part("file", part);
+
+        let url = format!("{}/api/v1/files/upload", self.api_server);
+        debug!(url = %url, filename = %filename, "uploading file");
+
+        // Use a client with a longer timeout for uploads
+        let upload_client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
+        let resp = upload_client
+            .post(&url)
+            .bearer_auth(self.token())
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| CommError::Other(format!("upload failed: {}", e)))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CommError::Other(format!(
+                "upload returned {}: {}",
+                status, body
+            )));
+        }
+
+        resp.json::<crate::wire::Attachment>()
+            .await
+            .map_err(|e| CommError::Other(format!("decode upload response: {}", e)))
+    }
+
+    /// Download a file by ID. Returns raw bytes.
+    pub async fn download_file(&self, file_id: &str) -> Result<Vec<u8>, CommError> {
+        let url = format!("{}/api/v1/files/{}", self.api_server, file_id);
+        self.fetch_raw(&url).await
     }
 
     // ── Raw Fetch ───────────────────────────────────────────────────

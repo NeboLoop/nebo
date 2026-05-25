@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agents;
 pub mod apps;
+pub mod artifact_updates;
 pub mod auth;
 pub mod chat;
 pub mod commander;

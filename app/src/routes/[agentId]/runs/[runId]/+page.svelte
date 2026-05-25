@@ -182,6 +182,52 @@
   function toggleStep(key: string) {
     expandedSteps[key] = !expandedSteps[key];
   }
+
+  let triggerLoading = $state(false);
+  let cancelLoading = $state(false);
+
+  async function cancelWorkflow() {
+    const wfId = runDetail?.workflowId;
+    const rid = runId;
+    if (!wfId || !rid || cancelLoading) return;
+    cancelLoading = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.cancelRun(wfId, rid);
+      ctx.refreshRuns?.();
+      // Re-fetch run detail to reflect cancelled status
+      const res = await api.getRun(`agent:${agentId}`, rid);
+      if (res?.run) runDetail = res.run;
+      if (res?.activities) activities = res.activities;
+    } catch (err) {
+      console.warn('[nebo] Failed to cancel run:', err);
+    } finally {
+      cancelLoading = false;
+    }
+  }
+
+  async function triggerWorkflow() {
+    if (!selectedRun || triggerLoading) return;
+    triggerLoading = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      // Forward original run inputs so the re-run has the same event payload
+      const originalInputs: Record<string, unknown> = {};
+      if (runDetail?.inputs) {
+        try {
+          const parsed = typeof runDetail.inputs === 'string' ? JSON.parse(runDetail.inputs) : runDetail.inputs;
+          if (parsed && typeof parsed === 'object') Object.assign(originalInputs, parsed);
+        } catch { /* ignore */ }
+      }
+      await api.runAgentWorkflow(agentId, selectedRun.workflowName, { inputs: originalInputs });
+      // Refresh the runs list
+      ctx.refreshRuns?.();
+    } catch (err) {
+      console.warn('[nebo] Failed to trigger workflow:', err);
+    } finally {
+      triggerLoading = false;
+    }
+  }
 </script>
 
 <div class="flex-1 flex flex-col bg-base-100 min-w-0 min-h-0">
@@ -196,9 +242,22 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </a>
       <span class="text-sm font-semibold truncate">{selectedRun.workflowName}</span>
-      <span class="py-0 px-1.5 rounded text-xs font-medium shrink-0 {selectedRun.status === 'success' ? 'bg-success/10 text-success' : selectedRun.status === 'failed' ? 'bg-error/10 text-error' : selectedRun.status === 'running' ? 'bg-warning/10 text-warning' : 'bg-base-200 text-base-content/50'}">
-        {selectedRun.status === 'success' ? 'Completed' : selectedRun.status === 'failed' ? 'Failed' : selectedRun.status === 'running' ? 'Running' : 'Skipped'}
+      <span class="py-0 px-1.5 rounded text-xs font-medium shrink-0 {selectedRun.status === 'success' ? 'bg-success/10 text-success' : selectedRun.status === 'failed' ? 'bg-error/10 text-error' : selectedRun.status === 'running' ? 'bg-warning/10 text-warning' : selectedRun.status === 'exited' ? 'bg-info/10 text-info' : selectedRun.status === 'cancelled' ? 'bg-warning/10 text-warning' : 'bg-base-200 text-base-content/50'}">
+        {selectedRun.status === 'success' ? 'Completed' : selectedRun.status === 'failed' ? 'Failed' : selectedRun.status === 'running' ? 'Running' : selectedRun.status === 'exited' ? 'Exited' : selectedRun.status === 'cancelled' ? 'Cancelled' : 'Skipped'}
       </span>
+      {#if selectedRun.status === 'running'}
+        <button
+          class="ml-auto py-0.5 px-2 rounded border border-error/30 bg-error/10 text-xs font-medium text-error cursor-pointer hover:bg-error/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={cancelLoading}
+          onclick={cancelWorkflow}
+        >
+          {#if cancelLoading}
+            <span class="loading loading-spinner loading-xs"></span>
+          {:else}
+            Stop
+          {/if}
+        </button>
+      {/if}
     </div>
 
     <div class="flex-1 overflow-y-auto p-5 select-text">
@@ -208,6 +267,14 @@
         <span class="font-mono">{duration}</span>
         <span class="font-mono">{selectedRun.date}</span>
       </div>
+
+      <!-- Error/reason banner for cancelled/failed/exited runs -->
+      {#if selectedRun.error}
+        <div class="mb-4 p-3 rounded-lg border {selectedRun.status === 'failed' ? 'border-error/30 bg-error/5' : selectedRun.status === 'exited' ? 'border-info/30 bg-info/5' : 'border-warning/30 bg-warning/5'}">
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{selectedRun.status === 'cancelled' ? 'Reason' : selectedRun.status === 'exited' ? 'Exit Reason' : 'Error'}</div>
+          <div class="text-xs text-base-content/70">{selectedRun.error}</div>
+        </div>
+      {/if}
 
       <!-- Run inputs (event payload, etc.) -->
       {#if runInputs}
@@ -394,11 +461,17 @@
 
       <!-- Footer -->
       <div class="mt-4 pt-4 border-t border-base-300 flex gap-2">
-        {#if selectedRun.status === 'failed'}
-          <button class="py-1.5 px-3 rounded-md bg-base-content text-base-100 text-sm font-medium cursor-pointer border-none">Retry</button>
-        {:else}
-          <button class="py-1.5 px-3 rounded-md border border-base-300 bg-base-100 text-sm cursor-pointer hover:bg-base-200 transition-colors">Run Now</button>
-        {/if}
+        <button
+          class="py-1.5 px-3 rounded-md border border-base-300 bg-base-100 text-sm cursor-pointer hover:bg-base-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={triggerLoading}
+          onclick={triggerWorkflow}
+        >
+          {#if triggerLoading}
+            <span class="loading loading-spinner loading-xs"></span>
+          {:else}
+            {selectedRun.status === 'failed' ? 'Retry' : 'Run Again'}
+          {/if}
+        </button>
       </div>
     </div>
   {:else}

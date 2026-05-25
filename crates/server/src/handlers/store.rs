@@ -267,14 +267,27 @@ fn is_installed(slug: &str, _name: &str, artifact_type: &str, _store: &db::Store
     is_locally_installed(slug, dir_type)
 }
 
-/// Enrich a single product JSON value with local install state.
+/// Enrich a single product JSON value with local install state and update availability.
 fn enrich_installed_item(val: &mut serde_json::Value, store: &db::Store) {
     if let Some(obj) = val.as_object_mut() {
-        let slug = obj.get("slug").and_then(|v| v.as_str()).unwrap_or("");
-        let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let artifact_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("skill");
-        if !slug.is_empty() && is_installed(slug, name, artifact_type, store) {
+        let slug = obj.get("slug").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let artifact_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("skill").to_string();
+        let artifact_id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if !slug.is_empty() && is_installed(&slug, &name, &artifact_type, store) {
             obj.insert("installed".to_string(), serde_json::Value::Bool(true));
+
+            // Check if an update is available for this artifact
+            let lookup_id = if artifact_id.is_empty() { &slug } else { &artifact_id };
+            if let Ok(pending) = store.list_artifacts_with_updates() {
+                if let Some(pref) = pending.iter().find(|p| p.artifact_id == *lookup_id || p.artifact_id == slug) {
+                    obj.insert("updateAvailable".to_string(), serde_json::Value::Bool(true));
+                    obj.insert(
+                        "remoteVersion".to_string(),
+                        serde_json::Value::String(pref.remote_version.clone()),
+                    );
+                }
+            }
         }
     }
 }

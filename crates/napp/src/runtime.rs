@@ -14,6 +14,10 @@ pub struct Process {
     pub manifest: Manifest,
     pub pid: u32,
     pub sock_path: PathBuf,
+    pub binary_path: PathBuf,
+    /// Per-launch auth token passed as NEBO_APP_TOKEN env var.
+    pub app_token: String,
+    binary_mtime: std::time::SystemTime,
     child: tokio::process::Child,
 }
 
@@ -21,6 +25,18 @@ impl Process {
     /// Get the gRPC endpoint for this tool.
     pub fn grpc_endpoint(&self) -> String {
         format!("unix://{}", self.sock_path.display())
+    }
+
+    /// Check if the binary on disk has changed since launch.
+    ///
+    /// Follows symlinks so a rebuild of the target binary is detected even
+    /// when the tool directory uses a symlink (e.g. `bin/brief → sidecar/target/release/brief-sidecar`).
+    pub fn binary_changed(&self) -> bool {
+        let path = std::fs::canonicalize(&self.binary_path).unwrap_or(self.binary_path.clone());
+        match std::fs::metadata(&path).and_then(|m| m.modified()) {
+            Ok(mtime) => mtime != self.binary_mtime,
+            Err(_) => false,
+        }
     }
 
     /// Check if the process is still alive.
@@ -81,12 +97,20 @@ impl Runtime {
     }
 
     /// Launch a tool from its directory.
-    pub async fn launch(&self, tool_dir: &Path) -> Result<Process, NappError> {
+    pub async fn launch(
+        &self,
+        tool_dir: &Path,
+        api_port: u16,
+    ) -> Result<Process, NappError> {
         let manifest = Manifest::load(&tool_dir.join("manifest.json"))?;
         manifest.validate()?;
 
-        // Find binary
+        // Find binary and snapshot its mtime for change detection
         let binary = self.find_binary(tool_dir)?;
+        let canonical = std::fs::canonicalize(&binary).unwrap_or(binary.clone());
+        let binary_mtime = std::fs::metadata(&canonical)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
         // Validate binary
         sandbox::validate_binary(&binary, 500 * 1024 * 1024)?;
@@ -97,19 +121,35 @@ impl Runtime {
         // Clean up stale socket
         let _ = std::fs::remove_file(&sock_path);
 
-        // Create data directory
-        let data_dir = tool_dir.join("data");
+        // Create data directory in appdata/ (physically separated from code)
+        let artifact_slug = tool_dir
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or(&manifest.name);
+        let artifact_type = match manifest.artifact_type.as_str() {
+            "agent" => "agents",
+            _ => "plugins",
+        };
+        let data_dir = config::appdata_dir()
+            .map(|d| d.join(artifact_type).join(artifact_slug))
+            .unwrap_or_else(|_| tool_dir.join("data"));
         std::fs::create_dir_all(&data_dir)?;
 
         // Build sanitized environment
-        let env = sandbox::sanitize_env(
+        let mut env = sandbox::sanitize_env(
             &manifest.id,
             &manifest.name,
             &manifest.version,
             &tool_dir.to_string_lossy(),
             &sock_path.to_string_lossy(),
             &data_dir.to_string_lossy(),
+            api_port,
         );
+
+        // Per-launch auth token for API authentication
+        let app_token = generate_token();
+        env.push(("NEBO_APP_TOKEN".into(), app_token.clone()));
 
         // Launch process
         let mut cmd = Command::new(&binary);
@@ -118,6 +158,10 @@ impl Runtime {
             cmd.env(k, v);
         }
         cmd.current_dir(tool_dir);
+        // SIGKILL the sidecar when its Child handle is dropped (nebo exit,
+        // hot-reload restart, panic unwind, task cancellation). Without this,
+        // sidecars stay alive after nebo dies, holding sockets and ports.
+        cmd.kill_on_drop(true);
 
         // Redirect stdout/stderr to dedicated log file in the data directory
         let log_path = data_dir.join("sidecar.log");
@@ -151,6 +195,10 @@ impl Runtime {
 
         let pid = child.id().unwrap_or(0);
 
+        // Track for signal-handler cleanup. Unregistered when the supervisor
+        // notices the sidecar exited (see supervisor.rs / lifecycle code).
+        crate::child_guard::register_child(pid);
+
         // Write PID file
         let pid_file = sock_path.with_extension("pid");
         let _ = std::fs::write(&pid_file, pid.to_string());
@@ -182,6 +230,9 @@ impl Runtime {
             manifest,
             pid,
             sock_path,
+            binary_path: binary,
+            app_token,
+            binary_mtime,
             child,
         })
     }
@@ -317,5 +368,32 @@ impl Runtime {
             }
             let _ = std::fs::remove_file(entry.path());
         }
+    }
+}
+
+/// Generate a random 32-byte hex token for per-launch app authentication.
+fn generate_token() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let bytes: [u8; 32] = rng.r#gen();
+    hex::encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_token_format() {
+        let token = generate_token();
+        assert_eq!(token.len(), 64); // 32 bytes = 64 hex chars
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_generate_token_unique() {
+        let t1 = generate_token();
+        let t2 = generate_token();
+        assert_ne!(t1, t2);
     }
 }

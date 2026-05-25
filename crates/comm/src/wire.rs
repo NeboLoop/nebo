@@ -115,6 +115,26 @@ pub struct AckPayload {
     pub acked_seq: u64,
 }
 
+/// File/image/video attachment metadata.
+/// Embedded in message `content` JSON alongside `text`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub file_id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size: u64,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+}
+
 /// REPLAY frame payload (server -> client).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,5 +239,49 @@ mod tests {
         let p2: JoinResultPayload = serde_json::from_str(minimal).unwrap();
         assert!(p2.agent_id.is_empty());
         assert!(p2.agent_slug.is_empty());
+    }
+
+    #[test]
+    fn test_attachment_roundtrip() {
+        let a = Attachment {
+            file_id: "f-abc123".into(),
+            filename: "photo.jpg".into(),
+            mime_type: "image/jpeg".into(),
+            size: 1048576,
+            url: "https://cdn.neboloop.com/files/f-abc123".into(),
+            thumbnail_url: Some("https://cdn.neboloop.com/thumbs/f-abc123".into()),
+            width: Some(1920),
+            height: Some(1080),
+            duration: None,
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let a2: Attachment = serde_json::from_str(&json).unwrap();
+        assert_eq!(a2.file_id, "f-abc123");
+        assert_eq!(a2.size, 1048576);
+        assert_eq!(a2.width, Some(1920));
+        assert!(a2.duration.is_none());
+        // Duration should be omitted
+        assert!(!json.contains("duration"));
+    }
+
+    #[test]
+    fn test_attachment_in_content() {
+        let content = serde_json::json!({
+            "text": "Here's a file",
+            "attachments": [{
+                "fileId": "f-1",
+                "filename": "doc.pdf",
+                "mimeType": "application/pdf",
+                "size": 245000,
+                "url": "https://cdn.neboloop.com/files/f-1"
+            }]
+        });
+        let attachments: Vec<Attachment> = content
+            .get("attachments")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].filename, "doc.pdf");
+        assert!(attachments[0].thumbnail_url.is_none());
     }
 }

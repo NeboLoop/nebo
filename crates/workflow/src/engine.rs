@@ -13,6 +13,22 @@ use crate::parser::{Activity, WorkflowDef};
 
 const MAX_ITERATIONS: u32 = 50;
 
+/// Decision from the step evaluator (orchestrator between steps).
+#[derive(Debug)]
+enum EvalDecision {
+    Proceed,
+    Exit(String),
+}
+
+fn parse_eval_response(content: &str) -> EvalDecision {
+    let trimmed = content.trim();
+    if let Some(reason) = trimmed.strip_prefix("exit:") {
+        EvalDecision::Exit(reason.trim().to_string())
+    } else {
+        EvalDecision::Proceed
+    }
+}
+
 /// Execute a complete workflow run.
 ///
 /// If `existing_run_id` is provided, uses that run record instead of creating a new one.
@@ -166,10 +182,6 @@ pub async fn execute_workflow(
                 total_tokens += tokens_used;
                 consecutive_failures = 0;
                 last_failure_pattern = None;
-                prior_context.push_str(&format!(
-                    "\n[Activity '{}' result]: {}\n",
-                    activity.id, result_text
-                ));
 
                 let completed_at = chrono::Utc::now().timestamp();
                 if let Err(e) = store.create_activity_result(
@@ -184,6 +196,32 @@ pub async fn execute_workflow(
                 ) {
                     warn!(run_id = %run_id, activity = %activity.id, error = %e, "failed to record activity result");
                 }
+
+                // n8n-style branch termination: empty output = no downstream execution.
+                // If the activity produced no output (even after tool-result synthesis),
+                // there is nothing to pass to the next activity — stop the branch.
+                if result_text.trim().is_empty() {
+                    info!(
+                        workflow = def.id.as_str(),
+                        activity = activity.id.as_str(),
+                        run_id = %run_id,
+                        "activity produced no output, terminating branch"
+                    );
+                    let _ = store.complete_workflow_run(
+                        &run_id,
+                        "completed",
+                        total_tokens as i64,
+                        None,
+                        Some(&activity.id),
+                        Some(&prior_context),
+                    );
+                    return Ok((run_id, prior_context));
+                }
+
+                prior_context.push_str(&format!(
+                    "\n[Activity '{}' result]: {}\n",
+                    activity.id, result_text
+                ));
             }
             Err(WorkflowError::Exited(reason)) => {
                 let completed_at = chrono::Utc::now().timestamp();
@@ -486,12 +524,57 @@ pub async fn execute_activity(
             e
         })?;
 
-        // Append assistant response to conversation for next step's context
-        messages.push(ai::Message {
-            role: "assistant".into(),
-            content: step_result.clone(),
-            ..Default::default()
-        });
+        // --- Orchestrator evaluation ---
+        let eval = evaluate_step(
+            provider,
+            &system,
+            step,
+            &step_result,
+            i,
+            total_steps,
+        )
+        .await?;
+
+        match eval {
+            EvalDecision::Proceed => {
+                // Normal flow: append result, continue to next step
+                messages.push(ai::Message {
+                    role: "assistant".into(),
+                    content: step_result.clone(),
+                    ..Default::default()
+                });
+            }
+            EvalDecision::Exit(reason) => {
+                // Record step as completed (it did produce output), then exit
+                let tokens_in = (step_tokens as i64) / 2;
+                let tokens_out = step_tokens as i64 - tokens_in;
+                let _ = store.update_task_item(
+                    &task_item.id,
+                    "completed",
+                    Some(&step_result),
+                    None,
+                    tokens_in,
+                    tokens_out,
+                );
+                if let Some(tx) = progress_tx {
+                    let _ = tx.send(WorkflowProgress::TaskUpdated {
+                        list_id: list_id.clone(),
+                        task_id: task_item.id.clone(),
+                        seq: task_seq,
+                        status: "completed".to_string(),
+                    });
+                }
+                info!(
+                    activity = %activity.id,
+                    step = i,
+                    reason = %reason,
+                    "orchestrator exited workflow at step"
+                );
+                return Err(WorkflowError::Exited(
+                    format!("Step {}/{} evaluator: {}", i + 1, total_steps, reason),
+                ));
+            }
+        }
 
         // Record completion
         total_tokens += step_tokens;
@@ -522,6 +605,74 @@ pub async fn execute_activity(
     // Final result is the last step's output (or concatenation if needed for prior_context)
     let final_output = step_outputs.last().cloned().unwrap_or_default();
     Ok((final_output, total_tokens))
+}
+
+/// Evaluate a step's output using the same provider (prompt-cached system prompt).
+/// Returns Proceed or Exit. Fails open (Proceed) on any error.
+async fn evaluate_step(
+    provider: &dyn ai::Provider,
+    system: &str,
+    step_text: &str,
+    step_output: &str,
+    step_index: usize,
+    total_steps: usize,
+) -> Result<EvalDecision, WorkflowError> {
+    let eval_system = format!(
+        "{}\n\n## Step Evaluation Mode\n\
+         You are evaluating the output of Step {}/{}: \"{}\"\n\n\
+         Based on the workflow context above and the step output below, respond with EXACTLY ONE of:\n\
+         - proceed — step completed its stated goal, continue to the next step\n\
+         - exit:<reason> — the task is inapplicable, the data doesn't match expectations, \
+           or continuing would be wasteful or harmful\n\n\
+         Respond with ONLY the decision. Nothing else.",
+        system, step_index + 1, total_steps, step_text,
+    );
+
+    let truncated_output = if step_output.len() > 2000 {
+        &step_output[..2000]
+    } else {
+        step_output
+    };
+
+    let messages = vec![ai::Message {
+        role: "user".into(),
+        content: format!("Step output:\n\n{}", truncated_output),
+        ..Default::default()
+    }];
+
+    let req = ChatRequest {
+        messages,
+        tools: vec![],
+        max_tokens: 100,
+        temperature: 0.0,
+        system: eval_system,
+        static_system: String::new(),
+        model: String::new(),
+        enable_thinking: false,
+        metadata: None,
+        cache_breakpoints: vec![],
+        cancel_token: None,
+    };
+
+    let mut rx = provider
+        .stream(&req)
+        .await
+        .map_err(|e| WorkflowError::Provider(e.to_string()))?;
+
+    let mut response_text = String::new();
+    while let Some(event) = rx.recv().await {
+        match event.event_type {
+            StreamEventType::Text => response_text.push_str(&event.text),
+            StreamEventType::Error => {
+                warn!("step evaluator error: {:?}", event.error);
+                return Ok(EvalDecision::Proceed);
+            }
+            StreamEventType::Done => break,
+            _ => {}
+        }
+    }
+
+    Ok(parse_eval_response(&response_text))
 }
 
 /// Core LLM multi-turn loop extracted from the original execute_activity.
@@ -621,6 +772,12 @@ async fn run_llm_loop(
                 iterations += 1;
                 continue;
             }
+            // If the LLM produced no text but tool calls were made,
+            // synthesize output from tool results so downstream steps/activities
+            // get context (n8n-style: empty output = branch termination).
+            if response_text.is_empty() && iterations > 0 {
+                response_text = synthesize_from_tool_results(&messages);
+            }
             return Ok((response_text, tokens_used));
         }
 
@@ -717,6 +874,39 @@ async fn run_llm_loop(
     }
 }
 
+/// When the LLM completes via tool calls without a final text response,
+/// extract the last tool result contents as the step output.
+fn synthesize_from_tool_results(messages: &[ai::Message]) -> String {
+    for msg in messages.iter().rev() {
+        if msg.role == "tool" {
+            if let Some(serde_json::Value::Array(results)) = &msg.tool_results {
+                let parts: Vec<&str> = results
+                    .iter()
+                    .filter_map(|entry| {
+                        let is_err = entry
+                            .get("is_error")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if is_err {
+                            return None;
+                        }
+                        entry.get("content").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+                    })
+                    .collect();
+                if !parts.is_empty() {
+                    let joined = parts.join("\n---\n");
+                    const MAX_LEN: usize = 4000;
+                    if joined.len() > MAX_LEN {
+                        return format!("{}...", &joined[..MAX_LEN]);
+                    }
+                    return joined;
+                }
+            }
+        }
+    }
+    String::new()
+}
+
 /// Build the system prompt for a per-step activity (no steps section — steps come as user messages).
 fn build_activity_prompt_no_steps(
     activity: &Activity,
@@ -730,7 +920,7 @@ fn build_activity_prompt_no_steps(
     // Reuse the full builder but with an activity clone that has empty steps
     let mut stepless = activity.clone();
     stepless.steps = vec![];
-    build_activity_prompt(
+    let mut prompt = build_activity_prompt(
         &stepless,
         prior_context,
         inputs,
@@ -738,7 +928,16 @@ fn build_activity_prompt_no_steps(
         emit_source,
         has_browser,
         tool_names,
-    )
+    );
+
+    prompt.push_str("\n## Step Execution Mode\n\
+        You will receive instructions one step at a time. You are running autonomously.\n\
+        - Execute ONLY what the current step asks. Nothing more.\n\
+        - Do NOT ask questions or present options. There is no human to answer.\n\
+        - If the task is inapplicable or the data doesn't match, use the exit tool.\n\
+        - When done, provide a brief summary of findings/actions and stop.\n\n");
+
+    prompt
 }
 
 /// Build the system prompt for an activity.
@@ -770,7 +969,10 @@ fn build_activity_prompt(
         - Report the final result only. No status updates, no intermediate summaries.\n\
         - If a prior step already resolved the task (e.g., 'no meeting found', 'not applicable', \
           'nothing to do'), call the exit tool immediately instead of repeating the same conclusion. \
-          Do not waste steps re-analyzing data you already evaluated.\n\n");
+          Do not waste steps re-analyzing data you already evaluated.\n\
+        - After completing all tool calls for a step, always end with a brief text summary of what \
+          you found or did. Never end a step with zero text output — downstream activities depend \
+          on your summary.\n\n");
 
     // Skills — injected from SKILL.md content
     if let Some(skills) = skill_content {
@@ -831,35 +1033,23 @@ fn build_activity_prompt(
         prompt.push('\n');
     }
 
-    // Command hints — only mention tools the step actually declares.
-    // If emit_source is set (Path B will handle it specifically), skip the
-    // generic emit hint to avoid redundant/conflicting instructions.
-    let effective_cmds: Vec<&str> = activity
-        .cmds
-        .iter()
-        .filter(|cmd| !(cmd.as_str() == "emit" && emit_source.is_some()))
-        .map(|s| s.as_str())
-        .collect();
-
-    if !effective_cmds.is_empty() {
-        prompt.push_str("\n## Workflow Controls\n");
-        prompt.push_str("You have access to these workflow control tools:\n");
-        for cmd in &effective_cmds {
-            match *cmd {
-                "exit" => prompt.push_str(
-                    "- exit(reason: \"...\") — call this to stop the workflow early if \
-                     the condition in your task is not met or there is nothing to do.\n",
-                ),
-                "emit" => prompt.push_str(
-                    "- emit(source: \"...\", payload: {...}) — call this to announce \
-                     your result to other workflows. Can be called multiple times, \
-                     once per item, if processing a collection.\n",
-                ),
-                _ => {}
-            }
-        }
-        prompt.push('\n');
+    // Workflow controls — exit is always available (injected at engine level).
+    // Emit is opt-in via cmds declaration.
+    prompt.push_str("\n## Workflow Controls\n");
+    prompt.push_str("You have access to these workflow control tools:\n");
+    prompt.push_str(
+        "- exit(reason: \"...\") — call this to stop the workflow early if \
+         the condition in your task is not met or there is nothing to do.\n",
+    );
+    let has_emit_cmd = activity.cmds.iter().any(|c| c == "emit");
+    if has_emit_cmd && emit_source.is_none() {
+        prompt.push_str(
+            "- emit(source: \"...\", payload: {...}) — call this to announce \
+             your result to other workflows. Can be called multiple times, \
+             once per item, if processing a collection.\n",
+        );
     }
+    prompt.push('\n');
 
     // Browser automation guide — injected when web tool is available
     if has_browser {
@@ -997,6 +1187,31 @@ fn strip_mcp_prefix(name: &str) -> &str {
 #[cfg(test)]
 mod engine_tests {
     use super::*;
+
+    #[test]
+    fn test_parse_eval_response() {
+        match parse_eval_response("proceed") {
+            EvalDecision::Proceed => {}
+            other => panic!("expected Proceed, got {:?}", other),
+        }
+        match parse_eval_response("  proceed\n") {
+            EvalDecision::Proceed => {}
+            other => panic!("expected Proceed, got {:?}", other),
+        }
+        match parse_eval_response("exit:SENT email, task inapplicable") {
+            EvalDecision::Exit(reason) => assert_eq!(reason, "SENT email, task inapplicable"),
+            other => panic!("expected Exit, got {:?}", other),
+        }
+        match parse_eval_response("  exit: nothing to do  ") {
+            EvalDecision::Exit(reason) => assert_eq!(reason, "nothing to do"),
+            other => panic!("expected Exit, got {:?}", other),
+        }
+        // Unknown responses default to Proceed (fail-open)
+        match parse_eval_response("maybe continue?") {
+            EvalDecision::Proceed => {}
+            other => panic!("expected Proceed, got {:?}", other),
+        }
+    }
 
     #[test]
     fn test_strip_mcp_prefix() {

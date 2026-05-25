@@ -49,10 +49,11 @@ pub struct Registry {
     revocation: Option<RevocationChecker>,
     tools: RwLock<HashMap<String, RegisteredTool>>,
     on_quarantine: RwLock<Option<Box<dyn Fn(QuarantineEvent) + Send + Sync>>>,
+    api_port: u16,
 }
 
 impl Registry {
-    pub fn new(config: RegistryConfig) -> Self {
+    pub fn new(config: RegistryConfig, api_port: u16) -> Self {
         let signing = config
             .neboloop_url
             .as_ref()
@@ -72,6 +73,7 @@ impl Registry {
             revocation,
             tools: RwLock::new(HashMap::new()),
             on_quarantine: RwLock::new(None),
+            api_port,
         }
     }
 
@@ -285,7 +287,7 @@ impl Registry {
         }
 
         // Launch process
-        let process = self.runtime.launch(tool_dir).await?;
+        let process = self.runtime.launch(tool_dir, self.api_port).await?;
         let capabilities = manifest.provides.clone();
 
         let tool_id = manifest.id().to_string();

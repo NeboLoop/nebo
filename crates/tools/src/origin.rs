@@ -27,6 +27,24 @@ pub type AskChannels = std::sync::Arc<
     tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
 >;
 
+/// Channel context — set when the current run was triggered by an inbound
+/// channel message (Slack, Discord, Teams, etc.). Lets channel plugins'
+/// CLI subcommands (e.g. `slack upload`) target the right destination
+/// without the agent having to look up channel/thread IDs.
+///
+/// Propagated as env vars `NEBO_CHANNEL_KIND`, `NEBO_CHANNEL_ID`,
+/// `NEBO_THREAD_TS` when the plugin tool invokes a plugin binary.
+/// See `docs/publishers-guide/channel-plugins.md`.
+#[derive(Debug, Clone, Default)]
+pub struct ChannelContext {
+    /// Plugin slug / channel kind — "slack", "discord", "teams", etc.
+    pub kind: String,
+    /// Platform channel ID — "C1234567890" on Slack, "guild/channel" on Discord.
+    pub channel_id: String,
+    /// Thread ID for threading replies. Slack: `thread_ts`. Discord: parent message ID.
+    pub thread_ts: Option<String>,
+}
+
 /// Context carried through tool execution for origin tracking and session info.
 #[derive(Debug, Clone, Default)]
 pub struct ToolContext {
@@ -53,6 +71,9 @@ pub struct ToolContext {
     /// Shared ask channels — tools call `ask_user()` to show a UI prompt and
     /// block until the user responds. The WS handler resolves the oneshot.
     pub ask_channels: Option<AskChannels>,
+    /// Channel context (Slack/Discord/etc.) when this run was triggered by an
+    /// inbound channel message. `None` for web UI, scheduled, or system runs.
+    pub channel: Option<ChannelContext>,
 }
 
 impl ToolContext {

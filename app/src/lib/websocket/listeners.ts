@@ -8,6 +8,7 @@
 import { getWebSocketClient } from './client';
 import { notifications, pushNotification, loadNotifications } from '$lib/stores/notifications';
 import { addToast } from '$lib/stores/toast';
+import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
 import { logger } from '$lib/monitoring';
 
 const log = logger.child({ component: 'WSListeners' });
@@ -120,6 +121,24 @@ export function attachWebSocketListeners(): void {
     );
   }
 
+  // --- Follow-up suggestions ---
+  unsubs.push(
+    ws.on('followup_suggestions', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:followup_suggestions', { detail: data }));
+      }
+    })
+  );
+
+  // --- Plan approval ---
+  unsubs.push(
+    ws.on('plan_approval', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:plan_approval', { detail: data }));
+      }
+    })
+  );
+
   // --- Chat lifecycle ---
   unsubs.push(
     ws.on('chat_complete', (data: any) => {
@@ -225,12 +244,28 @@ export function attachWebSocketListeners(): void {
     })
   );
 
+  // --- Code install lifecycle ---
+  for (const evt of ['code_processing', 'code_result', 'plugin_installing', 'plugin_installed', 'dep_pending', 'dep_installed', 'dep_failed', 'dep_cascade_complete'] as const) {
+    unsubs.push(
+      ws.on(evt, (data: any) => {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent(`nebo:${evt}`, { detail: data }));
+        }
+      })
+    );
+  }
+
   // --- Plugin auth lifecycle ---
   for (const evt of ['plugin_auth_started', 'plugin_auth_url', 'plugin_auth_complete', 'plugin_auth_error', 'agent_auth_required'] as const) {
     unsubs.push(
       ws.on(evt, (data: any) => {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent(`nebo:${evt}`, { detail: data }));
+          // Always open OAuth URLs — page-level listeners may not be active
+          // when auth is triggered by agent startup or watchers.
+          if (evt === 'plugin_auth_url' && data?.url) {
+            window.open(data.url, '_blank');
+          }
         }
       })
     );
@@ -241,6 +276,64 @@ export function attachWebSocketListeners(): void {
     ws.on('plan_changed', (data: any) => {
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('nebo:plan_changed', { detail: data }));
+      }
+    })
+  );
+
+  // --- Token usage ---
+  unsubs.push(
+    ws.on('usage', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:usage', { detail: data }));
+      }
+    })
+  );
+
+  // --- Quota warnings ---
+  unsubs.push(
+    ws.on('quota_warning', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:quota_warning', { detail: data }));
+      }
+      if (data?.text) {
+        addToast(data.text, 'warning');
+      }
+    })
+  );
+
+  // --- Ghost text (inline completion) ---
+  unsubs.push(
+    ws.on('ghost_text', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:ghost_text', { detail: data }));
+      }
+    })
+  );
+
+  // --- App update lifecycle ---
+  unsubs.push(
+    ws.on('update_available', (data: any) => {
+      onUpdateAvailable(data);
+    })
+  );
+
+  unsubs.push(
+    ws.on('update_progress', (data: any) => {
+      onUpdateProgress(data);
+    })
+  );
+
+  unsubs.push(
+    ws.on('update_ready', (data: any) => {
+      onUpdateReady(data);
+    })
+  );
+
+  unsubs.push(
+    ws.on('update_error', (data: any) => {
+      onUpdateError(data);
+      if (data?.error || data?.message) {
+        addToast(String(data.error || data.message), 'error');
       }
     })
   );
@@ -260,6 +353,36 @@ export function attachWebSocketListeners(): void {
       if (status === 'error') {
         addToast('WebSocket connection lost. Reconnecting...', 'warning');
       }
+    })
+  );
+
+  // --- Artifact Updates ---
+  unsubs.push(
+    ws.on('artifact_updates_available', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:artifact_updates_available', { detail: data }));
+      }
+      if (data.count > 0) {
+        addToast(`${data.count} update${data.count > 1 ? 's' : ''} available`, 'info');
+      }
+    })
+  );
+
+  unsubs.push(
+    ws.on('artifact_update_applied', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:artifact_update_applied', { detail: data }));
+      }
+      addToast(`Updated ${data.type}: ${data.version}`, 'success');
+    })
+  );
+
+  unsubs.push(
+    ws.on('artifact_update_failed', (data: any) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nebo:artifact_update_failed', { detail: data }));
+      }
+      addToast(`Update failed: ${data.error}`, 'error');
     })
   );
 

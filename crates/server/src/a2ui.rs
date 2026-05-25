@@ -273,8 +273,6 @@ pub struct A2UIManager {
     catalog_provider: Arc<NeboCatalogProvider>,
     /// Active surfaces indexed by surface_id.
     surfaces: RwLock<HashMap<String, SurfaceState>>,
-    /// Optional data binding manager for MCP tool polling.
-    binding_manager: RwLock<Option<Arc<crate::a2ui_bindings::DataBindingManager>>>,
     /// Actions currently being processed (keyed by "surface_id:action_name").
     /// Prevents duplicate LLM dispatch and drives frontend button state.
     pending_actions: RwLock<std::collections::HashSet<String>>,
@@ -291,17 +289,8 @@ impl A2UIManager {
             store,
             catalog_provider,
             surfaces: RwLock::new(HashMap::new()),
-            binding_manager: RwLock::new(None),
             pending_actions: RwLock::new(std::collections::HashSet::new()),
         }
-    }
-
-    /// Set the data binding manager (called after MCP bridge is available).
-    pub async fn set_binding_manager(
-        &self,
-        manager: Arc<crate::a2ui_bindings::DataBindingManager>,
-    ) {
-        *self.binding_manager.write().await = Some(manager);
     }
 
     /// Get the catalog provider (for prompt generation and validation).
@@ -741,36 +730,12 @@ impl A2UIManager {
             self.update_data_model(&sid, None, data.clone()).await?;
         }
 
-        // Start data bindings for the target view
-        self.start_data_bindings(&sid, target).await;
-
         info!(agent_id = %agent_id, from = %from_view, to = %to_view, "navigated view");
         Ok(sid)
     }
 
-    /// Start data bindings for a surface if the view has data_bindings defined.
-    pub async fn start_data_bindings(&self, surface_id: &str, view: &serde_json::Value) {
-        let bindings = crate::a2ui_bindings::parse_bindings(view);
-        if bindings.is_empty() {
-            return;
-        }
-        if let Some(ref manager) = *self.binding_manager.read().await {
-            manager.start_bindings(surface_id, bindings).await;
-        }
-    }
-
-    /// Stop data bindings for a surface.
-    pub async fn stop_data_bindings(&self, surface_id: &str) {
-        if let Some(ref manager) = *self.binding_manager.read().await {
-            manager.stop_bindings(surface_id).await;
-        }
-    }
-
     /// Delete a surface and broadcast the deleteSurface message.
     pub async fn delete_surface(&self, surface_id: &str) -> Result<(), types::NeboError> {
-        // Stop any active data bindings before deleting
-        self.stop_data_bindings(surface_id).await;
-
         let msg = a2ui_core::message::delete_surface_v09(surface_id);
         let serialized = serde_json::to_value(&msg)
             .map_err(|e| types::NeboError::Internal(format!("a2ui serialize: {e}")))?;

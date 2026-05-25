@@ -30,7 +30,10 @@ export interface WorkflowTrigger {
 	type: string
 	event?: string
 	schedule?: string
+	cron?: string
 	interval?: string
+	plugin?: string
+	command?: string
 	window?: { start?: string; end?: string }
 }
 
@@ -99,6 +102,7 @@ export interface AgentDisplay {
 	status: string
 	color: string
 	editable?: boolean
+	isApp?: boolean
 }
 
 /** The agentPage context shape provided by [agentId]/+layout.svelte. */
@@ -115,10 +119,11 @@ export interface AgentPageContext {
 	readonly runsLoading: boolean
 	loadMoreRuns: () => Promise<void>
 	readonly skills: string[]
-	readonly config: { persona: string; model: string; inputs: unknown[]; workflows: Record<string, WorkflowConfig> }
+	readonly config: { persona: string; agentMd: string; soul: string; rules: string; model: string; inputs: unknown[]; workflows: Record<string, WorkflowConfig> }
 	readonly workflowEntries: [string, WorkflowConfig][]
 	readonly workflowStats: WorkflowStatsLocal
 	readonly workflowRuns: unknown[]
+	readonly isApp: boolean
 	readonly devMode: boolean
 	readonly agentStatuses: Record<string, string>
 	openWorkflow: (name: string, wf: WorkflowConfig) => void
@@ -126,4 +131,6 @@ export interface AgentPageContext {
 	triggerSummary: (wf: WorkflowConfig) => string
 	toggleAgentStatus: (id: string, e?: MouseEvent) => void
 	agentStatus: (id: string) => string
+	refreshRuns: () => Promise<void>
+	refreshThreads: () => Promise<void>
 }

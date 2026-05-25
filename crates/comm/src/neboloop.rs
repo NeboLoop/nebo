@@ -324,7 +324,8 @@ impl CommPlugin for NeboLoopPlugin {
         // Store bot_id
         *self.bot_id.write().await = bot_id.clone();
 
-        // Init devlog (appends with session separator)
+        // Init devlog (appends with session separator) — dev builds only
+        #[cfg(debug_assertions)]
         if let Some(dir) = config.get("data_dir") {
             let log_path = std::path::PathBuf::from(dir)
                 .join("logs")
@@ -591,6 +592,11 @@ impl CommPlugin for NeboLoopPlugin {
                 map.insert(k.clone(), serde_json::Value::String(v.clone()));
             }
         }
+        // Include file/image/video attachments if present
+        if !msg.attachments.is_empty() {
+            content["attachments"] = serde_json::to_value(&msg.attachments)
+                .unwrap_or_default();
+        }
 
         if let Some(ref dl) = *self.devlog.read().await {
             dl.outbound(stream, &conv_id, &msg.content);
@@ -726,6 +732,7 @@ impl CommPlugin for NeboLoopPlugin {
                 content: m.content,
                 created_at: m.created_at,
                 role: m.role,
+                attachments: m.attachments,
             })
             .collect())
     }
@@ -883,7 +890,7 @@ async fn read_loop(
 
     loop {
         tokio::select! {
-            result = tokio::time::timeout(std::time::Duration::from_secs(60), read.next()) => {
+            result = tokio::time::timeout(std::time::Duration::from_secs(120), read.next()) => {
                 let msg = match result {
                     Ok(Some(Ok(m))) => m,
                     Ok(Some(Err(e))) => {
@@ -900,11 +907,11 @@ async fn read_loop(
                         break;
                     }
                     Err(_) => {
-                        // No data received in 60s (4x the 15s ping interval).
+                        // No data received in 120s (4x the 30s ping interval).
                         // Connection is likely dead (e.g. after system sleep/wake).
-                        warn!("neboloop read timeout (60s), treating as disconnect");
+                        warn!("neboloop read timeout (120s), treating as disconnect");
                         if let Some(ref dl) = devlog {
-                            dl.event("READ_TIMEOUT (60s) — treating as disconnect");
+                            dl.event("READ_TIMEOUT (120s) — treating as disconnect");
                         }
                         break;
                     }
@@ -1024,6 +1031,10 @@ async fn read_loop(
                             task_status: None,
                             artifacts: vec![],
                             error: None,
+                            attachments: delivery.content
+                                .get("attachments")
+                                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                                .unwrap_or_default(),
                         };
 
                         if let Some(ref h) = handler {
@@ -1168,7 +1179,7 @@ async fn write_loop(
     cancel: tokio_util::sync::CancellationToken,
     devlog: Option<DevLog>,
 ) {
-    let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+    let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(30));
     ping_interval.tick().await; // skip first immediate tick
     let mut last_ping_wall = std::time::SystemTime::now();
 
@@ -1200,7 +1211,7 @@ async fn write_loop(
                 let elapsed = now_wall.duration_since(last_ping_wall).unwrap_or_default();
                 last_ping_wall = now_wall;
 
-                if elapsed > std::time::Duration::from_secs(30) {
+                if elapsed > std::time::Duration::from_secs(60) {
                     warn!(
                         elapsed_secs = elapsed.as_secs(),
                         "neboloop write loop detected sleep drift, exiting"

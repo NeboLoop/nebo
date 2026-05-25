@@ -19,7 +19,7 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(api_key: String, model: String) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::http::streaming_client(),
             api_key,
             model,
             base_url: "https://api.anthropic.com".to_string(),

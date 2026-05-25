@@ -172,13 +172,37 @@ impl Store {
         Ok(())
     }
 
+    /// Resolve the plugin_registry ID for a slug.
+    ///
+    /// Checks for `napp-{slug}` first (installed .napp plugins), then falls back
+    /// to legacy builtin entries matched by name. Returns `napp-{slug}` if no
+    /// registry row exists yet (new plugin, pre-registration).
+    fn resolve_plugin_id(&self, slug: &str) -> Result<String, NeboError> {
+        let conn = self.conn()?;
+        let napp_id = format!("napp-{slug}");
+
+        // Prefer napp-{slug}, fall back to legacy builtin entries matched by name
+        match conn.query_row(
+            "SELECT id FROM plugin_registry
+             WHERE id = ?1 OR (slug = '' AND name = ?2)
+             ORDER BY CASE WHEN id = ?1 THEN 0 ELSE 1 END
+             LIMIT 1",
+            params![napp_id, slug],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(id) => Ok(id),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(napp_id),
+            Err(e) => Err(NeboError::Database(e.to_string())),
+        }
+    }
+
     /// List all settings for a plugin by its slug (not id).
     pub fn list_plugin_settings_by_slug(
         &self,
         slug: &str,
     ) -> Result<Vec<PluginSetting>, NeboError> {
         let conn = self.conn()?;
-        let plugin_id = format!("napp-{slug}");
+        let plugin_id = self.resolve_plugin_id(slug)?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, plugin_id, setting_key, setting_value, is_secret, created_at, updated_at
@@ -217,7 +241,7 @@ impl Store {
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         let now = chrono::Utc::now().timestamp();
-        let plugin_id = format!("napp-{slug}");
+        let plugin_id = self.resolve_plugin_id(slug)?;
         let id = format!("{plugin_id}:{key}");
 
         conn.execute(

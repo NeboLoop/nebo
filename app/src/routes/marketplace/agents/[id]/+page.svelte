@@ -27,6 +27,7 @@
 	let loading = $state(true);
 	let submittingReview = $state(false);
 	let installing = $state(false);
+	let updating = $state(false);
 	let showSetupModal = $state(false);
 	let setupInputs = $state<Record<string, unknown>>({});
 
@@ -125,6 +126,17 @@
 		installing = false;
 	}
 
+	async function updateProduct() {
+		updating = true;
+		try {
+			await webapi.post(`/api/v1/artifacts/${agentId}/apply-update`, {});
+			// Refresh product data to clear updateAvailable flag
+			const skillRes = await webapi.get<any>(`/api/v1/store/products/${agentId}`);
+			skill = skillRes?.item ?? skillRes;
+		} catch { /* ignore */ }
+		updating = false;
+	}
+
 	function handleSetupComplete(newAgentId: string) {
 		showSetupModal = false;
 		goto(`/${newAgentId}/threads`);
@@ -197,7 +209,16 @@
 				{#if skill.category}
 					<p class="text-sm text-base-content/60 mt-0.5">{skill.category}</p>
 				{/if}
-				{#if skill.installed}
+				{#if skill.installed && skill.updateAvailable}
+					<div class="flex items-center gap-2 mt-3">
+						<button type="button" onclick={updateProduct} disabled={updating} class="h-9 px-6 rounded-full bg-accent text-accent-content font-bold text-base hover:brightness-110 active:scale-[0.97] transition-all inline-flex items-center gap-1.5 disabled:opacity-50">
+							{updating ? 'Updating...' : `Update to ${skill.remoteVersion}`}
+						</button>
+						<button type="button" onclick={() => { setupInputs = skill?.typeConfig?.inputs || []; showSetupModal = true; }} class="h-9 px-5 rounded-full border border-base-content/15 text-base font-medium hover:bg-base-content/5 transition-colors inline-flex items-center">
+							{$t('marketplace.detail.configure')}
+						</button>
+					</div>
+				{:else if skill.installed}
 					<div class="flex items-center gap-2 mt-3">
 						<span class="h-9 px-6 rounded-full bg-success/15 text-success font-bold text-base inline-flex items-center gap-1.5">
 							{$t('common.installed')}

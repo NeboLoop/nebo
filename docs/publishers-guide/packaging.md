@@ -94,6 +94,7 @@ Format: `PREFIX-XXXX-XXXX` — Crockford Base32 (`0123456789ABCDEFGHJKMNPQRSTVWX
 | `SKIL` | Install a skill | `SKIL-R7KP-2M9V` |
 | `WORK` | Install a workflow | `WORK-5TG2-XBJK` |
 | `AGNT` | Install an agent | `AGNT-9DCE-4MPA` |
+| `APPX` | Install an app | `APPX-3FKT-7WNP` |
 | `LOOP` | Join bot to a Loop | `LOOP-7YSR-6WN3` |
 | `PLUG` | Install a plugin | `PLUG-4HVT-8KRP` |
 
@@ -137,8 +138,7 @@ my-app/
 │   ├── index.html
 │   ├── style.css
 │   └── app.js
-├── sidecar/              # Optional — native backend binary
-└── views.json            # Optional — A2UI view definitions
+└── sidecar/              # Optional — native backend binary
 ```
 
 The `manifest.json` extends the standard agent manifest with app-specific fields:
@@ -186,8 +186,23 @@ Workflows and agents are distributed as `.napp` files — signed `tar.gz` archiv
   → manifest.json
   → agent.json
   → AGENT.md
-  → views.json          # Optional — deterministic workspace UI
+  → skills/             # Optional — bundled SKILL.md files
+  →   skills/crm-lookup/SKILL.md
 ```
+
+### .napp Envelope Format
+
+Every `.napp` file wraps the inner tar.gz in a binary envelope that is verified before the payload is touched:
+
+```
+[4B magic "NAPP"] [1B version 0x01] [64B ED25519 signature] [32B SHA256 hash] [payload...]
+```
+
+Verification order:
+1. **SHA256** — cheap integrity check of the payload bytes.
+2. **ED25519** — proves the archive was signed by NeboLoop. The signature covers `hash || payload`.
+
+The NeboLoop public key is embedded at compile time (`neboloop_public_key.bin`) so verification works offline (first launch, air-gapped installs). A `SigningKeyProvider` also fetches the key from `GET /api/v1/apps/signing-key` with a 24-hour cache for key rotation.
 
 ### Sealed Archives
 
@@ -199,6 +214,22 @@ For workflows and agents, the `.napp` is **never extracted**. Nebo reads files d
 | Workflow | `.napp` sealed | Archive is the signed artifact — continuous integrity |
 | Agent | `.napp` sealed | Archive is the signed artifact — continuous integrity |
 | App | Directory (dev) / `.napp` sealed (marketplace) | Same as agent — includes `ui/` directory contents |
+
+### License-Key Sealed Archives
+
+Paid marketplace artifacts use an additional encryption layer on top of the `.napp` envelope. After envelope verification, the inner payload is AES-256-GCM encrypted with a per-artifact license key:
+
+```
+.napp envelope  →  unwrap (verify ED25519 + SHA256)  →  sealed payload  →  unseal (AES-256-GCM)  →  plain tar.gz
+```
+
+**Key derivation:** `derive_license_key(master_secret, artifact_id)` uses HKDF-SHA256 with the artifact ID as salt and `neboloop-license-v1` as info. The same key works regardless of who holds the license — authorization is server-side, so `.napp` files never need re-download on license transfer.
+
+**Detection:** Plain `.napp` payloads start with gzip magic bytes (`0x1f 0x8b`). Sealed payloads start with a 12-byte random nonce, which won't match. `is_sealed()` checks this.
+
+**Partial extraction:** For sealed skill archives, only executables (`scripts/`, `bin/`, `binary`) and metadata (`manifest.json`, `plugin.json`, `signatures.json`) are extracted to disk. IP-sensitive files (SKILL.md, references, assets) stay inside the sealed `.napp` and are read in memory at runtime — plaintext never touches disk.
+
+**Runtime:** The skill loader holds license keys in memory via `set_license_keys(HashMap<artifact_id, [u8; 32]>)`. Keys are cached from NeboLoop at startup and used transparently when reading sealed entries.
 
 ### Versioned Storage
 
@@ -231,7 +262,9 @@ user/                                    # User-created (dev/sideload path)
     my-agent/
       agent.json
       AGENT.md
-      views.json         # Optional — deterministic workspace UI
+      skills/            # Optional — bundled skills
+        my-skill/
+          SKILL.md
     my-app/              # Apps live alongside agents
       manifest.json      #   artifact_type: "app"
       AGENT.md
@@ -243,6 +276,31 @@ user/                                    # User-created (dev/sideload path)
 **Marketplace artifacts** (`nebo/`) are sealed `.napp` files. Signed, versioned, read from archive at runtime.
 
 **User artifacts** (`user/`) are loose files on disk. No archive, no signatures. This is the development path — edit directly, hot-reload picks up changes.
+
+### Runtime Data — `appdata/`
+
+Artifact runtime data (databases, caches, user files) lives in a completely separate tree:
+
+```
+appdata/                                 # Runtime data — NEVER touched by updates
+  plugins/
+    gws/                                 # Plugin data (survives all version upgrades)
+      cache.db
+      sidecar.log
+  skills/
+    my-custom-skill/                     # Skill data (survives reinstalls)
+      output.json
+  agents/
+    deal-tracker/                        # Agent app data (survives upgrades)
+      deals.db
+      sidecar.log
+```
+
+This follows the iOS model: code and data live in physically separate containers. The update system operates on `nebo/` and `user/` but **never touches `appdata/`**. Artifacts own their data and are responsible for their own schema migrations across versions.
+
+Environment variables point to the data directory:
+- **Plugins/apps:** `NEBO_APP_DATA` → `~/.nebo/appdata/plugins/<slug>/` or `~/.nebo/appdata/agents/<id>/`
+- **Skills:** `${NEBO_DATA_DIR}` template variable → `~/.nebo/appdata/skills/<name>/`
 
 ### Version Resolution
 
@@ -263,7 +321,7 @@ Nebo reads `.napp` entries by name at runtime using a thin reader:
 fn read_napp_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>>
 ```
 
-The skill loader reads `SKILL.md` from marketplace archives. The workflow engine calls `read_napp_entry(path, "workflow.json")`. The agent loader calls `read_napp_entry(path, "agent.json")`, `read_napp_entry(path, "AGENT.md")`, and optionally `read_napp_entry(path, "views.json")`. One function, used everywhere.
+The skill loader reads `SKILL.md` from marketplace archives. The workflow engine calls `read_napp_entry(path, "workflow.json")`. The agent loader calls `read_napp_entry(path, "agent.json")` and `read_napp_entry(path, "AGENT.md")`. One function, used everywhere.
 
 ---
 
@@ -301,7 +359,7 @@ The `name` field is the canonical identifier. The org, type, and artifact name a
 |-------|------|-------------|
 | `artifact_type` | string | Must be `"app"` to mark this agent as an app |
 | `permissions` | string[] | Required capabilities (`storage:readwrite`, `network:outbound`, etc.) |
-| `window` | object | Default window config (`title`, `width`, `height`, `min_width`, `min_height`, `resizable`) |
+| `window` | object | Default window config (`title`, `width`, `height`, `resizable`) |
 
 > **Install codes** are not part of the package. They are assigned by NeboLoop when the manifest is submitted and are stored server-side as an alias that resolves to the qualified name. The publisher never sets the code — they submit their package and NeboLoop assigns one.
 
@@ -329,13 +387,192 @@ The `name` field is the canonical identifier. The org, type, and artifact name a
 
 ---
 
+## agent.json — Extended Fields
+
+Beyond workflows, skills, and pricing, `agent.json` supports sidecar tool definitions, named tool scopes, and memory configuration.
+
+### Sidecar Tools
+
+Each entry in the `tools` array becomes a native tool registered for the agent. The LLM sees `list_projects(...)` directly — calls are routed to the sidecar HTTP endpoint.
+
+```json
+{
+  "tools": [
+    {
+      "name": "list_projects",
+      "description": "List all projects",
+      "method": "GET",
+      "path": "/projects"
+    },
+    {
+      "name": "get_document",
+      "description": "Get a document by ID",
+      "method": "GET",
+      "path": "/documents/{id}",
+      "input_schema": {
+        "type": "object",
+        "properties": { "id": { "type": "string" } },
+        "required": ["id"]
+      }
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Action name the LLM calls (e.g., `list_projects`) |
+| `description` | string | Human-readable description for the model |
+| `method` | string | HTTP method for the sidecar endpoint (`GET`, `POST`, `PUT`, `DELETE`) |
+| `path` | string | Sidecar-relative path, optionally with `{param}` placeholders |
+| `input_schema` | object | Optional JSON Schema for input parameters |
+
+### Tool Scopes
+
+Named scopes restrict which sidecar tools, skills, and plugins are active when an embed chat is mounted with a specific scope name via the SDK.
+
+```json
+{
+  "scopes": {
+    "editor": {
+      "tools": ["get_document", "update_document"],
+      "skills": ["skills/document-editing"],
+      "plugins": ["gws"]
+    },
+    "projects": {
+      "tools": ["list_projects"]
+    }
+  }
+}
+```
+
+Each scope maps to a subset of the agent's capabilities. The embed SDK mounts a chat with `scope: "editor"` to filter down to just those tools and skills.
+
+### Memory Configuration
+
+Controls how memories are isolated and inherited across the 3-tier hierarchy (user / agent / context).
+
+```json
+{
+  "memory": {
+    "inherit_user": true,
+    "context_isolated": true
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `inherit_user` | boolean | `false` | When true, agent can READ the user's main memories (read-only, `tacit/preferences` only) |
+| `context_isolated` | boolean | `false` | When true, memories are isolated per `contextId` from SDK embed sessions |
+
+---
+
+## Plugin Manifest — Capabilities and Permissions
+
+Plugins declare structured capabilities and permissions in `plugin.json`. These are in addition to the base manifest fields (slug, version, platforms, auth, events, dependencies).
+
+### Capabilities Block
+
+```json
+{
+  "capabilities": {
+    "tools": [
+      {
+        "name": "gws.gmail.triage",
+        "description": "Triage unread emails",
+        "command": "gmail +triage",
+        "approval": true,
+        "timeout_seconds": 120
+      }
+    ],
+    "hooks": [
+      {
+        "hook": "pre_send",
+        "hookType": "filter",
+        "priority": 50,
+        "command": "hooks pre-send",
+        "timeout_ms": 500
+      }
+    ],
+    "commands": [
+      {
+        "name": "/gmail",
+        "description": "Gmail operations",
+        "command": "gmail",
+        "slash": true
+      }
+    ],
+    "routes": [
+      {
+        "path": "/gws/oauth/callback",
+        "method": "GET",
+        "command": "auth callback",
+        "auth": "public"
+      }
+    ],
+    "providers": [
+      {
+        "id": "openrouter",
+        "displayName": "OpenRouter",
+        "providerType": "model",
+        "modelsCommand": "models list",
+        "chatCommand": "chat stream"
+      }
+    ],
+    "configSchema": [
+      {
+        "key": "MAX_RESULTS",
+        "label": "Max Results",
+        "description": "Maximum number of results to return",
+        "fieldType": "number",
+        "default": "10",
+        "required": false,
+        "secret": false
+      },
+      {
+        "key": "API_TOKEN",
+        "label": "API Token",
+        "fieldType": "string",
+        "required": true,
+        "secret": true
+      }
+    ]
+  }
+}
+```
+
+All capabilities are executed out-of-process via the plugin binary CLI. The `configSchema` fields are rendered as a settings form in the UI; values are stored in `plugin_settings` and injected as env vars on execution. Fields with `secret: true` are stored encrypted.
+
+### Permissions Block
+
+```json
+{
+  "permissions": {
+    "envAllow": ["HOME", "PATH", "GWS_BIN"],
+    "envDeny": ["AWS_SECRET_ACCESS_KEY"],
+    "network": true,
+    "maxTimeoutSeconds": 300
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `envAllow` | string[] | `[]` (all allowed) | Env vars the plugin may read |
+| `envDeny` | string[] | `[]` | Env vars always stripped before execution |
+| `network` | boolean | `false` | Whether the plugin needs network access (informational) |
+| `maxTimeoutSeconds` | number | `300` | Maximum execution timeout for any tool call |
+
+---
+
 ## Separation of Concerns
 
 Each artifact type has a clear split between identity, domain logic, and prose:
 
 - **Skills** — `SKILL.md` frontmatter (identity + runtime config) + body (knowledge) + optional bundled resources (scripts, references, assets). No manifest.json. Frontmatter is the source of truth. Compatible with the Agent Skills standard.
 - **Workflows** — `manifest.json` (marketplace identity) + `workflow.json` (procedure definition) + `WORKFLOW.md` (agent docs). Marketplace identity lives in the manifest; the workflow.json carries its own `id` for the local engine (REST API, run records, the `work` tool). Sealed archive.
-- **Agents** — `manifest.json` (marketplace identity) + `agent.json` (event bindings, pricing, defaults) + `AGENT.md` (persona prose) + optional `views.json` (deterministic workspace UI). Sealed archive.
+- **Agents** — `manifest.json` (marketplace identity) + `agent.json` (event bindings, pricing, defaults, sidecar tools, scopes, memory config) + `AGENT.md` (persona prose) + optional `skills/` directory (bundled skills). Sealed archive.
 - **Apps** — everything an Agent has + `artifact_type: "app"` in manifest + `ui/` directory (static frontend) + optional sidecar binary. The `manifest.json` adds `permissions` and `window` config. Apps use the `@neboai/app-sdk` for storage, agent invocation, identity, embedded chat, and direct LLM calls.
 
 ---
@@ -351,6 +588,8 @@ Each artifact type has a clear split between identity, domain logic, and prose:
 | Hook circuit breaker recovery | 5 minutes |
 | Signing key cache | 24 hours |
 | Revocation cache | 1 hour |
+| Plugin tool default timeout | 120 seconds |
+| Plugin max timeout (permissions) | 300 seconds |
 
 ### Qualified Name Format
 
@@ -360,4 +599,4 @@ Each artifact type has a clear split between identity, domain logic, and prose:
 
 `PREFIX-XXXX-XXXX` — Crockford Base32, case-insensitive. Always resolves to `@latest`.
 
-Prefixes: `NEBO`, `SKIL`, `WORK`, `AGNT`, `LOOP`, `PLUG`
+Prefixes: `NEBO`, `SKIL`, `WORK`, `AGNT`, `APPX`, `LOOP`, `PLUG`

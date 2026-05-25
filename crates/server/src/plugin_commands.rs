@@ -4,7 +4,7 @@
 //! with `capabilities.commands[].slash = true`, and executes the plugin binary
 //! directly — bypassing the LLM.
 
-use std::process::Stdio;
+use std::sync::Arc;
 
 use tracing::{info, warn};
 
@@ -54,7 +54,7 @@ pub async fn try_dispatch(state: &AppState, prompt: &str, session_id: &str) -> O
 
             info!(plugin = %slug, command = %cmd_name, args = %args, session_id, "executing plugin slash command");
 
-            return Some(execute(&binary, &cmd_def.command, args, slug).await);
+            return Some(execute(&binary, &cmd_def.command, args, slug, state.plugin_store.clone()).await);
         }
     }
 
@@ -62,17 +62,26 @@ pub async fn try_dispatch(state: &AppState, prompt: &str, session_id: &str) -> O
 }
 
 /// Execute a plugin binary with the given subcommand and args.
-async fn execute(binary: &std::path::Path, command: &str, args: &str, slug: &str) -> String {
-    let mut cmd_args: Vec<&str> = command.split_whitespace().collect();
-    if !args.is_empty() {
-        cmd_args.extend(args.split_whitespace());
-    }
+async fn execute(
+    binary: &std::path::Path,
+    command: &str,
+    args: &str,
+    slug: &str,
+    plugin_store: Arc<napp::plugin::PluginStore>,
+) -> String {
+    let full_command = if args.is_empty() {
+        command.to_string()
+    } else {
+        format!("{} {}", command, args)
+    };
 
-    let mut cmd = tokio::process::Command::new(binary);
-    cmd.args(&cmd_args);
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
+    let runtime = napp::PluginRuntime::new(slug, binary.to_path_buf(), plugin_store)
+        .with_permissions();
+    let timeout = runtime.effective_timeout(std::time::Duration::from_secs(30));
+    let mut cmd = runtime.command(&full_command);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
 
     let child = match cmd.spawn() {
         Ok(c) => c,
@@ -82,7 +91,7 @@ async fn execute(binary: &std::path::Path, command: &str, args: &str, slug: &str
         }
     };
 
-    match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await {
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);

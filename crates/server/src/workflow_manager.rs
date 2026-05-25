@@ -6,9 +6,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+
+/// Max concurrent workflow runs per agent+binding. Events beyond this limit are
+/// queued by the semaphore and execute as earlier runs complete.
+/// Rust+Tokio overhead is ~500KB per in-flight task — 100 concurrent ≈ 50MB.
+/// The real ceiling is LLM provider rate limits, not local resources.
+const BINDING_CONCURRENCY: usize = 100;
 
 use ai::Provider;
 use tools::origin::ToolContext;
@@ -32,6 +38,9 @@ pub struct WorkflowManagerImpl {
     event_bus: Option<tools::EventBus>,
     /// Skill loader for resolving skill_content in workflow execution.
     skill_loader: Option<Arc<tools::skills::Loader>>,
+    /// Per-binding concurrency semaphores. Key: "agent:{agent_id}:{binding}".
+    /// Allows up to BINDING_CONCURRENCY concurrent runs; additional events wait.
+    binding_semaphores: Arc<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>>,
 }
 
 impl WorkflowManagerImpl {
@@ -54,6 +63,7 @@ impl WorkflowManagerImpl {
             agent_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_bus,
             skill_loader,
+            binding_semaphores: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -674,17 +684,21 @@ impl WorkflowManager for WorkflowManagerImpl {
                 merged
             };
 
-            // Dedup: skip if the same agent+binding already has a running workflow
-            if let Some(ref detail) = trigger_detail {
+            // Acquire concurrency permit for this binding. Up to BINDING_CONCURRENCY
+            // runs execute in parallel; additional events wait (not dropped).
+            let binding_permit = if let Some(ref detail) = trigger_detail {
                 let binding_name = detail.split(':').next().unwrap_or(detail);
-                let workflow_id = format!("agent:{}", agent_id);
-                if let Ok(true) = self.store.has_running_run(&workflow_id, binding_name) {
-                    return Err(format!(
-                        "skipped: binding '{}' already has a running workflow",
-                        binding_name
-                    ));
-                }
-            }
+                let sem_key = format!("agent:{}:{}", agent_id, binding_name);
+                let sem = {
+                    let mut sems = self.binding_semaphores.lock().unwrap();
+                    sems.entry(sem_key)
+                        .or_insert_with(|| Arc::new(Semaphore::new(BINDING_CONCURRENCY)))
+                        .clone()
+                };
+                Some(sem.acquire_owned().await.map_err(|e| format!("semaphore closed: {}", e))?)
+            } else {
+                None
+            };
 
             // Create run record using agent_id for tracking
             let run_id = uuid::Uuid::new_v4().to_string();
@@ -729,6 +743,10 @@ impl WorkflowManager for WorkflowManagerImpl {
             let binding_name = def.name.clone();
 
             tokio::spawn(async move {
+                // Hold the concurrency permit for the lifetime of this run.
+                // Dropped automatically when the task completes, freeing a slot.
+                let _permit = binding_permit;
+
                 // Session key for posting chat messages to the agent's conversation
                 let chat_session = format!("agent:{}:web", agent_id_owned);
 

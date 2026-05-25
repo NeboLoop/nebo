@@ -33,7 +33,7 @@ impl OpenAIEmbeddingProvider {
             model: "text-embedding-3-small".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             dims: 1536,
-            http_client: reqwest::Client::new(),
+            http_client: crate::http::request_client(),
         }
     }
 
@@ -43,7 +43,7 @@ impl OpenAIEmbeddingProvider {
             model: "text-embedding-3-small".to_string(),
             base_url,
             dims: 1536,
-            http_client: reqwest::Client::new(),
+            http_client: crate::http::request_client(),
         }
     }
 
@@ -151,7 +151,7 @@ impl OllamaEmbeddingProvider {
             base_url,
             model,
             dims,
-            http_client: reqwest::Client::new(),
+            http_client: crate::http::request_client(),
         }
     }
 }

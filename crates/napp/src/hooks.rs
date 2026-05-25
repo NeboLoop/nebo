@@ -4,18 +4,14 @@ use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
 
-/// Valid hook names.
+/// Valid hook names (only hooks that are actually dispatched in the runner).
 pub const VALID_HOOKS: &[&str] = &[
     "tool.pre_execute",
     "tool.post_execute",
     "message.pre_send",
     "message.post_receive",
-    "memory.pre_store",
-    "memory.pre_recall",
     "session.message_append",
-    "prompt.system_sections",
     "steering.generate",
-    "response.stream",
     "agent.turn",
     "agent.should_continue",
 ];
@@ -307,6 +303,7 @@ pub struct PluginHookCaller {
     command: String,
     plugin_slug: String,
     timeout: Duration,
+    plugin_store: Arc<crate::plugin::PluginStore>,
 }
 
 impl PluginHookCaller {
@@ -315,12 +312,14 @@ impl PluginHookCaller {
         command: String,
         plugin_slug: String,
         timeout: Duration,
+        plugin_store: Arc<crate::plugin::PluginStore>,
     ) -> Self {
         Self {
             binary_path,
             command,
             plugin_slug,
             timeout,
+            plugin_store,
         }
     }
 
@@ -329,9 +328,14 @@ impl PluginHookCaller {
         _hook: &str,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, String> {
-        let args: Vec<&str> = self.command.split_whitespace().collect();
-        let mut cmd = tokio::process::Command::new(&self.binary_path);
-        cmd.args(&args);
+        let runtime = crate::PluginRuntime::new(
+            &self.plugin_slug,
+            self.binary_path.clone(),
+            self.plugin_store.clone(),
+        )
+        .with_permissions();
+        let timeout = runtime.effective_timeout(self.timeout);
+        let mut cmd = runtime.command(&self.command);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -348,7 +352,7 @@ impl PluginHookCaller {
         }
 
         // Wait with timeout
-        let output = tokio::time::timeout(self.timeout, child.wait_with_output())
+        let output = tokio::time::timeout(timeout, child.wait_with_output())
             .await
             .map_err(|_| format!("plugin '{}' hook timed out", self.plugin_slug))?
             .map_err(|e| format!("plugin '{}' hook wait failed: {}", self.plugin_slug, e))?;
@@ -402,6 +406,7 @@ pub fn register_plugin_hooks(
     manifest: &crate::plugin::PluginManifest,
     binary_path: &std::path::Path,
     dispatcher: &HookDispatcher,
+    plugin_store: Arc<crate::plugin::PluginStore>,
 ) -> usize {
     let caps = match &manifest.capabilities {
         Some(c) => c,
@@ -430,6 +435,7 @@ pub fn register_plugin_hooks(
             hook_def.command.clone(),
             manifest.slug.clone(),
             Duration::from_millis(hook_def.timeout_ms),
+            plugin_store.clone(),
         ));
 
         dispatcher.register(

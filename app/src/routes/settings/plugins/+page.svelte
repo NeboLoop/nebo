@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { setPluginConfig } from '$lib/api/index';
+  import { getWebSocketClient } from '$lib/websocket/client';
 
   interface Plugin {
     id: string;
@@ -31,8 +33,31 @@
   let removing = $state(false);
   let apiKeyInputs = $state<Record<string, string>>({});
   let apiKeySaving = $state(false);
+  let apiKeySaveResult = $state<'saved' | 'error' | null>(null);
+  let authChecking = $state(false);
+
+  let unsubscribers: Array<() => void> = [];
 
   onMount(async () => {
+    // Subscribe to WS events immediately — auth status checks below are slow
+    // (each spawns a plugin binary) and must not delay event registration.
+    const client = getWebSocketClient();
+    unsubscribers.push(
+      // plugin_auth_url is handled globally in listeners.ts (opens browser)
+      client.on('plugin_auth_complete', (data: Record<string, unknown>) => {
+        const slug = data.plugin as string;
+        if (slug) {
+          authStatuses[slug] = 'connected';
+        }
+      }),
+      client.on('plugin_auth_error', (data: Record<string, unknown>) => {
+        const slug = data.plugin as string;
+        if (slug) {
+          authStatuses[slug] = 'disconnected';
+        }
+      })
+    );
+
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.listPlugins();
@@ -65,32 +90,11 @@
         }
       }
     } catch {}
-
-    window.addEventListener('nebo:plugin_auth_complete', handleAuthComplete as EventListener);
-    window.addEventListener('nebo:plugin_auth_error', handleAuthError as EventListener);
-    window.addEventListener('nebo:plugin_auth_url', handleAuthUrl as EventListener);
   });
 
   onDestroy(() => {
-    window.removeEventListener('nebo:plugin_auth_complete', handleAuthComplete as EventListener);
-    window.removeEventListener('nebo:plugin_auth_error', handleAuthError as EventListener);
-    window.removeEventListener('nebo:plugin_auth_url', handleAuthUrl as EventListener);
+    unsubscribers.forEach((fn) => fn());
   });
-
-  function handleAuthComplete(e: CustomEvent) {
-    const plugin = e.detail?.plugin;
-    if (plugin) authStatuses[plugin] = 'connected';
-  }
-
-  function handleAuthError(e: CustomEvent) {
-    const plugin = e.detail?.plugin;
-    if (plugin) authStatuses[plugin] = 'disconnected';
-  }
-
-  function handleAuthUrl(e: CustomEvent) {
-    const url = e.detail?.url;
-    if (url) window.open(url, '_blank');
-  }
 
   let searchQuery = $state('');
 
@@ -128,12 +132,44 @@
     }
     if (!Object.keys(payload).length) return;
     apiKeySaving = true;
+    apiKeySaveResult = null;
     try {
-      const api = await import('$lib/api/nebo');
-      await api.setPluginConfig(plugin.id, payload);
+      await setPluginConfig(plugin.id, payload);
       plugin.authKeysSet = true;
+      apiKeySaveResult = 'saved';
       apiKeyInputs = {};
-    } catch { /* keep inputs for retry */ }
+
+      // Run auth check to verify the keys actually work
+      authChecking = true;
+      try {
+        const api = await import('$lib/api/nebo');
+        const status = await api.authStatus(plugin.id);
+        authStatuses[plugin.id] = status?.authenticated ? 'connected' : 'disconnected';
+      } catch {
+        authStatuses[plugin.id] = 'disconnected';
+      } finally {
+        authChecking = false;
+      }
+    } catch {
+      apiKeySaveResult = 'error';
+    } finally {
+      apiKeySaving = false;
+    }
+  }
+
+  async function clearApiKeys(plugin: Plugin) {
+    if (!plugin.authEnvVars.length) return;
+    apiKeySaving = true;
+    try {
+      const payload: Record<string, string> = {};
+      for (const key of plugin.authEnvVars) {
+        payload[key] = '';
+      }
+      await setPluginConfig(plugin.id, payload);
+      plugin.authKeysSet = false;
+      apiKeyInputs = {};
+      authStatuses[plugin.id] = 'disconnected';
+    } catch { /* silent */ }
     finally { apiKeySaving = false; }
   }
 
@@ -144,6 +180,8 @@
     removing = false;
     apiKeyInputs = {};
     apiKeySaving = false;
+    apiKeySaveResult = null;
+    authChecking = false;
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.listDependents(plugin.id);
@@ -261,7 +299,7 @@
   {@const status = authStatuses[selectedPlugin.id] ?? 'disconnected'}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus a11y_no_noninteractive_tabindex -->
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" tabindex="-1" onclick={(e) => { if (e.target === e.currentTarget) closeModal(); }} onkeydown={(e) => { if (e.key === 'Escape') closeModal(); }} role="dialog" aria-modal="true">
-    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
+    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl w-full max-w-xl mx-4 max-h-[80vh] flex flex-col">
       <!-- Header -->
       <div class="flex items-center justify-between p-5 border-b border-base-content/10">
         <div class="flex items-center gap-3 min-w-0">
@@ -284,12 +322,12 @@
       </div>
 
       <!-- Body -->
-      <div class="p-5 overflow-y-auto flex-1 space-y-5">
+      <div class="p-5 overflow-y-auto flex-1 space-y-6">
         <!-- Description -->
         {#if selectedPlugin.desc}
           <div>
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Description</div>
-            <p class="text-sm text-base-content/80">{selectedPlugin.desc}</p>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Description</div>
+            <p class="text-xs text-base-content/70 line-clamp-3">{selectedPlugin.desc}</p>
           </div>
         {/if}
 
@@ -308,8 +346,10 @@
                 <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">Not connected</span>
               {/if}
             {:else if selectedPlugin.hasAuth && selectedPlugin.authEnvVars.length > 0 && selectedPlugin.authType === 'env'}
-              {#if selectedPlugin.authKeysSet}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">Keys Set</span>
+              {#if selectedPlugin.authKeysSet && authStatuses[selectedPlugin.id] === 'connected'}
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">Connected</span>
+              {:else if selectedPlugin.authKeysSet}
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">Keys Set &middot; Not verified</span>
               {:else}
                 <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">Keys needed</span>
               {/if}
@@ -324,19 +364,36 @@
 
         <!-- API Keys / Credentials -->
         {#if selectedPlugin.hasAuth && selectedPlugin.authEnvVars.length > 0}
+          {@const hasInput = Object.values(apiKeyInputs).some(v => v.trim())}
           <div>
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">API Keys</div>
-            <div class="flex flex-col gap-2">
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">API Keys</div>
+            <div class="flex flex-col gap-3">
               {#each selectedPlugin.authEnvVars as envVar}
-                <div>
-                  <label class="text-xs text-base-content/50 font-mono mb-0.5 block">{envVar}</label>
-                  <input type="password" value={apiKeyInputs[envVar] ?? ''} oninput={(e) => { apiKeyInputs[envVar] = (e.target as HTMLInputElement).value; }} placeholder={selectedPlugin.authKeysSet ? '••••••••' : envVar} class="input input-sm input-bordered w-full text-xs font-mono" />
-                </div>
+                <label class="flex flex-col gap-1">
+                  <span class="text-xs text-base-content/70 font-mono">{envVar}</span>
+                  <input type="password" value={apiKeyInputs[envVar] ?? ''} oninput={(e) => { apiKeySaveResult = null; apiKeyInputs[envVar] = (e.target as HTMLInputElement).value; }} placeholder={selectedPlugin.authKeysSet ? '••••••••' : 'Paste token here…'} class="input input-sm input-bordered w-full text-sm font-mono"
+                    onkeydown={(e) => { if (e.key === 'Enter' && selectedPlugin) saveApiKeys(selectedPlugin); }}
+                  />
+                </label>
               {/each}
             </div>
-            <button class="mt-2 px-3 py-1.5 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors disabled:opacity-50" onclick={() => saveApiKeys(selectedPlugin!)} disabled={apiKeySaving || !Object.values(apiKeyInputs).some(v => v.trim())}>
-              {apiKeySaving ? 'Saving…' : 'Save'}
-            </button>
+            <div class="flex items-center gap-3 mt-3">
+              <button
+                class="btn btn-sm btn-primary"
+                disabled={!hasInput || apiKeySaving}
+                onclick={() => selectedPlugin && saveApiKeys(selectedPlugin)}
+              >{apiKeySaving ? 'Saving…' : authChecking ? 'Verifying…' : 'Save & Verify'}</button>
+              {#if apiKeySaveResult === 'saved' && !authChecking}
+                {@const authed = authStatuses[selectedPlugin.id] === 'connected'}
+                {#if authed}
+                  <span class="text-xs font-medium text-success">Authenticated</span>
+                {:else}
+                  <span class="text-xs font-medium text-error">Keys saved but authentication failed — check your tokens</span>
+                {/if}
+              {:else if apiKeySaveResult === 'error'}
+                <span class="text-xs font-medium text-error">Failed to save</span>
+              {/if}
+            </div>
           </div>
         {/if}
 
@@ -350,12 +407,14 @@
           {:else}
             <div class="flex flex-col gap-1.5">
               {#each modalDependents as dep}
-                <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-base-200/50 border border-base-content/5">
-                  <span class="px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider {dep.type === 'agent' ? 'bg-primary/10 text-primary' : 'bg-accent/10 text-accent'}">{dep.type}</span>
-                  <span class="text-sm font-medium">{dep.name}</span>
-                  {#if dep.description}
-                    <span class="text-xs text-base-content/50 truncate">{dep.description}</span>
-                  {/if}
+                <div class="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-base-200/50 border border-base-content/5">
+                  <span class="px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider shrink-0 mt-0.5 {dep.type === 'agent' ? 'bg-primary/10 text-primary' : 'bg-accent/10 text-accent'}">{dep.type}</span>
+                  <div class="min-w-0">
+                    <div class="text-sm font-medium">{dep.name}</div>
+                    {#if dep.description}
+                      <div class="text-xs text-base-content/50 truncate">{dep.description}</div>
+                    {/if}
+                  </div>
                 </div>
               {/each}
             </div>
@@ -372,6 +431,8 @@
             {:else if status !== 'connecting'}
               <button class="px-3 py-1.5 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => connectPlugin(selectedPlugin!.id)}>Connect</button>
             {/if}
+          {:else if selectedPlugin.hasAuth && selectedPlugin.authType === 'env' && selectedPlugin.authKeysSet}
+            <button class="px-3 py-1.5 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" disabled={apiKeySaving} onclick={() => clearApiKeys(selectedPlugin!)}>Clear Keys</button>
           {/if}
           {#if selectedPlugin.updateAvailable}
             <a href="/marketplace/plugins/{selectedPlugin.id}" class="px-3 py-1.5 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors no-underline">Upgrade to {selectedPlugin.updateAvailable}</a>

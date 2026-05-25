@@ -6,8 +6,9 @@ use async_openai::types::chat::{
     ChatCompletionRequestSystemMessageContent, ChatCompletionRequestToolMessage,
     ChatCompletionRequestToolMessageContent, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
-    ChatCompletionTool, ChatCompletionTools, CreateChatCompletionRequest,
-    CreateChatCompletionStreamResponse, FunctionCall, FunctionObject, ImageUrl,
+    ChatCompletionStreamOptions, ChatCompletionTool, ChatCompletionTools,
+    CreateChatCompletionRequest, CreateChatCompletionStreamResponse, FunctionCall, FunctionObject,
+    ImageUrl,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -47,7 +48,7 @@ impl OpenAIProvider {
             provider_id: "openai".to_string(),
             bot_id: None,
             lane: None,
-            http_client: RwLock::new(reqwest::Client::new()),
+            http_client: RwLock::new(crate::http::streaming_client()),
         }
     }
 
@@ -60,7 +61,7 @@ impl OpenAIProvider {
             provider_id: "openai".to_string(),
             bot_id: None,
             lane: None,
-            http_client: RwLock::new(reqwest::Client::new()),
+            http_client: RwLock::new(crate::http::streaming_client()),
         }
     }
 
@@ -110,14 +111,54 @@ impl OpenAIProvider {
         let mut messages = Vec::new();
         let mut skipped_orphans = 0u32;
 
-        // Add system message
+        // Add system message(s).
+        // When cache_breakpoints are provided, split the system prompt at those
+        // offsets into separate system messages. Proxies like Janus automatically
+        // wrap each system message with `cache_control: ephemeral`, so sending
+        // the stable prefix as its own message enables provider-side prefix
+        // caching (DashScope, OpenAI, etc.). The mutable tail changes per turn
+        // without busting the cached prefix.
         if !req.system.is_empty() {
-            messages.push(ChatCompletionRequestMessage::System(
-                ChatCompletionRequestSystemMessage {
-                    content: ChatCompletionRequestSystemMessageContent::Text(req.system.clone()),
-                    name: None,
-                },
-            ));
+            if req.cache_breakpoints.is_empty() {
+                messages.push(ChatCompletionRequestMessage::System(
+                    ChatCompletionRequestSystemMessage {
+                        content: ChatCompletionRequestSystemMessageContent::Text(
+                            req.system.clone(),
+                        ),
+                        name: None,
+                    },
+                ));
+            } else {
+                let prompt = &req.system;
+                let prompt_len = prompt.len();
+                let mut cursor = 0usize;
+                for &bp in &req.cache_breakpoints {
+                    let bp = bp.min(prompt_len);
+                    if bp <= cursor {
+                        continue;
+                    }
+                    messages.push(ChatCompletionRequestMessage::System(
+                        ChatCompletionRequestSystemMessage {
+                            content: ChatCompletionRequestSystemMessageContent::Text(
+                                prompt[cursor..bp].to_string(),
+                            ),
+                            name: None,
+                        },
+                    ));
+                    cursor = bp;
+                }
+                // Remaining tail (mutable portion)
+                if cursor < prompt_len {
+                    messages.push(ChatCompletionRequestMessage::System(
+                        ChatCompletionRequestSystemMessage {
+                            content: ChatCompletionRequestSystemMessageContent::Text(
+                                prompt[cursor..].to_string(),
+                            ),
+                            name: None,
+                        },
+                    ));
+                }
+            }
         }
 
         for msg in &req.messages {
@@ -425,9 +466,10 @@ impl OpenAIProvider {
                                 }
                             }
 
-                            // Check finish reason — break.
-                            // Janus may not send [DONE] sentinel after finish_reason,
-                            // which would block until TCP timeout (~120s).
+                            // Check finish reason — mark finished but don't break yet.
+                            // Continue processing remaining lines in buffer to catch
+                            // the usage chunk (include_usage sends it as a separate line
+                            // often in the same TCP packet).
                             if let Some(ref reason) = choice.finish_reason {
                                 debug!(
                                     finish_reason = ?reason,
@@ -442,8 +484,31 @@ impl OpenAIProvider {
                                         .unwrap_or_else(|| format!("{:?}", reason).to_lowercase()),
                                 );
                                 finished = true;
-                                break 'outer;
                             }
+                        }
+
+                        // Check for usage (include_usage sends it on final chunk)
+                        if let Some(ref usage) = response.usage {
+                            let cached = usage
+                                .prompt_tokens_details
+                                .as_ref()
+                                .and_then(|d| d.cached_tokens)
+                                .unwrap_or(0) as i32;
+                            let _ = tx
+                                .send(StreamEvent::usage(UsageInfo {
+                                    input_tokens: usage.prompt_tokens as i32,
+                                    output_tokens: usage.completion_tokens as i32,
+                                    cache_read_input_tokens: cached,
+                                    ..Default::default()
+                                }))
+                                .await;
+                        }
+
+                        // Break after processing this chunk if we saw finish_reason.
+                        // Janus may not send [DONE], so we break here to avoid
+                        // hanging until TCP timeout (~120s).
+                        if finished {
+                            break 'outer;
                         }
                     }
                     _ => {}
@@ -489,7 +554,7 @@ impl ConnectionResetter for OpenAIProvider {
             .http_client
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *lock = reqwest::Client::new();
+        *lock = crate::http::streaming_client();
         info!(provider = %self.provider_id, "reset HTTP connections");
     }
 }
@@ -534,6 +599,10 @@ impl Provider for OpenAIProvider {
             model: model.to_string(),
             messages,
             stream: Some(true),
+            stream_options: Some(ChatCompletionStreamOptions {
+                include_usage: Some(true),
+                include_obfuscation: None,
+            }),
             max_completion_tokens: if req.max_tokens > 0 {
                 Some(req.max_tokens as u32)
             } else {

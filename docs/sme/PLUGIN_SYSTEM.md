@@ -281,7 +281,7 @@ pub struct PluginCapabilities {
 
 ### PluginConfigField
 
-User-configurable settings rendered as a form in the UI. Values stored in `plugin_settings`, injected as env vars on plugin execution.
+User-configurable settings rendered as an auto-generated form in the UI. Values stored in `plugin_settings`, injected as env vars on plugin execution. Fields with `secret: true` are stored using AES-256-GCM encryption (via `is_secret` path in the auth keyring). Required fields must be set before the plugin activates — the UI blocks activation until all required config is provided.
 
 ```rust
 pub struct PluginConfigField {
@@ -323,6 +323,10 @@ pub struct PluginToolDef {
 ```
 
 Plugin tools are exposed through the consolidated STRAP `PluginTool`, which routes `capabilities.tools[]` via action parameters. The tool resolves the plugin binary, runs the declared command as a subprocess, and returns stdout as the tool result.
+
+**Registration:** Plugin tools are registered via `register_all_with_permissions()` (14 params) in `crates/tools/src/registry.rs`. Registration is **deferred** — the plugin tool is not sent to the LLM until keyword-activated or directly called, saving context tokens on requests that don't involve plugin operations.
+
+**Concurrency safety:** `PluginTool` implements `is_concurrent_safe()` on the `DynTool` trait. Read-only actions (`search`, `skills`, `services`, `help`, `events`) return `true` for parallel execution. Write actions (e.g., `exec`) default to `false` (serial). This is consistent across all STRAP tools — see §16 for the concurrency model.
 
 ### PluginHookDef
 
@@ -719,6 +723,8 @@ The hot-reload watcher clones the `plugin_store` Arc and passes it to the reload
 
 The `ExecuteTool` struct has `plugin_store: Option<Arc<napp::plugin::PluginStore>>`, set via `with_plugin_store()`.
 
+**Current wiring caveat:** `ExecuteTool` supports plugin env injection, but `Registry::register_all_with_permissions()` currently registers it with `.with_store(...)` only. Until registry construction also calls `.with_plugin_store(plugin_store)`, skill scripts may not receive `GWS_BIN`/`PATH` injection even though this runtime path exists.
+
 **Env var injection** happens after secret injection (line ~303), before the script subprocess is spawned:
 
 ```rust
@@ -732,7 +738,7 @@ if let Some(ref plugin_store) = self.plugin_store {
 }
 ```
 
-This means:
+When `plugin_store` is actually set on `ExecuteTool`, this means:
 - Plugin `gws` version `>=1.2.0` resolves to e.g., `/data/nebo/plugins/gws/1.2.0/gws`
 - Environment variable `GWS_BIN` is set to that path
 - The skill's script can use `$GWS_BIN` to invoke the binary
@@ -952,6 +958,24 @@ Plugin binaries are executed as subprocesses by the skill's script (e.g., `$GWS_
 | Concurrent downloads | `downloading: Arc<tokio::sync::Mutex<HashSet<String>>>` — check-then-insert dedup. Second caller polls `resolve()` every 1s for 30s |
 | GC vs reload race | GC takes `HashSet<String>` snapshot (not `&[Skill]`), snapshot-then-release pattern |
 | `resolve()` is sync | Local filesystem only — no async needed, safe to call from sync contexts |
+| Tool concurrency | `DynTool::is_concurrent_safe(input)` trait method — read-only ops return `true` (parallel), writes return `false` (serial). See below. |
+
+### Tool-Level Concurrency: `is_concurrent_safe()`
+
+**Source:** `crates/tools/src/registry.rs` (trait default), per-tool overrides in each STRAP tool.
+
+All STRAP domain tools implement `is_concurrent_safe(&self, input: &Value) -> bool` on the `DynTool` trait. The default is `false` (conservative — assumes writes). Tools override this for read-only operations:
+
+| Tool | Concurrent-safe actions |
+|------|------------------------|
+| `PluginTool` | `search`, `skills`, `services`, `help`, `events` |
+| `SkillTool` | `catalog`, `discover`, `help`, `browse`, `read_resource`, `featured`, `popular`, `reviews`, `secrets` |
+| `WebTool` | All actions (read-only by nature) |
+| `AgentTool` | `list`, `info`, `stats` |
+| `OsTool` | Per resource/action inspection |
+| `BotTool` | Per resource/action inspection |
+
+The runner partitions pending tool calls into concurrent-safe and serial sets. Concurrent-safe tools execute in parallel; serial tools run sequentially after.
 
 ---
 
@@ -996,7 +1020,7 @@ pub fn plugin_env_var(slug: &str) -> String {
 | `my-tool` | `MY_TOOL_BIN` |
 | `ffmpeg` | `FFMPEG_BIN` |
 
-If `PluginManifest.env_var` is non-empty, the custom name is used instead. (Not yet wired in ExecuteTool — uses default convention.)
+If `PluginManifest.env_var` is non-empty, the custom name is intended to be used instead. This is not wired in `ExecuteTool`; it uses the default `{SLUG}_BIN` convention.
 
 ---
 

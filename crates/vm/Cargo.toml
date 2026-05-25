@@ -1,0 +1,27 @@
+[package]
+name = "nebo-vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lightweight VM sandbox for isolated code execution"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+dirs = { workspace = true }
+config = { workspace = true }
+reqwest = { workspace = true }
+zstd = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS uses compiled Swift helper for Virtualization.framework
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux can use QEMU/KVM directly

@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Status** | Exploratory Draft |
-| **Author** | Alma Tuck |
+| **Author** | NeboLoop |
 | **Date** | May 6, 2026 |
 | **Classification** | Internal / Confidential |
 

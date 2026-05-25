@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
+use tools::workflows::WorkflowManager;
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
@@ -153,7 +154,7 @@ pub async fn list_agents(
 
     let mut agents = Vec::with_capacity(fs_agents.len());
     for loaded in &fs_agents {
-        let agent_id = loaded
+        let fs_id = loaded
             .id
             .clone()
             .unwrap_or_else(|| loaded.agent_def.name.clone());
@@ -164,8 +165,13 @@ pub async fn list_agents(
 
         // Look up DB record by ID or name for supplemental state
         let db_row = db_map
-            .get(&agent_id)
+            .get(&fs_id)
             .or_else(|| db_map.get(&loaded.agent_def.name.to_lowercase()));
+
+        // Prefer DB ID (UUID) over filesystem-derived ID (agent name)
+        let agent_id = db_row
+            .map(|r| r.id.clone())
+            .unwrap_or(fs_id);
 
         // Compute a display name: window title > first # heading from body > name
         let display_name = loaded
@@ -388,6 +394,9 @@ pub async fn create_agent(
         }
     }
 
+    // Refresh agent loader cache so the new agent appears in GET /agents immediately.
+    state.agent_loader.load_all().await;
+
     state.hub.broadcast(
         "agent_installed",
         serde_json::json!({ "agentId": agent.id, "name": agent.name }),
@@ -443,16 +452,6 @@ pub async fn get_agent(
         })
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v["version"].as_str().map(|s| s.to_string()));
-
-    // Read views.json for deterministic UI declarations
-    let views = agent
-        .napp_path
-        .as_ref()
-        .and_then(|p| {
-            let views_path = std::path::PathBuf::from(p).join("views.json");
-            std::fs::read_to_string(views_path).ok()
-        })
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
 
     // Parse and normalize inputFields from frontmatter so frontend doesn't have to
     let input_fields: Vec<serde_json::Value> = if !agent.frontmatter.is_empty() {
@@ -560,8 +559,9 @@ pub async fn get_agent(
         .map(|arr| arr.iter().filter_map(|s| s.as_str()).collect())
         .unwrap_or_default();
 
-    // Check installed plugins for pending auth — lets frontend show OAuth wizard
-    let plugins_needing_auth = check_plugins_auth_status(&state).await;
+    // Return cached plugin auth status only — never block getAgent on shell commands.
+    // The cache is populated lazily in the background on first plugin access.
+    let plugins_needing_auth = get_cached_plugins_auth_status(&state).await;
 
     // Compute a human-readable display name (window title > first heading > name)
     let display_name = agent
@@ -580,20 +580,46 @@ pub async fn get_agent(
         })
         .unwrap_or_else(|| agent.name.clone());
 
-    Ok(Json(serde_json::json!({
-        "agent": agent,
-        "displayName": display_name,
-        "version": version,
-        "inputFields": input_fields,
-        "personaProperties": persona_properties,
-        "personaBody": persona_body,
-        "persona": persona_body,
-        "model": model,
-        "skills": skills,
-        "views": views,
-        "pluginsNeedingAuth": plugins_needing_auth,
-        "needsSetup": needs_setup,
-    })))
+    // App agents: redact publisher IP (persona, skills content, frontmatter).
+    // Only return what the frontend needs for display and configuration.
+    let is_app = agent.is_app.unwrap_or(0) != 0;
+
+    if is_app {
+        Ok(Json(serde_json::json!({
+            "agent": {
+                "id": agent.id,
+                "name": agent.name,
+                "description": agent.description,
+                "isApp": true,
+                "isEnabled": agent.is_enabled,
+                "kind": agent.kind,
+                "appWindowConfig": agent.app_window_config,
+                "inputValues": agent.input_values,
+                "installedAt": agent.installed_at,
+                "updatedAt": agent.updated_at,
+                "pricingModel": agent.pricing_model,
+                "pricingCost": agent.pricing_cost,
+            },
+            "displayName": display_name,
+            "version": version,
+            "inputFields": input_fields,
+            "pluginsNeedingAuth": plugins_needing_auth,
+            "needsSetup": needs_setup,
+        })))
+    } else {
+        Ok(Json(serde_json::json!({
+            "agent": agent,
+            "displayName": display_name,
+            "version": version,
+            "inputFields": input_fields,
+            "personaProperties": persona_properties,
+            "persona": persona_body,
+            "model": model,
+            "skills": skills,
+            "pluginsNeedingAuth": plugins_needing_auth,
+            "needsSetup": needs_setup,
+        })))
+    }
 }
 
 /// PUT /agents/{id}
@@ -678,6 +704,8 @@ pub async fn update_agent(
 
     let pricing_model = fm.pricing.as_ref().map(|p| p.model.as_str());
     let pricing_cost = fm.pricing.as_ref().map(|p| p.cost);
+    let soul = body["soul"].as_str();
+    let rules = body["rules"].as_str();
 
     state
         .store
@@ -689,6 +717,8 @@ pub async fn update_agent(
             &frontmatter_json.to_string(),
             pricing_model,
             pricing_cost,
+            soul,
+            rules,
         )
         .map_err(to_error_response)?;
 
@@ -704,6 +734,8 @@ pub async fn update_agent(
         if let Some(active) = registry.get_mut(&id) {
             active.name = updated.name.clone();
             active.agent_md = updated.agent_md.clone();
+            active.soul = updated.soul.clone();
+            active.rules = updated.rules.clone();
         }
     }
 
@@ -872,6 +904,20 @@ pub async fn process_agent_bindings(
                 }
                 ("watch", cfg.to_string())
             }
+            napp::agent::AgentTrigger::Folder {
+                path,
+                extensions,
+                recursive,
+                debounce_secs,
+            } => {
+                let cfg = serde_json::json!({
+                    "path": path,
+                    "extensions": extensions,
+                    "recursive": recursive,
+                    "debounce_secs": debounce_secs
+                });
+                ("folder", cfg.to_string())
+            }
             napp::agent::AgentTrigger::Manual => ("manual", String::new()),
         };
 
@@ -1008,6 +1054,8 @@ async fn create_blank_agent(state: AppState) -> HandlerResult<serde_json::Value>
         config: None,
         channel_id: None,
         degraded: None,
+                    soul: agent.soul.clone(),
+                    rules: agent.rules.clone(),
     };
     state
         .agent_registry
@@ -1263,6 +1311,20 @@ fn reconstruct_trigger(trigger_type: &str, trigger_config: &str) -> serde_json::
                 serde_json::json!({ "type": "watch" })
             }
         }
+        "folder" => {
+            // trigger_config is JSON for folder triggers
+            if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(trigger_config) {
+                let mut t = serde_json::json!({ "type": "folder" });
+                if let Some(obj) = cfg.as_object() {
+                    for (k, v) in obj {
+                        t[k] = v.clone();
+                    }
+                }
+                t
+            } else {
+                serde_json::json!({ "type": "folder" })
+            }
+        }
         "manual" => serde_json::json!({ "type": "manual" }),
         _ => serde_json::json!({ "type": trigger_type }),
     }
@@ -1411,6 +1473,8 @@ pub async fn apply_agent_update(
                     config: Some(config),
                     channel_id: None,
                     degraded: None,
+                    soul: updated.soul.clone(),
+                    rules: updated.rules.clone(),
                 };
                 state
                     .agent_registry
@@ -1500,6 +1564,8 @@ pub async fn reload_agent(
             &current_fm,
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -1602,25 +1668,112 @@ pub async fn list_agent_runs(
     Path(id): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> HandlerResult<serde_json::Value> {
+    let t0 = std::time::Instant::now();
+
     state
         .store
         .get_agent(&id)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let t_agent = t0.elapsed();
 
     let wf_id = format!("agent:{}", id);
     let runs = state
         .store
         .list_workflow_runs(&wf_id, q.limit, q.offset)
         .map_err(to_error_response)?;
+    let t_runs = t0.elapsed();
+
     let total = state
         .store
         .count_workflow_runs(&wf_id)
         .map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({
-        "runs": runs,
-        "total": total,
-    })))
+    let t_count = t0.elapsed();
+
+    let run_count = runs.len();
+    let resp = serde_json::json!({ "runs": runs, "total": total });
+    let t_serialize = t0.elapsed();
+
+    tracing::info!(
+        agent_id = %id,
+        run_count = run_count,
+        get_agent_ms = t_agent.as_millis(),
+        list_runs_ms = (t_runs - t_agent).as_millis(),
+        count_ms = (t_count - t_runs).as_millis(),
+        serialize_ms = (t_serialize - t_count).as_millis(),
+        total_ms = t_serialize.as_millis(),
+        "list_agent_runs timing"
+    );
+
+    Ok(Json(resp))
+}
+
+/// POST /agents/{id}/workflows/{name}/run — manually trigger an agent workflow binding.
+pub async fn run_agent_workflow(
+    State(state): State<AppState>,
+    Path((id, binding_name)): Path<(String, String)>,
+    body: axum::body::Bytes,
+) -> HandlerResult<serde_json::Value> {
+    let agent_rec = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let config = napp::agent::parse_agent_config(&agent_rec.frontmatter)
+        .map_err(|e| to_error_response(types::NeboError::Internal(format!("parse agent config: {}", e))))?;
+
+    let binding = config
+        .workflows
+        .get(&binding_name)
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    if !binding.has_activities() {
+        return Err(to_error_response(types::NeboError::Validation(
+            "workflow binding has no activities".to_string(),
+        )));
+    }
+
+    let def_json = binding.to_workflow_json(&binding_name);
+
+    // Merge body inputs with binding defaults
+    let mut inputs: serde_json::Value = serde_json::to_value(&binding.inputs).unwrap_or_default();
+    if !body.is_empty() {
+        if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
+            if let Some(extra) = parsed.get("inputs") {
+                if let (Some(base), Some(extra_obj)) = (inputs.as_object_mut(), extra.as_object()) {
+                    for (k, v) in extra_obj {
+                        base.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let emit_source = binding.emit.as_ref().map(|emit_name| {
+        let slug = agent_rec.name.to_lowercase().replace(' ', "-");
+        format!("{}.{}", slug, emit_name)
+    });
+
+    let run_id = state
+        .workflow_manager
+        .run_inline(
+            def_json,
+            inputs,
+            "manual",
+            Some(binding_name),
+            &id,
+            emit_source,
+        )
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+
+    let run = state
+        .store
+        .get_workflow_run(&run_id)
+        .map_err(to_error_response)?;
+
+    Ok(Json(serde_json::json!({ "runId": run_id, "run": run })))
 }
 
 /// POST /agents/{id}/activate — activate an agent from the REST API (makes it appear in sidebar).
@@ -1654,6 +1807,8 @@ pub async fn activate_agent(
         config,
         channel_id: None,
         degraded: None,
+                    soul: agent.soul.clone(),
+                    rules: agent.rules.clone(),
     };
 
     state
@@ -1685,6 +1840,9 @@ pub async fn activate_agent(
                 agent_id.clone(),
                 tool_dir,
                 state.hub.clone(),
+                state.tools.clone(),
+                state.skill_loader.clone(),
+                state.config.port,
             );
             match lifecycle.launch().await {
                 Ok(()) => {
@@ -1855,6 +2013,8 @@ pub async fn duplicate_agent(
         config: None,
         channel_id: None,
         degraded: None,
+                    soul: agent.soul.clone(),
+                    rules: agent.rules.clone(),
     };
     state
         .agent_registry
@@ -1890,6 +2050,8 @@ pub async fn chat_with_agent(
             "prompt is required".into(),
         )));
     }
+    // Redact sensitive slash command arguments before storage
+    let prompt = crate::redact::redact_sensitive_args(&prompt).unwrap_or(prompt);
 
     // Verify agent is active
     {
@@ -1922,6 +2084,8 @@ pub async fn chat_with_agent(
         entity_name: String::new(),
         origin_agent_id: None,
         mention_context: None,
+        tool_scope: None, plan_mode: false,
+        channel_ctx: None,
     };
 
     crate::chat_dispatch::run_chat(&state, config).await;
@@ -1974,6 +2138,15 @@ fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) ->
                 };
             serde_json::json!({ "type": "event", "sources": sources })
         }
+        "folder" => {
+            let mut t = serde_json::json!({ "type": "folder" });
+            for key in &["path", "extensions", "recursive", "debounce_secs"] {
+                if let Some(v) = trigger_config.get(*key) {
+                    t[*key] = v.clone();
+                }
+            }
+            t
+        }
         _ => serde_json::json!({ "type": "manual" }),
     }
 }
@@ -2012,6 +2185,7 @@ fn flatten_trigger_config(trigger_type: &str, trigger_config: &serde_json::Value
                     .to_string()
             }
         }
+        "folder" => trigger_config.to_string(),
         _ => String::new(),
     }
 }
@@ -2191,6 +2365,8 @@ pub async fn create_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -2321,6 +2497,8 @@ pub async fn update_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -2482,6 +2660,8 @@ pub async fn delete_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -2507,58 +2687,10 @@ pub async fn delete_agent_workflow(
 }
 
 /// GET /agents/{id}/surfaces — Return A2UI replay messages for active surfaces.
-///
-/// If no active surfaces exist but the agent has a `default` view in views.json,
-/// auto-creates the surface server-side so it persists across page refreshes.
 pub async fn get_agent_surfaces(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let existing = state.a2ui.list_agent_surfaces(&id).await;
-
-    if existing.is_empty() {
-        // Check if agent has a views.json with a "default" view
-        if let Some(views) = get_agent_views(&state, &id).await {
-            if let Some(default_view) = views.get("default") {
-                if let Some(components) = default_view.get("components").and_then(|c| c.as_array())
-                {
-                    let catalog_id = "https://a2ui.org/specification/v0_9/basic_catalog.json";
-                    let surface_type = default_view
-                        .get("surface_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("panel");
-
-                    match state
-                        .a2ui
-                        .create_surface(&id, "default", surface_type, catalog_id, None)
-                        .await
-                    {
-                        Ok(sid) => {
-                            if let Err(e) =
-                                state.a2ui.update_components(&sid, components.clone()).await
-                            {
-                                warn!(error = %e, "failed to push default view components");
-                            }
-                            // If view has initial data, push it too
-                            if let Some(data) = default_view.get("data") {
-                                if let Err(e) =
-                                    state.a2ui.update_data_model(&sid, None, data.clone()).await
-                                {
-                                    warn!(error = %e, "failed to push default view data model");
-                                }
-                            }
-                            // Start data bindings if defined
-                            state.a2ui.start_data_bindings(&sid, default_view).await;
-                        }
-                        Err(e) => {
-                            warn!(error = %e, agent_id = %id, "failed to auto-create default surface");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     let messages = state.a2ui.get_agent_replay_messages(&id).await;
     Ok(Json(serde_json::json!({
         "messages": messages,
@@ -2605,119 +2737,21 @@ pub async fn get_agent_theme(
         .unwrap()
 }
 
-/// Return the agent's `_nav` config from views.json.
-///
-/// If `_nav` is explicitly defined, returns it. Otherwise auto-generates
-/// nav items from the top-level view keys (excluding underscore-prefixed keys
-/// and child views like "document-review").
-pub async fn get_agent_nav(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> HandlerResult<serde_json::Value> {
-    let views = get_agent_views(&state, &id).await;
-    let Some(views) = views else {
-        return Ok(axum::Json(serde_json::json!([])));
-    };
-
-    // Check for explicit _nav config
-    if let Some(nav) = views.get("_nav") {
-        return Ok(axum::Json(nav.clone()));
-    }
-
-    // Auto-generate from view keys
-    let obj = views.as_object().cloned().unwrap_or_default();
-    let items: Vec<serde_json::Value> = obj
-        .keys()
-        .filter(|k| !k.starts_with('_'))
-        .map(|k| {
-            let label = k
-                .replace('-', " ")
-                .split_whitespace()
-                .map(|w| {
-                    let mut c = w.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().to_string() + c.as_str(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
+/// Return cached plugin auth status — never spawns subprocesses.
+/// Returns whatever is in the auth cache right now (may be empty on cold start).
+/// The cache gets populated lazily when plugins are actually used.
+async fn get_cached_plugins_auth_status(state: &AppState) -> Vec<serde_json::Value> {
+    let needing_auth = state.plugin_store.plugins_needing_auth().await;
+    needing_auth
+        .into_iter()
+        .map(|(slug, auth)| {
             serde_json::json!({
-                "viewId": k,
-                "label": if k == "default" { "Dashboard" } else { &label },
-            })
-        })
-        .collect();
-
-    Ok(axum::Json(serde_json::json!(items)))
-}
-
-/// Check all installed plugins for pending auth requirements.
-/// Returns a list of plugins that have auth config but aren't authenticated yet.
-/// Pure in-memory read from PluginStore's auth cache (populated at startup,
-/// updated on login/logout). No subprocess spawning, no polling.
-async fn check_plugins_auth_status(state: &AppState) -> Vec<serde_json::Value> {
-    // Lazy auth check: only query plugins that are actually installed and have
-    // auth configs. Previously this read from a pre-populated cache that took
-    // ~61s to build at startup. Now each plugin is checked on first access.
-    let installed = state.plugin_store.list_installed();
-    let mut result = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for (slug, _, _, _) in installed {
-        if !seen.insert(slug.clone()) {
-            continue;
-        }
-        let Some(manifest) = state.plugin_store.get_manifest(&slug) else {
-            continue;
-        };
-        let Some(ref auth) = manifest.auth else {
-            continue;
-        };
-        if auth.commands.status.is_none() {
-            continue;
-        }
-        if !state.plugin_store.check_auth_lazy(&slug).await {
-            result.push(serde_json::json!({
                 "slug": slug,
                 "label": auth.label,
                 "description": auth.description,
-            }));
-        }
-    }
-    result
-}
-
-/// Look up an agent's views.json content.
-///
-/// Tries two sources:
-/// 1. DB agent record's napp_path (filesystem path to agent directory)
-/// 2. Agent loader's in-memory LoadedAgent (already parsed views.json)
-pub async fn get_agent_views(state: &AppState, agent_id: &str) -> Option<serde_json::Value> {
-    // Try DB agent's napp_path first
-    if let Ok(Some(agent)) = state.store.get_agent(agent_id) {
-        if let Some(napp_path) = agent.napp_path.as_ref() {
-            if !napp_path.is_empty() {
-                let views_path = std::path::PathBuf::from(napp_path).join("views.json");
-                if let Ok(content) = std::fs::read_to_string(&views_path) {
-                    if let Ok(views) = serde_json::from_str(&content) {
-                        return Some(views);
-                    }
-                }
-            }
-        }
-
-        // Fallback: look up via agent loader by name
-        if let Some(loaded) = state.agent_loader.get_by_name(&agent.name).await {
-            return loaded.views;
-        }
-    }
-
-    // Last resort: try agent_id as a name directly
-    if let Some(loaded) = state.agent_loader.get_by_name(agent_id).await {
-        return loaded.views;
-    }
-
-    None
+            })
+        })
+        .collect()
 }
 
 // ── Agent Multi-Chat ─────────────────────────────────────────────────────────
@@ -2886,5 +2920,312 @@ pub async fn activate_agent_chat(
         "messages": messages,
         "totalMessages": total,
         "sessionKey": session_key,
+    })))
+}
+
+// ── Channel Bindings ─────────────────────────────────────────────────
+
+/// GET /agents/{id}/channels — list channel plugins and their binding state.
+///
+/// Returns all installed plugins that declare a `channel` capability, along
+/// with whether each is enabled for this agent.
+pub async fn list_agent_channels(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let bindings = state
+        .store
+        .list_channel_bindings_for_agent(&agent_id)
+        .map_err(to_error_response)?;
+
+    // Discover all plugins with channel capability
+    let installed = state.plugin_store.list_installed();
+    let mut channels = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (slug, _version, _path, _source) in &installed {
+        if !seen.insert(slug.clone()) {
+            continue;
+        }
+        if let Some(ch) = state.plugin_store.get_channel_def(slug) {
+            let binding = bindings.iter().find(|b| b.plugin_slug == *slug);
+            let enabled = binding.map(|b| b.is_enabled).unwrap_or(false);
+            let has_agent_config = binding
+                .map(|b| !b.config.is_empty())
+                .unwrap_or(false);
+
+            // Per-agent auth: if the binding has its own config with all required
+            // env keys populated, consider it authenticated independently.
+            let auth_info = state.plugin_store.get_auth_info(slug);
+            let needs_auth = auth_info.is_some();
+            let authenticated = if has_agent_config {
+                // Check if all auth env keys are present in per-agent config
+                match &auth_info {
+                    Some((_, a)) => a.env.keys().all(|k| {
+                        binding
+                            .map(|b| b.config.get(k).is_some_and(|v| !v.is_empty()))
+                            .unwrap_or(false)
+                    }),
+                    None => true,
+                }
+            } else {
+                state.plugin_store.check_auth_lazy(slug).await
+            };
+
+            let (auth_label, auth_env_keys, auth_help) = match &auth_info {
+                Some((_, a)) => (
+                    a.label.clone(),
+                    a.env.keys().cloned().collect::<Vec<_>>(),
+                    a.help.as_ref().map(|h| serde_json::json!({
+                        "url": h.url,
+                        "urlLabel": h.url_label,
+                        "text": h.text,
+                    })),
+                ),
+                None => (String::new(), Vec::new(), None),
+            };
+            channels.push(serde_json::json!({
+                "pluginSlug": slug,
+                "name": if ch.name.is_empty() { slug.clone() } else { ch.name },
+                "description": ch.description,
+                "enabled": enabled,
+                "authenticated": authenticated,
+                "needsAuth": needs_auth,
+                "authLabel": auth_label,
+                "authEnvKeys": auth_env_keys,
+                "authHelp": auth_help,
+                "hasAgentConfig": has_agent_config,
+            }));
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "channels": channels })))
+}
+
+/// POST /agents/{id}/channels/{plugin_slug}/enable — enable a channel for this agent.
+pub async fn enable_agent_channel(
+    State(state): State<AppState>,
+    Path((agent_id, plugin_slug)): Path<(String, String)>,
+) -> HandlerResult<serde_json::Value> {
+    // Verify plugin has channel capability
+    if state.plugin_store.get_channel_def(&plugin_slug).is_none() {
+        return Err(to_error_response(types::NeboError::Validation(format!(
+            "plugin '{}' has no channel capability",
+            plugin_slug
+        ))));
+    }
+
+    state
+        .store
+        .enable_channel_binding(&agent_id, &plugin_slug)
+        .map_err(to_error_response)?;
+
+    // Restart agent worker so the channel loop starts
+    if let Ok(Some(agent)) = state.store.get_agent(&agent_id) {
+        let cfg = napp::agent::parse_agent_config(&agent.frontmatter).ok();
+        state
+            .agent_workers
+            .start_agent(&agent_id, &agent.name, cfg)
+            .await;
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// POST /agents/{id}/channels/{plugin_slug}/disable — disable a channel for this agent.
+pub async fn disable_agent_channel(
+    State(state): State<AppState>,
+    Path((agent_id, plugin_slug)): Path<(String, String)>,
+) -> HandlerResult<serde_json::Value> {
+    state
+        .store
+        .disable_channel_binding(&agent_id, &plugin_slug)
+        .map_err(to_error_response)?;
+
+    // Restart agent worker so the channel loop stops
+    if let Ok(Some(agent)) = state.store.get_agent(&agent_id) {
+        let cfg = napp::agent::parse_agent_config(&agent.frontmatter).ok();
+        state
+            .agent_workers
+            .start_agent(&agent_id, &agent.name, cfg)
+            .await;
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// PUT /agents/{id}/channels/{plugin_slug}/config — save per-agent channel credentials.
+///
+/// Each agent can have its own bot token / app token so it appears as a
+/// separate identity on Slack, Discord, etc.
+pub async fn set_agent_channel_config(
+    State(state): State<AppState>,
+    Path((agent_id, plugin_slug)): Path<(String, String)>,
+    Json(body): Json<std::collections::HashMap<String, String>>,
+) -> HandlerResult<serde_json::Value> {
+    // Verify plugin has channel capability
+    if state.plugin_store.get_channel_def(&plugin_slug).is_none() {
+        return Err(to_error_response(types::NeboError::Validation(format!(
+            "plugin '{}' has no channel capability",
+            plugin_slug
+        ))));
+    }
+
+    // Only allow keys that are declared in the plugin's auth.env
+    let allowed_keys: std::collections::HashSet<String> = state
+        .plugin_store
+        .get_auth_info(&plugin_slug)
+        .map(|(_, a)| a.env.keys().cloned().collect())
+        .unwrap_or_default();
+
+    let filtered: std::collections::HashMap<String, String> = body
+        .into_iter()
+        .filter(|(k, v)| allowed_keys.contains(k) && !v.is_empty())
+        .collect();
+
+    state
+        .store
+        .set_channel_binding_config(&agent_id, &plugin_slug, &filtered)
+        .map_err(to_error_response)?;
+
+    // Restart agent worker so the bridge picks up the new credentials
+    if let Ok(Some(agent)) = state.store.get_agent(&agent_id) {
+        let cfg = napp::agent::parse_agent_config(&agent.frontmatter).ok();
+        state
+            .agent_workers
+            .start_agent(&agent_id, &agent.name, cfg)
+            .await;
+    }
+
+    info!(agent = %agent_id, plugin = %plugin_slug, keys = filtered.len(), "saved per-agent channel config");
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// POST /agents/{id}/workflow/chat — open a workflow builder help chat session.
+///
+/// Creates a dedicated session seeded with the agent's workflow configs as context
+/// so the AI is an expert on the specific workflows, activities, and steps.
+/// The frontend passes the current workflow state; we serialize it into the system prompt.
+pub async fn start_workflow_chat(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    // Verify agent exists
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let agent_name = &agent.name;
+
+    // The frontend sends the full workflow state so the AI has real-time context
+    let workflows_json = body
+        .get("workflows")
+        .cloned()
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+    let selected_workflow = body
+        .get("selectedWorkflow")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let selected_activity = body
+        .get("selectedActivity")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Build rich system context
+    let workflows_pretty =
+        serde_json::to_string_pretty(&workflows_json).unwrap_or_else(|_| "{}".to_string());
+
+    let mut system_parts = vec![format!(
+        "You are the Architect — an expert workflow builder assistant for the agent \"{agent_name}\". \
+         You help design, modify, and troubleshoot automation workflows.\n\n\
+         ## Your Capabilities\n\
+         - Add, remove, and reorder workflow activities (steps)\n\
+         - Configure triggers (schedule, heartbeat, event, manual)\n\
+         - Set up connections between activities and between workflows (via emit/event)\n\
+         - Configure activity details: intent, skills, steps, parameters\n\
+         - Explain how workflows execute and help debug issues\n\n\
+         ## Workflow Format Reference\n\
+         Each workflow has:\n\
+         - **trigger**: {{ type, schedule/cron/interval/event, window }}\n\
+         - **activities**: array of {{ id, type, label, intent, skills, steps, params, branches }}\n\
+         - **connections**: array of {{ from, to, label }} defining execution order\n\
+         - **emit**: optional event name emitted on completion (chains to other workflows)\n\
+         - **isActive**: whether the workflow is currently enabled\n\n\
+         Activity types: custom, llm, tool, branch, loop, webhook, delay, transform\n\
+         Trigger types: schedule (cron), heartbeat (interval), event (reactive), manual\n\n\
+         ## Rules\n\
+         - Be concise and actionable. Show the user exactly what to change.\n\
+         - When suggesting modifications, describe them precisely (which workflow, which activity, what field).\n\
+         - If the user asks something outside workflow building, redirect them to the main chat."
+    )];
+
+    system_parts.push(format!(
+        "## Current Workflows for \"{agent_name}\"\n\n```json\n{workflows_pretty}\n```"
+    ));
+
+    if !selected_workflow.is_empty() {
+        system_parts.push(format!(
+            "## Currently Selected\nWorkflow: **{selected_workflow}**"
+        ));
+        if !selected_activity.is_empty() {
+            system_parts.push(format!("Activity: **{selected_activity}**"));
+        }
+    }
+
+    let system_context = system_parts.join("\n\n");
+
+    // Create a dedicated help session scoped to this agent + workflow builder
+    let session_key =
+        agent::keyparser::build_agent_session_key(&id, "help:workflow");
+
+    let session = state
+        .runner
+        .sessions()
+        .get_or_create(&session_key, "")
+        .map_err(to_error_response)?;
+
+    // Always re-seed: clear old messages and inject fresh context so the AI
+    // sees the latest workflow state every time the builder opens.
+    let _ = state.runner.sessions().clear_current_messages(&session.id);
+
+    let _ = state.runner.sessions().append_message(
+        &session.id,
+        "system",
+        &system_context,
+        None,
+        None,
+        None,
+    );
+
+    let greeting = format!(
+        "I'm the **Architect** — your workflow builder assistant for **{agent_name}**.\n\n\
+         I can see your current workflows and help you modify them. Try:\n\
+         - \"Add an email notification step after the review\"\n\
+         - \"Change the trigger to run every 30 minutes\"\n\
+         - \"What does the {} workflow do?\"\n\
+         - \"How can I chain two workflows together?\"",
+        if selected_workflow.is_empty() {
+            "morning-brief".to_string()
+        } else {
+            selected_workflow.to_string()
+        }
+    );
+
+    let _ = state.runner.sessions().append_message(
+        &session.id,
+        "assistant",
+        &greeting,
+        None,
+        None,
+        None,
+    );
+
+    Ok(Json(serde_json::json!({
+        "sessionKey": session_key,
+        "agentId": id,
     })))
 }

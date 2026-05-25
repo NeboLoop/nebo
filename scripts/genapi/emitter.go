@@ -231,23 +231,39 @@ func emitAPIFunction(b *strings.Builder, route Route, funcName string, handlers 
 	method := strings.ToLower(route.Method)
 	apiPath := "/api/v1" + route.Path
 
-	// Determine response type.
+	// Determine response type and query params.
 	responseType := "unknown"
+	var queryParams []QueryParam
 	h := handlers[route.Handler]
-	if h != nil && len(h.ResponseKeys) > 0 {
-		responseType = "components." + handlerToResponseTypeName(funcName)
+	if h != nil {
+		if len(h.ResponseKeys) > 0 {
+			responseType = "components." + handlerToResponseTypeName(funcName)
+		}
+		queryParams = h.QueryParams
 	}
 
 	// Build path params.
 	pathParams := extractPathParams(route.Path)
 
-	// Build function params: path params first, then optional body.
+	// Build function params: path params first, then query params, then body.
 	var params []string
 
 	// Path params (required, come first).
 	for _, p := range pathParams {
 		tsName := pathParamToTSName(p)
 		params = append(params, tsName+": string")
+	}
+
+	// Query params (for GET/DELETE — optional, come after path params).
+	hasQuery := len(queryParams) > 0 && (method == "get" || method == "delete")
+	if hasQuery {
+		for _, qp := range queryParams {
+			opt := ""
+			if qp.Optional {
+				opt = "?"
+			}
+			params = append(params, qp.Name+opt+": "+qp.TSType)
+		}
 	}
 
 	// For POST/PUT/PATCH, add request body param (optional, comes last).
@@ -264,6 +280,16 @@ func emitAPIFunction(b *strings.Builder, route Route, funcName string, handlers 
 		urlTemplate = strings.Replace(urlTemplate, "{*"+p+"}", "${"+tsName+"}", 1)
 	}
 
+	// Build query params object string for webapi.get/delete calls.
+	queryObjStr := ""
+	if hasQuery {
+		names := make([]string, 0, len(queryParams))
+		for _, qp := range queryParams {
+			names = append(names, qp.Name)
+		}
+		queryObjStr = "{ " + strings.Join(names, ", ") + " }"
+	}
+
 	// Description.
 	desc := deriveDescription(funcName)
 	fmt.Fprintf(b, "/**\n * @description \"%s\"\n */\n", desc)
@@ -274,9 +300,17 @@ func emitAPIFunction(b *strings.Builder, route Route, funcName string, handlers 
 	// Function body.
 	switch method {
 	case "get":
-		fmt.Fprintf(b, "\treturn webapi.get<%s>(`%s`)\n", responseType, urlTemplate)
+		if hasQuery {
+			fmt.Fprintf(b, "\treturn webapi.get<%s>(`%s`, %s)\n", responseType, urlTemplate, queryObjStr)
+		} else {
+			fmt.Fprintf(b, "\treturn webapi.get<%s>(`%s`)\n", responseType, urlTemplate)
+		}
 	case "delete":
-		fmt.Fprintf(b, "\treturn webapi.delete<%s>(`%s`)\n", responseType, urlTemplate)
+		if hasQuery {
+			fmt.Fprintf(b, "\treturn webapi.delete<%s>(`%s`, %s)\n", responseType, urlTemplate, queryObjStr)
+		} else {
+			fmt.Fprintf(b, "\treturn webapi.delete<%s>(`%s`)\n", responseType, urlTemplate)
+		}
 	case "post":
 		if hasBody {
 			fmt.Fprintf(b, "\treturn webapi.post<%s>(`%s`, req)\n", responseType, urlTemplate)

@@ -637,6 +637,10 @@ pub struct Agent {
     pub app_binary_path: Option<String>,
     /// JSON-serialized AppWindowConfig.
     pub app_window_config: Option<String>,
+    /// Per-agent soul: voice, tone, personality, boundaries (SOUL.md content).
+    pub soul: Option<String>,
+    /// Per-agent rules: behavior constraints and guardrails.
+    pub rules: Option<String>,
 }
 
 fn default_input_values() -> String {
@@ -781,4 +785,30 @@ pub struct A2UISurface {
     pub is_active: i64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+// ─── Artifact Update Tracking ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactUpdatePref {
+    pub artifact_id: String,
+    pub artifact_type: String,
+    #[serde(serialize_with = "i64_as_bool")]
+    pub auto_update: i64,
+    pub local_version: String,
+    pub remote_version: String,
+    pub last_checked_at: i64,
+    #[serde(serialize_with = "i64_as_bool")]
+    pub update_available: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactUpdateSettings {
+    pub agents: bool,
+    pub skills: bool,
+    pub plugins: bool,
+    #[serde(alias = "check_interval_hours")]
+    pub check_interval_hours: u32,
 }

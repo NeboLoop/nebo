@@ -54,9 +54,14 @@ func main() {
 	storeMethodTypes := scanStoreMethodTypes(queriesDir)
 	fmt.Printf("  Found %d store methods\n", len(storeMethodTypes))
 
-	// ── 4. Parse handler responses ──────────────────────────────────────
+	// ── 4. Parse Deserialize structs from handlers (for Query<T> params) ─
+	fmt.Println("Scanning query param structs...")
+	queryStructs := scanDeserializeStructs(handlersDir)
+	fmt.Printf("  Found %d Deserialize structs\n", len(queryStructs))
+
+	// ── 5. Parse handler responses ──────────────────────────────────────
 	fmt.Println("Scanning handler responses...")
-	handlers := scanHandlers(handlersDir, allStructs, storeMethodTypes)
+	handlers := scanHandlers(handlersDir, allStructs, storeMethodTypes, queryStructs)
 	fmt.Printf("  Found %d handler functions\n", len(handlers))
 
 	// ── 5. Parse WebSocket events ───────────────────────────────────────

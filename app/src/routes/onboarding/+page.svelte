@@ -4,7 +4,7 @@
   import { completeOnboarding } from '$lib/stores/onboarding';
   import { logger } from '$lib/monitoring';
   import * as api from '$lib/api/nebo';
-  import { neboLoopOAuthStartWithJanus } from '$lib/api/index';
+  import { neboLoopOAuthStartWithJanus, neboLoopOAuthStatus } from '$lib/api/index';
   import Check from 'lucide-svelte/icons/check';
   import ArrowRight from 'lucide-svelte/icons/arrow-right';
   import ArrowLeft from 'lucide-svelte/icons/arrow-left';
@@ -25,6 +25,9 @@
   let confirmText = $state('');
   const canConfirm = $derived(termsAccepted && confirmText === 'ENABLE');
   let selectedLocale = $state('en');
+
+  // Language picker hidden for v0.10.0. Set SHOW_LANGUAGE_STEP=true to re-enable.
+  const SHOW_LANGUAGE_STEP = false;
 
   // NeboLoop OAuth state
   let neboLoopLoading = $state(false);
@@ -70,33 +73,6 @@
     } catch {}
   });
 
-  const languages = [
-    { code: 'en', label: 'English' },
-    { code: 'de', label: 'Deutsch' },
-    { code: 'es', label: 'Español' },
-    { code: 'fr', label: 'Français' },
-    { code: 'it', label: 'Italiano' },
-    { code: 'pt', label: 'Português' },
-    { code: 'pt-BR', label: 'Português (Brasil)' },
-    { code: 'nl', label: 'Nederlands' },
-    { code: 'sv', label: 'Svenska' },
-    { code: 'pl', label: 'Polski' },
-    { code: 'tr', label: 'Türkçe' },
-    { code: 'ru', label: 'Русский' },
-    { code: 'uk', label: 'Українська' },
-    { code: 'ar', label: 'العربية' },
-    { code: 'he', label: 'עברית' },
-    { code: 'hi', label: 'हिन्दी' },
-    { code: 'bn', label: 'বাংলা' },
-    { code: 'th', label: 'ไทย' },
-    { code: 'vi', label: 'Tiếng Việt' },
-    { code: 'id', label: 'Bahasa Indonesia' },
-    { code: 'ms', label: 'Bahasa Melayu' },
-    { code: 'ja', label: '日本語' },
-    { code: 'ko', label: '한국어' },
-    { code: 'zh-CN', label: '简体中文' },
-    { code: 'zh-TW', label: '繁體中文' },
-  ];
 
   // Accept Terms & Conditions via backend
   async function acceptTerms() {
@@ -106,7 +82,14 @@
       // Non-blocking — user can still proceed
       logger.warn('Failed to record T&C acceptance on backend');
     }
-    step = 1;
+    if (SHOW_LANGUAGE_STEP) {
+      step = 1;
+    } else {
+      // Skip language step; persist default locale
+      localStorage.setItem('nebo_locale', 'en');
+      try { await api.userUpdatePreferences({ language: 'en' }); } catch {}
+      step = 2;
+    }
   }
 
   // Save language preference via backend
@@ -151,7 +134,7 @@
       // Poll every 2 seconds for completion
       neboLoopPollInterval = setInterval(async () => {
         try {
-          const status = await api.neboLoopOauthStatus() as api.OAuthStatusResponse;
+          const status = await neboLoopOAuthStatus(neboLoopPendingState);
           if (status?.status === 'complete') {
             cleanupNeboLoopOAuth();
             neboLoopConnected = true;
@@ -199,7 +182,37 @@
     goto('/');
   }
 
-  const steps = ['Welcome', 'Language', 'Connect', 'Permissions', 'Done'];
+  const steps = SHOW_LANGUAGE_STEP
+    ? ['Welcome', 'Language', 'Connect', 'Permissions', 'Done']
+    : ['Welcome', 'Connect', 'Permissions', 'Done'];
+
+  const languages = [
+    { code: 'en', label: 'English' },
+    { code: 'de', label: 'Deutsch' },
+    { code: 'es', label: 'Español' },
+    { code: 'fr', label: 'Français' },
+    { code: 'it', label: 'Italiano' },
+    { code: 'pt', label: 'Português' },
+    { code: 'pt-BR', label: 'Português (Brasil)' },
+    { code: 'nl', label: 'Nederlands' },
+    { code: 'sv', label: 'Svenska' },
+    { code: 'pl', label: 'Polski' },
+    { code: 'tr', label: 'Türkçe' },
+    { code: 'ru', label: 'Русский' },
+    { code: 'uk', label: 'Українська' },
+    { code: 'ar', label: 'العربية' },
+    { code: 'he', label: 'עברית' },
+    { code: 'hi', label: 'हिन्दी' },
+    { code: 'bn', label: 'বাংলা' },
+    { code: 'th', label: 'ไทย' },
+    { code: 'vi', label: 'Tiếng Việt' },
+    { code: 'id', label: 'Bahasa Indonesia' },
+    { code: 'ms', label: 'Bahasa Melayu' },
+    { code: 'ja', label: '日本語' },
+    { code: 'ko', label: '한국어' },
+    { code: 'zh-CN', label: '简体中文' },
+    { code: 'zh-TW', label: '繁體中文' },
+  ];
 </script>
 
 <svelte:head><title>Welcome to Nebo</title></svelte:head>
@@ -256,7 +269,7 @@
     </div>
   </div>
 
-{:else if step === 1}
+{:else if step === 1 && SHOW_LANGUAGE_STEP}
   <!-- Language -->
   <div class="text-center">
     <div class="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-5">
@@ -336,7 +349,7 @@
 
     <div class="flex items-center justify-center gap-3">
       <button
-        onclick={() => { cleanupNeboLoopOAuth(); step = 1; }}
+        onclick={() => { cleanupNeboLoopOAuth(); step = SHOW_LANGUAGE_STEP ? 1 : 0; }}
         class="inline-flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-base-content/60 cursor-pointer hover:text-base-content transition-colors border-none bg-transparent"
       >
         <ArrowLeft class="w-4 h-4" /> Back

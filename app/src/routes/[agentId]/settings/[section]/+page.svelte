@@ -1,10 +1,17 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { getContext } from 'svelte';
+  import { getContext, onDestroy } from 'svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { getActivityType } from '$lib/utils/workflowTypes';
   import type { AgentPageContext, WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
+  import { getWebSocketClient } from '$lib/websocket/client';
+  import { createChatController } from '$lib/chat/controller.svelte';
+  import ChatPane from '$lib/components/chat/ChatPane.svelte';
+  import Check from 'lucide-svelte/icons/check';
+  import Trash2 from 'lucide-svelte/icons/trash-2';
+  import ChevronRight from 'lucide-svelte/icons/chevron-right';
+  import type { Memory } from '$lib/api/neboComponents';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -39,21 +46,37 @@
     { id: 'general', label: 'General' },
     { id: 'identity', label: 'Identity' },
     { id: 'persona', label: 'Persona' },
+    { id: 'soul', label: 'Soul' },
+    { id: 'rules', label: 'Rules' },
     { id: 'configure', label: 'Configure' },
     { id: 'workflows', label: 'Workflows' },
     { id: 'skills', label: 'Skills' },
+    { id: 'channels', label: 'Channels' },
     { id: 'memory', label: 'Memory' },
     { id: 'permissions', label: 'Permissions' },
   ];
 
   // Delete confirmation triggered by ?delete=1 query param or button click
   let showDeleteConfirm = $state(false);
+  let deleting = $state(false);
 
   $effect(() => {
     if ($page.url.searchParams.get('delete') === '1') {
       showDeleteConfirm = true;
     }
   });
+
+  async function handleDeleteAgent() {
+    if (!agentId || deleting) return;
+    deleting = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.deleteAgent(agentId);
+      goto('/');
+    } catch {
+      deleting = false;
+    }
+  }
 
   function statusLabel(s: string) {
     if (s === 'online') return 'Online';
@@ -65,7 +88,297 @@
   function triggerSummary(wf: WorkflowConfig): string {
     if (wf.trigger?.type === 'schedule') return wf.schedule || 'Scheduled';
     if (wf.trigger?.type === 'event') return `On ${wf.trigger.event || 'event'}`;
+    if (wf.trigger?.type === 'watch') return `Watch: ${wf.trigger.event || wf.trigger.plugin || 'plugin'}`;
+    if (wf.trigger?.type === 'heartbeat') return `Every ${wf.trigger.interval || '?'}`;
     return 'Manual trigger';
+  }
+
+  // --- Identity auto-save ---
+  let identitySaved = $state(false);
+  let identitySaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let editName = $state('');
+  let editRole = $state('');
+
+  $effect(() => { if (agent) { editName = agent.name; editRole = agent.role; } });
+
+  function debounceIdentitySave() {
+    if (identitySaveTimer) clearTimeout(identitySaveTimer);
+    identitySaveTimer = setTimeout(() => saveIdentity(), 800);
+  }
+
+  async function saveIdentity() {
+    if (!agentId || !agent?.editable) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent(agentId, { name: editName, description: editRole });
+      identitySaved = true;
+      setTimeout(() => identitySaved = false, 2000);
+    } catch { /* silent */ }
+  }
+
+  // --- Persona auto-save (AGENT.md body) ---
+  let personaSaved = $state(false);
+  let personaSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let editPersona = $state('');
+
+  $effect(() => { editPersona = config.persona; });
+
+  function debouncePersonaSave() {
+    if (personaSaveTimer) clearTimeout(personaSaveTimer);
+    personaSaveTimer = setTimeout(() => savePersona(), 800);
+  }
+
+  async function savePersona() {
+    if (!agentId || !agent?.editable) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      const existingMd = config.agentMd || '';
+      const match = existingMd.match(/^---\n[\s\S]*?\n---\n?/);
+      const newMd = match ? match[0] + '\n' + editPersona + '\n' : `---\nname: "${editName}"\ndescription: "${editRole}"\n---\n\n${editPersona}\n`;
+      await api.updateAgent(agentId, { agentMd: newMd });
+      personaSaved = true;
+      setTimeout(() => personaSaved = false, 2000);
+    } catch { /* silent */ }
+  }
+
+  // --- Soul auto-save (voice, tone, personality, boundaries) ---
+  let soulSaved = $state(false);
+  let soulSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let editSoul = $state('');
+
+  $effect(() => { editSoul = config.soul; });
+
+  function debounceSoulSave() {
+    if (soulSaveTimer) clearTimeout(soulSaveTimer);
+    soulSaveTimer = setTimeout(() => saveSoul(), 800);
+  }
+
+  async function saveSoul() {
+    if (!agentId || !agent?.editable) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent(agentId, { soul: editSoul });
+      soulSaved = true;
+      setTimeout(() => soulSaved = false, 2000);
+    } catch { /* silent */ }
+  }
+
+  // --- Rules auto-save ---
+  let rulesSaved = $state(false);
+  let rulesSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let editRules = $state('');
+
+  $effect(() => { editRules = config.rules; });
+
+  function debounceRulesSave() {
+    if (rulesSaveTimer) clearTimeout(rulesSaveTimer);
+    rulesSaveTimer = setTimeout(() => saveRules(), 800);
+  }
+
+  async function saveRules() {
+    if (!agentId || !agent?.editable) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent(agentId, { rules: editRules });
+      rulesSaved = true;
+      setTimeout(() => rulesSaved = false, 2000);
+    } catch { /* silent */ }
+  }
+
+  // --- Memory browsing ---
+  let memoryStats = $state<{ totalCount: number; layerCounts: Record<string, number>; namespaces: string[] } | null>(null);
+  let expandedBank = $state<string | null>(null);
+  let bankEntries = $state<Memory[]>([]);
+  let bankLoading = $state(false);
+  let memoryLoading = $state(false);
+
+  $effect(() => { if (section === 'memory' && !memoryStats) loadMemoryStats(); });
+
+  async function loadMemoryStats() {
+    memoryLoading = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.getStats() as { totalCount: number; layerCounts: unknown; namespaces: string[] };
+      memoryStats = {
+        totalCount: resp.totalCount ?? 0,
+        layerCounts: (resp.layerCounts ?? {}) as Record<string, number>,
+        namespaces: resp.namespaces ?? [],
+      };
+    } catch { /* silent */ }
+    finally { memoryLoading = false; }
+  }
+
+  async function toggleBank(ns: string) {
+    if (expandedBank === ns) { expandedBank = null; bankEntries = []; return; }
+    expandedBank = ns;
+    bankLoading = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.listMemories(50, 0, ns);
+      bankEntries = (resp?.memories ?? []) as Memory[];
+    } catch { bankEntries = []; }
+    finally { bankLoading = false; }
+  }
+
+  async function deleteMemoryEntry(id: number) {
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.deleteMemory(String(id));
+      bankEntries = bankEntries.filter(e => e.id !== id);
+      if (memoryStats && expandedBank) {
+        const counts = { ...memoryStats.layerCounts };
+        if (counts[expandedBank] > 0) counts[expandedBank]--;
+        memoryStats = { ...memoryStats, totalCount: memoryStats.totalCount - 1, layerCounts: counts };
+      }
+    } catch { /* silent */ }
+  }
+
+  // --- Channels ---
+  type AuthHelp = { url?: string; urlLabel?: string; text?: string };
+  type ChannelInfo = { pluginSlug: string; name: string; description: string; enabled: boolean; authenticated: boolean; needsAuth: boolean; authLabel: string; authEnvKeys: string[]; authHelp?: AuthHelp | null };
+  let channelList = $state<ChannelInfo[]>([]);
+  let channelsLoading = $state(false);
+  let channelTogglingSlug = $state<string | null>(null);
+  let channelConnectingSlug = $state<string | null>(null);
+  let channelAuthModal = $state<ChannelInfo | null>(null);
+  let channelAuthInputs = $state<Record<string, string>>({});
+  let channelAuthSaving = $state(false);
+  let channelAuthError = $state<string | null>(null);
+  let helpChatOpen = $state(false);
+  let helpChatLoading = $state(false);
+  let helpChat = $state<ReturnType<typeof createChatController> | null>(null);
+  let helpSessionKey = $state<string | null>(null);
+
+  $effect(() => { if (section === 'channels') loadChannels(); });
+
+  // Listen for plugin auth WS events when on channels section
+  const channelAuthUnsubs: (() => void)[] = [];
+
+  $effect(() => {
+    if (section !== 'channels') return;
+    const ws = getWebSocketClient();
+    channelAuthUnsubs.push(
+      ws.on('plugin_auth_url', (data: Record<string, unknown>) => {
+        const url = data.url as string;
+        if (url) window.open(url, '_blank');
+      }),
+      ws.on('plugin_auth_complete', (data: Record<string, unknown>) => {
+        const slug = data.plugin as string;
+        if (slug) {
+          channelConnectingSlug = null;
+          channelAuthModal = null;
+          channelAuthError = null;
+          channelList = channelList.map(ch => ch.pluginSlug === slug ? { ...ch, authenticated: true } : ch);
+        }
+      }),
+      ws.on('plugin_auth_error', (data: Record<string, unknown>) => {
+        const slug = data.plugin as string;
+        if (slug === channelConnectingSlug) {
+          channelConnectingSlug = null;
+          channelAuthError = 'Authentication failed. Check your credentials and try again.';
+        }
+      }),
+    );
+  });
+
+  onDestroy(() => channelAuthUnsubs.forEach(fn => fn()));
+
+  async function loadChannels() {
+    channelsLoading = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.listAgentChannels(agentId) as { channels: ChannelInfo[] };
+      channelList = resp.channels ?? [];
+    } catch { channelList = []; }
+    finally { channelsLoading = false; }
+  }
+
+  function openAuthModal(ch: ChannelInfo) {
+    channelAuthModal = ch;
+    channelAuthInputs = {};
+    channelAuthError = null;
+  }
+
+  function closeAuthModal() {
+    if (channelAuthSaving || channelConnectingSlug) return;
+    channelAuthModal = null;
+    channelAuthError = null;
+    closeHelpChat();
+  }
+
+  async function submitAuthForm(slug: string) {
+    channelAuthSaving = true;
+    channelAuthError = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      // Save credentials per-agent so each agent gets its own bot identity
+      await api.setAgentChannelConfig(agentId, slug, channelAuthInputs);
+      // Mark as authenticated and auto-enable
+      channelList = channelList.map(ch =>
+        ch.pluginSlug === slug ? { ...ch, authenticated: true } : ch
+      );
+      closeAuthModal();
+      await loadChannels();
+    } catch {
+      channelAuthError = 'Failed to save credentials.';
+    }
+    finally { channelAuthSaving = false; }
+  }
+
+  async function toggleChannel(slug: string, currentlyEnabled: boolean) {
+    channelTogglingSlug = slug;
+    try {
+      const api = await import('$lib/api/nebo');
+      if (currentlyEnabled) {
+        await api.disableAgentChannel(agentId, slug);
+      } else {
+        await api.enableAgentChannel(agentId, slug);
+      }
+      channelList = channelList.map(ch => ch.pluginSlug === slug ? { ...ch, enabled: !currentlyEnabled } : ch);
+    } catch { /* silent */ }
+    finally { channelTogglingSlug = null; }
+  }
+
+  async function openHelpChat(slug: string) {
+    if (helpChatOpen) return;
+    helpChatLoading = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.startHelpChat(slug, { agentId }) as { sessionKey: string; chatId: string; agentId: string };
+      if (resp.sessionKey) {
+        helpSessionKey = resp.sessionKey;
+        helpChat = createChatController({
+          agentId: resp.agentId || agentId,
+          sessionKey: resp.sessionKey,
+          channel: `help:${slug}`,
+        });
+        // Load the seeded messages (system context + greeting)
+        try {
+          const msgs = await api.getSessionMessages(resp.sessionKey) as { messages?: { id: string; role: string; content: string; html?: string }[] };
+          if (msgs?.messages?.length) {
+            helpChat.setMessages(msgs.messages
+              .filter((m) => m.role === 'user' || m.role === 'assistant')
+              .map((m) => ({
+                id: m.id,
+                type: m.role as 'user' | 'assistant',
+                content: m.content,
+                html: m.html || undefined,
+              })));
+          }
+        } catch { /* first visit */ }
+        helpChatOpen = true;
+      }
+    } catch { /* silent */ }
+    finally { helpChatLoading = false; }
+  }
+
+  function closeHelpChat() {
+    helpChatOpen = false;
+    if (helpChat) {
+      helpChat.destroy();
+      helpChat = null;
+    }
+    helpSessionKey = null;
   }
 </script>
 
@@ -137,7 +450,7 @@
               <div class="text-sm font-medium mb-1">Delete {agent?.name}?</div>
               <div class="text-xs text-base-content/70 mb-3">This will permanently remove the agent, all threads, runs, and memory. This action cannot be undone.</div>
               <div class="flex items-center gap-2">
-                <button class="btn btn-error btn-sm" onclick={() => showDeleteConfirm = false}>Delete Agent</button>
+                <button class="btn btn-error btn-sm" onclick={handleDeleteAgent} disabled={deleting}>{deleting ? 'Deleting...' : 'Delete Agent'}</button>
                 <button class="btn btn-ghost btn-sm" onclick={() => showDeleteConfirm = false}>Cancel</button>
               </div>
             </div>
@@ -148,16 +461,22 @@
       {/if}
 
     {:else if section === 'identity'}
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Identity</div>
+        {#if identitySaved}
+          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+        {/if}
+      </div>
       {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">Managed by <span class="font-mono">agent.json</span> — read-only.</div>
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">Managed by <span class="font-mono">AGENT.md</span> — read-only.</div>
       {/if}
       <label class="block">
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">Agent Name</span>
-        <input type="text" value={agent?.name ?? ''} disabled={!agent?.editable} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
+        <input type="text" bind:value={editName} oninput={debounceIdentitySave} disabled={!agent?.editable} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
       </label>
       <label class="block">
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">Role</span>
-        <input type="text" value={agent?.role ?? ''} disabled={!agent?.editable} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
+        <textarea bind:value={editRole} oninput={debounceIdentitySave} disabled={!agent?.editable} rows="3" class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed resize-none"></textarea>
       </label>
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">Color</div>
@@ -181,22 +500,67 @@
       </div>
 
     {:else if section === 'persona'}
-      {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">Managed by <span class="font-mono">agent.json</span> — read-only.</div>
-      {/if}
-      <label class="block">
-        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">System Prompt</span>
-        <div class="text-xs text-base-content/70 mb-1.5">From AGENT.md &mdash; defines personality, communication style, and judgment rules.</div>
-        <textarea rows="8" placeholder="Describe this agent's personality, communication style, and approach..." disabled={!agent?.editable}
-          class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-body leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed">{config.persona}</textarea>
-      </label>
-      <label class="block">
-        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">Temperature</span>
-        <div class="flex items-center gap-3">
-          <input type="range" min="0" max="1" step="0.1" value="0.7" class="flex-1" disabled={!agent?.editable} />
-          <span class="font-mono text-xs w-8 text-right">0.7</span>
+      <div class="flex items-center justify-between mb-1">
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Persona</div>
+          <div class="text-xs text-base-content/70 mt-1">The agent's operating instructions &mdash; what it does, how it works, what rules it follows.</div>
         </div>
-      </label>
+        {#if personaSaved}
+          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+        {/if}
+      </div>
+      {#if !agent?.editable}
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">Managed by <span class="font-mono">AGENT.md</span> &mdash; read-only.</div>
+      {/if}
+      <textarea rows="20"
+        bind:value={editPersona}
+        oninput={debouncePersonaSave}
+        disabled={!agent?.editable}
+        placeholder={"You are a helpful assistant that specializes in...\n\n## Rules\n- Always confirm before taking consequential actions\n- Be concise but thorough when needed\n\n## Capabilities\n- Research and analysis\n- Document drafting\n- Task automation"}
+        class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+      ></textarea>
+
+    {:else if section === 'soul'}
+      <div class="flex items-center justify-between mb-1">
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Soul</div>
+          <div class="text-xs text-base-content/70 mt-1">Who this agent IS &mdash; voice, tone, personality, values, and boundaries. Not what it does, but how it speaks and who it is.</div>
+        </div>
+        {#if soulSaved}
+          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+        {/if}
+      </div>
+      {#if !agent?.editable}
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">Managed externally &mdash; read-only.</div>
+      {/if}
+      <textarea rows="20"
+        bind:value={editSoul}
+        oninput={debounceSoulSave}
+        disabled={!agent?.editable}
+        placeholder={"# Core Truths\n- Be genuinely helpful, not performatively helpful\n- Have opinions and share them when relevant\n- Be resourceful before asking for help\n- Earn trust through competence\n\n# Vibe\n- Conversational and warm, not corporate\n- Direct and honest — skip filler words\n- Concise when needed, thorough when it matters\n\n# Boundaries\n- Private things stay private. Period.\n- When in doubt, ask before acting externally\n- Never send half-baked replies\n\n# Personality\n- Curious and engaged\n- Patient with complex problems\n- Lighthearted when appropriate\n- Not a sycophant — be genuine"}
+        class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+      ></textarea>
+
+    {:else if section === 'rules'}
+      <div class="flex items-center justify-between mb-1">
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Rules</div>
+          <div class="text-xs text-base-content/70 mt-1">Behavior constraints and guardrails &mdash; what this agent must or must not do.</div>
+        </div>
+        {#if rulesSaved}
+          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+        {/if}
+      </div>
+      {#if !agent?.editable}
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">Managed externally &mdash; read-only.</div>
+      {/if}
+      <textarea rows="20"
+        bind:value={editRules}
+        oninput={debounceRulesSave}
+        disabled={!agent?.editable}
+        placeholder={"# Rules\n- Always confirm before taking destructive actions\n- Never send emails without explicit approval\n- Keep responses concise unless asked for detail\n- Escalate to owner if uncertain about a request\n\n# Boundaries\n- Do not access files outside the project directory\n- Do not make purchases or financial commitments\n- Do not share sensitive information externally"}
+        class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+      ></textarea>
 
     {:else if section === 'configure'}
       <div class="text-sm mb-1">Configuration from <span class="font-mono">agent.json</span>. These inputs customize how {agent?.name} operates.</div>
@@ -281,7 +645,7 @@
             <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
               <div class="flex items-start gap-3 p-3.5">
                 <div class="w-[22px] h-[22px] rounded flex items-center justify-center text-sm shrink-0 mt-0.5 {wf.isActive !== false ? 'bg-primary/10 text-primary' : 'bg-base-200 text-base-content/40'}">
-                  {#if wf.trigger?.type === 'schedule'}&#8635;{:else if wf.trigger?.type === 'event'}&#9889;{:else}&#9654;{/if}
+                  {#if wf.trigger?.type === 'schedule'}&#8635;{:else if wf.trigger?.type === 'event'}&#9889;{:else if wf.trigger?.type === 'watch'}&#128065;{:else if wf.trigger?.type === 'heartbeat'}&#10084;{:else}&#9654;{/if}
                 </div>
 
                 <button class="flex-1 min-w-0 text-left cursor-pointer bg-transparent border-none p-0" onclick={() => ctx.openWorkflow(name, wf)}>
@@ -330,30 +694,114 @@
       {/each}
       <a href="/marketplace/skills" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-1">+ Add from Marketplace &#8594;</a>
 
-    {:else if section === 'memory'}
-      <label class="block">
-        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">Permanent Memory</span>
-        <textarea rows="4" placeholder="Standing instructions and preferences..."
-          class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-body leading-relaxed"></textarea>
-        <span class="block text-xs text-base-content/70 mt-1">Persists across all threads. Thread memory is scoped to each conversation.</span>
-      </label>
-      <div class="border-t border-base-300 pt-4">
-        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">Memory Banks</div>
-        <div class="flex flex-col gap-1.5">
-          <div class="flex items-center justify-between py-1.5 px-3 rounded-lg border border-base-300 bg-base-100 text-sm">
-            <span>Preferences</span>
-            <span class="font-mono">24 entries</span>
-          </div>
-          <div class="flex items-center justify-between py-1.5 px-3 rounded-lg border border-base-300 bg-base-100 text-sm">
-            <span>Entities</span>
-            <span class="font-mono">12 entries</span>
-          </div>
-          <div class="flex items-center justify-between py-1.5 px-3 rounded-lg border border-base-300 bg-base-100 text-sm">
-            <span>Daily</span>
-            <span class="font-mono">3 entries</span>
-          </div>
+    {:else if section === 'channels'}
+      <div class="text-xs text-base-content/70 mb-2">Connect {agent?.name} to external messaging platforms. Install channel plugins from the Marketplace, then enable them here.</div>
+      {#if channelsLoading}
+        <div class="text-xs text-base-content/50 py-6 text-center">Loading channels...</div>
+      {:else if channelList.length === 0}
+        <div class="py-8 text-center">
+          <div class="text-sm text-base-content/50 mb-2">No channel plugins installed</div>
+          <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">Browse Marketplace &#8594;</a>
         </div>
-      </div>
+      {:else}
+        <div class="flex flex-col gap-2">
+          {#each channelList as ch}
+            <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg border border-base-300 bg-base-100">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-medium">{ch.name}</span>
+                  {#if ch.needsAuth && !ch.authenticated}
+                    <span class="text-xs text-warning font-medium">Setup required</span>
+                  {/if}
+                </div>
+                {#if ch.description}
+                  <div class="text-xs text-base-content/70 mt-0.5">{ch.description}</div>
+                {/if}
+              </div>
+              {#if ch.needsAuth && !ch.authenticated}
+                <button
+                  class="btn btn-sm btn-outline btn-primary"
+                  onclick={() => openAuthModal(ch)}
+                >Connect</button>
+              {:else}
+                <div class="flex items-center gap-2">
+                  {#if ch.needsAuth}
+                    <button
+                      class="btn btn-xs btn-ghost text-base-content/50"
+                      title="Update credentials"
+                      onclick={() => openAuthModal(ch)}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M11.013 2.513a1.75 1.75 0 0 1 2.475 2.474L6.226 12.25a2.751 2.751 0 0 1-.892.596l-2.047.848a.75.75 0 0 1-.98-.98l.848-2.047a2.75 2.75 0 0 1 .596-.892l7.262-7.262Z" clip-rule="evenodd" /></svg>
+                    </button>
+                  {/if}
+                  <input
+                    type="checkbox"
+                    class="toggle toggle-sm toggle-primary shrink-0"
+                    checked={ch.enabled}
+                    disabled={channelTogglingSlug === ch.pluginSlug}
+                    role="switch"
+                    aria-checked={ch.enabled}
+                    onchange={() => toggleChannel(ch.pluginSlug, ch.enabled)}
+                  />
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+        <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-2">+ Add from Marketplace &#8594;</a>
+      {/if}
+
+    {:else if section === 'memory'}
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Memory Banks</div>
+      <div class="text-xs text-base-content/70 mb-3">Browse and manage memories across all layers.</div>
+      {#if memoryLoading}
+        <div class="text-xs text-base-content/50 py-6 text-center">Loading memory stats...</div>
+      {:else if memoryStats}
+        <div class="text-xs text-base-content/50 mb-3 font-mono">{memoryStats.totalCount} total memories</div>
+        <div class="flex flex-col gap-1.5">
+          {#each Object.entries(memoryStats.layerCounts) as [layer, count]}
+            <div>
+              <button
+                class="w-full flex items-center justify-between py-2 px-3 rounded-lg border border-base-300 bg-base-100 text-sm cursor-pointer hover:bg-base-200/50 transition-colors"
+                onclick={() => toggleBank(layer)}
+              >
+                <span class="flex items-center gap-1.5">
+                  <ChevronRight class="w-3.5 h-3.5 text-base-content/50 transition-transform {expandedBank === layer ? 'rotate-90' : ''}" />
+                  <span class="font-medium">{layer}</span>
+                </span>
+                <span class="text-xs text-base-content/50 font-mono">{count}</span>
+              </button>
+              {#if expandedBank === layer}
+                <div class="ml-3 mt-1 border-l-2 border-base-300 pl-3">
+                  {#if bankLoading}
+                    <div class="text-xs text-base-content/50 py-3">Loading...</div>
+                  {:else if bankEntries.length === 0}
+                    <div class="text-xs text-base-content/50 py-3">No entries.</div>
+                  {:else}
+                    <div class="flex flex-col gap-0.5">
+                      {#each bankEntries as entry}
+                        <div class="flex items-start gap-2 py-1.5 px-2 rounded border border-transparent hover:border-base-300 hover:bg-base-200/50 group">
+                          <div class="flex-1 min-w-0">
+                            <div class="text-xs font-mono font-medium truncate">{entry.key}</div>
+                            <div class="text-xs text-base-content/70 line-clamp-2 mt-0.5">{entry.value}</div>
+                          </div>
+                          <button
+                            class="opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer bg-transparent border-none shrink-0 mt-0.5 p-0.5"
+                            onclick={() => deleteMemoryEntry(entry.id)}
+                            title="Delete memory"
+                          ><Trash2 class="w-3 h-3 text-error" /></button>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <div class="text-xs text-base-content/50 py-6 text-center">No memories found.</div>
+      {/if}
 
     {:else if section === 'permissions'}
       <div class="text-xs text-base-content/70 mb-2">Control what {agent?.name} can access and execute.</div>
@@ -379,3 +827,103 @@
 
   </div>
 </div>
+
+<!-- Channel Auth Modal -->
+{#if channelAuthModal}
+  {@const ch = channelAuthModal}
+  {@const busy = channelAuthSaving || channelConnectingSlug === ch.pluginSlug}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus a11y_no_noninteractive_tabindex -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape' && !helpChatOpen) closeAuthModal(); }} role="dialog" aria-modal="true">
+    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl mx-4 flex overflow-hidden transition-all duration-300 ease-out {helpChatOpen ? 'w-[80vw] h-[80vh]' : 'w-full max-w-md'}">
+      <!-- Left: Setup form -->
+      <div class="flex flex-col min-h-0 overflow-hidden {helpChatOpen ? 'w-1/2 border-r border-base-content/10' : 'w-full'}">
+        <div class="flex items-center justify-between p-5 border-b border-base-content/10">
+          <div class="min-w-0">
+            <div class="text-base font-semibold">Connect {ch.name}</div>
+            {#if ch.authLabel}
+              <div class="text-xs text-base-content/50 mt-0.5">{ch.authLabel}</div>
+            {/if}
+          </div>
+          <button class="btn btn-ghost btn-sm btn-square" onclick={closeAuthModal} aria-label="Close" disabled={busy}>
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+
+        <div class="p-5 space-y-4 overflow-y-auto flex-1">
+          {#if ch.authHelp?.text}
+            <div class="rounded-lg bg-base-200/50 border border-base-300 p-3">
+              <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Setup Guide</div>
+              {#each ch.authHelp.text.split('\n').filter(Boolean) as line}
+                <div class="text-xs text-base-content/70 leading-relaxed">{line}</div>
+              {/each}
+              {#if ch.authHelp.url}
+                <a href={ch.authHelp.url} target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-primary font-medium mt-2 hover:underline">{ch.authHelp.urlLabel ?? ch.authHelp.url} &#8599;</a>
+              {/if}
+            </div>
+          {:else if ch.authHelp?.url}
+            <a href={ch.authHelp.url} target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-primary font-medium hover:underline">{ch.authHelp.urlLabel ?? 'Setup documentation'} &#8599;</a>
+          {/if}
+
+          {#each ch.authEnvKeys as envKey}
+            <label class="flex flex-col gap-1.5">
+              <span class="text-xs font-mono text-base-content/50">{envKey}</span>
+              <input
+                type="password"
+                class="input input-sm input-bordered w-full font-mono text-xs"
+                placeholder="Paste token here..."
+                value={channelAuthInputs[envKey] ?? ''}
+                disabled={busy}
+                oninput={(e) => { channelAuthInputs[envKey] = (e.target as HTMLInputElement).value; }}
+              />
+            </label>
+          {/each}
+
+          {#if channelAuthError}
+            <div class="text-xs text-error">{channelAuthError}</div>
+          {/if}
+        </div>
+
+        <div class="flex items-center gap-2 p-5 border-t border-base-content/10">
+          {#if !helpChatOpen}
+            <button
+              class="btn btn-sm btn-ghost text-primary"
+              onclick={() => openHelpChat(ch.pluginSlug)}
+              disabled={helpChatLoading}
+            >{helpChatLoading ? 'Loading...' : 'Need help?'}</button>
+          {/if}
+          <div class="flex-1"></div>
+          <button class="btn btn-sm btn-ghost" onclick={closeAuthModal} disabled={busy}>Cancel</button>
+          <button
+            class="btn btn-sm btn-primary"
+            disabled={busy || !ch.authEnvKeys.some(k => channelAuthInputs[k]?.trim())}
+            onclick={() => submitAuthForm(ch.pluginSlug)}
+          >{busy ? 'Saving...' : 'Save Credentials'}</button>
+        </div>
+      </div>
+
+      <!-- Right: Help chat (shown when help is open) -->
+      {#if helpChatOpen && helpChat}
+        <div class="w-1/2 flex flex-col min-h-0 overflow-hidden">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-base-content/10 shrink-0">
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{ch.name} Help</div>
+            <button class="btn btn-ghost btn-xs btn-square" onclick={closeHelpChat} aria-label="Close help">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+          <div class="flex-1 flex flex-col min-h-0">
+            <ChatPane
+              messages={helpChat.messages}
+              agentName="{ch.name} Help"
+              agentId={agentId}
+              sessionId={helpSessionKey ?? ''}
+              placeholder="Ask about {ch.name} setup..."
+              onsend={(text) => helpChat?.send(text)}
+              onstop={() => helpChat?.stop()}
+              isLoading={helpChat.isLoading}
+            />
+          </div>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}

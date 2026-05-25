@@ -125,6 +125,16 @@ pub trait DynTool: Send + Sync {
     fn resource_permit(&self, _input: &serde_json::Value) -> Option<ResourceKind> {
         None
     }
+    /// Whether this tool call is safe to run concurrently with other tools.
+    ///
+    /// Read-only operations (file read, web search, skill catalog) return `true`
+    /// and can run in parallel. Write operations (file write, shell exec, plugin exec)
+    /// return `false` and are executed serially after all concurrent tools finish.
+    ///
+    /// Default: `false` (assume writes). Override for read-only operations.
+    fn is_concurrent_safe(&self, _input: &serde_json::Value) -> bool {
+        false
+    }
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
@@ -137,6 +147,8 @@ pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Box<dyn DynTool>>>>,
     /// Tools marked as deferred — not sent to LLM until keyword-activated or first called.
     deferred: Arc<RwLock<HashSet<String>>>,
+    /// Maps agent_id → set of tool names owned by that agent's sidecar.
+    agent_tools: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     policy: Arc<RwLock<Policy>>,
     process_registry: Arc<ProcessRegistry>,
     bridge: std::sync::RwLock<Option<Arc<mcp::Bridge>>>,
@@ -150,6 +162,7 @@ impl Registry {
         Self {
             tools: Arc::new(RwLock::new(HashMap::new())),
             deferred: Arc::new(RwLock::new(HashSet::new())),
+            agent_tools: Arc::new(RwLock::new(HashMap::new())),
             policy: Arc::new(RwLock::new(policy)),
             process_registry: Arc::new(ProcessRegistry::new()),
             bridge: std::sync::RwLock::new(None),
@@ -193,12 +206,49 @@ impl Registry {
         debug!(tool = %name, "registered as deferred");
     }
 
+    /// Register a tool as belonging to an agent's sidecar.
+    pub async fn register_for_agent(&self, agent_id: &str, tool: Box<dyn DynTool>) {
+        let name = tool.name().to_string();
+        self.register(tool).await;
+        self.agent_tools
+            .write()
+            .await
+            .entry(agent_id.to_string())
+            .or_default()
+            .insert(name);
+    }
+
+    /// Get the set of tool names owned by an agent's sidecar.
+    pub async fn agent_tool_names(&self, agent_id: &str) -> HashSet<String> {
+        self.agent_tools
+            .read()
+            .await
+            .get(agent_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Unregister a tool by name.
     pub async fn unregister(&self, name: &str) {
         let mut tools = self.tools.write().await;
         if tools.remove(name).is_some() {
             self.deferred.write().await.remove(name);
             debug!(tool = %name, "unregistered tool");
+        }
+    }
+
+    /// Unregister all tools belonging to an agent's sidecar.
+    pub async fn unregister_agent_tools(&self, agent_id: &str) {
+        let names = {
+            let mut at = self.agent_tools.write().await;
+            at.remove(agent_id).unwrap_or_default()
+        };
+        if !names.is_empty() {
+            let mut tools = self.tools.write().await;
+            for name in &names {
+                tools.remove(name);
+            }
+            debug!(agent = %agent_id, tools = ?names, "unregistered agent sidecar tools");
         }
     }
 
@@ -271,6 +321,18 @@ impl Registry {
     pub async fn get_tool_description(&self, name: &str) -> Option<String> {
         let tools = self.tools.read().await;
         tools.get(name).map(|t| t.description())
+    }
+
+    /// Check whether a tool call is safe to run concurrently with other tools.
+    ///
+    /// Returns `true` for read-only operations, `false` for writes/mutations.
+    /// Returns `false` for unknown tools (conservative default).
+    pub async fn is_concurrent_safe(&self, tool_name: &str, input: &serde_json::Value) -> bool {
+        let tools = self.tools.read().await;
+        tools
+            .get(tool_name)
+            .or_else(|| tools.get(strip_mcp_prefix(tool_name)))
+            .map_or(false, |tool| tool.is_concurrent_safe(input))
     }
 
     /// List tools filtered by per-entity permissions.
@@ -516,7 +578,9 @@ impl Registry {
             }
         };
 
-        // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — always registered
+        // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — deferred
+        // Activated by keyword matching (file, read, write, shell, run, etc.)
+        // Saves ~8-10K tokens on requests that don't involve OS operations.
         let policy = self.policy.read().await.clone();
         let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone())
             .with_store(store.clone());
@@ -524,7 +588,7 @@ impl Registry {
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
         }
-        self.register(Box::new(os_tool)).await;
+        self.register_deferred(Box::new(os_tool)).await;
 
         // Web tool (HTTP fetch + search + browser) — requires "web" permission
         if allowed("web") {
@@ -539,7 +603,7 @@ impl Registry {
         }
 
         // Agent tool (memory, tasks, sessions, context, advisors, ask, runs) — always registered (core)
-        let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator);
+        let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator.clone());
         let runner_for_events = advisor_runner.clone();
         if let Some(runner) = advisor_runner {
             agent_tool = agent_tool.with_advisor_runner(runner);
@@ -620,6 +684,7 @@ impl Registry {
                 store.clone(),
                 agent_reg,
                 agent_loader,
+                orchestrator.clone(),
             )))
             .await;
             self.register_deferred(Box::new(crate::publisher_tool::PublisherTool::new(
@@ -639,6 +704,11 @@ impl Registry {
                 self.register_deferred(Box::new(pt)).await;
             }
         }
+
+        // VM tool (isolated Linux environment for builds/toolchains) — deferred
+        // Activated when agent needs Go, gcc, Docker, or clean build env
+        self.register_deferred(Box::new(crate::vm_tool::VmTool::new()))
+            .await;
 
         // Loop tool (NeboLoop comms: dm, channel, group, topic) — requires "loop" permission + comm plugin
         if allowed("loop") {

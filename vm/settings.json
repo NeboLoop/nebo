@@ -1,0 +1,28 @@
+{
+  "network": {
+    "allowedDomains": [
+      "registry.npmjs.org",
+      "npmjs.com",
+      "yarnpkg.com",
+      "registry.yarnpkg.com",
+      "pypi.org",
+      "files.pythonhosted.org",
+      "github.com",
+      "api.anthropic.com",
+      "anthropic.com",
+      "crates.io",
+      "index.crates.io",
+      "static.crates.io",
+      "neboloop.com",
+      "api.neboloop.com"
+    ],
+    "deniedDomains": [],
+    "allowLocalBinding": true,
+    "allowAllUnixSockets": false
+  },
+  "filesystem": {
+    "denyRead": [],
+    "allowWrite": ["/sessions", "/tmp"],
+    "denyWrite": ["/usr", "/bin", "/sbin", "/etc"]
+  }
+}

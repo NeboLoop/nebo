@@ -41,6 +41,59 @@ pub struct AgentRequires {
     pub plugins: Vec<String>,
 }
 
+/// A sidecar tool definition declared in agent.json.
+///
+/// Each entry becomes a native tool registered for this agent. The LLM sees
+/// `list_projects(...)` directly — calls are routed to the sidecar HTTP
+/// endpoint specified by `method` + `path`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentToolDef {
+    /// Action name the LLM will use (e.g. "list_projects").
+    pub name: String,
+    /// Human-readable description.
+    pub description: String,
+    /// HTTP method for the sidecar endpoint (GET, POST, PUT, DELETE).
+    pub method: String,
+    /// Sidecar-relative path, optionally with `{param}` placeholders.
+    pub path: String,
+    /// JSON Schema for input parameters (path params, query, body).
+    #[serde(default)]
+    pub input_schema: Option<serde_json::Value>,
+}
+
+/// Named scope restricting which sidecar tools, skills, and plugins are
+/// active when an embed chat is mounted with this scope name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolScope {
+    /// Sidecar tool names active in this scope.
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// Skill refs to load (subset of top-level skills array).
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// Additional plugin slugs to pre-activate for this scope.
+    #[serde(default)]
+    pub plugins: Vec<String>,
+}
+
+/// Memory scoping configuration for an agent.
+///
+/// Controls how memories are isolated and inherited across the 3-tier hierarchy:
+/// - Layer 1 (User):   `user_id = "user123"` — main Nebo companion
+/// - Layer 2 (Agent):  `user_id = "user123:agent:brief"` — agent-wide
+/// - Layer 3 (Context): `user_id = "user123:agent:brief:ctx:doc-123"` — per-context
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    /// When true, agent can READ the user's main memories (read-only inheritance).
+    /// Only `tacit/preferences` memories are inherited — never writes to user scope.
+    #[serde(default)]
+    pub inherit_user: bool,
+    /// When true, memories are isolated per contextId (from SDK embed sessions).
+    /// Context comes from the session key's 4th segment: `agent:{id}:{channel}:{ctx}`.
+    #[serde(default)]
+    pub context_isolated: bool,
+}
+
 /// Agent configuration parsed from agent.json.
 ///
 /// Contains the "schedule of intent" — which workflows run, when they fire,
@@ -61,6 +114,19 @@ pub struct AgentConfig {
     /// User-supplied values are stored and injected into workflow execution.
     #[serde(default)]
     pub inputs: Vec<AgentInputField>,
+    /// Sidecar tool definitions. Each entry becomes a native tool routed to
+    /// the sidecar HTTP endpoint. Follows the same filesystem-based pattern
+    /// as skills and plugins — no HTTP discovery needed.
+    #[serde(default)]
+    pub tools: Vec<AgentToolDef>,
+    /// Named tool scopes for SDK-driven filtering. Each scope maps to a subset
+    /// of sidecar tools, skills, and plugins that are active when the embed
+    /// chat is mounted with `scope: "<name>"`.
+    #[serde(default)]
+    pub scopes: HashMap<String, ToolScope>,
+    /// Memory scoping configuration (inheritance + context isolation).
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 /// A single input field the agent needs from the user.
@@ -376,6 +442,25 @@ pub enum AgentTrigger {
         #[serde(default = "default_restart_delay")]
         restart_delay_secs: u64,
     },
+    /// Built-in folder watcher — uses OS filesystem notifications (notify crate)
+    /// to detect new/changed files in a directory. No plugin binary needed.
+    /// Each change batch triggers a workflow run with the affected file paths
+    /// in `_watch_payload.files`.
+    #[serde(rename = "folder")]
+    Folder {
+        /// Absolute path to watch (supports `{{key}}` template substitution).
+        path: String,
+        /// File extensions to match (e.g. ["pdf", "docx"]). Empty = all files.
+        #[serde(default)]
+        extensions: Vec<String>,
+        /// Watch subdirectories recursively (default: true).
+        #[serde(default = "default_true")]
+        recursive: bool,
+        /// Debounce window in seconds — aggregate rapid events into a single
+        /// workflow trigger (default: 2).
+        #[serde(default = "default_debounce_secs")]
+        debounce_secs: u64,
+    },
     /// Explicit user trigger.
     #[serde(rename = "manual")]
     Manual,
@@ -383,6 +468,14 @@ pub enum AgentTrigger {
 
 fn default_restart_delay() -> u64 {
     5
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_debounce_secs() -> u64 {
+    2
 }
 
 /// Pricing configuration for an agent.
@@ -845,6 +938,94 @@ mod tests {
         assert!(config.workflows.is_empty());
         assert!(config.skills.is_empty());
         assert!(config.pricing.is_none());
+        assert!(config.scopes.is_empty());
+        // Memory config defaults
+        assert!(!config.memory.inherit_user);
+        assert!(!config.memory.context_isolated);
+    }
+
+    #[test]
+    fn test_memory_config_parsing() {
+        let json = r#"{"memory": {"inherit_user": true, "context_isolated": true}}"#;
+        let config = parse_agent_config(json).unwrap();
+        assert!(config.memory.inherit_user);
+        assert!(config.memory.context_isolated);
+    }
+
+    #[test]
+    fn test_memory_config_defaults() {
+        let json = r#"{"memory": {}}"#;
+        let config = parse_agent_config(json).unwrap();
+        assert!(!config.memory.inherit_user);
+        assert!(!config.memory.context_isolated);
+    }
+
+
+    #[test]
+    fn test_tools_parsing() {
+        let json = r#"{
+            "tools": [
+                {
+                    "name": "list_projects",
+                    "description": "List all projects",
+                    "method": "GET",
+                    "path": "/projects"
+                },
+                {
+                    "name": "get_document",
+                    "description": "Get a document by ID",
+                    "method": "GET",
+                    "path": "/documents/{id}",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string" }
+                        },
+                        "required": ["id"]
+                    }
+                }
+            ]
+        }"#;
+        let config = parse_agent_config(json).unwrap();
+        assert_eq!(config.tools.len(), 2);
+        assert_eq!(config.tools[0].name, "list_projects");
+        assert_eq!(config.tools[0].method, "GET");
+        assert!(config.tools[0].input_schema.is_none());
+        assert_eq!(config.tools[1].name, "get_document");
+        assert!(config.tools[1].input_schema.is_some());
+    }
+
+    #[test]
+    fn test_tools_default_empty() {
+        let json = "{}";
+        let config = parse_agent_config(json).unwrap();
+        assert!(config.tools.is_empty());
+    }
+
+    #[test]
+    fn test_scopes_parsing() {
+        let json = r#"{
+            "scopes": {
+                "editor": {
+                    "tools": ["get_document", "update_document"],
+                    "skills": ["skills/document-editing"],
+                    "plugins": ["gws"]
+                },
+                "projects": {
+                    "tools": ["list_projects"]
+                }
+            }
+        }"#;
+        let config = parse_agent_config(json).unwrap();
+        assert_eq!(config.scopes.len(), 2);
+        let editor = &config.scopes["editor"];
+        assert_eq!(editor.tools, vec!["get_document", "update_document"]);
+        assert_eq!(editor.skills, vec!["skills/document-editing"]);
+        assert_eq!(editor.plugins, vec!["gws"]);
+        let projects = &config.scopes["projects"];
+        assert_eq!(projects.tools, vec!["list_projects"]);
+        assert!(projects.skills.is_empty());
+        assert!(projects.plugins.is_empty());
     }
 
     #[test]

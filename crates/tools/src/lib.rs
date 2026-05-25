@@ -35,11 +35,12 @@ pub mod safeguard;
 pub mod sandbox_policy;
 pub mod settings_tool;
 pub mod shell_tool;
+pub mod sidecar_tool;
 pub mod skill_tool;
 pub mod skills;
 pub mod spotlight_tool;
-pub mod system_tool;
 pub mod tool_search;
+pub mod vm_tool;
 pub mod web_tool;
 pub mod workflows;
 
@@ -76,14 +77,13 @@ pub use music_tool::MusicTool;
 pub use orchestrator::{
     OrchestratorHandle, SpawnRequest, SpawnResult, SubAgentOrchestrator, new_handle,
 };
-pub use origin::{AskChannels, Origin, ToolContext};
+pub use origin::{AskChannels, ChannelContext, Origin, ToolContext};
 pub use os_tool::OsTool;
 pub use policy::{AskMode, Policy, PolicyLevel};
 pub use process::ProcessRegistry;
 pub use registry::{Registry, ResourceKind, ToolResult};
 pub use shell_tool::ShellTool;
 pub use skill_tool::SkillTool;
-pub use system_tool::SystemTool;
 pub use tool_search::ToolSearchTool;
 pub use web_tool::WebTool;
 pub use workflows::{WorkTool, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
@@ -370,6 +370,8 @@ pub async fn persist_agent_from_api(
             &description,
             &manifest_text,
             &frontmatter_str,
+            None,
+            None,
             None,
             None,
         );

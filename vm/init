@@ -1,0 +1,69 @@
+#!/bin/sh
+# Nebo VM init — boots the guest daemon from the smol-bin image.
+#
+# The rootfs is the base Alpine filesystem with runtimes.
+# The guest daemon lives on a separate small image (smol-bin)
+# so it can be updated without rebuilding the entire rootfs.
+#
+# Boot sequence:
+#   1. Mount essential filesystems
+#   2. Mount the smol-bin image (second virtio disk)
+#   3. Load settings from smol-bin
+#   4. Exec the guest daemon
+
+set -e
+
+# Mount essential filesystems
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mount -t tmpfs tmpfs /tmp
+mount -t tmpfs tmpfs /run
+
+# Wait for the smol-bin device to appear (up to 5 seconds)
+SMOL_DEV=""
+for dev in /dev/vdb /dev/sdb /dev/xvdb; do
+    if [ -b "$dev" ]; then
+        SMOL_DEV="$dev"
+        break
+    fi
+done
+
+if [ -z "$SMOL_DEV" ]; then
+    echo "[init] waiting for smol-bin device..."
+    for i in $(seq 1 50); do
+        for dev in /dev/vdb /dev/sdb /dev/xvdb; do
+            if [ -b "$dev" ]; then
+                SMOL_DEV="$dev"
+                break 2
+            fi
+        done
+        sleep 0.1
+    done
+fi
+
+if [ -z "$SMOL_DEV" ]; then
+    echo "[init] ERROR: smol-bin device not found, cannot start guest daemon"
+    echo "[init] Available block devices:"
+    ls -la /dev/vd* /dev/sd* /dev/xvd* 2>/dev/null || echo "  (none)"
+    exec /bin/sh  # drop to shell for debugging
+fi
+
+echo "[init] mounting smol-bin from $SMOL_DEV"
+mount -o ro "$SMOL_DEV" /mnt/smol-bin
+
+# Load settings if present
+if [ -f /mnt/smol-bin/settings.json ]; then
+    export NEBO_GUEST_SETTINGS=/mnt/smol-bin/settings.json
+    echo "[init] loaded settings from smol-bin"
+fi
+
+# Verify the guest daemon exists
+if [ ! -x /mnt/smol-bin/nebo-vm-daemon ]; then
+    echo "[init] ERROR: /mnt/smol-bin/nebo-vm-daemon not found or not executable"
+    ls -la /mnt/smol-bin/ 2>/dev/null
+    exec /bin/sh
+fi
+
+echo "[init] starting nebo-vm-daemon daemon"
+exec /mnt/smol-bin/nebo-vm-daemon

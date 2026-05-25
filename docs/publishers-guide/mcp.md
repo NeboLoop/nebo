@@ -130,7 +130,7 @@ NEBO_ALLOW_REMOTE=true NEBO_MCP_API_KEY=my-secret-key nebo serve --host 0.0.0.0
 | Remote, no API key | Blocked | Server refuses to start |
 | Remote, API key set | Yes | Full protection |
 
-MCP tool calls are auto-approved (no interactive prompts). The MCP context uses `Origin::Mcp` for audit trail, with the same tool access as a direct user.
+MCP tool calls are auto-approved (no interactive prompts). The MCP context currently uses `Origin::User` for tool access, with the same permissions as a direct user.
 
 ---
 

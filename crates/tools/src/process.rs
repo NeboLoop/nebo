@@ -346,49 +346,8 @@ pub fn hide_window_std(_cmd: &mut std::process::Command) {
     // No-op on Unix
 }
 
-/// Environment variables that can be exploited for code injection.
-const DANGEROUS_ENV_VARS: &[&str] = &[
-    "LD_PRELOAD",
-    "LD_LIBRARY_PATH",
-    "LD_AUDIT",
-    "DYLD_INSERT_LIBRARIES",
-    "DYLD_LIBRARY_PATH",
-    "DYLD_FRAMEWORK_PATH",
-    "IFS",
-    "CDPATH",
-    "BASH_ENV",
-    "ENV",
-    "PROMPT_COMMAND",
-    "SHELLOPTS",
-    "BASHOPTS",
-    "GLOBIGNORE",
-    "PYTHONSTARTUP",
-    "PYTHONPATH",
-    "RUBYOPT",
-    "RUBYLIB",
-    "PERL5OPT",
-    "PERL5LIB",
-    "PERL5DB",
-    "NODE_OPTIONS",
-];
-
 /// Return a sanitized copy of the environment.
+/// Delegates to `napp::plugin_runtime::sanitized_env` — the canonical implementation.
 pub fn sanitized_env() -> Vec<(String, String)> {
-    let dangerous: std::collections::HashSet<&str> = DANGEROUS_ENV_VARS.iter().copied().collect();
-
-    std::env::vars()
-        .filter(|(k, _)| {
-            let upper = k.to_uppercase();
-            if dangerous.contains(upper.as_str()) {
-                return false;
-            }
-            if upper.starts_with("BASH_FUNC_")
-                || upper.starts_with("LD_")
-                || upper.starts_with("DYLD_")
-            {
-                return false;
-            }
-            true
-        })
-        .collect()
+    napp::plugin_runtime::sanitized_env()
 }

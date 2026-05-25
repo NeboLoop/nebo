@@ -38,7 +38,7 @@
         <div class="text-xs text-base-content/50">{agent.role}</div>
       </div>
       <span class="px-2 py-0.5 rounded text-sm font-medium {agent.status === 'online' ? 'bg-success/10 text-success' : agent.status === 'running' ? 'bg-info/10 text-info' : 'bg-base-200 text-base-content/60'}">{agent.status}</span>
-      <button class="px-3 py-1 rounded-md border border-base-content/10 text-sm cursor-pointer bg-transparent hover:bg-base-200 transition-colors">Configure</button>
+      <a href="/{agent.id}/settings" class="px-3 py-1 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors no-underline">Configure</a>
     </div>
   {/each}
 </div>

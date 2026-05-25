@@ -419,6 +419,21 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Return all distinct user_id values that have memories, with their counts.
+    pub fn get_distinct_memory_user_ids(&self) -> Result<Vec<(String, i64)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT user_id, COUNT(*) as cnt FROM memories GROUP BY user_id ORDER BY cnt DESC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Check FTS5 health and rebuild if broken. Call at startup.
     pub fn ensure_fts_healthy(&self) -> Result<(), NeboError> {
         let conn = self.conn()?;

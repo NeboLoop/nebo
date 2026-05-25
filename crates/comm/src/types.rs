@@ -97,6 +97,9 @@ pub struct CommMessage {
     pub artifacts: Vec<TaskArtifact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// File/image/video attachments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::wire::Attachment>,
 }
 
 /// Skill for A2A Agent Card discovery.
@@ -166,6 +169,9 @@ pub struct ChannelMessageItem {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// File/image/video attachments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::wire::Attachment>,
 }
 
 /// Channel member item.

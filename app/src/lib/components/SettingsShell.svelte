@@ -5,10 +5,6 @@
   import Cloud from 'lucide-svelte/icons/cloud';
   import User from 'lucide-svelte/icons/user';
   import CreditCard from 'lucide-svelte/icons/credit-card';
-  import Fingerprint from 'lucide-svelte/icons/fingerprint';
-  import Sparkles from 'lucide-svelte/icons/sparkles';
-  import ScrollText from 'lucide-svelte/icons/scroll-text';
-  import MessagesSquare from 'lucide-svelte/icons/messages-square';
   import Bot from 'lucide-svelte/icons/bot';
   import Zap from 'lucide-svelte/icons/zap';
   import Puzzle from 'lucide-svelte/icons/puzzle';
@@ -24,22 +20,30 @@
   import Activity from 'lucide-svelte/icons/activity';
   import Info from 'lucide-svelte/icons/info';
   import X from 'lucide-svelte/icons/x';
-  import type { Component } from 'svelte';
+  import type { SvelteComponent } from 'svelte';
+
+  import { onMount } from 'svelte';
 
   let { children } = $props();
 
-  interface NavItem { id: string; path: string; label: string; icon: Component; devOnly?: boolean }
+  let appVersion = $state('');
+
+  onMount(async () => {
+    try {
+      const resp = await fetch('/health');
+      const data = await resp.json();
+      if (data?.version) appVersion = data.version;
+    } catch { /* keep empty */ }
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  interface NavItem { id: string; path: string; label: string; icon: typeof SvelteComponent<any>; devOnly?: boolean }
 
   const allItems: (NavItem | null)[] = [
     { id: 'account', path: '/settings/account', label: 'Account', icon: Cloud },
     { id: 'profile', path: '/settings/profile', label: 'Profile', icon: User },
     { id: 'billing', path: '/settings/billing', label: 'Billing', icon: CreditCard },
     { id: 'usage', path: '/settings/usage', label: 'Usage', icon: BarChart3 },
-    null,
-    { id: 'identity', path: '/settings/identity', label: 'Identity', icon: Fingerprint },
-    { id: 'personality', path: '/settings/personality', label: 'Personality', icon: Sparkles },
-    { id: 'rules', path: '/settings/rules', label: 'Rules', icon: ScrollText },
-    { id: 'advisors', path: '/settings/advisors', label: 'Advisors', icon: MessagesSquare },
     null,
     { id: 'agents', path: '/settings/agents', label: 'Agents', icon: Bot },
     { id: 'skills', path: '/settings/skills', label: 'Skills', icon: Zap },
@@ -101,7 +105,7 @@
     <div class="flex items-center justify-between px-6 py-4 border-b border-base-content/10 shrink-0">
       <div class="flex items-center gap-3">
         <h1 class="font-display text-lg font-bold text-base-content">Settings</h1>
-        <span class="text-xs text-base-content/50">v2.4.1</span>
+        {#if appVersion}<span class="text-xs text-base-content/50">v{appVersion}</span>{/if}
       </div>
       <button
         class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors cursor-pointer bg-transparent border-none"

@@ -58,6 +58,7 @@ impl LoopTool {
                     task_status: None,
                     artifacts: Vec::new(),
                     error: None,
+                    attachments: Vec::new(),
                 };
 
                 match self.comm.send(msg).await {
@@ -101,6 +102,7 @@ impl LoopTool {
                     task_status: None,
                     artifacts: Vec::new(),
                     error: None,
+                    attachments: Vec::new(),
                 };
 
                 match self.comm.send(msg).await {
@@ -290,10 +292,18 @@ impl DynTool for LoopTool {
                 Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
             };
 
-            let resource = if domain_input.resource.is_empty() {
-                self.infer_resource(&domain_input.action).to_string()
-            } else {
-                domain_input.resource
+            let mut input = input;
+            let resource = {
+                let corrected = crate::domain::auto_correct_resource(
+                    &domain_input,
+                    &mut input,
+                    &["dm", "channel", "group", "topic"],
+                );
+                if corrected.is_empty() {
+                    self.infer_resource(&domain_input.action).to_string()
+                } else {
+                    corrected
+                }
             };
 
             if resource.is_empty() {

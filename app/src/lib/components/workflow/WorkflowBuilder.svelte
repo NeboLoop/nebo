@@ -452,6 +452,7 @@
 				{agentId}
 				workflows={builderWorkflows}
 				selectedWorkflowName={activeWorkflowName}
+				selectedActivityId={selectedNodeId}
 				onaction={handleArchitectAction}
 			/>
 		</div>

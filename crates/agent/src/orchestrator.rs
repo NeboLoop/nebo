@@ -11,9 +11,41 @@ use tracing::{debug, info, warn};
 /// Per-worker wall-clock timeout for parallel spawns.
 const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-use ai::StreamEventType;
+use ai::{StreamEventType, ToolCall};
 use db::Store;
 use tools::{SpawnRequest, SpawnResult, SubAgentOrchestrator};
+
+/// Build a human-readable description from a tool call.
+///
+/// For STRAP tools, extracts resource/action from the input JSON so
+/// the progress heartbeat shows "persona: create" instead of just "agent".
+fn describe_tool_call(tc: &ToolCall) -> String {
+    let input = &tc.input;
+    let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Plugin tool: show slug + command prefix
+    if tc.name == "plugin" {
+        let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let cmd_prefix = command.split_whitespace().next().unwrap_or("");
+        if !resource.is_empty() && !cmd_prefix.is_empty() {
+            return format!("{}: {}", resource, cmd_prefix);
+        }
+        if !resource.is_empty() {
+            return resource.to_string();
+        }
+        return tc.name.clone();
+    }
+
+    // STRAP tools: show resource + action
+    if !resource.is_empty() && !action.is_empty() {
+        return format!("{}: {}", resource, action);
+    }
+    if !resource.is_empty() {
+        return resource.to_string();
+    }
+    tc.name.clone()
+}
 
 use crate::concurrency::ConcurrencyController;
 use crate::decompose;
@@ -115,6 +147,8 @@ impl Orchestrator {
                     cancel.clone(),
                     &format!("subagent:{}:{}", req.parent_session_key, task_id),
                     req.max_iterations,
+                    &req,
+                    req.parent_stream_tx.clone(),
                 )
                 .await;
 
@@ -152,22 +186,26 @@ impl Orchestrator {
             let user_id = req.user_id.clone();
             let max_iterations = req.max_iterations;
             let concurrency = self.concurrency.clone();
+            let parent_stream_tx = req.parent_stream_tx.clone();
+            let spawn_req = req.clone();
 
             let bg_session_key = format!("subagent:{}:{}", req.parent_session_key, task_id_clone);
 
             tokio::spawn(async move {
                 let _permit = concurrency.acquire_llm_permit().await;
 
-                let run_req = build_subagent_request(
+                let mut run_req = build_subagent_request(
                     &bg_session_key,
                     &prompt,
                     &model_override,
                     &user_id,
                     &cancel,
                     max_iterations,
+                    &spawn_req.agent_id,
                 );
+                apply_spawn_context(&mut run_req, &spawn_req);
 
-                let result = run_and_collect(&runner, run_req, cancel, None).await;
+                let result = run_and_collect(&runner, run_req, cancel, None, parent_stream_tx).await;
 
                 match result {
                     Ok(output) => {
@@ -201,6 +239,8 @@ impl Orchestrator {
         cancel: CancellationToken,
         session_key: &str,
         max_iterations: usize,
+        spawn_req: &SpawnRequest,
+        parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
     ) -> Result<String, String> {
         let _ = self.store.update_task_running(task_id);
 
@@ -210,15 +250,17 @@ impl Orchestrator {
             format!("{}\n\n{}", dep_context, prompt)
         };
 
-        let req = build_subagent_request(
+        let mut req = build_subagent_request(
             session_key,
             &full_prompt,
             model_override,
             user_id,
             &cancel,
             max_iterations,
+            &spawn_req.agent_id,
         );
-        run_and_collect(&self.runner, req, cancel, None).await
+        apply_spawn_context(&mut req, spawn_req);
+        run_and_collect(&self.runner, req, cancel, None, parent_stream_tx).await
     }
 
     /// Execute a DAG of sub-tasks with reactive scheduling.
@@ -248,6 +290,11 @@ impl Orchestrator {
                 wait: true,
                 parent_cancel: parent_cancel.clone(),
                 max_iterations: 0,
+                skills: Vec::new(),
+                plugins: Vec::new(),
+                tools: Vec::new(),
+                parent_stream_tx: None,
+                agent_id: String::new(),
             };
             return self.spawn_internal(req).await;
         }
@@ -341,9 +388,10 @@ impl Orchestrator {
                         &user_id,
                         &cancel,
                         0,
+                        "",
                     );
 
-                    let result = run_and_collect(&runner, req, cancel, None).await;
+                    let result = run_and_collect(&runner, req, cancel, None, None).await;
 
                     match &result {
                         Ok(output) => {
@@ -568,14 +616,16 @@ impl Orchestrator {
             let desc = description.clone();
             let prog_tx_clone = prog_tx.clone();
 
-            let run_req = build_subagent_request(
+            let mut run_req = build_subagent_request(
                 &session_key,
                 &prefixed_prompt,
                 &req.model_override,
                 &req.user_id,
                 &cancel,
                 req.max_iterations,
+                &req.agent_id,
             );
+            apply_spawn_context(&mut run_req, &req);
 
             running.push(Box::pin(async move {
                 let _permit = concurrency.acquire_llm_permit().await;
@@ -584,6 +634,7 @@ impl Orchestrator {
                     run_and_collect(
                         &runner, run_req, cancel.clone(),
                         Some((tid.clone(), prog_tx_clone)),
+                        None,
                     ),
                 ).await {
                     Ok(r) => r,
@@ -784,7 +835,7 @@ impl Orchestrator {
                 };
 
                 let cancel = CancellationToken::new();
-                match run_and_collect(&runner, req, cancel, None).await {
+                match run_and_collect(&runner, req, cancel, None, None).await {
                     Ok(output) => {
                         let _ = store.update_task_completed(&task_id, Some(&output));
                     }
@@ -847,12 +898,14 @@ fn build_subagent_request(
     user_id: &str,
     cancel: &CancellationToken,
     max_iterations: usize,
+    agent_id: &str,
 ) -> RunRequest {
     RunRequest {
         session_key: session_key.to_string(),
         prompt: prompt.to_string(),
         model_override: model_override.to_string(),
         user_id: user_id.to_string(),
+        agent_id: agent_id.to_string(),
         skip_memory_extract: true,
         origin: tools::Origin::System,
         channel: "subagent".to_string(),
@@ -860,6 +913,30 @@ fn build_subagent_request(
         prompt_mode: crate::prompt::PromptMode::Minimal,
         max_iterations,
         ..Default::default()
+    }
+}
+
+/// Apply SpawnRequest's skills/plugins/tools onto an already-built RunRequest.
+fn apply_spawn_context(run_req: &mut RunRequest, spawn_req: &SpawnRequest) {
+    if !spawn_req.skills.is_empty() {
+        run_req.preload_skills = spawn_req.skills.clone();
+    }
+    if !spawn_req.plugins.is_empty() {
+        run_req.preload_plugins = spawn_req.plugins.clone();
+        // Pre-activate the "plugin" tool so it's available from turn 1
+        // (it's normally deferred and discovered via tool_search).
+        if !run_req.preactivate_tools.contains(&"plugin".to_string()) {
+            run_req.preactivate_tools.push("plugin".to_string());
+        }
+    }
+    if !spawn_req.tools.is_empty() {
+        run_req.preload_tools = spawn_req.tools.clone();
+        // Pre-activate all specified tools so they pass the tool filter
+        for tool in &spawn_req.tools {
+            if !run_req.preactivate_tools.contains(tool) {
+                run_req.preactivate_tools.push(tool.clone());
+            }
+        }
     }
 }
 
@@ -879,6 +956,7 @@ async fn run_and_collect(
     req: RunRequest,
     cancel: CancellationToken,
     progress_tx: Option<(String, mpsc::Sender<SubagentProgress>)>,
+    parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
 ) -> Result<String, String> {
     let mut rx = runner
         .run(req)
@@ -888,11 +966,27 @@ async fn run_and_collect(
     let mut output = String::new();
     let mut tool_count: usize = 0;
     let mut token_count: i32 = 0;
+    let mut last_operation = String::new();
+
+    // Periodic progress timer: send a short status to the parent every 30s
+    // so the user sees activity instead of silence during long sub-agent runs.
+    let mut progress_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    progress_interval.tick().await; // skip first immediate tick
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
                 return Err("Cancelled".to_string());
+            }
+            _ = progress_interval.tick() => {
+                if let Some(ref ptx) = parent_stream_tx {
+                    let desc = if last_operation.is_empty() {
+                        "Working...".to_string()
+                    } else {
+                        format!("Working on: {}", &last_operation[..last_operation.len().min(50)])
+                    };
+                    let _ = ptx.send(ai::StreamEvent::text(format!("\n_{}_\n", desc))).await;
+                }
             }
             event = rx.recv() => {
                 match event {
@@ -900,9 +994,12 @@ async fn run_and_collect(
                         match e.event_type {
                             StreamEventType::Text => output.push_str(&e.text),
                             StreamEventType::ToolCall => {
+                                if let Some(ref tc) = e.tool_call {
+                                    last_operation = describe_tool_call(tc);
+                                }
                                 if let Some((ref tid, ref tx)) = progress_tx {
                                     let op = e.tool_call.as_ref()
-                                        .map(|tc| format!("{}", tc.name))
+                                        .map(describe_tool_call)
                                         .unwrap_or_default();
                                     let _ = tx.send(SubagentProgress {
                                         task_id: tid.clone(),
@@ -933,6 +1030,14 @@ async fn run_and_collect(
                                     return Err(err);
                                 }
                             }
+                            StreamEventType::AskRequest
+                            | StreamEventType::ApprovalRequest
+                            | StreamEventType::PlanApproval => {
+                                // Forward permission/ask events to parent so they reach the user
+                                if let Some(ref ptx) = parent_stream_tx {
+                                    let _ = ptx.send(e).await;
+                                }
+                            }
                             StreamEventType::Done => break,
                             _ => {}
                         }
@@ -946,6 +1051,21 @@ async fn run_and_collect(
     if output.is_empty() {
         Ok("Sub-agent completed (no text output).".to_string())
     } else {
+        // Cap sub-agent output to prevent flooding parent context (Claude Code pattern).
+        // Default 32K — parent can Read the full file if it needs more.
+        const MAX_SUBAGENT_OUTPUT: usize = 32_000;
+        if output.len() > MAX_SUBAGENT_OUTPUT {
+            let total = output.len();
+            output.truncate(MAX_SUBAGENT_OUTPUT);
+            // Find a clean char boundary
+            while !output.is_char_boundary(output.len()) {
+                output.pop();
+            }
+            output.push_str(&format!(
+                "\n\n[Sub-agent output truncated: {} chars total, showing first {}.]",
+                total, MAX_SUBAGENT_OUTPUT
+            ));
+        }
         Ok(output)
     }
 }

@@ -4,7 +4,7 @@ Comprehensive Subject Matter Expert document covering the Nebo tool system:
 registry, domain tools (STRAP pattern), deferred loading, policy/safeguards,
 skills, events, process management, and integration points.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-05-12
+**Status:** Current (Rust implementation) | **Last updated:** 2026-05-25
 
 ---
 
@@ -27,7 +27,10 @@ skills, events, process management, and integration points.
 15. [Prompt Assembly](#15-prompt-assembly)
 16. [Entity Permissions](#16-entity-permissions)
 17. [Tool Corrections](#17-tool-corrections)
-18. [File Manifest](#18-file-manifest)
+18. [Sidecar Tool System](#18-sidecar-tool-system)
+19. [Agent-Scoped Tool Tracking](#19-agent-scoped-tool-tracking)
+20. [Tool Concurrency Safety](#20-tool-concurrency-safety)
+21. [File Manifest](#21-file-manifest)
 
 ---
 
@@ -36,17 +39,19 @@ skills, events, process management, and integration points.
 ```
 Server Startup
 ├── Registry::new(policy)
-├── register_all_with_permissions()     ← 12 domain tools
-│   ├── Always: os, web, agent, event, skill, message, persona
-│   ├── Deferred: execute, work, publisher, plugin
-│   └── Conditional: loop (stub until NeboLoop connects)
+├── register_all_with_permissions()     ← 14 parameters, domain tools
+│   ├── Always: web, agent, event, skill, message, persona, loop (stub), tool_search
+│   ├── Deferred: os (keyword), execute, work, publisher, plugin
+│   └── Conditional: loop (real tool replaces stub when NeboLoop connects)
 ├── register(ToolSearchTool)            ← meta-tool for deferred discovery
 ├── register(McpTool)                   ← STRAP tool for MCP servers
+├── register_for_agent(sidecar tools)   ← per-agent sidecar endpoint tools
 └── MCP Bridge → register_proxy()       ← deferred proxy tools per server
 
 Per Chat Turn (run_loop)
-├── detect_deferred_activations()       ← keyword + call-based activation
+├── extract_discovered_deferred_tools() ← message-window scanning (Claude Code pattern)
 ├── list_active(&activated)             ← tool defs sent to LLM
+├── filter_tools_with_context()         ← contextual filtering + agent sidecar bypass
 ├── list_deferred_stubs(&activated)     ← compact stubs in system prompt
 ├── build system prompt (STRAP docs + deferred listing)
 ├── LLM responds with tool_calls
@@ -74,6 +79,7 @@ Workflow Activities
 pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Box<dyn DynTool>>>>,
     deferred: Arc<RwLock<HashSet<String>>>,
+    agent_tools: Arc<RwLock<HashMap<String, HashSet<String>>>>,  // agent_id → tool names
     policy: Arc<RwLock<Policy>>,
     process_registry: Arc<ProcessRegistry>,
     bridge: std::sync::RwLock<Option<Arc<mcp::Bridge>>>,
@@ -97,6 +103,7 @@ pub trait Tool: Send + Sync {
 
 pub trait DynTool: Send + Sync {
     fn resource_permit(&self, input: &Value) -> Option<ResourceKind> { None }
+    fn is_concurrent_safe(&self, input: &Value) -> bool { false }
     fn execute_dyn(&self, ctx: &ToolContext, input: Value) -> Pin<Box<dyn Future<Output = ToolResult>>>;
 }
 ```
@@ -107,11 +114,19 @@ pub trait DynTool: Send + Sync {
 |--------|---------|
 | `register(tool)` | Register in active set |
 | `register_deferred(tool)` | Register as deferred (not sent to LLM until activated) |
+| `register_for_agent(agent_id, tool)` | Register tool owned by an agent's sidecar |
+| `agent_tool_names(agent_id)` | Get tool names for an agent's sidecar |
 | `unregister(name)` | Remove tool |
+| `unregister_agent_tools(agent_id)` | Remove all sidecar tools for an agent |
+| `is_deferred(name)` | Check if a tool is deferred |
+| `get_deferred_names()` | Get names of all deferred tools |
+| `get_tool_description(name)` | Get full description of a specific tool |
+| `is_concurrent_safe(name, input)` | Query whether a tool call is safe to run concurrently |
 | `list_active(&activated)` | Non-deferred + activated deferred → `Vec<ToolDefinition>` |
 | `list_deferred_stubs(&activated)` | `Vec<(name, short_desc)>` for non-activated deferred |
+| `list_with_permissions(perms)` | Filter tools by per-entity permission categories |
 | `execute(ctx, name, input)` | Two-phase: validate → acquire permit → execute |
-| `register_all_with_permissions(...)` | Register complete domain tool set |
+| `register_all_with_permissions(...)` | Register complete domain tool set (14 parameters) |
 
 ### ToolResult
 
@@ -137,26 +152,30 @@ tool_name(resource: "resource_type", action: "action_name", ...params)
 
 | Tool | Name | File | Status | Resources |
 |------|------|------|--------|-----------|
-| OS | `os` | `os_tool.rs` | Always | file, shell, capture, window, clipboard, app, dock, settings, music, keychain, search, mail, calendar, contacts, reminders, notification, alert, tts |
+| OS | `os` | `os_tool.rs` | **Deferred** | file, shell, capture, window, clipboard, app, dock, settings, music, keychain, search, mail, calendar, contacts, reminders, notification, alert, tts |
+| System | `system` | `system_tool.rs` | Not registered by default | file, shell (lighter alternative to OS tool) |
 | Web | `web` | `web_tool.rs` | Always | http, search, browser |
 | Agent | `agent` | `bot_tool.rs` | Always | memory, task, session, context, advisors, ask, vision, run |
 | Event | `event` | `event_tool.rs` | Always | (flat) create, list, delete, pause, resume, run, history |
-| Skill | `skill` | `skill_tool.rs` | Always | (flat) catalog, help, load, install, configure, discover, featured, popular, reviews, browse, read_resource |
+| Skill | `skill` | `skill_tool.rs` | Always | (flat) catalog, help, load, install, configure, discover, featured, popular, reviews, browse, read_resource, secrets |
 | Message | `message` | `message_tool.rs` | Always | owner, notify, sms |
 | Persona | `persona` | `agent_tool.rs` | Always | (agent management, registry) |
-| Loop | `loop` | `loop_tool.rs` | Conditional | dm, channel, group, topic |
-| Plugin | `plugin` | `plugin_tool.rs` | Deferred | per-plugin slug as resource |
+| Loop | `loop` | `loop_tool.rs` | Always (stub) | dm, channel, group, topic |
+| Plugin | `plugin` | `plugin_tool.rs` | Deferred | per-plugin slug as resource; actions: `exec`, `events`. Full command catalog (per-plugin) auto-emitted into the tool description from `capabilities.tools[]` or skill SKILL.md frontmatter — no separate discovery action (v0.10.0+) |
 | Work | `work` | `workflows/work_tool.rs` | Deferred | (flat) list, create, run, pause, resume, delete, history |
 | Execute | `execute` | `execute_tool.rs` | Deferred | (flat) run, list |
 | Publisher | `publisher` | `publisher_tool.rs` | Deferred | (agent/skill publishing) |
 | Tool Search | `tool_search` | `tool_search.rs` | Always | (meta-tool) |
 | MCP | `mcp` | `mcp_tool.rs` | Always | per-server resource routing |
+| Sidecar | (per-endpoint) | `sidecar_tool.rs` | Per-agent | native tools from sidecar `GET /_tools` |
 | Emit | `emit` | `emit_tool.rs` | Injected | (workflow only) |
 | Exit | `exit` | `exit_tool.rs` | Injected | (workflow only) |
 
 ### OS Tool Detail
 
-The `os` tool consolidates 25+ resources across file system, shell, desktop, apps, settings, media, credentials, search, and PIM:
+The `os` tool consolidates 25+ resources across file system, shell, desktop, apps, settings, media, credentials, search, and PIM.
+
+**Now deferred** — discovered through `tool_search` or a direct deferred-tool call in the message window. Contextual keywords can activate OS STRAP sub-docs once the tool is present, but keyword-only deferred activation was removed. Saves ~8-10K tokens on requests that don't involve OS operations.
 
 **Auto-approve (no confirmation):** file, shell, clipboard, capture, search, notification, tts, dock
 **Requires approval:** window, app, settings, music, keychain, mail, calendar, contacts, reminders
@@ -179,7 +198,7 @@ Sub-tools: `FileTool`, `ShellTool`, `DesktopTool`, `AppTool`, `SettingsTool`, `M
 - `advisors` — deliberate (external advisor execution)
 - `ask` — user (UI prompt, blocks until response)
 - `vision` — describe, extract
-- `run` — list, status, cancel, logs
+- `run` — list, status, cancel, logs (uses `RunQuerierHandle` to query active runs across the global run registry)
 
 ### Plugin Tool Detail
 
@@ -202,7 +221,7 @@ Tools registered as deferred are not sent to the LLM in the initial tool list. I
 3. Runner intercepts results, adds to `activated_deferred` set
 4. Full tool definition injected on next turn
 
-**Default deferred:** execute, work, publisher, plugin, MCP proxy tools
+**Default deferred:** os, execute, work, publisher, plugin, MCP proxy tools
 
 ### Search Modes
 
@@ -219,21 +238,46 @@ Tools registered as deferred are not sent to the LLM in the initial tool list. I
 **File:** `crates/agent/src/tool_filter.rs`
 
 ```rust
-pub fn detect_deferred_activations(
-    messages, called_tools, deferred_names, already_activated
+pub fn extract_discovered_deferred_tools(
+    messages: &[ChatMessage],
+    deferred_names: &HashSet<String>,
 ) -> HashSet<String>
 ```
 
-Activates deferred tools via:
-1. Any deferred tool that was called → activate
-2. MCP proxy tools that were called → activate
-3. Keyword matching for `DEFERRED_TOOL_KEYWORDS`: loop, work, execute, plugin, publisher
+Follows Claude Code's `extractDiscoveredToolNames(messages)` pattern:
+1. Scans assistant `tool_calls` — any deferred tool that was directly called → discovered
+2. Scans tool result messages for `tool_search` responses — extracts `matches` array entries
 
-**Keyword groups** map conversation context → tool names:
+**Key property:** when the sliding message window evicts messages, any `tool_search` results or tool calls in those messages disappear, so the tool naturally unloads. Tools come and go with the message window.
+
+Keyword-based deferred activation was removed. The model must explicitly call `tool_search` to discover deferred tools.
+
+### Contextual Tool Filtering (tool_filter.rs)
+
+```rust
+pub fn filter_tools_with_context(
+    all_tools, messages, called_tools, agent_tool_names
+) -> (Vec<ToolDefinition>, Vec<String>)
+```
+
+All tools remain registered but the schema list sent to the LLM is filtered by context:
+- **Always included:** agent, skill, event, message, tool_search
+- **Context-activated:** web, loop, work, execute, emit (via keyword matching in recent messages)
+- **OS sub-contexts:** desktop, app, music, settings, keychain, spotlight, organizer (activate `os` tool + inject STRAP sub-docs)
+- **Agent sidecar tools:** always included for their agent (bypass filter via `agent_tool_names` parameter)
+
+**Keyword groups** map conversation context → STRAP sub-doc injection:
 - "workflow", "automate" → `work`
 - "run script", "python", "node" → `execute`
 - "neboloop", "channel", "dm" → `loop`
+- "click", "mouse", "screenshot" → `desktop` (os sub-context)
 - etc.
+
+### LoopStubTool
+
+**File:** `crates/tools/src/registry.rs`
+
+Fallback tool registered when NeboLoop is not yet connected. Returns a helpful error (`"NeboLoop is not connected..."`) instead of crashing. Ensures the `loop` tool appears in the tool list (10/10) even before NeboLoop connects. Replaced by the real `LoopTool` when `comm_plugin` is available.
 
 ---
 
@@ -409,6 +453,7 @@ pub struct Loader {
     installed_dir: PathBuf,
     skills: Arc<RwLock<HashMap<String, Skill>>>,
     plugin_store: Option<Arc<napp::plugin::PluginStore>>,
+    watcher_paused: Arc<AtomicBool>,
     bundled_raw: HashMap<String, &'static str>,
     cached_catalog: Arc<RwLock<String>>,
     license_keys: Arc<RwLock<HashMap<String, [u8; 32]>>>,
@@ -419,6 +464,25 @@ pub struct Loader {
 1. Embedded bundled skills (frontmatter only, template lazy-loaded)
 2. Installed skills from `.napp` archives (`nebo/skills/`)
 3. User skills from loose files (`user/skills/`)
+4. App skills from agent tool directories (`~/.nebo/agents/<agent-id>/skills/`)
+
+### Warm-Start Manifest
+
+The loader uses a two-phase load strategy:
+- **Warm start (<50ms):** Reads a skill manifest index (`.skill-manifest.json`) instead of walking the filesystem.
+- **Cold start:** Full filesystem scan + parallel YAML parsing via rayon, then writes manifest for next time.
+
+The `cached_catalog` field holds a pre-built compact catalog string, rebuilt on `load_all()` or watcher reload.
+
+### Loader Methods
+
+| Method | Purpose |
+|--------|---------|
+| `pause_watcher()` | Prevent premature reloads during skill/plugin extraction |
+| `resume_watcher()` | Re-enable filesystem watcher after extraction |
+| `with_plugin_store(ps)` | Verify plugin dependencies during load |
+| `set_license_keys(keys)` | Set license keys for sealed `.napp` decryption (keyed by artifact_id) |
+| `load_app_skills(&app_dir)` | Load skills from an app's directory (e.g. `<tool_dir>/skills/`), returns names |
 
 ### Template Expansion (`expand.rs`)
 
@@ -516,17 +580,23 @@ External MCP clients (Claude Desktop, Cursor) can call STRAP tools directly via 
 ### Tool List Assembly (per turn)
 
 ```rust
-// 1. Detect deferred activations from conversation context
-let new_activations = tool_filter::detect_deferred_activations(
-    &messages, &called_tools, &deferred_names, &activated_deferred,
+// 1. Extract discovered deferred tools from message window
+// (tools auto-unload when their discovery messages are evicted)
+let activated_deferred = tool_filter::extract_discovered_deferred_tools(
+    &messages, &deferred_names,
 );
-activated_deferred.extend(new_activations);
 
 // 2. Get tool definitions for LLM
 let all_tool_defs = tools.list_active(&activated_deferred).await;
 
 // 3. Get compact stubs for unactivated deferred tools
 let deferred_stubs = tools.list_deferred_stubs(&activated_deferred).await;
+
+// 4. Filter by context + agent sidecar tools
+let agent_tools = tools.agent_tool_names(&agent_id).await;
+let (filtered, contexts) = tool_filter::filter_tools_with_context(
+    &all_tool_defs, &messages, &called_tools, &agent_tools,
+);
 ```
 
 ### Tool Execution (parallel)
@@ -665,7 +735,103 @@ When the LLM calls a non-existent tool, the registry returns a correction hint:
 
 ---
 
-## 18. File Manifest
+## 18. Sidecar Tool System
+
+**File:** `crates/tools/src/sidecar_tool.rs` (161 lines)
+
+Each sidecar HTTP endpoint becomes a native LLM tool — the LLM sees `list_projects(...)` directly, not `brief(action: "list_projects")`.
+
+### Discovery
+
+Sidecars expose their tools via `GET /_tools`, which returns a JSON array of `SidecarToolDef`:
+
+```rust
+pub struct SidecarToolDef {
+    pub name: String,           // e.g. "list_projects"
+    pub description: String,
+    pub method: String,         // GET, POST, PUT, DELETE
+    pub path: String,           // "/projects", "/documents/{id}"
+    pub input_schema: Option<serde_json::Value>,
+}
+```
+
+### Execution
+
+`SidecarActionTool` implements `DynTool` directly (not wrapped in a domain tool):
+1. Resolves path parameters from input (`/documents/{id}` + `{id: "123"}` → `/documents/123`)
+2. Builds request by HTTP method: GET → query params, POST/PUT → JSON body (path param keys stripped)
+3. Calls sidecar via the `SidecarCaller` trait (abstracts gRPC connection — implemented in `crates/server`)
+4. Returns `ToolResult::ok` or `ToolResult::error` based on HTTP status code
+
+### Integration
+
+- Sidecar tools are registered via `Registry::register_for_agent(agent_id, tool)` — not deferred
+- Always included for their agent (bypass contextual tool filter via `agent_tool_names`)
+- Cleaned up on agent shutdown via `Registry::unregister_agent_tools(agent_id)`
+
+**Full reference:** `docs/sme/SIDECAR_TOOLS_SME.md`
+
+---
+
+## 19. Agent-Scoped Tool Tracking
+
+**File:** `crates/tools/src/registry.rs`
+
+The registry tracks which tools belong to which agent's sidecar:
+
+```rust
+agent_tools: Arc<RwLock<HashMap<String, HashSet<String>>>>  // agent_id → tool names
+```
+
+### Methods
+
+| Method | Purpose |
+|--------|---------|
+| `register_for_agent(agent_id, tool)` | Register tool + record ownership |
+| `agent_tool_names(agent_id)` | Get `HashSet<String>` of tool names for an agent |
+| `unregister_agent_tools(agent_id)` | Remove all tools owned by an agent |
+
+### Use Cases
+
+- **Clean shutdown:** When an app agent stops, its sidecar tools are removed in one call
+- **Hot restart:** Unregister old tools, re-discover via `GET /_tools`, register new set
+- **Tool filter bypass:** `filter_tools_with_context()` accepts `agent_tool_names` — sidecar tools always pass through the contextual filter
+- **SDK whitelisting:** Agent's own tools are always visible regardless of permission categories
+
+---
+
+## 20. Tool Concurrency Safety
+
+**File:** `crates/tools/src/registry.rs`
+
+The `DynTool` trait includes a method for declaring whether a tool call is safe to run concurrently:
+
+```rust
+fn is_concurrent_safe(&self, input: &Value) -> bool { false }  // default: assume writes
+```
+
+Read-only operations return `true` and can run in parallel. Write operations default to `false` (serial execution after all concurrent tools finish).
+
+### Registry Integration
+
+```rust
+pub async fn is_concurrent_safe(&self, tool_name: &str, input: &Value) -> bool
+```
+
+Queries the tool by name (with MCP prefix fallback). Returns `false` for unknown tools (conservative default).
+
+### Per-Tool Overrides
+
+**Skill tool** (`skill_tool.rs`) — marks these actions as concurrent-safe:
+`catalog`, `discover`, `help`, `browse`, `read_resource`, `featured`, `popular`, `reviews`, `secrets`
+
+Write actions (`load`, `unload`, `create`, `update`, `delete`, `install`, `configure`) remain serial.
+
+Other tools default to `false` (serial) unless they override `is_concurrent_safe`.
+
+---
+
+## 21. File Manifest
 
 ### Domain Tools
 
@@ -673,11 +839,13 @@ When the LLM calls a non-existent tool, the registry returns a correction hint:
 |------|-----------|---------|
 | `os_tool.rs` | `os` | Unified OS operations (25 resources) |
 | `web_tool.rs` | `web` | HTTP + search + browser automation |
-| `bot_tool.rs` | `agent` | Agent self-management (memory, tasks, sessions) |
+| `bot_tool.rs` | `agent` | Agent self-management (memory, tasks, sessions, runs via `RunQuerierHandle`) |
 | `event_tool.rs` | `event` | Scheduling & reminders |
 | `skill_tool.rs` | `skill` | Skill catalog, loading, marketplace |
 | `message_tool.rs` | `message` | Outbound notifications & SMS |
 | `agent_tool.rs` | `persona` | Agent registry & validation |
+| `sidecar_tool.rs` | (per-endpoint) | Sidecar HTTP endpoint → native LLM tool |
+| `system_tool.rs` | `system` | Lighter OS alternative (file + shell only) |
 | `loop_tool.rs` | `loop` | NeboLoop communication |
 | `plugin_tool.rs` | `plugin` | Plugin binary execution |
 | `workflows/work_tool.rs` | `work` | Workflow lifecycle |
@@ -693,8 +861,8 @@ When the LLM calls a non-existent tool, the registry returns a correction hint:
 
 | File | Used By | Purpose |
 |------|---------|---------|
-| `file_tool.rs` | `os` | File system operations |
-| `shell_tool.rs` | `os` | Shell execution |
+| `file_tool.rs` | `os`, `system` | File system operations |
+| `shell_tool.rs` | `os`, `system` | Shell execution |
 | `desktop_tool.rs` | `os` | Desktop automation (capture, window, clipboard) |
 | `app_tool.rs` | `os` | App launching, dock management |
 | `settings_tool.rs` | `os` | System settings (volume, brightness) |
@@ -732,4 +900,4 @@ When the LLM calls a non-existent tool, the registry returns a correction hint:
 
 ---
 
-*Last updated: 2026-05-12*
+*Last updated: 2026-05-25*

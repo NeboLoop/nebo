@@ -1,9 +1,11 @@
 pub mod agent;
 pub mod agent_loader;
+pub mod child_guard;
 pub mod hooks;
 pub mod manifest;
 pub mod napp;
 pub mod plugin;
+pub mod plugin_runtime;
 pub mod reader;
 pub mod registry;
 pub mod runtime;
@@ -18,6 +20,7 @@ pub use hooks::{HookCaller, HookDispatcher, HookType, register_plugin_hooks};
 pub use manifest::{Manifest, ManifestSignature, QualifiedName};
 pub use registry::{Registry, RegistryConfig};
 pub use runtime::{Process, Runtime};
+pub use plugin_runtime::PluginRuntime;
 pub use signing::{RevocationChecker, SigningKeyProvider, builtin_verifying_key};
 
 use serde::{Deserialize, Serialize};

@@ -21,6 +21,25 @@ pub struct SpawnRequest {
     pub parent_cancel: Option<CancellationToken>,
     /// Maximum agentic loop iterations for this sub-agent (0 = default 100).
     pub max_iterations: usize,
+    /// Skill names to pre-load into the sub-agent's context. Full SKILL.md
+    /// content is injected so the sub-agent has instructions without needing
+    /// to discover/load them itself. Keeps the parent context lean.
+    pub skills: Vec<String>,
+    /// Plugin install codes the sub-agent should have access to. Plugin docs
+    /// and capabilities are injected into the sub-agent's system prompt so it
+    /// knows how to use them from turn 1.
+    pub plugins: Vec<String>,
+    /// STRAP domain tool names the sub-agent needs (e.g. "web", "loop", "message").
+    /// The corresponding STRAP doc is injected so the sub-agent knows the tool's
+    /// resources, actions, and usage patterns.
+    pub tools: Vec<String>,
+    /// Parent's stream sender — forwarded to sub-agents so that `AskRequest`
+    /// events reach the user's WebSocket (permission forwarding).
+    pub parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
+    /// When set, the sub-agent runs as this agent identity. The runner
+    /// loads the agent's AGENT.md, soul, plugins, skills, and memory
+    /// scoping automatically from the AgentRegistry.
+    pub agent_id: String,
 }
 
 /// Result from a sub-agent or DAG execution.

@@ -99,8 +99,8 @@ export function updateProfile(req: Record<string, unknown> = {}) {
 /**
  * @description "List sessions"
  */
-export function listSessions() {
-	return webapi.get<components.ListSessionsResponse>(`/api/v1/agent/sessions`)
+export function listSessions(limit?: number, offset?: number) {
+	return webapi.get<components.ListSessionsResponse>(`/api/v1/agent/sessions`, { limit, offset })
 }
 
 /**
@@ -113,8 +113,8 @@ export function deleteSession(id: string) {
 /**
  * @description "Get session messages"
  */
-export function getSessionMessages(id: string) {
-	return webapi.get<components.GetSessionMessagesResponse>(`/api/v1/agent/sessions/${id}/messages`)
+export function getSessionMessages(id: string, limit?: number, before?: string) {
+	return webapi.get<components.GetSessionMessagesResponse>(`/api/v1/agent/sessions/${id}/messages`, { limit, before })
 }
 
 /**
@@ -155,8 +155,8 @@ export function agentWsHandler() {
 /**
  * @description "List agents"
  */
-export function listAgents() {
-	return webapi.get<components.ListAgentsResponse>(`/api/v1/agents`)
+export function listAgents(limit?: number, offset?: number) {
+	return webapi.get<components.ListAgentsResponse>(`/api/v1/agents`, { limit, offset })
 }
 
 /**
@@ -213,6 +213,34 @@ export function activateAgent(id: string, req: Record<string, unknown> = {}) {
  */
 export function applyAgentUpdate(id: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.ApplyAgentUpdateResponse>(`/api/v1/agents/${id}/apply-update`, req)
+}
+
+/**
+ * @description "List agent channels"
+ */
+export function listAgentChannels(id: string) {
+	return webapi.get<components.ListAgentChannelsResponse>(`/api/v1/agents/${id}/channels`)
+}
+
+/**
+ * @description "Set agent channel config"
+ */
+export function setAgentChannelConfig(id: string, pluginSlug: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.SetAgentChannelConfigResponse>(`/api/v1/agents/${id}/channels/${pluginSlug}/config`, req)
+}
+
+/**
+ * @description "Disable agent channel"
+ */
+export function disableAgentChannel(id: string, pluginSlug: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.DisableAgentChannelResponse>(`/api/v1/agents/${id}/channels/${pluginSlug}/disable`, req)
+}
+
+/**
+ * @description "Enable agent channel"
+ */
+export function enableAgentChannel(id: string, pluginSlug: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.EnableAgentChannelResponse>(`/api/v1/agents/${id}/channels/${pluginSlug}/enable`, req)
 }
 
 /**
@@ -279,13 +307,6 @@ export function installDeps(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
- * @description "Get agent nav"
- */
-export function getAgentNav(id: string) {
-	return webapi.get<components.GetAgentNavResponse>(`/api/v1/agents/${id}/nav`)
-}
-
-/**
  * @description "Reload agent"
  */
 export function reloadAgent(id: string, req: Record<string, unknown> = {}) {
@@ -295,8 +316,8 @@ export function reloadAgent(id: string, req: Record<string, unknown> = {}) {
 /**
  * @description "List agent runs"
  */
-export function listAgentRuns(id: string) {
-	return webapi.get<components.ListAgentRunsResponse>(`/api/v1/agents/${id}/runs`)
+export function listAgentRuns(id: string, limit?: number, offset?: number) {
+	return webapi.get<components.ListAgentRunsResponse>(`/api/v1/agents/${id}/runs`, { limit, offset })
 }
 
 /**
@@ -335,6 +356,13 @@ export function toggleAgent(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Start workflow chat"
+ */
+export function startWorkflowChat(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.StartWorkflowChatResponse>(`/api/v1/agents/${id}/workflow/chat`, req)
+}
+
+/**
  * @description "List agent workflows"
  */
 export function listAgentWorkflows(id: string) {
@@ -367,6 +395,55 @@ export function deleteAgentWorkflow(id: string, bindingName: string) {
  */
 export function toggleAgentWorkflow(id: string, bindingName: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.ToggleAgentWorkflowResponse>(`/api/v1/agents/${id}/workflows/${bindingName}/toggle`, req)
+}
+
+/**
+ * @description "Run agent workflow"
+ */
+export function runAgentWorkflow(id: string, name: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.RunAgentWorkflowResponse>(`/api/v1/agents/${id}/workflows/${name}/run`, req)
+}
+
+/**
+ * @description "Check updates"
+ */
+export function checkUpdates(req: Record<string, unknown> = {}) {
+	return webapi.post<components.CheckUpdatesResponse>(`/api/v1/artifacts/check-updates`, req)
+}
+
+/**
+ * @description "Get update settings"
+ */
+export function getUpdateSettings() {
+	return webapi.get<unknown>(`/api/v1/artifacts/update-settings`)
+}
+
+/**
+ * @description "Set update settings"
+ */
+export function setUpdateSettings(req: Record<string, unknown> = {}) {
+	return webapi.put<components.SetUpdateSettingsResponse>(`/api/v1/artifacts/update-settings`, req)
+}
+
+/**
+ * @description "List updates"
+ */
+export function listUpdates() {
+	return webapi.get<components.ListUpdatesResponse>(`/api/v1/artifacts/updates`)
+}
+
+/**
+ * @description "Apply update"
+ */
+export function applyUpdate(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.ApplyUpdateResponse>(`/api/v1/artifacts/${id}/apply-update`, req)
+}
+
+/**
+ * @description "Set artifact auto update"
+ */
+export function setArtifactAutoUpdate(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.SetArtifactAutoUpdateResponse>(`/api/v1/artifacts/${id}/auto-update`, req)
 }
 
 /**
@@ -428,8 +505,8 @@ export function verifyEmail(req: Record<string, unknown> = {}) {
 /**
  * @description "List chats"
  */
-export function listChats() {
-	return webapi.get<components.ListChatsResponse>(`/api/v1/chats`)
+export function listChats(limit?: number, offset?: number) {
+	return webapi.get<components.ListChatsResponse>(`/api/v1/chats`, { limit, offset })
 }
 
 /**
@@ -442,8 +519,8 @@ export function createChat(req: Record<string, unknown> = {}) {
 /**
  * @description "Get companion chat"
  */
-export function getCompanionChat() {
-	return webapi.get<components.GetCompanionChatResponse>(`/api/v1/chats/companion`)
+export function getCompanionChat(max_chars?: number) {
+	return webapi.get<components.GetCompanionChatResponse>(`/api/v1/chats/companion`, { max_chars })
 }
 
 /**
@@ -456,8 +533,8 @@ export function createCompanionChat(req: Record<string, unknown> = {}) {
 /**
  * @description "List chat days"
  */
-export function listChatDays() {
-	return webapi.get<components.ListChatDaysResponse>(`/api/v1/chats/days`)
+export function listChatDays(limit?: number, offset?: number) {
+	return webapi.get<components.ListChatDaysResponse>(`/api/v1/chats/days`, { limit, offset })
 }
 
 /**
@@ -484,8 +561,8 @@ export function editMessage(id: string, req: Record<string, unknown> = {}) {
 /**
  * @description "Search messages"
  */
-export function searchMessages() {
-	return webapi.get<components.SearchMessagesResponse>(`/api/v1/chats/search`)
+export function searchMessages(q?: string, limit?: number, offset?: number, chat_id?: string) {
+	return webapi.get<components.SearchMessagesResponse>(`/api/v1/chats/search`, { q, limit, offset, chat_id })
 }
 
 /**
@@ -519,8 +596,8 @@ export function deleteChat(id: string) {
 /**
  * @description "Get chat messages"
  */
-export function getChatMessages(id: string) {
-	return webapi.get<components.GetChatMessagesResponse>(`/api/v1/chats/${id}/messages`)
+export function getChatMessages(id: string, max_chars?: number, before?: string) {
+	return webapi.get<components.GetChatMessagesResponse>(`/api/v1/chats/${id}/messages`, { max_chars, before })
 }
 
 /**
@@ -636,6 +713,13 @@ export function pickFolder(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Upload file"
+ */
+export function uploadFile(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/files/upload`, req)
+}
+
+/**
  * @description "Serve file"
  */
 export function serveFile(path: string) {
@@ -736,15 +820,15 @@ export function localModelsStatus() {
 /**
  * @description "List memories"
  */
-export function listMemories() {
-	return webapi.get<components.ListMemoriesResponse>(`/api/v1/memories`)
+export function listMemories(limit?: number, offset?: number, namespace?: string) {
+	return webapi.get<components.ListMemoriesResponse>(`/api/v1/memories`, { limit, offset, namespace })
 }
 
 /**
  * @description "Search memories"
  */
-export function searchMemories() {
-	return webapi.get<components.SearchMemoriesResponse>(`/api/v1/memories/search`)
+export function searchMemories(q?: string, limit?: number, offset?: number) {
+	return webapi.get<components.SearchMemoriesResponse>(`/api/v1/memories/search`, { q, limit, offset })
 }
 
 /**
@@ -909,17 +993,38 @@ export function neboLoopJanusUsageRefresh(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Nebo loop marketplace list subscriptions"
+ */
+export function neboLoopMarketplaceListSubscriptions() {
+	return webapi.get<unknown>(`/api/v1/neboloop/marketplace/subscriptions`)
+}
+
+/**
+ * @description "Nebo loop marketplace create subscription"
+ */
+export function neboLoopMarketplaceCreateSubscription(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/neboloop/marketplace/subscriptions`, req)
+}
+
+/**
+ * @description "Nebo loop marketplace cancel subscription"
+ */
+export function neboLoopMarketplaceCancelSubscription(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/neboloop/marketplace/subscriptions/${id}/cancel`, req)
+}
+
+/**
  * @description "Nebo loop oauth start"
  */
-export function neboLoopOauthStart() {
-	return webapi.get<unknown>(`/api/v1/neboloop/oauth/start`)
+export function neboLoopOauthStart(janus?: string) {
+	return webapi.get<unknown>(`/api/v1/neboloop/oauth/start`, { janus })
 }
 
 /**
  * @description "Nebo loop oauth status"
  */
-export function neboLoopOauthStatus() {
-	return webapi.get<unknown>(`/api/v1/neboloop/oauth/status`)
+export function neboLoopOauthStatus(state?: string) {
+	return webapi.get<unknown>(`/api/v1/neboloop/oauth/status`, { state })
 }
 
 /**
@@ -1037,8 +1142,8 @@ export function getPluginConfig(slug: string) {
 /**
  * @description "Set plugin config"
  */
-export function setPluginConfig(slug: string, config: Record<string, string>) {
-	return webapi.put<components.SetPluginConfigResponse>(`/api/v1/plugins/${slug}/config`, config)
+export function setPluginConfig(slug: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.SetPluginConfigResponse>(`/api/v1/plugins/${slug}/config`, req)
 }
 
 /**
@@ -1060,6 +1165,20 @@ export function getDiagnostics(slug: string) {
  */
 export function listPluginEvents(slug: string) {
 	return webapi.get<components.ListPluginEventsResponse>(`/api/v1/plugins/${slug}/events`)
+}
+
+/**
+ * @description "Get plugin help"
+ */
+export function getPluginHelp(slug: string) {
+	return webapi.get<components.GetPluginHelpResponse>(`/api/v1/plugins/${slug}/help`)
+}
+
+/**
+ * @description "Start help chat"
+ */
+export function startHelpChat(slug: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.StartHelpChatResponse>(`/api/v1/plugins/${slug}/help/chat`, req)
 }
 
 /**
@@ -1224,10 +1343,31 @@ export function listStoreCollections() {
 }
 
 /**
+ * @description "Create store collection"
+ */
+export function createStoreCollection(req: Record<string, unknown> = {}) {
+	return webapi.post<components.CreateStoreCollectionResponse>(`/api/v1/store/collections`, req)
+}
+
+/**
  * @description "Get store collection"
  */
 export function getStoreCollection(id: string) {
 	return webapi.get<components.GetStoreCollectionResponse>(`/api/v1/store/collections/${id}`)
+}
+
+/**
+ * @description "Update store collection"
+ */
+export function updateStoreCollection(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.UpdateStoreCollectionResponse>(`/api/v1/store/collections/${id}`, req)
+}
+
+/**
+ * @description "Delete store collection"
+ */
+export function deleteStoreCollection(id: string) {
+	return webapi.delete<components.DeleteStoreCollectionResponse>(`/api/v1/store/collections/${id}`)
 }
 
 /**
@@ -1247,8 +1387,8 @@ export function removeCollectionItem(id: string, itemId: string) {
 /**
  * @description "List store featured"
  */
-export function listStoreFeatured() {
-	return webapi.get<unknown>(`/api/v1/store/featured`)
+export function listStoreFeatured(q?: string, category?: string, page?: number, pageSize?: number, type?: string) {
+	return webapi.get<unknown>(`/api/v1/store/featured`, { q, category, page, pageSize, type })
 }
 
 /**
@@ -1261,15 +1401,15 @@ export function listStoreOrgs() {
 /**
  * @description "List store products"
  */
-export function listStoreProducts() {
-	return webapi.get<unknown>(`/api/v1/store/products`)
+export function listStoreProducts(q?: string, category?: string, page?: number, pageSize?: number, type?: string) {
+	return webapi.get<unknown>(`/api/v1/store/products`, { q, category, page, pageSize, type })
 }
 
 /**
  * @description "List store products top"
  */
-export function listStoreProductsTop() {
-	return webapi.get<unknown>(`/api/v1/store/products/top`)
+export function listStoreProductsTop(q?: string, category?: string, page?: number, pageSize?: number, type?: string) {
+	return webapi.get<unknown>(`/api/v1/store/products/top`, { q, category, page, pageSize, type })
 }
 
 /**
@@ -1282,8 +1422,15 @@ export function getStoreProduct(id: string) {
 /**
  * @description "Get store product feedback"
  */
-export function getStoreProductFeedback(id: string) {
-	return webapi.get<components.GetStoreProductFeedbackResponse>(`/api/v1/store/products/${id}/feedback`)
+export function getStoreProductFeedback(id: string, q?: string, category?: string, page?: number, pageSize?: number, type?: string) {
+	return webapi.get<components.GetStoreProductFeedbackResponse>(`/api/v1/store/products/${id}/feedback`, { q, category, page, pageSize, type })
+}
+
+/**
+ * @description "Submit store product feedback"
+ */
+export function submitStoreProductFeedback(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/store/products/${id}/feedback`, req)
 }
 
 /**
@@ -1291,6 +1438,13 @@ export function getStoreProductFeedback(id: string) {
  */
 export function installStoreProduct(id: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.InstallStoreProductResponse>(`/api/v1/store/products/${id}/install`, req)
+}
+
+/**
+ * @description "Uninstall store product"
+ */
+export function uninstallStoreProduct(id: string) {
+	return webapi.delete<components.UninstallStoreProductResponse>(`/api/v1/store/products/${id}/install`)
 }
 
 /**
@@ -1303,8 +1457,15 @@ export function getStoreProductMedia(id: string) {
 /**
  * @description "Get store product reviews"
  */
-export function getStoreProductReviews(id: string) {
-	return webapi.get<unknown>(`/api/v1/store/products/${id}/reviews`)
+export function getStoreProductReviews(id: string, q?: string, category?: string, page?: number, pageSize?: number, type?: string) {
+	return webapi.get<unknown>(`/api/v1/store/products/${id}/reviews`, { q, category, page, pageSize, type })
+}
+
+/**
+ * @description "Submit store product review"
+ */
+export function submitStoreProductReview(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/store/products/${id}/reviews`, req)
 }
 
 /**
@@ -1324,8 +1485,8 @@ export function getStoreScreenshots(type: string) {
 /**
  * @description "List tasks"
  */
-export function listTasks() {
-	return webapi.get<components.ListTasksResponse>(`/api/v1/tasks`)
+export function listTasks(limit?: number, offset?: number) {
+	return webapi.get<components.ListTasksResponse>(`/api/v1/tasks`, { limit, offset })
 }
 
 /**
@@ -1359,8 +1520,8 @@ export function deleteTask(name: string) {
 /**
  * @description "List task history"
  */
-export function listTaskHistory(name: string) {
-	return webapi.get<components.ListTaskHistoryResponse>(`/api/v1/tasks/${name}/history`)
+export function listTaskHistory(name: string, limit?: number, offset?: number) {
+	return webapi.get<components.ListTaskHistoryResponse>(`/api/v1/tasks/${name}/history`, { limit, offset })
 }
 
 /**
@@ -1485,8 +1646,8 @@ export function tts(req: Record<string, unknown> = {}) {
 /**
  * @description "List workflows"
  */
-export function listWorkflows() {
-	return webapi.get<components.ListWorkflowsResponse>(`/api/v1/workflows`)
+export function listWorkflows(limit?: number, offset?: number) {
+	return webapi.get<components.ListWorkflowsResponse>(`/api/v1/workflows`, { limit, offset })
 }
 
 /**
@@ -1541,8 +1702,8 @@ export function runWorkflow(id: string, req: Record<string, unknown> = {}) {
 /**
  * @description "List runs"
  */
-export function listRuns(id: string) {
-	return webapi.get<components.ListRunsResponse>(`/api/v1/workflows/${id}/runs`)
+export function listRuns(id: string, limit?: number, offset?: number) {
+	return webapi.get<components.ListRunsResponse>(`/api/v1/workflows/${id}/runs`, { limit, offset })
 }
 
 /**

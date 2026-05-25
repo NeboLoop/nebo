@@ -17,7 +17,8 @@ var typeOverrides = map[string]string{
 	"get_active_agents.agents": "ActiveAgent[]",
 
 	// ── Agent runs ──
-	"list_agent_runs.runs": "AgentRunEntry[]",
+	"list_agent_runs.runs":  "AgentRunEntry[]",
+	"list_agent_runs.total": "number",
 
 	// ── Commander org chart ──
 	"get_commander_org.nodes":      "CommanderNode[]",

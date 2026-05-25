@@ -28,8 +28,8 @@
 
   const navItems: PaletteItem[] = [
     { category: 'Navigation', label: 'Agents', icon: 'cpu', action: () => goto('/') },
-    { category: 'Navigation', label: 'Schedule', icon: 'calendar', action: () => goto('/schedule') },
     { category: 'Navigation', label: 'Apps', icon: 'grid', action: () => goto('/apps') },
+    { category: 'Navigation', label: 'Schedule', icon: 'calendar', action: () => goto('/schedule') },
     { category: 'Navigation', label: 'Marketplace', icon: 'store', action: () => goto('/marketplace') },
     { category: 'Navigation', label: 'Activity', icon: 'calendar', action: () => goto('/activity') },
     { category: 'Navigation', label: 'Events', icon: 'calendar', action: () => goto('/events') },
@@ -60,11 +60,7 @@
     { category: 'Marketplace', label: 'Installed Items', icon: 'grid', action: () => goto('/marketplace/installed') },
   ];
 
-  const actionItems: PaletteItem[] = [
-    { category: 'Actions', label: 'New Chat', icon: 'plus', action: () => goto('/chat') },
-  ];
-
-  const allItems = [...navItems, ...settingsItems, ...marketplaceItems, ...actionItems];
+  const allItems = [...navItems, ...settingsItems, ...marketplaceItems];
 
   const filteredItems = $derived.by(() => {
     const q = query.toLowerCase().trim();

@@ -26,6 +26,7 @@
 	let loading = $state(true);
 	let submittingReview = $state(false);
 	let installing = $state(false);
+	let updating = $state(false);
 
 	const skillId = $derived($page.params.id ?? '');
 
@@ -78,6 +79,16 @@
 			if (skill) skill.installed = true;
 		} catch { /* ignore */ }
 		installing = false;
+	}
+
+	async function updateProduct() {
+		updating = true;
+		try {
+			await webapi.post(`/api/v1/artifacts/${skillId}/apply-update`, {});
+			const skillRes = await webapi.get<any>(`/api/v1/store/products/${skillId}`);
+			skill = skillRes?.item ?? skillRes;
+		} catch { /* ignore */ }
+		updating = false;
 	}
 
 	function formatNumber(n: number) {
@@ -142,7 +153,11 @@
 				{#if skill.category}
 					<p class="text-sm text-base-content/60 mt-0.5">{skill.category}</p>
 				{/if}
-				{#if skill.installed}
+				{#if skill.installed && skill.updateAvailable}
+					<button type="button" onclick={updateProduct} disabled={updating} class="h-9 px-6 rounded-full bg-accent text-accent-content font-bold text-base mt-3 hover:brightness-110 active:scale-[0.97] transition-all inline-flex items-center gap-1.5 disabled:opacity-50">
+						{updating ? 'Updating...' : `Update to ${skill.remoteVersion}`}
+					</button>
+				{:else if skill.installed}
 					<span class="h-9 px-6 rounded-full bg-success/15 text-success font-bold text-base mt-3 inline-flex items-center gap-1.5">
 						<Check class="w-4 h-4" /> {$t('common.installed')}
 					</span>
@@ -175,7 +190,11 @@
 				<span class="text-sm text-base-content/60">{$t('marketplace.detail.installs')}</span>
 			</div>
 			<div class="flex-1 flex flex-col items-center gap-0.5 py-1">
-				<span class="text-base font-bold text-success">{$t('common.free')}</span>
+				{#if skill.price && skill.price !== 'Free' && skill.price !== 'Get'}
+					<span class="text-base font-bold text-base-content/90">{skill.price}</span>
+				{:else}
+					<span class="text-base font-bold text-success">{$t('common.free')}</span>
+				{/if}
 				<span class="text-sm text-base-content/60">{$t('marketplace.detail.price')}</span>
 			</div>
 			{#if skill.category}

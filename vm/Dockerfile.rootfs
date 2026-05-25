@@ -1,0 +1,59 @@
+# Nebo VM rootfs builder
+#
+# This builds the base Linux filesystem that the VM boots into.
+# It does NOT contain the guest daemon — that lives in the smol-bin
+# image so it can be updated independently.
+#
+# Usage:
+#   docker build -t nebo-rootfs -f vm/Dockerfile.rootfs .
+#   docker create --name rootfs-tmp nebo-rootfs
+#   docker export rootfs-tmp > vm/build/rootfs.tar
+#   docker rm rootfs-tmp
+#
+# Or just: make vm-rootfs
+
+FROM alpine:3.20
+
+# Core utilities
+RUN apk add --no-cache \
+    bash \
+    coreutils \
+    curl \
+    git \
+    openssh-client \
+    jq \
+    tar \
+    gzip \
+    xz \
+    findutils \
+    grep \
+    sed \
+    ca-certificates
+
+# Language runtimes
+RUN apk add --no-cache \
+    nodejs \
+    npm \
+    python3 \
+    py3-pip
+
+# Build tools (for native npm modules, pip packages with C extensions)
+RUN apk add --no-cache \
+    build-base \
+    python3-dev \
+    linux-headers
+
+# Rust tooling (cargo for building from source if needed)
+# Skipped — skills ship pre-compiled binaries via .napp
+
+# Create session and temp directories
+RUN mkdir -p /sessions /tmp/nebo /mnt/smol-bin /run
+
+# Init script — mounts smol-bin and execs the guest daemon
+COPY vm/init /init
+RUN chmod +x /init
+
+# Drop unnecessary caches to reduce image size
+RUN rm -rf /var/cache/apk/* /tmp/* /root/.cache
+
+CMD ["/init"]

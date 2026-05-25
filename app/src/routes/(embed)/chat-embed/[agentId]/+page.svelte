@@ -3,23 +3,24 @@
   import { page } from '$app/stores';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
-
-  type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string };
+  import { createChatController } from '$lib/chat/controller.svelte';
+  import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
+  import { uploadFiles } from '$lib/api/upload';
+  import type { UploadedAttachment } from '$lib/types/attachment';
 
   const agentId = $derived($page.params.agentId ?? '');
 
   let agentName = $state('');
-  let chatMessages = $state<any[]>([]);
-  let allAgents = $state<AgentInfo[]>([]);
-  let isLoading = $state(false);
-  let streamingContent = $state('');
   let placeholder = $state('');
+  let appContext = $state<Record<string, unknown> | null>(null);
 
   // Read options from URL params
   const urlParams = $derived(new URLSearchParams($page.url.search));
   const paramPlaceholder = $derived(urlParams.get('placeholder') || '');
   const paramTheme = $derived(urlParams.get('theme') || '');
   const paramBorderless = $derived(urlParams.get('borderless') === '1');
+  const paramCtx = $derived(urlParams.get('ctx') || '');
+  const paramScope = $derived(urlParams.get('scope') || '');
 
   $effect(() => {
     if (paramPlaceholder) placeholder = paramPlaceholder;
@@ -32,50 +33,40 @@
     }
   });
 
-  const sessionKey = $derived(`agent:${agentId}:app`);
+  const sessionKey = $derived(`agent:${agentId}:app${paramCtx ? ':' + paramCtx : ''}`);
+
+  // Capture current values — embed agentId is stable (route doesn't change without full reload)
+  const initialAgentId = $page.params.agentId ?? '';
+  const initialSessionKey = `agent:${initialAgentId}:app${$page.url.searchParams.get('ctx') ? ':' + $page.url.searchParams.get('ctx') : ''}`;
+
+  const chat = createChatController({
+    agentId: initialAgentId,
+    sessionKey: initialSessionKey,
+    channel: 'app',
+    onResponseComplete: (text) => {
+      window.parent?.postMessage({ type: 'nebo:response-complete', text }, '*');
+    },
+  });
 
   // Slash commands that clear the conversation
   const CLEAR_COMMANDS = ['/new', '/clear'];
 
-  function handleSend(text: string) {
+  async function handleSend(text: string, attachments?: UploadedAttachment[]) {
     const trimmed = text.trim().toLowerCase();
+    const isClear = CLEAR_COMMANDS.includes(trimmed);
 
-    // /new and /clear: clear local messages, then send to server
-    if (CLEAR_COMMANDS.includes(trimmed)) {
-      chatMessages = [];
-      streamingContent = '';
-    } else {
-      chatMessages = [...chatMessages, { type: 'user', content: text }];
+    if (isClear) chat.clearMessages();
+
+    const extra: Record<string, unknown> = {};
+    if (appContext) {
+      extra.context = appContext;
+    } else if (paramCtx) {
+      extra.context = { displayedDoc: { documentId: paramCtx } };
     }
+    if (paramScope) extra.scope = paramScope;
 
-    isLoading = true;
-    streamingContent = '';
-
-    const ws = getWebSocketClient();
-    ws.send('chat', {
-      session_id: sessionKey,
-      prompt: text,
-      agent_id: agentId,
-      channel: 'app',
-    });
-
-    // Notify parent
+    chat.send(text, { extraPayload: extra, silent: isClear, attachments });
     window.parent?.postMessage({ type: 'nebo:message-sent', message: text }, '*');
-  }
-
-  function handleStop() {
-    const ws = getWebSocketClient();
-    ws.send('cancel', { session_id: sessionKey });
-    isLoading = false;
-  }
-
-  function newThread() {
-    chatMessages = [];
-    streamingContent = '';
-    isLoading = false;
-
-    const ws = getWebSocketClient();
-    ws.send('rotate_chat', { session_id: sessionKey });
   }
 
   const cleanups: (() => void)[] = [];
@@ -85,30 +76,25 @@
 
     // Fetch agent info
     try {
-      const resp = await fetch(`/api/v1/agents/${agentId}`);
-      if (resp.ok) {
-        const detail = await resp.json();
-        agentName = detail.displayName || detail.agent?.name || agentId;
-        if (!placeholder) {
-          placeholder = `Message ${agentName}...`;
-        }
+      const detail = await api.getAgent(agentId);
+      agentName = detail.displayName || detail.agent?.name || agentId;
+      if (!placeholder) {
+        placeholder = `Message ${agentName}...`;
       }
     } catch { /* ignore */ }
 
     // Load agents for @mentions
     try {
       const resp = await api.listAgents();
-      console.log('[chat-embed] listAgents response:', resp?.agents?.length, 'agents');
       if (resp?.agents?.length) {
-        allAgents = resp.agents.map((a: any) => ({
+        chat.setAllAgents((resp.agents as Agent[]).map((a) => ({
           id: a.id,
           name: a.name,
           role: a.description || '',
           initial: a.name.charAt(0).toUpperCase(),
           status: a.isEnabled ? 'online' : 'paused',
           color: 'teal',
-        }));
-        console.log('[chat-embed] allAgents set:', allAgents.length, 'agents, current agentId:', agentId);
+        })));
       }
     } catch (e) {
       console.warn('[chat-embed] Failed to load agents for @mentions:', e);
@@ -118,14 +104,15 @@
     try {
       const resp = await api.getSessionMessages(sessionKey);
       if (resp?.messages?.length) {
-        chatMessages = resp.messages
-          .filter((m: any) => m.role === 'user' || m.role === 'assistant')
-          .map((m: any) => ({
+        const messages = resp.messages as ApiChatMessage[];
+        chat.setMessages(messages
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m) => ({
             id: m.id,
             type: m.role as 'user' | 'assistant',
             content: m.content,
             html: m.html || undefined,
-          }));
+          })));
       }
     } catch { /* first visit — no session yet */ }
 
@@ -133,62 +120,6 @@
     const ws = getWebSocketClient();
     const token = localStorage.getItem('nebo_token');
     ws.connect(token || undefined);
-
-    // Listen for chat events
-    const offStream = ws.on('chat_stream', (data: any) => {
-      if (data.session_id && !data.session_id.includes(agentId)) return;
-      const chunk = data.content || data.chunk || data.text || '';
-      if (chunk) {
-        streamingContent += chunk;
-        const last = chatMessages[chatMessages.length - 1];
-        if (last?.type === 'assistant') {
-          chatMessages = [...chatMessages.slice(0, -1), { ...last, content: streamingContent }];
-        } else {
-          chatMessages = [...chatMessages, { type: 'assistant', content: streamingContent }];
-        }
-      }
-    });
-    cleanups.push(offStream);
-
-    const offMessage = ws.on('chat_message', (data: any) => {
-      if (data.session_id && !data.session_id.includes(agentId)) return;
-      if (data.role === 'assistant' || data.type === 'assistant') {
-        const content = data.content || data.text || '';
-        if (content) {
-          const last = chatMessages[chatMessages.length - 1];
-          if (last?.type === 'assistant') {
-            chatMessages = [...chatMessages.slice(0, -1), { type: 'assistant', content }];
-          } else {
-            chatMessages = [...chatMessages, { type: 'assistant', content }];
-          }
-        }
-        // Notify parent
-        window.parent?.postMessage({
-          type: 'nebo:response-complete',
-          text: content || streamingContent,
-        }, '*');
-        streamingContent = '';
-        isLoading = false;
-      }
-    });
-    cleanups.push(offMessage);
-
-    const offComplete = ws.on('chat_complete', (data: any) => {
-      if (data.session_id && !data.session_id.includes(agentId)) return;
-      isLoading = false;
-      streamingContent = '';
-    });
-    cleanups.push(offComplete);
-
-    // Listen for session_reset events (server-side /new or /clear)
-    const offReset = ws.on('session_reset', (data: any) => {
-      if (data.session_id && !data.session_id.includes(agentId)) return;
-      if (data.success) {
-        chatMessages = [];
-        streamingContent = '';
-      }
-    });
-    cleanups.push(offReset);
 
     // Listen for postMessage commands from parent
     function onParentMessage(e: MessageEvent) {
@@ -198,7 +129,10 @@
           if (e.data.message) handleSend(e.data.message);
           break;
         case 'nebo:new-thread':
-          newThread();
+          chat.newThread();
+          break;
+        case 'nebo:set-context':
+          appContext = e.data.context ?? null;
           break;
         case 'nebo:configure':
           if (e.data.options?.placeholder) placeholder = e.data.options.placeholder;
@@ -214,18 +148,26 @@
 
   onDestroy(() => {
     cleanups.forEach(fn => fn());
+    chat.destroy();
   });
 </script>
 
 <div class="h-screen flex flex-col {paramBorderless ? '' : 'bg-base-100'}">
   <ChatPane
-    messages={chatMessages}
+    messages={chat.messages}
     {agentName}
     {agentId}
+    sessionId={sessionKey}
     {placeholder}
-    {allAgents}
-    onsend={(text) => handleSend(text)}
-    onstop={handleStop}
-    {isLoading}
+    allAgents={chat.allAgents}
+    onsend={async (text, files) => {
+      const attachments = files?.length ? await uploadFiles(files.map(f => f.file)) : undefined;
+      handleSend(text, attachments);
+    }}
+    onstop={() => chat.stop()}
+    isLoading={chat.isLoading}
+    tokenUsage={chat.tokenUsage}
+    quotaWarning={chat.quotaWarning}
+    ondismisswarning={() => chat.dismissWarning()}
   />
 </div>

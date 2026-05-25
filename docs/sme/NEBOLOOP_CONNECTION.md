@@ -58,6 +58,7 @@ The local Nebo desktop app connects to the NeboLoop cloud gateway via a **binary
 - **JoinResultPayload**: `{conversationId, botId, stream, channelId, channelName, loopId, peerId, peerType, agentId, agentSlug}` — type detected by which fields are set
 - **AckPayload**: `{conversationId, ackedSeq}`
 - **ReplayPayload**: `{conversationId, fromSeq, toSeq, messageCount}`
+- **Attachment**: `{fileId, filename, mimeType, size, url, thumbnailUrl?, width?, height?, duration?}` — file/image/video metadata embedded in `content.attachments[]`
 
 ---
 
@@ -75,8 +76,8 @@ The local Nebo desktop app connects to the NeboLoop cloud gateway via a **binary
 4. Extract rotated JWT from AUTH_OK → store in memory + persist to <data_dir>/neboloop_token.cache
 5. Reset ConvMaps (fresh for new connection)
 6. Spawn 3 background tasks:
-   - Read loop: decode frames → dedup → dispatch to handler
-   - Write loop: drain send queue + 15s keepalive pings
+   - Read loop: decode frames → dedup → dispatch to handler (120s read timeout)
+   - Write loop: drain send queue + 30s keepalive pings
    - Join processor: update ConvMaps from join results
 7. Auto-join 5 bot streams: dm, installs, chat, account, voice
 ```
@@ -97,6 +98,16 @@ The token cache file at `<data_dir>/neboloop_token.cache` is persisted immediate
 9. Persist rotated JWT from AUTH_OK to DB auth_profiles
 10. Broadcast `settings_updated` to frontend
 11. Spawn background reconciliation: `reconcile_agents()` + `sync_bot_identity()`
+
+### Keepalive & Timeouts
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Ping interval | 30s | Standard WebSocket keepalive; balances bandwidth vs liveness detection |
+| Read timeout | 120s | 4× ping interval; allows 4 missed pings before treating as dead |
+| Sleep drift threshold | 60s | 2× ping interval; detects system sleep/wake and forces reconnect |
+
+Ping/pong frames are logged to devlog (dev builds only) for connection health visibility.
 
 ### Auto-connect & Reconnect (`lib.rs:988-1027`)
 
@@ -153,6 +164,7 @@ ConvMaps {
 5. For `TYPE_MESSAGE_DELIVERY`:
    - Parse `DeliveryPayload`
    - Build `CommMessage` with metadata (agent_id, agent_slug, source_channel_id)
+   - Extract `attachments[]` from `delivery.content` JSON → `Vec<wire::Attachment>`
    - Set `topic` = `delivery.stream` (e.g., "chat", "dm", "agent_space", "installs")
    - Call registered message handler callback (warns + logs if handler is None)
 6. For `TYPE_JOIN_CONVERSATION`: route to join processor
@@ -192,9 +204,12 @@ Single handler registration at startup — message handler is set once during `s
 5. Pre-create chat record with "Agent: {agent_name}" title
 6. Send desktop notification
 7. Resolve entity config for ("channel", "agent_space")
-8. Build ChatConfig {origin: Comm, lane: COMM, agent_id, comm_reply: {topic: "agent_space", conv_id}}
-9. Dispatch to run_chat()
-10. Emit event: "neboloop.agent_space.{slug}" → triggers agent event subscriptions
+8. Process attachments via process_comm_attachments():
+   - Image attachments → download via API, base64-encode → Vec<ImageContent> for vision
+   - Non-image attachments → append "[Attached: filename (size)]" to prompt text
+9. Build ChatConfig {origin: Comm, lane: COMM, agent_id, images, comm_reply: {topic: "agent_space", conv_id}}
+10. Dispatch to run_chat()
+11. Emit event: "neboloop.agent_space.{slug}" → triggers agent event subscriptions
 ```
 
 ### Chat/DM Messages (`lib.rs:1352-1500`)
@@ -210,9 +225,10 @@ Single handler registration at startup — message handler is set once during `s
 5. Resolve entity config for ("channel", topic)
 6. Check @mention: if agent_slug in metadata → resolve agent_id
 7. If @mentioned: pre-create chat with "@{slug} (channel)" title
-8. Build ChatConfig {origin: Comm, lane: COMM, agent_id (empty if no @mention), comm_reply}
-9. Dispatch to run_chat()
-10. Emit event: "neboloop.{topic}" → triggers agent event subscriptions
+8. Process attachments via process_comm_attachments() (same as agent_space path)
+9. Build ChatConfig {origin: Comm, lane: COMM, agent_id (empty if no @mention), images, comm_reply}
+10. Dispatch to run_chat()
+11. Emit event: "neboloop.{topic}" → triggers agent event subscriptions
 ```
 
 ---
@@ -226,7 +242,7 @@ Single handler registration at startup — message handler is set once during `s
 ```rust
 ChatConfig {
     session_key:   String,           // Unique conversation ID
-    prompt:        String,           // User message text
+    prompt:        String,           // User message text (may include "[Attached: ...]" for non-image files)
     system:        String,           // System prompt override
     user_id:       String,           // User identity
     channel:       String,           // "neboloop" for comm messages
@@ -236,7 +252,7 @@ ChatConfig {
     lane:          String,           // "comm" for NeboLoop (not "main")
     comm_reply:    Option<CommReplyConfig>, // Where to send response back
     entity_config: Option<ResolvedEntityConfig>, // Permissions, model, personality
-    images:        Vec<ImageContent>,
+    images:        Vec<ImageContent>, // Populated from comm attachment downloads (image/* types)
     entity_name:   String,           // Display name (agent name or "Nebo"), used in RunRegistry
 }
 ```
@@ -249,7 +265,7 @@ ChatConfig {
 3. Enqueue lane task on specified lane (e.g., COMM)
 4. Lane task spawns agent runner.run(RunRequest)
 5. Stream events from runner:
-   - Text → coalesce 75ms, broadcast "chat_stream" to frontend
+   - Text → coalesce 50ms, broadcast "chat_stream" to frontend
           → if comm_reply set: coalesce 500ms, send Stream chunks to NeboLoop
    - Thinking → broadcast "thinking"
    - ToolCall → broadcast "tool_start"
@@ -269,7 +285,7 @@ ChatConfig {
 ### Comm Response Streaming
 
 Responses to NeboLoop are **streamed in real-time** (not batched). Two coalescing windows operate in parallel:
-- **Frontend**: 75ms coalesce → `chat_stream` WebSocket event
+- **Frontend**: 50ms coalesce → `chat_stream` WebSocket event
 - **NeboLoop comm**: 500ms coalesce → `CommMessageType::Stream` chunks via `comm_manager.send()`
 
 After the agent completes:
@@ -281,7 +297,8 @@ After the agent completes:
 
 ```rust
 CommReplyConfig {
-    topic: String,          // "agent_space", "chat", or "dm"
+    provider: String,        // "neboloop", or future: "slack", "discord"
+    topic: String,           // "agent_space", "chat", or "dm"
     conversation_id: String, // NeboLoop conversation ID
 }
 ```
@@ -325,7 +342,8 @@ After completion (only if no chunks were streamed):
    - Else if resolved via agent_space → "agent_space"
    - Else → "dm"
 4. Build content: {"text": msg.content} merged with metadata fields
-5. Build SendPayload → encode frame → queue to write loop
+5. If msg.attachments is non-empty → add content["attachments"] with attachment metadata array
+6. Build SendPayload → encode frame → queue to write loop
 ```
 
 ### From Agent Tools (loop tool)
@@ -397,6 +415,7 @@ On every successful connection, `reconcile_agents()` syncs local ↔ remote:
 | **Publishing** | `publish_skill`, `publish_agent`, `submit_for_review` |
 | **Plugins** | `get_plugin(slug, platform)`, `download_plugin_binary(url)` |
 | **Workflows** | `list_workflows`, `uninstall_workflow` |
+| **Files** | `upload_file(filename, mime_type, data)` → `Attachment`, `download_file(file_id)` → raw bytes |
 | **Referral** | `get_referral_code` |
 | **Unauthenticated** | `redeem_connect_code(code)` — for initial bot activation |
 
@@ -443,10 +462,72 @@ CommMessage {
     task_status: Option<TaskStatus>,   // Submitted, Working, Completed, Failed, Canceled, InputRequired
     artifacts: Vec<TaskArtifact>,
     error: Option<String>,
+
+    // File/image/video attachments
+    attachments: Vec<wire::Attachment>,  // #[serde(default, skip_serializing_if = "Vec::is_empty")]
 }
 ```
 
-The `Stream` message type is used for real-time response streaming (500ms coalesced chunks). `Task`/`TaskResult`/`TaskStatus` types support the A2A protocol for inter-agent task delegation.
+The `Stream` message type is used for real-time response streaming (500ms coalesced chunks). `Task`/`TaskResult`/`TaskStatus` types support the A2A protocol for inter-agent task delegation. `attachments` carries file/image/video metadata — actual file bytes are uploaded/downloaded via the REST API, only metadata (~200 bytes each) travels over the WebSocket.
+
+---
+
+## 12b. File/Image/Video Attachments
+
+### Upload-Then-Reference Pattern
+
+Attachments use an **upload-then-reference** pattern. File bytes are uploaded via REST, returning an `Attachment` metadata struct. Only the metadata is embedded in the WebSocket `content.attachments[]` JSON — file bytes never travel over the 32KB wire protocol.
+
+### Attachment Struct (`crates/comm/src/wire.rs`)
+
+```rust
+Attachment {
+    file_id: String,         // Server-assigned file ID
+    filename: String,        // Original filename
+    mime_type: String,       // MIME type (e.g., "image/png", "video/mp4", "application/pdf")
+    size: u64,               // File size in bytes
+    url: String,             // Download URL (may be pre-signed)
+    thumbnail_url: Option,   // Resized image / video first frame
+    width: Option<u32>,      // Image/video dimensions
+    height: Option<u32>,
+    duration: Option<f64>,   // Video duration in seconds
+}
+```
+
+### REST Endpoints (`crates/comm/src/api.rs`)
+
+- `upload_file(filename, mime_type, data)` → `POST /api/v1/files/upload` (multipart/form-data) → returns `Attachment`
+- `download_file(file_id)` → `GET /api/v1/files/{file_id}` → raw bytes
+
+Upload uses a separate reqwest client with 120s timeout (vs 15s default) for large files.
+
+### Wire Protocol Integration
+
+Attachments piggyback on the existing freeform `content: Value` field in `SendPayload` and `DeliveryPayload`:
+
+- **Outbound** (`neboloop.rs:send()`): If `msg.attachments` is non-empty, `content["attachments"]` is set to the serialized attachment metadata array alongside `content["text"]`.
+- **Inbound** (`neboloop.rs:read_loop`): `delivery.content.get("attachments")` is parsed into `Vec<wire::Attachment>` and stored on `CommMessage.attachments`.
+
+No wire protocol header, frame type, or version changes — fully backward compatible.
+
+### Vision Integration (`lib.rs:process_comm_attachments()`)
+
+When a comm message with attachments reaches `handle_comm_message()`:
+
+1. **Image attachments** (`mime_type.starts_with("image/")`) are downloaded via `NeboLoopApi.download_file()`, base64-encoded, and added to `ChatConfig.images` as `ai::ImageContent`. The AI provider receives these as vision input.
+2. **Non-image attachments** (PDF, video, etc.) are appended to the prompt as text descriptions: `[Attached: report.pdf (245 KB)]`.
+3. Errors (download failure, missing API client) are logged and skipped — the message is still processed with whatever attachments succeeded.
+
+### Local Server Upload Proxy (`crates/server/src/handlers/files.rs`)
+
+The frontend uploads through the local server (`POST /api/v1/files/upload`) which proxies to NeboLoop. This avoids CORS issues and keeps the NeboLoop token off the browser.
+
+### Frontend Flow
+
+1. User attaches files in the chat composer
+2. Files are uploaded via `app/src/lib/api/upload.ts` (XHR for progress tracking) → returns `UploadedAttachment[]`
+3. `controller.send(text, { attachments })` includes attachment metadata in the WebSocket payload
+4. `ChatPane.svelte` renders attachments inline: images as thumbnails, videos with controls, files as download pills
 
 ---
 
@@ -466,6 +547,11 @@ The `Stream` message type is used for real-time response streaming (500ms coales
 12. **DM→agent_space reroute**: Gateway sometimes sends `stream=dm` for agent space conversations. `handle_comm_message()` checks `agent_slug_for_conv()` and reroutes to the agent space path if the conversation belongs to an agent.
 13. **Token cache file**: `<data_dir>/neboloop_token.cache` survives hot-reload kills. `activate_neboloop()` reads this first, falling back to DB token.
 14. **RunRegistry**: All chat runs auto-register in the global RunRegistry for visibility, progress tracking, and external cancellation.
+15. **Dev-only devlog**: DevLog initialization is gated behind `#[cfg(debug_assertions)]` — no traffic logging in release builds. Writes to `<data_dir>/logs/neboloop.log`. Includes all frame I/O, ping/pong, JOINs, errors, and session separators.
+16. **Sleep drift detection**: After each ping, elapsed time since last ping is checked. If > 60s (2× the 30s interval), the connection is assumed stale (e.g., laptop lid close/open) and force-reconnected.
+17. **Attachment upload-then-reference**: Files are uploaded via REST (`POST /api/v1/files/upload` multipart), returning an `Attachment` metadata struct. Only the metadata (~200 bytes/attachment) is embedded in `content.attachments[]` inside the WebSocket payload — file bytes never travel over the 32KB-limited wire protocol. The local server proxies uploads through `POST /api/v1/files/upload` (handlers/files.rs) to the NeboLoop API.
+18. **Image vision from attachments**: `process_comm_attachments()` in `lib.rs` downloads image attachments (`mime_type.starts_with("image/")`) via `NeboLoopApi.download_file()`, base64-encodes them, and populates `ChatConfig.images` for the AI provider's vision pipeline. Non-image attachments (PDF, video, etc.) are appended as text descriptions to the prompt.
+19. **Attachment backward compatibility**: `CommMessage.attachments` uses `#[serde(default, skip_serializing_if = "Vec::is_empty")]` — old clients that don't understand attachments still see the `text` field, and old messages without attachments deserialize with an empty vec.
 
 ---
 
@@ -492,16 +578,34 @@ The reconnect watcher in `lib.rs` polls `is_connected()` every 30s. The `wait_di
 ### Open: No guard against concurrent `activate_neboloop()` calls
 `activate_neboloop()` has a guard at the top (`if already connected, return Ok()`) but no mutex. If the function takes longer than the reconnect poll interval (30s), a second call can overlap. Both pass the guard (both see `false`), and both call `connect()`. The second `connect()` tears down the first at its top, but this creates wasted connections and confusing devlog entries.
 
+### Open: Missing agent_spaces — `AddMember` early-return skips `EnsureAgentForBot`
+**Root cause:** In the NeboLoop server, `membership.go:AddMember()` returns early (line 32-38) if the bot is already a member of the loop, skipping the call to `EnsureAgentForBot()`. If membership was created before the agent system existed, or if `EnsureAgentForBot` failed on the original call, the bot has a valid loop membership but no agent, no agent_space conversation, and no default channels.
+
+**Impact:** The gateway's `subscribeToAgentSpaces()` queries `ListAgentSpacesByBot` which returns empty. The bot connects successfully (AUTH_OK), auto-joins 5 bot_streams, but receives zero agent_space JOINs and zero channel JOINs. All owner↔agent conversations via the mobile/web app are undeliverable.
+
+**Evidence:** Diagnostic analysis of `~/.nebo/logs/neboloop.log` across 684 connections showed:
+- 684 AUTH_OK (all healthy)
+- 5 bot_stream JOINs per connect (dm, installs, chat, account, voice) ✓
+- 0 agent_space JOINs across all 684 connections ✗
+- 0 channel JOINs across all 684 connections ✗
+- 0 chat/dm/agent_space messages ever received ✗
+
+**Proposed fix:** Self-healing in gateway's `subscribeToAgentSpaces()` — if `ListAgentSpacesByBot` returns empty, check loop memberships and call `EnsureAgentForBot` for each loop, then re-query. Fix proposed to NeboLoop team via Discuss (discussion `4e9cdce6`).
+
+### Open: `reconcile_agents` does not cover the default bot agent
+`reconcile_agents()` (codes.rs:930-996) only syncs custom agents from `list_agents()`. The default bot agent (slug `bot_*`) is created by `EnsureAgentForBot` on the NeboLoop side during `AddMember`. If this default agent is missing (see above), `reconcile_agents` will not detect or repair it because it only iterates locally-installed agents, not the implicit default.
+
 ---
 
 ## 14. Complete End-to-End Sequence
 
 ```
-Human types in NeboLoop app (web/mobile)
+Human types in NeboLoop app (web/mobile), optionally attaches files/images/video
   │
   ▼
 NeboLoop Gateway receives message
   │ Resolves @mention → wraps with agentId/agentSlug/sourceChannelId
+  │ Attachments metadata embedded in content.attachments[] (file bytes stored in object storage)
   │
   ▼
 TYPE_MESSAGE_DELIVERY frame → WebSocket → Nebo desktop app
@@ -511,15 +615,19 @@ Read loop (neboloop.rs:805+)
   ├─ Decode 47-byte header + JSON payload
   ├─ Decompress if zstd flag set
   ├─ Dedup check (skip if duplicate msg_id)
-  ├─ Parse DeliveryPayload → build CommMessage
+  ├─ Parse DeliveryPayload → build CommMessage (including attachments from content JSON)
   └─ Call registered handler callback
   │
   ▼
 handle_comm_message (lib.rs:1212)
   ├─ topic="account" → persist token/plan update (no chat)
   ├─ topic="installs" → napp_registry
-  ├─ topic="agent_space" → resolve agent from slug, build ChatConfig
-  ├─ topic="chat"/"dm" → agent_space reroute check → optional @mention resolve, build ChatConfig
+  ├─ topic="agent_space" / "chat" / "dm":
+  │    ├─ Resolve agent, build session_key
+  │    ├─ process_comm_attachments():
+  │    │    ├─ image/* attachments → download via REST API → base64 → Vec<ImageContent>
+  │    │    └─ non-image attachments → append "[Attached: filename (size)]" to prompt
+  │    └─ Build ChatConfig {images, prompt (with attachment text), ...}
   └─ other → event_bus + broadcast to frontend
   │
   ▼
@@ -530,9 +638,9 @@ chat_dispatch::run_chat (chat_dispatch.rs:56)
   │
   ▼
 Lane task executes
-  ├─ runner.run(RunRequest{origin: Comm, agent_id, ...})
-  ├─ Agent processes (tools, thinking, text generation)
-  ├─ Stream events → broadcast to frontend (chat_stream 75ms, tool_start, etc.)
+  ├─ runner.run(RunRequest{origin: Comm, agent_id, images: [base64 vision data], ...})
+  ├─ Agent processes (tools, thinking, text generation — can "see" attached images via vision)
+  ├─ Stream events → broadcast to frontend (chat_stream 50ms, tool_start, etc.)
   ├─ Stream text → NeboLoop comm channel (Stream chunks, 500ms coalesce)
   │
   ▼
@@ -543,7 +651,7 @@ Agent completes
   ▼
 NeboLoopPlugin.send (neboloop.rs:517)
   ├─ Resolve conversation_id (from CommReplyConfig)
-  ├─ Build SendPayload{conversation_id, topic, content: {"text": response}}
+  ├─ Build SendPayload{conversation_id, topic, content: {"text": response, "attachments": [...]}}
   ├─ Encode frame (TYPE_SEND_MESSAGE)
   └─ Queue to write loop
   │

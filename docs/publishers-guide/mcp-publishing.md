@@ -187,40 +187,34 @@ Agents have two files that get uploaded: `AGENT.md` (persona/manifest) and `agen
 
 2. **Create the agent** (or update an existing one):
    ```
-   skill(action: create, name: "My Agent", category: "productivity", manifestContent: "<AGENT.md content>")
+   agent(action: create, name: "My Agent", category: "productivity", manifestContent: "<AGENT.md content>")
    ```
 
    For updates:
    ```
-   skill(action: update, id: "<AGENT_ID>", manifestContent: "<AGENT.md content>")
+   agent(action: update, id: "<AGENT_ID>", manifestContent: "<AGENT.md content>")
    ```
-
-   > **Note:** Agents use the `skill()` MCP tool for marketplace CRUD, not the `agent()` tool. The `agent()` tool is for runtime AI agent configuration (autonomy levels, prompts, actions).
 
 3. **Upload agent.json** — get a binary-token and upload via curl:
    ```
-   skill(action: binary-token, id: "<AGENT_ID>")
+   agent(action: binary-token, id: "<AGENT_ID>")
    ```
 
    ```bash
    curl --http1.1 -X POST https://neboloop.com/api/v1/developer/apps/<AGENT_ID>/binaries \
      -H "Authorization: Bearer <TOKEN>" \
-     -F "config=@/path/to/agent.json" \
-     -F "platform=linux-amd64" \
-     -F "skill=@/path/to/AGENT.md"
+     -F "config=@/path/to/agent.json"
    ```
 
    | Form field | Required | Description |
    |------------|----------|-------------|
    | `config`   | yes      | The `agent.json` file — stored as `type_config` |
-   | `platform` | yes      | Use `linux-amd64` (agents are not platform-specific, but the field is required) |
-   | `skill`    | yes      | The `AGENT.md` manifest |
 
-   **Critical:** The `config` field stores its contents as the agent's `type_config` in the database. This is where `agent.json` goes. Do **not** upload `manifest.json` as `config` — it will overwrite the `agent.json` data.
+   **Critical:** The `config` field stores its contents as the agent's `type_config` in the database. This is where `agent.json` goes. Do **not** upload `manifest.json` as `config` — it will overwrite the `agent.json` data. Agents do not require `platform` or `file` fields — they are not platform-specific binaries.
 
 4. **Submit for review:**
    ```
-   skill(action: submit, id: "<AGENT_ID>", version: "1.0.0")
+   agent(action: submit, id: "<AGENT_ID>", version: "1.0.0")
    ```
 
 ### Verifying the Upload
@@ -248,7 +242,7 @@ The response should include the full agent.json structure (`inputs`, `workflows`
   python3 -c "import json; json.load(open('agent.json')); print('valid')"
   ```
 
-- **Forgetting the platform field:** Even though agents are not platform-specific, the `platform` field is required by the upload endpoint. Use `linux-amd64` as the default.
+- **Sending unnecessary fields:** Agent uploads only need the `config` field. Unlike skills and plugins, agents do not require `file`, `platform`, or `skill` fields.
 
 ---
 
@@ -276,19 +270,17 @@ The response should include the full agent.json structure (`inputs`, `workflows`
 |----------|----------------|----------------|-------------------|
 | Skill    | `skill()`      | `skill(action: binary-token)` | `skill(action: submit)` |
 | Plugin   | `plugin()`     | `plugin(action: binary-token)` | `plugin(action: submit)` |
-| Agent    | `skill()`      | `skill(action: binary-token)` | `skill(action: submit)` |
+| Agent    | `agent()`      | `agent(action: binary-token)` | `agent(action: submit)` |
 
 ### Curl Form Fields
 
 | Field    | Skills | Plugins | Agents | Description |
 |----------|--------|---------|--------|-------------|
 | `file`   | yes    | yes     | no     | Binary file |
-| `platform` | yes  | yes     | yes*   | Target platform |
-| `skill`  | yes    | yes     | yes    | Markdown manifest (SKILL.md / PLUGIN.md / AGENT.md) |
+| `platform` | yes  | yes     | no     | Target platform |
+| `skill`  | yes    | yes     | no     | Markdown manifest (SKILL.md / PLUGIN.md) |
 | `config` | no     | optional | yes   | JSON config (plugin.json / agent.json) |
 | `skills` | no     | optional | no    | Skills tarball (.tar.gz) |
-
-\* Agents require `platform` but are not platform-specific. Use `linux-amd64`.
 
 ### Valid Platforms
 

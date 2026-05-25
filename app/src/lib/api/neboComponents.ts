@@ -56,6 +56,8 @@ export interface Agent {
 	inputValues?: string
 	isApp?: boolean
 	appWindowConfig?: string
+	soul?: string
+	rules?: string
 }
 
 export interface AgentProfile {
@@ -107,6 +109,23 @@ export interface AgentWorkflowStats {
 	lastRunAt?: number
 	lastSuccessAt?: number
 	lastError?: string
+}
+
+export interface ArtifactUpdatePref {
+	artifactId: string
+	artifactType: string
+	autoUpdate: boolean
+	localVersion: string
+	remoteVersion: string
+	lastCheckedAt: number
+	updateAvailable: boolean
+}
+
+export interface ArtifactUpdateSettings {
+	agents: boolean
+	skills: boolean
+	plugins: boolean
+	checkIntervalHours: number
 }
 
 export interface AuthProfile {
@@ -285,6 +304,7 @@ export interface EntityConfig {
 	multiChat?: number
 	createdAt: number
 	updatedAt: number
+	lastHeartbeatAt?: string
 }
 
 export interface ErrorLog {
@@ -685,6 +705,7 @@ export interface ActivateAgentResponse {
 
 export interface AddCollectionItemResponse {
 	collection: unknown
+	added: unknown
 }
 
 export interface AgentMcpHandlerResponse {
@@ -700,6 +721,10 @@ export interface AgentStatsResponse {
 export interface ApplyAgentUpdateResponse {
 	ok: boolean
 	agent: Agent
+}
+
+export interface ApplyUpdateResponse {
+	status: string
 }
 
 export interface AuthLoginResponse {
@@ -720,7 +745,8 @@ export interface BrowseResponse {
 }
 
 export interface CancelRunResponse {
-	cancelled: string
+	cancelled: boolean
+	runId: string
 }
 
 export interface ChatWithAgentResponse {
@@ -732,6 +758,10 @@ export interface ChatWithAgentResponse {
 export interface CheckAgentUpdateResponse {
 	hasUpdate: boolean
 	error: string
+}
+
+export interface CheckUpdatesResponse {
+	status: string
 }
 
 export interface CompleteResponse {
@@ -864,7 +894,8 @@ export interface DeleteSkillSecretResponse {
 }
 
 export interface DeleteStoreCollectionResponse {
-	deleted: unknown
+	deleted: boolean
+	id: string
 }
 
 export interface DeleteTaskResponse {
@@ -879,6 +910,10 @@ export interface DeleteWorkflowResponse {
 	message: string
 }
 
+export interface DisableAgentChannelResponse {
+	ok: boolean
+}
+
 export interface DuplicateAgentResponse {
 	agent: unknown
 	activated: boolean
@@ -886,11 +921,11 @@ export interface DuplicateAgentResponse {
 
 export interface EditMessageResponse {
 	success: boolean
+	chatId: string
 }
 
-export interface GetAgentNavResponse {
-	viewId: unknown
-	label: string
+export interface EnableAgentChannelResponse {
+	ok: boolean
 }
 
 export interface GetAgentResponse {
@@ -899,11 +934,9 @@ export interface GetAgentResponse {
 	version: string
 	inputFields: unknown[]
 	personaProperties: unknown
-	personaBody: unknown
 	persona: unknown
 	model: unknown
 	skills: string[]
-	views: unknown
 	pluginsNeedingAuth: unknown
 	needsSetup: unknown
 }
@@ -921,7 +954,8 @@ export interface GetChatHistoryByDayResponse {
 }
 
 export interface GetChatMessagesResponse {
-	messages: unknown[]
+	messages: ChatMessage[]
+	totalMessages: number
 }
 
 export interface GetCompanionChatResponse {
@@ -983,6 +1017,10 @@ export interface GetPluginConfigResponse {
 	config: unknown[]
 }
 
+export interface GetPluginHelpResponse {
+	docs: unknown[]
+}
+
 export interface GetRunResponse {
 	run: WorkflowRun
 	activities: WorkflowActivityResult[]
@@ -1019,10 +1057,12 @@ export interface GetStatusResponse {
 
 export interface GetStorageResponse {
 	key: string
+	value: string
 }
 
 export interface GetStoreCollectionResponse {
 	collection: unknown
+	id: string
 }
 
 export interface GetStoreProductFeedbackResponse {
@@ -1041,6 +1081,7 @@ export interface GetSystemInfoResponse {
 
 export interface GetToolOutputResponse {
 	output: string
+	isError: boolean
 }
 
 export interface GetWorkflowResponse {
@@ -1064,6 +1105,7 @@ export interface InstallStoreProductResponse {
 
 export interface JanusCompleteResponse {
 	text: unknown
+	usage: unknown
 }
 
 export interface ListActiveAgentsResponse {
@@ -1075,14 +1117,18 @@ export interface ListAdvisorsResponse {
 	advisors: Advisor[]
 }
 
+export interface ListAgentChannelsResponse {
+	channels: unknown
+}
+
 export interface ListAgentChatsResponse {
-	chats: unknown[]
+	chats: EnrichedChat[]
 	activeChatId: string
 	total: number
 }
 
 export interface ListAgentRunsResponse {
-	runs: WorkflowRun[]
+	runs: AgentRunEntry[]
 	total: number
 }
 
@@ -1102,7 +1148,8 @@ export interface ListAllPluginEventsResponse {
 }
 
 export interface ListBindingsResponse {
-	bindings: unknown[]
+	bindings: WorkflowToolBinding[]
+	total: number
 }
 
 export interface ListChatDaysResponse {
@@ -1125,7 +1172,7 @@ export interface ListEventSourcesResponse {
 }
 
 export interface ListExtensionsResponse {
-	extensions: unknown[]
+	extensions: ExtensionInfo[]
 }
 
 export interface ListIntegrationsResponse {
@@ -1193,6 +1240,7 @@ export interface ListStorageResponse {
 
 export interface ListStoreCollectionsResponse {
 	collections: unknown
+	total: number
 }
 
 export interface ListStoreOrgsResponse {
@@ -1210,6 +1258,10 @@ export interface ListTasksResponse {
 
 export interface ListToolsResponse {
 	tools: unknown[]
+}
+
+export interface ListUpdatesResponse {
+	updates: ArtifactUpdatePref[]
 }
 
 export interface ListWorkflowsResponse {
@@ -1272,6 +1324,7 @@ export interface NeboLoopConnectHandlerResponse {
 
 export interface NeboLoopForceReconnectResponse {
 	reconnected: boolean
+	error: string
 }
 
 export interface NeboLoopJanusUsageResponse {
@@ -1292,13 +1345,6 @@ export interface PickFolderResponse {
 	path: string
 }
 
-export interface ProcessAgentBindingsResponse {
-	binding: string
-	triggerType: unknown
-	hasActivities: unknown
-	status: string
-}
-
 export interface ProxyPluginRouteResponse {
 	output: unknown
 }
@@ -1314,11 +1360,17 @@ export interface ReloadAgentResponse {
 }
 
 export interface RemoveCollectionItemResponse {
-	collection: string
+	collection: unknown
+	removedItem: string
 }
 
 export interface RemovePluginResponse {
 	message: string
+}
+
+export interface RunAgentWorkflowResponse {
+	runId: string
+	run: WorkflowRun
 }
 
 export interface RunTaskResponse {
@@ -1343,12 +1395,35 @@ export interface SearchMessagesResponse {
 	messages: ChatMessage[]
 }
 
+export interface SetAgentChannelConfigResponse {
+	ok: boolean
+}
+
+export interface SetArtifactAutoUpdateResponse {
+	ok: boolean
+}
+
 export interface SetPluginConfigResponse {
 	success: boolean
 }
 
 export interface SetSkillSecretResponse {
 	success: boolean
+	key: string
+}
+
+export interface SetUpdateSettingsResponse {
+	ok: boolean
+}
+
+export interface StartHelpChatResponse {
+	sessionKey: string
+	agentId: string
+}
+
+export interface StartWorkflowChatResponse {
+	sessionKey: string
+	agentId: string
 }
 
 export interface StatusResponse {
@@ -1378,6 +1453,7 @@ export interface ToggleAgentWorkflowResponse {
 
 export interface ToggleSkillResponse {
 	name: string
+	enabled: boolean
 }
 
 export interface ToggleWorkflowResponse {
@@ -1459,10 +1535,12 @@ export interface UpdateSettingsResponse {
 
 export interface UpdateSkillResponse {
 	name: string
+	success: boolean
 }
 
 export interface UpdateStoreCollectionResponse {
 	collection: unknown
+	id: string
 }
 
 export interface UpdateTaskRoutingResponse {
@@ -1639,7 +1717,7 @@ export type WSServerEventType =
 	| "session_reset"
 	| "session_compact"
 	| "chat_complete"
-	| "a2ui_message"
+	| "ghost_text"
 	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
@@ -1647,10 +1725,8 @@ export type WSServerEventType =
 
 export interface AppActionEvent {
 	agentId: string
-	surfaceId: string
 	name: unknown
-	sourceComponentId: string
-	context: unknown
+	data: unknown
 }
 
 export interface AppPingEvent {
@@ -1662,12 +1738,19 @@ export interface ChatCancelledEvent {
 }
 
 export interface SessionCompactEvent {
-	session_id: unknown
+	session_id: string
+	success: boolean
+	error: string
 }
 
 export interface ChatCompleteEvent {
 	session_id: string
 	skipped: boolean
+}
+
+export interface GhostTextEvent {
+	request_id: string
+	suggestion: string
 }
 
 export interface ChatAckEvent {
@@ -1682,10 +1765,12 @@ export interface ChatStreamEvent {
 
 export interface ChatErrorEvent {
 	error: string
+	session_id: string
 }
 
 export interface AgentActivatedEvent {
 	agentId: string
+	name: string
 }
 
 /** Client → Server WebSocket message types */

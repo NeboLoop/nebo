@@ -5,6 +5,8 @@
   import { listStoreProducts } from '$lib/api/index';
   import { collections } from '$lib/stores/collections.js';
   import { installItem } from '$lib/stores/marketplace.js';
+  import { getWebSocketClient } from '$lib/websocket/client';
+  import CodeInstallModal from '$lib/components/chat/CodeInstallModal.svelte';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   const sidebarCollapsed = sidebarCollapsedFor('marketplace');
@@ -109,39 +111,51 @@
 
   // Install code input
   let codeInput = $state('');
-  let codeStatus = $state('idle'); // idle | processing | success | error
+  let codeStatus = $state('idle'); // idle | processing | error
   let codeMessage = $state('');
-  const CODE_RE = /^(NEBO|SKIL|AGNT|PLUG|LOOP)-[0-9A-Z]{4}-[0-9A-Z]{4}$/i;
+  let showInstallModal = $state(false);
+  const CODE_RE = /^(NEBO|SKIL|AGNT|PLUG|LOOP|WORK|APPX)-[0-9A-Z]{4}-[0-9A-Z]{4}$/i;
+  const CODE_TYPE_MAP: Record<string, string> = {
+    NEBO: 'nebo', SKIL: 'skill', WORK: 'workflow', AGNT: 'agent',
+    LOOP: 'loop', PLUG: 'plugin', APPX: 'app',
+  };
+  const CODE_STATUS_MAP: Record<string, string> = {
+    nebo: 'Connecting to NeboLoop...', skill: 'Installing skill...',
+    workflow: 'Installing workflow...', agent: 'Installing agent...',
+    loop: 'Joining loop...', plugin: 'Installing plugin...', app: 'Installing app...',
+  };
 
   function redeemCode() {
     const code = codeInput.trim().toUpperCase();
     if (!CODE_RE.test(code)) {
       codeStatus = 'error';
       codeMessage = 'Invalid code format';
+      setTimeout(() => { codeStatus = 'idle'; codeMessage = ''; }, 2500);
       return;
     }
-    codeStatus = 'processing';
-    codeMessage = 'Installing...';
 
-    // Look up code in all marketplace items
-    const found = allProducts.find(item => item.code === code);
+    // Dispatch code_processing for instant modal feedback
+    const match = code.match(CODE_RE);
+    if (match) {
+      const prefix = match[1].toUpperCase();
+      const codeTypeStr = CODE_TYPE_MAP[prefix] || 'code';
+      window.dispatchEvent(new CustomEvent('nebo:code_processing', {
+        detail: {
+          code,
+          code_type: codeTypeStr,
+          status_message: CODE_STATUS_MAP[codeTypeStr] || 'Processing...',
+        },
+      }));
+    }
 
-    // Simulate async install
-    setTimeout(() => {
-      if (found) {
-        const validTypes = ['skill', 'agent', 'plugin', 'connector'] as const;
-        const itemType = validTypes.includes(found.type as typeof validTypes[number]) ? found.type as typeof validTypes[number] : 'skill';
-        installItem({ id: found.id, name: found.name, type: itemType });
-        codeStatus = 'success';
-        codeMessage = `Installed ${found.name}`;
-        codeInput = '';
-        setTimeout(() => { codeStatus = 'idle'; codeMessage = ''; }, 2500);
-      } else {
-        codeStatus = 'error';
-        codeMessage = 'Code not found';
-        setTimeout(() => { codeStatus = 'idle'; codeMessage = ''; }, 2500);
-      }
-    }, 800);
+    // Send via WebSocket — backend intercepts and handles
+    const ws = getWebSocketClient();
+    if (ws.isConnected()) {
+      ws.send('chat', { prompt: code, agent_id: 'assistant' });
+    }
+
+    codeInput = '';
+    codeStatus = 'idle';
   }
 </script>
 
@@ -289,3 +303,5 @@
     {@render children()}
   </div>
 </div>
+
+<CodeInstallModal bind:show={showInstallModal} />

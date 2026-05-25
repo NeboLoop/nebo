@@ -5,10 +5,17 @@ USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, 
 Spawn sub-agents for independent work. Two modes:
 - **wait: true (DEFAULT)** — You block until the sub-agent finishes. Result returns inline. Use this for most cases.
 - **wait: false** — Sub-agent runs in background. Its result is automatically delivered to your conversation when it completes. Use this only when you have other work to do in parallel.
-- agent(resource: task, action: spawn, prompt: "Research competitor pricing") — Spawn and wait for result (default)
-- agent(resource: task, action: spawn, prompt: "...", wait: false) — Background; result delivered when done
+- agent(resource: task, action: spawn, prompt: "Research competitor pricing", tools: ["web"]) — Spawn with web tool docs
+- agent(resource: task, action: spawn, prompt: "Check inbox for urgent items", plugins: ["PLUG-PJ3Z-ECFV"], tools: ["loop", "message"]) — Spawn with plugin + tools
+- agent(resource: task, action: spawn, prompt: "...", wait: false, tools: ["web"]) — Background with tool docs
 - agent(resource: task, action: status, agent_id: "...") — Check status of a background agent
 - agent(resource: task, action: cancel, agent_id: "...") — Cancel a running sub-agent
+
+**CRITICAL: Sub-agents are born blind.** They only know what you pass them.
+- **plugins**: Pass plugin install codes the sub-agent needs. It gets the plugin's description, skills, and usage docs.
+- **tools**: Pass STRAP tool names ("web", "loop", "message", "system", "agent", "skill", "event", "mcp"). It gets the full tool documentation.
+- **skills**: Pass skill names for SKILL.md instructions pre-loaded into context.
+If you use plugins or specific tools, you MUST pass them to any sub-agent that will need them too.
 
 **Work tracking (keep yourself on task):**
 For multi-step work, create tasks to track your progress. This prevents you from losing focus or repeating steps.

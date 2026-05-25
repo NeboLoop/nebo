@@ -94,6 +94,15 @@ pub fn user_dir() -> Result<PathBuf, NeboError> {
     Ok(data_dir()?.join("user"))
 }
 
+/// Returns the `appdata/` directory for persistent artifact data.
+///
+/// This tree is **never** touched by the update system. Artifacts own their
+/// data and are responsible for their own schema migrations across versions.
+/// Layout: `appdata/{plugins,skills,agents}/<slug>/`
+pub fn appdata_dir() -> Result<PathBuf, NeboError> {
+    Ok(data_dir()?.join("appdata"))
+}
+
 /// Artifact type subdirectories.
 const ARTIFACT_TYPES: &[&str] = &["skills", "agents"];
 
@@ -121,8 +130,8 @@ pub fn ensure_artifact_dirs() -> Result<(), NeboError> {
         ))
     })?;
 
-    // Create nebo/ and user/ subdirectories
-    for namespace in &["nebo", "user"] {
+    // Create nebo/, user/, and appdata/ subdirectories
+    for namespace in &["nebo", "user", "appdata"] {
         for artifact_type in ARTIFACT_TYPES {
             let dir = data.join(namespace).join(artifact_type);
             fs::create_dir_all(&dir).map_err(|e| {
@@ -133,6 +142,10 @@ pub fn ensure_artifact_dirs() -> Result<(), NeboError> {
             })?;
         }
     }
+    // appdata/plugins (not in ARTIFACT_TYPES since plugins aren't a top-level artifact dir)
+    fs::create_dir_all(data.join("appdata").join("plugins")).map_err(|e| {
+        NeboError::DataDir(format!("failed to create appdata/plugins directory: {e}"))
+    })?;
 
     Ok(())
 }

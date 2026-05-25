@@ -23,6 +23,8 @@ members = [
     "crates/a2ui/a2ui-types",
     "crates/a2ui/a2ui-core",
     "crates/a2ui/a2ui-validation",
+    "crates/vm",
+    "crates/vm-daemon",
 ]
 
 [workspace.package]
@@ -36,11 +38,11 @@ repository = "https://github.com/NeboLoop/nebo"
 tokio = { version = "1", features = ["full"] }
 
 # HTTP & Web
-axum = { version = "0.8", features = ["ws", "macros"] }
+axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = { version = "0.5" }
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "fs", "set-header", "trace"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 hyper = { version = "1" }
 
 # Serialization
@@ -89,6 +91,9 @@ cron = "0.12"
 # Env
 dotenvy = "0.15"
 
+# Compression
+zstd = "0.13"
+
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
@@ -119,6 +124,7 @@ notify_crate = { path = "crates/notify", package = "nebo-notify" }
 updater = { path = "crates/updater", package = "nebo-updater" }
 cli = { path = "crates/cli", package = "nebo-cli" }
 sandbox-runtime = { git = "https://github.com/NeboLoop/sandbox-runtime.git", branch = "master" }
+vm = { path = "crates/vm", package = "nebo-vm" }
 
 # A2UI protocol
 a2ui-types = { path = "crates/a2ui/a2ui-types" }

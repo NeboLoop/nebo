@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { auth } from '$lib/stores/auth.js';
+  import UpdateBanner from '$lib/components/UpdateBanner.svelte';
 
   let displayName = $state('');
   let planName = $state('Free');
@@ -10,13 +11,14 @@
 
   onMount(async () => {
     try {
-      const [profileResp, subsResp] = await Promise.all([
-        import('$lib/api/nebo').then(api => api.getProfile()),
-        import('$lib/api/nebo').then(api => api.neboLoopBillingSubscription()).catch(() => null)
+      const api = await import('$lib/api/nebo');
+      const [accountResp, subsResp] = await Promise.all([
+        api.neboLoopAccountStatus().catch(() => null),
+        api.neboLoopBillingSubscription().catch(() => null)
       ]);
-      const profile = (profileResp as { profile?: Record<string, unknown> })?.profile;
-      if (profile?.displayName) {
-        displayName = String(profile.displayName);
+      const account = accountResp as Record<string, unknown> | null;
+      if (account?.displayName) {
+        displayName = String(account.displayName);
       }
       const sub = subsResp as Record<string, unknown> | null;
       if (sub?.plan) {
@@ -43,6 +45,7 @@
   ];
 </script>
 
+<UpdateBanner {collapsed} />
 <div class="relative border-t border-base-300 shrink-0">
   {#if open}
     <div class="fixed inset-0 z-40" onclick={() => open = false} role="presentation"></div>
@@ -76,7 +79,7 @@
     class="w-full flex items-center cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none {collapsed ? 'justify-center py-2.5 px-0' : 'gap-2 py-2.5 px-3.5 text-left'}"
     onclick={() => open = !open}
   >
-    <div class="w-7 h-7 rounded-full bg-primary/20 text-primary flex items-center justify-center font-mono text-xs font-semibold shrink-0">{displayName.slice(0, 2).toUpperCase()}</div>
+    <div class="w-7 h-7 rounded-full bg-primary text-primary-content flex items-center justify-center font-mono text-xs font-semibold shrink-0">{displayName.slice(0, 2).toUpperCase()}</div>
     {#if !collapsed}
       <div class="flex-1 min-w-0">
         <div class="text-sm font-medium truncate">{displayName}</div>

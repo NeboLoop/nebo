@@ -1,0 +1,96 @@
+name: VM Rootfs
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to CDN after build"
+        type: boolean
+        default: false
+  push:
+    paths:
+      - "vm/Dockerfile.rootfs"
+      - "vm/init"
+      - ".github/workflows/vm-rootfs.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-rootfs:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x64
+            docker_platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            docker_platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build rootfs via Docker
+        run: |
+          docker build \
+            --platform ${{ matrix.docker_platform }} \
+            -t nebo-rootfs \
+            -f vm/Dockerfile.rootfs .
+
+      - name: Export rootfs to raw ext4 image
+        run: |
+          mkdir -p vm/build
+          # Export container filesystem
+          docker create --name rootfs-tmp nebo-rootfs
+          docker export rootfs-tmp > vm/build/rootfs.tar
+          docker rm rootfs-tmp
+
+          # Create ext4 image from tarball
+          truncate -s 512M vm/build/rootfs.img
+          mkfs.ext4 -F vm/build/rootfs.img
+          mkdir -p /tmp/nebo-rootfs-mnt
+          sudo mount -o loop vm/build/rootfs.img /tmp/nebo-rootfs-mnt
+          sudo tar xf vm/build/rootfs.tar -C /tmp/nebo-rootfs-mnt
+          sudo umount /tmp/nebo-rootfs-mnt
+          rm -rf /tmp/nebo-rootfs-mnt vm/build/rootfs.tar
+
+      - name: Compute SHA-256
+        id: sha
+        run: |
+          SHA=$(sha256sum vm/build/rootfs.img | cut -d' ' -f1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "SHA-256: $SHA"
+
+      - name: Compress with zstd
+        run: |
+          zstd -f -19 vm/build/rootfs.img -o vm/build/rootfs.img.zst
+          echo "Compressed: $(du -h vm/build/rootfs.img.zst | cut -f1)"
+          echo "Uncompressed: $(du -h vm/build/rootfs.img | cut -f1)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-${{ matrix.arch }}
+          path: |
+            vm/build/rootfs.img.zst
+          retention-days: 30
+
+      - name: Publish to CDN
+        if: ${{ inputs.publish && secrets.DO_SPACES_ACCESS_KEY != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
+          S3_ENDPOINT: https://nyc3.digitaloceanspaces.com
+          SHA: ${{ steps.sha.outputs.sha }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          aws s3 cp vm/build/rootfs.img.zst \
+            "s3://neboloop/vm/${ARCH}/${SHA}/rootfs.img.zst" \
+            --endpoint-url "$S3_ENDPOINT" \
+            --acl public-read \
+            --content-type application/zstd
+          echo "Published: cdn.neboloop.com/vm/${ARCH}/${SHA}/rootfs.img.zst"
+          echo ""
+          echo "Update ROOTFS_SHA in crates/tools/src/vm_tool.rs to:"
+          echo "  const ROOTFS_SHA: &str = \"${SHA}\";"

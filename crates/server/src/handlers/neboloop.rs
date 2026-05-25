@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::response::{Html, Json};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
@@ -915,6 +915,69 @@ pub async fn referral_code(State(state): State<AppState>) -> HandlerResult<serde
         .referral_code()
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("referral_code: {e}"))))?;
+    Ok(Json(resp))
+}
+
+// --- Marketplace subscription proxy handlers ---
+
+#[derive(serde::Deserialize)]
+pub struct MarketplaceSubscriptionRequest {
+    #[serde(rename = "targetId")]
+    pub target_id: String,
+    #[serde(rename = "targetType")]
+    pub target_type: String,
+    #[serde(rename = "botCount", default = "default_bot_count")]
+    pub bot_count: i32,
+}
+
+fn default_bot_count() -> i32 {
+    1
+}
+
+/// POST /api/v1/neboloop/marketplace/subscriptions — create marketplace subscription (Stripe Checkout).
+pub async fn marketplace_create_subscription(
+    State(state): State<AppState>,
+    Json(body): Json<MarketplaceSubscriptionRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .marketplace_create_subscription(&body.target_id, &body.target_type, body.bot_count)
+        .await
+        .map_err(|e| {
+            to_error_response(NeboError::Internal(format!(
+                "marketplace_create_subscription: {e}"
+            )))
+        })?;
+    Ok(Json(resp))
+}
+
+/// GET /api/v1/neboloop/marketplace/subscriptions — list active marketplace subscriptions.
+pub async fn marketplace_list_subscriptions(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api.marketplace_list_subscriptions().await.map_err(|e| {
+        to_error_response(NeboError::Internal(format!(
+            "marketplace_list_subscriptions: {e}"
+        )))
+    })?;
+    Ok(Json(resp))
+}
+
+/// POST /api/v1/neboloop/marketplace/subscriptions/:id/cancel — cancel a marketplace subscription.
+pub async fn marketplace_cancel_subscription(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .marketplace_cancel_subscription(&id)
+        .await
+        .map_err(|e| {
+            to_error_response(NeboError::Internal(format!(
+                "marketplace_cancel_subscription: {e}"
+            )))
+        })?;
     Ok(Json(resp))
 }
 

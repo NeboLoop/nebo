@@ -146,4 +146,47 @@ export function neboLoopOAuthStartWithJanus(janus: boolean) {
 	);
 }
 
+// NeboLoop OAuth status polling (generated API lacks the state param)
+export function neboLoopOAuthStatus(state: string) {
+	return webapi.get<components.OAuthStatusResponse>(
+		'/api/v1/neboloop/oauth/status',
+		{ state }
+	);
+}
+
+// Marketplace subscription API wrappers
+
+export interface MarketplaceSubscriptionInfo {
+	id: string;
+	targetId: string;
+	targetType: string;
+	artifactName?: string;
+	tierName?: string;
+	priceCents?: number;
+	billingInterval?: string;
+	status: string;
+	currentPeriodEnd?: string;
+	cancelledAt?: string;
+}
+
+export function createMarketplaceSubscription(params: {
+	targetId: string;
+	targetType: string;
+	botCount?: number;
+}): Promise<{ checkoutUrl?: string; subscriptionId?: string }> {
+	return webapi.post('/api/v1/neboloop/marketplace/subscriptions', params);
+}
+
+export function listMarketplaceSubscriptions(): Promise<{
+	subscriptions: MarketplaceSubscriptionInfo[];
+}> {
+	return webapi.get('/api/v1/neboloop/marketplace/subscriptions');
+}
+
+export function cancelMarketplaceSubscription(
+	id: string
+): Promise<{ success: boolean }> {
+	return webapi.post(`/api/v1/neboloop/marketplace/subscriptions/${id}/cancel`, {});
+}
+
 

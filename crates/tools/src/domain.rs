@@ -40,6 +40,34 @@ pub struct DomainSchemaConfig {
     pub examples: Vec<String>,
 }
 
+/// Auto-correct missing `resource` on STRAP tool calls.
+///
+/// LLMs commonly forget to set `resource`, placing the resource name in the
+/// `action` field instead (e.g. `bot(action: "memory")` instead of
+/// `bot(resource: "memory", action: "list")`).
+///
+/// Call this before per-tool `infer_resource` logic. If the action value
+/// matches a known resource name, it's swapped into the resource field.
+/// Returns the corrected resource string (empty if no correction was possible).
+pub fn auto_correct_resource(
+    domain_input: &DomainInput,
+    input: &mut serde_json::Value,
+    resource_names: &[&str],
+) -> String {
+    if !domain_input.resource.is_empty() {
+        return domain_input.resource.clone();
+    }
+
+    // Most common LLM error: resource name placed as action value
+    // e.g. bot(action: "memory") instead of bot(resource: "memory", action: "list")
+    if resource_names.contains(&domain_input.action.as_str()) {
+        input["resource"] = serde_json::Value::String(domain_input.action.clone());
+        return domain_input.action.clone();
+    }
+
+    String::new()
+}
+
 /// Validate resource and action against allowed values.
 pub fn validate_resource_action(
     resource: &str,

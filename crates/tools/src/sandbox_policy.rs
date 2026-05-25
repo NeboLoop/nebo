@@ -11,11 +11,53 @@ use sandbox_runtime::SandboxRuntimeConfig;
 use crate::skills::Skill;
 
 /// Sensitive paths that are always denied for reading.
-const DENY_READ: &[&str] = &[
+///
+/// Protects credentials, browser data, crypto wallets, password managers,
+/// and Nebo internals from marketplace-uploaded artifacts.
+pub const DENY_READ: &[&str] = &[
+    // Credentials & keys
     "~/.ssh",
     "~/.gnupg",
-    "~/.aws/credentials",
+    "~/.aws",
     "~/.config/gcloud",
+    "~/.kube",
+    "~/.docker",
+    "~/.config/gh",
+    "~/.netrc",
+    "~/.npmrc",
+    "~/.pypirc",
+    "~/.cargo/credentials",
+    "~/.cargo/credentials.toml",
+    "~/.config/pip",
+    // Browser data (passwords, cookies, sessions)
+    "~/Library/Application Support/Google/Chrome",
+    "~/Library/Application Support/Firefox",
+    "~/Library/Application Support/Microsoft Edge",
+    "~/Library/Application Support/Brave-Browser",
+    "~/Library/Application Support/Arc",
+    "~/Library/Safari",
+    "~/Library/Cookies",
+    "~/.mozilla",
+    "~/.config/google-chrome",
+    "~/.config/chromium",
+    // Keychain & system credentials
+    "~/Library/Keychains",
+    // Password managers
+    "~/Library/Group Containers/2BUA8C4S2C.com.1password",
+    "~/Library/Application Support/KeePassXC",
+    // Crypto wallets
+    "~/Library/Application Support/Exodus",
+    "~/Library/Ethereum",
+    "~/Library/Application Support/Electrum",
+    "~/.bitcoin",
+    "~/.ethereum",
+    // macOS sensitive data
+    "~/Library/Messages",
+    "~/Library/Mail",
+    "~/Library/Accounts",
+    // Nebo internals
+    "~/.nebo/settings.json",
+    "~/.nebo/data/nebo.db",
 ];
 
 /// Default package registry domains allowed when `network` capability is present.
@@ -169,12 +211,10 @@ mod tests {
         let skill = test_skill(vec![], HashMap::new());
         let config = build_sandbox_config(&skill, Path::new("/tmp/work"));
         assert!(config.filesystem.deny_read.contains(&"~/.ssh".to_string()));
-        assert!(
-            config
-                .filesystem
-                .deny_read
-                .contains(&"~/.gnupg".to_string())
-        );
+        assert!(config.filesystem.deny_read.contains(&"~/.gnupg".to_string()));
+        assert!(config.filesystem.deny_read.contains(&"~/Library/Keychains".to_string()));
+        assert!(config.filesystem.deny_read.contains(&"~/.nebo/settings.json".to_string()));
+        assert!(config.filesystem.deny_read.contains(&"~/Library/Application Support/Google/Chrome".to_string()));
     }
 
     #[test]
@@ -196,4 +236,5 @@ mod tests {
         // Should have more than the base 4 writable paths
         assert!(config.filesystem.allow_write.len() >= 4);
     }
+
 }

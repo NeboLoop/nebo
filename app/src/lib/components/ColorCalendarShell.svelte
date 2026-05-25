@@ -8,6 +8,8 @@
 
   let { view = $bindable('day'), selectedDate = $bindable(new Date()), enabled, onopencanvas }: { view: string; selectedDate: Date; enabled: Record<string, boolean>; onopencanvas?: (agentFull: string) => void } = $props();
 
+  let showHeartbeats = $state(false);
+
   function goToday() { selectedDate = new Date(); }
 
   function goPrev() {
@@ -70,15 +72,22 @@
       {/each}
     </div>
 
+    {#if view !== 'month'}
+      <button
+        class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-sm {showHeartbeats ? 'text-primary bg-primary/10' : 'text-base-content/50'}"
+        onclick={() => showHeartbeats = !showHeartbeats}
+        title="{showHeartbeats ? 'Hide' : 'Show'} interval events"
+      >↻</button>
+    {/if}
     <button class="btn btn-ghost btn-sm text-sm" onclick={goToday}>Today</button>
   </div>
 
   <!-- Calendar content -->
   <div class="flex-1 min-h-0 flex">
     {#if view === 'day'}
-      <ColorDayView {enabled} {selectedDate} {onopencanvas} />
+      <ColorDayView {enabled} {selectedDate} {onopencanvas} {showHeartbeats} />
     {:else if view === 'week'}
-      <ColorWeekView {enabled} {selectedDate} {onopencanvas} />
+      <ColorWeekView {enabled} {selectedDate} {onopencanvas} {showHeartbeats} />
     {:else}
       <ColorMonthView {enabled} {selectedDate} />
     {/if}

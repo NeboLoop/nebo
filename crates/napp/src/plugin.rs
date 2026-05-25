@@ -67,6 +67,47 @@ pub struct PluginManifest {
     /// Optional permissions manifest — declares env access, network, and timeout caps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<PluginPermissions>,
+    /// Plugin category for discovery routing (e.g., "payments", "communication", "developer").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub category: String,
+    /// Trigger keywords for search matching (e.g., ["payment", "invoice", "billing"]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<String>,
+    /// Channel bridge capability. When present, this plugin can act as a
+    /// bidirectional messaging bridge (e.g., Slack, Discord, Telegram).
+    /// The user enables it per-agent in Settings → Plugins → Channel Routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<PluginChannel>,
+}
+
+/// Channel bridge declaration in plugin.json.
+///
+/// Tells Nebo this plugin can bridge external messaging platforms.
+/// The binary runs as a persistent subprocess: inbound messages on stdout (NDJSON),
+/// outbound replies on stdin (NDJSON).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginChannel {
+    /// CLI command appended to plugin binary (e.g., "bridge --listen").
+    pub command: String,
+    /// Human-readable channel name (e.g., "Slack", "Discord").
+    #[serde(default)]
+    pub name: String,
+    /// Description shown in settings UI.
+    #[serde(default)]
+    pub description: String,
+    /// Seconds to wait before restarting on crash (default: 5).
+    #[serde(default = "default_channel_restart_delay")]
+    pub restart_delay_secs: u64,
+    /// When true, one bridge process is shared across all agents.
+    /// Incoming messages are routed to agents by name. Each agent's
+    /// replies are posted with its own display identity.
+    #[serde(default)]
+    pub shared: bool,
+}
+
+fn default_channel_restart_delay() -> u64 {
+    5
 }
 
 /// Authentication configuration for a plugin binary.
@@ -92,6 +133,27 @@ pub struct PluginAuth {
     /// Description shown to user during auth step.
     #[serde(default)]
     pub description: String,
+    /// Optional help info shown in configuration modals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<ArtifactHelp>,
+}
+
+/// Help content that any artifact (plugin, skill, agent, MCP) can declare.
+///
+/// Displayed in configuration modals to guide users through setup.
+/// At least one of `url` or `text` should be provided.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactHelp {
+    /// Link to external documentation (e.g., API key creation page).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Label for the URL link (e.g., "Get your API key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_label: Option<String>,
+    /// Inline help text (markdown). Shown directly in the modal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// CLI commands for plugin authentication lifecycle.
@@ -366,6 +428,22 @@ fn is_valid_slug_char(c: char) -> bool {
 }
 
 impl PluginManifest {
+    /// Returns true if this plugin declares tool capabilities (connector pattern).
+    pub fn is_connector(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .map(|c| !c.tools.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Number of declared tool capabilities.
+    pub fn tool_count(&self) -> usize {
+        self.capabilities
+            .as_ref()
+            .map(|c| c.tools.len())
+            .unwrap_or(0)
+    }
+
     /// Validate manifest fields beyond serde deserialization.
     ///
     /// Checks slug format, semver validity, platform entries, binary name safety,
@@ -493,6 +571,9 @@ pub struct PluginStore {
     /// In-memory auth status per slug: `true` = authenticated, `false` = needs auth.
     /// Populated once at startup; updated on login/logout events.
     auth_cache: Arc<tokio::sync::RwLock<HashMap<String, bool>>>,
+    /// In-memory cache of stored env var values per slug.
+    /// Populated from DB at startup; updated when user saves plugin config.
+    env_cache: Arc<std::sync::RwLock<HashMap<String, HashMap<String, String>>>>,
 }
 
 /// A diagnostic entry for plugin health tracking.
@@ -519,6 +600,7 @@ impl PluginStore {
             downloading: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             diagnostics: Arc::new(std::sync::RwLock::new(Vec::new())),
             auth_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            env_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -636,6 +718,49 @@ impl PluginStore {
             .unwrap_or_default()
     }
 
+    // ── Env var cache ─────────────────────────────────────────────
+
+    /// Store a user-provided env var value for a plugin.
+    pub fn set_env_var(&self, slug: &str, key: &str, value: &str) {
+        if let Ok(mut cache) = self.env_cache.write() {
+            cache
+                .entry(slug.to_string())
+                .or_default()
+                .insert(key.to_string(), value.to_string());
+        }
+    }
+
+    /// Bulk-set env var values for a plugin (e.g., from DB at startup).
+    pub fn set_env_vars(&self, slug: &str, vars: HashMap<String, String>) {
+        if let Ok(mut cache) = self.env_cache.write() {
+            cache.insert(slug.to_string(), vars);
+        }
+    }
+
+    /// Get resolved auth env vars for a plugin: stored values override manifest defaults.
+    pub fn resolved_auth_env(&self, slug: &str) -> HashMap<String, String> {
+        let manifest_env = self
+            .get_manifest(slug)
+            .and_then(|m| m.auth)
+            .map(|a| a.env)
+            .unwrap_or_default();
+
+        let stored = self
+            .env_cache
+            .read()
+            .ok()
+            .and_then(|c| c.get(slug).cloned())
+            .unwrap_or_default();
+
+        let mut resolved = manifest_env;
+        for (k, v) in stored {
+            if !v.is_empty() {
+                resolved.insert(k, v);
+            }
+        }
+        resolved
+    }
+
     /// Root directory for installed (marketplace) plugin storage.
     pub fn plugins_dir(&self) -> &Path {
         &self.installed_dir
@@ -657,6 +782,28 @@ impl PluginStore {
             return Some(path);
         }
         self.resolve_in_dir(&self.installed_dir, slug, version_range)
+    }
+
+    /// Returns the persistent data directory for a plugin: `<data_dir>/plugins/data/<slug>/`.
+    ///
+    /// This directory is NOT inside the versioned plugin cache, so it survives plugin
+    /// updates. Plugins use it for OAuth tokens, cached responses, user preferences, etc.
+    ///
+    /// The path is derived from `installed_dir` (`<data_dir>/nebo/plugins/`) by going
+    /// Persistent data directory for a plugin, separated from the code tree.
+    /// Returns `~/.nebo/appdata/plugins/<slug>/` — survives all upgrades.
+    pub fn plugin_data_dir(&self, slug: &str) -> PathBuf {
+        config::appdata_dir()
+            .map(|d| d.join("plugins").join(slug))
+            .unwrap_or_else(|_| {
+                // Fallback: derive from installed_dir parent
+                let data_dir = self
+                    .installed_dir
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .unwrap_or(&self.installed_dir);
+                data_dir.join("plugins").join("data").join(slug)
+            })
     }
 
     /// Resolve a plugin binary within a single root directory.
@@ -941,31 +1088,40 @@ impl PluginStore {
     }
 
     /// Inner implementation of .napp-based plugin install.
+    ///
+    /// Uses a safe stage-verify-swap pattern so the old version is never deleted
+    /// until the new one is fully extracted and verified (like an iOS app update).
+    ///
+    /// Flow:
+    ///   1. Save .napp archive to disk
+    ///   2. Extract to <version>.staging/ directory
+    ///   3. Verify manifest, binary, SHA256, ED25519
+    ///   4. Only after verification: swap staging into place, back up old version
+    ///   5. Clean up old backups
     async fn install_from_napp_inner(
         &self,
         slug: &str,
         version: &str,
         napp_data: &[u8],
     ) -> Result<PathBuf, NappError> {
-        // Store .napp archive alongside version dir (same pattern as agent install)
         let plugin_dir = self.installed_dir.join(slug);
         std::fs::create_dir_all(&plugin_dir)?;
+
+        // 1. Save .napp archive
         let napp_path = plugin_dir.join(format!("{version}.napp"));
         std::fs::write(&napp_path, napp_data)?;
         info!(plugin = slug, path = %napp_path.display(), size = napp_data.len(), "stored sealed .napp");
 
-        // Remove existing version dir so extract_napp_alongside re-extracts
-        let version_dir = plugin_dir.join(version);
-        if version_dir.exists() {
-            std::fs::remove_dir_all(&version_dir)?;
+        // 2. Extract to staging dir (never touches the live version dir)
+        let staging_dir = plugin_dir.join(format!("{version}.staging"));
+        if staging_dir.exists() {
+            std::fs::remove_dir_all(&staging_dir)?;
         }
+        crate::reader::extract_all(&napp_path, &staging_dir)?;
+        info!(plugin = slug, dir = %staging_dir.display(), "extracted .napp to staging");
 
-        // Extract alongside: <slug>/<version>.napp → <slug>/<version>/
-        let mut extract_dir = crate::reader::extract_napp_alongside(&napp_path)?;
-        info!(plugin = slug, dir = %extract_dir.display(), "extracted .napp");
-
-        // Read plugin.json from extracted dir (plugin-specific metadata)
-        let plugin_json_path = extract_dir.join("plugin.json");
+        // 3. Read and validate plugin.json from staging
+        let plugin_json_path = staging_dir.join("plugin.json");
         let plugin_manifest: Option<PluginManifest> = if plugin_json_path.exists() {
             let data = std::fs::read_to_string(&plugin_json_path)?;
             match serde_json::from_str(&data) {
@@ -979,14 +1135,11 @@ impl PluginStore {
             None
         };
 
-        // Validate manifest if present
         if let Some(ref pm) = plugin_manifest {
             pm.validate()?;
         }
 
-        // Resolve effective version: use manifest version when caller passed a
-        // non-semver placeholder like "latest". This ensures the on-disk directory
-        // is named with the real semver so `resolve()` can find it.
+        // Resolve effective version (e.g., "latest" -> real semver from manifest)
         let effective_version = if let Some(ref pm) = plugin_manifest {
             if semver::Version::parse(version).is_err()
                 && semver::Version::parse(&pm.version).is_ok()
@@ -999,59 +1152,49 @@ impl PluginStore {
             version.to_string()
         };
 
-        // Rename .napp and extracted dir if the effective version differs from the
-        // caller-supplied version (e.g., "latest" → "1.2.0").
+        // If effective version differs, rename staging dir + .napp to match
+        let mut staging = staging_dir;
         if effective_version != version {
+            let new_staging = plugin_dir.join(format!("{effective_version}.staging"));
             let new_napp_path = plugin_dir.join(format!("{effective_version}.napp"));
-            let new_extract_dir = plugin_dir.join(&effective_version);
-
-            // Remove target dir if it already exists (re-install of same version)
-            if new_extract_dir.exists() {
-                std::fs::remove_dir_all(&new_extract_dir)?;
+            if new_staging.exists() {
+                std::fs::remove_dir_all(&new_staging)?;
             }
-
-            std::fs::rename(&extract_dir, &new_extract_dir)?;
+            std::fs::rename(&staging, &new_staging)?;
             std::fs::rename(&napp_path, &new_napp_path)?;
-
-            // Clean up the old placeholder dir if extract left it empty
-            if version_dir.exists() {
-                let _ = std::fs::remove_dir_all(&version_dir);
-            }
-
-            extract_dir = new_extract_dir;
-            info!(
-                plugin = slug,
-                from = %version,
-                to = %effective_version,
-                "resolved version from manifest"
-            );
+            staging = new_staging;
+            info!(plugin = slug, from = %version, to = %effective_version, "resolved version from manifest");
         }
 
-        // Find binary and make executable
-        let binary_path = self
-            .find_binary_in_version_dir(&extract_dir)
-            .ok_or_else(|| NappError::Extraction("no binary found in extracted .napp".into()))?;
+        // Find binary in staging and make executable
+        let binary_name = self
+            .find_binary_in_version_dir(&staging)
+            .ok_or_else(|| NappError::Extraction("no binary found in extracted .napp".into()))?
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
+        let staging_binary = staging.join(&binary_name);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::set_permissions(&staging_binary, std::fs::Permissions::from_mode(0o755))?;
         }
 
-        // Verify SHA256 + ED25519 if plugin.json exists with platform entry
+        // Verify SHA256 + ED25519 against staging binary (before touching live dir)
         if let Some(ref pm) = plugin_manifest {
             let platform = current_platform_key();
             if let Some(pb) = pm.platforms.get(&platform) {
-                let binary_data = std::fs::read(&binary_path)?;
+                let binary_data = std::fs::read(&staging_binary)?;
 
                 // SHA256
                 let mut hasher = Sha256::new();
                 hasher.update(&binary_data);
                 let actual_hash = hex::encode(hasher.finalize());
                 if actual_hash != pb.sha256 {
-                    let _ = std::fs::remove_dir_all(&extract_dir);
-                    let _ =
-                        std::fs::remove_file(&plugin_dir.join(format!("{effective_version}.napp")));
+                    // Verification failed — clean up staging, keep old version intact
+                    let _ = std::fs::remove_dir_all(&staging);
                     self.record_diagnostic(slug, "error", "verify", "SHA256 mismatch");
                     return Err(NappError::PluginDownloadFailed(format!(
                         "SHA256 mismatch for plugin '{}': expected {}, got {}",
@@ -1077,6 +1220,8 @@ impl PluginStore {
                             verifying_key
                                 .verify(&binary_data, &signature)
                                 .map_err(|_| {
+                                    // Verification failed — clean up staging, keep old version
+                                    let _ = std::fs::remove_dir_all(&staging);
                                     NappError::Signing(format!(
                                         "plugin '{}' signature verification failed",
                                         slug
@@ -1091,12 +1236,39 @@ impl PluginStore {
                 }
             }
 
-            // Cache manifest in memory using the effective (real) version
+            // Cache manifest in memory
             let cache_key = format!("{}:{}", slug, effective_version);
             let mut manifests = self.manifests.write().await;
             manifests.insert(cache_key, pm.clone());
         }
 
+        // 4. Verification passed — safe to swap staging into place.
+        let final_dir = plugin_dir.join(&effective_version);
+        if final_dir.exists() {
+            // Back up old version instead of deleting
+            let prev_dir = plugin_dir.join(format!("{effective_version}.prev"));
+            let _ = std::fs::remove_dir_all(&prev_dir); // clean up any leftover backup
+            std::fs::rename(&final_dir, &prev_dir)?;
+            info!(plugin = slug, version = %effective_version, "backed up previous version");
+        }
+        std::fs::rename(&staging, &final_dir)?;
+
+        // 5. Clean up old backups and stale version dirs (keep only the current version)
+        if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                // Keep the current version dir and .napp
+                if fname == effective_version || fname == format!("{effective_version}.napp") {
+                    continue;
+                }
+                // Remove .prev backups, .staging leftovers, and old version dirs
+                if fname.ends_with(".prev") || fname.ends_with(".staging") {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+
+        let binary_path = final_dir.join(&binary_name);
         info!(
             plugin = slug,
             version = %effective_version,
@@ -1577,6 +1749,47 @@ impl PluginStore {
         events.into_iter().find(|e| e.name == event_name)
     }
 
+    /// Get the channel bridge definition for a plugin, if declared.
+    pub fn get_channel_def(&self, slug: &str) -> Option<PluginChannel> {
+        let manifest = self.get_manifest(slug)?;
+        manifest.channel
+    }
+
+    /// List help docs from a plugin's `help/` directory.
+    ///
+    /// Returns `(filename, content)` pairs for all `.md` files found.
+    pub fn list_help_docs(&self, slug: &str) -> Vec<(String, String)> {
+        let binary = match self.resolve(slug, "*") {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let plugin_dir = match binary.parent() {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+        let help_dir = plugin_dir.join("help");
+        if !help_dir.is_dir() {
+            return Vec::new();
+        }
+        let mut docs = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&help_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "md") {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        let name = path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        docs.push((name, content));
+                    }
+                }
+            }
+        }
+        docs.sort_by(|a, b| a.0.cmp(&b.0));
+        docs
+    }
+
     /// Find a binary in a version directory by reading plugin.json or scanning for executables.
     fn find_binary_in_version_dir(&self, version_dir: &Path) -> Option<PathBuf> {
         // Try plugin.json first
@@ -1819,6 +2032,13 @@ pub fn plugin_env_var(slug: &str) -> String {
     format!("{}_BIN", slug.to_uppercase().replace('-', "_"))
 }
 
+/// Returns the `{SLUG}_DATA` environment variable name for a plugin's persistent data directory.
+///
+/// Example: `nebo-office` → `NEBO_OFFICE_DATA`.
+pub fn plugin_data_env_var(slug: &str) -> String {
+    format!("{}_DATA", slug.to_uppercase().replace('-', "_"))
+}
+
 /// Run a single plugin's auth status command. Returns `true` if authenticated.
 async fn run_auth_status_check(store: &PluginStore, slug: &str, path_env: &str) -> bool {
     let Some((binary_path, auth)) = store.get_auth_info(slug) else {
@@ -1827,11 +2047,12 @@ async fn run_auth_status_check(store: &PluginStore, slug: &str, path_env: &str) 
     let Some(status_cmd) = auth.commands.status.as_deref() else {
         return true; // no status command → treat as authenticated
     };
+    let resolved_env = store.resolved_auth_env(slug);
     let args: Vec<&str> = status_cmd.split_whitespace().collect();
     let mut cmd = tokio::process::Command::new(&binary_path);
     cmd.args(&args);
     cmd.env("PATH", path_env);
-    for (key, value) in &auth.env {
+    for (key, value) in &resolved_env {
         cmd.env(key, value);
     }
     match cmd.output().await {
@@ -2072,6 +2293,8 @@ mod tests {
             dependencies: vec![],
             capabilities: None,
             permissions: None,
+            category: String::new(),
+            triggers: vec![],
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
@@ -2230,6 +2453,8 @@ mod tests {
             dependencies: vec![],
             capabilities: None,
             permissions: None,
+            category: String::new(),
+            triggers: vec![],
         }
     }
 

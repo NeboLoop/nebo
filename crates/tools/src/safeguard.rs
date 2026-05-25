@@ -457,7 +457,11 @@ fn nebo_data_dirs(home: &str) -> Vec<(String, String)> {
 
     // Check NEBO_DATA_DIR override first
     if let Ok(env_dir) = std::env::var("NEBO_DATA_DIR") {
-        return vec![(format!("{}/data", env_dir), reason)];
+        let appdata_reason = "Nebo appdata directory — deleting this would destroy all artifact data (plugin databases, skill files, etc.)".to_string();
+        return vec![
+            (format!("{}/data", env_dir), reason),
+            (format!("{}/appdata", env_dir), appdata_reason),
+        ];
     }
 
     // Platform-standard data directories

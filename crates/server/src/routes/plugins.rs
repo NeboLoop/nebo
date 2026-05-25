@@ -47,6 +47,14 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::plugins::get_diagnostics),
         )
         .route(
+            "/plugins/{slug}/help",
+            axum::routing::get(handlers::plugins::get_plugin_help),
+        )
+        .route(
+            "/plugins/{slug}/help/chat",
+            axum::routing::post(handlers::plugins::start_help_chat),
+        )
+        .route(
             "/plugins/{slug}/api/{*path}",
             axum::routing::any(handlers::plugins::proxy_plugin_route),
         )

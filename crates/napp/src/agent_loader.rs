@@ -51,8 +51,6 @@ pub struct LoadedAgent {
     pub description: String,
     /// NeboLoop artifact UUID from manifest.json (marketplace agents only).
     pub id: Option<String>,
-    /// Deterministic views from views.json (rendered without LLM involvement).
-    pub views: Option<serde_json::Value>,
     /// Theme CSS from theme.css (for A2UI workspace styling).
     pub theme_css: Option<String>,
     /// True if this agent is an app (artifact_type == "app").
@@ -179,6 +177,7 @@ impl AgentLoader {
         let installed_dir = self.installed_dir.clone();
         let user_dir = self.user_dir.clone();
         let agents = self.agents.clone();
+        let bundled = self.bundled;
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgentFsEvent>(32);
 
         let handle = tokio::spawn(async move {
@@ -231,7 +230,6 @@ impl AgentLoader {
                             name.eq_ignore_ascii_case("agent.md")
                                 || name == "agent.json"
                                 || name == "manifest.json"
-                                || name == "views.json"
                                 || name == "theme.css"
                                 || name.ends_with(".napp")
                                 // New symlink/directory added directly under watched dir
@@ -251,6 +249,16 @@ impl AgentLoader {
 
                         debug!("agents directory changed, reloading");
                         let mut loaded = HashMap::new();
+
+                        // Preserve bundled agents (lowest priority)
+                        for (name, agent_md, agent_json, manifest_json) in bundled {
+                            match load_from_embedded(name, agent_md, agent_json, manifest_json) {
+                                Ok(agent) => {
+                                    loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+                                }
+                                Err(_) => {}
+                            }
+                        }
 
                         for agent in scan_installed_agents(&installed_dir) {
                             loaded.insert(agent.agent_def.name.to_lowercase(), agent);
@@ -360,7 +368,6 @@ fn load_from_embedded(
         frontmatter,
         description,
         id,
-        views: None,
         theme_css: None,
         is_app: false,
         app_ui_path: None,
@@ -444,18 +451,6 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
 
     let description = agent_def.description.clone();
 
-    // Read views.json if present (deterministic UI declarations)
-    let views = {
-        let views_path = dir.join("views.json");
-        if views_path.exists() {
-            std::fs::read_to_string(&views_path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        } else {
-            None
-        }
-    };
-
     // Read theme.css if present (A2UI workspace styling)
     let theme_css = {
         let theme_path = dir.join("theme.css");
@@ -513,7 +508,6 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
         frontmatter,
         description,
         id,
-        views,
         theme_css,
         is_app,
         app_ui_path,
@@ -693,11 +687,6 @@ fn load_from_sealed_napp(
 
     let description = agent_def.description.clone();
 
-    // Read optional views.json and theme.css from sealed archive
-    let views = crate::reader::read_sealed_napp_entry_string(napp_path, "views.json", license_key)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-
     let theme_css =
         crate::reader::read_sealed_napp_entry_string(napp_path, "theme.css", license_key).ok();
 
@@ -712,7 +701,6 @@ fn load_from_sealed_napp(
         frontmatter,
         description,
         id,
-        views,
         theme_css,
         is_app: false,
         app_ui_path: None,

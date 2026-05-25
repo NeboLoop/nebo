@@ -23,6 +23,7 @@ use crate::selector::{self, ModelSelector};
 use crate::session::SessionManager;
 use crate::steering;
 use crate::tool_filter;
+use crate::transcript;
 
 /// Default maximum agentic loop iterations per run.
 const DEFAULT_MAX_ITERATIONS: usize = 100;
@@ -34,20 +35,63 @@ const DEFAULT_CONTEXT_TOKEN_LIMIT: usize = 80_000;
 const MAX_TRANSIENT_RETRIES: usize = 10;
 /// Max retryable (provider/rate_limit/billing) retries before giving up.
 const MAX_RETRYABLE_RETRIES: usize = 5;
+/// Consecutive overloaded (529) errors before falling back to a cheaper model.
+#[allow(dead_code)] // reserved for overload fallback logic
+const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
 /// Timeout for individual tool execution.
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 /// Default max auto-continuations when agent stops mid-task (no work tasks).
+#[allow(dead_code)] // used by max_auto_continuations, reserved for auto-continuation logic
 const MAX_AUTO_CONTINUATIONS_DEFAULT: usize = 5;
 /// Ceiling for auto-continuations even with many work tasks.
+#[allow(dead_code)] // used by max_auto_continuations, reserved for auto-continuation logic
 const MAX_AUTO_CONTINUATIONS_CEILING: usize = 50;
 /// Max recovery attempts when output is truncated by token limit.
 const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
+/// Default output token cap for LLM requests.
+const DEFAULT_MAX_OUTPUT_TOKENS: i32 = 16_384;
+/// Escalated output token cap after a max_tokens truncation.
+const ESCALATED_MAX_OUTPUT_TOKENS: i32 = 65_536;
+/// Max output length from forked command execution (bytes).
+const FORK_OUTPUT_CAP: usize = 32_000;
+/// Max iterations for forked command sub-agent.
+const FORK_MAX_ITERATIONS: usize = 20;
+
+/// Command prefixes eligible for forked (sub-agent) execution.
+const FORK_COMMAND_PREFIXES: &[&str] = &[
+    "/research",
+    "/analyze",
+    "/deep-dive",
+    "/investigate",
+];
+
+/// Check whether a user prompt should be forked to a sub-agent context.
+fn should_fork_command(prompt: &str) -> bool {
+    let trimmed = prompt.trim().to_lowercase();
+    FORK_COMMAND_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
+/// Extract file path from an os(resource: "file", action: "read") tool call.
+/// Returns None if the call is not a file read.
+fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
+    if call.name != "os" {
+        return None;
+    }
+    let resource = call.input.get("resource").and_then(|v| v.as_str())?;
+    let action = call.input.get("action").and_then(|v| v.as_str())?;
+    if resource != "file" || action != "read" {
+        return None;
+    }
+    call.input.get("path").and_then(|v| v.as_str()).map(|s| s.to_string())
+}
 
 /// Pick a non-gateway provider when available.  Falls back to first provider
 /// (which may be Janus) only when no other option exists.  This prevents
 /// background operations (memory extraction, compaction, summarisation) from
 /// burning Janus credits when a CLI or direct-API provider is loaded.
-fn prefer_non_gateway(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
+pub(crate) fn prefer_non_gateway(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
     providers
         .iter()
         .find(|p| p.id() != "janus")
@@ -117,6 +161,32 @@ pub struct RunRequest {
     /// Injected as a system-role message after the user prompt — visible to the
     /// LLM but not rendered in the frontend. Used for @mention routing context.
     pub mention_context: Option<String>,
+    /// Tool scope name from agent.json for SDK-driven tool filtering.
+    pub tool_scope: Option<String>,
+    /// Skill names to pre-load into this run's context. Full SKILL.md content
+    /// is injected into the system prompt so the agent has instructions without
+    /// needing to discover/load them. Used by sub-agent spawning.
+    pub preload_skills: Vec<String>,
+    /// Plugin install codes to include in the sub-agent's system prompt.
+    /// The plugin inventory and usage docs are injected so the sub-agent
+    /// knows how to use these plugins from turn 1.
+    pub preload_plugins: Vec<String>,
+    /// STRAP domain tool names to include in the sub-agent's system prompt.
+    /// The tool's STRAP doc (resources, actions, examples) is injected so the
+    /// sub-agent knows how to use these tools without discovery.
+    pub preload_tools: Vec<String>,
+    /// Tool names to pre-activate (bypass deferred-loading discovery).
+    /// Populated automatically from preload_plugins/preload_tools to ensure
+    /// sub-agents have the tools available from turn 1.
+    pub preactivate_tools: Vec<String>,
+    /// When true, agent presents a plan before executing any tool calls.
+    /// The plan is sent via a PlanApproval event for user approval.
+    pub plan_mode: bool,
+    /// Channel context (Slack/Discord/etc.) when this run was triggered by an
+    /// inbound channel message. Surfaces on `ToolContext.channel` so the
+    /// plugin tool can inject `NEBO_CHANNEL_*` env vars into plugin processes
+    /// (e.g. for `slack upload`). See `docs/publishers-guide/channel-plugins.md`.
+    pub channel_ctx: Option<tools::ChannelContext>,
 }
 
 /// Shared atomic counters for live run progress reporting.
@@ -133,6 +203,10 @@ pub struct RunProgress {
 struct RunState {
     prompt_overhead: usize,
     last_input_tokens: usize,
+    /// Cumulative input tokens across all iterations in this run.
+    total_input_tokens: i32,
+    /// Cumulative output tokens across all iterations in this run.
+    total_output_tokens: i32,
     thresholds: Option<ContextThresholds>,
     /// Janus quota warning string, populated when session or weekly usage exceeds 80%.
     quota_warning: Option<String>,
@@ -145,6 +219,8 @@ impl RunState {
         Self {
             prompt_overhead: 0,
             last_input_tokens: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
             thresholds: None,
             quota_warning: None,
             quota_warning_sent: false,
@@ -169,6 +245,7 @@ pub struct Runner {
     agent_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
     ask_channels: Option<tools::AskChannels>,
+    embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
 }
 
 impl Runner {
@@ -196,6 +273,7 @@ impl Runner {
             mcp_context,
             agent_registry,
             skill_loader,
+            embedding_provider: None,
         }
     }
 
@@ -207,6 +285,12 @@ impl Runner {
     /// Set the shared ask channels so tools can prompt the user via `ctx.ask_user()`.
     pub fn set_ask_channels(mut self, channels: tools::AskChannels) -> Self {
         self.ask_channels = Some(channels);
+        self
+    }
+
+    /// Set the embedding provider for transcript indexing and memory embedding.
+    pub fn set_embedding_provider(mut self, provider: Arc<dyn ai::EmbeddingProvider>) -> Self {
+        self.embedding_provider = Some(provider);
         self
     }
 
@@ -261,6 +345,114 @@ impl Runner {
 
         let session_id = session.id.clone();
         info!(session_id = %session_id, "session ready");
+
+        // Pre-load skills into the sub-agent's conversation (Claude Code pattern).
+        // Each skill becomes a user message with isMeta metadata so the UI doesn't
+        // render it as real user input. Injected BEFORE the task prompt so the
+        // sub-agent has instructions in its context from turn 1.
+        if !req.preload_skills.is_empty() {
+            if let Some(ref loader) = self.skill_loader {
+                for skill_name in &req.preload_skills {
+                    if let Some(skill) = loader.get(skill_name).await {
+                        if skill.enabled {
+                            let content = loader.expand_template(&skill, Some(&self.store));
+                            if !content.is_empty() {
+                                let meta = serde_json::json!({
+                                    "isMeta": true,
+                                    "skillPreload": skill_name,
+                                })
+                                .to_string();
+                                let _ = self.sessions.append_message(
+                                    &session_id,
+                                    "user",
+                                    &format!("[Loading skill: {}]\n\n{}", skill_name, content),
+                                    None,
+                                    None,
+                                    Some(&meta),
+                                );
+                                info!(skill = %skill_name, len = content.len(),
+                                      "pre-loaded skill into sub-agent context");
+                            }
+                        } else {
+                            warn!(skill = %skill_name, "pre-load skill disabled, skipping");
+                        }
+                    } else {
+                        warn!(skill = %skill_name, "pre-load skill not found");
+                    }
+                }
+            }
+        }
+
+        // Pre-load plugin docs into the sub-agent's conversation.
+        // Plugin context (description, skills, usage) is injected as a user message
+        // so the sub-agent knows how to use these plugins from turn 1.
+        if !req.preload_plugins.is_empty() {
+            if let Some(ref loader) = self.skill_loader {
+                let plugin_context = loader.agent_plugin_context(&req.preload_plugins);
+                if !plugin_context.is_empty() {
+                    let meta = serde_json::json!({
+                        "isMeta": true,
+                        "pluginPreload": true,
+                    })
+                    .to_string();
+                    let _ = self.sessions.append_message(
+                        &session_id,
+                        "user",
+                        &format!("[Loading plugin context]\n\n{}", plugin_context),
+                        None,
+                        None,
+                        Some(&meta),
+                    );
+                    info!(
+                        plugins = ?req.preload_plugins,
+                        len = plugin_context.len(),
+                        "pre-loaded plugin context into sub-agent"
+                    );
+                }
+            }
+        }
+
+        // Pre-load STRAP tool docs into the sub-agent's conversation.
+        // Each tool's full documentation (resources, actions, examples) is injected
+        // so the sub-agent knows exactly how to call these tools.
+        if !req.preload_tools.is_empty() {
+            let mut tool_docs = String::new();
+            for tool_name in &req.preload_tools {
+                // Try core tool doc first, then OS sub-context doc
+                let doc = prompt::strap_tool_doc(tool_name)
+                    .or_else(|| prompt::strap_context_doc(tool_name));
+                if let Some(d) = doc {
+                    if !tool_docs.is_empty() {
+                        tool_docs.push_str("\n\n---\n\n");
+                    }
+                    tool_docs.push_str(d);
+                }
+            }
+            if !tool_docs.is_empty() {
+                let meta = serde_json::json!({
+                    "isMeta": true,
+                    "toolPreload": true,
+                })
+                .to_string();
+                let _ = self.sessions.append_message(
+                    &session_id,
+                    "user",
+                    &format!(
+                        "[Loading tool documentation for: {}]\n\n{}",
+                        req.preload_tools.join(", "),
+                        tool_docs,
+                    ),
+                    None,
+                    None,
+                    Some(&meta),
+                );
+                info!(
+                    tools = ?req.preload_tools,
+                    len = tool_docs.len(),
+                    "pre-loaded STRAP tool docs into sub-agent"
+                );
+            }
+        }
 
         // Append user message — large inputs are offloaded to a temp file and
         // replaced with an LLM-generated summary so the full document never
@@ -429,6 +621,11 @@ impl Runner {
         let prompt_mode = req.prompt_mode.clone();
         let progress = req.progress.clone();
         let ask_channels = self.ask_channels.clone();
+        let embedding_provider = self.embedding_provider.clone();
+        let tool_scope = req.tool_scope.clone();
+        let plan_mode = req.plan_mode;
+        let preactivate_tools = req.preactivate_tools.clone();
+        let channel_ctx = req.channel_ctx.clone();
 
         // Set MCP context so CLI providers can access tools with the right session info
         if let Some(ref mcp_ctx) = self.mcp_context {
@@ -440,6 +637,120 @@ impl Runner {
         }
 
         tokio::spawn(async move {
+            // ── Forked command execution ──────────────────────────────
+            // Heavy commands (e.g. /research, /analyze) run in a sub-agent
+            // context so intermediate tool calls don't consume the main
+            // chat's context window.
+            if should_fork_command(&user_prompt) {
+                info!(session_id, "forking command to sub-agent: {}", &user_prompt[..user_prompt.len().min(50)]);
+
+                let _ = tx
+                    .send(StreamEvent::text(
+                        "Working on this in the background...\n\n".to_string(),
+                    ))
+                    .await;
+
+                let fork_session_key =
+                    format!("fork:{}:{}", session_id, uuid::Uuid::new_v4());
+
+                let fork_session = session_mgr
+                    .get_or_create(&fork_session_key, &user_id)
+                    .ok();
+
+                if let Some(ref fs) = fork_session {
+                    let _ = session_mgr.append_message(
+                        &fs.id,
+                        "user",
+                        &user_prompt,
+                        None,
+                        None,
+                        None,
+                    );
+
+                    let fork_session_id = fs.id.clone();
+                    let (sub_tx, mut sub_rx) = mpsc::channel::<StreamEvent>(256);
+
+                    let steering = steering::Pipeline::new();
+                    let _fork_result = run_loop(
+                        &session_mgr,
+                        &tools,
+                        &store,
+                        &providers,
+                        &concurrency,
+                        &selector,
+                        &steering,
+                        &hooks,
+                        &sub_tx,
+                        &fork_session_id,
+                        &system_prompt,
+                        &model_override,
+                        &user_id,
+                        &channel,
+                        &model_aliases,
+                        origin,
+                        true,  // skip_memory for forked runs
+                        FORK_MAX_ITERATIONS,
+                        &cancel_token,
+                        &agent_registry,
+                        &agent_id,
+                        personality_snippet.as_deref(),
+                        entity_permissions.as_ref(),
+                        entity_resource_grants.as_ref(),
+                        &user_prompt,
+                        &force_skill,
+                        skill_loader.as_deref(),
+                        &allowed_paths,
+                        presence_tracker.as_ref(),
+                        proactive_inbox.as_ref(),
+                        0,
+                        prompt::PromptMode::Minimal,
+                        progress.as_ref(),
+                        ask_channels.as_ref(),
+                        embedding_provider.as_ref(),
+                        tool_scope.as_deref(),
+                        false,  // no plan_mode for forks
+                        &preactivate_tools,
+                        channel_ctx.as_ref(),
+                    )
+                    .await;
+
+                    drop(sub_tx);
+
+                    let mut result_text = String::new();
+                    while let Some(event) = sub_rx.recv().await {
+                        if event.event_type == StreamEventType::Text {
+                            result_text.push_str(&event.text);
+                        }
+                    }
+
+                    if result_text.len() > FORK_OUTPUT_CAP {
+                        result_text.truncate(FORK_OUTPUT_CAP);
+                        result_text.push_str("\n\n[Output truncated]");
+                    }
+
+                    let _ = session_mgr.append_message(
+                        &session_id,
+                        "assistant",
+                        &result_text,
+                        None,
+                        None,
+                        None,
+                    );
+
+                    let _ = tx.send(StreamEvent::text(result_text)).await;
+                } else {
+                    let _ = tx
+                        .send(StreamEvent::error(
+                            "Failed to create fork session".to_string(),
+                        ))
+                        .await;
+                }
+
+                let _ = tx.send(StreamEvent::done()).await;
+                return;
+            }
+
+            // ── Normal (non-forked) execution ────────────────────────
             let steering = steering::Pipeline::new();
 
             let result = run_loop(
@@ -477,6 +788,11 @@ impl Runner {
                 prompt_mode,
                 progress.as_ref(),
                 ask_channels.as_ref(),
+                embedding_provider.as_ref(),
+                tool_scope.as_deref(),
+                plan_mode,
+                &preactivate_tools,
+                channel_ctx.as_ref(),
             )
             .await;
 
@@ -486,6 +802,74 @@ impl Runner {
                     .await;
             }
             let _ = tx.send(StreamEvent::done()).await;
+
+            // Generate follow-up suggestions in the background (non-blocking).
+            // Only for normal interactive chats (skip_memory is false for those).
+            if !skip_memory {
+                let tx_suggestions = tx.clone();
+                let providers_suggestions = providers.clone();
+                let session_mgr_suggestions = session_mgr.clone();
+                let session_id_suggestions = session_id.clone();
+                let cheap_model = selector.get_cheapest_model();
+                tokio::spawn(async move {
+                    let all_msgs = session_mgr_suggestions
+                        .get_messages(&session_id_suggestions)
+                        .unwrap_or_default();
+                    let last_exchange: Vec<_> = {
+                        let last_user_idx = all_msgs.iter().rposition(|m| m.role == "user");
+                        match last_user_idx {
+                            Some(idx) => all_msgs[idx..].to_vec(),
+                            None => vec![],
+                        }
+                    };
+                    if let Some(suggestions) = crate::followup::generate_suggestions(
+                        &providers_suggestions,
+                        &last_exchange,
+                        &cheap_model,
+                    )
+                    .await
+                    {
+                        let _ = tx_suggestions
+                            .send(StreamEvent::followup_suggestions(suggestions))
+                            .await;
+                    }
+                });
+
+                // Auto-generate session title after first exchange.
+                // Only runs when the chat title is still a default placeholder.
+                let providers_title = providers.clone();
+                let store_title = store.clone();
+                let session_mgr_title = session_mgr.clone();
+                let session_id_title = session_id.clone();
+                let user_prompt_title = user_prompt.clone();
+                let cheap_model_title = selector.get_cheapest_model();
+                tokio::spawn(async move {
+                    let chat_id = session_mgr_title.active_chat_id(&session_id_title);
+                    let needs_title = match store_title.get_chat(&chat_id) {
+                        Ok(Some(chat)) => {
+                            let t = &chat.title;
+                            t.is_empty()
+                                || t == "New Chat"
+                                || t == "Untitled"
+                                || *t == chat_id
+                                || t.starts_with("Chat ")
+                        }
+                        _ => false,
+                    };
+                    if needs_title {
+                        if let Some(title) = crate::summarizer::generate_session_title(
+                            &providers_title,
+                            &user_prompt_title,
+                            &cheap_model_title,
+                        )
+                        .await
+                        {
+                            let _ = store_title.update_chat_title(&chat_id, &title);
+                            info!(chat_id = %chat_id, title = %title, "auto-generated session title");
+                        }
+                    }
+                });
+            }
         });
 
         Ok(rx)
@@ -568,7 +952,7 @@ async fn run_loop(
     channel: &str,
     model_aliases: &str,
     origin: Origin,
-    skip_memory: bool,
+    mut skip_memory: bool,
     max_iterations: usize,
     cancel_token: &CancellationToken,
     agent_registry: &tools::AgentRegistry,
@@ -586,11 +970,18 @@ async fn run_loop(
     prompt_mode: prompt::PromptMode,
     progress: Option<&RunProgress>,
     ask_channels: Option<&tools::AskChannels>,
+    embedding_provider: Option<&Arc<dyn ai::EmbeddingProvider>>,
+    tool_scope: Option<&str>,
+    plan_mode: bool,
+    preactivate_tools: &[String],
+    channel_ctx: Option<&tools::ChannelContext>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
     let mut retryable_retries = 0usize;
-    let mut called_tools: Vec<String> = Vec::new();
+    // Pre-seed called_tools with preactivated tools so they pass the tool filter
+    // from turn 1 (bypasses deferred-loading discovery for sub-agents).
+    let mut called_tools: Vec<String> = preactivate_tools.to_vec();
     // Rolling hashes of recent tool results for stale-result detection in steering
     let mut recent_tool_result_hashes: Vec<(u64, u64, u64)> = Vec::new();
     // Parallel vec of tool names (same indexing as recent_tool_result_hashes)
@@ -598,9 +989,9 @@ async fn run_loop(
     let mut provider_idx: usize = 0;
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
-    let mut auto_continuations = 0usize;
+    let auto_continuations = 0usize;
     // Cycle detection: track last auto-continued response to break loops
-    let mut prev_auto_content: Option<String> = None;
+    let prev_auto_content: Option<String> = None;
     // Sticky flag: once user demands action ("don't stop", "do them all"), stays true for the run
     let mut user_demanded_action_sticky =
         user_demanded_action(&sessions.get_messages(session_id).unwrap_or_default());
@@ -610,6 +1001,7 @@ async fn run_loop(
     const MAX_TOOL_DOC_ENTRIES: usize = 5;
     const MAX_TOOL_DOC_CONTENT: usize = 4_000;
     let mut output_recovery_attempts = 0usize;
+    let mut output_escalated = false;
     let mut continuation_steering: Option<String> = None;
     let mut consecutive_error_iterations = 0usize;
     let mut post_tool_empty_nudges = 0usize;
@@ -618,9 +1010,17 @@ async fn run_loop(
     let mut turn_exit_reason = "unknown".to_string();
     let mut final_iteration = 0usize;
     let mut last_model_name = String::new();
-    // Deferred tools that have been activated (keyword-matched or first-called)
-    let mut activated_deferred: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    // Session-scoped tool schema cache: tool schemas don't change between turns,
+    // so we cache them to prevent mid-session schema churn that busts the API's
+    // prompt cache.
+    let mut tool_schema_cache: HashMap<String, serde_json::Value> = HashMap::new();
+    // Track file paths read during this session to detect duplicate reads.
+    // When the model re-reads a file, a short note is appended to the tool result.
+    let mut files_read_this_session: HashSet<String> = HashSet::new();
+    // Deferred tool discovery follows Claude Code's message-history pattern:
+    // Each turn, `extract_discovered_deferred_tools` scans window_messages for
+    // tool_search results and direct calls to deferred tools. When sliding window
+    // evicts those messages, the tools naturally unload. No persistent set needed.
 
     // Resolve agent from registry if agent_id is set
     let active_agent_entry = if !agent_id.is_empty() {
@@ -630,16 +1030,68 @@ async fn run_loop(
         None
     };
 
+    // Resolve memory config from agent entry
+    let memory_config = active_agent_entry
+        .as_ref()
+        .and_then(|e| e.config.as_ref())
+        .map(|c| &c.memory)
+        .cloned()
+        .unwrap_or_default();
+
+    // Extract context_id from session key for context-isolated memory scoping.
+    // Session key format: "agent:{agent_id}:{channel}:{context_id}"
+    let context_id: Option<String> = {
+        let parts: Vec<&str> = session_id.splitn(4, ':').collect();
+        if parts.len() == 4 && parts[0] == "agent" {
+            Some(parts[3].to_string())
+        } else {
+            None
+        }
+    };
+
     // Scope memory by agent: each agent gets its own memory namespace to prevent cross-contamination.
     // Main bot uses the raw user_id; agents use "user_id:agent:agent_id".
+    // With context_isolated, further scoped to "user_id:agent:agent_id:ctx:context_id".
     let memory_user_id = if !agent_id.is_empty() {
-        format!("{}:agent:{}", user_id, agent_id)
+        let agent_scope = format!("{}:agent:{}", user_id, agent_id);
+        if memory_config.context_isolated {
+            if let Some(ref ctx) = context_id {
+                format!("{}:ctx:{}", agent_scope, ctx)
+            } else {
+                agent_scope
+            }
+        } else {
+            agent_scope
+        }
     } else {
         user_id.to_string()
     };
 
+    // Build the inheritance chain for READ access
+    let mut inherit_scopes: Vec<db_context::InheritScope> = Vec::new();
+
+    if !agent_id.is_empty() {
+        let agent_scope = format!("{}:agent:{}", user_id, agent_id);
+
+        // If context-isolated, inherit agent-wide memories (all tacit/)
+        if memory_config.context_isolated && context_id.is_some() {
+            inherit_scopes.push(db_context::InheritScope {
+                user_id: agent_scope,
+                namespace_prefix: "tacit/".to_string(),
+            });
+        }
+
+        // If inherit_user enabled, inherit user's preferences only
+        if memory_config.inherit_user {
+            inherit_scopes.push(db_context::InheritScope {
+                user_id: user_id.to_string(),
+                namespace_prefix: "tacit/preferences".to_string(),
+            });
+        }
+    }
+
     // Load rich DB context (agent profile, user profile, personality directive, scored memories)
-    let db_ctx = db_context::load_db_context(store, &memory_user_id);
+    let db_ctx = db_context::load_db_context(store, &memory_user_id, &inherit_scopes);
 
     // Extract user-configured timezone for date/time in the dynamic suffix
     let user_timezone = db_ctx
@@ -713,11 +1165,14 @@ async fn run_loop(
     // Get active task (mutable: refreshed periodically to catch async detect_objective)
     let mut active_task = sessions.get_active_task(session_id).unwrap_or_default();
 
-    // Match skills against user prompt (force_skill overrides trigger matching)
-    // Template variables (${NEBO_SKILL_DIR}, ${NEBO_DATA_DIR}, etc.) are expanded at activation.
-    // The compact skill catalog (always-present listing) replaces old keyword-triggered hints.
-    // Full skill bodies are only injected when: forced, trigger-matched, or agent-declared.
-    let mut active_skill_template = if let Some(loader) = skill_loader {
+    // Skills follow Claude Code's deferred pattern: NOT auto-loaded into system prompt.
+    // Model uses skill(action: "discover") to find skills and skill(action: "load") to
+    // activate them. Loaded skill content goes into message history (tool results) and
+    // unloads when messages are evicted by sliding window.
+    //
+    // Exceptions: force_skill (explicit API activation) and agent-declared skills
+    // (part of the job definition — always present for that agent).
+    let active_skill_template = if let Some(loader) = skill_loader {
         if !force_skill.is_empty() {
             match loader.get(force_skill).await {
                 Some(skill) if skill.enabled => {
@@ -729,14 +1184,6 @@ async fn run_loop(
                     None
                 }
             }
-        } else if !user_prompt.is_empty() {
-            let matches = loader.match_triggers(user_prompt, 3).await;
-            if let Some(best) = matches.first() {
-                info!(skill = %best.name, priority = best.priority, "skill matched via trigger");
-                Some(loader.expand_template(best, Some(store)))
-            } else {
-                None
-            }
         } else {
             None
         }
@@ -744,37 +1191,43 @@ async fn run_loop(
         None
     };
 
-    // Auto-load agent-declared skills so the LLM knows about plugin tools and
-    // usage patterns from SKILL.md content. Without this, agents fall back to
-    // native tools (e.g. organizer:mail) instead of using declared plugins.
-    if let (Some(agent_entry), Some(loader)) = (&active_agent_entry, skill_loader) {
-        if let Some(cfg) = &agent_entry.config {
-            let mut agent_skill_parts: Vec<String> = Vec::new();
-            for skill_ref in &cfg.skills {
-                let skill_name = extract_skill_name(skill_ref);
-                if let Some(skill) = loader.get(&skill_name).await {
-                    if skill.enabled {
-                        let expanded = loader.expand_template(&skill, Some(store));
-                        if !expanded.is_empty() {
-                            agent_skill_parts.push(expanded);
+    // Agent-declared skills are already in the skill catalog (compact name +
+    // description). The LLM discovers and loads them on-demand via the skill
+    // tool — same as every other skill. No need to dump full SKILL.md bodies
+    // into the system prompt (that caused 230KB+ prompt bloat).
+
+    // Pre-activate tools declared in agent.json — these are part of the agent's job
+    // definition and must be available from turn 1 (not discovered via tool_search).
+    // Agent-declared tools stay active for the entire session.
+    // Scope-specific plugins are merged with global requires.plugins.
+    let agent_preactivated: std::collections::HashSet<String> = {
+        let mut set = std::collections::HashSet::new();
+        if let Some(ref agent_entry) = active_agent_entry {
+            if let Some(ref cfg) = agent_entry.config {
+                let mut needs_plugin = !cfg.requires.plugins.is_empty();
+
+                // Merge scope-specific plugin requirements
+                if let Some(scope_name) = tool_scope {
+                    if let Some(scope) = cfg.scopes.get(scope_name) {
+                        if !scope.plugins.is_empty() {
+                            needs_plugin = true;
                         }
                     }
                 }
-            }
-            if !agent_skill_parts.is_empty() {
-                let combined = agent_skill_parts.join("\n\n---\n\n");
-                active_skill_template = Some(match active_skill_template {
-                    Some(existing) => format!("{}\n\n---\n\n{}", existing, combined),
-                    None => combined,
-                });
-                info!(
-                    agent = %agent_entry.name,
-                    count = agent_skill_parts.len(),
-                    "auto-loaded agent-declared skills"
-                );
+
+                if needs_plugin {
+                    set.insert("plugin".to_string());
+                    info!(
+                        agent = %agent_entry.name,
+                        plugins = ?cfg.requires.plugins,
+                        scope = ?tool_scope,
+                        "pre-activating plugin tool for agent-declared dependencies"
+                    );
+                }
             }
         }
-    }
+        set
+    };
 
     // Build static system prompt — use modular prompt when no custom one is provided
     // STRAP docs and tool list are NOT included here — they're injected per-iteration
@@ -827,18 +1280,165 @@ async fn run_loop(
             Err(_) => r.agent_md.clone(),
         }
     });
-    let plugin_inventory = skill_loader
-        .as_ref()
-        .map(|l| l.plugin_inventory())
-        .unwrap_or_default();
+    // Build focused context for agent-required plugins (descriptions + skill names).
+    let agent_plugin_context = if let Some(ref agent_entry) = active_agent_entry {
+        if let Some(ref cfg) = agent_entry.config {
+            let mut required = cfg.requires.plugins.clone();
+            // Merge scope-specific plugins
+            if let Some(scope_name) = tool_scope {
+                if let Some(scope) = cfg.scopes.get(scope_name) {
+                    for p in &scope.plugins {
+                        if !required.contains(p) {
+                            required.push(p.clone());
+                        }
+                    }
+                }
+            }
+            skill_loader
+                .as_ref()
+                .map(|l| l.agent_plugin_context(&required))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Build agent self-awareness context: workflows, skills, and capabilities.
+    // The agent must know about itself from turn 1.
+    let agent_self_context = if let Some(ref agent_entry) = active_agent_entry {
+        if let Some(ref cfg) = agent_entry.config {
+            let mut parts = Vec::new();
+
+            // Workflows
+            if !cfg.workflows.is_empty() {
+                let mut wf_lines = vec![format!(
+                    "## Your Workflows ({})\n",
+                    cfg.workflows.len()
+                )];
+                let mut sorted: Vec<_> = cfg.workflows.iter().collect();
+                sorted.sort_by_key(|(name, _)| name.as_str());
+                for (name, binding) in &sorted {
+                    let trigger_desc = match &binding.trigger {
+                        napp::agent::AgentTrigger::Schedule { schedule, cron, .. } => {
+                            if let Some(s) = schedule {
+                                format!("schedule: {}", s)
+                            } else {
+                                format!("schedule: {}", cron)
+                            }
+                        }
+                        napp::agent::AgentTrigger::Heartbeat { interval, window } => {
+                            if let Some(w) = window {
+                                format!("heartbeat: every {} within {}", interval, w)
+                            } else {
+                                format!("heartbeat: every {}", interval)
+                            }
+                        }
+                        napp::agent::AgentTrigger::Event { sources } => {
+                            format!("event: {}", sources.join(", "))
+                        }
+                        napp::agent::AgentTrigger::Watch { plugin, event, .. } => {
+                            if let Some(ev) = event {
+                                format!("watch: {}.{}", plugin, ev)
+                            } else {
+                                format!("watch: {}", plugin)
+                            }
+                        }
+                        napp::agent::AgentTrigger::Folder { path, .. } => {
+                            format!("folder: {}", path)
+                        }
+                        napp::agent::AgentTrigger::Manual => "manual".to_string(),
+                    };
+                    let desc = if binding.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", binding.description)
+                    };
+                    let activity_count = binding.activities.len();
+                    wf_lines.push(format!(
+                        "- **{}**{} [{}] ({} activities)",
+                        name, desc, trigger_desc, activity_count
+                    ));
+                }
+                wf_lines.push(String::new());
+                wf_lines.push(
+                    "Use work(resource: \"<name>\", action: \"run\") to trigger a workflow manually. \
+                     Use work(resource: \"<name>\", action: \"status\") to check its last run."
+                        .to_string(),
+                );
+                parts.push(wf_lines.join("\n"));
+            }
+
+            // Skills declared by this agent
+            if !cfg.skills.is_empty() {
+                let mut sk_lines = vec![format!(
+                    "## Your Skills ({})\n",
+                    cfg.skills.len()
+                )];
+                for skill_ref in &cfg.skills {
+                    sk_lines.push(format!("- {}", skill_ref));
+                }
+                sk_lines.push(String::new());
+                sk_lines.push(
+                    "These skills are part of your configuration. Use skill(action: \"discover\", query: \"...\") or plugin(action: \"skills\") to explore their capabilities."
+                        .to_string(),
+                );
+                parts.push(sk_lines.join("\n"));
+            }
+
+            // Sidecar tools (custom HTTP endpoint tools defined by this agent)
+            if !cfg.tools.is_empty() {
+                let mut tool_lines = vec![format!(
+                    "## Your Custom Tools ({})\n",
+                    cfg.tools.len()
+                )];
+                for tool_def in &cfg.tools {
+                    tool_lines.push(format!(
+                        "- **{}** — {}",
+                        tool_def.name, tool_def.description
+                    ));
+                }
+                parts.push(tool_lines.join("\n"));
+            }
+
+            parts.join("\n\n")
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
 
     // Build compact skill catalog (replaces old keyword-triggered skill_hints).
     // The full skill body is now in active_skill_template (agent-declared skills)
     // or loaded on-demand via the skill tool.
-    let skill_catalog = if let Some(loader) = skill_loader {
-        crate::sanitize::sanitize_for_prompt(&loader.compact_catalog().await)
-    } else {
-        String::new()
+
+    // Build compact agent catalog from DB (installed + user agents).
+    let agent_catalog = match store.list_agents(100, 0) {
+        Ok(agents) => {
+            let enabled: Vec<_> = agents.iter().filter(|a| a.is_enabled == 1).collect();
+            if enabled.is_empty() {
+                String::new()
+            } else {
+                let mut lines = vec![format!("## Installed Agents ({})\n", enabled.len())];
+                for a in &enabled {
+                    let desc = if a.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", a.description)
+                    };
+                    lines.push(format!("- **{}**{}", a.name, desc));
+                }
+                lines.push(String::new());
+                lines.push("Use agents(action: \"list\") for full details. Use agents(action: \"activate\", name: \"...\") to switch.".to_string());
+                lines.join("\n")
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load agent catalog");
+            String::new()
+        }
     };
 
     // Load workspace context file (.nebo.md or NEBO.md) — walk up from CWD to git root or home.
@@ -849,14 +1449,17 @@ async fn run_loop(
             mode: prompt_mode,
             agent_name: agent_name.clone(),
             active_skill: active_skill_template,
-            skill_catalog,
+            agent_catalog,
             model_aliases: model_aliases.to_string(),
             channel: channel.to_string(),
             platform: std::env::consts::OS.to_string(),
             memory_context: String::new(),
             db_context: Some(db_context_formatted.clone()),
             active_agent: active_agent_body,
-            plugin_inventory,
+            agent_soul: active_agent_entry.as_ref().and_then(|r| r.soul.clone()),
+            agent_rules: active_agent_entry.as_ref().and_then(|r| r.rules.clone()),
+            agent_plugin_context,
+            agent_self_context,
             research_prompt: None,
             context_file,
         };
@@ -1077,11 +1680,39 @@ async fn run_loop(
             }
         }
 
-        // Apply sliding window — token-only threshold (no message count limit).
-        // auto_compact is ~80% of effective context window, so eviction only
-        // fires when approaching the limit (Claude Code's proven approach).
-        let (mut window_messages, evicted) =
-            pruning::apply_sliding_window(&all_messages, run_start_time, thresholds.auto_compact);
+        // --- Pre-eviction progressive compaction ---
+        // Stages 1-3 reduce token count BEFORE the sliding window checks.
+        // The window becomes a last resort instead of the first response.
+
+        // Stage 1: Clear stale tool results (cache-cold session)
+        let (mut working, tb_saved) = pruning::time_based_micro_compact(
+            &all_messages,
+            pruning::TIME_BASED_KEEP_RECENT,
+            pruning::TIME_BASED_GAP_THRESHOLD_SECS,
+        );
+        if tb_saved > 0 {
+            debug!(tokens_saved = tb_saved, "Stage 1: time-based micro-compact");
+        }
+
+        // Stage 2: Compress tool results with informative summaries
+        let (compacted, mc_saved) = pruning::micro_compact(&working, thresholds.warning);
+        if mc_saved > 0 {
+            debug!(tokens_saved = mc_saved, "Stage 2: micro-compact tool results");
+            working = compacted;
+        }
+
+        // Stage 3: Truncate old user/assistant messages
+        let (summarized, ms_saved) = pruning::message_summarize(&working, thresholds.warning, 15);
+        if ms_saved > 0 {
+            debug!(tokens_saved = ms_saved, "Stage 3: message summarization");
+            working = summarized;
+        }
+
+        // --- Eviction (last resort) ---
+
+        // Stage 4: Sliding window — only fires if still over auto_compact after stages 1-3
+        let (window_messages, evicted) =
+            pruning::apply_sliding_window(&working, run_start_time, thresholds.auto_compact);
 
         // Build rolling summary if we evicted messages.
         // Quick fallback is used immediately (no LLM call); the LLM-quality
@@ -1091,7 +1722,9 @@ async fn run_loop(
 
             // Immediate: quick fallback (pure string extraction, no LLM)
             let quick = pruning::build_quick_fallback_summary(&evicted, &active_task);
-            let immediate_summary = if existing_summary.is_empty() {
+            let immediate_summary = if existing_summary.len() > 4000 {
+                quick // Replace — LLM summary will merge properly
+            } else if existing_summary.is_empty() {
                 quick
             } else {
                 format!("{}\n\n{}", existing_summary, quick)
@@ -1107,7 +1740,7 @@ async fn run_loop(
                 let task = active_task.clone();
                 let existing = existing_summary.clone();
                 let conc = concurrency.clone();
-                tokio::spawn(async move {
+                let handle = tokio::spawn(async move {
                     let _permit = conc.acquire_llm_permit().await;
                     match pruning::build_llm_summary(
                         prov.as_ref(),
@@ -1126,6 +1759,20 @@ async fn run_loop(
                         }
                     }
                 });
+                crate::memory_flush::track_extraction(handle).await;
+            }
+
+            // Background: index evicted messages for cross-session semantic search
+            if let Some(ep) = embedding_provider {
+                let store_c = store.clone();
+                let ep_c = ep.clone();
+                let sid = session_id.to_string();
+                let uid = memory_user_id.clone();
+                let handle = tokio::spawn(async move {
+                    transcript::index_compacted_messages(&store_c, ep_c.as_ref(), &sid, &uid)
+                        .await;
+                });
+                crate::memory_flush::track_extraction(handle).await;
             }
 
             immediate_summary
@@ -1133,40 +1780,59 @@ async fn run_loop(
             sessions.get_summary(session_id).unwrap_or_default()
         };
 
-        // Time-based micro-compact: clear stale tool results when user
-        // returns after inactivity (cache is cold, no point re-processing).
-        let (tb_messages, tb_saved) = pruning::time_based_micro_compact(
-            &window_messages,
-            pruning::TIME_BASED_KEEP_RECENT,
-            pruning::TIME_BASED_GAP_THRESHOLD_SECS,
-        );
-        if tb_saved > 0 {
-            debug!(tokens_saved = tb_saved, "Time-based micro-compact fired");
-            window_messages = tb_messages;
-        }
-
-        // Micro-compact tool results if needed
-        let (compacted_messages, _tokens_saved) =
-            pruning::micro_compact(&window_messages, thresholds.warning);
-        window_messages = compacted_messages;
-
-        // Detect which deferred tools should be activated this iteration (keyword match or prior call)
+        // Discover which deferred tools are active by scanning the message window.
+        // Follows Claude Code's extractDiscoveredToolNames pattern — tools load when
+        // tool_search results or direct calls appear in messages, and unload when
+        // those messages are evicted by sliding window compaction.
         let deferred_names = tools.get_deferred_names().await;
-        let new_activations = tool_filter::detect_deferred_activations(
-            &window_messages,
-            &called_tools,
-            &deferred_names,
-            &activated_deferred,
-        );
-        if !new_activations.is_empty() {
-            debug!(tools = ?new_activations, "activating deferred tools");
-            activated_deferred.extend(new_activations);
+        let mut active_deferred =
+            tool_filter::extract_discovered_deferred_tools(&window_messages, &deferred_names);
+
+        // Merge agent-declared dependencies — these stay active for the entire session
+        // regardless of message window state (they're part of the job definition).
+        active_deferred.extend(agent_preactivated.iter().cloned());
+
+        if !active_deferred.is_empty() {
+            debug!(tools = ?active_deferred, "deferred tools active (discovered + agent-declared)");
         }
 
-        // Get tool definitions: active (non-deferred + activated deferred) tools get full schemas
-        let all_tool_defs = tools.list_active(&activated_deferred).await;
-        let (tool_defs, active_contexts) =
-            tool_filter::filter_tools_with_context(&all_tool_defs, &window_messages, &called_tools);
+        // Get tool definitions: active (non-deferred + active deferred) tools get full schemas
+        let all_tool_defs = tools.list_active(&active_deferred).await;
+        let mut agent_tool_names = tools.agent_tool_names(agent_id).await;
+
+        // Scope filtering: restrict sidecar tools to those listed in the active scope
+        if let Some(scope_name) = tool_scope {
+            if let Some(ref agent_entry) = active_agent_entry {
+                if let Some(ref cfg) = agent_entry.config {
+                    if let Some(scope) = cfg.scopes.get(scope_name) {
+                        if !scope.tools.is_empty() {
+                            let scope_set: HashSet<String> = scope.tools.iter().cloned().collect();
+                            agent_tool_names = agent_tool_names.intersection(&scope_set).cloned().collect();
+                            debug!(scope = %scope_name, tools = ?agent_tool_names, "scoped agent tools");
+                        }
+                    }
+                }
+            }
+        }
+
+        let (mut tool_defs, active_contexts) =
+            tool_filter::filter_tools_with_context(&all_tool_defs, &window_messages, &called_tools, &agent_tool_names);
+
+        // Pattern 3: Deterministic sort for prompt cache stability.
+        // Stable alphabetical ordering ensures identical tool blocks across turns,
+        // maximising API-side prompt cache hits.
+        tool_defs.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Pattern 4: Session-scoped schema memoization.
+        // Tool schemas are immutable within a session, so reuse cached values to
+        // prevent schema churn that would bust the prompt cache.
+        for td in &mut tool_defs {
+            if let Some(cached) = tool_schema_cache.get(&td.name) {
+                td.input_schema = cached.clone();
+            } else {
+                tool_schema_cache.insert(td.name.clone(), td.input_schema.clone());
+            }
+        }
 
         // Read tracking tasks from pending_tasks (session-scoped list)
         let task_items_list_id = format!("session:{}", session_id);
@@ -1204,11 +1870,12 @@ async fn run_loop(
 
         // Build per-iteration STRAP docs + tool list based on filtered tools
         let filtered_tool_names: Vec<String> = tool_defs.iter().map(|t| t.name.clone()).collect();
-        let strap_section = prompt::build_strap_section(&filtered_tool_names, &active_contexts);
+        let strap_section =
+            prompt::build_strap_section(&filtered_tool_names, &active_contexts, &called_tools);
         let tools_list = prompt::build_tools_list(&filtered_tool_names);
 
-        // Build compact listing of deferred (not yet activated) tools
-        let deferred_stubs = tools.list_deferred_stubs(&activated_deferred).await;
+        // Build compact listing of deferred (not yet discovered) tools
+        let deferred_stubs = tools.list_deferred_stubs(&active_deferred).await;
         let deferred_listing = prompt::build_deferred_listing(&deferred_stubs);
 
         // Select model: use override if set, otherwise ask the selector
@@ -1307,6 +1974,47 @@ async fn run_loop(
             });
         }
 
+        // Plugin affinity: surface recently used plugin slugs so the LLM doesn't re-discover.
+        {
+            let mut used_plugins = std::collections::BTreeSet::new();
+            for msg in &window_messages {
+                if let Some(ref tc_json) = msg.tool_calls {
+                    if let Ok(tcs) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) {
+                        for tc in &tcs {
+                            let name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            if name == "plugin" {
+                                if let Some(input) = tc.get("input") {
+                                    let input_obj = if let Some(s) = input.as_str() {
+                                        serde_json::from_str::<serde_json::Value>(s).ok()
+                                    } else {
+                                        Some(input.clone())
+                                    };
+                                    if let Some(obj) = input_obj {
+                                        if let Some(slug) = obj.get("resource").and_then(|v| v.as_str()) {
+                                            if !slug.is_empty() {
+                                                used_plugins.insert(slug.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !used_plugins.is_empty() {
+                let slugs: Vec<String> = used_plugins.into_iter().collect();
+                all_directives.push(steering::SteeringDirective {
+                    label: "Plugin Affinity".to_string(),
+                    content: format!(
+                        "Recently used plugins this session: {}. You can use these directly without searching again.",
+                        slugs.join(", ")
+                    ),
+                    priority: 3,
+                });
+            }
+        }
+
         // Inject research mode nudge when detect_objective classified this as a research task.
         // Short directive only — the full methodology is delivered via the bot tool result.
         {
@@ -1362,6 +2070,25 @@ async fn run_loop(
             )
         };
 
+        // Log prompt component sizes for debugging token bloat
+        {
+            let tool_schema_chars: usize = tool_defs.iter().map(|t| {
+                t.description.len() + t.input_schema.to_string().len()
+            }).sum();
+            info!(
+                iteration,
+                static_system_chars = static_system.len(),
+                strap_chars = strap_section.len(),
+                tools_list_chars = tools_list.len(),
+                deferred_listing_chars = deferred_listing.len(),
+                dynamic_suffix_chars = dynamic_suffix.len(),
+                full_system_chars = full_system.len(),
+                tool_schema_chars,
+                tool_count = tool_defs.len(),
+                "prompt component sizes"
+            );
+        }
+
         // Hook: message.pre_send — let apps modify system prompt before LLM call
         let full_system = if hooks.has_subscribers("message.pre_send") {
             let payload = serde_json::to_vec(&crate::hooks::PreSendPayload {
@@ -1401,7 +2128,7 @@ async fn run_loop(
         let chat_req = ChatRequest {
             messages: ai_messages,
             tools: tool_defs,
-            max_tokens: 4096,
+            max_tokens: if output_escalated { ESCALATED_MAX_OUTPUT_TOKENS } else { DEFAULT_MAX_OUTPUT_TOKENS },
             temperature: 0.7,
             system: full_system,
             static_system: static_system.clone(),
@@ -1652,6 +2379,8 @@ async fn run_loop(
                 StreamEventType::Usage => {
                     if let Some(ref usage) = event.usage {
                         state.last_input_tokens = usage.input_tokens as usize;
+                        state.total_input_tokens += usage.input_tokens;
+                        state.total_output_tokens += usage.output_tokens;
                     }
                     let _ = tx.send(event).await;
                 }
@@ -1730,8 +2459,14 @@ async fn run_loop(
                 }
                 StreamEventType::ToolResult
                 | StreamEventType::ApprovalRequest
-                | StreamEventType::AskRequest => {
-                    // ToolResult/Approval/Ask: only sent by runner, not received from provider.
+                | StreamEventType::AskRequest
+                | StreamEventType::PlanApproval
+                | StreamEventType::FollowupSuggestions => {
+                    // ToolResult/Approval/Ask/Plan/Followup: only sent by runner, not received from provider.
+                }
+                StreamEventType::ToolSummary => {
+                    // Tool execution summary — relay to parent for display.
+                    let _ = tx.send(event).await;
                 }
                 StreamEventType::SubagentStart
                 | StreamEventType::SubagentProgress
@@ -1844,6 +2579,23 @@ async fn run_loop(
             assistant_content
         };
 
+        // Early cycle detection: if this is an auto-continuation iteration and
+        // the response is identical to the previous one, skip the persist entirely
+        // to avoid duplicate rows in the DB.
+        if auto_continuations > 0 {
+            if let Some(ref prev) = prev_auto_content {
+                if prev == &assistant_content {
+                    info!(
+                        iteration,
+                        session_id,
+                        auto_continuations,
+                        "cycle detected before persist: identical response, skipping save"
+                    );
+                    break;
+                }
+            }
+        }
+
         // Save assistant message.
         // If there was a stream error, strip tool_calls — they won't be executed
         // so saving them would create orphans in the session history.
@@ -1895,6 +2647,83 @@ async fn run_loop(
             }
         }
 
+        // Plan mode: on first iteration with tool calls, pause for user approval.
+        if plan_mode && iteration == 1 && !tool_calls.is_empty() {
+            if let Some(ask_chs) = ask_channels {
+                let plan_text = if !assistant_content.is_empty() {
+                    assistant_content.clone()
+                } else {
+                    format!(
+                        "I'd like to execute {} tool calls: {}",
+                        tool_calls.len(),
+                        tool_calls
+                            .iter()
+                            .map(|tc| tc.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let tool_names: Vec<String> =
+                    tool_calls.iter().map(|tc| tc.name.clone()).collect();
+
+                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                ask_chs
+                    .lock()
+                    .await
+                    .insert(request_id.clone(), resp_tx);
+
+                let _ = tx
+                    .send(StreamEvent::plan_approval_request(
+                        &request_id,
+                        &plan_text,
+                        tool_names,
+                    ))
+                    .await;
+
+                info!(session_id, request_id = %request_id, "plan mode: waiting for user approval");
+
+                let approved = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        info!(session_id, "plan approval cancelled");
+                        ask_chs.lock().await.remove(&request_id);
+                        return Ok(());
+                    }
+                    result = resp_rx => {
+                        match result {
+                            Ok(value) => {
+                                let v = value.to_lowercase();
+                                v == "approve" || v == "approved" || v == "yes" || v == "true"
+                            }
+                            Err(_) => false,
+                        }
+                    }
+                };
+
+                if !approved {
+                    info!(session_id, "plan rejected by user");
+                    let _ = tx
+                        .send(StreamEvent::text(
+                            "\n\nPlan was rejected. Let me know how you'd like to proceed."
+                                .to_string(),
+                        ))
+                        .await;
+                    let _ = sessions.append_message(
+                        session_id,
+                        "assistant",
+                        "Plan was rejected. Let me know how you'd like to proceed.",
+                        None,
+                        None,
+                        None,
+                    );
+                    break;
+                }
+
+                info!(session_id, "plan approved, proceeding with tool execution");
+            }
+        }
+
         // CLI providers handle their own tool execution via MCP — skip runner tool loop
         if provider.handles_tools() && !tool_calls.is_empty() {
             info!(
@@ -1914,7 +2743,7 @@ async fn run_loop(
                 origin,
                 session_key: resolved_key,
                 session_id: session_id.to_string(),
-                user_id: user_id.to_string(),
+                user_id: memory_user_id.clone(),
                 entity_permissions: entity_permissions.cloned(),
                 resource_grants: entity_resource_grants.cloned(),
                 allowed_paths: allowed_paths.to_vec(),
@@ -1922,15 +2751,13 @@ async fn run_loop(
                 stream_tx: Some(tx.clone()),
                 run_id: progress.map(|p| p.run_id.clone()),
                 ask_channels: ask_channels.cloned(),
+                channel: channel_ctx.cloned(),
             };
 
-            // Track tool names for filter + activate any deferred tools on first call
+            // Track tool names for context filtering and memory debounce
             for tc in &tool_calls {
                 called_tools.push(tc.name.clone());
-                if deferred_names.contains(&tc.name) && !activated_deferred.contains(&tc.name) {
-                    debug!(tool = %tc.name, "activating deferred tool on first call");
-                    activated_deferred.insert(tc.name.clone());
-                }
+                crate::memory_debounce::global().record_tool_call(session_id).await;
             }
 
             // Launch all tool calls concurrently via FuturesUnordered
@@ -1955,10 +2782,10 @@ async fn run_loop(
                 vec![None; tool_calls.len()];
             let has_pre_hook = hooks.has_subscribers("tool.pre_execute");
             if has_pre_hook {
-                for (idx, tc) in tool_calls.iter().enumerate() {
+                for idx in 0..tool_calls.len() {
                     let payload = serde_json::to_vec(&crate::hooks::ToolPreExecutePayload {
-                        tool_name: tc.name.clone(),
-                        input: tc.input.clone(),
+                        tool_name: tool_calls[idx].name.clone(),
+                        input: tool_calls[idx].input.clone(),
                         session_id: session_id.to_string(),
                     })
                     .unwrap_or_default();
@@ -1970,26 +2797,67 @@ async fn run_loop(
                             let msg = resp
                                 .blocked_message
                                 .unwrap_or_else(|| "Blocked by plugin hook".into());
-                            blocked_results[idx] = Some((tc.clone(), ToolResult::error(msg)));
+                            blocked_results[idx] =
+                                Some((tool_calls[idx].clone(), ToolResult::error(msg)));
+                        } else if let Some(mutated_input) = resp.input {
+                            tool_calls[idx].input = mutated_input;
                         }
                     }
                 }
             }
 
+            // Hard guard: block tool calls that repeat 3+ times with identical args.
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {
-                    continue; // skip blocked tools
+                    continue;
                 }
+                let name_hash = simple_hash(tc.name.as_bytes());
+                let args_hash = simple_hash(tc.input.to_string().as_bytes());
+                let dup_count = recent_tool_result_hashes
+                    .iter()
+                    .filter(|&&(nh, ah, _)| nh == name_hash && ah == args_hash)
+                    .count();
+                if dup_count >= 3 {
+                    blocked_results[idx] = Some((
+                        tc.clone(),
+                        ToolResult::error(format!(
+                            "Blocked: {} called with identical arguments {} times. \
+                             The result will not change. Use different parameters, \
+                             a different tool, or respond with what you already know.",
+                            tc.name,
+                            dup_count + 1
+                        )),
+                    ));
+                }
+            }
+
+            // Partition tool calls into concurrent-safe (read-only) and sequential (writes).
+            // Concurrent-safe tools run in parallel via FuturesUnordered, then
+            // sequential tools run one at a time to prevent state conflicts.
+            let mut concurrent_indices = Vec::new();
+            let mut sequential_indices = Vec::new();
+            for (idx, tc) in tool_calls.iter().enumerate() {
+                if blocked_results[idx].is_some() {
+                    continue;
+                }
+                if tools.is_concurrent_safe(&tc.name, &tc.input).await {
+                    concurrent_indices.push(idx);
+                } else {
+                    sequential_indices.push(idx);
+                }
+            }
+
+            // Phase 1: Execute concurrent-safe tools in parallel
+            for &idx in &concurrent_indices {
                 let tools = tools.clone();
                 let ctx = ctx.clone();
-                let tc = tc.clone();
+                let tc = tool_calls[idx].clone();
                 let concurrency = concurrency.clone();
                 futures.push(async move {
-                    // Acquire tool permit inside the future
                     let _permit = concurrency.acquire_tool_permit().await;
                     let input_str = tc.input.to_string();
                     let input_log = truncate_str(&input_str, 500);
-                    info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool");
+                    info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool (concurrent)");
                     let result = tokio::time::timeout(
                         TOOL_EXECUTION_TIMEOUT,
                         tools.execute(&ctx, &tc.name, tc.input.clone()),
@@ -2024,6 +2892,56 @@ async fn run_loop(
                 };
                 let (idx, tc, result) = item;
                 // Send tool result event immediately as each completes
+                let _ = tx
+                    .send(StreamEvent {
+                        event_type: StreamEventType::ToolResult,
+                        text: result.content.clone(),
+                        tool_call: Some(ai::ToolCall {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            input: serde_json::Value::Null,
+                        }),
+                        error: if result.is_error {
+                            Some(result.content.clone())
+                        } else {
+                            None
+                        },
+                        usage: None,
+                        rate_limit: None,
+                        widgets: None,
+                        provider_metadata: None,
+                        stop_reason: None,
+                    })
+                    .await;
+                results[idx] = Some((tc, result));
+            }
+
+            // Phase 2: Execute sequential (write) tools one at a time
+            for &idx in &sequential_indices {
+                if cancel_token.is_cancelled() {
+                    info!(session_id, "run cancelled during sequential tool execution");
+                    return Ok(());
+                }
+                let tc = tool_calls[idx].clone();
+                let _permit = concurrency.acquire_tool_permit().await;
+                let input_str = tc.input.to_string();
+                let input_log = truncate_str(&input_str, 500);
+                info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool (sequential)");
+                let result = tokio::time::timeout(
+                    TOOL_EXECUTION_TIMEOUT,
+                    tools.execute(&ctx, &tc.name, tc.input.clone()),
+                )
+                .await;
+                let result = match result {
+                    Ok(r) => r,
+                    Err(_) => ToolResult::error(format!(
+                        "Tool '{}' timed out after {}s",
+                        tc.name,
+                        TOOL_EXECUTION_TIMEOUT.as_secs()
+                    )),
+                };
+                let result_log = truncate_str(&result.content, 300);
+                info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
                 let _ = tx
                     .send(StreamEvent {
                         event_type: StreamEventType::ToolResult,
@@ -2144,19 +3062,90 @@ async fn run_loop(
                 }
             }
 
+            // Duplicate file read detection: if the model re-reads a file it
+            // already read this session, append a note so it knows.
+            for entry in results.iter_mut().flatten() {
+                if let Some(path) = extract_file_read_path(&entry.0) {
+                    if !files_read_this_session.insert(path.clone()) {
+                        entry.1.content.push_str(
+                            "\n\n(Note: this file was already read earlier in this session)",
+                        );
+                    }
+                }
+            }
+
             // Save all tool results to session in deterministic order
-            // and track whether ALL results in this iteration were errors
+            // and track whether ALL results in this iteration were errors.
+            //
+            // Context protection (Claude Code pattern):
+            // - Success results: 30K cap. Oversized → persist to file, return preview + path.
+            // - Error results:   10K cap. Oversized → first 5K + last 5K with truncation marker.
+            // - Universal:      100K hard ceiling as final safety net.
+            const RESULT_CAP: usize = 30_000;
+            const ERROR_CAP: usize = 10_000;
+            const ERROR_HALF: usize = 5_000;
             const UNIVERSAL_TOOL_RESULT_CAP: usize = 100_000;
             let mut all_errors_this_iteration = true;
             let mut had_results = false;
+            // Lightweight snapshots for the background tool summary generator.
+            let mut summary_tool_calls: Vec<ai::ToolCall> = Vec::new();
+            let mut summary_tool_results: Vec<ToolResult> = Vec::new();
             for entry in results.into_iter().flatten() {
                 let (tc, mut result) = entry;
                 had_results = true;
+                // Capture pre-truncation snapshots for the summarizer (only name + short content)
+                summary_tool_calls.push(tc.clone());
+                summary_tool_results.push(ToolResult {
+                    content: crate::runner::truncate_str(&result.content, 300).to_string(),
+                    is_error: result.is_error,
+                    image_url: None,
+                });
                 if !result.is_error {
                     all_errors_this_iteration = false;
                 }
-                // Universal safety net: cap any tool result that exceeds 100K chars.
-                // Per-tool caps (50K) handle common cases; this catches MCP, plugin, etc.
+
+                // Empty result guard (Claude Code pattern): prevent models from
+                // interpreting empty tool_result as end-of-output.
+                if result.content.is_empty() && !result.is_error {
+                    result.content = format!("({} completed with no output)", tc.name);
+                }
+
+                // Error truncation: first 5K + last 5K with marker (Claude Code pattern)
+                if result.is_error && result.content.len() > ERROR_CAP {
+                    let total_len = result.content.len();
+                    let first = truncate_str(&result.content, ERROR_HALF).to_string();
+                    let last_start = result.content.len().saturating_sub(ERROR_HALF);
+                    // Find char boundary for the tail
+                    let mut tail_start = last_start;
+                    while tail_start < result.content.len() && !result.content.is_char_boundary(tail_start) {
+                        tail_start += 1;
+                    }
+                    let last = &result.content[tail_start..];
+                    result.content = format!(
+                        "{}\n\n[{} characters truncated]\n\n{}",
+                        first, total_len - first.len() - last.len(), last
+                    );
+                }
+
+                // Success result truncation: persist to file, return preview + path
+                if !result.is_error && result.content.len() > RESULT_CAP {
+                    let total_len = result.content.len();
+                    // Persist full result to temp file so agent can Read it if needed
+                    let result_id = uuid::Uuid::new_v4().to_string();
+                    let result_dir = std::path::Path::new("/tmp/nebo-tool-results");
+                    let _ = std::fs::create_dir_all(result_dir);
+                    let result_path = result_dir.join(format!("{}.txt", result_id));
+                    if let Err(e) = std::fs::write(&result_path, &result.content) {
+                        warn!(error = %e, "failed to persist large tool result");
+                    }
+                    let preview = truncate_str(&result.content, 4_000);
+                    result.content = format!(
+                        "{}\n\n[Output too large ({} chars). Full output saved to: {}. Use os(resource: \"file\", action: \"read\", path: \"{}\") to access.]",
+                        preview, total_len, result_path.display(), result_path.display()
+                    );
+                }
+
+                // Universal hard ceiling as final safety net
                 if result.content.len() > UNIVERSAL_TOOL_RESULT_CAP {
                     let total_len = result.content.len();
                     let preview = truncate_str(&result.content, 4_000);
@@ -2165,19 +3154,15 @@ async fn run_loop(
                         preview, total_len
                     );
                 }
-                // Activate tools discovered by tool_search
+                // Log tool_search discoveries (activation happens via message-window
+                // scanning on the next iteration — no persistent set needed)
                 if tc.name == "tool_search" && !result.is_error {
                     if let Ok(search) = serde_json::from_str::<serde_json::Value>(&result.content) {
                         if let Some(matches) = search.get("matches").and_then(|v| v.as_array()) {
-                            for m in matches {
-                                if let Some(name) = m.as_str() {
-                                    if deferred_names.contains(name)
-                                        && !activated_deferred.contains(name)
-                                    {
-                                        debug!(tool = %name, "activating tool via tool_search");
-                                        activated_deferred.insert(name.to_string());
-                                    }
-                                }
+                            let names: Vec<&str> =
+                                matches.iter().filter_map(|m| m.as_str()).collect();
+                            if !names.is_empty() {
+                                debug!(tools = ?names, "tool_search discovered tools (active next turn)");
                             }
                         }
                     }
@@ -2275,11 +3260,69 @@ async fn run_loop(
                 hooks.do_action("agent.turn", payload).await;
             }
 
+            // Pattern 12: skip post-run memory extraction when this iteration
+            // contained an explicit memory write (agent resource:"memory" action:"store").
+            // Re-extracting would duplicate facts the model just wrote.
+            if !skip_memory {
+                for tc in &tool_calls {
+                    if tc.name == "agent" {
+                        let resource = tc.input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+                        let action = tc.input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                        if resource == "memory" && action == "store" {
+                            debug!(session_id, "memory write detected — skipping post-run extraction");
+                            skip_memory = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Pattern 13: background tool summary generation via cheap model.
+            // Spawns a fire-and-forget task that calls the cheapest provider to
+            // generate a one-line label for the UX showing what the agent did.
+            {
+                let prov_lock = providers.read().await;
+                let prov_snapshot: Vec<Arc<dyn Provider>> = prov_lock.clone();
+                drop(prov_lock);
+                let summary_tx = tx.clone();
+                let summary_assistant = assistant_content.clone();
+                let summary_tcs = summary_tool_calls;
+                let summary_trs = summary_tool_results;
+                tokio::spawn(async move {
+                    if let Some(summary) = crate::summarizer::summarize_tool_batch(
+                        &prov_snapshot,
+                        &summary_tcs,
+                        &summary_trs,
+                        &summary_assistant,
+                    )
+                    .await
+                    {
+                        let _ = summary_tx.send(StreamEvent::tool_summary(summary)).await;
+                    }
+                });
+            }
+
             // Reset post-tool nudge flag after successful tool execution
             // so it can fire again if the model goes empty on a later tool round.
             post_tool_empty_nudges = 0;
 
             // Continue loop — LLM needs to respond to tool results
+            continue;
+        }
+
+        // Output token escalation: on first truncation, retry with a higher cap
+        // before falling through to the multi-attempt continuation recovery.
+        if (stop_reason.as_deref() == Some("length") || stop_reason.as_deref() == Some("max_tokens"))
+            && !output_escalated
+        {
+            info!(
+                iteration,
+                session_id,
+                "output truncated at {}K tokens, retrying with {}K",
+                DEFAULT_MAX_OUTPUT_TOKENS / 1024,
+                ESCALATED_MAX_OUTPUT_TOKENS / 1024,
+            );
+            output_escalated = true;
             continue;
         }
 
@@ -2303,10 +3346,11 @@ async fn run_loop(
                 continue;
             }
         }
-        // Reset recovery counter on successful non-truncated completion
+        // Reset recovery counter and escalation flag on successful non-truncated completion
         if stop_reason.as_deref() != Some("length") && stop_reason.as_deref() != Some("max_tokens")
         {
             output_recovery_attempts = 0;
+            output_escalated = false;
         }
 
         // Token budget continuation: if min_iterations is set and not yet reached,
@@ -2395,71 +3439,15 @@ async fn run_loop(
             break;
         }
 
-        // Reset retry counters on successful non-empty content
-        empty_content_retries = 0;
+        // Reset retry counter on successful non-empty content (read on next loop iteration)
+        #[allow(unused_assignments)]
+        { empty_content_retries = 0; }
 
-        // Check if we should auto-continue.
-        //
-        // Philosophy (aligned with Claude Code / OpenClaw / Hermes): the primary
-        // continuation signal is the presence of tool_use blocks, NOT pattern
-        // matching on response text.  We only auto-continue when there are
-        // concrete incomplete work tasks AND the response isn't a cycle.
-        let has_incomplete = work_tasks.iter().any(|t| t.status != "completed");
-        let has_task_context = !active_task.is_empty()
-            || user_demanded_action_sticky
-            || (has_incomplete && !work_tasks.is_empty());
-        let auto_limit = max_auto_continuations(&work_tasks);
-
-        // Work-task-aware continuation — only when there are explicitly
-        // incomplete work tasks (concrete signal, not text heuristics).
-        if has_task_context
-            && has_incomplete
-            && auto_continuations < auto_limit
-            && !assistant_content.is_empty()
-        {
-            // Cycle detection: if the response is identical to the previous
-            // auto-continued response, the agent is stuck — stop.
-            if let Some(ref prev) = prev_auto_content {
-                if prev == &assistant_content {
-                    info!(
-                        iteration,
-                        session_id,
-                        auto_continuations,
-                        "cycle detected: identical response, stopping auto-continuation"
-                    );
-                    break;
-                }
-            }
-
-            if cancel_token.is_cancelled() {
-                info!(
-                    session_id,
-                    "skipping work-task auto-continue: run was cancelled"
-                );
-                break;
-            }
-            prev_auto_content = Some(assistant_content.clone());
-            auto_continuations += 1;
-            let incomplete_count = work_tasks
-                .iter()
-                .filter(|t| t.status != "completed")
-                .count();
-            info!(
-                iteration,
-                session_id,
-                auto_continuations,
-                auto_limit,
-                incomplete_count,
-                "auto-continuing: incomplete work tasks remain"
-            );
-            continuation_steering = Some(format!(
-                "<system>You stopped but there are still {} incomplete tasks. \
-                 Continue working on the next incomplete task. Do not summarize \
-                 or ask permission — take the next action now.</system>",
-                incomplete_count
-            ));
-            continue;
-        }
+        // Auto-continuation: tool_use blocks are the sole continuation signal
+        // (aligned with Claude Code). Text-only responses always exit the loop.
+        // Tool-using iterations already `continue` via the tool execution path
+        // at ~line 2367, so reaching this point means no tools were called.
+        // Max-tokens recovery and budget continuation handle their own cases above.
 
         // agent.turn action — notify apps at natural break
         if hooks.has_subscribers("agent.turn") {
@@ -2587,6 +3575,7 @@ async fn run_loop(
             let store = store.clone();
             let mem_uid = memory_user_id.clone();
             let session_id_owned = session_id.to_string();
+            let embed_prov = embedding_provider.cloned();
 
             debouncer
                 .schedule(session_id, move || async move {
@@ -2596,9 +3585,9 @@ async fn run_loop(
                     };
                     if let Some(provider) = provider {
                         if let Some(facts) =
-                            memory::extract_facts(provider.as_ref(), &last_exchange).await
+                            memory::extract_facts(provider.as_ref(), &last_exchange, Some(&store), Some(&mem_uid)).await
                         {
-                            memory::store_facts(&store, &facts, &mem_uid);
+                            memory::store_facts(&store, &facts, &mem_uid, embed_prov);
                             debug!(
                                 session_id = session_id_owned,
                                 "extracted and stored memory facts"
@@ -2618,13 +3607,14 @@ async fn run_loop(
         let providers_clone = providers.clone();
         let uid = memory_user_id.clone();
         let conc = concurrency.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let _permit = conc.acquire_llm_permit().await;
             let prov = prefer_non_gateway(&providers_clone.read().await);
             if let Some(prov) = prov {
                 crate::personality::synthesize_directive(&store_clone, prov.as_ref(), &uid).await;
             }
         });
+        crate::memory_flush::track_extraction(handle).await;
     }
 
     Ok(())
@@ -2733,6 +3723,7 @@ fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<St
 
 /// Compute max auto-continuations based on incomplete work tasks.
 /// Scales with remaining work so batch tasks get more runway.
+#[allow(dead_code)] // reserved for auto-continuation logic
 fn max_auto_continuations(work_tasks: &[steering::WorkTask]) -> usize {
     let incomplete = work_tasks
         .iter()
@@ -3230,20 +4221,6 @@ fn simple_hash(data: &[u8]) -> u64 {
     hash
 }
 
-fn extract_skill_name(skill_ref: &str) -> String {
-    if skill_ref.starts_with('@') {
-        let without_at = &skill_ref[1..];
-        let name_part = without_at.split('@').next().unwrap_or(without_at);
-        name_part
-            .rsplit('/')
-            .next()
-            .unwrap_or(name_part)
-            .to_string()
-    } else {
-        skill_ref.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3379,18 +4356,4 @@ mod tests {
         assert_eq!(result[1].role, "assistant");
     }
 
-    #[test]
-    fn test_extract_skill_name() {
-        // Qualified ref with org and version
-        assert_eq!(
-            extract_skill_name("@nebo/skills/gws-gmail@^1.0.0"),
-            "gws-gmail"
-        );
-        // Qualified ref without version
-        assert_eq!(extract_skill_name("@nebo/skills/gws-gmail"), "gws-gmail");
-        // Plain name passthrough
-        assert_eq!(extract_skill_name("gws-gmail"), "gws-gmail");
-        // Code passthrough
-        assert_eq!(extract_skill_name("SKIL-ABCD-1234"), "SKIL-ABCD-1234");
-    }
 }

@@ -1,7 +1,8 @@
 pub mod a2ui;
 pub mod a2ui_actions;
-pub mod a2ui_bindings;
 pub mod app_lifecycle;
+mod artifact_updates;
+mod channel_dispatch;
 pub mod chat_dispatch;
 pub mod codes;
 pub mod deps;
@@ -12,6 +13,7 @@ pub mod middleware;
 mod migration;
 mod plugin_commands;
 mod plugin_provider;
+mod redact;
 pub mod routes;
 pub mod run_registry;
 mod scheduler;
@@ -166,6 +168,39 @@ pub fn build_model_overrides(store: &db::Store) -> std::collections::HashMap<Str
         }
     }
     overrides
+}
+
+/// Build an embedding provider from auth profiles.
+/// Prefers OpenAI (text-embedding-3-small), falls back to Ollama if available.
+fn build_embedding_provider(
+    store: &Arc<db::Store>,
+) -> Option<Arc<dyn ai::EmbeddingProvider>> {
+    let profiles = store.list_auth_profiles().ok()?;
+    for profile in &profiles {
+        if profile.is_active.unwrap_or(0) == 0 {
+            continue;
+        }
+        match profile.provider.as_str() {
+            "openai" => {
+                let ep = ai::OpenAIEmbeddingProvider::new(profile.api_key.clone());
+                let cached = ai::CachedEmbeddingProvider::new(Box::new(ep), store.clone());
+                info!("embedding provider: OpenAI text-embedding-3-small (cached)");
+                return Some(Arc::new(cached));
+            }
+            "ollama" => {
+                let base_url = profile
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "http://localhost:11434".into());
+                let ep = ai::OllamaEmbeddingProvider::new(base_url, "nomic-embed-text".into(), 768);
+                let cached = ai::CachedEmbeddingProvider::new(Box::new(ep), store.clone());
+                info!("embedding provider: Ollama nomic-embed-text (cached)");
+                return Some(Arc::new(cached));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Build AI providers from auth_profiles in the database.
@@ -410,6 +445,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         println!("Starting server on http://localhost:{port}");
     }
 
+    // Reap any orphan plugin/agent processes left over from a prior crashed
+    // or SIGKILL'd Nebo. Without this, hot-reload restarts accumulate orphans
+    // that hold sockets and post duplicate channel placeholders.
+    let orphans = napp::child_guard::cleanup_orphans_at_startup();
+    if orphans > 0 {
+        info!(orphans_killed = orphans, "startup: reaped orphan child processes from previous run");
+    }
+
+    // Install SIGTERM/SIGINT/SIGHUP handler so children die with us on shutdown.
+    napp::child_guard::install_signal_handler();
+
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
 
@@ -549,6 +595,23 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         None,
     ));
 
+    // Populate plugin env var cache from DB (stored API keys, tokens, etc.)
+    {
+        let installed = plugin_store.list_installed();
+        for (slug, _, _, _) in &installed {
+            if let Ok(settings) = store.list_plugin_settings_by_slug(slug) {
+                let vars: std::collections::HashMap<String, String> = settings
+                    .into_iter()
+                    .filter(|s| !s.setting_value.is_empty())
+                    .map(|s| (s.setting_key, s.setting_value))
+                    .collect();
+                if !vars.is_empty() {
+                    plugin_store.set_env_vars(slug, vars);
+                }
+            }
+        }
+    }
+
     // Append plugin-provided AI providers (e.g., openrouter, local model servers)
     {
         let installed = plugin_store.list_installed();
@@ -652,9 +715,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )))
     };
 
+    // Build embedding provider for vector search (memory embedding + transcript indexing)
+    let embedding_provider = build_embedding_provider(&store);
+
     // Create hybrid search adapter (FTS5 + vector similarity for memory search)
+    // TurboVec indexes are lazy-loaded per user_id on first search.
     let hybrid_searcher: Arc<dyn tools::HybridSearcher> = Arc::new(
-        agent::search_adapter::HybridSearchAdapter::new(store.clone(), None),
+        agent::search_adapter::HybridSearchAdapter::new(store.clone(), embedding_provider.clone()),
     );
 
     // Initialize napp package registry
@@ -663,7 +730,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         user_tools_dir: data_dir.join("user").join("tools"),
         neboloop_url: Some(cfg.neboloop.api_url.clone()),
     };
-    let napp_registry = Arc::new(napp::Registry::new(napp_config));
+    let napp_registry = Arc::new(napp::Registry::new(napp_config, port));
 
     // Plan tier — updated by NeboLoop AUTH_OK handler, read by ExecuteTool
     let plan_tier = Arc::new(tokio::sync::RwLock::new("free".to_string()));
@@ -1033,20 +1100,27 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let ask_channels: tools::AskChannels =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
-    let runner = Arc::new(
-        agent::Runner::new(
-            store.clone(),
-            tool_registry.clone(),
-            providers,
-            selector,
-            concurrency.clone(),
-            hooks.clone(),
-            Some(mcp_context.clone()),
-            active_role_state.clone(),
-            Some(skill_loader.clone()),
-        )
-        .set_ask_channels(ask_channels.clone()),
-    );
+    let mut runner_builder = agent::Runner::new(
+        store.clone(),
+        tool_registry.clone(),
+        providers,
+        selector,
+        concurrency.clone(),
+        hooks.clone(),
+        Some(mcp_context.clone()),
+        active_role_state.clone(),
+        Some(skill_loader.clone()),
+    )
+    .set_ask_channels(ask_channels.clone());
+
+    if let Some(ep) = embedding_provider {
+        runner_builder = runner_builder.set_embedding_provider(ep);
+    }
+
+    let runner = Arc::new(runner_builder);
+
+    // Spawn background memory consolidation sweep (30-min interval, per-scope dedup/prune)
+    agent::memory_consolidation::spawn_sweep(store.clone(), runner.providers());
 
     // Create event bus and dispatcher for workflow-to-workflow events
     let (event_bus, event_rx) = tools::EventBus::new();
@@ -1115,6 +1189,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     &loaded.description,
                     &loaded.agent_md,
                     &loaded.frontmatter,
+                    None,
+                    None,
                     None,
                     None,
                 );
@@ -1271,6 +1347,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         config: agent_configs.get(&agent.id).cloned(),
                         channel_id: None,
                         degraded: None,
+                        soul: agent.soul.clone(),
+                        rules: agent.rules.clone(),
                     },
                 );
             }
@@ -1318,12 +1396,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         a2ui_catalog,
     ));
     a2ui_manager.restore_surfaces().await;
-    // Wire data binding manager (MCP tool polling for A2UI surfaces)
-    let binding_manager = Arc::new(a2ui_bindings::DataBindingManager::new(
-        a2ui_manager.clone(),
-        bridge.clone(),
-    ));
-    a2ui_manager.set_binding_manager(binding_manager).await;
     tool_registry
         .register(Box::new(tools::A2UIDomainTool::new(
             a2ui_manager.clone() as Arc<dyn tools::A2UIHost>
@@ -1377,6 +1449,37 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Wire RunRegistry into the tool-layer run querier (late binding via OnceLock)
     let _ = run_querier_handle.set(Box::new(state.run_registry.clone()));
 
+    // Wire channel dispatcher into agent workers (late binding via OnceLock).
+    // Workers started before this point have channel_dispatch = None, so channels
+    // don't start yet. We restart workers that declare channels below.
+    state.agent_workers.set_channel_dispatch(Arc::new(
+        channel_dispatch::ChannelDispatchImpl::new(state.clone()),
+    ));
+
+    // Restart workers that have DB channel bindings (they were started before the
+    // channel dispatcher was wired, so channels didn't start).
+    {
+        let bindings = state.store.list_enabled_channel_bindings().unwrap_or_default();
+        // Collect unique agent IDs that have channel bindings
+        let mut channel_agents: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for b in &bindings {
+            channel_agents.insert(b.agent_id.clone());
+        }
+        for agent_id in &channel_agents {
+            if let Ok(Some(agent)) = state.store.get_agent(agent_id) {
+                let cfg = napp::agent::parse_agent_config(&agent.frontmatter).ok();
+                info!(
+                    agent = %agent_id,
+                    "restarting agent worker to enable channel bindings"
+                );
+                state
+                    .agent_workers
+                    .start_agent(agent_id, &agent.name, cfg)
+                    .await;
+            }
+        }
+    }
+
     // Register structured tools + hooks for all installed plugins (startup recovery).
     {
         let installed = state.plugin_store.list_installed();
@@ -1390,7 +1493,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             // Hooks
             if let Some(manifest) = state.plugin_store.get_manifest(slug) {
                 if let Some(binary) = state.plugin_store.resolve(slug, "*") {
-                    let count = napp::register_plugin_hooks(&manifest, &binary, &state.hooks);
+                    let count = napp::register_plugin_hooks(&manifest, &binary, &state.hooks, state.plugin_store.clone());
                     if count > 0 {
                         info!(plugin = %slug, hooks = count, "registered plugin hooks at startup");
                     }
@@ -1400,8 +1503,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     }
 
     // Launch sidecars for enabled app agents (restore after restart).
+    // Spawned as a background task so sidecar timeouts don't block server startup.
     {
-        if let Ok(agents) = state.store.list_agents(1000, 0) {
+        let startup_state = state.clone();
+        tokio::spawn(async move {
+            let agents = match startup_state.store.list_agents(1000, 0) {
+                Ok(a) => a,
+                Err(_) => return,
+            };
             let mut launched = 0usize;
             for agent in &agents {
                 if agent.is_enabled == 0 || agent.is_app.unwrap_or(0) == 0 {
@@ -1411,11 +1520,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     let mut lifecycle = app_lifecycle::AppLifecycle::new(
                         agent.id.clone(),
                         tool_dir,
-                        state.hub.clone(),
+                        startup_state.hub.clone(),
+                        startup_state.tools.clone(),
+                        startup_state.skill_loader.clone(),
+                        startup_state.config.port,
                     );
                     match lifecycle.launch().await {
                         Ok(()) => {
-                            state
+                            startup_state
                                 .app_lifecycles
                                 .write()
                                 .await
@@ -1431,7 +1543,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             if launched > 0 {
                 info!(count = launched, "launched app sidecars at startup");
             }
-        }
+        });
     }
 
     // Replace comm message handler with full version that routes chat/DM to agent runner
@@ -1689,6 +1801,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Spawn heartbeat scheduler for per-entity heartbeats
     heartbeat::spawn(state.clone());
 
+    // Spawn marketplace artifact update checker (6h default, staggered API calls)
+    artifact_updates::spawn(state.clone());
+
     // Spawn periodic agent_progress broadcaster — broadcasts active run snapshots
     // to all connected clients every 5 seconds so the frontend stays in sync.
     {
@@ -1735,8 +1850,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/ws", axum::routing::get(handlers::ws::client_ws_handler))
         .route("/ws/app/{agent_id}", axum::routing::get(handlers::ws::app_ws_handler))
         .route("/ws/extension", axum::routing::get(handlers::ws::extension_ws_handler))
-        .route("/ws/voice/dictation", axum::routing::get(handlers::voice::dictation_ws_handler))
-        .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
+        // [VOICE DISABLED] .route("/ws/voice/dictation", axum::routing::get(handlers::voice::dictation_ws_handler))
+        // [VOICE DISABLED] .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
         .route("/apps/{agent_id}/ui/{*path}", axum::routing::get(handlers::apps::serve_app_ui))
         .route("/sdk/nebo.global.js", axum::routing::get(handlers::apps::serve_sdk_iife))
         .merge(http_routes)
@@ -1756,6 +1871,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Clone comm_manager for the shutdown handler — needs to disconnect NeboLoop
     // before the process exits so the gateway sees a clean WebSocket Close frame.
     let shutdown_comm = state.comm_manager.clone();
+    let shutdown_lifecycles = state.app_lifecycles.clone();
 
     if !quiet {
         info!("Server ready at http://localhost:{port}");
@@ -1781,6 +1897,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
+    // Preconnect to AI provider to warm TCP+TLS (saves ~200ms on first call)
+    {
+        let api_url = cfg.neboloop.janus_url.clone();
+        if !api_url.is_empty() {
+            tokio::spawn(async move {
+                let client = reqwest::Client::new();
+                let _ = client.head(&api_url).send().await;
+            });
+        }
+    }
+
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .map_err(|e| NeboError::Server(format!("failed to bind: {e}")))?;
@@ -1788,7 +1915,19 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
-            info!("shutdown signal received, disconnecting comm plugins...");
+            info!("shutdown signal received, draining in-flight extractions...");
+            agent::memory_flush::drain_extractions().await;
+            info!("extractions drained, stopping app sidecars...");
+            {
+                let mut lifecycles = shutdown_lifecycles.write().await;
+                for (id, lifecycle) in lifecycles.iter_mut() {
+                    if let Err(e) = lifecycle.shutdown().await {
+                        warn!(agent = %id, error = %e, "failed to stop sidecar on shutdown");
+                    }
+                }
+                lifecycles.clear();
+            }
+            info!("app sidecars stopped, disconnecting comm plugins...");
             shutdown_comm.shutdown().await;
             // Brief pause for write_loop to send the WebSocket Close frame
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1851,6 +1990,8 @@ async fn handle_agent_fs_events(
                         &loaded.description,
                         &loaded.agent_md,
                         &loaded.frontmatter,
+                        None,
+                        None,
                         None,
                         None,
                     );
@@ -1926,6 +2067,8 @@ async fn handle_agent_fs_events(
                                 config,
                                 channel_id: None,
                                 degraded: None,
+                                soul: db.soul.clone(),
+                                rules: db.rules.clone(),
                             },
                         );
                         state.agent_workers.start_agent(&final_id, &db.name, None).await;
@@ -1965,6 +2108,8 @@ async fn handle_agent_fs_events(
                     &loaded.description,
                     &loaded.agent_md,
                     &loaded.frontmatter,
+                    None,
+                    None,
                     None,
                     None,
                 );
@@ -2072,6 +2217,20 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
                     cfg["event"] = serde_json::json!(ev);
                 }
                 ("watch", cfg.to_string())
+            }
+            napp::agent::AgentTrigger::Folder {
+                path,
+                extensions,
+                recursive,
+                debounce_secs,
+            } => {
+                let cfg = serde_json::json!({
+                    "path": path,
+                    "extensions": extensions,
+                    "recursive": recursive,
+                    "debounce_secs": debounce_secs
+                });
+                ("folder", cfg.to_string())
             }
             napp::agent::AgentTrigger::Manual => ("manual", String::new()),
         };
@@ -2186,6 +2345,24 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         return;
     }
 
+    // Skip self-echo: NeboLoop deliveries always set human_injected=false,
+    // but the sender_id (msg.from) matches our bot_id when we sent the message.
+    // Without this, a local user prompt forwarded to NeboLoop comes back as a
+    // new delivery and triggers a duplicate agent run on the same session.
+    if !msg.from.is_empty() {
+        if let Some(bot_id) = config::read_bot_id() {
+            if msg.from == bot_id {
+                tracing::debug!(
+                    topic = %msg.topic,
+                    conv_id = %msg.conversation_id,
+                    sender = %msg.from,
+                    "skipping self-echo (sender_id matches bot_id)"
+                );
+                return;
+            }
+        }
+    }
+
     // Route agent space messages to the correct role
     if msg.topic == "agent_space" {
         let text = extract_message_text(&msg.content);
@@ -2296,9 +2473,12 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             entity_config::resolve_for_chat(&state.store, "channel", "agent_space")
         };
 
+        let mut prompt = text;
+        let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
+
         let config = chat_dispatch::ChatConfig {
             session_key,
-            prompt: text,
+            prompt,
             system: String::new(),
             user_id: String::new(),
             channel: "neboloop".to_string(),
@@ -2312,10 +2492,12 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 conversation_id: msg.conversation_id.clone(),
             }),
             entity_config,
-            images: vec![],
+            images,
             entity_name: agent_name.clone(),
             origin_agent_id: None,
             mention_context: None,
+            tool_scope: None, plan_mode: false,
+            channel_ctx: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -2444,9 +2626,12 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 entity_config::resolve_for_chat(&state.store, "channel", "agent_space")
             };
 
+            let mut prompt = text;
+            let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
+
             let config = chat_dispatch::ChatConfig {
                 session_key,
-                prompt: text,
+                prompt,
                 system: String::new(),
                 user_id: String::new(),
                 channel: "neboloop".to_string(),
@@ -2460,10 +2645,12 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     conversation_id: msg.conversation_id.clone(),
                 }),
                 entity_config,
-                images: vec![],
+                images,
                 entity_name: agent_name.clone(),
                 origin_agent_id: None,
                 mention_context: None,
+                tool_scope: None, plan_mode: false,
+                channel_ctx: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;
@@ -2518,9 +2705,12 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 .create_chat(&session_key, &format!("@{} (channel)", agent_slug));
         }
 
+        let mut prompt = text;
+        let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
+
         let config = chat_dispatch::ChatConfig {
             session_key,
-            prompt: text,
+            prompt,
             system: String::new(),
             user_id: String::new(),
             channel: "neboloop".to_string(),
@@ -2534,10 +2724,12 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 conversation_id: msg.conversation_id.clone(),
             }),
             entity_config,
-            images: vec![],
+            images,
             entity_name: String::new(),
             origin_agent_id: None,
             mention_context: None,
+            tool_scope: None, plan_mode: false,
+            channel_ctx: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -2625,6 +2817,62 @@ fn extract_message_text(content: &str) -> String {
         }
     }
     content.to_string()
+}
+
+/// Convert image attachments to AI vision content and append text descriptions
+/// for non-image attachments to the prompt.
+async fn process_comm_attachments(
+    state: &state::AppState,
+    attachments: &[comm::wire::Attachment],
+    prompt: &mut String,
+) -> Vec<ai::ImageContent> {
+    use base64::Engine;
+
+    if attachments.is_empty() {
+        return vec![];
+    }
+
+    let api = match codes::build_api_client(state) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot download attachments: no API client");
+            return vec![];
+        }
+    };
+
+    let mut images = Vec::new();
+
+    for att in attachments {
+        if att.mime_type.starts_with("image/") {
+            match api.download_file(&att.file_id).await {
+                Ok(bytes) => {
+                    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    images.push(ai::ImageContent {
+                        media_type: att.mime_type.clone(),
+                        data,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        file_id = %att.file_id,
+                        error = %e,
+                        "failed to download image attachment"
+                    );
+                }
+            }
+        } else {
+            // Append a text description for non-image attachments
+            let size_kb = att.size / 1024;
+            let size_label = if size_kb >= 1024 {
+                format!("{:.1} MB", size_kb as f64 / 1024.0)
+            } else {
+                format!("{} KB", size_kb)
+            };
+            prompt.push_str(&format!("\n[Attached: {} ({})]", att.filename, size_label));
+        }
+    }
+
+    images
 }
 
 async fn health_handler() -> Json<HealthResponse> {

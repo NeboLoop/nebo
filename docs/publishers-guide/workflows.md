@@ -50,7 +50,7 @@ Each entry in the `workflows` map binds activities to a trigger:
 | `inputs` | map | no | `{}` | Default inputs passed to the workflow on trigger |
 | `activities` | array | no | `[]` | Inline activity definitions. When present, the workflow runs inline — no external `ref` needed. |
 | `budget` | object | no | `{}` | Token budget constraints (`total_per_run`) |
-| `emit` | string | no | — | Event name to emit on completion. Emitted as `{agent-slug}.{emit}` into the EventBus. |
+| `emit` | string | no | — | Event name to emit on completion. By convention, prefix with the agent slug (e.g., `chief-of-staff.briefing.ready`) to avoid cross-agent collisions. |
 
 ---
 
@@ -77,7 +77,23 @@ Activities define the steps an agent takes when a workflow fires. Each activity 
 1. **System prompt** is constructed from: execution rules → skills → available tools → intent → steps → inputs → prior activity results
 2. **Agentic loop** runs (up to 50 iterations): LLM streams → tool calls → results → repeat
 3. **Context chaining**: Each activity's output is appended as `[Activity '{id}' result]: {text}` and passed to the next activity
-4. **Completion**: Activity ends when LLM produces text without tool calls (or budget exhausted)
+4. **Branch termination**: If an activity produces empty output (empty string), its branch stops — no downstream activities execute. This follows n8n-style semantics where empty output signals "nothing to do."
+5. **Completion**: Activity ends when LLM produces text without tool calls (or budget exhausted)
+
+### Activity Results
+
+Each completed activity records:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `started_at` | timestamp | When the activity began executing |
+| `completed_at` | timestamp | When the activity finished |
+| `input_tokens` | number | Token usage for input (prompt) |
+| `output_tokens` | number | Token usage for output (completion) |
+| `error_pattern` | string | Error pattern tracked for circuit breaker (if failed) |
+| `failure_reason` | string | Human-readable failure reason (if failed) |
+
+Activity results are stored per run and available in system events and the workflow run API response.
 
 ### Built-in Tools
 
@@ -95,9 +111,19 @@ Two tools are always available inside activities:
 | `on_error.retry` | number | Times to retry the activity before giving up (default: 0) |
 | `on_error.fallback` | string | What to do after retries exhausted: `skip`, `abort`, `notify_owner` |
 
-**Circuit breaker:** If 3+ consecutive activities fail with the same error pattern, the workflow stops automatically.
+**Circuit breaker** (`CIRCUIT_BREAKER_THRESHOLD = 3`): If 3 or more consecutive activities fail with the same error pattern, the workflow aborts automatically. The failure reason is stored per activity result, enabling post-mortem analysis. This prevents infinite retry loops on systematic errors (e.g., a misconfigured API key causing every activity to fail the same way).
 
 **Same-tool loop detection:** If the LLM calls the same tool 3+ times in a row, a steering hint is injected to break the loop.
+
+### Cancellation
+
+Workflows support graceful cancellation via a cancellation token. When cancelled:
+
+1. The currently in-progress activity is allowed to finish (no mid-activity abort)
+2. No subsequent activities are started
+3. The workflow run is marked as cancelled, not failed
+
+Cancel a running workflow via `POST /agents/{id}/workflows/{binding}/cancel`.
 
 ---
 
@@ -196,6 +222,18 @@ Watch trigger commands support `{{key}}` placeholders, substituted from the agen
 
 The placeholder name must exactly match an input `key`. Unmatched placeholders are left as literal text (which will cause failures).
 
+### Input Values & Template Substitution in Triggers
+
+All trigger configs — not just watch commands — support `{{key}}` template substitution. Values are resolved from `agents.input_values`, which users set via the Settings UI or the API.
+
+```json
+{
+  "trigger": { "type": "schedule", "cron": "{{sync_time}}" }
+}
+```
+
+If the agent's `input_values` contains `{ "sync_time": "0 9 * * 1-5" }`, the cron expression resolves to `0 9 * * 1-5` at trigger evaluation time. This lets end users customize workflow timing and parameters without editing the agent package.
+
 ### Manual
 
 ```json
@@ -241,20 +279,18 @@ The `payload` becomes the triggered workflow's inputs (available as `_event_payl
 
 ### Emit Namespace
 
-When a workflow emits events, they are namespaced by the agent's slugified name:
+Events emitted from activities use the source name as-is — there is no automatic namespace prefix. Activities must include the full source name to avoid collisions across agents:
 
 ```
-Agent name: "Chief of Staff"
-emit: "briefing.ready"
-→ Event source: "chief-of-staff.briefing.ready"
+emit(source: "chief-of-staff.briefing.ready", payload: {...})
 ```
 
-Other agents subscribe to the full namespaced source.
+**Convention:** Prefix event sources with the agent slug to prevent cross-agent collisions. Other agents subscribe to the full source name.
 
 ### Emitting from Activities
 
 ```
-emit(source: "email.customer-service", payload: {"from": "j@example.com", "subject": "..."})
+emit(source: "chief-of-staff.email.customer-service", payload: {"from": "j@example.com", "subject": "..."})
 ```
 
 Each `emit` call is a discrete event. If an activity emits 5 events, each fires independently against all active subscriptions. This enables **fan-out pipelines**.
@@ -267,6 +303,17 @@ Each `emit` call is a discrete event. If an activity emits 5 events, each fires 
 | `workflow.{id}.failed` | A workflow run fails |
 
 System events enable workflow chaining: A completes → B triggers.
+
+### Progress Events
+
+In addition to completion events, the engine emits progress events for live monitoring:
+
+| Event | When | Payload |
+|-------|------|---------|
+| `ActivityStarted` | Each activity begins executing | Activity ID, workflow run ID |
+| `TaskUpdated` | During activity execution | Progress details, current activity state |
+
+These events are broadcast over WebSocket, enabling the UI to show real-time workflow progress.
 
 ---
 
@@ -366,7 +413,7 @@ Read top to bottom: watcher monitors Gmail. For each email, triage classifies an
 
 - Each binding must have a `trigger` (required)
 - Either `ref` or `activities` must be present (one defines what runs)
-- Trigger `type` must be one of: `schedule`, `heartbeat`, `event`, `watch`, `manual`
+- Trigger `type` must be one of: `schedule`, `heartbeat`, `event`, `watch`, `folder`, `manual`
 - **Lenient parsing:** Individual workflow bindings that fail to parse (e.g., invalid trigger format) are skipped with a warning — they do not prevent the agent from loading. The agent still appears in the UI with its remaining valid workflows.
 - Schedule triggers must have a valid 5-field `cron` expression
 - Heartbeat triggers must have a valid `interval` (e.g., `"30m"`, `"1h"`)

@@ -26,6 +26,7 @@ pub fn sanitize_env(
     app_dir: &str,
     sock_path: &str,
     data_dir: &str,
+    api_port: u16,
 ) -> Vec<(String, String)> {
     let mut env = Vec::new();
 
@@ -36,6 +37,7 @@ pub fn sanitize_env(
     env.push(("NEBO_APP_DIR".into(), app_dir.into()));
     env.push(("NEBO_APP_SOCK".into(), sock_path.into()));
     env.push(("NEBO_APP_DATA".into(), data_dir.into()));
+    env.push(("NEBO_API_URL".into(), format!("http://127.0.0.1:{api_port}")));
 
     // Allowlisted system vars
     for var in ALLOWED_SYSTEM_VARS {
@@ -118,18 +120,20 @@ mod tests {
             "/apps/app-1",
             "/tmp/app.sock",
             "/apps/app-1/data",
+            27895,
         );
 
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
         assert!(keys.contains(&"NEBO_APP_ID"));
         assert!(keys.contains(&"NEBO_APP_NAME"));
+        assert!(keys.contains(&"NEBO_API_URL"));
         assert!(!keys.contains(&"ANTHROPIC_API_KEY"));
         assert!(!keys.contains(&"JWT_SECRET"));
     }
 
     #[test]
     fn test_sanitize_env_includes_system() {
-        let env = sanitize_env("x", "X", "1", "/x", "/x.sock", "/x/data");
+        let env = sanitize_env("x", "X", "1", "/x", "/x.sock", "/x/data", 27895);
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
         // PATH should be included if set
         if std::env::var("PATH").is_ok() {

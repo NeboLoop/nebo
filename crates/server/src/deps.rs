@@ -377,6 +377,18 @@ async fn install_skill(
         }
     };
 
+    // Seed artifact update tracking for skills
+    if let Some(ref dir) = skill_dir {
+        let version = dir
+            .join("manifest.json")
+            .to_str()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "1.0.0".to_string());
+        let _ = state.store.upsert_artifact_update_pref(&artifact_id, "skill", &version);
+    }
+
     // Reload skill loader so it appears immediately
     state.skill_loader.load_all().await;
 

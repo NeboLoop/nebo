@@ -6,6 +6,8 @@
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
   import AgentSetupModal from '$lib/components/agent-setup/AgentSetupModal.svelte';
+  import CodeInstallModal from '$lib/components/chat/CodeInstallModal.svelte';
+  import { launchApp } from '$lib/apps/launcher.js';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   const sidebarCollapsed = sidebarCollapsedFor('agents');
   import { devMode } from '$lib/stores/devmode.js';
@@ -28,17 +30,18 @@
   let apiRawRuns = $state<Record<string, RawRunRecord[]>>({});
   let apiStats = $state<Record<string, WorkflowStatsLocal>>({});
   let apiSkills = $state<Record<string, string[]>>({});
-  let apiConfig = $state<Record<string, { persona: string; model: string; inputs: unknown[]; workflows: Record<string, WorkflowConfig> }>>({});
+  let apiConfig = $state<Record<string, { persona: string; agentMd: string; soul: string; rules: string; model: string; inputs: unknown[]; workflows: Record<string, WorkflowConfig> }>>({});
   let agentsLoading = $state(true);
   let threadsLoading = $state<Record<string, boolean>>({});
 
   // Onboarding modal state
   let showSetupModal = $state(false);
+  let showInstallModal = $state(false);
   let setupAgentName = $state('');
   let setupAgentDesc = $state('');
-  let setupInputFields = $state<unknown[]>([]);
+  let setupInputFields = $state<Record<string, unknown>>({});
 
-  const DEFAULT_CONFIG = { persona: '', model: 'claude-sonnet-4-6', inputs: [] as unknown[], workflows: {} as Record<string, WorkflowConfig> };
+  const DEFAULT_CONFIG = { persona: '', agentMd: '', soul: '', rules: '', model: 'claude-sonnet-4-6', inputs: [] as unknown[], workflows: {} as Record<string, WorkflowConfig> };
 
   // Load agents from API and return roster-refresh function
   async function loadAgentRoster() {
@@ -53,7 +56,7 @@
         activeAgents.map((a) => a.id || a.agentId)
       );
       if (agentsResp?.agents?.length) {
-        const agents = (agentsResp.agents as Agent[]).filter(a => !a.isApp);
+        const agents = agentsResp.agents as Agent[];
         allAgents = agents.map(a => ({
           id: a.id,
           name: a.name,
@@ -61,6 +64,8 @@
           initial: a.name.charAt(0).toUpperCase(),
           status: activeIds.has(a.id) ? 'online' : 'paused',
           color: 'teal',
+          editable: !a.nappPath,
+          isApp: a.isApp ?? false,
         }));
         agentStatuses = Object.fromEntries(allAgents.map(a => [a.id, a.status]));
       }
@@ -99,7 +104,7 @@
         id: String(r.id || ''),
         name: rawName,
         workflowName: wfName,
-        status: r.status === 'completed' ? 'success' : r.status === 'exited' ? 'skipped' : String(r.status || 'unknown'),
+        status: r.status === 'completed' ? 'success' : String(r.status || 'unknown'),
         duration: durStr,
         date: dt ? dt.toLocaleString() : '—',
         dateGroup: dt ? dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
@@ -234,23 +239,23 @@
     threadsLoading[id] = true;
     apiRunsLoading[id] = true;
     try {
+      const t0 = performance.now();
       const api = await import('$lib/api/nebo');
+      console.log(`[nebo] import api: ${(performance.now() - t0).toFixed(0)}ms`);
       // Fire all requests in parallel but resolve threads first to unblock the UI
-      const chatsPromise = api.listAgentChats(id).catch((e: unknown) => { console.warn('[nebo] listAgentChats failed for', id, e); return null; });
-      const runsPromise = api.listAgentRuns(id).catch((e: unknown) => { console.warn('[nebo] listAgentRuns failed for', id, e); return null; });
-      const statsPromise = api.agentStats(id).catch((e: unknown) => { console.warn('[nebo] agentStats failed for', id, e); return null; });
-      const agentPromise = api.getAgent(id).catch((e: unknown) => { console.warn('[nebo] getAgent failed for', id, e); return null; });
-      const workflowsPromise = api.listAgentWorkflows(id).catch((e: unknown) => { console.warn('[nebo] listAgentWorkflows failed for', id, e); return null; });
+      const chatsPromise = api.listAgentChats(id).then(r => { console.log(`[nebo] chats: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] listAgentChats failed for', id, e); return null; });
+      const runsPromise = api.listAgentRuns(id).then(r => { console.log(`[nebo] runs: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] listAgentRuns failed for', id, e); return null; });
+      const statsPromise = api.agentStats(id).then(r => { console.log(`[nebo] stats: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] agentStats failed for', id, e); return null; });
+      const agentPromise = api.getAgent(id).then(r => { console.log(`[nebo] agent: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] getAgent failed for', id, e); return null; });
+      const workflowsPromise = api.listAgentWorkflows(id).then(r => { console.log(`[nebo] workflows: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] listAgentWorkflows failed for', id, e); return null; });
 
       // Unblock thread list as soon as chats arrive
       const chatsResp = await chatsPromise;
       if (chatsResp?.chats) apiThreads[id] = chatsResp.chats as EnrichedChat[];
       threadsLoading[id] = false;
 
-      // Let the rest settle in the background
-      const [runsResp, statsResp, agentResp, workflowsResp] = await Promise.all([
-        runsPromise, statsPromise, agentPromise, workflowsPromise,
-      ]);
+      // Unblock runs list as soon as runs + stats arrive (don't wait for agent/workflows)
+      const [runsResp, statsResp] = await Promise.all([runsPromise, statsPromise]);
       if (runsResp?.runs) {
         const rawRuns = runsResp.runs as RawRunRecord[];
         apiRuns[id] = mapRuns(rawRuns);
@@ -271,21 +276,27 @@
           lastRunAt: s.lastRunAt ? new Date(s.lastRunAt * 1000).toLocaleString() : '—',
         };
       }
+
+      // Agent + workflows settle in the background — don't block runs/stats UI
+      const [agentResp, workflowsResp] = await Promise.all([agentPromise, workflowsPromise]);
       // Agent config (persona, model, skills, inputs)
       if (agentResp) {
         const ar = agentResp;
         apiSkills[id] = Array.isArray(ar.skills) ? ar.skills as string[] : [];
-        const persona = typeof ar.personaBody === 'string' ? ar.personaBody : '';
+        const persona = typeof ar.persona === 'string' ? (ar.persona as string) : '';
+        const agentMd = (ar.agent as Agent)?.agentMd || '';
+        const soul = (ar.agent as Agent)?.soul || '';
+        const rules = (ar.agent as Agent)?.rules || '';
         const model = typeof ar.model === 'string' ? ar.model : (ar.model as Record<string, unknown>)?.id as string ?? 'claude-sonnet-4-6';
         const inputs = Array.isArray(ar.inputFields) ? ar.inputFields : [];
         // Workflows from separate endpoint — merged below
-        apiConfig[id] = { persona, model, inputs, workflows: apiConfig[id]?.workflows ?? {} };
+        apiConfig[id] = { persona, agentMd, soul, rules, model, inputs, workflows: apiConfig[id]?.workflows ?? {} };
 
         // Auto-trigger onboarding if agent has unconfigured required inputs
         if (ar.needsSetup) {
           setupAgentName = ar.displayName || ar.agent?.name || '';
           setupAgentDesc = ar.agent?.description || '';
-          setupInputFields = Array.isArray(ar.inputFields) ? ar.inputFields : [];
+          setupInputFields = (ar as any).agent?.inputValues ? JSON.parse((ar as any).agent.inputValues) : {};
           showSetupModal = true;
         } else {
           showSetupModal = false;
@@ -370,9 +381,13 @@
   }
 
   const sortedAgents = $derived.by(() => {
-    const primary = allAgents.filter(a => a.id === 'assistant');
-    const rest = allAgents.filter(a => a.id !== 'assistant').sort((a, b) => a.name.localeCompare(b.name));
+    const primary = allAgents.filter(a => a.id === 'assistant' && !a.isApp);
+    const rest = allAgents.filter(a => a.id !== 'assistant' && !a.isApp).sort((a, b) => a.name.localeCompare(b.name));
     return [...primary, ...rest];
+  });
+
+  const sortedAppAgents = $derived.by(() => {
+    return allAgents.filter(a => a.isApp).sort((a, b) => a.name.localeCompare(b.name));
   });
 
   const agentId = $derived($page.params.agentId ?? '');
@@ -668,7 +683,8 @@
   });
 
   function selectAgent(id: string) {
-    goto(`/${id}/threads`);
+    const a = allAgents.find(ag => ag.id === id);
+    goto(a?.isApp ? `/${id}/overview` : `/${id}/threads`);
   }
 
   function statusLabel(s: string) {
@@ -680,6 +696,27 @@
 
   // Agent context menu
   let ctxMenu = $state<{ x: number; y: number; agentId: string } | null>(null);
+
+  // Delete confirmation
+  let deleteTarget = $state<{ id: string; name: string } | null>(null);
+  let deleting = $state(false);
+
+  async function confirmDeleteAgent() {
+    if (!deleteTarget || deleting) return;
+    const targetId = deleteTarget.id;
+    deleting = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.deleteAgent(targetId);
+      deleteTarget = null;
+      deleting = false;
+      loadAgentRoster();
+      // Navigate away if we were viewing the deleted agent
+      if (agentId === targetId) goto('/');
+    } catch {
+      deleting = false;
+    }
+  }
 
   function handleAgentContext(e: MouseEvent, aid: string) {
     e.preventDefault();
@@ -703,8 +740,12 @@
       navigator.clipboard.writeText(id);
     } else if (action === 'settings') {
       goto(`/${id}/settings/general`);
+    } else if (action === 'open-app') {
+      const a = allAgents.find(ag => ag.id === id);
+      launchApp(id, a?.name || 'App');
     } else if (action === 'delete') {
-      goto(`/${id}/settings/general?delete=1`);
+      const a = allAgents.find(ag => ag.id === id);
+      deleteTarget = { id, name: a?.name || 'this agent' };
     }
   }
 
@@ -726,6 +767,7 @@
     get workflowEntries() { return workflowEntries; },
     get workflowStats() { return workflowStats; },
     get workflowRuns() { return workflowRuns; },
+    get isApp() { return agent?.isApp ?? false; },
     get devMode() { return $devMode; },
     get agentStatuses() { return agentStatuses; },
     openWorkflow,
@@ -733,6 +775,8 @@
     triggerSummary,
     toggleAgentStatus,
     agentStatus,
+    refreshRuns,
+    refreshThreads,
   });
 </script>
 
@@ -747,22 +791,30 @@
     class="fixed z-50 w-[180px] py-1 rounded-lg border border-base-300 bg-base-100 shadow-xl"
     style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
   >
-    {#if ctxMenu.agentId !== 'assistant'}
-      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('toggle-status')}>
-        {#if ctxSt === 'paused'}
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-success"><polygon points="6,4 20,12 6,20"/></svg>
-          Activate
-        {:else}
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-base-content/50"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-          Pause
-        {/if}
+    {#if ctxAgent?.isApp}
+      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors font-medium" onclick={() => ctxAction('open-app')}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        Open App
       </button>
       <div class="h-px bg-base-300 my-1"></div>
+    {:else}
+      {#if ctxMenu.agentId !== 'assistant'}
+        <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('toggle-status')}>
+          {#if ctxSt === 'paused'}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-success"><polygon points="6,4 20,12 6,20"/></svg>
+            Activate
+          {:else}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-base-content/50"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+            Pause
+          {/if}
+        </button>
+        <div class="h-px bg-base-300 my-1"></div>
+      {/if}
+      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('new-thread')}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New Thread
+      </button>
     {/if}
-    <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('new-thread')}>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      New Thread
-    </button>
     <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('copy-id')}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-base-content/50"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       Copy Agent ID
@@ -778,6 +830,37 @@
         Delete
       </button>
     {/if}
+  </div>
+{/if}
+
+<!-- Delete agent confirmation modal -->
+{#if deleteTarget}
+  <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="presentation" onclick={() => { if (!deleting) deleteTarget = null; }} onkeydown={(e) => { if (e.key === 'Escape' && !deleting) deleteTarget = null; }}></div>
+    <div class="relative w-full max-w-sm rounded-2xl bg-base-100 border border-error/30 shadow-2xl overflow-hidden">
+      <div class="flex items-center gap-3 px-5 py-4 bg-error/5 border-b border-error/20">
+        <div class="w-9 h-9 rounded-full bg-error/15 flex items-center justify-center">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-error"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
+        <div>
+          <h3 class="text-sm font-bold">Delete {deleteTarget.name}?</h3>
+          <p class="text-xs text-base-content/50">This cannot be undone</p>
+        </div>
+      </div>
+      <div class="px-5 py-4">
+        <p class="text-sm text-base-content/70">All threads, runs, and memory for this agent will be permanently removed.</p>
+      </div>
+      <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-base-content/10">
+        <button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={() => { deleteTarget = null; }} disabled={deleting}>Cancel</button>
+        <button class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none" onclick={confirmDeleteAgent} disabled={deleting}>
+          {#if deleting}
+            <span class="loading loading-spinner loading-xs"></span>
+          {:else}
+            Delete Agent
+          {/if}
+        </button>
+      </div>
+    </div>
   </div>
 {/if}
 
@@ -1363,7 +1446,7 @@
   </div>
   <div class="flex-1 overflow-y-auto py-1">
     {#if agentsLoading && sortedAgents.length === 0}
-      <div class="flex justify-center py-4">
+      <div class="flex-1 flex items-center justify-center">
         <span class="loading loading-spinner loading-sm"></span>
       </div>
     {:else if $sidebarCollapsed}
@@ -1383,6 +1466,22 @@
             <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
           </div>
         {/each}
+        {#if sortedAppAgents.length > 0}
+          <div class="h-px bg-base-content/10 mx-2 my-1.5"></div>
+          {#each sortedAppAgents as a}
+            <button
+              class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 cursor-pointer transition-colors {agentId === a.id
+                ? 'bg-primary text-primary-content border-none'
+                : 'border border-base-300 bg-base-100'}"
+              onclick={() => selectAgent(a.id)}
+              oncontextmenu={(e) => handleAgentContext(e, a.id)}
+              data-context-menu
+              title={a.name}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
+            </button>
+          {/each}
+        {/if}
       </div>
     {:else}
       {#each sortedAgents as a}
@@ -1419,6 +1518,44 @@
           {/if}
         </div>
       {/each}
+      {#if sortedAppAgents.length > 0}
+        <div class="px-3.5 pt-3 pb-1">
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Agent Apps</div>
+        </div>
+        {#each sortedAppAgents as a}
+          {@const st = agentStatus(a.id)}
+          <div
+            class="group/agent w-full flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {agentId === a.id
+              ? 'rounded-box border border-base-300 bg-base-100 shadow-sm'
+              : 'rounded-box border border-transparent hover:bg-base-100/70'}"
+          >
+            <button
+              class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer p-0 text-left"
+              onclick={() => selectAgent(a.id)}
+              oncontextmenu={(e) => handleAgentContext(e, a.id)}
+              data-context-menu
+            >
+              <div class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 {agentId === a.id
+                ? 'bg-primary text-primary-content'
+                : 'border border-base-300 bg-base-100'}">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium truncate">{a.name}</div>
+                <div class="text-xs text-base-content/70 truncate">{a.role}</div>
+              </div>
+            </button>
+            <div class="relative shrink-0">
+              <input type="checkbox" class="toggle toggle-xs {st === 'running' ? 'toggle-warning' : 'toggle-success'}" checked={st !== 'paused'}
+                onchange={(e) => { e.stopPropagation(); toggleAgentStatus(a.id); }}
+              />
+              {#if st === 'running'}
+                <div class="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-warning animate-pulse pointer-events-none"></div>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      {/if}
     {/if}
   </div>
   <UserMenu collapsed={$sidebarCollapsed} />
@@ -1438,3 +1575,11 @@
     onCancel={() => { showSetupModal = false; }}
   />
 {/if}
+
+<CodeInstallModal
+  bind:show={showInstallModal}
+  onAgentSetup={(agentId, agentName) => {
+    setupAgentName = agentName;
+    showSetupModal = true;
+  }}
+/>

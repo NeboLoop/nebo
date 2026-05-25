@@ -80,14 +80,15 @@
         {#each visible as item}
           {@const c = AGENT_COLORS[item.agent]}
           {@const a = AGENTS.find(x => x.id === item.agent)}
+          {@const isHeartbeat = item.triggerType === 'heartbeat'}
           <button
-            class="flex items-center text-xs px-1 py-px rounded-sm overflow-hidden border-l-2 cursor-pointer text-left transition-shadow {c.fillClass} {c.textClass} {c.edgeClass} {selected === item._id ? 'ring-2' : ''}"
-            style={selected === item._id ? `--tw-ring-color:${c.edgeVar}` : ''}
+            class="flex items-center text-xs px-1 py-px rounded-sm overflow-hidden border-l-2 cursor-pointer text-left transition-shadow {isHeartbeat ? 'opacity-50' : ''} {isHeartbeat ? '' : c.fillClass} {c.textClass} {c.edgeClass} {selected === item._id ? 'ring-2' : ''}"
+            style="{isHeartbeat ? 'border-left-style:dashed;' : ''} {selected === item._id ? `--tw-ring-color:${c.edgeVar}` : ''}"
             onclick={(e) => { e.stopPropagation(); selected = item._id; }}
-            title="{a?.name ?? item.agent} · {item.label}"
+            title="{a?.name ?? item.agent} · {item.label}{isHeartbeat ? ` (every ${item.interval})` : ''}"
           >
-            <span class="overflow-hidden whitespace-nowrap text-ellipsis font-medium flex-1">{a?.name ?? item.agent}: {item.label}</span>
-            {#if item.run}
+            <span class="overflow-hidden whitespace-nowrap text-ellipsis font-medium flex-1">{isHeartbeat ? `↻ ${a?.name ?? item.agent} · ${item.interval}` : `${a?.name ?? item.agent}: ${item.label}`}</span>
+            {#if item.run && !isHeartbeat}
               <span class="w-1.5 h-1.5 rounded-full shrink-0 ml-0.5 {item.run.status === 'success' ? 'bg-success' : item.run.status === 'failed' ? 'bg-error' : item.run.status === 'skipped' ? 'bg-warning' : 'bg-base-content/30'}"></span>
             {/if}
           </button>

@@ -53,6 +53,8 @@ func scanStructs(dir string) []*RustStruct {
 var (
 	// Match derive attributes that include Serialize.
 	reDerive = regexp.MustCompile(`#\[derive\([^)]*\bSerialize\b[^)]*\)\]`)
+	// Match derive attributes that include Deserialize (for query param structs).
+	reDeserialize = regexp.MustCompile(`#\[derive\([^)]*\bDeserialize\b[^)]*\)\]`)
 	// Match serde container attributes.
 	reSerdeCont = regexp.MustCompile(`#\[serde\(([^)]+)\)\]`)
 	// Match pub struct Name {
@@ -61,9 +63,19 @@ var (
 	reSerdeField = regexp.MustCompile(`#\[serde\(([^)]+)\)\]`)
 	// Match a struct field: pub name: Type,
 	reField = regexp.MustCompile(`pub\s+(\w+)\s*:\s*(.+?)\s*[,}]`)
+	// Match Query<StructName> in handler function signatures.
+	reQueryType = regexp.MustCompile(`Query<(\w+)>`)
 )
 
 func parseStructs(src, path string) []*RustStruct {
+	return parseStructsMatching(src, path, reDerive)
+}
+
+func parseDeserializeStructs(src, path string) []*RustStruct {
+	return parseStructsMatching(src, path, reDeserialize)
+}
+
+func parseStructsMatching(src, path string, deriveMatcher *regexp.Regexp) []*RustStruct {
 	lines := strings.Split(src, "\n")
 	var result []*RustStruct
 
@@ -71,8 +83,8 @@ func parseStructs(src, path string) []*RustStruct {
 	for i < len(lines) {
 		line := strings.TrimSpace(lines[i])
 
-		// Look for #[derive(...Serialize...)]
-		if !reDerive.MatchString(line) {
+		// Look for matching derive attribute.
+		if !deriveMatcher.MatchString(line) {
 			i++
 			continue
 		}
@@ -236,14 +248,17 @@ func scanRoutes(dir string) []Route {
 
 var reRoute = regexp.MustCompile(`\.route\(\s*"([^"]+)"\s*,\s*axum::routing::(get|post|put|delete|patch)\(([^)]+?)\)`)
 
+// reChainedMethod matches chained method calls like .put(handler) after the initial method.
+var reChainedMethod = regexp.MustCompile(`\.(get|post|put|delete|patch)\(([^)]+?)\)`)
+
 func parseRoutes(src, sourceFile string) []Route {
 	var routes []Route
 	// Collapse newlines so multi-line .route() calls match the regex.
 	collapsed := strings.ReplaceAll(src, "\n", " ")
-	for _, m := range reRoute.FindAllStringSubmatch(collapsed, -1) {
-		routePath := m[1]
-		method := strings.ToUpper(m[2])
-		handler := strings.TrimSpace(m[3])
+	for _, idx := range reRoute.FindAllStringSubmatchIndex(collapsed, -1) {
+		routePath := collapsed[idx[2]:idx[3]]
+		method := strings.ToUpper(collapsed[idx[4]:idx[5]])
+		handler := strings.TrimSpace(collapsed[idx[6]:idx[7]])
 
 		routes = append(routes, Route{
 			Method:  method,
@@ -251,6 +266,28 @@ func parseRoutes(src, sourceFile string) []Route {
 			Handler: handler,
 			Source:  sourceFile,
 		})
+
+		// Scan for chained .method(handler) calls on the same .route() call.
+		// Start scanning from after the first method's closing paren.
+		rest := collapsed[idx[1]:]
+		for _, cm := range reChainedMethod.FindAllStringSubmatch(rest, -1) {
+			chainedMethod := strings.ToUpper(cm[1])
+			chainedHandler := strings.TrimSpace(cm[2])
+			// Stop if we hit the next .route( call — we've left this route.
+			chainedPos := strings.Index(rest, "."+cm[0][1:])
+			nextRoute := strings.Index(rest, ".route(")
+			if nextRoute >= 0 && chainedPos > nextRoute {
+				break
+			}
+			routes = append(routes, Route{
+				Method:  chainedMethod,
+				Path:    routePath,
+				Handler: chainedHandler,
+				Source:  sourceFile,
+			})
+			// Advance rest past this match to find further chained methods.
+			rest = rest[chainedPos+len(cm[0]):]
+		}
 	}
 	return routes
 }
@@ -268,7 +305,16 @@ type HandlerInfo struct {
 	ResponseKeys []ResponseKey
 	// ResponseStruct is the name of a typed response struct, if any.
 	ResponseStruct string
-	Source         string
+	// QueryParams are typed parameters extracted from Query<T> in the function signature.
+	QueryParams []QueryParam
+	Source      string
+}
+
+// QueryParam represents a typed query parameter for a handler function.
+type QueryParam struct {
+	Name     string // TypeScript name (camelCase)
+	TSType   string // TypeScript type (string, number, etc.)
+	Optional bool   // whether the param has a default or is Option<T>
 }
 
 // ResponseKey is a single key in a json!({...}) response.
@@ -333,8 +379,35 @@ func extractFirstGenericArg(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// scanDeserializeStructs reads handler .rs files and extracts Deserialize structs
+// (used for Query<T> parameter inference — not emitted as TS interfaces).
+// Keys are "filename::StructName" to avoid collisions between identically-named
+// structs in different handler files (e.g. multiple ListQuery structs).
+func scanDeserializeStructs(dir string) map[string]*RustStruct {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	result := make(map[string]*RustStruct)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".rs") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for _, s := range parseDeserializeStructs(string(data), path) {
+			// Key by filename::Name so same-named structs don't collide.
+			result[e.Name()+"::"+s.Name] = s
+		}
+	}
+	return result
+}
+
 // scanHandlers reads all handler .rs files and extracts response shapes.
-func scanHandlers(dir string, structs map[string]*RustStruct, storeMethodTypes map[string]string) map[string]*HandlerInfo {
+func scanHandlers(dir string, structs map[string]*RustStruct, storeMethodTypes map[string]string, queryStructs map[string]*RustStruct) map[string]*HandlerInfo {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -350,7 +423,7 @@ func scanHandlers(dir string, structs map[string]*RustStruct, storeMethodTypes m
 			continue
 		}
 		module := strings.TrimSuffix(e.Name(), ".rs")
-		for _, h := range parseHandlers(string(data), module, e.Name(), structs, storeMethodTypes) {
+		for _, h := range parseHandlers(string(data), module, e.Name(), structs, storeMethodTypes, queryStructs) {
 			result[h.QualifiedName] = h
 		}
 	}
@@ -359,7 +432,7 @@ func scanHandlers(dir string, structs map[string]*RustStruct, storeMethodTypes m
 
 var reFuncSig = regexp.MustCompile(`pub\s+async\s+fn\s+(\w+)\s*\(`)
 
-func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruct, storeMethodTypes map[string]string) []*HandlerInfo {
+func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruct, storeMethodTypes map[string]string, queryStructs map[string]*RustStruct) []*HandlerInfo {
 	var result []*HandlerInfo
 
 	// Split into functions by finding pub async fn signatures.
@@ -372,6 +445,9 @@ func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruc
 			Source:        sourceFile,
 		}
 
+		// Extract query parameters from Query<T> in the function signature.
+		h.QueryParams = extractQueryParams(body, sourceFile, queryStructs, structs)
+
 		// Build a variable type map from let bindings + store method calls.
 		varTypes := extractVarTypes(body)
 		traceStoreMethodCalls(body, varTypes, storeMethodTypes)
@@ -381,7 +457,7 @@ func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruc
 		if keys != nil {
 			// Refine inferred types using variable type info and key-name heuristics.
 			for i := range keys {
-				keys[i].InferredTS = refineType(keys[i], varTypes, structs, handlerToFuncName(h.QualifiedName))
+				keys[i].InferredTS = refineType(keys[i], varTypes, structs, handlerToFuncName(h.QualifiedName), h.FuncName)
 			}
 			h.ResponseKeys = keys
 		}
@@ -389,6 +465,52 @@ func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruc
 		result = append(result, h)
 	}
 	return result
+}
+
+// extractQueryParams finds Query<StructName> in a handler function signature
+// and converts the struct's fields to typed query parameters.
+// sourceFile is the handler's filename (e.g. "memory.rs") — used to prefer
+// the file-local Deserialize struct when multiple files define the same name.
+func extractQueryParams(body string, sourceFile string, queryStructs map[string]*RustStruct, allStructs map[string]*RustStruct) []QueryParam {
+	// Only look in the function signature (before the first opening brace).
+	sigEnd := strings.Index(body, "{")
+	if sigEnd < 0 {
+		return nil
+	}
+	sig := body[:sigEnd]
+
+	m := reQueryType.FindStringSubmatch(sig)
+	if m == nil {
+		return nil
+	}
+
+	queryTypeName := m[1]
+
+	// Look up in Deserialize structs: prefer file-local key (filename::Name),
+	// then fall back to allStructs.
+	var s *RustStruct
+	if queryStructs != nil {
+		s = queryStructs[sourceFile+"::"+queryTypeName]
+	}
+	if s == nil {
+		s = allStructs[queryTypeName]
+	}
+	if s == nil {
+		return nil
+	}
+
+	var params []QueryParam
+	for _, f := range s.Fields {
+		if f.Skip {
+			continue
+		}
+		params = append(params, QueryParam{
+			Name:     toTSFieldName(f, s.RenameAll),
+			TSType:   rustTypeToTS(f.RustType, allStructs),
+			Optional: f.Optional,
+		})
+	}
+	return params
 }
 
 // extractVarTypes finds `let varname: Type = ...` patterns in a function body.
@@ -507,14 +629,18 @@ func storeResultTransformed(chunk string) bool {
 }
 
 // refineType improves a ResponseKey's TS type using variable types, struct map, and key-name heuristics.
-// handlerName is the Rust function name (e.g. "list_agents") for override lookups.
-func refineType(k ResponseKey, varTypes map[string]string, structs map[string]*RustStruct, handlerName string) string {
+// handlerName is the camelCase TS function name (e.g. "listAgents").
+// rustName is the raw Rust function name (e.g. "list_agents") for override lookups.
+func refineType(k ResponseKey, varTypes map[string]string, structs map[string]*RustStruct, handlerName, rustName string) string {
 	expr := strings.TrimSpace(k.ValueExpr)
 
 	// 0. Check explicit type overrides first (highest priority).
-	overrideKey := handlerName + "." + k.Key
-	if tsType, ok := typeOverrides[overrideKey]; ok {
-		return tsType
+	// Overrides can use either the snake_case Rust name or the camelCase TS name.
+	for _, name := range []string{rustName, handlerName} {
+		overrideKey := name + "." + k.Key
+		if tsType, ok := typeOverrides[overrideKey]; ok {
+			return tsType
+		}
 	}
 
 	// 1. If value is a known variable with a type annotation, use it.
@@ -794,6 +920,38 @@ func extractBraced(s string) string {
 	return ""
 }
 
+// splitJsonPairsToLines splits comma-separated top-level key-value pairs
+// onto separate lines so the per-line regex in parseJsonMacroKeys works.
+// e.g. `"runs": runs, "total": total` → `"runs": runs,\n"total": total`
+func splitJsonPairsToLines(s string) string {
+	var result strings.Builder
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch ch {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		}
+		result.WriteByte(ch)
+		// At top level, after a comma followed by optional whitespace and a quote,
+		// insert a newline so each pair gets its own line.
+		if ch == ',' && depth == 0 && i+1 < len(s) {
+			// Look ahead past whitespace for a quote.
+			j := i + 1
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+				j++
+			}
+			if j < len(s) && s[j] == '"' {
+				result.WriteByte('\n')
+				i = j - 1 // skip whitespace, loop will advance to j
+			}
+		}
+	}
+	return result.String()
+}
+
 // parseJsonMacroKeys extracts "key": expr pairs from a json!({...}) body.
 // Only extracts top-level keys — skips content nested inside [...] or {...}.
 func parseJsonMacroKeys(content string) []ResponseKey {
@@ -805,6 +963,11 @@ func parseJsonMacroKeys(content string) []ResponseKey {
 	inner = inner[1 : len(inner)-1]
 
 	var keys []ResponseKey
+
+	// Normalize single-line json! into multi-line so the per-line regex works.
+	// Split top-level comma-separated pairs onto separate lines.
+	inner = splitJsonPairsToLines(inner)
+
 	// Track nesting depth so we only match top-level "key": value pairs.
 	depth := 0
 	reKV := regexp.MustCompile(`"(\w+)"\s*:\s*(.+?)(?:\s*,\s*$|\s*$)`)

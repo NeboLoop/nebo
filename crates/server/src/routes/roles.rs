@@ -104,12 +104,12 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::agents::list_agent_runs),
         )
         .route(
-            "/agents/{id}/surfaces",
-            axum::routing::get(handlers::agents::get_agent_surfaces),
+            "/agents/{id}/workflows/{name}/run",
+            axum::routing::post(handlers::agents::run_agent_workflow),
         )
         .route(
-            "/agents/{id}/nav",
-            axum::routing::get(handlers::agents::get_agent_nav),
+            "/agents/{id}/surfaces",
+            axum::routing::get(handlers::agents::get_agent_surfaces),
         )
         .route(
             "/agents/{id}/theme.css",
@@ -126,5 +126,25 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/agents/{id}/chats/{chat_id}/activate",
             axum::routing::post(handlers::agents::activate_agent_chat),
+        )
+        .route(
+            "/agents/{id}/channels",
+            axum::routing::get(handlers::agents::list_agent_channels),
+        )
+        .route(
+            "/agents/{id}/channels/{plugin_slug}/enable",
+            axum::routing::post(handlers::agents::enable_agent_channel),
+        )
+        .route(
+            "/agents/{id}/channels/{plugin_slug}/disable",
+            axum::routing::post(handlers::agents::disable_agent_channel),
+        )
+        .route(
+            "/agents/{id}/channels/{plugin_slug}/config",
+            axum::routing::put(handlers::agents::set_agent_channel_config),
+        )
+        .route(
+            "/agents/{id}/workflow/chat",
+            axum::routing::post(handlers::agents::start_workflow_chat),
         )
 }

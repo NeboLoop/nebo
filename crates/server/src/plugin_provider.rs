@@ -23,7 +23,7 @@ pub struct PluginProvider {
     provider_id: String,
     display_name: String,
     binary_path: PathBuf,
-    chat_command: Vec<String>,
+    chat_command: String,
     plugin_slug: String,
     plugin_store: Arc<napp::plugin::PluginStore>,
 }
@@ -35,17 +35,11 @@ impl PluginProvider {
         binary_path: PathBuf,
         plugin_store: Arc<napp::plugin::PluginStore>,
     ) -> Self {
-        let chat_command: Vec<String> = def
-            .chat_command
-            .split_whitespace()
-            .map(String::from)
-            .collect();
-
         Self {
             provider_id: def.id.clone(),
             display_name: def.display_name.clone(),
             binary_path,
-            chat_command,
+            chat_command: def.chat_command.clone(),
             plugin_slug: plugin_slug.to_string(),
             plugin_store,
         }
@@ -65,21 +59,17 @@ impl Provider for PluginProvider {
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         let (tx, rx) = mpsc::channel(64);
 
-        let mut cmd = tokio::process::Command::new(&self.binary_path);
-        cmd.args(&self.chat_command);
+        let runtime = napp::PluginRuntime::new(
+            &self.plugin_slug,
+            self.binary_path.clone(),
+            self.plugin_store.clone(),
+        )
+        .with_permissions();
+        let timeout = runtime.effective_timeout(std::time::Duration::from_secs(300));
+        let mut cmd = runtime.command(&self.chat_command);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-
-        // Augmented PATH so plugin can find dep binaries
-        cmd.env("PATH", self.plugin_store.path_with_plugins());
-
-        // Auth env vars
-        if let Some((_bin, auth)) = self.plugin_store.get_auth_info(&self.plugin_slug) {
-            for (k, v) in &auth.env {
-                cmd.env(k, v);
-            }
-        }
 
         let mut child = cmd.spawn().map_err(|e| {
             ProviderError::Request(format!(
@@ -87,6 +77,10 @@ impl Provider for PluginProvider {
                 self.provider_id, e
             ))
         })?;
+
+        // Track for signal-handler cleanup so plugin AI providers die with us.
+        let provider_pid = child.id().unwrap_or(0);
+        napp::child_guard::register_child(provider_pid);
 
         // Write ChatRequest JSON to stdin
         let req_json = serde_json::to_vec(req)
@@ -106,30 +100,35 @@ impl Provider for PluginProvider {
 
         // Spawn reader task: parse NDJSON lines from stdout into StreamEvents
         tokio::spawn(async move {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
+            let read_future = async {
+                let reader = BufReader::new(stdout);
+                let mut lines = reader.lines();
 
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                match parse_ndjson_event(&line) {
-                    Some(event) => {
-                        if tx.send(event).await.is_err() {
-                            break; // receiver dropped
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    match parse_ndjson_event(&line) {
+                        Some(event) => {
+                            if tx.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => {
+                            warn!(provider = %provider_id, line = %line, "unparseable NDJSON line");
                         }
                     }
-                    None => {
-                        warn!(provider = %provider_id, line = %line, "unparseable NDJSON line");
-                    }
                 }
+            };
+
+            if tokio::time::timeout(timeout, read_future).await.is_err() {
+                warn!("plugin provider timed out");
+                let _ = tx.send(StreamEvent::error("plugin provider timed out")).await;
             }
 
-            // Send done event
             let _ = tx.send(StreamEvent::done()).await;
-
-            // Wait for child to finish
-            let _ = child.wait().await;
+            let _ = child.kill().await;
+            napp::child_guard::unregister_child(provider_pid);
         });
 
         Ok(rx)

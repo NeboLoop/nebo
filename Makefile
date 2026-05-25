@@ -56,7 +56,7 @@ help:
 # ─── Code Generation ────────────────────────────────────────────────────────
 gen:
 	@echo "Generating API client from Rust routes..."
-	@cd app && pnpm run gen:api
+	@cd scripts/genapi && go run .
 
 # ─── Development ─────────────────────────────────────────────────────────────
 
@@ -66,8 +66,9 @@ dev:
 	@echo "  Proxy errors during Rust build are normal — Tauri window waits for build."
 	@echo "  NOTE: File changes trigger restart — use 'make run' to test workflows."
 	@echo "  Ctrl-C to stop all processes."
+	@echo "  RUST_LOG=$${RUST_LOG:-info,nebo_agent=debug,nebo_server::channel_dispatch=debug}"
 	@echo ""
-	@cargo tauri dev; \
+	@RUST_LOG=$${RUST_LOG:-info,nebo_agent=debug,nebo_server::channel_dispatch=debug} cargo tauri dev; \
 		lsof -ti :5173 -ti :27895 2>/dev/null | xargs kill -9 2>/dev/null; \
 		pkill -9 -f "cargo-tauri" 2>/dev/null; \
 		pkill -9 -f "target/debug/nebo" 2>/dev/null; \
@@ -103,7 +104,53 @@ test:
 
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -rf target/ dist/
+	rm -rf target/ dist/ vm/build/
+
+# ── VM Sandbox ─────────────────────────────────────────────────────
+
+vm-daemon:
+	@echo "Building nebo-vm-daemon (static musl binary)..."
+	cargo build --target aarch64-unknown-linux-musl --release -p nebo-vm-daemon
+
+vm-image:
+	@echo "Building nebo-vm sandbox image..."
+	./vm/build-sandbox-img.sh arm64
+
+vm-rootfs:
+	@echo "Building rootfs image via Docker..."
+	docker build -t nebo-rootfs -f vm/Dockerfile.rootfs .
+	docker create --name rootfs-tmp nebo-rootfs 2>/dev/null || true
+	mkdir -p vm/build
+	docker export rootfs-tmp > vm/build/rootfs.tar
+	docker rm rootfs-tmp
+	@echo "Converting to raw disk image..."
+	@# Create a raw ext4 image from the tarball (same format as Claude's rootfs.img)
+	dd if=/dev/zero of=vm/build/rootfs.img bs=1M count=512
+	mkfs.ext4 -F vm/build/rootfs.img
+	mkdir -p /tmp/nebo-rootfs-mnt
+	sudo mount -o loop vm/build/rootfs.img /tmp/nebo-rootfs-mnt
+	sudo tar xf vm/build/rootfs.tar -C /tmp/nebo-rootfs-mnt
+	sudo umount /tmp/nebo-rootfs-mnt
+	rm -rf /tmp/nebo-rootfs-mnt vm/build/rootfs.tar
+	@echo "Compressing with zstd..."
+	zstd -f --rm vm/build/rootfs.img -o vm/build/rootfs.img.zst
+	@echo "Computing SHA-256..."
+	@# Decompress to compute SHA (or compute before compression)
+	zstd -d -k vm/build/rootfs.img.zst -o vm/build/rootfs.img 2>/dev/null
+	shasum -a 256 vm/build/rootfs.img | cut -d' ' -f1 > vm/build/rootfs.sha256
+	@echo "SHA: $$(cat vm/build/rootfs.sha256)"
+	@echo "Done: vm/build/rootfs.img.zst ($$(du -h vm/build/rootfs.img.zst | cut -f1))"
+
+vm-rootfs-publish: vm-rootfs
+	@echo "Publishing rootfs to CDN..."
+	@ARCH=$$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/'); \
+	SHA=$$(cat vm/build/rootfs.sha256); \
+	echo "Target: cdn.neboloop.com/vm/$$ARCH/$$SHA/rootfs.img.zst"; \
+	echo "TODO: upload vm/build/rootfs.img.zst to CDN at /vm/$$ARCH/$$SHA/rootfs.img.zst"; \
+	echo "Then update ROOTFS_SHA in crates/tools/src/vm_tool.rs to: $$SHA"
+
+vm-all: vm-daemon vm-image vm-rootfs
+	@echo "VM artifacts ready in vm/build/"
 
 # Copy plugin binaries + manifests from sibling repos into the local plugin store.
 # Prerequisites: build each plugin first (cargo build --release in each repo).

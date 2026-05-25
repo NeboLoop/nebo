@@ -244,7 +244,7 @@ impl DynTool for OsTool {
         );
         // File
         props.insert("path".into(), prop("string", "File or directory path"));
-        props.insert("content".into(), prop("string", "File content to write"));
+        props.insert("content".into(), prop("string", "REQUIRED for write. The file content to write. Must use this exact field name — not 'text' or 'data'."));
         props.insert("pattern".into(), prop("string", "Glob or grep pattern"));
         props.insert(
             "old_string".into(),
@@ -275,6 +275,22 @@ impl DynTool for OsTool {
         props.insert(
             "glob".into(),
             prop("string", "File filter pattern for grep"),
+        );
+        props.insert(
+            "output_mode".into(),
+            serde_json::json!({
+                "type": "string",
+                "description": "Grep result format: 'content' (matching lines with context, default), 'files' (file paths only), 'count' (match counts per file)",
+                "enum": ["content", "files", "count"]
+            }),
+        );
+        props.insert(
+            "context_before".into(),
+            prop("integer", "Lines to show before each grep match (like grep -B)"),
+        );
+        props.insert(
+            "context_after".into(),
+            prop("integer", "Lines to show after each grep match (like grep -A)"),
         );
         // Shell
         props.insert("command".into(), prop("string", "Shell command to execute"));
@@ -465,6 +481,27 @@ impl DynTool for OsTool {
         }
     }
 
+    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let resource = if resource.is_empty() {
+            let inferred = OsTool::infer_resource(action);
+            if inferred.is_empty() {
+                OsTool::infer_resource_from_context(input)
+            } else {
+                inferred
+            }
+        } else {
+            resource
+        };
+        match resource {
+            "file" => matches!(action, "read" | "list" | "glob" | "grep"),
+            "search" => true,
+            "capture" => matches!(action, "screenshot" | "see"),
+            _ => false,
+        }
+    }
+
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
@@ -478,7 +515,6 @@ impl DynTool for OsTool {
                 }
             };
 
-            // Known resource names for auto-correction
             const RESOURCE_NAMES: &[&str] = &[
                 "file", "shell", "window", "input", "clipboard", "capture", "notification",
                 "ui", "menu", "dialog", "space", "shortcut", "tts", "dock",
@@ -488,25 +524,22 @@ impl DynTool for OsTool {
 
             let mut input = input;
 
-            let resource = if domain_input.resource.is_empty() {
-                // Common LLM error: resource name placed as action value
-                // e.g. os(action: "calendar") instead of os(resource: "calendar", action: "today")
-                if RESOURCE_NAMES.contains(&domain_input.action.as_str()) {
-                    // Auto-correct: treat action as resource, keep action value intact
-                    // so downstream handlers can use it if it's also a valid action
-                    // (e.g. search(action:"search") stays action="search" for SpotlightTool)
-                    input["resource"] = serde_json::Value::String(domain_input.action.clone());
-                    domain_input.action.clone()
-                } else {
+            let resource = {
+                let corrected = crate::domain::auto_correct_resource(
+                    &domain_input,
+                    &mut input,
+                    RESOURCE_NAMES,
+                );
+                if corrected.is_empty() {
                     let inferred = Self::infer_resource(&domain_input.action);
                     if inferred.is_empty() {
                         Self::infer_resource_from_context(&input).to_string()
                     } else {
                         inferred.to_string()
                     }
+                } else {
+                    corrected
                 }
-            } else {
-                domain_input.resource
             };
 
             if resource.is_empty() {
@@ -817,5 +850,18 @@ mod tests {
         let required_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(required_strs.contains(&"resource"), "schema must require 'resource'");
         assert!(required_strs.contains(&"action"), "schema must require 'action'");
+    }
+
+    #[test]
+    fn test_schema_has_grep_fields() {
+        let tool = OsTool::new(
+            crate::policy::Policy::default(),
+            Arc::new(crate::process::ProcessRegistry::new()),
+        );
+        let schema = tool.schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("output_mode"), "schema missing output_mode");
+        assert!(props.contains_key("context_before"), "schema missing context_before");
+        assert!(props.contains_key("context_after"), "schema missing context_after");
     }
 }

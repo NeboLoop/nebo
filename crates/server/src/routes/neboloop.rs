@@ -83,6 +83,15 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::neboloop::referral_code),
         )
         .route(
+            "/neboloop/marketplace/subscriptions",
+            axum::routing::get(handlers::neboloop::marketplace_list_subscriptions)
+                .post(handlers::neboloop::marketplace_create_subscription),
+        )
+        .route(
+            "/neboloop/marketplace/subscriptions/{id}/cancel",
+            axum::routing::post(handlers::neboloop::marketplace_cancel_subscription),
+        )
+        .route(
             "/neboloop/reconnect",
             axum::routing::post(handlers::neboloop::force_reconnect),
         )

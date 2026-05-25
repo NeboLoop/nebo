@@ -27,10 +27,11 @@ pub struct PluginTool {
 
 #[derive(Debug, Deserialize)]
 struct PluginInput {
-    /// Plugin slug (e.g., "gws").
+    /// Plugin slug (e.g., "gws", "slack").
+    #[serde(default)]
     resource: String,
-    /// Action: "exec" (default) to run a command, "help" to read plugin skill docs,
-    /// "services" to list available services.
+    /// Action: "exec" (default — run a plugin command) or "events"
+    /// (list the plugin's declared NDJSON watch events).
     #[serde(default = "default_action")]
     action: String,
     /// CLI arguments passed to the plugin binary (required for exec).
@@ -41,9 +42,6 @@ struct PluginInput {
     /// Use this for content that may contain special characters.
     #[serde(default)]
     args: std::collections::HashMap<String, String>,
-    /// Service/topic name for help lookup (e.g., "gmail", "docs", "calendar").
-    #[serde(default)]
-    topic: String,
     /// Optional timeout in seconds (default: 120).
     #[serde(default)]
     timeout: i64,
@@ -54,7 +52,9 @@ fn default_action() -> String {
 }
 
 impl PluginTool {
-    pub fn new(plugin_store: Arc<napp::plugin::PluginStore>) -> Self {
+    pub fn new(
+        plugin_store: Arc<napp::plugin::PluginStore>,
+    ) -> Self {
         Self {
             plugin_store,
             broadcaster: None,
@@ -80,16 +80,24 @@ impl PluginTool {
     }
 
     /// Find the skills directory for a plugin slug.
+    ///
+    /// Walks up from the binary path looking for a `skills/` directory.
+    /// Handles both layouts:
+    ///   - Installed plugins: `<data>/plugins/<slug>/<version>/{binary,skills/}`
+    ///     (skills/ is sibling of binary, 1 level up)
+    ///   - Symlinked dev plugins: `~/.nebo/user/plugins/<slug>/{target/release/binary,skills/}`
+    ///     (skills/ is 3 levels up — past `target/release/`)
     fn skills_dir(&self, slug: &str) -> Option<PathBuf> {
-        // Resolve binary path, then look for skills/ sibling directory
         let binary_path = self.plugin_store.resolve(slug, "*")?;
-        let version_dir = binary_path.parent()?;
-        let skills_dir = version_dir.join("skills");
-        if skills_dir.is_dir() {
-            Some(skills_dir)
-        } else {
-            None
+        let mut cur = binary_path.parent()?;
+        for _ in 0..5 {
+            let candidate = cur.join("skills");
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+            cur = cur.parent()?;
         }
+        None
     }
 
     /// List available services (top-level skill names) for a plugin.
@@ -147,23 +155,25 @@ impl PluginTool {
         String::new()
     }
 
-    /// Read a specific skill's full SKILL.md content for help.
-    fn read_skill_help(&self, slug: &str, topic: &str) -> Option<String> {
-        let skills_dir = self.skills_dir(slug)?;
+}
 
-        // Try exact match first (e.g., "gws-gmail"), then prefixed (e.g., "gmail" → "gws-gmail")
-        let candidates = vec![
-            skills_dir.join(topic),
-            skills_dir.join(format!("{}-{}", slug, topic)),
-        ];
-
-        for dir in candidates {
-            let skill_md = dir.join("SKILL.md");
-            if skill_md.exists() {
-                return std::fs::read_to_string(&skill_md).ok();
-            }
-        }
-        None
+/// Render a skill name as a likely command label for the description.
+///
+/// Plugins follow the convention `<slug>-<service>-<verb>` for skill dirs
+/// (e.g. `gws-gmail-triage` → command `gmail +triage`). Strip the slug
+/// prefix and convert dashes; surface the rest as-is.
+///
+/// If the skill name doesn't follow the convention, show the raw name —
+/// better to over-disclose than mislead.
+fn display_command_for_skill(slug: &str, skill_name: &str) -> String {
+    let prefix = format!("{}-", slug);
+    let trimmed = skill_name.strip_prefix(&prefix).unwrap_or(skill_name);
+    // First segment becomes the service, rest becomes the command (with `+` per GWS convention).
+    // For non-GWS-style plugins this collapses to a single token, which is fine.
+    if let Some((service, verb)) = trimmed.split_once('-') {
+        format!("{} +{}", service, verb)
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -174,33 +184,70 @@ impl DynTool for PluginTool {
 
     fn description(&self) -> String {
         let slugs = self.installed_slugs();
-        let mut desc = String::from(
-            "Execute installed plugin binaries or browse their documentation.\n\n\
-             Actions:\n\
-             - exec: Run a plugin command (default)\n\
-             - services: List available services/commands for a plugin\n\
-             - help: Read documentation for a specific service (use topic param)\n\
-             - events: List declared events for a plugin (NDJSON watch capabilities)\n\n\
-             For exec: use `command` for subcommand + simple flags, and `args` for values \
-             that may contain special characters (quotes, backticks, $, etc.).\n\n\
-             Plugin capabilities:\n\
-             - Events: Plugins can declare watch events in plugin.json (e.g. email.new, calendar.event).\n  \
-               These are long-running NDJSON processes that auto-emit into the EventBus.\n  \
-               Use `events` action to discover what events a plugin provides.\n  \
-               Agents reference plugin events via watch triggers: plugin=\"gws\", event=\"email.new\".\n\
-             - Auth: Plugins can declare OAuth flows. Auth is handled by Nebo — plugins receive\n  \
-               tokens via environment variables at runtime.\n\n\
-             Available plugins:\n",
-        );
-        for slug in &slugs {
-            if let Some(manifest) = self.plugin_store.get_manifest(slug) {
-                desc.push_str(&format!("- {} — {}\n", slug, manifest.description));
-            } else {
-                desc.push_str(&format!("- {}\n", slug));
-            }
+        if slugs.is_empty() {
+            return "Execute installed plugin binaries. No plugins are currently installed.".to_string();
         }
-        desc.push_str("\nWorkflow: services → help → exec. Use events to discover watch capabilities. Always check docs before executing unfamiliar commands.");
-        desc
+
+        // Build a per-plugin command catalog. Every plugin's commands (sourced
+        // from its SKILL.md frontmatter) are surfaced here so the agent sees
+        // the full API upfront — no separate discovery step.
+        //
+        // Matches the Claude Code pattern: tool schema description IS the
+        // contract. The agent should never need to call a separate "list
+        // commands" action; if a command isn't in this description, it
+        // doesn't exist.
+        let mut out = String::from("Execute installed plugin binaries.\n\n");
+        out.push_str("Usage: plugin(resource: \"<plugin-slug>\", action: \"exec\", command: \"<subcommand and flags>\")\n");
+        out.push_str("       plugin(resource: \"<plugin-slug>\", action: \"events\") — list declared NDJSON watch events\n\n");
+        out.push_str("Installed plugins:\n\n");
+
+        // Soft cap per plugin so heavyweight catalogs (gws ships ~100 skills)
+        // don't blow up the system prompt. Above this size we truncate and
+        // include a count of omitted commands so the agent knows more exist.
+        const PER_PLUGIN_BUDGET: usize = 4096;
+
+        for slug in &slugs {
+            let services = self.list_services(slug);
+            if services.is_empty() {
+                // Plugin didn't ship skill docs — surface the plugin name with
+                // a generic hint so the agent at least knows it's available.
+                out.push_str(&format!(
+                    "### {}\n  (no command catalog declared by this plugin — call `{} --help` via exec to discover commands)\n\n",
+                    slug, slug
+                ));
+                continue;
+            }
+            let mut section = format!("### {}\n", slug);
+            let total = services.len();
+            let mut included = 0usize;
+            let mut truncated = false;
+            for (name, desc) in services {
+                let label = display_command_for_skill(slug, &name);
+                let line = if desc.is_empty() {
+                    format!("  - {}\n", label)
+                } else {
+                    format!("  - {} — {}\n", label, desc)
+                };
+                if section.len() + line.len() > PER_PLUGIN_BUDGET {
+                    truncated = true;
+                    break;
+                }
+                section.push_str(&line);
+                included += 1;
+            }
+            if truncated {
+                section.push_str(&format!(
+                    "  - … and {} more — call `{} --help` via exec to discover the rest\n",
+                    total - included,
+                    slug
+                ));
+            }
+            section.push('\n');
+            out.push_str(&section);
+        }
+
+        out.push_str("If a command isn't listed here, it isn't available. Don't guess flags or syntax — only call commands shown above.");
+        out
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -223,8 +270,8 @@ impl DynTool for PluginTool {
             "action".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "Action: exec (run command), services (list available), help (read docs for a topic), events (list declared NDJSON events)",
-                "enum": ["exec", "services", "help", "events"],
+                "description": "Action: 'exec' (default — run a plugin command) or 'events' (list the plugin's declared NDJSON watch events)",
+                "enum": ["exec", "events"],
                 "default": "exec"
             }),
         );
@@ -232,7 +279,7 @@ impl DynTool for PluginTool {
             "command".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "CLI subcommand and flags (e.g., 'gmail +triage --max 5')"
+                "description": "Subcommand and flags ONLY — the binary path is auto-resolved. Do NOT include the plugin name. Example: 'gmail +triage --max 5' (not 'gws gmail +triage --max 5'). Use only commands listed in this tool's description; do not guess syntax."
             }),
         );
         props.insert(
@@ -241,13 +288,6 @@ impl DynTool for PluginTool {
                 "type": "object",
                 "description": "Named flags passed directly to the binary. Each key becomes --key with the value as a separate argument. Use this for content that may contain special characters (quotes, backticks, dollar signs, etc.). Example: {\"text\": \"Hello world!\", \"max\": \"5\"}",
                 "additionalProperties": { "type": "string" }
-            }),
-        );
-        props.insert(
-            "topic".into(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Service name for help action (e.g., 'gmail', 'docs', 'calendar')"
             }),
         );
         props.insert(
@@ -278,9 +318,17 @@ impl DynTool for PluginTool {
         action == "exec"
     }
 
+    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+        let action = input
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("exec");
+        matches!(action, "search" | "skills" | "services" | "help" | "events")
+    }
+
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
@@ -290,50 +338,39 @@ impl DynTool for PluginTool {
             };
 
             if pi.resource.is_empty() {
-                let slugs = self.installed_slugs();
-                return ToolResult::error(format!(
-                    "resource is required. Available plugins: {}",
-                    slugs.join(", ")
-                ));
+                return ToolResult::error(
+                    "resource is required — set it to the plugin slug. \
+                     Example: plugin(resource: \"gws\", action: \"exec\", command: \"gmail +triage\")"
+                        .to_string(),
+                );
             }
 
+            // The plugin tool exposes a single canonical action — `exec` —
+            // for running plugin commands. `events` is the only other action,
+            // and it surfaces the plugin's declared NDJSON watch events for
+            // workflow trigger registration.
+            //
+            // Discovery actions (`search`, `skills`, `services`, `help`) were
+            // removed in v0.10.0 — every plugin's command catalog now lives
+            // in this tool's `description()`, so the agent sees the full API
+            // upfront and never needs a discovery round-trip.
             match pi.action.as_str() {
-                "services" => self.handle_services(&pi.resource),
-                "help" => self.handle_help(&pi.resource, &pi.topic),
+                "exec" | "" => self.handle_exec(&pi, ctx).await,
                 "events" => self.handle_events(&pi.resource),
-                _ => self.handle_exec(&pi).await,
+                "search" | "skills" | "services" | "help" => ToolResult::error(format!(
+                    "action '{}' was removed in v0.10.0. All plugin commands are listed in this tool's description — call them directly with action: \"exec\".",
+                    pi.action
+                )),
+                other => ToolResult::error(format!(
+                    "Unknown action: '{}'. Valid actions: exec, events.",
+                    other
+                )),
             }
         })
     }
 }
 
 impl PluginTool {
-    fn handle_services(&self, slug: &str) -> ToolResult {
-        let services = self.list_services(slug);
-        if services.is_empty() {
-            return ToolResult::error(format!(
-                "No services found for plugin '{}'. The plugin may not include documentation.",
-                slug
-            ));
-        }
-
-        let mut result = format!("Available services for **{}**:\n\n", slug);
-        for (name, desc) in &services {
-            // Strip slug prefix for display (gws-gmail → gmail)
-            let short = name.strip_prefix(&format!("{}-", slug)).unwrap_or(name);
-            if desc.is_empty() {
-                result.push_str(&format!("- {}\n", short));
-            } else {
-                result.push_str(&format!("- **{}** — {}\n", short, desc));
-            }
-        }
-        result.push_str(&format!(
-            "\nUse plugin(resource: \"{}\", action: \"help\", topic: \"<service>\") to read docs for a specific service.",
-            slug
-        ));
-        ToolResult::ok(result)
-    }
-
     fn handle_events(&self, slug: &str) -> ToolResult {
         let events = self.plugin_store.get_events(slug);
         match events {
@@ -368,35 +405,8 @@ impl PluginTool {
         }
     }
 
-    fn handle_help(&self, slug: &str, topic: &str) -> ToolResult {
-        if topic.is_empty() {
-            // No topic — show the shared/root docs if available, otherwise list services
-            if let Some(content) = self.read_skill_help(slug, "shared") {
-                return ToolResult::ok(content);
-            }
-            return self.handle_services(slug);
-        }
-
-        match self.read_skill_help(slug, topic) {
-            Some(content) => ToolResult::ok(content),
-            None => {
-                // Try to suggest similar services
-                let services = self.list_services(slug);
-                let names: Vec<&str> = services
-                    .iter()
-                    .map(|(n, _)| n.strip_prefix(&format!("{}-", slug)).unwrap_or(n.as_str()))
-                    .collect();
-                ToolResult::error(format!(
-                    "No docs found for '{}'. Available services: {}",
-                    topic,
-                    names.join(", ")
-                ))
-            }
-        }
-    }
-
-    async fn handle_exec(&self, pi: &PluginInput) -> ToolResult {
-        let result = self.run_plugin_command(pi).await;
+    async fn handle_exec(&self, pi: &PluginInput, ctx: &ToolContext) -> ToolResult {
+        let result = self.run_plugin_command(pi, ctx).await;
 
         // On error, check if it's an auth failure and attempt re-auth.
         if result.is_error {
@@ -435,7 +445,7 @@ impl PluginTool {
                             );
                         }
 
-                        return self.run_plugin_command(pi).await;
+                        return self.run_plugin_command(pi, ctx).await;
                     }
 
                     // Re-auth failed
@@ -464,7 +474,7 @@ impl PluginTool {
     }
 
     /// Execute a plugin command and return the result. Shared by initial call and retry.
-    async fn run_plugin_command(&self, pi: &PluginInput) -> ToolResult {
+    async fn run_plugin_command(&self, pi: &PluginInput, ctx: &ToolContext) -> ToolResult {
         if pi.command.is_empty() && pi.args.is_empty() {
             return ToolResult::error(
                 "command is required for exec. Use action: \"services\" to discover available commands.",
@@ -516,46 +526,40 @@ impl PluginTool {
             args.push(value.clone());
         }
 
+        let runtime = napp::PluginRuntime::new(
+            &pi.resource,
+            binary_path.clone(),
+            self.plugin_store.clone(),
+        )
+        .with_deps()
+        .with_permissions();
+
         let mut cmd = tokio::process::Command::new(&binary_path);
         cmd.args(&args);
+        cmd.env_clear();
+        for (k, v) in runtime.build_env() {
+            cmd.env(k, v);
+        }
+
+        // Inject channel context as env vars so channel-plugin CLI subcommands
+        // (e.g. `slack upload`) can target the current channel/thread without
+        // the agent having to look up IDs. See
+        // `docs/publishers-guide/channel-plugins.md` for the convention.
+        if let Some(ch) = &ctx.channel {
+            cmd.env("NEBO_CHANNEL_KIND", &ch.kind);
+            cmd.env("NEBO_CHANNEL_ID", &ch.channel_id);
+            if let Some(ts) = &ch.thread_ts {
+                cmd.env("NEBO_THREAD_TS", ts);
+            }
+        }
 
         process::hide_window(&mut cmd);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        // Clean env + inject sanitized env
-        cmd.env_clear();
-        for (k, v) in process::sanitized_env() {
-            cmd.env(k, v);
-        }
-
-        // Plugin binary env var (e.g., GWS_BIN=/path/to/gws)
-        cmd.env(
-            napp::plugin::plugin_env_var(&pi.resource),
-            binary_path.to_string_lossy().as_ref(),
-        );
-
-        // Dependency plugin env vars (e.g., digest gets FFMPEG_BIN)
-        for dep in self.plugin_store.get_dependencies(&pi.resource) {
-            if let Some(dep_path) = self.plugin_store.resolve(&dep.name, &dep.version) {
-                cmd.env(
-                    napp::plugin::plugin_env_var(&dep.name),
-                    dep_path.to_string_lossy().as_ref(),
-                );
-            }
-        }
-
-        // Augmented PATH with all plugin directories
-        cmd.env("PATH", self.plugin_store.path_with_plugins());
-
-        // Auth env vars (client_id, client_secret, etc.)
-        if let Some((_bin, auth)) = self.plugin_store.get_auth_info(&pi.resource) {
-            for (k, v) in &auth.env {
-                cmd.env(k, v);
-            }
-        }
-
-        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output()).await;
+        let effective_timeout = runtime
+            .effective_timeout(Duration::from_secs(timeout_secs));
+        let result = tokio::time::timeout(effective_timeout, cmd.output()).await;
 
         match result {
             Err(_) => ToolResult::error(format!(
@@ -594,10 +598,10 @@ impl PluginTool {
                     text = "(no output)".to_string();
                 }
 
-                // Truncate very long output
+                // Truncate very long output (char-boundary safe)
                 const MAX_OUTPUT: usize = 50000;
                 if text.len() > MAX_OUTPUT {
-                    text.truncate(MAX_OUTPUT);
+                    types::strutil::safe_truncate(&mut text, MAX_OUTPUT);
                     text.push_str("\n... (output truncated)");
                 }
 
@@ -618,22 +622,11 @@ impl PluginTool {
             None => return false,
         };
 
-        let args: Vec<&str> = status_cmd.split_whitespace().collect();
-        let mut cmd = tokio::process::Command::new(binary);
-        cmd.args(&args);
-
+        let runtime = napp::PluginRuntime::new(slug, binary.to_path_buf(), self.plugin_store.clone());
+        let mut cmd = runtime.command(status_cmd);
         process::hide_window(&mut cmd);
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
-
-        cmd.env_clear();
-        for (k, v) in process::sanitized_env() {
-            cmd.env(k, v);
-        }
-        cmd.env("PATH", self.plugin_store.path_with_plugins());
-        for (k, v) in &auth.env {
-            cmd.env(k, v);
-        }
 
         match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
             Ok(Ok(output)) => {
@@ -657,23 +650,12 @@ impl PluginTool {
         binary: &Path,
         auth: &napp::plugin::PluginAuth,
     ) -> bool {
-        let args: Vec<&str> = auth.commands.login.split_whitespace().collect();
-        let mut cmd = tokio::process::Command::new(binary);
-        cmd.args(&args);
-
+        let runtime = napp::PluginRuntime::new(slug, binary.to_path_buf(), self.plugin_store.clone());
+        let mut cmd = runtime.command(&auth.commands.login);
         process::hide_window(&mut cmd);
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-
-        cmd.env_clear();
-        for (k, v) in process::sanitized_env() {
-            cmd.env(k, v);
-        }
-        cmd.env("PATH", self.plugin_store.path_with_plugins());
-        for (k, v) in &auth.env {
-            cmd.env(k, v);
-        }
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,

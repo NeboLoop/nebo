@@ -25,6 +25,10 @@ pub struct ActiveAgent {
     /// If set, this agent has unmet skill dependencies and is degraded.
     /// The string describes which skill dependencies are missing.
     pub degraded: Option<String>,
+    /// Per-agent soul: voice, tone, personality, boundaries (SOUL.md content).
+    pub soul: Option<String>,
+    /// Per-agent rules: behavior constraints and guardrails.
+    pub rules: Option<String>,
 }
 
 /// Registry of all currently active agents. Multiple agents run concurrently.
@@ -117,6 +121,7 @@ pub struct PersonaTool {
     store: Arc<Store>,
     agent_registry: AgentRegistry,
     agent_loader: Arc<napp::AgentLoader>,
+    orchestrator: crate::orchestrator::OrchestratorHandle,
 }
 
 impl PersonaTool {
@@ -124,11 +129,13 @@ impl PersonaTool {
         store: Arc<Store>,
         agent_registry: AgentRegistry,
         agent_loader: Arc<napp::AgentLoader>,
+        orchestrator: crate::orchestrator::OrchestratorHandle,
     ) -> Self {
         Self {
             store,
             agent_registry,
             agent_loader,
+            orchestrator,
         }
     }
 
@@ -287,6 +294,8 @@ impl PersonaTool {
                     config: loaded.config.clone(),
                     channel_id: None,
                     degraded: None,
+                    soul: None,
+                    rules: None,
                 };
                 self.agent_registry
                     .write()
@@ -311,7 +320,7 @@ impl PersonaTool {
                 ToolResult::ok(result)
             }
             None => ToolResult::error(format!(
-                "Agent '{}' not found. Use persona(action: \"list\") to see available agents.",
+                "Agent '{}' not found. Use agents(action: \"list\") to see available agents.",
                 name
             )),
         }
@@ -427,6 +436,9 @@ impl PersonaTool {
                                     Some(ev) => format!("watch({}, event:{})", plugin, ev),
                                     None => format!("watch({}, {})", plugin, command),
                                 },
+                                napp::agent::AgentTrigger::Folder { path, .. } => {
+                                    format!("folder({})", path)
+                                }
                                 napp::agent::AgentTrigger::Manual => "manual".to_string(),
                             };
                             let desc = if wf.description.is_empty() {
@@ -612,6 +624,10 @@ impl PersonaTool {
                                     has_heartbeat_or_event = true;
                                     format!("watch({})", plugin)
                                 }
+                                napp::agent::AgentTrigger::Folder { path, .. } => {
+                                    has_heartbeat_or_event = true;
+                                    format!("folder({})", path)
+                                }
                                 napp::agent::AgentTrigger::Manual => "manual".to_string(),
                             };
                             format!("{} [{}]", name, t)
@@ -640,6 +656,8 @@ impl PersonaTool {
             config: parsed_config,
             channel_id: None,
             degraded: None,
+            soul: None,
+            rules: None,
         };
         self.agent_registry.write().await.insert(id.clone(), active);
         result.push_str("\nAgent activated and visible in sidebar.");
@@ -671,7 +689,7 @@ impl PersonaTool {
             Some(r) => r,
             None => {
                 return ToolResult::error(format!(
-                    "Agent '{}' not found. Use persona(action: \"list\") to see available agents.",
+                    "Agent '{}' not found. Use agents(action: \"list\") to see available agents.",
                     name
                 ));
             }
@@ -997,6 +1015,8 @@ impl PersonaTool {
             &current_frontmatter,
             None,
             None,
+            None,
+            None,
         ) {
             return ToolResult::error(format!("Failed to update agent in DB: {}", e));
         }
@@ -1307,6 +1327,8 @@ impl PersonaTool {
             &current_frontmatter,
             db_agent.pricing_model.as_deref(),
             db_agent.pricing_cost,
+            None,
+            None,
         ) {
             return ToolResult::error(format!("Failed to update DB: {}", e));
         }
@@ -1435,6 +1457,8 @@ impl PersonaTool {
                                 &new_fm,
                                 agent.pricing_model.as_deref(),
                                 agent.pricing_cost,
+                                None,
+                                None,
                             );
 
                             // Also update agent.json on disk
@@ -1524,6 +1548,20 @@ impl PersonaTool {
                         cfg["event"] = serde_json::json!(ev);
                     }
                     ("watch", cfg.to_string())
+                }
+                napp::agent::AgentTrigger::Folder {
+                    path,
+                    extensions,
+                    recursive,
+                    debounce_secs,
+                } => {
+                    let cfg = serde_json::json!({
+                        "path": path,
+                        "extensions": extensions,
+                        "recursive": recursive,
+                        "debounce_secs": debounce_secs
+                    });
+                    ("folder", cfg.to_string())
                 }
                 napp::agent::AgentTrigger::Manual => ("manual", String::new()),
             };
@@ -1812,6 +1850,20 @@ impl PersonaTool {
                 }
                 ("watch".to_string(), cfg.to_string())
             }
+            napp::agent::AgentTrigger::Folder {
+                path,
+                extensions,
+                recursive,
+                debounce_secs,
+            } => {
+                let cfg = serde_json::json!({
+                    "path": path,
+                    "extensions": extensions,
+                    "recursive": recursive,
+                    "debounce_secs": debounce_secs
+                });
+                ("folder".to_string(), cfg.to_string())
+            }
             napp::agent::AgentTrigger::Manual => ("manual".to_string(), String::new()),
         }
     }
@@ -1920,7 +1972,7 @@ impl PersonaTool {
             Some(r) => r,
             None => {
                 return ToolResult::error(format!(
-                    "Agent '{}' not found. Use persona(action: \"list\") to see available agents.",
+                    "Agent '{}' not found. Use agents(action: \"list\") to see available agents.",
                     name
                 ));
             }
@@ -2042,6 +2094,169 @@ impl PersonaTool {
         ))
     }
 
+    async fn handle_delegate(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let name = input["name"].as_str().unwrap_or("");
+        let id = input["id"].as_str().unwrap_or("");
+        let prompt = input["prompt"].as_str().unwrap_or("");
+
+        if prompt.is_empty() {
+            return ToolResult::error("'prompt' is required for delegate");
+        }
+        if name.is_empty() && id.is_empty() {
+            return ToolResult::error("'name' or 'id' is required for delegate");
+        }
+
+        // Resolve agent_id from registry or loader
+        let resolved_id = if !id.is_empty() {
+            // Direct ID — verify it exists in registry or DB
+            let registry = self.agent_registry.read().await;
+            if registry.contains_key(id) {
+                id.to_string()
+            } else {
+                drop(registry);
+                // Try loading by ID
+                match self.store.list_agents(500, 0) {
+                    Ok(agents) => match agents.iter().find(|a| a.id == id) {
+                        Some(_) => id.to_string(),
+                        None => return ToolResult::error(format!("Agent id '{}' not found", id)),
+                    },
+                    Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
+                }
+            }
+        } else {
+            // Resolve by name — check registry first, then loader/DB
+            let registry = self.agent_registry.read().await;
+            let lower = name.to_lowercase();
+            let found = registry
+                .iter()
+                .find(|(_, v)| v.name.to_lowercase() == lower)
+                .map(|(k, _)| k.clone());
+            drop(registry);
+
+            match found {
+                Some(agent_id) => agent_id,
+                None => {
+                    // Try to find and activate
+                    match self.find_agent(name).await {
+                        Some(loaded) => {
+                            // Get or create DB ID
+                            let agent_id = match self.store.list_agents(500, 0) {
+                                Ok(agents) => {
+                                    let agent_name = &loaded.agent_def.name;
+                                    if let Some(db) = agents.iter().find(|r| r.name == *agent_name)
+                                    {
+                                        db.id.clone()
+                                    } else {
+                                        uuid::Uuid::new_v4().to_string()
+                                    }
+                                }
+                                Err(_) => uuid::Uuid::new_v4().to_string(),
+                            };
+
+                            // Insert into registry so runner can resolve it
+                            let active = ActiveAgent {
+                                agent_id: agent_id.clone(),
+                                name: loaded.agent_def.name.clone(),
+                                agent_md: loaded.agent_def.body.clone(),
+                                config: loaded.config.clone(),
+                                channel_id: None,
+                                degraded: None,
+                                soul: None,
+                                rules: None,
+                            };
+                            self.agent_registry
+                                .write()
+                                .await
+                                .insert(agent_id.clone(), active);
+                            agent_id
+                        }
+                        None => {
+                            return ToolResult::error(format!(
+                                "Agent '{}' not found. Use agents(action: \"list\") to see available agents.",
+                                name
+                            ));
+                        }
+                    }
+                }
+            }
+        };
+
+        // Read agent config for plugins/skills
+        let registry = self.agent_registry.read().await;
+        let (plugins, skills) = match registry.get(&resolved_id) {
+            Some(agent) => {
+                let plugins = agent
+                    .config
+                    .as_ref()
+                    .map(|c| c.requires.plugins.clone())
+                    .unwrap_or_default();
+                let skills = agent
+                    .config
+                    .as_ref()
+                    .map(|c| c.skills.clone())
+                    .unwrap_or_default();
+                (plugins, skills)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        let agent_name = registry
+            .get(&resolved_id)
+            .map(|a| a.name.clone())
+            .unwrap_or_default();
+        drop(registry);
+
+        let wait = input["wait"].as_bool().unwrap_or(true);
+        let max_iterations = input["max_iterations"].as_u64().unwrap_or(0) as usize;
+        let desc_prompt = if prompt.len() > 60 {
+            format!("{}...", &prompt[..60])
+        } else {
+            prompt.to_string()
+        };
+        let description = format!("Delegate to {}: {}", agent_name, desc_prompt);
+
+        let orch = match self.orchestrator.get() {
+            Some(o) => o,
+            None => return ToolResult::error("Sub-agent orchestrator not ready"),
+        };
+
+        let req = crate::orchestrator::SpawnRequest {
+            prompt: prompt.to_string(),
+            description,
+            agent_type: "general".to_string(),
+            model_override: String::new(),
+            parent_session_id: ctx.session_id.clone(),
+            parent_session_key: ctx.session_key.clone(),
+            user_id: ctx.user_id.clone(),
+            wait,
+            parent_cancel: Some(ctx.cancel_token.clone()),
+            max_iterations,
+            skills,
+            plugins,
+            tools: Vec::new(),
+            parent_stream_tx: ctx.stream_tx.clone(),
+            agent_id: resolved_id,
+        };
+
+        match orch.spawn(req).await {
+            Ok(result) => {
+                if result.success {
+                    ToolResult::ok(format!(
+                        "Delegation to {} [{}] completed:\n\n{}",
+                        agent_name, result.task_id, result.output
+                    ))
+                } else {
+                    ToolResult::error(format!(
+                        "Delegation to {} [{}] failed: {}",
+                        agent_name,
+                        result.task_id,
+                        result.error.unwrap_or_default()
+                    ))
+                }
+            }
+            Err(e) => ToolResult::error(format!("Failed to delegate to {}: {}", agent_name, e)),
+        }
+    }
+
     /// Find an agent by name across loader cache and DB.
     async fn find_agent(&self, name: &str) -> Option<napp::agent_loader::LoadedAgent> {
         // Check loader cache first
@@ -2076,7 +2291,6 @@ impl PersonaTool {
                         frontmatter: r.frontmatter.clone(),
                         description: r.description.clone(),
                         id: Some(r.id.clone()),
-                        views: None,
                         theme_css: None,
                         is_app: false,
                         app_ui_path: None,
@@ -2093,15 +2307,15 @@ impl PersonaTool {
 
 impl DynTool for PersonaTool {
     fn name(&self) -> &str {
-        "persona"
+        "agents"
     }
 
     fn description(&self) -> String {
-        "Manage agent personas — who the agent is, what workflows it follows, what skills it needs.\n\n\
+        "Manage installed agents — who they are, what workflows they follow, what skills they need.\n\n\
          Actions:\n\
          - list: list available agents (installed + user-created)\n\
-         - activate: assume a persona (injects persona, registers triggers)\n\
-         - deactivate: drop a persona by name (or all agents if no name given)\n\
+         - activate: activate an agent (injects persona, registers triggers)\n\
+         - deactivate: deactivate an agent by name (or all agents if no name given)\n\
          - info: show agent details (workflows, skills, triggers, persona)\n\
          - create: create a new agent with structured automations (preferred) or raw agent_md/agent_json\n\
          - update: edit any aspect of an existing agent — supports granular, non-destructive edits\n\
@@ -2110,7 +2324,8 @@ impl DynTool for PersonaTool {
          - setup: open the setup wizard for an agent (configure inputs and schedules)\n\
          - reload: re-read AGENT.md + agent.json from filesystem and sync to DB (use after editing files on disk)\n\
          - repair: fix invalid cron expressions, orphan cron jobs, and sync triggers (optional: name to target one agent)\n\
-         - stats: show workflow run statistics for an agent (total/completed/failed runs, tokens, errors)\n\n\
+         - stats: show workflow run statistics for an agent (total/completed/failed runs, tokens, errors)\n\
+         - delegate: delegate a task to a named agent (loads full identity, plugins, skills, memory scoping)\n\n\
          AUTOMATIONS (for create and update):\n\
          Each automation needs: name, steps[], and ONE trigger pattern.\n\
          Trigger type is AUTO-INFERRED from fields — just include the right field:\n\n\
@@ -2134,41 +2349,41 @@ impl DynTool for PersonaTool {
            {\"name\": \"x\", \"trigger\": \"manual\", \"steps\": [...]}\n\n\
          Optional fields: emit (event name on completion), description (human label).\n\n\
          EXAMPLES:\n  \
-         persona(action: \"create\", name: \"morning-briefing\", description: \"Daily executive briefing\",\n    \
+         agents(action: \"create\", name: \"morning-briefing\", description: \"Daily executive briefing\",\n    \
            automations: [{\"name\": \"daily-brief\", \"schedule\": \"0 7 * * *\",\n    \
              \"steps\": [\"Gather top news headlines\", \"Check calendar for today\", \"Compose briefing\"],\n    \
              \"emit\": \"briefing.ready\", \"description\": \"7am daily briefing\"}])\n  \
-         persona(action: \"create\", name: \"email-monitor\", description: \"Checks email\",\n    \
+         agents(action: \"create\", name: \"email-monitor\", description: \"Checks email\",\n    \
            automations: [{\"name\": \"check\", \"interval\": \"15m\", \"window\": \"08:00-18:00\",\n    \
              \"steps\": [\"Check inbox for urgent emails and flag them\"]}])\n  \
-         persona(action: \"update\", name: \"morning-briefing\", description: \"Updated description\")\n  \
-         persona(action: \"update\", name: \"morning-briefing\",\n    \
+         agents(action: \"update\", name: \"morning-briefing\", description: \"Updated description\")\n  \
+         agents(action: \"update\", name: \"morning-briefing\",\n    \
            add_automations: [{\"name\": \"evening-recap\", \"schedule\": \"daily at 6pm\",\n    \
              \"steps\": [\"Summarize the day\"]}])\n  \
-         persona(action: \"create\", name: \"inbox-watcher\", description: \"Watches for new emails\",\n    \
+         agents(action: \"create\", name: \"inbox-watcher\", description: \"Watches for new emails\",\n    \
            automations: [{\"name\": \"watch-email\", \"plugin\": \"gws\", \"event\": \"email.new\",\n    \
              \"steps\": [\"Triage the incoming email\", \"Flag if urgent\"]}])\n  \
-         persona(action: \"create\", name: \"email-relay\", description: \"Relays email events\",\n    \
+         agents(action: \"create\", name: \"email-relay\", description: \"Relays email events\",\n    \
            automations: [{\"name\": \"relay\", \"plugin\": \"gws\", \"event\": \"email.new\",\n    \
              \"description\": \"Event-only watch — no steps, just relays into EventBus\"}])\n  \
-         persona(action: \"update\", name: \"morning-briefing\", remove_automations: [\"evening-recap\"])\n  \
-         persona(action: \"delete\", name: \"morning-briefing\")\n  \
-         persona(action: \"repair\")  — fix all agents\n  \
-         persona(action: \"repair\", name: \"trading-bot\")  — fix one agent\n  \
-         persona(action: \"install\", code: \"AGNT-ABCD-1234\")\n\n\
+         agents(action: \"update\", name: \"morning-briefing\", remove_automations: [\"evening-recap\"])\n  \
+         agents(action: \"delete\", name: \"morning-briefing\")\n  \
+         agents(action: \"repair\")  — fix all agents\n  \
+         agents(action: \"repair\", name: \"trading-bot\")  — fix one agent\n  \
+         agents(action: \"install\", code: \"AGNT-ABCD-1234\")\n\n\
          GRANULAR UPDATE (non-destructive — change one thing without affecting the rest):\n\n\
          Update a SINGLE automation (change only what you specify):\n  \
-         persona(action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
+         agents(action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
            \"name\": \"weekly-audit\", \"schedule\": \"0 8 * * 1\", \"description\": \"New label\"})\n  \
-         persona(action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
+         agents(action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
            \"name\": \"weekly-audit\", \"steps\": [\"Step 1\", \"Step 2\", \"Step 3\"]})\n\n\
          Toggle a single automation on/off:\n  \
-         persona(action: \"update\", name: \"seo-auditor\", toggle_automation: \"weekly-audit\")\n\n\
+         agents(action: \"update\", name: \"seo-auditor\", toggle_automation: \"weekly-audit\")\n\n\
          Set user-supplied input values (feeds into every workflow run):\n  \
-         persona(action: \"update\", name: \"seo-auditor\", input_values: {\n    \
+         agents(action: \"update\", name: \"seo-auditor\", input_values: {\n    \
            \"site_url\": \"https://example.com\", \"report_frequency\": \"weekly\"})\n\n\
          Update input field schema (dynamic form shown on Settings tab):\n  \
-         persona(action: \"update\", name: \"seo-auditor\", inputs: [\n    \
+         agents(action: \"update\", name: \"seo-auditor\", inputs: [\n    \
            {\"key\": \"site_url\", \"label\": \"Your website\", \"type\": \"text\", \"required\": true},\n    \
            {\"key\": \"frequency\", \"label\": \"Report frequency\", \"type\": \"select\",\n     \
              \"options\": [{\"value\": \"daily\", \"label\": \"Daily\"}, {\"value\": \"weekly\", \"label\": \"Weekly\"}]}])"
@@ -2182,7 +2397,7 @@ impl DynTool for PersonaTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["list", "activate", "deactivate", "info", "create", "update", "delete", "install", "reload", "repair", "setup", "stats"]
+                    "enum": ["list", "activate", "deactivate", "info", "create", "update", "delete", "install", "reload", "repair", "setup", "stats", "delegate"]
                 },
                 "name": {
                     "type": "string",
@@ -2293,6 +2508,22 @@ impl DynTool for PersonaTool {
                 "apply_update": {
                     "type": "boolean",
                     "description": "For reload: download and apply the latest version from NeboLoop (marketplace agents only)"
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Agent ID (for delegate — alternative to name)"
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Task prompt to delegate to the agent (for delegate)"
+                },
+                "wait": {
+                    "type": "boolean",
+                    "description": "Whether to wait for delegation result (default: true). Set false for background delegation."
+                },
+                "max_iterations": {
+                    "type": "integer",
+                    "description": "Maximum agentic loop iterations for the delegated agent (0 = default)"
                 }
             },
             "required": ["action"]
@@ -2303,9 +2534,14 @@ impl DynTool for PersonaTool {
         false
     }
 
+    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        matches!(action, "list" | "info" | "stats")
+    }
+
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
@@ -2324,8 +2560,9 @@ impl DynTool for PersonaTool {
                 "repair" => self.handle_repair(&input).await,
                 "setup" => self.handle_setup(&input).await,
                 "stats" => self.handle_stats(&input).await,
+                "delegate" => self.handle_delegate(&input, ctx).await,
                 _ => ToolResult::error(format!(
-                    "Unknown action '{}'. Available: list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats",
+                    "Unknown action '{}'. Available: list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats, delegate",
                     action
                 )),
             }
@@ -2408,6 +2645,7 @@ mod tests {
                 ).unwrap()),
                 channel_id: None,
                 degraded: None,
+                soul: None,
             });
             // Agent with no config — should remain non-degraded
             reg.insert(
@@ -2419,6 +2657,7 @@ mod tests {
                     config: None,
                     channel_id: None,
                     degraded: None,
+                    soul: None,
                 },
             );
         }
@@ -2477,6 +2716,7 @@ mod tests {
                     ),
                     channel_id: None,
                     degraded: None,
+                    soul: None,
                 },
             );
         }

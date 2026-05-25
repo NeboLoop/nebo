@@ -44,6 +44,7 @@ urlencoding = "2"
 url = "2"
 napp = { workspace = true }
 notify_crate = { workspace = true }
+semver = { workspace = true }
 workflow = { workspace = true }
 tonic = "0.12"
 hyper-util = "0.1"

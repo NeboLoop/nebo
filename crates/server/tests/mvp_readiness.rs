@@ -877,6 +877,7 @@ async fn test_cron(server: &TestServer) -> TestResult {
         emit: None,
         activities: None,
         last_fired: None,
+        connections: None,
     }];
 
     let count_before_agent = store.count_cron_jobs().unwrap();

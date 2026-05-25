@@ -1,5 +1,48 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import ExternalLink from 'lucide-svelte/icons/external-link';
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
+
+  let version = $state('—');
+  let platform = $state('—');
+  let licensesText = $state('');
+  let showLicenses = $state(false);
+
+  onMount(async () => {
+    try {
+      const resp = await fetch('/health');
+      const data = await resp.json();
+      if (data?.version) version = data.version;
+    } catch { /* keep placeholder */ }
+    if (typeof navigator !== 'undefined') {
+      const ua = navigator.userAgent;
+      if (ua.includes('Mac')) platform = 'macOS';
+      else if (ua.includes('Windows')) platform = 'Windows';
+      else if (ua.includes('Linux')) platform = 'Linux';
+      else platform = navigator.platform || '—';
+    }
+  });
+
+  async function toggleLicenses() {
+    if (!licensesText) {
+      try {
+        const resp = await fetch('/LICENSES.txt');
+        licensesText = await resp.text();
+      } catch { licensesText = 'Failed to load license information.'; }
+    }
+    showLicenses = !showLicenses;
+  }
+
+  const resources = [
+    { label: 'Documentation', url: 'https://docs.neboloop.com' },
+    { label: 'Report an Issue', url: 'https://github.com/NeboLoop/nebo/issues' },
+    { label: 'Privacy Policy', url: 'https://neboloop.com/privacy' },
+    { label: 'Terms of Service', url: 'https://neboloop.com/terms' },
+  ];
+</script>
+
 <div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">About</h2>
+  <h2 class="text-base font-semibold mb-1">About</h2>
   <p class="text-xs text-base-content/70">Application information and resources.</p>
 </div>
 
@@ -7,42 +50,56 @@
   <div class="flex items-center gap-3 mb-4">
     <div class="w-12 h-12 rounded-xl bg-base-content text-base-100 grid place-items-center font-mono text-lg font-semibold">N</div>
     <div>
-      <div class="text-base font-bold">Nebo</div>
-      <div class="text-sm">AI Agent Orchestration Platform</div>
+      <div class="text-sm font-bold">Nebo</div>
+      <div class="text-xs text-base-content/70">Personal Desktop AI Companion</div>
     </div>
   </div>
 
   <div class="flex flex-col gap-2 text-sm">
     <div class="flex justify-between py-1.5 border-b border-base-content/5">
-      <span class="text-base-content/70">Version</span>
-      <span class="font-mono">2.4.1</span>
+      <span class="text-xs text-base-content/70">Version</span>
+      <span class="text-xs font-mono">{version}</span>
     </div>
     <div class="flex justify-between py-1.5 border-b border-base-content/5">
-      <span class="text-base-content/70">Build</span>
-      <span class="font-mono">2026.04.28-abc1234</span>
-    </div>
-    <div class="flex justify-between py-1.5 border-b border-base-content/5">
-      <span class="text-base-content/70">Platform</span>
-      <span class="font-mono">macOS arm64</span>
-    </div>
-    <div class="flex justify-between py-1.5">
-      <span class="text-base-content/70">Svelte</span>
-      <span class="font-mono">5.55.2</span>
+      <span class="text-xs text-base-content/70">Platform</span>
+      <span class="text-xs font-mono">{platform}</span>
     </div>
   </div>
 </div>
 
 <!-- Resources -->
-<div class="mb-7">
-  <h3 class="text-base font-semibold mb-3">Resources</h3>
+<div class="mb-6">
+  <h3 class="text-sm font-semibold mb-3">Resources</h3>
   <div class="flex flex-col gap-1.5">
-    {#each ['Documentation', 'Release Notes', 'Community Discord', 'Report an Issue', 'Privacy Policy', 'Terms of Service'] as link}
-      <div class="flex items-center justify-between p-3 rounded-lg border border-base-content/5 bg-base-100 cursor-pointer hover:border-base-content/15 transition-colors">
-        <span class="text-sm font-medium">{link}</span>
-        <span class="text-base-content">→</span>
-      </div>
+    {#each resources as resource}
+      <a
+        href={resource.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="flex items-center justify-between p-3 rounded-lg border border-base-content/5 bg-base-100 cursor-pointer hover:border-base-content/15 transition-colors no-underline"
+      >
+        <span class="text-sm font-medium">{resource.label}</span>
+        <ExternalLink class="w-3.5 h-3.5 text-base-content/50" />
+      </a>
     {/each}
   </div>
 </div>
 
-<button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm cursor-pointer hover:bg-base-200 transition-colors">Check for Updates</button>
+<!-- Open Source Licenses -->
+<div>
+  <button
+    type="button"
+    class="flex items-center justify-between w-full p-3 rounded-lg border border-base-content/5 bg-base-100 cursor-pointer hover:border-base-content/15 transition-colors"
+    onclick={toggleLicenses}
+  >
+    <span class="text-sm font-medium">Open Source Licenses</span>
+    <ChevronDown class="w-3.5 h-3.5 text-base-content/50 transition-transform {showLicenses ? 'rotate-180' : ''}" />
+  </button>
+  {#if showLicenses}
+    <textarea
+      readonly
+      class="w-full h-64 mt-2 p-3 rounded-lg border border-base-content/5 bg-base-200/50 text-xs font-mono text-base-content/70 resize-y outline-none"
+      value={licensesText}
+    ></textarea>
+  {/if}
+</div>

@@ -11,6 +11,9 @@ importers:
       '@dagrejs/dagre':
         specifier: ^3.0.0
         version: 3.0.0
+      '@neboai/app-sdk':
+        specifier: ^0.1.0
+        version: 0.1.0
       '@tauri-apps/api':
         specifier: ^2.11.0
         version: 2.11.0
@@ -429,6 +432,14 @@ packages:
     peerDependencies:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
+
+  '@neboai/app-sdk@0.1.0':
+    resolution: {integrity: sha512-U46SfxzUdhsU40nW/1wED86Nf+OguOGdN9198xQR0eNwe/nmqQkj8EECkAl3zCX/ToM2yZ1j7yNwl16IAok+iQ==}
+    peerDependencies:
+      '@a2ui/web_core': '>=0.9.0'
+    peerDependenciesMeta:
+      '@a2ui/web_core':
+        optional: true
 
   '@oxc-project/types@0.127.0':
     resolution: {integrity: sha512-aIYXQBo4lCbO4z0R3FHeucQHpF46l2LbMdxRvqvuRuW2OxdnSkcng5B8+K12spgLDj93rtN3+J2Vac/TIO+ciQ==}
@@ -1515,6 +1526,8 @@ snapshots:
       '@emnapi/runtime': 1.10.0
       '@tybys/wasm-util': 0.10.1
     optional: true
+
+  '@neboai/app-sdk@0.1.0': {}
 
   '@oxc-project/types@0.127.0': {}
 

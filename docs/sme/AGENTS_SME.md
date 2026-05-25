@@ -5,7 +5,7 @@
 > heartbeat, event, watch, manual), the cron scheduler, event dispatcher, AgentWorker
 > runtime, database schema, HTTP endpoints, and known issues.
 
-**Last verified against source:** 2026-04-13
+**Last verified against source:** 2026-05-25
 
 ---
 
@@ -31,8 +31,14 @@
 18. [Error Handling & Recovery](#18-error-handling--recovery)
 19. [A2UI Workspace Surfaces](#19-a2ui-workspace-surfaces)
 20. [Input Values & System Prompt Injection](#20-input-values--system-prompt-injection)
-21. [Known Issues](#21-known-issues)
-22. [Key Files Reference](#22-key-files-reference)
+21. [Tool Filter & Contextual Awareness](#21-tool-filter--contextual-awareness)
+22. [Forked Command Execution](#22-forked-command-execution)
+23. [Follow-up Suggestions System](#23-follow-up-suggestions-system)
+24. [Non-Gateway Provider Preference](#24-non-gateway-provider-preference)
+25. [Run Progress Tracking](#25-run-progress-tracking)
+26. [Skill Pre-Loading for Sub-Agents](#26-skill-pre-loading-for-sub-agents)
+27. [Known Issues](#27-known-issues)
+28. [Key Files Reference](#28-key-files-reference)
 
 ---
 
@@ -180,6 +186,12 @@ pub struct AgentConfig {
     pub pricing: Option<AgentPricing>,
     pub defaults: Option<AgentDefaults>,
     pub inputs: Vec<AgentInputField>,                   // Dynamic form fields
+    pub memory: MemoryConfig,                           // Memory scoping (inherit + context isolation)
+}
+
+pub struct MemoryConfig {
+    pub inherit_user: bool,      // READ main Nebo's tacit/preferences (read-only)
+    pub context_isolated: bool,  // Memories scoped per contextId from SDK embed
 }
 
 pub struct AgentRequires {
@@ -322,14 +334,13 @@ pub struct LoadedAgent {
     pub frontmatter: String,             // Raw agent.json content as JSON string
     pub description: String,             // Extracted description
     pub id: Option<String>,              // NeboLoop UUID (marketplace agents)
-    pub views: Option<serde_json::Value>, // Parsed views.json (if exists)
-    pub theme_css: Option<String>,       // theme.css content (if exists)
+    // views.json and theme.css removed — apps own their UI via @neboai/app-sdk
 }
 ```
 
 ### Scanning
 
-- `load_from_dir(dir, source)` -- loads AGENT.md + optional agent.json + manifest.json + views.json + theme.css
+- `load_from_dir(dir, source)` -- loads AGENT.md + optional agent.json + manifest.json
 - `scan_installed_agents(dir)` -- walks for `AGENT.md` marker files
 - `scan_user_agents(dir)` -- shallow read_dir, checks for `AGENT.md` in each subdirectory
 - Falls back to directory name if AGENT.md has no frontmatter name
@@ -363,7 +374,7 @@ pub enum AgentFsEvent {
 3. Send events via the mpsc channel (capacity 32)
 4. Overwrite cache with new state
 
-**Watched files:** `AGENT.md`, `agent.json`, `manifest.json`, `views.json`, `theme.css`
+**Watched files:** `AGENT.md`, `agent.json`, `manifest.json`
 
 **Server-side consumer** (`crates/server/src/lib.rs`):
 - `Added` → create/update DB record, sync workflows, broadcast `agent_installed`
@@ -450,7 +461,7 @@ CREATE TABLE workflows (
 ```sql
 CREATE TABLE workflow_runs (
     id TEXT PRIMARY KEY,
-    workflow_id TEXT NOT NULL,               -- "persona:{agent_id}" for inline runs, workflow ID for standalone
+    workflow_id TEXT NOT NULL,               -- "agent:{agent_id}" for inline runs, workflow ID for standalone
     trigger_type TEXT NOT NULL,              -- schedule, event, manual, cron, heartbeat
     trigger_detail TEXT,
     status TEXT NOT NULL DEFAULT 'running',  -- running, completed, failed, cancelled, exited
@@ -467,7 +478,7 @@ CREATE TABLE workflow_runs (
 ```
 
 **Key point:** No FK on `workflow_id` -- removed in migration 0061 to support
-inline agent runs where `workflow_id = "persona:{agent_id}"`.
+inline agent runs where `workflow_id = "agent:{agent_id}"`.
 
 ### workflow_activity_results
 
@@ -492,7 +503,7 @@ CREATE TABLE cron_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
     schedule TEXT NOT NULL,                  -- Cron expression
-    command TEXT DEFAULT '',                 -- Shell cmd / workflow ID / "persona:id:binding"
+    command TEXT DEFAULT '',                 -- Shell cmd / workflow ID / "agent:id:binding"
     task_type TEXT DEFAULT 'bash',           -- bash, shell, agent, workflow, agent_workflow
     message TEXT DEFAULT '',                 -- Agent prompt
     deliver TEXT DEFAULT '',
@@ -546,7 +557,7 @@ CREATE TABLE entity_config (
 
 ```
 agents (1) ──→ (many) agent_workflows ──→ (via trigger registration) cron_jobs
-agents ──→ (via "persona:{id}") workflow_runs ──→ (many) workflow_activity_results
+agents ──→ (via "agent:{id}") workflow_runs ──→ (many) workflow_activity_results
 cron_jobs (1) ──→ (many) cron_history
 entity_config ── standalone per (entity_type, entity_id) pair
 ```
@@ -630,7 +641,7 @@ entity_config ── standalone per (entity_type, entity_id) pair
 | POST | `/agents/{id}/chat` | `chat_with_agent` | Send message to agent's session |
 | GET | `/agents/{id}/surfaces` | `list_agent_surfaces` | List A2UI surfaces for agent |
 | GET | `/agents/{id}/theme.css` | `get_agent_theme` | Serve agent's theme.css (200 or 204) |
-| GET | `/agents/{id}/nav` | `get_agent_nav` | Navigation structure from views.json `_nav` |
+| GET | `/agents/{id}/nav` | `get_agent_nav` | Navigation structure |
 
 ### Agent Workflows -- `/api/v1/agents/{id}/workflows`
 
@@ -701,6 +712,7 @@ entity_config ── standalone per (entity_type, entity_id) pair
 
 ### Delete (`delete_agent`)
 
+**Backend** (`handlers/agents.rs`):
 1. Stop `AgentWorker`
 2. Remove from `AgentRegistry`
 3. Unregister all cron triggers
@@ -716,6 +728,29 @@ entity_config ── standalone per (entity_type, entity_id) pair
    - Order matters: chats before sessions (chats reference session names)
 8. Clean up filesystem (napp_path, nebo/agents/, user/agents/)
 9. Deregister from NeboLoop (async)
+
+**Frontend delete flow** (`[agentId]/+layout.svelte`):
+- Right-click agent in sidebar → context menu → "Delete"
+- Confirmation modal appears: warning icon, agent name, "All threads, runs, and memory will be permanently removed"
+- Cancel / Delete Agent buttons
+- On confirm: calls `deleteAgent(id)` REST API → refreshes roster → navigates away if viewing deleted agent
+- Primary agent (`assistant`) cannot be deleted (no Delete option in context menu)
+- Marketplace agents (non-editable) also cannot be deleted
+
+### Agent Sidebar Roster
+
+**Location:** `[agentId]/+layout.svelte` — Column 1 of 3-column layout
+
+**Data flow:** REST-first, WS-refreshed
+- Initial load: `listAgents()` + `listActiveAgents()` in parallel
+- WS events trigger re-fetch: `agent_activated`, `agent_deactivated`, `agent_installed`, `agent_uninstalled`, `agent_updated`
+- Events dispatched as DOM CustomEvents (`nebo:{event}`) via `listeners.ts`
+
+**Refresh triggers:**
+- Agent installed via code → backend broadcasts `agent_installed` → sidebar re-fetches
+- Agent deleted → backend broadcasts `agent_uninstalled` → sidebar re-fetches
+- Agent activated/deactivated → immediate status update + full re-fetch
+- CodeInstallModal also dispatches `nebo:agent_installed` on completion as safety net
 
 ### Update (`update_agent`)
 
@@ -810,7 +845,7 @@ Concrete implementation. Key internals:
 
 **run_inline() flow:**
 1. Parse definition from JSON string
-2. Create `workflow_runs` record with `workflow_id = "persona:{agent_id}"`
+2. Create `workflow_runs` record with `workflow_id = "agent:{agent_id}"`
 3. Store CancellationToken + track in agent_runs
 4. `tokio::spawn` background task:
    - Get provider, build tool wrappers, load skill content
@@ -859,12 +894,15 @@ pub async fn execute_workflow(
 
 ### execute_activity()
 
-Single activity execution -- a lean agentic loop (no steering, no memory, no personality):
+Single activity execution -- a lean agentic loop (no steering, no memory, no personality).
+Two paths: **legacy single-turn** (no steps) and **per-step** (steps defined).
+
+#### Legacy path (no steps)
 
 1. Build system prompt via `build_activity_prompt()`
 2. Build tool definitions from available tools
 3. Start with user message = activity.intent
-4. **Loop** (max 20 iterations):
+4. **Loop** (max 50 iterations via `run_llm_loop()`):
    - Build ChatRequest -> `provider.stream()`
    - Accumulate text + tool_calls
    - If no tool_calls -> return (response, tokens)
@@ -873,6 +911,46 @@ Single activity execution -- a lean agentic loop (no steering, no memory, no per
    - Check for repeated "tool not found" (3x consecutive = abort)
    - Append tool results to messages
    - Continue loop
+
+#### Per-step path (steps defined)
+
+When `activity.steps` is non-empty, each step executes as a separate LLM turn within a shared conversation:
+
+1. Build system prompt via `build_activity_prompt_no_steps()` -- same as legacy but appends a **Step Execution Mode** section that primes the LLM to execute only what each step asks, not ask questions, and use exit tool if inapplicable.
+2. Seed `task_items` in DB for progress tracking
+3. For each step:
+   a. Send step as user message: `"Step {i}/{total}: {step_text}"`
+   b. Run `run_llm_loop()` -- full tool-calling agentic loop for that step
+   c. **Orchestrator evaluation** via `evaluate_step()` (see below)
+   d. On `Proceed`: append assistant response, record completion, continue
+   e. On `Exit(reason)`: record step as completed, return `WorkflowError::Exited`
+4. Final result = last step's output
+
+### Step Evaluator (Orchestrator Between Steps)
+
+**Purpose:** Prevents the LLM from taking unauthorized side-actions and enables short-circuiting when a task is inapplicable (e.g., processing the agent's own SENT email).
+
+```rust
+async fn evaluate_step(provider, system, step_text, step_output, step_index, total_steps)
+    -> Result<EvalDecision, WorkflowError>
+```
+
+**How it works:**
+- Reuses the same system prompt (prompt-cached by the provider) with a short `## Step Evaluation Mode` appendix
+- Sends step output as a user message (truncated to 2000 chars)
+- No tools, max 100 tokens, temperature 0 -- near-free with prompt caching
+- Responds with exactly `proceed` or `exit:<reason>`
+- **Fails open:** any error or unexpected response defaults to `Proceed`
+
+**EvalDecision enum:**
+```rust
+enum EvalDecision {
+    Proceed,        // Continue to next step
+    Exit(String),   // Terminate workflow cleanly with reason
+}
+```
+
+**When Exit fires:** The workflow returns `WorkflowError::Exited` which is handled at the activity loop level -- records the activity as "exited" (not failed), completes the workflow run with status "exited", and returns `Ok`. This is a clean termination, not an error.
 
 ### System Prompt Construction (build_activity_prompt)
 
@@ -931,7 +1009,7 @@ pub fn register_agent_triggers(agent_id: &str, bindings: &[AgentWorkflow], store
     for binding in bindings {
         if binding.trigger_type == "schedule" {
             let name = format!("agent-{}-{}", agent_id, binding.binding_name);
-            let command = format!("persona:{}:{}", agent_id, binding.binding_name);
+            let command = format!("agent:{}:{}", agent_id, binding.binding_name);
             store.upsert_cron_job(&name, &binding.trigger_config, &command, "agent_workflow", ...);
         }
     }
@@ -982,7 +1060,7 @@ if next > now { continue; }  // Not due
 | `"bash"` / `"shell"` / `""` | Shell command | `sh -c {command}` subprocess |
 | `"agent"` | Prompt text | `runner.run()` with `Origin::System`, session `"cron-{name}"` |
 | `"workflow"` | Workflow ID | `manager.run(id, null, "cron")` |
-| `"agent_workflow"` | `"persona:{agent_id}:{binding}"` | Parse -> load agent -> `manager.run_inline()` |
+| `"agent_workflow"` | `"agent:{agent_id}:{binding}"` | Parse -> load agent -> `manager.run_inline()` |
 
 ### execute_agent_workflow_task() -- **CRITICAL PATH**
 
@@ -990,9 +1068,9 @@ if next > now { continue; }  // Not due
 async fn execute_agent_workflow_task(
     manager: &dyn WorkflowManager,
     store: &Store,
-    command: &str,  // "persona:{agent_id}:{binding_name}"
+    command: &str,  // "agent:{agent_id}:{binding_name}"
 ) -> (bool, String, Option<String>) {
-    let parts = command.splitn(3, ':');  // ["persona", agent_id, binding_name]
+    let parts = command.splitn(3, ':');  // ["agent", agent_id, binding_name]
     let agent = store.get_agent(agent_id)?;
     let config = napp::agent::parse_agent_config(&agent.frontmatter)?;
     let binding = config.workflows.get(binding_name)?;
@@ -1412,7 +1490,7 @@ code_processing → [dep_installed × N] → dep_cascade_complete → code_resul
 4. **Handler:** Builds trigger JSON, inserts into frontmatter, upserts agent_workflows row
 5. **Trigger registration:** Creates cron_job named `"agent-{agent_id}-morning-briefing"`
 6. **Scheduler tick (60s):** Finds cron job due -> `execute_agent_workflow_task()`
-7. Parses `"persona:{agent_id}:morning-briefing"` -> loads agent config -> `run_inline()`
+7. Parses `"agent:{agent_id}:morning-briefing"` -> loads agent config -> `run_inline()`
 8. **Engine:** Creates workflow_runs record -> executes activities sequentially
 9. If emit configured: last activity calls `emit` tool -> EventBus -> EventDispatcher
 
@@ -1489,9 +1567,9 @@ as "cancelled" with error "server restart".
 
 ## 19. A2UI Workspace Surfaces
 
-**Files:** `crates/server/src/a2ui.rs`, `crates/server/src/a2ui_actions.rs`, `crates/server/src/a2ui_bindings.rs`, `crates/tools/src/a2ui_tool.rs`
+**Files:** `crates/server/src/a2ui.rs`, `crates/server/src/a2ui_actions.rs`, `crates/tools/src/a2ui_tool.rs`
 
-Agents can declare workspace UIs via `views.json` or create them dynamically via the `a2ui` tool. Surfaces are persisted in the `a2ui_surfaces` DB table.
+Agents can create UIs dynamically via the `a2ui` tool during conversation. Surfaces are persisted in the `a2ui_surfaces` DB table. Apps build their own frontends using `@neboai/app-sdk`.
 
 ### A2UIManager
 
@@ -1519,27 +1597,16 @@ pub struct A2UIManager {
 ### Action Dispatch (`a2ui_actions.rs`)
 
 When a user clicks a button, the WS handler routes through:
-1. Try deterministic dispatch via `ActionBinding` from `views.json` actions map
-2. If handled (mcp_call/navigate/update_data): skip LLM
+1. Try deterministic dispatch (mcp_call/navigate/update_data)
+2. If handled: skip LLM
 3. If not handled: `try_begin_action()` → `run_chat()` → `end_action()`
+
+This fallthrough works for both the client WS handler and the app WS handler — unhandled actions from apps now route to `run_chat()` instead of broadcasting to a dead `app_action` event.
 
 **Deterministic action types:**
 - `mcp_call` — calls MCP tool via bridge, injects result into data model at `update_path`
 - `navigate` — switches views via `A2UIManager::navigate_view()`
 - `update_data` — direct data model update at JSON Pointer path
-
-### Data Bindings (`a2ui_bindings.rs`)
-
-```rust
-pub struct DataBinding {
-    pub path: String,              // JSON Pointer for result injection
-    pub source: DataBindingSource, // { server, tool }
-    pub params: serde_json::Value,
-    pub interval_secs: u64,        // Default: 30
-}
-```
-
-`DataBindingManager` spawns tokio tasks per binding, polls MCP tools at intervals, injects results. Exponential backoff on repeated failures (max 60s).
 
 ### Surface ID Format
 
@@ -1633,51 +1700,302 @@ Sub-agents spawned via `bot(task, spawn)` inherit parent values through prompt t
 
 ---
 
-## 21. Known Issues
+## 21. Tool Filter & Contextual Awareness
 
-### BUG: Disabled Schedule Automations Still Execute
+**File:** `crates/agent/src/tool_filter.rs`
 
-**Severity:** High
+Major enhancement beyond basic keyword deferred activation. Follows Claude Code's
+message-window scanning pattern: tools appear/disappear as messages enter/leave the
+sliding context window.
 
-When a user toggles an agent_workflow binding to `is_active = 0`:
-- The toggle handler **correctly** deletes the cron_job (unregisters the schedule trigger)
-- However, if the cron_job somehow still exists (e.g., re-registered on agent worker restart),
-  `execute_agent_workflow_task()` in `scheduler.rs` **does NOT check `agent_workflows.is_active`**
+### Core Architecture
 
-The execution path in `scheduler.rs:209-253`:
 ```rust
-async fn execute_agent_workflow_task(manager, store, command) {
-    let parts = command.splitn(3, ':');
-    let agent = store.get_agent(agent_id)?;
-    let config = napp::agent::parse_agent_config(&agent.frontmatter)?;
-    let binding = config.workflows.get(binding_name)?;
-    // ** NO CHECK: does not query agent_workflows.is_active **
-    manager.run_inline(def_json, inputs, "schedule", agent_id, ...).await
+pub fn filter_tools_with_context(
+    all_tools: &[ToolDefinition],
+    messages: &[ChatMessage],
+    called_tools: &[String],
+    agent_tool_names: &HashSet<String>,
+) -> (Vec<ToolDefinition>, Vec<String>)
+```
+
+Returns a filtered tool list and a list of active context names (used for STRAP
+sub-doc injection into the system prompt).
+
+### ALWAYS_INCLUDE_TOOLS
+
+Core tools that are never filtered out, regardless of context:
+```rust
+const ALWAYS_INCLUDE_TOOLS: &[&str] = &["agent", "skill", "event", "message", "tool_search"];
+```
+
+### Contextual Keyword Groups
+
+13 keyword groups map conversation content to tool contexts. Last 5 user/assistant
+messages are scanned for keyword matches.
+
+| Context | Tool/Sub-doc | Example Keywords |
+|---------|-------------|-----------------|
+| `web` | web tool | browse, website, url, http, google, search |
+| `event` | event tool | schedule, remind, cron, tomorrow, daily |
+| `loop` | loop tool | neboloop, channel, dm, group chat |
+| `work` | work tool | workflow, automate, automation |
+| `desktop` | os sub-doc | click, mouse, screenshot, gui, tts |
+| `app` | os sub-doc | launch, open app, quit app, frontmost |
+| `organizer` | os sub-doc | calendar, reminder, contact, email, inbox |
+| `music` | os sub-doc | music, play, pause, playlist, spotify |
+| `settings` | os sub-doc | volume, brightness, wifi, dark mode |
+| `keychain` | os sub-doc | password, credential, api key, token |
+| `spotlight` | os sub-doc | find file, locate, spotlight, mdfind |
+| `execute` | execute tool | run script, python, node, run code |
+| `emit` | emit tool | emit event, fire event, trigger event |
+
+Contexts like `desktop`, `app`, `music`, etc. are OS sub-contexts. They activate the
+`os` tool and inject the corresponding STRAP sub-doc into the prompt.
+
+### Inclusion Rules
+
+A tool passes the filter if any of these hold:
+1. It is in `ALWAYS_INCLUDE_TOOLS` (core tools)
+2. Its name matches an active `TOOL_CONTEXTS` entry (web, event, loop, work, execute, emit)
+3. It was already called during this session (`called_tools`)
+4. It is an MCP proxy tool (name starts with `mcp__`)
+5. It is one of the agent's own sidecar tools (`agent_tool_names`)
+6. It is `os` and any OS sub-context is active
+
+### tool_search Discovery (Deferred Tool Loading)
+
+```rust
+pub fn extract_discovered_deferred_tools(
+    messages: &[ChatMessage],
+    deferred_names: &HashSet<String>,
+) -> HashSet<String>
+```
+
+Scans the message window for deferred tools that have been "discovered":
+- **Direct calls:** assistant `tool_calls` containing a deferred tool name
+- **tool_search results:** tool result messages from `tool_search` invocations,
+  extracting tool names from the `matches` array
+
+Key property: when sliding window evicts messages, any tool_search results or
+tool calls in those evicted messages disappear, so the tool naturally unloads.
+Tools come and go with the message window.
+
+---
+
+## 22. Forked Command Execution
+
+**File:** `crates/agent/src/runner.rs`
+
+Commands starting with specific prefixes are forked to an isolated sub-agent session
+to prevent intermediate tool calls from consuming the main chat's context window.
+
+### Fork Prefixes
+
+```rust
+const FORK_COMMAND_PREFIXES: &[&str] = &[
+    "/research",
+    "/analyze",
+    "/deep-dive",
+    "/investigate",
+];
+```
+
+### Execution Flow
+
+1. `should_fork_command()` detects eligible prompts (case-insensitive prefix match)
+2. A "Working on this in the background..." message is sent to the user
+3. Fork session created with key: `fork:{parent_session_id}:{uuid}`
+4. `run_loop()` executes in the fork session with:
+   - `PromptMode::Minimal` (skip memory, routing, etiquette)
+   - `FORK_MAX_ITERATIONS = 20` (vs 100 normal)
+   - `skip_memory = true`
+   - `plan_mode = false`
+5. Sub-agent text output is collected from the stream
+6. Output capped at `FORK_OUTPUT_CAP = 32KB` (truncated with "[Output truncated]" marker)
+7. Result inserted into the main session as an assistant message
+8. Result also streamed to the user via the main channel
+9. `StreamEvent::done()` sent — the fork is complete
+
+The fork session is ephemeral: it exists only for the duration of the command.
+The main session sees the final result but not intermediate tool calls.
+
+---
+
+## 23. Follow-up Suggestions System
+
+**File:** `crates/agent/src/followup.rs` (~151 lines)
+
+After each chat turn completes, generates 2-3 contextual follow-up suggestions
+that the user can click to continue the conversation.
+
+### Trigger Conditions
+
+- Only for normal interactive chats (`skip_memory == false`)
+- Runs asynchronously in a background `tokio::spawn` (non-blocking)
+- Triggered after `run_loop()` completes and `StreamEvent::done()` is sent
+
+### Provider Selection
+
+Uses cheapest available provider via `prefer_non_gateway()` (see Section 24).
+This avoids spending Janus credits on auxiliary generation.
+
+### Function Signature
+
+```rust
+pub async fn generate_suggestions(
+    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    last_exchange: &[db::models::ChatMessage],
+    model: &str,
+) -> Option<Vec<String>>
+```
+
+### Context Building
+
+- Takes last 4 messages from the most recent user message onward
+- Each message content truncated to 500 chars
+- Requires at least 2 messages in the exchange (else returns `None`)
+
+### Generation
+
+- Minimal system prompt requesting a JSON array of 2-3 suggestions
+- `max_tokens: 200`, `temperature: 0.7`
+- No tools, no thinking
+
+### Post-Processing Filters
+
+Generated suggestions are filtered. A suggestion is rejected if:
+- Empty or > 50 characters
+- Fewer than 2 or more than 10 words
+- Contains `?` or newlines
+- Starts with "Tell me", "Can you", "What ", "How ", "Let me", or "I'll "
+
+Up to 3 passing suggestions are kept. Returns `None` if all are filtered.
+
+### Delivery
+
+Sent via `StreamEvent::followup_suggestions(suggestions)` which maps to
+`StreamEventType::FollowupSuggestions`. The server's `chat_dispatch.rs` broadcasts
+this as a `"followup_suggestions"` WebSocket event with a `suggestions` payload.
+
+---
+
+## 24. Non-Gateway Provider Preference
+
+**File:** `crates/agent/src/runner.rs`
+
+```rust
+pub(crate) fn prefer_non_gateway(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
+    providers
+        .iter()
+        .find(|p| p.id() != "janus")
+        .cloned()
+        .or_else(|| providers.first().cloned())
 }
 ```
 
-The agent config comes from `agents.frontmatter` (which is the static agent.json
-definition) -- it has no concept of `is_active`. The `is_active` flag only
-exists in the `agent_workflows` tracking table.
+Finds the first provider whose `id()` is not `"janus"`. Falls back to the first
+provider (which may be Janus) only when no other option exists.
 
-**Event triggers DO check correctly** via `list_active_event_triggers()` which
-has `WHERE rw.is_active = 1 AND r.is_enabled = 1`.
+**Used for background/auxiliary operations:**
+- Follow-up suggestion generation (Section 23)
+- Session title auto-generation
+- Memory extraction and compaction
+- Summarization
 
-**Heartbeat triggers** have a partial mitigation: they run in the AgentWorker's
-tokio task, which is started on agent activation and stopped on deactivation.
-However, individual heartbeat bindings cannot be toggled without restarting the
-entire worker.
+**Rationale:** Janus is the NeboLoop gateway that costs credits per token. When a
+local provider (CLI key, Ollama, etc.) is available, background tasks should use
+it to preserve Janus credits for user-facing interactions.
 
-**Fix:** Add an `is_active` check in `execute_agent_workflow_task()`:
+---
+
+## 25. Run Progress Tracking
+
+**File:** `crates/agent/src/runner.rs`
+
+### RunProgress Struct
+
 ```rust
-// After loading agent and config, check tracking table:
-let bindings = store.list_agent_workflows(agent_id)?;
-let is_active = bindings.iter()
-    .find(|b| b.binding_name == binding_name)
-    .map(|b| b.is_active != 0)
-    .unwrap_or(false);
-if !is_active { return (true, "skipped: binding inactive".into(), None); }
+#[derive(Clone, Debug)]
+pub struct RunProgress {
+    pub run_id: String,
+    pub iteration_count: Arc<std::sync::atomic::AtomicU32>,
+    pub tool_call_count: Arc<std::sync::atomic::AtomicU32>,
+    pub current_tool: Arc<std::sync::Mutex<String>>,
+}
 ```
+
+Shared atomic counters enabling live observation of a running agent.
+
+### Lifecycle
+
+1. **Created** by the server's `RunRegistry` (via `RunHandle`) when a chat run starts
+2. **Threaded** into `RunRequest.progress` so the runner has access
+3. **Updated** during `run_loop()` iterations:
+   - `iteration_count` incremented each loop iteration
+   - `tool_call_count` incremented per tool call
+   - `current_tool` updated to the name of the currently executing tool
+4. **Read** by WS/UI handlers to display real-time progress (iteration count, active tool)
+
+The atomic types (`AtomicU32`, `Mutex<String>`) allow lock-free reads from
+observation threads while the runner writes.
+
+---
+
+## 26. Skill Pre-Loading for Sub-Agents
+
+**File:** `crates/agent/src/runner.rs`, `crates/agent/src/orchestrator.rs`
+
+### Mechanism
+
+Sub-agents spawned via the orchestrator can receive pre-loaded skill content so
+they have instructions in context from turn 1, without needing to discover or
+load skills dynamically.
+
+### RunRequest Field
+
+```rust
+pub struct RunRequest {
+    // ...
+    pub preload_skills: Vec<String>,  // Skill names to pre-load
+    // ...
+}
+```
+
+### Injection Flow
+
+1. Orchestrator builds `RunRequest` with `preload_skills` from the parent task
+2. `Runner::run()` checks `req.preload_skills` before appending the task prompt
+3. For each skill name, loads full content via `SkillLoader::get()` + `expand_template()`
+4. Injects as a user message with metadata:
+   ```json
+   {"isMeta": true, "skillPreload": "<skill_name>"}
+   ```
+5. Message content: `[Loading skill: <name>]\n\n<full SKILL.md content>`
+6. `isMeta` flag prevents the UI from rendering it as real user input
+7. Injected BEFORE the task prompt so the skill is in context from turn 1
+
+### Source
+
+The orchestrator sets `preload_skills` when spawning sub-agents:
+```rust
+run_req.preload_skills = skills;  // from parent task's skill list
+```
+
+Disabled skills are skipped with a warning log.
+
+---
+
+## 27. Known Issues
+
+### Disabled Schedule Automations Guard
+
+The previous high-severity bug where stale cron rows could execute disabled
+agent workflow bindings has been fixed. `scheduler.rs::execute_agent_workflow_task()`
+now calls `store.is_agent_workflow_active(agent_id, binding_name)` before loading
+the binding from `agents.frontmatter`. The DB query checks both
+`agent_workflows.is_active = 1` and `agents.is_enabled = 1`, and the scheduler
+fails closed if it cannot verify active status.
 
 ### Heartbeat Toggle Granularity
 
@@ -1728,7 +2046,7 @@ notification mechanism is not implemented. Both abort the workflow on activity f
 
 ---
 
-## 22. Key Files Reference
+## 28. Key Files Reference
 
 ### Core Agent System
 
@@ -1740,6 +2058,9 @@ notification mechanism is not implemented. Both abort the workflow on activity f
 | `crates/db/src/queries/agents.rs` | ~353 | All agent + agent_workflow DB queries |
 | `crates/db/src/models.rs:570-647` | ~78 | Agent, AgentWorkflow, EmitSource, AgentWorkflowStats structs |
 | `crates/tools/src/persona_tool.rs:14-29` | ~16 | ActiveAgent struct, AgentRegistry type alias |
+| `crates/agent/src/tool_filter.rs` | ~603 | Contextual tool filtering, keyword groups, deferred tool discovery |
+| `crates/agent/src/followup.rs` | ~151 | Follow-up suggestion generation (post-chat-turn) |
+| `crates/agent/src/orchestrator.rs` | ~266+ | Sub-agent orchestration, skill pre-loading |
 
 ### A2UI Workspace
 
@@ -1747,11 +2068,9 @@ notification mechanism is not implemented. Both abort the workflow on activity f
 |------|-------|-------------|
 | `crates/server/src/a2ui.rs` | ~350 | A2UIManager, SurfaceState, NeboCatalogProvider, action dedup |
 | `crates/server/src/a2ui_actions.rs` | ~200 | ActionBinding, deterministic dispatch (mcp_call, navigate, update_data) |
-| `crates/server/src/a2ui_bindings.rs` | ~180 | DataBindingManager, MCP tool polling |
 | `crates/tools/src/a2ui_tool.rs` | ~300 | A2UIHost trait, A2UITool STRAP implementation |
-| `app/src/lib/components/a2ui/nebo-surface.ts` | ~99 | NeboSurfaceElement (shadow DOM + style injection + Lit context) |
-| `app/src/lib/components/a2ui/nebo-action-context.ts` | ~18 | Lit context for button pending state |
-| `app/src/lib/components/a2ui/A2UISurfacePanel.svelte` | ~113 | Svelte wrapper for surface rendering + action routing |
+
+> `a2ui_bindings.rs` (DataBindingManager) and `app/src/lib/components/a2ui/` (frontend A2UI renderer) have been removed. Apps own their UI via `@neboai/app-sdk`.
 | `app/src/lib/stores/a2ui.ts` | ~183 | A2UI store (MessageProcessor, pendingActions, handleActionStatus) |
 
 ### Workflow Engine
@@ -1796,4 +2115,4 @@ notification mechanism is not implemented. Both abort the workflow on activity f
 
 ---
 
-*Last updated: 2026-04-13*
+*Last updated: 2026-05-25*

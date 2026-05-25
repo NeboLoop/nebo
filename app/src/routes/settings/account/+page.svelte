@@ -1,34 +1,77 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import { neboLoopOAuthStartWithJanus, neboLoopOAuthStatus } from '$lib/api/index';
 
   let user = $state({ name: '', email: '', displayName: '' });
   let connected = $state(true);
+  let reconnecting = $state(false);
+  let reconnectError = $state('');
+  let oauthPollInterval: ReturnType<typeof setInterval> | null = null;
+  let oauthTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  onDestroy(() => {
+    if (oauthPollInterval) clearInterval(oauthPollInterval);
+    if (oauthTimeout) clearTimeout(oauthTimeout);
+  });
 
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.getProfile() as { profile?: Record<string, unknown> };
-      if (resp?.profile) {
-        const p = resp.profile;
-        user = {
-          ...user,
-          name: String(p.displayName || p.name || user.name),
-          displayName: String(p.displayName || p.name || user.displayName),
-          email: user.email,
-        };
-      }
-      // Try to get email from current user
-      const userResp = await api.userGetCurrentUser().catch(() => null);
-      if (userResp) {
-        user.email = userResp.email || user.email;
-        user.name = user.name || userResp.name;
-      }
-      const status = await api.neboLoopAccountStatus() as { connected?: boolean } | null;
+      const status = await api.neboLoopAccountStatus() as Record<string, unknown> | null;
       if (status) {
         connected = !!status.connected;
+        if (status.email) user.email = String(status.email);
+        if (status.displayName) {
+          user.displayName = String(status.displayName);
+          user.name = String(status.displayName);
+        }
       }
     } catch { /* keep mock data */ }
   });
+
+  async function reconnect() {
+    reconnecting = true;
+    reconnectError = '';
+    try {
+      const result = await neboLoopOAuthStartWithJanus(false);
+      const pendingState = result.state;
+
+      oauthTimeout = setTimeout(() => {
+        if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
+        reconnecting = false;
+        reconnectError = 'Connection timed out. Please try again.';
+      }, 180_000);
+
+      oauthPollInterval = setInterval(async () => {
+        try {
+          const status = await neboLoopOAuthStatus(pendingState);
+          if (status?.status === 'complete') {
+            if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
+            if (oauthTimeout) { clearTimeout(oauthTimeout); oauthTimeout = null; }
+            connected = true;
+            reconnecting = false;
+            if (status.email) user.email = status.email;
+            if (status.displayName) { user.displayName = status.displayName; user.name = status.displayName; }
+          } else if (status?.status === 'error') {
+            if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
+            if (oauthTimeout) { clearTimeout(oauthTimeout); oauthTimeout = null; }
+            reconnecting = false;
+            reconnectError = status.error || 'OAuth failed. Please try again.';
+          } else if (status?.status === 'expired') {
+            if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
+            if (oauthTimeout) { clearTimeout(oauthTimeout); oauthTimeout = null; }
+            reconnecting = false;
+            reconnectError = 'OAuth session expired. Please try again.';
+          }
+        } catch {
+          // Poll error — keep trying
+        }
+      }, 2000);
+    } catch (err) {
+      reconnecting = false;
+      reconnectError = err instanceof Error ? err.message : 'Failed to start OAuth flow';
+    }
+  }
 
   async function disconnect() {
     try {
@@ -68,8 +111,21 @@
 
 <div class="flex gap-2 mb-8">
   <a href="/settings/usage" class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium hover:bg-base-200 transition-colors">View Usage →</a>
-  <button class="px-4 py-2 rounded-lg border border-error/20 text-sm font-medium text-error hover:bg-error/5 transition-colors cursor-pointer" onclick={disconnect}>Disconnect Account</button>
+  {#if connected}
+    <button class="px-4 py-2 rounded-lg border border-error/20 text-sm font-medium text-error hover:bg-error/5 transition-colors cursor-pointer" onclick={disconnect}>Disconnect Account</button>
+  {:else}
+    <button
+      class="px-4 py-2 rounded-lg border border-primary/30 text-sm font-medium text-primary hover:bg-primary/5 transition-colors cursor-pointer disabled:opacity-50"
+      onclick={reconnect}
+      disabled={reconnecting}
+    >
+      {reconnecting ? 'Connecting...' : 'Reconnect to NeboLoop'}
+    </button>
+  {/if}
 </div>
+{#if reconnectError}
+  <div class="text-xs text-error mb-4">{reconnectError}</div>
+{/if}
 
 <!-- Danger zone -->
 <div class="mb-7">

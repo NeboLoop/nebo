@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 use super::manifest::{self, SkillManifest};
 use super::skill::{Skill, SkillSource, SkillSummary, parse_skill_frontmatter, split_frontmatter};
 
+
 /// Manages loading, caching, and hot-reloading of skills from embedded
 /// (bundled), sealed .napp archives (nebo/skills/) and loose files (user/skills/).
 pub struct Loader {
@@ -419,6 +420,46 @@ impl Loader {
         }
     }
 
+    /// Load skills from an app's directory (e.g. `<tool_dir>/skills/`).
+    /// Each SKILL.md is parsed and registered the same way as plugin-embedded skills.
+    /// Returns the names of the loaded skills.
+    pub async fn load_app_skills(&self, app_dir: &Path) -> Vec<String> {
+        let skills_dir = app_dir.join("skills");
+        if !skills_dir.exists() {
+            return vec![];
+        }
+        let app_skills = load_skills_from_nested_dir(&skills_dir, SkillSource::Installed);
+        let mut names = Vec::new();
+        let mut all = self.skills.write().await;
+        for mut skill in app_skills {
+            skill.enabled = true;
+            names.push(skill.name.clone());
+            all.insert(skill.name.clone(), skill);
+        }
+        if !names.is_empty() {
+            // Rebuild catalog with new skills
+            let catalog = build_catalog_string(&all);
+            drop(all);
+            *self.cached_catalog.write().await = catalog;
+            info!(count = names.len(), skills = ?names, "loaded app skills");
+        }
+        names
+    }
+
+    /// Unload skills that were loaded for an app.
+    pub async fn unload_skills(&self, names: &[String]) {
+        let mut all = self.skills.write().await;
+        for name in names {
+            all.remove(name);
+        }
+        if !names.is_empty() {
+            let catalog = build_catalog_string(&all);
+            drop(all);
+            *self.cached_catalog.write().await = catalog;
+            debug!(count = names.len(), "unloaded app skills");
+        }
+    }
+
     /// List all loaded skills.
     pub async fn list(&self) -> Vec<Skill> {
         let skills = self.skills.read().await;
@@ -463,27 +504,53 @@ impl Loader {
     }
 
     /// Search skills by query, returning lightweight summaries.
+    /// Splits query into tokens and matches each independently (AND logic).
+    /// Tokens match against name, description, and triggers with hyphens
+    /// treated as word separators.
     pub async fn discover_summaries(&self, query: &str) -> Vec<SkillSummary> {
         let skills = self.skills.read().await;
-        let query_lower = query.to_lowercase();
+        let tokens: Vec<String> = query
+            .to_lowercase()
+            .split_whitespace()
+            .map(|t| t.to_string())
+            .collect();
+        if tokens.is_empty() {
+            return Vec::new();
+        }
         let mut matches: Vec<(usize, SkillSummary)> = skills
             .values()
             .filter(|s| s.enabled)
             .filter_map(|s| {
-                let name_match = s.name.to_lowercase().contains(&query_lower);
-                let desc_match = s.description.to_lowercase().contains(&query_lower);
-                let trigger_match = s
+                let name_lower = s.name.to_lowercase().replace('-', " ");
+                let desc_lower = s.description.to_lowercase();
+                let triggers_lower: Vec<String> = s
                     .triggers
                     .iter()
-                    .any(|t| t.to_lowercase().contains(&query_lower));
-                if name_match || desc_match || trigger_match {
-                    let score = if name_match { 3 } else { 0 }
-                        + if trigger_match { 2 } else { 0 }
-                        + if desc_match { 1 } else { 0 };
-                    Some((score, s.to_summary()))
-                } else {
-                    None
+                    .map(|t| t.to_lowercase())
+                    .collect();
+                // Every token must match at least one field
+                let all_match = tokens.iter().all(|tok| {
+                    name_lower.contains(tok.as_str())
+                        || desc_lower.contains(tok.as_str())
+                        || triggers_lower.iter().any(|t| t.contains(tok.as_str()))
+                });
+                if !all_match {
+                    return None;
                 }
+                // Score: reward name matches highest
+                let mut score: usize = 0;
+                for tok in &tokens {
+                    if name_lower.contains(tok.as_str()) {
+                        score += 3;
+                    }
+                    if triggers_lower.iter().any(|t| t.contains(tok.as_str())) {
+                        score += 2;
+                    }
+                    if desc_lower.contains(tok.as_str()) {
+                        score += 1;
+                    }
+                }
+                Some((score, s.to_summary()))
             })
             .collect();
         matches.sort_by(|a, b| b.0.cmp(&a.0));
@@ -492,56 +559,230 @@ impl Loader {
 
     /// Search skills by query (name or description match).
     /// Returns matching skills sorted by relevance.
+    /// Splits query into tokens and matches each independently (AND logic).
     pub async fn discover(&self, query: &str) -> Vec<Skill> {
         let skills = self.skills.read().await;
-        let query_lower = query.to_lowercase();
+        let tokens: Vec<String> = query
+            .to_lowercase()
+            .split_whitespace()
+            .map(|t| t.to_string())
+            .collect();
+        if tokens.is_empty() {
+            return Vec::new();
+        }
         let mut matches: Vec<(usize, Skill)> = skills
             .values()
             .filter(|s| s.enabled)
             .filter_map(|s| {
-                let name_match = s.name.to_lowercase().contains(&query_lower);
-                let desc_match = s.description.to_lowercase().contains(&query_lower);
-                let trigger_match = s
+                let name_lower = s.name.to_lowercase().replace('-', " ");
+                let desc_lower = s.description.to_lowercase();
+                let triggers_lower: Vec<String> = s
                     .triggers
                     .iter()
-                    .any(|t| t.to_lowercase().contains(&query_lower));
-                if name_match || desc_match || trigger_match {
-                    let score = if name_match { 3 } else { 0 }
-                        + if trigger_match { 2 } else { 0 }
-                        + if desc_match { 1 } else { 0 };
-                    Some((score, s.clone()))
-                } else {
-                    None
+                    .map(|t| t.to_lowercase())
+                    .collect();
+                let all_match = tokens.iter().all(|tok| {
+                    name_lower.contains(tok.as_str())
+                        || desc_lower.contains(tok.as_str())
+                        || triggers_lower.iter().any(|t| t.contains(tok.as_str()))
+                });
+                if !all_match {
+                    return None;
                 }
+                let mut score: usize = 0;
+                for tok in &tokens {
+                    if name_lower.contains(tok.as_str()) {
+                        score += 3;
+                    }
+                    if triggers_lower.iter().any(|t| t.contains(tok.as_str())) {
+                        score += 2;
+                    }
+                    if desc_lower.contains(tok.as_str()) {
+                        score += 1;
+                    }
+                }
+                Some((score, s.clone()))
             })
             .collect();
         matches.sort_by(|a, b| b.0.cmp(&a.0));
         matches.into_iter().map(|(_, s)| s).collect()
     }
 
-    /// Build a plugin inventory string for the system prompt.
-    /// Lists installed plugins with their env vars so the agent knows they exist.
+    /// Build a compact plugin inventory for the system prompt.
+    ///
+    /// Produces a categorized summary of installed connector plugins (~200 tokens)
+    /// with instructions to use search for discovery. Provider, hook, and utility
+    /// plugins are infrastructure and omitted — they don't need LLM routing.
     pub fn plugin_inventory(&self) -> String {
-        let ps = match self.plugin_store {
-            Some(ref ps) => ps,
+        let ps = match &self.plugin_store {
+            Some(ps) => ps,
             None => return String::new(),
         };
-        let env_map = ps.build_env_map();
-        if env_map.is_empty() {
+        let installed = ps.list_installed();
+        if installed.is_empty() {
             return String::new();
         }
-        let mut lines = vec!["## Installed Plugins\n".to_string()];
-        lines.push("These plugins are available via the `plugin` tool. Example: plugin(resource: \"gws\", command: \"gmail +triage --max 5\")\n".to_string());
-        for (env_name, _path) in &env_map {
-            let slug = env_name.trim_end_matches("_BIN").to_lowercase();
-            if let Some(manifest) = ps.get_manifest(&slug) {
-                lines.push(format!("- **{}** — {}", slug, manifest.description));
+
+        // Deduplicate slugs and load manifests.
+        let mut seen = std::collections::HashSet::new();
+        let mut categories: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        let mut uncategorized: Vec<String> = Vec::new();
+        let mut total = 0usize;
+
+        for (slug, _, _, _) in &installed {
+            if !seen.insert(slug.clone()) {
+                continue;
+            }
+            total += 1;
+            if let Some(manifest) = ps.get_manifest(slug) {
+                let cat = if !manifest.category.is_empty() {
+                    manifest.category.to_lowercase()
+                } else {
+                    String::new()
+                };
+                if cat.is_empty() {
+                    uncategorized.push(slug.clone());
+                } else {
+                    categories.entry(cat).or_default().push(slug.clone());
+                }
             } else {
-                lines.push(format!("- **{}**", slug));
+                uncategorized.push(slug.clone());
             }
         }
-        lines.push(String::new());
-        lines.join("\n")
+
+        // Build categorized summary. Collapse single-plugin categories into "other"
+        // to keep the system prompt concise with many categories.
+        let mut category_lines: Vec<String> = Vec::new();
+        let mut other_slugs: Vec<String> = uncategorized;
+        for (cat, slugs) in &categories {
+            if slugs.len() == 1 {
+                other_slugs.extend(slugs.iter().cloned());
+            } else {
+                category_lines.push(format!("{} ({})", cat, slugs.join(", ")));
+            }
+        }
+        if !other_slugs.is_empty() {
+            category_lines.push(format!("other ({})", other_slugs.join(", ")));
+        }
+
+        let categories_text = if category_lines.is_empty() {
+            // Fallback: flat list (no manifests have categories yet)
+            let all_slugs: Vec<String> = seen.into_iter().collect();
+            all_slugs.join(", ")
+        } else {
+            category_lines.join(", ")
+        };
+
+        format!(
+            "## Installed Plugins ({})\n\
+             {}\n\n\
+             To use a plugin:\n\
+             1. plugin(action: \"search\", query: \"what you need\") — find matching plugins\n\
+             2. plugin(action: \"skills\", resource: \"<slug>\", query: \"what you need\") — search a plugin's skills\n\
+             3. plugin(resource: \"<slug>\", action: \"help\", topic: \"<skill>\") — read docs BEFORE exec\n\
+             4. plugin(resource: \"<slug>\", action: \"exec\", command: \"<subcommand> +<flags>\")\n\n\
+             IMPORTANT: Always read docs (step 3) before your first exec of any plugin skill.\n\
+             The command field is CLI args — NOT colon syntax. Never use \"service:method\".\n\n\
+             For content with special characters, use args instead of command:\n\
+             plugin(resource: \"<slug>\", action: \"exec\", command: \"docx +create\", args: {{\"name\": \"report.docx\", \"content\": \"...\"}})\n\n\
+             If you already know the plugin slug, skip to step 2.",
+            total,
+            categories_text,
+        )
+    }
+
+    /// Build a focused context section for an agent's required plugins.
+    /// Lists each required plugin with its description and top skills so the
+    /// LLM knows what's available from turn 1 without needing to discover.
+    pub fn agent_plugin_context(&self, required_plugins: &[String]) -> String {
+        if required_plugins.is_empty() {
+            return String::new();
+        }
+        let ps = match &self.plugin_store {
+            Some(ps) => ps,
+            None => return String::new(),
+        };
+
+        let mut lines = Vec::new();
+        for plugin_ref in required_plugins {
+            // Resolve the slug — may be an install code or slug directly
+            let slug = plugin_ref
+                .split('-')
+                .last()
+                .unwrap_or(plugin_ref.as_str());
+
+            // Try both the raw reference and the extracted slug
+            let manifest = ps.get_manifest(plugin_ref)
+                .or_else(|| ps.get_manifest(slug));
+            let binary = ps.resolve(plugin_ref, "*")
+                .or_else(|| ps.resolve(slug, "*"));
+
+            let resolved_slug = if ps.resolve(plugin_ref, "*").is_some() {
+                plugin_ref.as_str()
+            } else if ps.resolve(slug, "*").is_some() {
+                slug
+            } else {
+                continue; // Not installed
+            };
+
+            let desc = manifest
+                .as_ref()
+                .map(|m| m.description.as_str())
+                .unwrap_or("");
+
+            // List skill names from the plugin's skills/ directory
+            let skill_names: Vec<String> = if let Some(bin_path) = &binary {
+                if let Some(version_dir) = bin_path.parent() {
+                    let skills_dir = version_dir.join("skills");
+                    if skills_dir.is_dir() {
+                        let mut names = Vec::new();
+                        if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if path.is_dir() && path.join("SKILL.md").exists() {
+                                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                        // Strip slug prefix for readability
+                                        let short = name
+                                            .strip_prefix(&format!("{}-", resolved_slug))
+                                            .unwrap_or(name);
+                                        names.push(short.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        names.sort();
+                        names
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            let mut line = format!("- **{}**", resolved_slug);
+            if !desc.is_empty() {
+                line.push_str(&format!(" — {}", desc));
+            }
+            if !skill_names.is_empty() {
+                line.push_str(&format!("\n  Skills: {}", skill_names.join(", ")));
+            }
+            lines.push(line);
+        }
+
+        if lines.is_empty() {
+            return String::new();
+        }
+
+        format!(
+            "## Agent Required Plugins\n\
+             This agent depends on these plugins. Use plugin(action: \"skills\", resource: \"<slug>\", query: \"...\") to find the right skill for a task.\n\n\
+             {}\n",
+            lines.join("\n")
+        )
     }
 
     /// Start watching for filesystem changes and reload on modification.
@@ -818,26 +1059,22 @@ impl Loader {
     }
 }
 
-/// Build a names-only catalog string for the system prompt.
+/// Build a compact catalog header for the system prompt.
 ///
-/// Like Claude Code's deferred tool listing: just skill names, comma-separated.
-/// The model uses skill(action: "discover") or skill(action: "help") for details.
+/// Does NOT list all skill names — the model uses skill(action: "discover")
+/// to search on demand. Only shows the count so the model knows skills exist.
 fn build_catalog_string(skills: &HashMap<String, Skill>) -> String {
-    let mut names: Vec<&str> = skills
-        .values()
-        .filter(|s| s.enabled)
-        .map(|s| s.name.as_str())
-        .collect();
-    names.sort_unstable();
+    let count = skills.values().filter(|s| s.enabled).count();
 
-    if names.is_empty() {
+    if count == 0 {
         return String::new();
     }
 
     format!(
-        "## Available Skills ({} installed)\n{}\n\nUse skill(action: \"discover\", query: \"...\") to find relevant skills.\nUse skill(action: \"help\", name: \"...\") for full instructions.",
-        names.len(),
-        names.join(", ")
+        "## Available Skills ({} installed)\n\n\
+         Use skill(action: \"discover\", query: \"...\") to find skills by capability.\n\
+         Use skill(action: \"help\", name: \"...\") for full instructions before using a skill.",
+        count
     )
 }
 

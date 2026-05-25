@@ -61,6 +61,7 @@
     } else {
       // Turning OFF — just disable
       autonomous = false;
+      saveAutonomousMode(false);
     }
   }
 
@@ -70,12 +71,34 @@
     confirmText = '';
   }
 
-  function confirmEnable() {
+  async function confirmEnable() {
     if (!canConfirm) return;
     autonomous = true;
     showEnableModal = false;
     termsAccepted = false;
     confirmText = '';
+    await saveAutonomousMode(true);
+  }
+
+  async function saveAutonomousMode(enabled: boolean) {
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateSettings({ autonomousMode: enabled });
+    } catch { /* keep local state */ }
+  }
+
+  async function toggleCapability(key: string) {
+    const perm = permissions.find(p => p.key === key);
+    if (!perm) return;
+    perm.enabled = !perm.enabled;
+    try {
+      const api = await import('$lib/api/nebo');
+      const permObj: Record<string, boolean> = {};
+      for (const p of permissions) {
+        permObj[p.key] = p.enabled;
+      }
+      await api.userUpdatePermissions({ permissions: permObj });
+    } catch { /* keep local state */ }
   }
 </script>
 
@@ -117,7 +140,7 @@
         class="toggle toggle-sm toggle-primary"
         checked={autonomous || perm.enabled}
         disabled={autonomous}
-        onchange={() => perm.enabled = !perm.enabled}
+        onchange={() => toggleCapability(perm.key)}
       />
     </div>
   {/each}

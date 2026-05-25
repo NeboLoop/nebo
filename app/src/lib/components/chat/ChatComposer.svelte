@@ -3,13 +3,16 @@
   import { Editor, Extension, Mark } from '@tiptap/core';
   import StarterKit from '@tiptap/starter-kit';
   import Mention from '@tiptap/extension-mention';
+  import { Plugin, PluginKey } from '@tiptap/pm/state';
+  import { Decoration, DecorationSet } from '@tiptap/pm/view';
   import SlashCommandMenu from './SlashCommandMenu.svelte';
-  import VoiceButton from './VoiceButton.svelte';
-  import VoiceModeOverlay from './VoiceModeOverlay.svelte';
+  // [VOICE DISABLED] import VoiceButton from './VoiceButton.svelte';
+  // [VOICE DISABLED] import VoiceModeOverlay from './VoiceModeOverlay.svelte';
   import type { SlashCommand } from './slashCommands.js';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
-  import { dictationStore, combinedTranscript } from '$lib/stores/dictation';
-  import AudioLines from 'lucide-svelte/icons/audio-lines';
+  // [VOICE DISABLED] import { dictationStore, combinedTranscript } from '$lib/stores/dictation';
+  import { getWebSocketClient } from '$lib/websocket/client';
+  // [VOICE DISABLED] import AudioLines from 'lucide-svelte/icons/audio-lines';
 
   interface AttachedFile {
     file: File;
@@ -25,7 +28,7 @@
 
   type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string };
 
-  let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false }: {
+  let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '' }: {
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -34,6 +37,7 @@
     onsend?: (text: string, files: AttachedFile[], mentions?: MentionRef[]) => void;
     onstop?: () => void;
     isLoading?: boolean;
+    sessionId?: string;
   } = $props();
 
   let editorElement = $state<HTMLDivElement | null>(null);
@@ -55,19 +59,26 @@
   let mentionActiveIdx = $state(0);
   let mentionCommand: ((props: { id: string; label: string }) => void) | null = null;
 
-  // Dictation — unique owner ID for this composer instance
-  const composerOwnerId = crypto.randomUUID();
-  let isDictating = $derived($dictationStore.status === 'recording' && $dictationStore.ownerId === composerOwnerId);
+  // [VOICE DISABLED] Dictation — unique owner ID for this composer instance
+  // const composerOwnerId = crypto.randomUUID();
+  // let isDictating = $derived($dictationStore.status === 'recording' && $dictationStore.ownerId === composerOwnerId);
 
-  // Dictation doc builder state — frozen cursor segments (Phase 7.6)
-  let dictationBefore = $state('');
-  let dictationAfter = $state('');
+  // [VOICE DISABLED] Dictation doc builder state — frozen cursor segments (Phase 7.6)
+  // let dictationBefore = $state('');
+  // let dictationAfter = $state('');
 
-  // Voice conversation overlay state
-  let showVoiceOverlay = $state(false);
+  // [VOICE DISABLED] Voice conversation overlay state
+  // let showVoiceOverlay = $state(false);
 
   // IME composition state (Phase 10 — prevents Enter-to-send during CJK input)
   let isComposing = $state(false);
+
+  // Ghost text (inline completion)
+  let ghostText = $state('');
+  let ghostRequestId = '';
+  let ghostDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let ghostCleanup: (() => void) | null = null;
+  const ghostPluginKey = new PluginKey('ghostText');
 
   // Draft persistence (Phase 6)
   let draftSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -140,7 +151,7 @@
   let composerDragOver = $state(false);
   let composerDragDepth = 0;
 
-  // --- Custom Dictation Mark (uses Tailwind classes in renderHTML) ---
+  /* [VOICE DISABLED] — Dictation mark, doc builder, hotkey
   const DictationMark = Mark.create({
     name: 'dictation',
     parseHTML() {
@@ -150,8 +161,6 @@
       return ['span', { 'data-dictation': '', class: 'bg-primary/20 border-b-2 border-primary/60 rounded-sm' }, 0];
     },
   });
-
-  // --- Dictation doc builder (Phase 7.6 — matches Claude Desktop KVt pattern) ---
 
   function buildDictationDoc(before: string, dictationText: string, after: string) {
     const fullText = before + dictationText + after;
@@ -214,7 +223,6 @@
     return Math.min(textOffset + 1 + extra, docContentSize);
   }
 
-  // --- Cmd+D hotkey for dictation toggle (Phase 7.7) ---
   function handleDictationHotkey(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
       e.preventDefault();
@@ -224,6 +232,55 @@
         dictationStore.start(composerOwnerId, { type: 'editor' });
       }
     }
+  }
+  [VOICE DISABLED] */
+
+  // --- Ghost Text Functions ---
+
+  function requestGhostText(partialText: string) {
+    // Don't request during streaming or for short input
+    if (isLoading || partialText.length < 10) {
+      clearGhostText();
+      return;
+    }
+
+    if (ghostDebounceTimer) clearTimeout(ghostDebounceTimer);
+    ghostDebounceTimer = setTimeout(() => {
+      ghostRequestId = crypto.randomUUID();
+      const ws = getWebSocketClient();
+      ws.send('ghost_text', {
+        partial_text: partialText,
+        session_id: sessionId,
+        agent_id: agentId,
+        request_id: ghostRequestId,
+      });
+    }, 500);
+  }
+
+  function clearGhostText() {
+    ghostText = '';
+    if (ghostDebounceTimer) {
+      clearTimeout(ghostDebounceTimer);
+      ghostDebounceTimer = null;
+    }
+    // Clear the decoration in the editor
+    if (editor) {
+      const tr = editor.state.tr.setMeta(ghostPluginKey, '');
+      editor.view.dispatch(tr);
+    }
+  }
+
+  function acceptGhostText() {
+    if (!ghostText || !editor) return;
+    const text = ghostText;
+    clearGhostText();
+    editor.commands.insertContent(text);
+  }
+
+  function updateGhostDecoration(text: string) {
+    if (!editor) return;
+    const tr = editor.state.tr.setMeta(ghostPluginKey, text);
+    editor.view.dispatch(tr);
   }
 
   // --- Slash Command Detection Extension ---
@@ -241,16 +298,51 @@
     },
   });
 
-  // --- Reactive dictation integration (Phase 7.6) ---
+  // --- Ghost Text TipTap Extension ---
+  const GhostTextExtension = Extension.create({
+    name: 'ghostText',
+    addProseMirrorPlugins() {
+      const key = ghostPluginKey;
+      return [
+        new Plugin({
+          key,
+          state: {
+            init() { return DecorationSet.empty; },
+            apply(tr, old) {
+              const meta = tr.getMeta(key);
+              // Explicit set via meta
+              if (meta !== undefined) {
+                if (!meta) return DecorationSet.empty;
+                const pos = tr.selection.$to.pos;
+                const widget = Decoration.widget(pos, () => {
+                  const span = document.createElement('span');
+                  span.textContent = meta;
+                  span.className = 'ghost-text-hint';
+                  return span;
+                }, { side: 1 });
+                return DecorationSet.create(tr.doc, [widget]);
+              }
+              // On any other transaction (typing), clear ghost text
+              if (tr.docChanged) return DecorationSet.empty;
+              return old.map(tr.mapping, tr.doc);
+            }
+          },
+          props: {
+            decorations(state) { return key.getState(state); }
+          }
+        })
+      ];
+    }
+  });
 
-  // Track dictation start/stop transitions
+  /* [VOICE DISABLED] — Reactive dictation integration (Phase 7.6)
+
   let wasDictatingRef = false;
 
   $effect(() => {
     const active = isDictating;
 
     if (active && !wasDictatingRef) {
-      // Dictation just started — capture cursor position (frozen segments)
       if (editor) {
         const { from } = editor.state.selection;
         const fullText = editor.state.doc.textBetween(0, editor.state.doc.content.size, '\n');
@@ -261,7 +353,6 @@
     }
 
     if (!active && wasDictatingRef) {
-      // Dictation just stopped — strip marks, position cursor
       if (editor) {
         const pos = editor.state.selection.anchor;
         editor.chain().selectAll().unsetMark('dictation').setTextSelection(pos).run();
@@ -271,7 +362,6 @@
     wasDictatingRef = active;
   });
 
-  // Rebuild TipTap doc on each transcript update during dictation
   $effect(() => {
     const transcript = $combinedTranscript;
     if (!isDictating || !editor || !transcript) return;
@@ -292,16 +382,27 @@
     const cursorPos = textOffsetToDocPos(fullText, cursorOffset, editor.state.doc.content.size);
     editor.commands.setTextSelection(cursorPos);
   });
+  [VOICE DISABLED] */
 
   // --- Initialize TipTap Editor ---
   onMount(() => {
     if (!editorElement) return;
 
-    // Stop dictation when tab becomes hidden
-    document.addEventListener('visibilitychange', dictationStore.handleVisibilityChange);
+    // [VOICE DISABLED] document.addEventListener('visibilitychange', dictationStore.handleVisibilityChange);
+    // [VOICE DISABLED] document.addEventListener('keydown', handleDictationHotkey);
 
-    // Cmd+D hotkey
-    document.addEventListener('keydown', handleDictationHotkey);
+    // Ghost text listener
+    function onGhostText(e: Event) {
+      const data = (e as CustomEvent).detail;
+      if (data?.request_id !== ghostRequestId) return; // stale response
+      const suggestion = data?.suggestion || '';
+      ghostText = suggestion;
+      if (suggestion) {
+        updateGhostDecoration(suggestion);
+      }
+    }
+    window.addEventListener('nebo:ghost_text', onGhostText);
+    ghostCleanup = () => window.removeEventListener('nebo:ghost_text', onGhostText);
 
     editor = new Editor({
       element: editorElement,
@@ -312,8 +413,9 @@
           horizontalRule: false,
           blockquote: false,
         }),
-        DictationMark,
+        // [VOICE DISABLED] DictationMark,
         SlashDetector,
+        GhostTextExtension,
         Mention.configure({
           HTMLAttributes: { class: 'mention-chip' },
           suggestion: {
@@ -396,6 +498,19 @@
             return true;
           }
 
+          // Ghost text: Tab accepts, any other key dismisses
+          if (ghostText) {
+            if (event.key === 'Tab') {
+              event.preventDefault();
+              acceptGhostText();
+              return true;
+            }
+            // Don't clear on modifier keys alone
+            if (!['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) {
+              clearGhostText();
+            }
+          }
+
           // Phase 10: Suppress Enter during IME composition (CJK input)
           if (event.key === 'Enter' && !event.shiftKey && !mentionMenuVisible && !isComposing) {
             event.preventDefault();
@@ -418,6 +533,13 @@
       onUpdate({ editor: ed }) {
         editorIsEmpty = ed.isEmpty;
         debouncedSaveDraft();
+        // Request ghost text on content change
+        const text = ed.getText();
+        if (text.length >= 10 && !isLoading) {
+          requestGhostText(text);
+        } else {
+          clearGhostText();
+        }
       },
       onCreate({ editor: ed }) {
         editorIsEmpty = ed.isEmpty;
@@ -429,12 +551,11 @@
   onDestroy(() => {
     saveDraft(); // Flush any pending draft before teardown
     if (draftSaveTimer) clearTimeout(draftSaveTimer);
-    // Stop dictation if this composer owns the session (prevents orphaned sessions on navigation)
-    if (dictationStore.isOwner(composerOwnerId)) {
-      dictationStore.stop();
-    }
-    document.removeEventListener('visibilitychange', dictationStore.handleVisibilityChange);
-    document.removeEventListener('keydown', handleDictationHotkey);
+    if (ghostDebounceTimer) clearTimeout(ghostDebounceTimer);
+    ghostCleanup?.();
+    // [VOICE DISABLED] if (dictationStore.isOwner(composerOwnerId)) { dictationStore.stop(); }
+    // [VOICE DISABLED] document.removeEventListener('visibilitychange', dictationStore.handleVisibilityChange);
+    // [VOICE DISABLED] document.removeEventListener('keydown', handleDictationHotkey);
     editor?.destroy();
     editor = null;
   });
@@ -519,7 +640,7 @@
     editor?.commands.focus();
   }
 
-  // --- Voice conversation ---
+  /* [VOICE DISABLED]
   function handleStartConversation() {
     showVoiceOverlay = true;
   }
@@ -527,6 +648,7 @@
   function handleCloseConversation() {
     showVoiceOverlay = false;
   }
+  [VOICE DISABLED] */
 
   // --- File management ---
   function browseFiles() {
@@ -690,7 +812,7 @@
     <!-- TipTap Editor with placeholder overlay -->
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="relative cursor-text" onclick={() => editor?.commands.focus()}>
-      {#if editorIsEmpty && hasHydrated}
+      {#if editorIsEmpty && hasHydrated && !ghostText}
         <div class="absolute inset-0 pointer-events-none text-base text-base-content/40 leading-snug">
           {placeholder || `Message ${agentName}...`}
         </div>
@@ -714,6 +836,7 @@
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
           </svg>
         </button>
+        <!-- [VOICE DISABLED]
         <VoiceButton
           ownerId={composerOwnerId}
         />
@@ -724,6 +847,7 @@
         >
           <AudioLines class="w-[18px] h-[18px]" />
         </button>
+        [VOICE DISABLED] -->
       </div>
 
       {#if isLoading}
@@ -751,6 +875,7 @@
   </p>
 </div>
 
+<!-- [VOICE DISABLED]
 {#if showVoiceOverlay}
   <VoiceModeOverlay
     {agentId}
@@ -758,3 +883,4 @@
     onclose={handleCloseConversation}
   />
 {/if}
+[VOICE DISABLED] -->

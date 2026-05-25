@@ -173,11 +173,39 @@ impl ShellTool {
                     result = "(no output)".to_string();
                 }
 
-                // Truncate very long output
+                // Truncate very long output (char-boundary safe)
                 const MAX_OUTPUT: usize = 50000;
                 if result.len() > MAX_OUTPUT {
-                    result.truncate(MAX_OUTPUT);
-                    result.push_str("\n... (output truncated)");
+                    let total_len = result.len();
+                    let total_lines = result.lines().count();
+
+                    // Persist full output to disk
+                    let output_dir = dirs::data_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                        .join("nebo/shell_output");
+                    let _ = std::fs::create_dir_all(&output_dir);
+                    let filename = format!("cmd_{}.txt", uuid::Uuid::new_v4().as_simple());
+                    let output_path = output_dir.join(&filename);
+                    let persisted = std::fs::write(&output_path, &result).is_ok();
+
+                    // Truncate for inline result
+                    types::strutil::safe_truncate(&mut result, MAX_OUTPUT);
+
+                    if persisted {
+                        result.push_str(&format!(
+                            "\n\n--- Full output ({} chars, {} lines) saved to: {}\n\
+                             Read sections with: system(resource: \"file\", action: \"read\", path: \"{}\", offset: N, limit: M)",
+                            total_len, total_lines,
+                            output_path.display(), output_path.display(),
+                        ));
+                    } else {
+                        let removed_kb = (total_len - MAX_OUTPUT) / 1024;
+                        result.push_str(&format!(
+                            "\n... [output truncated — showing first 50000 of {} chars, {}KB removed. \
+                             Use grep to search for specific content, or pipe through head/tail.]",
+                            total_len, removed_kb
+                        ));
+                    }
                 }
 
                 ToolResult::ok(result)

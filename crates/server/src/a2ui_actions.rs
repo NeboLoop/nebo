@@ -2,7 +2,6 @@
 //!
 //! Routes button clicks and other A2UI events by action type:
 //! - `mcp_call` → MCP bridge tool call → result injected into data model
-//! - `navigate` → view navigation (delegates to A2UIManager::navigate_view)
 //! - `update_data` → direct data model update (no LLM, no MCP)
 //! - `agent` (default) → existing path: build ChatConfig, call run_chat()
 
@@ -14,7 +13,7 @@ use tracing::{debug, info, warn};
 use crate::a2ui::A2UIManager;
 use crate::state::AppState;
 
-/// Parsed action binding from views.json or inline action context.
+/// Parsed action binding from inline action context.
 #[derive(Debug)]
 pub struct ActionBinding {
     pub action_type: String,
@@ -26,9 +25,7 @@ pub struct ActionBinding {
     pub args: Option<serde_json::Value>,
     /// For mcp_call: JSON Pointer path where result is injected into data model
     pub update_path: Option<String>,
-    /// For navigate: target view ID
-    pub view: Option<String>,
-    /// For navigate/update_data: parameters or value
+    /// For update_data: parameters or value
     pub params: Option<serde_json::Value>,
     /// For update_data: JSON Pointer path
     pub path: Option<String>,
@@ -63,10 +60,6 @@ impl ActionBinding {
                 .get("update_path")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
-            view: ctx
-                .get("view")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
             params: ctx.get("params").cloned(),
             path: ctx
                 .get("path")
@@ -79,18 +72,6 @@ impl ActionBinding {
                 .map(|s| s.to_string()),
         })
     }
-
-    /// Try to resolve an action binding from views.json for a given action name.
-    pub fn from_views_json(
-        views_json: &serde_json::Value,
-        view_id: &str,
-        action_name: &str,
-    ) -> Option<Self> {
-        let view = views_json.get(view_id)?;
-        let actions = view.get("actions")?.as_object()?;
-        let binding = actions.get(action_name)?;
-        Self::from_context(binding)
-    }
 }
 
 /// Dispatch an A2UI action based on its binding type.
@@ -100,21 +81,15 @@ impl ActionBinding {
 pub async fn dispatch(
     state: &AppState,
     a2ui: &Arc<A2UIManager>,
-    agent_id: &str,
+    _agent_id: &str,
     surface_id: &str,
-    action_name: &str,
+    _action_name: &str,
     _component_id: &str,
     raw_context: &serde_json::Value,
-    views_json: Option<&serde_json::Value>,
 ) -> bool {
-    // Try to resolve binding: first from inline context, then from views.json
+    // Resolve binding from inline context
     let binding = ActionBinding::from_context(raw_context)
-        .filter(|b| b.action_type != "agent") // Only use inline if it's deterministic
-        .or_else(|| {
-            // Try views.json action bindings
-            let view_id = surface_id.split(':').nth(2).unwrap_or("default");
-            views_json.and_then(|v| ActionBinding::from_views_json(v, view_id, action_name))
-        });
+        .filter(|b| b.action_type != "agent"); // Only use inline if it's deterministic
 
     let binding = match binding {
         Some(b) if b.action_type != "agent" => b,
@@ -124,10 +99,6 @@ pub async fn dispatch(
     match binding.action_type.as_str() {
         "mcp_call" => {
             handle_mcp_call(state, a2ui, surface_id, &binding).await;
-            true
-        }
-        "navigate" => {
-            handle_navigate(state, a2ui, agent_id, surface_id, &binding, views_json).await;
             true
         }
         "update_data" => {
@@ -184,55 +155,6 @@ async fn handle_mcp_call(
                     .await;
             }
         }
-    }
-}
-
-/// Handle navigate action: switch to a different view.
-async fn handle_navigate(
-    state: &AppState,
-    a2ui: &Arc<A2UIManager>,
-    agent_id: &str,
-    surface_id: &str,
-    binding: &ActionBinding,
-    views_json: Option<&serde_json::Value>,
-) {
-    let target_view = match &binding.view {
-        Some(v) => v.as_str(),
-        None => {
-            warn!("navigate action missing 'view' field");
-            return;
-        }
-    };
-
-    let from_view = surface_id.split(':').nth(2).unwrap_or("default");
-
-    // Use provided views_json or look up from filesystem
-    let owned_views;
-    let views = match views_json {
-        Some(v) => v,
-        None => {
-            owned_views = crate::handlers::agents::get_agent_views(state, agent_id).await;
-            match &owned_views {
-                Some(v) => v,
-                None => {
-                    warn!(agent_id = %agent_id, "navigate: no views.json found");
-                    return;
-                }
-            }
-        }
-    };
-
-    if let Err(e) = a2ui
-        .navigate_view(
-            agent_id,
-            from_view,
-            target_view,
-            binding.params.clone(),
-            views,
-        )
-        .await
-    {
-        warn!(error = %e, "navigate action failed");
     }
 }
 

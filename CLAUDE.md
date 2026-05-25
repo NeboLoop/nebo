@@ -60,6 +60,24 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. No Quick Fixes (CRITICAL)
+
+**Always do the right fix. Never present a "quick" option.**
+
+The quick fix always becomes tech debt we never remember. A "TODO come back to this" never gets revisited. The shortcut you took today is the bug report next quarter and the architectural rewrite next year. Worse, *presenting* a quick option as a choice biases the decision toward it — even when "right" is only marginally more effort.
+
+The rules:
+
+- **NEVER offer "quick fix vs right fix" as a choice.** If you know the right fix, do the right fix. Don't frame it as an option.
+- **NEVER ship a workaround as the final answer.** Workarounds during diagnosis are fine ("let me try X to confirm the hypothesis"), but the patch that lands MUST be the proper fix.
+- **NEVER leave a bandaid behind.** No `// TODO: do this properly later`, no `// FIXME`, no commented-out alternate paths.
+- **NEVER bypass a constraint to "make it work."** If a check, lint, type, or test is blocking you, fix what it's complaining about — don't `--no-verify`, don't `#[allow]`, don't widen a type to silence the compiler.
+- **NEVER add a competing pathway** for something that already has one canonical implementation (see Rule 8 in `docs/sme/CODE_AUDITOR.md`). Two ways to do the same thing IS tech debt.
+
+If you genuinely don't know the right fix yet, say so. Investigate. Ask. Don't fill the gap with a shortcut and a comment.
+
+**The test:** Six months from now, will someone reading this code think "why was this done this temporary way?" If yes, you took a shortcut. Redo it.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

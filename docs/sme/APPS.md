@@ -34,8 +34,11 @@
 21. [Database Schema](#21-database-schema)
 22. [WebSocket Events](#22-websocket-events)
 23. [On-Demand Sidecar Launch](#23-on-demand-sidecar-launch)
-24. [Edge Cases](#24-edge-cases)
-25. [Key Files](#25-key-files)
+24. [Sidecar Restore on Server Startup](#24-sidecar-restore-on-server-startup)
+25. [App Agent Redaction](#25-app-agent-redaction)
+26. [Tool Scope Isolation](#26-tool-scope-isolation)
+27. [Edge Cases](#27-edge-cases)
+28. [Key Files](#28-key-files)
 
 ---
 
@@ -93,7 +96,7 @@ crates/napp/src/manifest.rs           — Manifest parsing + validation
 crates/napp/src/sandbox.rs            — Environment sanitization + binary validation
 crates/napp/src/supervisor.rs         — Restart policy + backoff
 crates/proto/                         — gRPC proto definitions (UIService, etc.)
-packages/app-sdk/                     — TypeScript SDK for app frontends
+@neboai/app-sdk (npm)                 — TypeScript SDK for app frontends (source: NeboLoop/app-sdk)
 ```
 
 ---
@@ -115,8 +118,7 @@ my-app/
 │   └── target/release/
 │       └── my-app-sidecar   # Compiled binary
 ├── bin/                  # Alternative binary location
-├── data/                 # Auto-created — app-scoped data directory
-└── views.json            # Optional — A2UI view definitions
+└── data/                 # Auto-created — app-scoped data directory
 ```
 
 The sidecar is optional. Apps without a sidecar are pure-frontend — they use the SDK's `agents.invoke()` and `janus.complete()` to talk to the LLM, and `storage` for persistence. No native binary needed.
@@ -246,10 +248,12 @@ load manifest.json → validate → find_binary → validate_binary
 
 1. **Load manifest** from `{tool_dir}/manifest.json`
 2. **Find binary** using search order above
-3. **Validate binary**: regular file, not symlink, executable, valid magic bytes (ELF/Mach-O/PE), ≤ 500MB
+3. **Validate binary**: regular file, not symlink, executable, valid magic bytes (ELF, Mach-O 64, Mach-O 32, Mach-O 32 swapped, Universal/fat binary, PE), ≤ 500MB
 4. **Sanitize environment**: clear all env vars, set only:
    - `NEBO_APP_ID`, `NEBO_APP_NAME`, `NEBO_APP_VERSION`
    - `NEBO_APP_DIR`, `NEBO_APP_SOCK`, `NEBO_APP_DATA`
+   - `NEBO_API_URL` (callback URL: `http://127.0.0.1:{port}` — sidecar uses this to call Nebo's SDK endpoints)
+   - `NEBO_APP_TOKEN` (injected post-sanitize for authenticated sidecar requests)
    - System: `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ`
 5. **Spawn process**: `Command::new(binary)` with process group isolation (`setpgid(0,0)`)
 6. **Wait for socket**: polls for `{tool_dir}/{id}.sock` (timeout from manifest, default 10s)
@@ -265,7 +269,10 @@ pub struct Process {
     pub manifest: Manifest,
     pub pid: u32,
     pub sock_path: PathBuf,
+    pub binary_path: PathBuf,
+    pub app_token: String,
     child: tokio::process::Child,
+    binary_mtime: std::time::SystemTime,
 }
 ```
 
@@ -290,14 +297,19 @@ pub struct AppLifecycle {
     process: Arc<Mutex<Option<napp::Process>>>,
     cancel: CancellationToken,
     hub: Arc<ClientHub>,
+    registry: Arc<tools::Registry>,
+    skill_loader: Arc<tools::skills::Loader>,
+    loaded_skill_names: Vec<String>,
+    app_token: Arc<tokio::sync::RwLock<String>>,
+    permissions: Arc<tokio::sync::RwLock<Vec<String>>>,
 }
 ```
 
 ### Lifecycle Methods
 
-- `new(agent_id, tool_dir, hub)` — creates runtime, supervisor, cancellation token
-- `launch()` — cleans stale sockets, launches process, starts health checker, broadcasts `app_started`
-- `shutdown()` — cancels health checker, stops process, broadcasts `app_stopped`
+- `new(agent_id, tool_dir, hub, registry, skill_loader)` — creates runtime, supervisor, cancellation token
+- `launch()` — cleans stale sockets, launches process, discovers sidecar tools, loads app skills, starts health checker, broadcasts `app_started`
+- `shutdown()` — cancels health checker, stops process, unregisters agent tools (`registry.unregister_agent_tools(agent_id)`), unloads skills (`skill_loader.unload_skills()`), broadcasts `app_stopped`
 
 ### Health Checker
 
@@ -327,6 +339,43 @@ loop:
 | Health check interval | 15 seconds |
 
 After 1 hour of no restarts, the window and backoff reset.
+
+### Sidecar Tool Registration
+
+After launch, `discover_tools()` registers sidecar tools declared in `agent.json` into the global tool registry:
+
+1. `read_tool_defs_from_config(agent_root, agent_id)` parses `agent.json` for tool definitions
+2. Each tool definition becomes a `SidecarActionTool` backed by a `GrpcSidecarCaller`
+3. `GrpcSidecarCaller` implements the `SidecarCaller` trait — routes tool invocations through `UIService.HandleRequest` over the gRPC Unix socket
+4. Tools are registered per-agent via `registry.register_for_agent(agent_id, tool)` (scoped to that agent)
+5. On shutdown: `registry.unregister_agent_tools(agent_id)` removes all tools for the agent
+
+### App Skill Management
+
+Apps can bundle skills in their tool directory. `loaded_skill_names: Vec<String>` tracks which skills were loaded for cleanup:
+
+- On launch: `skill_loader.load_app_skills(tool_dir)` loads app-bundled skills
+- On shutdown: `skill_loader.unload_skills(loaded_skill_names)` removes them
+- Loading priority (lowest to highest): bundled → installed `.napp` → user files → **app skills**
+
+### Binary Hot-Reload Detection
+
+The health checker distinguishes between a crash and a binary change on disk:
+
+```
+health_check tick:
+  process.binary_changed()?  (compares on-disk mtime vs launch-time mtime)
+    yes && alive → hot-reload:
+      unregister_agent_tools(agent_id)
+      stop process
+      re-launch → re-discover tools
+      broadcast "app_restarted" { reason: "binary_changed" }
+    no && dead → crash:
+      broadcast "app_crashed"
+      supervisor backoff → re-launch
+```
+
+`Process.binary_changed()` follows symlinks (`fs::canonicalize`) so rebuilds in `sidecar/target/release/` are detected even when the tool directory uses a symlink. Exponential backoff applies only to actual crashes; hot-reloads restart immediately.
 
 **Source:** `crates/server/src/app_lifecycle.rs`, `crates/napp/src/supervisor.rs`
 
@@ -395,13 +444,14 @@ message UserContext {
 
 All handlers are in `crates/server/src/handlers/apps.rs`.
 
-### serve_app_ui
+### serve_app_ui / serve_app_ui_root
 
 ```
 GET /apps/{agent_id}/ui/{*path}
+GET /apps/{agent_id}/ui/              (trailing-slash root)
 ```
 
-Serves static files from the app's `ui/` directory. Sanitizes path (rejects `..`). Falls back to `index.html` for SPA routing. Caches immutable assets; `index.html` is never cached.
+Serves static files from the app's `ui/` directory. `serve_app_ui_root` handles the trailing-slash case (no path segment). Sanitizes path (rejects `..`). Falls back to `index.html` for SPA routing. Caches immutable assets; `index.html` is never cached.
 
 ### proxy_to_sidecar
 
@@ -490,10 +540,11 @@ Serves the prebuilt global SDK IIFE for vanilla/HTMX apps.
 
 **File:** `crates/server/src/routes/apps.rs`
 
-Routes are merged into the `/api/v1` namespace via `api_routes()`. The UI serving route is additionally mounted at the top level (outside `/api/v1`) so apps can load at `/apps/{id}/ui/index.html`.
+Routes are defined in `routes/apps.rs` and merged into the `/api/v1` namespace via `api_routes()`. The UI serving route is additionally mounted at the top level (outside `/api/v1`) in `lib.rs` so apps can load at `/apps/{id}/ui/index.html`. The SDK IIFE route is also registered at the top level in `lib.rs`.
 
 ```
-/apps/{agent_id}/ui/{*path}          → serve_app_ui
+/apps/{agent_id}/ui/                 → serve_app_ui_root (GET, top-level + routes/apps.rs)
+/apps/{agent_id}/ui/{*path}          → serve_app_ui (GET, top-level + routes/apps.rs)
 /apps/{agent_id}/api/{*path}         → proxy_to_sidecar (ANY method)
 /apps/{agent_id}/agents/invoke       → invoke_agent (POST)
 /apps/{agent_id}/agents/stream       → stream_agent (POST)
@@ -503,7 +554,7 @@ Routes are merged into the `/api/v1` namespace via `api_routes()`. The UI servin
 /apps/{agent_id}/storage/{key}       → get/put/delete_storage
 /apps/{agent_id}/http/proxy          → http_proxy (POST)
 /apps/{agent_id}/identity            → get_identity (GET)
-/sdk/nebo.global.js                  → serve SDK IIFE
+/sdk/nebo.global.js                  → serve_sdk_iife (GET, top-level in lib.rs)
 ```
 
 ---
@@ -519,7 +570,7 @@ PUT    /apps/{agent_id}/storage/mykey   → body: { value: <any JSON> }
 DELETE /apps/{agent_id}/storage/mykey   → 204 No Content
 ```
 
-Auto-creates the plugin registry entry on first write. Values are JSON-serialized strings in the DB.
+Auto-creates the plugin registry entry on first write. Values are JSON-serialized strings in the DB. Note: `delete_storage` is implemented as writing an empty string (`set_plugin_setting(..., "")`) rather than removing the row.
 
 ---
 
@@ -658,17 +709,18 @@ The chat UI is ~3000 lines of Svelte components (`ChatPane`, `ChatComposer`, `Sl
 
 ### Chat Embed Page
 
-**File:** `app/src/routes/app/[agentId]/chat-embed/+page.svelte`
+**File:** `app/src/routes/(embed)/chat-embed/[agentId]/+page.svelte`
+
+**URL:** `/chat-embed/[agentId]`
 
 A minimal SvelteKit page that:
 1. Reads `agentId` from URL params
 2. Connects to the main Nebo WebSocket (`/ws`)
-3. Creates a session with key `app:{agentId}:chat`
+3. Creates a session with key `agent:{agentId}:app` (or `agent:{agentId}:app:{contextId}` when `contextId` is set — the 4th segment enables per-context memory isolation when `agent.json` has `memory.context_isolated: true`)
 4. Renders the existing `ChatPane` component
-5. Accepts configuration via URL params (`placeholder`, `theme`, `borderless`)
+5. Accepts configuration via URL params (`placeholder`, `theme`, `borderless`, `ctx`, `scope`)
 6. Implements the postMessage bridge protocol
-
-**Layout:** `app/src/routes/app/[agentId]/chat-embed/+layout.svelte` — bare layout, no sidebar/nav/header.
+7. Loads existing chat history via `api.getSessionMessages(sessionKey)`
 
 ### postMessage Bridge Protocol
 
@@ -678,6 +730,7 @@ A minimal SvelteKit page that:
 |---------|--------|-------------|
 | `nebo:send` | `message: string` | Programmatic send |
 | `nebo:new-thread` | — | Start fresh conversation |
+| `nebo:set-context` | `context: ChatContext \| null` | Update app context injected into agent requests |
 | `nebo:configure` | `options: { placeholder? }` | Update configuration |
 
 **Iframe → Parent:**
@@ -687,14 +740,15 @@ A minimal SvelteKit page that:
 | `nebo:ready` | — | Iframe loaded and connected |
 | `nebo:message-sent` | `message: string` | User sent a message |
 | `nebo:response-complete` | `text: string` | Agent finished responding |
-| `nebo:resize` | `height: number` | Content height changed |
+
+Note: `nebo:resize` is handled by the SDK's `chat.mount()` module — the SDK listens for content height changes from the iframe and auto-resizes the host `<iframe>` element. The embed page itself does not emit this event.
 
 ### Session Management
 
-- Session key: `app:{agent_id}:chat` — distinct from `app:{agent_id}:api` (used by `agents.invoke()`)
+- Session key: `agent:{agent_id}:app` (or `agent:{agent_id}:app:{contextId}` when a `ctx` URL param is provided)
 - Chat embed connects to the main WebSocket (`/ws`) and sends `chat_message` with this session key
 - `rotate_chat()` (new thread) preserves old messages, starts fresh conversation
-- History loads via existing `getChatMessages` API
+- History loads via `api.getSessionMessages(sessionKey)` on mount
 
 ### SDK Usage
 
@@ -725,7 +779,7 @@ nebo.chat.unmount();
 
 ## 18. App SDK (TypeScript)
 
-**Package:** `packages/app-sdk/`
+**Package:** `@neboai/app-sdk` (npm) — source repo: `NeboLoop/app-sdk`
 
 The SDK provides a singleton `nebo` object with typed APIs for all app capabilities.
 
@@ -740,7 +794,7 @@ The SDK provides a singleton `nebo` object with typed APIs for all app capabilit
 | `nebo.janus` | Direct LLM calls | `src/janus.ts` |
 | `nebo.fetch` | CORS-free HTTP proxy | `src/fetch.ts` |
 | `nebo.WebSocket` | Real-time WebSocket | `src/websocket.ts` |
-| `nebo.surfaces` | A2UI event streaming | `src/surfaces.ts` |
+| `nebo.surfaces` | Agent↔app surface events | `src/surfaces.ts` |
 | `nebo.a2ui` | Agent-driven UI | `src/a2ui.ts` |
 
 ### Usage
@@ -805,15 +859,86 @@ For vanilla HTML / HTMX apps that can't use ES modules:
 </script>
 ```
 
+### Surfaces API (`@neboai/app-sdk` — `src/surfaces.ts`)
+
+Enables apps to receive structured agent events without coupling to Nebo's UI framework. The agent pushes events over WebSocket; the app renders however it wants.
+
+**`NeboSurfaces` class:**
+- `connect()` — opens WebSocket, starts listening for events
+- `disconnect()` — closes connection and stops reconnecting
+- `on(eventType, handler)` — subscribe to typed events (returns unsubscribe function)
+- `off(eventType, handler)` — remove a listener
+- `send(name, payload)` — send an action/event to the agent
+- `requestState()` — request a `state_snapshot` from the agent
+- `state: Record<string, unknown>` — shared state, auto-updated from `state_snapshot` and `state_delta` events
+
+**Event types:**
+
+| Event | Key Fields | Description |
+|-------|-----------|-------------|
+| `run_started` | `runId, threadId?` | Agent run began |
+| `run_finished` | `runId` | Agent run completed |
+| `run_error` | `runId, message, code?` | Agent run failed |
+| `text_start` | `messageId` | Streaming text begins |
+| `text_content` | `messageId, delta` | Streaming text chunk |
+| `text_end` | `messageId` | Streaming text finished |
+| `tool_call_start` | `toolCallId, toolName` | Tool execution began |
+| `tool_call_end` | `toolCallId, result?` | Tool execution finished |
+| `state_snapshot` | `snapshot` | Full state replacement |
+| `state_delta` | `delta` (RFC 6902 JSON Patch ops) | Incremental state update |
+| `surface_create` | `surfaceId, components, data?` | A2UI component tree created |
+| `surface_update` | `surfaceId, components?, data?` | A2UI surface updated |
+| `surface_delete` | `surfaceId` | A2UI surface removed |
+| `data_update` | `surfaceId?, path?, value` | Partial data model update |
+| `custom` | `name, value` | App-specific event |
+
+Wildcard listener `on('*', handler)` receives all events.
+
+### Chat API (`@neboai/app-sdk` — `src/chat.ts`)
+
+Mounts the full Nebo chat UI inside an app via iframe.
+
+**`ChatOptions`:**
+- `placeholder?: string` — input placeholder text
+- `theme?: 'auto' | 'light' | 'dark'` — color theme
+- `height?: string` — iframe height (default `'400px'`)
+- `borderless?: boolean` — remove iframe border/radius
+- `contextId?: string` — scope session to a specific context (each unique ID gets its own persistent conversation)
+- `scope?: string` — tool scope name from `agent.json` to restrict available tools
+
+**`ChatContext`:**
+- `projectId?: string` — current project the user is viewing
+- `displayedDoc?: { filename, documentId }` — document currently displayed
+- `attachedDocuments?: { filename, documentId }[]` — explicitly attached documents
+- `route?: string` — current app route/page path
+- Arbitrary `[key: string]: unknown` extensions
+
+**Methods:**
+- `chat.mount(element, options?)` — creates iframe pointing to `/chat-embed/{appId}`, starts listening for postMessage events
+- `chat.unmount()` — removes iframe, cleans up listeners
+- `chat.send(message)` — programmatic send via `nebo:send` postMessage
+- `chat.onMessage(handler)` — listen for iframe events (returns unsubscribe function)
+- `chat.setContext(context | null)` — update app context injected into every agent request (via `nebo:set-context`)
+- `chat.newThread()` — start a fresh conversation (via `nebo:new-thread`)
+
+### WebSocket (`@neboai/app-sdk` — `src/websocket.ts`)
+
+**`NeboWebSocket`** — auto-connects to `ws://{base}/ws/app/{appId}` with exponential backoff reconnection.
+
+- Initial reconnect delay: 1 second
+- Max reconnect delay: 30 seconds
+- Backoff: doubles on each reconnect attempt, resets to 1s on successful connection
+- `send(data)` — send string, ArrayBuffer, or Blob
+- `close(code?, reason?)` — close and stop reconnecting
+- `readyState` — proxies to underlying WebSocket state
+
 ---
 
 ## 19. Frontend Integration
 
-### Chat Embed Route (`app/src/routes/app/[agentId]/chat-embed/+page.svelte`)
+### Chat Embed Route (`app/src/routes/(embed)/chat-embed/[agentId]/+page.svelte`)
 
-Standalone page that renders `ChatPane` in a bare layout (no sidebar, nav, or header). Used as the iframe source for `nebo.chat.mount()`. Connects to the main WebSocket, uses session key `app:{agentId}:chat`, and implements the postMessage bridge protocol. Accepts configuration via URL params (`placeholder`, `theme`, `borderless`).
-
-Layout: `app/src/routes/app/[agentId]/chat-embed/+layout.svelte` — renders only children, no chrome.
+Standalone page that renders `ChatPane` in a bare layout (no sidebar, nav, or header). Used as the iframe source for `nebo.chat.mount()`. Connects to the main WebSocket, uses session key `agent:{agentId}:app` (or `agent:{agentId}:app:{contextId}`), and implements the postMessage bridge protocol. Accepts configuration via URL params (`placeholder`, `theme`, `borderless`, `ctx`, `scope`). Loads existing chat history via `api.getSessionMessages(sessionKey)` on mount.
 
 ### Apps Page (`app/src/routes/apps/+page.svelte`)
 
@@ -840,11 +965,7 @@ export async function launchApp(
 
 ### App Wrapper Route (`app/src/routes/app/[agentId]/+page.svelte`)
 
-Dual-mode page:
-- **Normal agent:** renders A2UI views
-- **App agent (`isApp`):** renders iframe (`/apps/{agentId}/ui/index.html`) + collapsible chat panel
-
-The collapsible chat panel in the wrapper uses the existing `ChatPane` component connected via WebSocket with session key `agent:{agentId}:web`. This is separate from the embedded chat (`app:{agentId}:chat`) which apps mount via `nebo.chat.mount()` inside their own UI.
+Simple redirect — immediately calls `goto(\`/${agentId}/threads\`, { replaceState: true })`. Does not render any UI. Apps are launched in pop-out windows via `launchApp()`, not rendered inline at this route.
 
 ---
 
@@ -861,20 +982,20 @@ Sidecar processes start with a cleared environment. Only these variables are set
 - `NEBO_APP_DIR` — tool directory path
 - `NEBO_APP_SOCK` — Unix socket path
 - `NEBO_APP_DATA` — data directory path
+- `NEBO_API_URL` — callback URL (`http://127.0.0.1:{port}`) for calling Nebo's SDK endpoints (storage, invoke, janus, http_proxy)
+- `NEBO_APP_TOKEN` — authentication token (injected post-sanitize, used as `Authorization: Bearer` for SDK endpoint calls)
 
 **Allowlisted system:**
 - `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ`
 
-**Blocked (never passed through):**
-- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`
-- `JWT_SECRET`, `DATABASE_URL`, `AWS_*`, `GITHUB_TOKEN`, `STRIPE_SECRET_KEY`
+**Blocking model:** The environment is cleared and only the above allowlisted variables are set. There is a `_BLOCKED_ENV_VARS` constant in the source for documentation purposes (listing `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `JWT_SECRET`, `DATABASE_URL`, `AWS_*`, `GITHUB_TOKEN`, `STRIPE_SECRET_KEY`), but it is not actively checked — blocking is implicit through the allowlist approach.
 
 ### Binary Validation
 
 Before launching, binaries are validated:
 - Must be a regular file (not symlink)
 - Must be executable (Unix mode `& 0o111 != 0`)
-- Must have valid magic bytes: ELF (`7f454c46`), Mach-O 64 (`feedfacf`), Mach-O 32 (`feedface`), PE (`4d5a`)
+- Must have valid magic bytes: ELF (`7f454c46`), Mach-O 64 (`feedfacf`), Mach-O 32 (`feedface`), Mach-O 32 swapped (`cefaedfe`), Universal/fat binary (`cafebabe`), PE (`4d5a`)
 - Scripts (shebang `#!`) are rejected
 - Size ≤ 500 MB
 
@@ -940,12 +1061,14 @@ request arrives at /apps/{id}/api/...
       → acquire app_lifecycles write lock
       → double-check: if already in map, skip
       → resolve tool_dir from app_tool_dir()
-      → create AppLifecycle::new(agent_id, tool_dir, hub)
+      → create AppLifecycle::new(agent_id, tool_dir, hub, registry, skill_loader)
       → lifecycle.launch().await
       → store in app_lifecycles map
   → connect to socket via tonic gRPC
   → proxy request → response
 ```
+
+The first API request to a sidecar that is not running triggers automatic launch — no explicit activation step needed.
 
 The `app_lifecycles` map is an `Arc<tokio::sync::RwLock<HashMap<String, AppLifecycle>>>` on `AppState`.
 
@@ -964,7 +1087,75 @@ The `app_lifecycles` map is an `Arc<tokio::sync::RwLock<HashMap<String, AppLifec
 
 ---
 
-## 24. Edge Cases
+## 24. Sidecar Restore on Server Startup
+
+On boot, the server automatically relaunches sidecars for enabled app agents. This prevents user-visible breakage when the server restarts.
+
+**Flow in `start_server()` (`crates/server/src/lib.rs`):**
+
+```
+list_agents() → for each agent where is_enabled=1 AND is_app=1:
+  → resolve tool_dir via app_tool_dir(agent)
+  → create AppLifecycle::new(agent_id, tool_dir, hub, registry, skill_loader)
+  → lifecycle.launch().await
+  → store in app_lifecycles map
+```
+
+The restore runs after plugin initialization and before the comm message handler is registered. Failed launches are logged as warnings but do not block server startup.
+
+---
+
+## 25. App Agent Redaction
+
+For `is_app=true` agents, the `get_agent()` handler strips sensitive publisher IP before returning the response. Only UI-needed fields are included:
+
+**Returned fields:** `id`, `name`, `description`, `isApp`, `isEnabled`, `kind`, `appWindowConfig`, `inputValues`, `installedAt`, `updatedAt`, `pricingModel`, `pricingCost`, `displayName`, `version`, `inputFields`, `views`, `pluginsNeedingAuth`
+
+**Stripped fields:** `persona` (full AGENT.md body), skills content, frontmatter — anything that exposes the publisher's prompt engineering or agent configuration.
+
+Non-app agents continue to return the full response.
+
+**Source:** `crates/server/src/handlers/agents.rs` (`get_agent`)
+
+---
+
+## 26. Tool Scope Isolation
+
+Apps can declare named scopes in `agent.json` to restrict which tools, skills, and plugins are active for a given embed chat session.
+
+### agent.json Declaration
+
+```json
+{
+  "scopes": {
+    "read": {
+      "tools": ["search_docs", "get_summary"],
+      "skills": ["web-search"],
+      "plugins": []
+    },
+    "write": {
+      "tools": ["search_docs", "get_summary", "create_doc", "update_doc"],
+      "skills": ["web-search", "drafting"],
+      "plugins": ["google-workspace"]
+    }
+  }
+}
+```
+
+### How It Works
+
+1. SDK embed mounts chat with `scope` param: `nebo.chat.mount(el, { scope: 'read' })`
+2. Chat embed page reads `scope` from URL params and includes it in the `chat_message` payload
+3. Dispatch passes `tool_scope` to the runner via `ChatConfig`
+4. Runner restricts available tools/skills/plugins to those listed in the named scope
+
+**Struct:** `ToolScope` in `crates/napp/src/agent.rs` — `tools: Vec<String>`, `skills: Vec<String>`, `plugins: Vec<String>`
+
+Each scope is a named subset. When no scope is specified, all tools are available (default behavior).
+
+---
+
+## 27. Edge Cases
 
 ### Stale Sockets
 `runtime.cleanup_stale(tool_dir)` removes leftover `.sock` and `.pid` files from previous crashes before launching.
@@ -983,7 +1174,7 @@ Apps without a sidecar binary (pure frontend) work fine — they use the SDK's `
 
 ---
 
-## 25. Key Files
+## 28. Key Files
 
 | Component | File |
 |-----------|------|
@@ -999,11 +1190,16 @@ Apps without a sidecar binary (pure frontend) work fine — they use the SDK's `
 | Binary validation / sandbox | `crates/napp/src/sandbox.rs` |
 | Restart policy | `crates/napp/src/supervisor.rs` |
 | Agent loader | `crates/napp/src/agent_loader.rs` |
-| TypeScript SDK | `packages/app-sdk/src/` |
-| SDK — Identity module | `packages/app-sdk/src/identity.ts` |
-| SDK — Chat mount module | `packages/app-sdk/src/chat.ts` |
+| Agent config (scopes, tools, memory) | `crates/napp/src/agent.rs` |
+| Sidecar tool routing | `crates/tools/src/sidecar_tool.rs` |
+| Server startup (sidecar restore) | `crates/server/src/lib.rs` |
+| Agent redaction | `crates/server/src/handlers/agents.rs` |
+| TypeScript SDK | `@neboai/app-sdk` (npm); IIFE served from `app/node_modules/@neboai/app-sdk/dist/nebo.global.js` |
+| SDK — Identity module | `@neboai/app-sdk` — `src/identity.ts` |
+| SDK — Chat mount module | `@neboai/app-sdk` — `src/chat.ts` |
+| SDK — Surfaces module | `@neboai/app-sdk` — `src/surfaces.ts` |
+| SDK — WebSocket module | `@neboai/app-sdk` — `src/websocket.ts` |
 | Frontend launcher | `app/src/lib/apps/launcher.ts` |
 | Apps listing page | `app/src/routes/apps/+page.svelte` |
 | App wrapper route | `app/src/routes/app/[agentId]/+page.svelte` |
-| Chat embed page | `app/src/routes/app/[agentId]/chat-embed/+page.svelte` |
-| Chat embed layout | `app/src/routes/app/[agentId]/chat-embed/+layout.svelte` |
+| Chat embed page | `app/src/routes/(embed)/chat-embed/[agentId]/+page.svelte` |

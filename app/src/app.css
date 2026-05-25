@@ -70,6 +70,55 @@
   --noise: 0.02;
 }
 
+@plugin "daisyui/theme" {
+  name: "clean";
+  default: false;
+  prefersdark: false;
+  color-scheme: light;
+
+  /* Surfaces — nearly flat, barely-there separation */
+  --color-base-100: #ffffff;
+  --color-base-200: #fafafa;
+  --color-base-300: #ebebeb;
+  --color-base-content: #1d1d1f;
+
+  /* Primary — clean blue */
+  --color-primary: #2563eb;
+  --color-primary-content: #ffffff;
+
+  /* Secondary — cool slate */
+  --color-secondary: #64748b;
+  --color-secondary-content: #ffffff;
+
+  /* Accent — warm coral for CTAs */
+  --color-accent: #e8503a;
+  --color-accent-content: #ffffff;
+
+  /* Neutral */
+  --color-neutral: #1d1d1f;
+  --color-neutral-content: #f5f5f7;
+
+  /* Semantic */
+  --color-info: #3b82f6;
+  --color-info-content: #ffffff;
+  --color-success: #22c55e;
+  --color-success-content: #ffffff;
+  --color-warning: #f59e0b;
+  --color-warning-content: #ffffff;
+  --color-error: #ef4444;
+  --color-error-content: #ffffff;
+
+  /* Shape — same as nebo */
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --border: 1px;
+
+  /* Clean feel — depth but no noise */
+  --depth: 1;
+  --noise: 0;
+}
+
 
 @theme {
   --font-display: 'Geist', system-ui, -apple-system, sans-serif;
@@ -268,3 +317,11 @@
 .voice-pulse {
   animation: voice-pulse 1.5s ease-in-out infinite;
 }
+
+/* Ghost text inline suggestion (TipTap decoration) */
+.ghost-text-hint {
+  opacity: 0.3;
+  pointer-events: none;
+  user-select: none;
+}
+

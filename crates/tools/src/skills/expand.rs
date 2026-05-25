@@ -89,13 +89,12 @@ pub fn build_context(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    // Persistent data directory: <data_dir>/nebo/skills/<name>/data/
-    let data_dir = config::data_dir()
+    // Persistent data directory: <data_dir>/appdata/skills/<name>/
+    // Separated from code tree so upgrades never touch artifact data.
+    let data_dir = config::appdata_dir()
         .map(|d| {
-            d.join("nebo")
-                .join("skills")
+            d.join("skills")
                 .join(&skill.name)
-                .join("data")
                 .to_string_lossy()
                 .to_string()
         })

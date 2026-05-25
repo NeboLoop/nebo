@@ -146,8 +146,9 @@ Hook circuit breaker: 3 consecutive failures disables the hook, auto-recovery af
 3. User installs the skill or plugin (via marketplace or install code)
 4. Nebo detects the plugin dependency and downloads the binary silently
 5. If the plugin declares its own `dependencies[]`, those are installed recursively
-6. Binary is stored locally at `<data_dir>/nebo/plugins/<slug>/<version>/`
-7. Skill scripts and dependent plugins access the binary via `{SLUG}_BIN` environment variable
+6. Binary is stored locally at `~/.nebo/nebo/plugins/<slug>/<version>/`
+7. Plugin runtime data (databases, caches, logs) is stored at `~/.nebo/appdata/plugins/<slug>/` — physically separate from the binary, survives upgrades
+8. Skill scripts access the binary via `${plugin.SLUG_BIN}` template variable (e.g. `${plugin.GWS_BIN}`)
 8. If the plugin declares `capabilities.tools[]`, typed tools are registered for the agent
 
 ```
@@ -209,17 +210,50 @@ plugins:
 
 The skill loads only if all **required** plugins resolve. Optional plugins are silently skipped if missing.
 
+### Alternative: `requires` Block
+
+Plugin manifests can also declare dependencies using a `requires` block, which supports the same fields:
+
+```yaml
+requires:
+  plugins:
+    - name: gws
+      version: ">=1.2.0"
+      optional: false
+```
+
+- `optional: true` — the skill or plugin loads without this dependency, but features may be degraded.
+- Version uses semver range matching (same syntax as the `plugins` frontmatter field).
+
 ---
 
 ## Using Plugin Binaries in Scripts
 
-Plugin binaries are exposed to your scripts as environment variables. The naming convention is `{SLUG}_BIN` where the slug is uppercased and hyphens become underscores.
+Plugin binaries are accessible in two ways depending on context:
+
+### In SKILL.md Body (Template Variables)
+
+Use `${plugin.SLUG_BIN}` syntax. Nebo expands these at skill activation time.
+
+| Plugin Slug | Template Variable | Expands To |
+|-------------|-------------------|------------|
+| `gws` | `${plugin.GWS_BIN}` | `/Users/me/.nebo/nebo/plugins/gws/1.2.3/gws` |
+| `ffmpeg` | `${plugin.FFMPEG_BIN}` | `/Users/me/.nebo/nebo/plugins/ffmpeg/2.0.0/ffmpeg` |
+| `my-tool` | `${plugin.MY_TOOL_BIN}` | `/Users/me/.nebo/nebo/plugins/my-tool/1.0.0/my-tool` |
+
+The slug is uppercased with hyphens replaced by underscores.
+
+### In Script Files (Environment Variables)
+
+When a script runs, plugin binaries are injected as environment variables using the `{SLUG}_BIN` naming convention:
 
 | Plugin Slug | Environment Variable |
 |-------------|---------------------|
 | `gws` | `GWS_BIN` |
 | `ffmpeg` | `FFMPEG_BIN` |
 | `my-tool` | `MY_TOOL_BIN` |
+
+Additionally, `NEBO_PLUGIN_DATA` is set to `~/.nebo/appdata/plugins/<slug>/` — the persistent data directory for this plugin. Use this for caches, databases, and any state that should survive plugin upgrades.
 
 ### Python Example
 
@@ -546,7 +580,51 @@ $FFMPEG_BIN -i "$INPUT" -f wav - | process_audio
 
 ## Structured Capabilities
 
-Plugins can declare structured capabilities in their manifest. These are richer than the generic `plugin` tool — they give the agent typed tools with schemas, and prepare for future hook/command/route/provider integration.
+Plugins can declare structured capabilities in their manifest. These are richer than the generic `plugin` tool — they give the agent typed tools with schemas, lifecycle hooks, slash commands, HTTP routes, AI provider adapters, and user-configurable settings.
+
+A full `capabilities` declaration:
+
+```yaml
+capabilities:
+  tools:
+    - name: search_emails
+      description: "Search Gmail emails"
+      command: "search --query {query}"
+      input_schema: { type: object, properties: { query: { type: string } } }
+      approval: false
+      timeout_seconds: 30
+  hooks:
+    - hook: tool.pre_execute
+      hook_type: filter
+      priority: 10
+      command: "hook pre-execute"
+      timeout_ms: 500
+  commands:
+    - name: sync
+      description: "Sync all data"
+      command: "sync --full"
+  routes:
+    - path: /oauth/callback
+      method: GET
+      command: "oauth-callback"
+  providers:
+    - name: openrouter
+      description: "OpenRouter AI provider"
+      command: "provider serve"
+  config_schema:
+    - key: GOOGLE_API_KEY
+      label: "Google API Key"
+      field_type: string
+      required: true
+      secret: true
+    - key: SYNC_INTERVAL
+      label: "Sync Interval"
+      field_type: select
+      required: false
+      options: ["15m", "30m", "1h", "4h"]
+```
+
+Each capability type is detailed in the subsections below.
 
 ### Tools
 
@@ -583,7 +661,7 @@ Declare tools in `capabilities.tools[]`. Each tool becomes a typed, schema-valid
 | `description` | string | required | Description for the model to understand when to use this tool |
 | `command` | string | required | CLI args appended to the plugin binary (e.g., `"gmail +triage"`) |
 | `inputSchema` | object | generic object | JSON Schema for typed input validation |
-| `approval` | bool | `true` | Whether this tool requires user approval before execution |
+| `approval` | bool | `false` | Whether this tool requires user approval before execution |
 | `timeoutSeconds` | number | `120` | Maximum execution time in seconds |
 
 #### How Typed Tools Work
@@ -595,7 +673,26 @@ Declare tools in `capabilities.tools[]`. Each tool becomes a typed, schema-valid
 
 The generic `plugin(resource, action, command)` tool still works alongside structured tools — it's the fallback for commands not declared in capabilities.
 
-### Hooks (Manifest Ready)
+#### The Command Catalog (v0.10.0+)
+
+The `plugin` tool's description includes a **per-plugin command catalog** automatically — every installed plugin's available commands surface in the agent's tool schema upfront, with one-line descriptions. This means the model never needs a separate "discover commands" round-trip; if a command isn't in the catalog, it doesn't exist.
+
+The catalog is built from two sources, in this order:
+
+1. **`capabilities.tools[]` in `plugin.json`** — if you declare your tools here, their names + descriptions become the catalog entries. This is the preferred, authoritative form.
+2. **Skill `SKILL.md` frontmatter** — for each `skills/<name>/SKILL.md` shipped with the plugin, Nebo reads the YAML frontmatter `description:` and renders the skill as a catalog entry. This is the fallback for plugins that ship skill docs but haven't (yet) declared `capabilities.tools[]`.
+
+What this means for plugin authors:
+
+- **Always include a one-line `description:` in every `SKILL.md` frontmatter.** The model reads it; bad/missing descriptions = bad calls.
+- **Follow the `<slug>-<service>-<verb>` naming convention** for skill dirs (e.g., `gws-gmail-triage`). Nebo renders that as the command label `gmail +triage` in the catalog.
+- **`capabilities.tools[]` overrides skill-derived entries** when both exist for the same name.
+
+#### Removed in v0.10.0
+
+The `search`, `skills`, `services`, and `help` actions on the `plugin` tool were removed — they were a competing pathway with the new upfront catalog. The only supported actions are now `exec` (run a command) and `events` (list declared NDJSON watch events). Calls to the removed actions return a clear error pointing the agent at the catalog.
+
+### Hooks
 
 Declare lifecycle hooks your plugin wants to subscribe to:
 
@@ -623,9 +720,14 @@ Declare lifecycle hooks your plugin wants to subscribe to:
 | `command` | string | required | CLI subcommand for the hook handler |
 | `timeoutMs` | number | `500` | Timeout in milliseconds |
 
-> **Note:** Hook declarations are stored in the manifest but the runtime bridge (`PluginHookCaller`) is not yet implemented. This will be completed in a future release.
+Hook types:
 
-### Commands (Manifest Ready)
+- **`filter`** — can modify or block the operation. The hook receives the payload as JSON on stdin and returns modified JSON on stdout. Returning a non-zero exit code blocks the operation.
+- **`action`** — fire-and-forget side-effect. The return value is ignored.
+
+Priority determines execution order: lower numbers run first. Default timeout is 500ms.
+
+### Commands
 
 Declare slash commands or app commands:
 
@@ -651,7 +753,7 @@ Declare slash commands or app commands:
 | `command` | string | required | CLI subcommand to execute |
 | `slash` | bool | `false` | Register as a slash command in chat |
 
-### Routes (Manifest Ready)
+### Routes
 
 Declare HTTP routes your plugin handles (e.g., OAuth callbacks):
 
@@ -677,7 +779,7 @@ Declare HTTP routes your plugin handles (e.g., OAuth callbacks):
 | `command` | string | required | CLI subcommand that handles the request |
 | `auth` | string | `"jwt"` | `"public"` or `"jwt"` |
 
-### Providers (Manifest Ready)
+### Providers
 
 Declare AI provider adapters (for custom model backends):
 
@@ -755,14 +857,16 @@ Declare user-configurable settings that render as a form in the UI. Values are s
 | `fieldType` | string | `"string"` | `"string"`, `"number"`, `"boolean"`, or `"select"` |
 | `default` | string | — | Default value |
 | `required` | bool | `false` | Whether the user must set this field |
-| `secret` | bool | `false` | If true, value is stored encrypted |
+| `secret` | bool | `false` | If true, value is stored with AES-256-GCM encryption |
 | `options` | string[] | — | Available choices for `"select"` type |
+
+> **Activation gate:** A plugin will not activate until all `required: true` config fields have been set by the user. The UI auto-generates a settings form from `configSchema` — users fill it in under Settings > Plugins.
 
 ---
 
 ## Permissions
 
-Plugins can declare a permissions manifest that controls environment variable access and execution limits.
+Plugins can declare a permissions manifest that controls environment variable access, network needs, and execution limits. These are enforced at exec time.
 
 ```json
 {
@@ -770,17 +874,27 @@ Plugins can declare a permissions manifest that controls environment variable ac
     "envAllow": ["HOME", "PATH", "WORKSPACE_ID"],
     "envDeny": ["AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN"],
     "network": true,
-    "maxTimeoutSeconds": 600
+    "maxTimeoutSeconds": 300
   }
 }
+```
+
+Or in YAML:
+
+```yaml
+permissions:
+  env_allow: ["HOME", "PATH"]
+  env_deny: ["AWS_SECRET_ACCESS_KEY"]
+  network: true
+  max_timeout_seconds: 300
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `envAllow` | string[] | `[]` (all allowed) | Env vars the plugin may read. Empty means all are allowed. |
-| `envDeny` | string[] | `[]` | Env vars always stripped before execution |
-| `network` | bool | `false` | Whether the plugin needs network access (informational) |
-| `maxTimeoutSeconds` | number | `300` | Maximum timeout in seconds for any tool execution |
+| `envDeny` | string[] | `[]` | Env vars always stripped before execution (security blocklist) |
+| `network` | bool | `false` | Whether the plugin needs network access |
+| `maxTimeoutSeconds` | number | `300` | Hard cap on any single execution in seconds |
 
 ---
 
@@ -811,6 +925,51 @@ Nebo validates `plugin.json` during installation. Invalid manifests are rejected
 "binary_name '../evil' contains path separator"
 "auth.commands.login must be non-empty when auth is present"
 ```
+
+---
+
+## Plugin Runtime Environment
+
+Plugins are **spawned on-demand** — each tool call, hook invocation, or command execution spawns a fresh process with the CLI arguments from the capability definition. There is no persistent plugin process between invocations. The exception is **watch triggers**, which spawn a long-running process that emits NDJSON events continuously.
+
+Each invocation runs in a sandboxed environment with a controlled set of environment variables.
+
+### Environment Variables
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `NEBO_APP_ID` | `gws` | Plugin identifier (from manifest) |
+| `NEBO_APP_NAME` | `Google Workspace CLI` | Display name |
+| `NEBO_APP_VERSION` | `1.2.3` | Manifest version |
+| `NEBO_APP_DIR` | `~/.nebo/nebo/plugins/gws/1.2.3` | Plugin binary directory (code — replaceable) |
+| `NEBO_APP_SOCK` | `~/.nebo/nebo/plugins/gws/1.2.3/gws.sock` | Unix socket path for gRPC |
+| `NEBO_APP_DATA` | `~/.nebo/appdata/plugins/gws` | Persistent data directory (separate from code — survives upgrades) |
+| `PATH` | system path | Standard path |
+| `HOME` | user home | Home directory |
+| `TMPDIR` | temp directory | Temporary files |
+| `LANG` | locale | System locale |
+| `TZ` | timezone | System timezone |
+
+All other environment variables (API keys, secrets, database URLs) are **stripped** — your plugin must not depend on the user's shell environment.
+
+### Data Persistence
+
+Store all persistent data in `$NEBO_APP_DATA`. This directory is physically separated from the code directory — it lives at `~/.nebo/appdata/plugins/<slug>/`, not inside the version directory. This means:
+
+- Upgrading the plugin binary never touches your data
+- Your plugin is responsible for its own schema migrations across versions
+- Data survives reinstalls, version upgrades, and Nebo updates
+
+Common storage patterns:
+- **SQLite** — for structured data and queries
+- **JSON files** — for simple configuration state
+- **File store** — for cached downloads, processed outputs
+
+### Blocked Variables
+
+These environment variables are always stripped for security:
+
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `JWT_SECRET`, `DATABASE_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `STRIPE_SECRET_KEY`
 
 ---
 
@@ -926,19 +1085,28 @@ After installation, embedded skills are discovered by the skill loader automatic
 What the user sees on disk after install:
 
 ```
-<data_dir>/nebo/plugins/
-  gws/
-    1.2.3/
-      manifest.json    # Package identity
-      plugin.json      # Cached PluginManifest
-      PLUGIN.md        # Documentation
-      gws              # Your binary (chmod 755)
-      skills/          # Embedded skills (if bundled)
-        gws-gmail/
-          SKILL.md
-        gws-calendar/
-          SKILL.md
+~/.nebo/
+  nebo/plugins/                          # CODE — replaceable on upgrade
+    gws/
+      1.2.3/
+        manifest.json                    # Package identity
+        plugin.json                      # Cached PluginManifest
+        PLUGIN.md                        # Documentation
+        gws                              # Your binary (chmod 755)
+        skills/                          # Embedded skills (if bundled)
+          gws-gmail/
+            SKILL.md
+          gws-calendar/
+            SKILL.md
+
+  appdata/plugins/                       # DATA — never touched by updates
+    gws/
+      sidecar.log                        # Process output
+      cache.db                           # Your plugin's persistent data
+      credentials.json                   # Whatever your plugin stores
 ```
+
+Code and data are physically separated. The update system operates on `nebo/plugins/` but **never touches `appdata/plugins/`**. Your plugin's databases, caches, and user files survive all version upgrades and reinstalls — same model as iOS apps.
 
 Multiple versions can coexist. Each skill resolves to the highest installed version matching its semver range.
 

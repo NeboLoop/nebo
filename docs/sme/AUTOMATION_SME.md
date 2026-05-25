@@ -4,7 +4,7 @@ Comprehensive Subject Matter Expert document covering the full Nebo automation
 pipeline: proactive heartbeats, cron scheduling, workflow execution, event-driven
 triggers, agent workers, and frontend UI.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-05-11
+**Status:** Current (Rust implementation) | **Last updated:** 2026-05-25
 
 ---
 
@@ -365,18 +365,19 @@ struct WatchTriggerConfig {
 ```
 1. Resolve plugin binary path via plugin_store.resolve()
 2. Resolve command from plugin manifest event definition
-3. Spawn child process with sanitized env + plugin auth env vars
-4. Read NDJSON lines from stdout in a loop:
+3. Substitute input templates: `{{key}}` placeholders in command resolved from `agents.input_values`
+4. Spawn child process with sanitized env + plugin auth env vars
+5. Read NDJSON lines from stdout in a loop:
    a. Parse JSON payload
    b. Auto-emit: hash (source + payload) → check DedupeCache (10min TTL, 2000 entries)
       - If duplicate → skip
       - If new → emit Event to EventBus
    c. Run inline workflow if def_json activities defined
-5. On stdout close (process exit):
+6. On stdout close (process exit):
    a. Check stderr for auth errors → if auth error, pause until re-auth (break loop)
    b. Otherwise restart with exponential backoff (restart_delay → 2x → max 300s)
    c. Reset backoff if process ran >30s (not a fast crash)
-6. On cancel token → kill child process, return
+7. On cancel token → kill child process, return
 ```
 
 ### Event Auto-Emission
@@ -394,6 +395,19 @@ let event_dedup = DedupeCache::new(Duration::from_secs(10 * 60), 2000);
 ```
 
 Prevents the same event (e.g., same email notification) from triggering multiple workflow runs when the watcher restarts.
+
+### Input Template Substitution
+
+Watch trigger commands support `{{key}}` placeholders resolved from `agents.input_values`:
+
+```rust
+fn substitute_inputs(template: &str, inputs: &serde_json::Value) -> String
+// "gmail +watch --project {{gcp_project}}" + {"gcp_project": "my-proj"}
+// → "gmail +watch --project my-proj"
+```
+
+Only string values are substituted. Unmatched placeholders remain literal.
+Values come from the agent's `input_values` JSON column (set via agent settings UI).
 
 ### Auth Error Handling
 
@@ -516,12 +530,15 @@ pub async fn execute_workflow(
 For each activity in `def.activities`:
 
 1. **Cancellation check** — bail if token cancelled
-2. **Update run** — set `current_activity` in DB
-3. **Execute with retry** — up to `activity.on_error.retry` attempts
-4. **Record result** — `workflow_activity_results` row
-5. **Accumulate context** — prior results passed to next activity
-6. **Budget check** — per-activity and global token limits
-7. **Error handling** — always aborts on activity failure (downstream activities depend on prior results)
+2. **Progress event** — sends `ActivityStarted { activity_id, activity_index, total_activities }` via `progress_tx` channel
+3. **Update run** — set `current_activity` in DB
+4. **Execute with retry** — up to `activity.on_error.retry` attempts
+5. **Record result** — `create_activity_result()` with `started_at`/`completed_at` timestamps, token usage, and error text
+6. **Branch termination** — if activity output is empty (trimmed), stop the branch (n8n-style: downstream activities never execute on empty output)
+7. **Accumulate context** — prior results formatted as `[Activity '{id}' result]: {text}` passed to next activity
+8. **Circuit breaker** — 3+ consecutive same-pattern failures aborts the workflow with `WorkflowError::CircuitBreak`
+9. **Budget check** — per-activity and global token limits
+10. **Error handling** — always aborts on activity failure (downstream activities depend on prior results)
 
 ### Activity Execution (Single)
 
@@ -543,16 +560,70 @@ pub async fn execute_activity(
 6. Workflow Controls (exit, emit hints)
 7. Output instruction (if emit_source set on last activity)
 
-**Agentic loop** (max 20 iterations):
+**Agentic loop** (max 50 iterations — `MAX_ITERATIONS`):
 1. Build ChatRequest → `provider.stream()`
 2. Accumulate text + tool_calls
-3. If no tool_calls → return (response, tokens)
-4. Execute each tool call
+3. If no tool_calls:
+   - **Budget continuation:** if `activity.min_iterations > 0` and not yet reached, force another iteration with a "keep working" nudge
+   - **Output synthesis:** if the LLM produced no text but tool calls were made in prior iterations, `synthesize_from_tool_results()` extracts the last tool result contents (max 4000 chars) as the step output — prevents silent empty output
+   - Return (response, tokens)
+4. Execute each tool call (with MCP prefix stripping: `mcp__server__tool` → `tool`)
 5. Check for `EXIT_SENTINEL` in tool results → early exit
-6. Continue loop
+6. **Same-tool loop detection:** 3+ consecutive calls to the same tool injects a warning message nudging the LLM to take a different action
+7. **Repeated tool-not-found termination:** 3+ consecutive iterations where all tool calls return "tool not found" aborts the activity
+8. Continue loop
 
 **Auto-injected tools:** `emit_tool` and `exit_tool` are always available, even if
 not declared in the activity definition.
+
+### Progress Events
+
+The engine emits progress events via an `UnboundedSender<WorkflowProgress>` channel,
+enabling live workflow monitoring in the UI:
+
+```rust
+pub enum WorkflowProgress {
+    ActivityStarted {
+        activity_id: String,
+        activity_index: usize,
+        total_activities: usize,
+    },
+    TaskUpdated {
+        list_id: String,    // "run:{run_id}:{activity_id}"
+        task_id: String,
+        seq: i64,
+        status: String,     // "in_progress", "completed", "failed"
+    },
+}
+```
+
+`ActivityStarted` fires before each activity begins. `TaskUpdated` fires per-step
+within stepped activities (mark in_progress, then completed/failed).
+
+### Circuit Breaker
+
+Tracks consecutive failures with the same error pattern. If 3+ activities fail in
+a row with the same pattern, the workflow aborts with `WorkflowError::CircuitBreak`.
+
+```rust
+const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
+```
+
+Error pattern extraction: `extract_error_pattern()` takes the first segment before
+`:`, lowercased, max 60 chars. If the pattern changes, the counter resets to 1.
+
+**Current status:** Wired but effectively dead under the always-abort error policy
+(each failure returns immediately). Becomes active when `Fallback::Skip` support is
+added for independent activities.
+
+### Activity Result Recording
+
+Each activity records a `workflow_activity_results` row with:
+- `started_at` / `completed_at` — Unix timestamps
+- `tokens_used` — token count for the activity
+- `attempts` — retry count (`on_error.retry`)
+- `error` — failure reason text (for circuit breaker pattern matching)
+- `status` — `"completed"`, `"failed"`, or `"exited"`
 
 ### WorkflowDef Structure
 
@@ -575,6 +646,7 @@ pub struct Activity {
     pub cmds: Vec<String>,       // Command references
     pub model: String,           // Model override
     pub steps: Vec<String>,
+    pub min_iterations: u32,      // Force continuation even on text-only responses
     pub token_budget: TokenBudget,
     pub on_error: OnError,
 }
@@ -1204,9 +1276,11 @@ interface ResolvedEntityConfig {
 |-----------|----------|----------|
 | Provider error | Immediate | Return error, mark run failed |
 | Token budget exceeded | Per-activity or global | Mark run failed |
-| Tool not found | Continue | `ToolResult::error()`, activity continues |
+| Tool not found | Continue | `ToolResult::error()`, activity continues (3 consecutive all-not-found aborts) |
 | Cancellation | Before each activity | Return `WorkflowError::Cancelled` |
 | Exit tool | Propagate | Mark run "exited" (distinct from "failed") |
+| Circuit breaker | 3+ same-pattern failures | Return `WorkflowError::CircuitBreak`, mark run failed |
+| Same-tool loop | 3+ consecutive same tool | Warning injected into conversation (does not abort) |
 | Retry exhausted | Always abort | Fail entire workflow + create failure notification |
 
 ### Fallback Behavior
@@ -1248,8 +1322,12 @@ Notifications are push-only — the frontend never polls for notifications. The 
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| Max iterations per activity | 20 | `engine.rs` |
-| EXIT_SENTINEL | `"__EXIT__:"` | `tools` crate |
+| MAX_ITERATIONS | 50 | `engine.rs` |
+| CIRCUIT_BREAKER_THRESHOLD | 3 | `engine.rs` |
+| EXIT_SENTINEL | `"__WORKFLOW_EXIT__:"` | `tools` crate (`exit_tool.rs`) |
+| Same-tool loop warning | 3 consecutive | `engine.rs` (`run_llm_loop`) |
+| Tool-not-found abort | 3 consecutive | `engine.rs` (`run_llm_loop`) |
+| INPUT_VALUE_MAX_CHARS | 4000 | `engine.rs` |
 
 ### Lanes
 
@@ -1283,6 +1361,17 @@ entity_config heartbeat uses HEARTBEAT lane (max_concurrent=1), providing natura
 dedup for server-level heartbeats, but agent worker heartbeats are not gated by the
 same mechanism.
 
+### Heartbeat Binding Toggle Granularity
+
+Individual agent-workflow heartbeat bindings cannot currently be toggled without
+restarting the whole `AgentWorker`. The toggle handler updates `is_active`,
+deletes cron triggers, and unsubscribes event triggers, but the heartbeat
+`tokio::interval` task spawned by `agent_worker.rs` is tied to the worker-level
+cancel token, not a per-binding token.
+
+**Impact:** Toggling a heartbeat binding OFF may not stop the already-running
+interval task until the agent worker is restarted or the agent is deactivated.
+
 ### Event Channel Unbounded
 
 `EventBus` uses `mpsc::unbounded_channel()` — no backpressure. In a scenario where
@@ -1315,4 +1404,4 @@ for the same event.
 
 ---
 
-*Last updated: 2026-05-11*
+*Last updated: 2026-05-25*

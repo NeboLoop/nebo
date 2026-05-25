@@ -52,7 +52,7 @@ AGENT (schedule of intent)
 
 **Key properties:**
 - Skills are **filesystem-only** — no database tables (unlike workflows/roles)
-- Three storage tiers: **bundled** (shipped with app) → **installed** (marketplace .napp) → **user** (loose files, highest priority)
+- Six loading tiers: **bundled** (compiled in) → **installed** (marketplace .napp) → **sealed .napp** (paid, decrypted in memory) → **plugin-embedded** → **user plugin-embedded** → **user** (loose files, highest base priority) — plus dynamic **app skills** loaded at runtime
 - **Hot-reload** via filesystem watcher (debounced 1s)
 - **Trigger matching** — case-insensitive substring match against user messages
 - **Dependency verification** — skills with missing deps are dropped at load time
@@ -241,46 +241,87 @@ pub fn parse_skill_md(data: &[u8]) -> Result<Skill, String>
 
 ```rust
 pub struct Loader {
-    bundled_dir: PathBuf,       // e.g. <data_dir>/bundled/skills/
-    installed_dir: PathBuf,     // e.g. <data_dir>/nebo/skills/
     user_dir: PathBuf,          // e.g. <data_dir>/user/skills/
-    plugin_store: Option<Arc<napp::plugin::PluginStore>>,  // For plugin-embedded skills + dep verification
+    installed_dir: PathBuf,     // e.g. <data_dir>/nebo/skills/
     skills: Arc<RwLock<HashMap<String, Skill>>>,
+    plugin_store: Option<Arc<napp::plugin::PluginStore>>,  // For plugin-embedded skills + dep verification
+    watcher_paused: Arc<AtomicBool>,       // Prevents premature reloads during extraction
+    bundled_raw: HashMap<String, &'static str>,  // include_str!() content for lazy template loading
+    cached_catalog: Arc<RwLock<String>>,    // Pre-built compact catalog for system prompt
+    license_keys: Arc<RwLock<HashMap<String, [u8; 32]>>>,  // Keyed by artifact_id, for sealed .napp decryption
 }
 ```
 
-### load_all()
+Bundled skills are compiled into the binary via `include_str!()` and indexed into `bundled_raw` at construction. There is no `bundled_dir` on the filesystem.
+
+### load_all() — Two-Phase Loading
 
 ```rust
 pub async fn load_all(&self) -> usize
 ```
 
+**Warm start** (typical case, <50ms): Reads a cached skill manifest (`installed_dir/.skill-manifest.json`) containing frontmatter-only snapshots. Re-injects runtime-only `license_key` fields from the in-memory `license_keys` map. Rebuilds `cached_catalog`. Returns immediately.
+
+**Cold start** (first run or manifest missing/corrupt): Full filesystem scan with parallel YAML parsing. After loading, writes the manifest for next warm start.
+
+After warm start, `verify_and_refresh_manifest()` runs as a background task — it hash-checks each manifest entry against the filesystem, re-parses stale entries, discovers new SKILL.md files, re-verifies dependencies, and rewrites the manifest.
+
+#### Cold Start Loading Order
+
 Loading order (later tiers override earlier by name):
 
-1. **Bundled** (`bundled_dir`) — `load_skills_from_dir()` — force `enabled = true`
+1. **Bundled** (`bundled_raw`) — `parse_skill_frontmatter()` from compiled-in content — force `enabled = true` (template body loaded lazily via `get()`)
 2. **Installed** (`installed_dir`) — `load_skills_from_nested_dir()` — force `enabled = true`, uses `napp::reader::walk_for_marker()` for recursive SKILL.md discovery
-2.5. **Plugin-embedded** (`plugin_store.plugins_dir()`) — `load_skills_from_nested_dir()` — force `enabled = true`. Discovers skills bundled inside plugin .napp archives (e.g., `plugins/gws/0.22.3/skills/gws-gmail/SKILL.md`). Only runs if `plugin_store` is Some and the directory exists.
+2.1. **Sealed .napp** (`installed_dir`) — `load_sealed_skills()` — reads SKILL.md frontmatter from encrypted `.napp` archives in memory using `license_keys`. Only loads sealed archives that have NO extracted sibling directory with SKILL.md (free content is loaded in step 2). Sets `napp_path` and `license_key` on the skill for lazy template loading.
+2.5. **Plugin-embedded** (`plugin_store.plugins_dir()`) — `load_skills_from_nested_dir()` — force `enabled = true`. Discovers skills bundled inside plugin .napp archives (e.g., `plugins/gws/0.22.3/skills/gws-gmail/SKILL.md`). Auto-injects parent plugin slug as a `PluginDependency` so env vars like `GWS_BIN` get set. Only runs if `plugin_store` is Some and the directory exists.
+2.75. **User plugin-embedded** (`plugin_store.user_plugins_dir()`) — same as 2.5 but for user-installed plugins. Overrides marketplace plugin skills by name.
 3. **User** (`user_dir`) — `load_skills_from_dir()` — respects enabled/disabled state
-4. **Legacy YAML** (`user_dir`) — `load_yaml_skills()` — flat `.yaml` / `.yaml.disabled` files, only if name not already loaded
 
 After loading all tiers:
-- `verify_dependencies()` — drops skills whose `dependencies[]` reference names not in the loaded set
+- `verify_dependencies(&mut loaded, plugin_store)` — drops skills whose `dependencies[]` reference names not in the loaded set, or whose required `plugins[]` are not installed
+- Rebuild `cached_catalog` (count-only compact format for system prompt)
 - Store in `Arc<RwLock<HashMap<String, Skill>>>`
+- Write manifest for next warm start
 - Return total count
 
 ### Key API Methods
 
 ```rust
-pub async fn get(&self, name: &str) -> Option<Skill>
-pub async fn list(&self) -> Vec<Skill>                    // sorted by priority desc, then name asc
+// Core access
+pub async fn get(&self, name: &str) -> Option<Skill>              // lazily loads template body from disk/sealed/bundled
+pub async fn list(&self) -> Vec<Skill>                             // sorted by priority desc, then name asc
 pub async fn match_triggers(&self, message: &str, max: usize) -> Vec<Skill>  // enabled only, sorted by priority
-pub fn watch(&self) -> tokio::task::JoinHandle<()>        // hot-reload watcher
+pub async fn compact_catalog(&self) -> String                      // pre-built count-only catalog for system prompt
+pub async fn list_summaries(&self) -> Vec<SkillSummary>            // lightweight (no template body)
+pub async fn discover_summaries(&self, query: &str) -> Vec<SkillSummary>  // search by name/desc/trigger, scored
+
+// Lifecycle
+pub fn watch(&self) -> tokio::task::JoinHandle<()>                 // hot-reload watcher
+pub async fn verify_and_refresh_manifest(&self)                    // background manifest hash-check + refresh
+pub fn pause_watcher(&self)                                        // prevent reloads during extraction
+pub fn resume_watcher(&self)                                       // re-enable watcher after extraction
+pub fn with_plugin_store(self, store: Arc<PluginStore>) -> Self    // builder: set plugin store for dep verification
+pub async fn set_license_keys(&self, keys: HashMap<String, [u8; 32]>)  // set license keys for sealed .napp decryption
+
+// App skills
+pub async fn load_app_skills(&self, app_dir: &Path) -> Vec<String>  // load skills from app's tool_dir/skills/
+pub async fn unload_skills(&self, names: &[String])                  // remove app skills on teardown
+
+// Write / resolve
 pub fn write_skill(&self, name: &str, content: &str) -> Result<PathBuf, String>
 pub fn resolve_user_skill_path(&self, name: &str) -> Option<PathBuf>
-pub fn bundled_dir(&self) -> &Path
+pub fn expand_template(&self, skill: &Skill, store: Option<&db::Store>) -> String  // resolve ${NEBO_*} and ${plugin.*} vars
 pub fn user_dir(&self) -> &Path
 pub fn installed_dir(&self) -> &Path
 ```
+
+#### Lazy Template Loading
+
+`get()` returns a skill with the template body populated. If the skill was loaded from a manifest (warm start) or from `parse_skill_frontmatter()` (cold start), the template is initially empty. `load_template()` populates it on first access:
+
+1. **Sealed .napp** — read `SKILL.md` from encrypted archive via `read_sealed_napp_entry(napp_path, "SKILL.md", key)`
+2. **Filesystem** — read from `source_path` and split frontmatter
+3. **Bundled** — read from `bundled_raw` in-memory content
 
 ### Loading Internals
 
@@ -293,10 +334,14 @@ pub fn installed_dir(&self) -> &Path
 ### Dependency Verification
 
 ```rust
-fn verify_dependencies(loaded: &mut HashMap<String, Skill>)
+fn verify_dependencies(loaded: &mut HashMap<String, Skill>, plugin_store: Option<&napp::plugin::PluginStore>)
 ```
 
-Builds a set of all loaded skill names. Retains only skills whose every dependency exists in that set. Logs `skill skipped: missing dependency` for dropped skills.
+Builds a set of all loaded skill names. Retains only skills whose:
+- Every entry in `dependencies[]` exists in the loaded set
+- Every required entry in `plugins[]` is installed in the plugin store (if `plugin_store` is Some)
+
+Logs `skill skipped: missing dependency` for dropped skills.
 
 ---
 
@@ -307,16 +352,19 @@ Builds a set of all loaded skill names. Retains only skills whose every dependen
 ### Setup
 
 - Uses `notify::RecommendedWatcher` with 2s poll interval
-- Watches `user_dir`, `installed_dir`, and `plugin_store.plugins_dir()` recursively (not bundled — those don't change)
-- Plugin dir is only watched if `plugin_store` is Some and the directory exists
+- Watches `user_dir`, `installed_dir`, `plugin_store.plugins_dir()`, and `plugin_store.user_plugins_dir()` recursively (not bundled — those are compiled in)
+- Plugin dirs are only watched if `plugin_store` is Some and the directories exist
 
 ### Trigger Conditions
 
 Only reloads on Create/Modify/Remove events where the path matches:
 - `SKILL.md` (case-insensitive)
-- `*.yaml` or `*.yaml.disabled`
 - `*.napp`
 - Files in ancestor directories named: `scripts`, `references`, `assets`, `examples`, `agents`, `core`
+
+### Pause Guard
+
+If `watcher_paused` is true, reload events are silently skipped. This prevents premature reloads while `.napp` archives are being extracted. Call `pause_watcher()` before extraction and `resume_watcher()` after `load_all()` completes.
 
 ### Debounce
 
@@ -324,7 +372,7 @@ Only reloads on Create/Modify/Remove events where the path matches:
 
 ### Reload Algorithm
 
-Full re-scan: same algorithm as `load_all()` (bundled → installed → user → yaml → verify deps).
+Full re-scan: same cold-load algorithm (bundled → installed → sealed → plugins → user plugins → user → verify deps). After reload, the watcher also rewrites the skill manifest for next warm start.
 
 ---
 
@@ -347,21 +395,32 @@ Tool name: `"skill"`
 
 | Action | Required Params | Purpose |
 |--------|----------------|---------|
-| `catalog` / `list` | — | List all skills with status, source, triggers, capabilities, resource count |
+| `catalog` / `list` | — | Budget-constrained listing: count + up to 30 enabled skills with truncated descriptions (120 char max) |
+| `discover` | `query` | Search skills by name/description/trigger match. Scored: name=3, trigger=2, desc=1. Returns top 10 |
 | `help` | `name` | Show full SKILL.md content + metadata + resource listing |
 | `browse` | `name`, `path?` | List resource files with sizes, optionally filtered by directory prefix |
 | `read_resource` | `name`, `path` | Read a specific resource file (path-traversal protected) |
-| `load` | `name` | Enable skill: rename `.yaml.disabled` → `.yaml` or `SKILL.md.disabled` → `SKILL.md` |
-| `unload` | `name` | Disable skill: rename `.yaml` → `.yaml.disabled` or `SKILL.md` → `SKILL.md.disabled` |
-| `create` | `name`, `content` | Create new skill. If content starts with `---`: writes `{name}/SKILL.md`. Otherwise: `{name}.yaml` |
+| `load` | `name` | Enable skill: rename `SKILL.md.disabled` → `SKILL.md` |
+| `unload` | `name` | Disable skill: rename `SKILL.md` → `SKILL.md.disabled` |
+| `create` | `name`, `content` | Create new skill as `{name}/SKILL.md`. Wraps with minimal frontmatter if content lacks `---` |
 | `update` | `name`, `content` | Update existing skill. Rejects installed (marketplace) skills as read-only |
-| `delete` | `name` | Delete user skill (directory + yaml files). Rejects installed skills |
-| `install` | `code` | Install from marketplace (must start with `SKIL-`). Calls NeboLoop API, persists, reloads |
-| `configure` | `name`, `key`, `value` | Set a secret/API key for a skill (encrypted at rest) |
-| `secrets` | `name` | List declared secrets for a skill and their configuration status |
+| `delete` | `name` | Delete user skill (directory). Rejects installed skills |
+| `install` | `code` | Install from marketplace (must start with `SKIL-`). Calls NeboLoop API, `persist_skill_from_api()`, reloads |
+| `configure` | `name`, `key`, `value` | Set a secret/API key for a skill (encrypted at rest). Validates key against declared secrets |
+| `secrets` | `name` | Show declared secrets with configuration status: "configured", "MISSING (required)", or "not set (optional)" |
 | `featured` | — | List enabled skills with non-empty capabilities (top 10) |
 | `popular` | — | List enabled skills sorted by capability count (top 10) |
 | `reviews` | `name` | Placeholder — returns "no reviews available" (marketplace API stub) |
+
+### Concurrent Safety
+
+Read-only actions are marked `is_concurrent_safe() = true` for parallel execution:
+
+```rust
+matches!(action, "catalog" | "discover" | "help" | "browse" | "read_resource" | "featured" | "popular" | "reviews" | "secrets")
+```
+
+All other actions (load, unload, create, update, delete, install, configure) are NOT concurrent-safe.
 
 ### Schema
 
@@ -369,13 +428,14 @@ Tool name: `"skill"`
 {
   "type": "object",
   "properties": {
-    "action": { "type": "string", "enum": ["catalog", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "featured", "popular", "reviews"] },
+    "action": { "type": "string", "enum": ["catalog", "discover", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "featured", "popular", "reviews"] },
     "name": { "type": "string", "description": "Skill name (slug)" },
     "content": { "type": "string", "description": "Skill YAML content (for create/update)" },
     "path": { "type": "string", "description": "Relative path for browse filter or resource read" },
     "code": { "type": "string", "description": "Marketplace code for install (e.g. SKIL-XXXX-XXXX)" },
     "key": { "type": "string", "description": "Secret/API key name for configure action (e.g. BRAVE_API_KEY)" },
-    "value": { "type": "string", "description": "Secret value for configure action" }
+    "value": { "type": "string", "description": "Secret value for configure action" },
+    "query": { "type": "string", "description": "Search query for discover action (describe what you're trying to do)" }
   },
   "required": ["action"]
 }
@@ -383,9 +443,16 @@ Tool name: `"skill"`
 
 ### Catalog Output Format
 
+Budget-constrained (Claude Code pattern) — caps at 30 entries with 120-char description truncation:
+
 ```
-{count} skills:
-- {name} [{enabled|disabled}|{nebo|user}] — {description} [caps: python, storage] (3 resource files) (triggers: research, look up)
+{total} skills ({enabled} enabled):
+- **{name}** — {description (truncated to 120 chars)}...
+- **{name}** — {description}
+
+... and {remaining} more. Use skill(action: "discover", query: "...") to search.
+
+To use a skill: skill(action: "help", name: "<name>") for instructions, then spawn a sub-agent with the skill pre-loaded.
 ```
 
 ### Protection Rules
@@ -407,12 +474,15 @@ pub struct ExecuteTool {
     loader: Arc<Loader>,
     plan_tier: Arc<RwLock<String>>,
     sandbox: Option<Arc<SandboxManager>>,
+    plugin_store: Option<Arc<PluginStore>>,
 }
 ```
 
 Tool name: `"execute"`
 
 Only registered when both `skill_loader` and `plan_tier` are available.
+
+**Current wiring caveat:** `ExecuteTool` has `with_plugin_store()` and can inject plugin binary env vars for skills that declare `plugins:`, but the registry registration path currently builds it with `.with_store(...)` only. Plugin-dependent skill scripts may not receive env vars such as `GWS_BIN` until `Registry::register_all_with_permissions()` passes the shared `PluginStore` into `ExecuteTool`.
 
 ### Schema
 
@@ -1074,12 +1144,21 @@ resolve_cascade(state, deps, visited):
 
 ```rust
 // In AppState initialization
-let skill_loader = Arc::new(Loader::new(bundled_dir, installed_dir, user_dir));
+let skill_loader = Arc::new(
+    Loader::new(installed_dir, user_dir)
+        .with_plugin_store(plugin_store.clone())
+);
+skill_loader.set_license_keys(license_key_map).await;
 skill_loader.load_all().await;
 
+// Background manifest verification (after warm start)
+let loader_bg = skill_loader.clone();
+tokio::spawn(async move { loader_bg.verify_and_refresh_manifest().await; });
+
 // Register SkillTool and ExecuteTool in registry
-registry.register(Box::new(SkillTool::new(skill_loader.clone())));
-registry.register(Box::new(ExecuteTool::new(skill_loader.clone(), plan_tier, sandbox)));
+registry.register(Box::new(SkillTool::new(skill_loader.clone()).with_store(store.clone())));
+registry.register(Box::new(ExecuteTool::new(skill_loader.clone(), plan_tier, sandbox).with_store(store.clone())));
+// TODO: also call .with_plugin_store(plugin_store.clone()) so plugin env vars are injected.
 
 // Start hot-reload watcher
 tokio::spawn(skill_loader.watch());
@@ -1119,21 +1198,21 @@ const CORE_TOOLS: &[&str] = &["os", "web", "agent", "event", "message", "skill",
 
 ```
 {data_dir}/
-├── bundled/skills/               # Tier 1: Shipped with app (lowest priority)
-│   └── skill-name/
-│       └── SKILL.md
+├── (bundled skills)              # Tier 1: Compiled into binary via include_str!() (lowest priority)
+│                                 #   No filesystem directory — indexed in bundled_raw HashMap
 │
-├── nebo/skills/                  # Tier 2: Marketplace (sealed .napp archives)
+├── nebo/skills/                  # Tier 2: Marketplace (extracted + sealed .napp archives)
+│   ├── .skill-manifest.json     # Warm-start manifest (hash → skill frontmatter index)
 │   └── @org/skills/name/
-│       ├── 1.0.0.napp           # Sealed tar.gz archive
-│       └── 1.0.0/               # Extracted directory
+│       ├── 1.0.0.napp           # Sealed tar.gz archive (paid content stays encrypted)
+│       └── 1.0.0/               # Extracted directory (free content)
 │           ├── SKILL.md
 │           ├── manifest.json
 │           ├── signatures.json   # ED25519 signatures (optional)
 │           └── scripts/
 │               └── run.py
 │
-├── nebo/plugins/                 # Tier 2.5: Skills embedded in plugin .napp bundles
+├── nebo/plugins/                 # Tier 2.5: Skills embedded in marketplace plugin .napp bundles
 │   └── gws/
 │       └── 0.22.3/
 │           ├── plugin.json
@@ -1144,23 +1223,31 @@ const CORE_TOOLS: &[&str] = &["os", "web", "agent", "event", "message", "skill",
 │               └── gws-calendar/
 │                   └── SKILL.md
 │
-└── user/skills/                  # Tier 3: User-created (highest priority)
-    ├── my-skill/
-    │   ├── SKILL.md
-    │   ├── scripts/
-    │   │   └── process.py
-    │   └── references/
-    │       └── guide.md
-    ├── legacy.yaml               # Tier 4: Backward-compatible flat files
-    └── disabled.yaml.disabled    # Disabled skills
+├── user/plugins/                 # Tier 2.75: Skills embedded in user-installed plugin bundles
+│   └── my-plugin/               #   Same structure as nebo/plugins/, overrides by name
+│       └── ...
+│
+├── user/skills/                  # Tier 3: User-created (highest priority for base loader)
+│   └── my-skill/
+│       ├── SKILL.md
+│       ├── scripts/
+│       │   └── process.py
+│       └── references/
+│           └── guide.md
+│
+└── agents/<agent-id>/skills/    # App skills: loaded dynamically via load_app_skills()
+    └── app-skill-name/          #   Highest priority (loaded after base load_all)
+        └── SKILL.md
 ```
 
 ### Priority Override
 
-If a user skill has the same `name` as an installed or plugin-embedded skill, the user version wins:
+If a skill with the same `name` exists in multiple tiers, the higher-priority tier wins:
 ```
-bundled "research" → overridden by installed "research" → overridden by plugin-embedded "research" → overridden by user "research"
+bundled → installed → sealed .napp → plugin-embedded → user plugin-embedded → user → app skills (highest)
 ```
+
+App skills are loaded dynamically via `load_app_skills()` and inserted directly into the skill map, overriding any existing skill with the same name. They are unloaded when the app session ends via `unload_skills()`.
 
 ### .napp Archive Contents
 
@@ -1361,4 +1448,4 @@ const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 ---
 
-*Last updated: 2026-03-25*
+*Last updated: 2026-05-25*

@@ -86,7 +86,10 @@ struct CodeHandlerResult {
     artifact_name: Option<String>,
     checkout_url: Option<String>,
     artifact_id: Option<String>,
+    artifact_type: Option<String>,
     needs_auth: bool,
+    /// Pricing tier info forwarded from NeboLoop (name, recurringPriceCents, billingInterval, pricingModel).
+    tier: Option<serde_json::Value>,
 }
 
 /// Handle a detected code: broadcast processing event, dispatch to handler, broadcast result.
@@ -134,9 +137,11 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
                     "message": r.message,
                     "artifact_name": r.artifact_name,
                     "artifact_id": r.artifact_id,
+                    "artifact_type": r.artifact_type.as_deref().unwrap_or(code_type_str),
                     "payment_required": payment_required,
                     "checkout_url": r.checkout_url,
                     "needsAuth": r.needs_auth,
+                    "tier": r.tier,
                 }),
             );
         }
@@ -162,6 +167,69 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
     );
 }
 
+/// Handle a detected code and return a text response (for channel bridges).
+///
+/// Same logic as `handle_code` but returns the result as a string instead
+/// of broadcasting WebSocket events. Used by Slack, Telegram, etc.
+pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str) -> String {
+    let code_type_str = match code_type {
+        CodeType::Nebo => "NeboLoop connection",
+        CodeType::Skill => "skill",
+        CodeType::Work => "workflow",
+        CodeType::Agent => "agent",
+        CodeType::Loop => "loop",
+        CodeType::Plugin => "plugin",
+        CodeType::App => "app",
+    };
+
+    // Also broadcast for the frontend UI
+    state.hub.broadcast(
+        "code_processing",
+        serde_json::json!({
+            "code": code,
+            "code_type": code_type_str,
+            "status_message": format!("Installing {code_type_str}..."),
+        }),
+    );
+
+    let result = match code_type {
+        CodeType::Nebo => handle_nebo_code(state, code).await,
+        CodeType::Skill => handle_skill_code(state, code).await,
+        CodeType::Work => handle_work_code(state, code).await,
+        CodeType::Agent => handle_agent_code(state, code).await,
+        CodeType::Loop => handle_loop_code(state, code).await,
+        CodeType::Plugin => handle_plugin_code(state, code).await,
+        CodeType::App => handle_app_code(state, code).await,
+    };
+
+    match result {
+        Ok(r) => {
+            // Broadcast for frontend
+            state.hub.broadcast(
+                "code_result",
+                serde_json::json!({
+                    "code": code,
+                    "code_type": code_type_str,
+                    "success": true,
+                    "message": r.message,
+                    "artifact_name": r.artifact_name,
+                    "artifact_id": r.artifact_id,
+                }),
+            );
+
+            if let Some(url) = r.checkout_url {
+                format!("{}. Payment required: {}", r.message, url)
+            } else {
+                r.message
+            }
+        }
+        Err(e) => {
+            warn!(code = code, error = %e, "code handling failed (channel)");
+            format!("Failed to install {code_type_str}: {e}")
+        }
+    }
+}
+
 // ── Per-Type Handlers ───────────────────────────────────────────────
 
 async fn handle_nebo_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
@@ -184,7 +252,9 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             return Ok(CodeHandlerResult {
                 message: format!("Skill requires payment: {}", name),
                 artifact_name: Some(name),
+                artifact_type: Some("skill".to_string()),
                 checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+                tier: resp.tier.clone(),
                 ..Default::default()
             });
         }
@@ -236,6 +306,18 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         }
     };
 
+    // Seed artifact update tracking for skills
+    if let Some(ref dir) = skill_dir {
+        let version = dir
+            .join("manifest.json")
+            .to_str()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "1.0.0".to_string());
+        let _ = state.store.upsert_artifact_update_pref(&artifact_id, "skill", &version);
+    }
+
     // Reload skill loader so skill appears in catalog immediately
     state.skill_loader.load_all().await;
 
@@ -275,7 +357,9 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
             return Ok(CodeHandlerResult {
                 message: format!("Workflow requires payment: {}", name),
                 artifact_name: Some(name),
+                artifact_type: Some("workflow".to_string()),
                 checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+                tier: resp.tier.clone(),
                 ..Default::default()
             });
         }
@@ -356,7 +440,9 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             return Ok(CodeHandlerResult {
                 message: format!("Agent requires payment: {}", name),
                 artifact_name: Some(name),
+                artifact_type: Some("agent".to_string()),
                 checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+                tier: resp.tier.clone(),
                 ..Default::default()
             });
         }
@@ -431,7 +517,13 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             }
         };
 
-    // Cascade: resolve agent deps (plugins, skills) BEFORE activating the agent
+    // Notify frontend immediately so sidebar refreshes
+    state.hub.broadcast(
+        "agent_installed",
+        serde_json::json!({ "agentId": artifact_id, "name": artifact_name }),
+    );
+
+    // Cascade: resolve agent deps (plugins, skills) in background — don't block code_result
     {
         let has_type_config = persist_result
             .as_ref()
@@ -463,8 +555,13 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 info!(dep_type = ?d.dep_type, reference = %d.reference, "cascade: dep");
             }
             if !deps.is_empty() {
-                let mut visited = std::collections::HashSet::new();
-                crate::deps::resolve_cascade(state, deps, &mut visited).await;
+                let bg_state = state.clone();
+                let bg_name = artifact_name.clone();
+                tokio::spawn(async move {
+                    let mut visited = std::collections::HashSet::new();
+                    crate::deps::resolve_cascade(&bg_state, deps, &mut visited).await;
+                    info!(agent = %bg_name, "cascade: background dep resolution complete");
+                });
             }
         }
     }
@@ -548,6 +645,8 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 config,
                 channel_id: None,
                 degraded: None,
+                soul: agent.soul.clone(),
+                rules: agent.rules.clone(),
             };
             state
                 .agent_registry
@@ -576,9 +675,9 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     Ok(CodeHandlerResult {
         message: format!("Installed agent: {}", artifact_name),
         artifact_name: Some(artifact_name),
-        checkout_url: None,
         artifact_id: Some(artifact_id),
         needs_auth: has_auth_requirements,
+        ..Default::default()
     })
 }
 
@@ -607,7 +706,9 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
             return Ok(CodeHandlerResult {
                 message: format!("Plugin requires payment: {}", name),
                 artifact_name: Some(name),
+                artifact_type: Some("plugin".to_string()),
                 checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+                tier: resp.tier.clone(),
                 ..Default::default()
             });
         }
@@ -730,6 +831,9 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
                 warn!(plugin = %slug, error = %e, "failed to upsert plugin into DB registry");
             }
 
+            // Seed artifact update tracking with installed version
+            let _ = state.store.upsert_artifact_update_pref(&slug, "plugin", &version);
+
             // Cascade plugin-to-plugin dependencies (e.g., digest → ffmpeg).
             if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
                 if !manifest.dependencies.is_empty() {
@@ -825,7 +929,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     // Register plugin hooks with the hook dispatcher
     if let Some(manifest) = plugin_store.get_manifest(&slug) {
         if let Some(binary) = plugin_store.resolve(&slug, "*") {
-            let count = napp::register_plugin_hooks(&manifest, &binary, &state.hooks);
+            let count = napp::register_plugin_hooks(&manifest, &binary, &state.hooks, plugin_store.clone());
             if count > 0 {
                 info!(plugin = %slug, hooks = count, "registered plugin hooks");
             }

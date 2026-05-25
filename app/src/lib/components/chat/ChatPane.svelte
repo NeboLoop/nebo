@@ -8,6 +8,8 @@
   import Code from 'lucide-svelte/icons/code';
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
+  import type { UploadedAttachment } from '$lib/types/attachment';
+  import { getAttachmentType, formatFileSize } from '$lib/types/attachment';
 
   // Configure marked for streaming-friendly rendering
   marked.setOptions({
@@ -30,6 +32,7 @@
     duration: string;
     request: Record<string, unknown>;
     response: string;
+    statusText?: string;
   }
 
   interface ToolGroup {
@@ -38,20 +41,21 @@
   }
 
   type Message =
-    | { type: 'user'; content: string; time?: string }
+    | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[] }
     | { type: 'thinking'; content: string; duration: string }
     | ToolMsg
     | ToolGroup
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
-    | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string };
+    | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[] };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onsend, onstop, onedit, onredo, onasksubmit, isLoading = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], followupSuggestions = [], activityStatus = '', tokenUsage = null, quotaWarning = '', onsend, onstop, onedit, onredo, onasksubmit, onfollowupselect, ondismissfollowups, ondismisswarning, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false }: {
     messages?: Message[];
     agentName?: string;
     agentId?: string;
     threadId?: string;
+    sessionId?: string;
     headerTitle?: string;
     headerRight?: string;
     placeholder?: string;
@@ -59,12 +63,22 @@
     emptyTitle?: string;
     emptyDesc?: string;
     allAgents?: AgentInfo[];
-    onsend?: (text: string, files: unknown[]) => void;
+    followupSuggestions?: string[];
+    activityStatus?: string;
+    tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number } | null;
+    quotaWarning?: string;
+    onsend?: (text: string, files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[]) => void;
     onstop?: () => void;
     onedit?: (msgIndex: number, newContent: string) => void;
     onredo?: (msgIndex: number) => void;
     onasksubmit?: (requestId: string, value: string) => void;
+    onfollowupselect?: (suggestion: string) => void;
+    ondismissfollowups?: () => void;
+    ondismisswarning?: () => void;
+    onloadmore?: () => void;
     isLoading?: boolean;
+    isLoadingMore?: boolean;
+    hasMore?: boolean;
   } = $props();
 
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
@@ -230,6 +244,28 @@
   let scrollingProgrammatically = false;
   let pendingScrollRAF: number | null = null;
   let initialScrollDone = false;
+  let prevScrollHeight = 0;
+
+  // Preserve scroll position after older messages are prepended
+  $effect(() => {
+    if (isLoadingMore && messagesContainer) {
+      prevScrollHeight = messagesContainer.scrollHeight;
+    }
+  });
+  $effect(() => {
+    // When loading finishes and messages have been prepended, adjust scroll
+    if (!isLoadingMore && prevScrollHeight > 0 && messagesContainer) {
+      scrollingProgrammatically = true;
+      requestAnimationFrame(() => {
+        if (messagesContainer) {
+          const added = messagesContainer.scrollHeight - prevScrollHeight;
+          messagesContainer.scrollTop += added;
+        }
+        prevScrollHeight = 0;
+        requestAnimationFrame(() => { scrollingProgrammatically = false; });
+      });
+    }
+  });
 
   // Auto-scroll when messages change
   $effect(() => {
@@ -279,6 +315,11 @@
       autoScrollEnabled = false;
     } else if (!wasNearBottom && !showScrollButton) {
       autoScrollEnabled = true;
+    }
+
+    // Load older messages when scrolled near top
+    if (scrollTop < 100 && hasMore && !isLoadingMore && onloadmore) {
+      onloadmore();
     }
   }
 
@@ -412,12 +453,16 @@
 
   <!-- Messages / Empty state -->
   {#if !hasMessages && emptyTitle}
-    <div class="flex-1 flex flex-col items-center justify-center gap-3 p-6">
+    <div class="flex-1 flex flex-col items-center justify-center gap-4 p-6">
       {#if emptyIcon}
         <div class="w-12 h-12 rounded-box flex items-center justify-center font-mono text-xl font-semibold bg-primary text-primary-content">{emptyIcon}</div>
+        <div class="text-base font-semibold">{emptyTitle}</div>
+      {:else}
+        <div class="text-2xl font-semibold text-base-content">{emptyTitle}</div>
       {/if}
-      <div class="text-base font-semibold">{emptyTitle}</div>
-      <div class="text-sm text-center max-w-[280px] leading-relaxed">{emptyDesc}</div>
+      {#if emptyDesc}
+        <div class="text-sm text-base-content/50 text-center max-w-[320px] leading-relaxed">{emptyDesc}</div>
+      {/if}
     </div>
   {:else}
   <div class="flex-1 relative min-h-0">
@@ -436,6 +481,11 @@
     {/if}
   <div bind:this={messagesContainer} onscroll={handleScroll} class="h-full overflow-y-auto p-[18px_24px]">
   <div class="max-w-3xl mx-auto flex flex-col gap-1" data-selectable>
+    {#if isLoadingMore}
+      <div class="flex justify-center py-3">
+        <div class="loading loading-spinner loading-sm text-base-content/30"></div>
+      </div>
+    {/if}
     {#each groupedMessages as msg, idx}
       {#if msg.type === 'user'}
         {@const origIdx = originalIndices[idx]}
@@ -471,6 +521,42 @@
           <div class="max-w-[640px] self-end mt-3">
             <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 rounded-br-sm">
               {@html renderUserContent(msg.content)}
+              {#if msg.attachments?.length}
+                <div class="flex flex-wrap gap-2 mt-2">
+                  {#each msg.attachments as att}
+                    {@const attType = getAttachmentType(att.mimeType)}
+                    {#if attType === 'image'}
+                      <a href={att.url} target="_blank" rel="noopener" class="block">
+                        <img
+                          src={att.thumbnailUrl || att.url}
+                          alt={att.filename}
+                          class="max-w-[240px] max-h-[180px] rounded-lg border border-base-content/15 object-cover"
+                          loading="lazy"
+                        />
+                      </a>
+                    {:else if attType === 'video'}
+                      <video
+                        src={att.url}
+                        controls
+                        preload="metadata"
+                        class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
+                      >
+                        <track kind="captions" />
+                      </video>
+                    {:else}
+                      <a
+                        href={att.url}
+                        download={att.filename}
+                        class="flex items-center gap-2 py-2 px-3 rounded-lg border border-base-content/15 bg-base-200/50 hover:bg-base-200 transition-colors no-underline text-inherit"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        <span class="text-xs font-medium truncate max-w-[160px]">{att.filename}</span>
+                        <span class="text-xs text-base-content/50 font-mono shrink-0">{formatFileSize(att.size)}</span>
+                      </a>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
             </div>
             <div class="flex items-center gap-1 justify-end mt-1.5">
               {#if msg.time}
@@ -508,7 +594,7 @@
 
       {:else if msg.type === 'tool-group'}
         {@const hasRunning = msg.tools.some((t: ToolMsg) => t.status === 'running')}
-        {@const isOpen = hasRunning || collapsedToolGroups[idx]}
+        {@const isOpen = !!collapsedToolGroups[idx]}
         <div class="max-w-[640px] my-1">
           <button
             class="flex items-center gap-1.5 text-xs text-base-content/50 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/70 transition-colors"
@@ -542,7 +628,7 @@
                     {/if}
                   </div>
                   <div class="flex-1 min-w-0 pb-3">
-                    <div class="text-xs font-mono {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.name}{#if tool.status === 'running'}<span class="text-base-content/50 ml-1">running...</span>{/if}</div>
+                    <div class="text-xs font-mono {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.name}{#if tool.status === 'running'}<span class="text-base-content/50 ml-1">{tool.statusText || 'running...'}</span>{/if}</div>
                     {#if tool.status !== 'running'}
                       {#if isExpanded}
                         <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-hidden">
@@ -618,6 +704,42 @@
               {@html renderMarkdown(msg.content)}
             {/if}
           </div>
+          {#if msg.attachments?.length}
+            <div class="flex flex-wrap gap-2 mt-2">
+              {#each msg.attachments as att}
+                {@const attType = getAttachmentType(att.mimeType)}
+                {#if attType === 'image'}
+                  <a href={att.url} target="_blank" rel="noopener" class="block">
+                    <img
+                      src={att.thumbnailUrl || att.url}
+                      alt={att.filename}
+                      class="max-w-[240px] max-h-[180px] rounded-lg border border-base-content/15 object-cover"
+                      loading="lazy"
+                    />
+                  </a>
+                {:else if attType === 'video'}
+                  <video
+                    src={att.url}
+                    controls
+                    preload="metadata"
+                    class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
+                  >
+                    <track kind="captions" />
+                  </video>
+                {:else}
+                  <a
+                    href={att.url}
+                    download={att.filename}
+                    class="flex items-center gap-2 py-2 px-3 rounded-lg border border-base-content/15 bg-base-200/50 hover:bg-base-200 transition-colors no-underline text-inherit"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                    <span class="text-xs font-medium truncate max-w-[160px]">{att.filename}</span>
+                    <span class="text-xs text-base-content/50 font-mono shrink-0">{formatFileSize(att.size)}</span>
+                  </a>
+                {/if}
+              {/each}
+            </div>
+          {/if}
           <!-- Inline artifact cards for this message (populated by agent tool results) -->
           {#each artifacts.filter(a => a.messageId === msg.id) as artifact}
             {@const ArtIcon = artifactIcons[artifact.kind]}
@@ -661,17 +783,52 @@
     {/each}
 
     {#if isLoading && groupedMessages.length > 0 && groupedMessages[groupedMessages.length - 1]?.type !== 'assistant'}
-      <div class="max-w-[640px] mt-3 py-2">
-        <svg width="40" height="20" viewBox="0 0 40 20" class="text-base-content/40">
-          <circle cx="8" cy="10" r="3" fill="currentColor" class="animate-[nebo-think_1.4s_ease-in-out_infinite]" />
-          <circle cx="20" cy="10" r="3" fill="currentColor" class="animate-[nebo-think_1.4s_ease-in-out_0.2s_infinite]" />
-          <circle cx="32" cy="10" r="3" fill="currentColor" class="animate-[nebo-think_1.4s_ease-in-out_0.4s_infinite]" />
-        </svg>
+      <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2">
+        <span class="loading loading-spinner loading-xs text-primary"></span>
+        <span class="text-sm text-base-content/50 animate-pulse">Working...</span>
       </div>
     {/if}
   </div>
   </div>
   </div>
+  {/if}
+
+  <!-- Token usage badge -->
+  {#if tokenUsage}
+    {@const uncachedInput = Math.max(0, tokenUsage.input - (tokenUsage.cacheRead ?? 0) - (tokenUsage.cacheCreation ?? 0))}
+    <div class="max-w-3xl mx-auto w-full shrink-0 px-6 pb-1">
+      <span class="text-xs text-base-content/50 font-mono" title="{tokenUsage.input.toLocaleString()} total · {(tokenUsage.cacheRead ?? 0).toLocaleString()} cache read · {(tokenUsage.cacheCreation ?? 0).toLocaleString()} cache write">
+        {uncachedInput.toLocaleString()} in · {tokenUsage.output.toLocaleString()} out
+      </span>
+    </div>
+  {/if}
+
+  <!-- Follow-up suggestion chips -->
+  {#if followupSuggestions.length > 0 && !isLoading}
+    <div class="max-w-3xl mx-auto w-full shrink-0 px-4 pb-2 flex flex-wrap items-center gap-2">
+      {#each followupSuggestions as suggestion}
+        <button
+          class="btn btn-sm btn-outline btn-primary rounded-full text-xs"
+          onclick={() => onfollowupselect?.(suggestion)}
+        >
+          {suggestion}
+        </button>
+      {/each}
+      <button
+        class="text-xs text-base-content/40 hover:text-base-content/70 transition-colors cursor-pointer bg-transparent border-none px-1"
+        onclick={() => ondismissfollowups?.()}
+      >dismiss</button>
+    </div>
+  {/if}
+
+  <!-- Quota warning banner -->
+  {#if quotaWarning}
+    <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2">
+      <div class="px-3 py-2 rounded-lg bg-warning/10 border border-warning/30 flex items-center justify-between">
+        <span class="text-xs text-warning-content">{quotaWarning}</span>
+        <button class="btn btn-ghost btn-xs" onclick={() => ondismisswarning?.()}>x</button>
+      </div>
+    </div>
   {/if}
 
   <!-- Composer -->
@@ -680,6 +837,7 @@
       {agentName}
       {agentId}
       {threadId}
+      {sessionId}
       {placeholder}
       {allAgents}
       {onsend}

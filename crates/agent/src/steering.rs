@@ -542,6 +542,31 @@ impl Generator for LoopDetector {
             });
         }
 
+        // Duplicate tool call detection
+        let mut seen: std::collections::HashMap<(u64, u64), (usize, String)> = std::collections::HashMap::new();
+        for (i, &(name_hash, args_hash, _)) in ctx.recent_tool_result_hashes.iter().enumerate() {
+            let name = ctx.recent_tool_names.get(i).cloned().unwrap_or_default();
+            seen.entry((name_hash, args_hash))
+                .and_modify(|e| e.0 += 1)
+                .or_insert((1, name));
+        }
+
+        for ((_,_), (count, tool_name)) in &seen {
+            if *count >= 3 {
+                directives.push(SteeringDirective {
+                    label: "Duplicate Tool Call".to_string(),
+                    content: format!(
+                        "You have called {} with identical arguments {} times. \
+                         The result will not change. Try a different approach: \
+                         different parameters, a different tool, or summarize \
+                         what you know and respond to the user.",
+                        tool_name, count
+                    ),
+                    priority: 8,
+                });
+            }
+        }
+
         directives
     }
 }
@@ -1212,6 +1237,95 @@ mod tests {
         assert!(
             !result.iter().any(|d| d.label == "Ping-Pong"),
             "LoopDetector should NOT have ping-pong detection (removed)"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_detection_fires_at_3() {
+        let generator = LoopDetector;
+        let mut ctx = make_ctx(vec![]);
+        ctx.recent_tool_result_hashes = vec![
+            (42, 99, 1),
+            (42, 99, 2),
+            (42, 99, 3),
+        ];
+        ctx.recent_tool_names = vec![
+            "web".to_string(),
+            "web".to_string(),
+            "web".to_string(),
+        ];
+
+        let result = generator.generate(&ctx);
+        assert!(
+            result.iter().any(|d| d.label == "Duplicate Tool Call"),
+            "LoopDetector should emit Duplicate Tool Call at 3 identical (name, args) pairs"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_detection_silent_below_3() {
+        let generator = LoopDetector;
+        let mut ctx = make_ctx(vec![]);
+        ctx.recent_tool_result_hashes = vec![
+            (42, 99, 1),
+            (42, 99, 2),
+        ];
+        ctx.recent_tool_names = vec![
+            "web".to_string(),
+            "web".to_string(),
+        ];
+
+        let result = generator.generate(&ctx);
+        assert!(
+            !result.iter().any(|d| d.label == "Duplicate Tool Call"),
+            "LoopDetector should NOT fire Duplicate Tool Call with only 2 identical pairs"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_detection_different_args_no_fire() {
+        let generator = LoopDetector;
+        let mut ctx = make_ctx(vec![]);
+        ctx.recent_tool_result_hashes = vec![
+            (42, 100, 1),
+            (42, 200, 2),
+            (42, 300, 3),
+        ];
+        ctx.recent_tool_names = vec![
+            "system".to_string(),
+            "system".to_string(),
+            "system".to_string(),
+        ];
+
+        let result = generator.generate(&ctx);
+        assert!(
+            !result.iter().any(|d| d.label == "Duplicate Tool Call"),
+            "LoopDetector should NOT fire when args_hash differs across calls"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_detection_includes_tool_name() {
+        let generator = LoopDetector;
+        let mut ctx = make_ctx(vec![]);
+        ctx.recent_tool_result_hashes = vec![
+            (77, 88, 10),
+            (77, 88, 20),
+            (77, 88, 30),
+        ];
+        ctx.recent_tool_names = vec![
+            "bot".to_string(),
+            "bot".to_string(),
+            "bot".to_string(),
+        ];
+
+        let result = generator.generate(&ctx);
+        let dup = result.iter().find(|d| d.label == "Duplicate Tool Call")
+            .expect("should have Duplicate Tool Call directive");
+        assert!(
+            dup.content.contains("bot"),
+            "Duplicate Tool Call content should include the tool name 'bot', got: {}",
+            dup.content
         );
     }
 }

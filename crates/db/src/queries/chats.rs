@@ -203,15 +203,18 @@ impl Store {
                     |row| row.get(0),
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
+            // Use composite cursor (created_at, id) to avoid skipping messages
+            // created in the same second as the cursor message.
             let mut stmt = conn
                 .prepare(
-                    "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
-                 ORDER BY created_at DESC, id DESC LIMIT ?3",
+                    "SELECT * FROM chat_messages WHERE chat_id = ?1
+                     AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+                 ORDER BY created_at DESC, id DESC LIMIT ?4",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt
                 .query_map(
-                    params![chat_id, cursor_ts, batch_limit],
+                    params![chat_id, cursor_ts, before_id, batch_limit],
                     row_to_chat_message,
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;

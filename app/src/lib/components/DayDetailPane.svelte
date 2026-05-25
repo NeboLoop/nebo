@@ -1,9 +1,9 @@
 <script lang="ts">
   import { AGENT_COLORS } from '$lib/tokens.js';
-  import { AGENTS } from '$lib/data.js';
+  import { AGENTS, AGENT_ID_REVERSE } from '$lib/data.js';
   import { triggerGlyph, fmtTime } from '$lib/utils.js';
-  import { getRecentRuns, addUserItem, getScheduleAgents, snapTo15, userScheduleItems, updateUserItem } from '$lib/stores/schedule.js';
-  import type { CalendarItem } from '$lib/stores/schedule.js';
+  import { getRecentRuns, getWorkflowDef, getScheduleAgents, snapTo15, userScheduleItems, updateUserItem, loadScheduleFromAPI } from '$lib/stores/schedule.js';
+  import type { CalendarItem, WorkflowDefData } from '$lib/stores/schedule.js';
 
   interface CreateData { hour: number; date: Date }
 
@@ -30,14 +30,13 @@
       : []
   );
 
-  // Workflow definition — loaded from API via schedule store, no longer from mock data
-  interface WorkflowDef {
-    activities: { id: string; intent: string }[];
-  }
-  const workflowDef = $derived.by((): WorkflowDef | null => {
-    return null; // TODO: load from listAgentWorkflows() API when item selected
+  // Workflow definition — loaded from schedule store cache (populated by loadScheduleFromAPI)
+  const workflowDef = $derived.by((): WorkflowDefData | null => {
+    if (!item?.agentFull || !item?.workflowId) return null;
+    return getWorkflowDef(item.agentFull, item.workflowId);
   });
   const workflowActivities = $derived(workflowDef?.activities ?? []);
+  const workflowConnections = $derived(workflowDef?.connections ?? []);
 
   function statusIcon(status: string): string {
     if (status === 'success') return '✓';
@@ -100,13 +99,13 @@
   let formLabel = $state('');
   let formHour = $state(9);
   let formMinute = $state(0);
-  let formDurMinutes = $state(30);
   let formDays = $state<number[]>([1, 2, 3, 4, 5]);
   let formTriggerType = $state<'schedule' | 'heartbeat'>('schedule');
   let formInterval = $state('30m');
+  let formSaving = $state(false);
+  let formError = $state('');
 
   const dayLabels = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const durationPresets = [15, 30, 45, 60, 90, 120];
   const intervalPresets = ['5m', '10m', '15m', '30m', '1h', '2h', '4h'];
   const editHours = Array.from({ length: 24 }, (_, i) => i);
   const editMinutes = [0, 15, 30, 45];
@@ -118,9 +117,10 @@
       formMinute = Math.round((snapped - Math.floor(snapped)) * 60);
       formAgent = schedAgents[0] || '';
       formLabel = '';
-      formDurMinutes = 30;
       formTriggerType = 'schedule';
       formInterval = '30m';
+      formSaving = false;
+      formError = '';
       const wd = createData.date.getDay() === 0 ? 7 : createData.date.getDay();
       formDays = [wd];
     }
@@ -153,20 +153,47 @@
     return dayPart;
   }
 
-  function handleSave() {
+  /** Build a cron expression from form values. ISO weekdays (Mon=1..Sun=7) → cron (Sun=0..Sat=6). */
+  function buildCron(): string {
+    const cronDays = formDays.map(d => d === 7 ? 0 : d).sort().join(',');
+    return `${formMinute} ${formHour} * * ${cronDays}`;
+  }
+
+  async function handleSave() {
     if (!formAgent || !formLabel.trim() || formDays.length === 0) return;
-    const fractionalHour = formHour + formMinute / 60;
-    addUserItem({
-      agent: formAgent,
-      agentFull: '',
-      label: formLabel.trim(),
-      days: formDays,
-      hour: fractionalHour,
-      dur: formDurMinutes / 60,
-      triggerType: formTriggerType,
-      recurrence: recurrenceText(),
-    });
-    onclose?.();
+    const agentFullId = AGENT_ID_REVERSE[formAgent];
+    if (!agentFullId) { formError = 'Unknown agent'; return; }
+
+    formSaving = true;
+    formError = '';
+    try {
+      const api = await import('$lib/api/nebo');
+      const bindingName = formLabel.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+      if (formTriggerType === 'schedule') {
+        await api.createAgentWorkflow(agentFullId, {
+          bindingName,
+          triggerType: 'schedule',
+          triggerConfig: { cron: buildCron() },
+          description: formLabel.trim(),
+        });
+      } else {
+        await api.createAgentWorkflow(agentFullId, {
+          bindingName,
+          triggerType: 'heartbeat',
+          triggerConfig: { interval: formInterval },
+          description: formLabel.trim(),
+        });
+      }
+
+      // Reload schedule data so the new event appears on the calendar
+      await loadScheduleFromAPI();
+      onclose?.();
+    } catch (e: any) {
+      formError = e?.message || 'Failed to create event';
+    } finally {
+      formSaving = false;
+    }
   }
 
   const showCreate = $derived(createData && !item);
@@ -179,7 +206,7 @@
       preview = {
         agent: formAgent,
         hour: formHour + formMinute / 60,
-        dur: formDurMinutes / 60,
+        dur: 0.25,
         label: formLabel || 'New event',
       };
     } else {
@@ -192,9 +219,9 @@
   <!-- hidden -->
 {:else if showCreate}
   <!-- ─── Create Form ─────────────────────────────────────────── -->
-  <div class="w-72 border-l border-base-content/10 bg-base-100 p-5 flex flex-col gap-4 shrink-0 overflow-y-auto">
+  <div class="w-80 border-l border-base-content/10 bg-base-100 p-5 flex flex-col gap-4 shrink-0 overflow-y-auto">
     <div class="flex items-center justify-between">
-      <div class="text-sm font-semibold">New Scheduled Event</div>
+      <div class="text-sm font-semibold">Schedule a Task</div>
       <button class="w-6 h-6 rounded grid place-items-center hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors text-lg leading-none" onclick={onclose}>×</button>
     </div>
 
@@ -211,24 +238,24 @@
       </select>
     </div>
 
-    <!-- Label -->
+    <!-- What should the agent do? -->
     <div class="flex flex-col gap-1">
-      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Label</span>
-      <input type="text" class="input input-bordered input-sm w-full" placeholder="e.g. Morning scan" bind:value={formLabel} />
+      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">What should they do?</span>
+      <input type="text" class="input input-bordered input-sm w-full" placeholder="e.g. Morning email summary" bind:value={formLabel} />
     </div>
 
     <!-- Trigger Type -->
     <div class="flex flex-col gap-1">
-      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Trigger</span>
+      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">How often?</span>
       <div class="inline-flex bg-base-200/80 rounded-lg p-0.5 border border-base-content/5">
         <button
           class="px-3 py-1 rounded-md text-xs cursor-pointer transition-all {formTriggerType === 'schedule' ? 'bg-base-100 font-medium text-base-content shadow-sm' : 'text-base-content/70'}"
           onclick={() => formTriggerType = 'schedule'}
-        >Schedule</button>
+        >At a time</button>
         <button
           class="px-3 py-1 rounded-md text-xs cursor-pointer transition-all {formTriggerType === 'heartbeat' ? 'bg-base-100 font-medium text-base-content shadow-sm' : 'text-base-content/70'}"
           onclick={() => formTriggerType = 'heartbeat'}
-        >Interval</button>
+        >On an interval</button>
       </div>
     </div>
 
@@ -248,7 +275,7 @@
     {:else}
       <!-- Time -->
       <div class="flex flex-col gap-1">
-        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Time</span>
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">At</span>
         <div class="flex items-center gap-1.5">
           <select class="select select-bordered select-sm flex-1" bind:value={formHour}>
             {#each editHours as h}
@@ -265,20 +292,7 @@
       </div>
     {/if}
 
-    <!-- Duration -->
-    <div class="flex flex-col gap-1">
-      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Duration</span>
-      <div class="flex flex-wrap gap-1">
-        {#each durationPresets as d}
-          <button
-            class="px-2 py-0.5 rounded-md text-xs cursor-pointer border transition-colors {formDurMinutes === d ? 'bg-primary text-primary-content border-primary' : 'bg-base-200 border-base-300 hover:bg-base-300'}"
-            onclick={() => formDurMinutes = d}
-          >{d < 60 ? `${d}m` : `${d / 60}h`}</button>
-        {/each}
-      </div>
-    </div>
-
-    <!-- Recurrence -->
+    <!-- Repeat -->
     <div class="flex flex-col gap-1.5">
       <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Repeat on</span>
       <div class="flex gap-1">
@@ -295,12 +309,33 @@
       </div>
     </div>
 
+    <!-- Summary -->
+    <div class="rounded-lg bg-base-200/50 border border-base-300 px-3 py-2">
+      <div class="text-xs text-base-content/70">
+        {#if formTriggerType === 'heartbeat'}
+          Runs every {formInterval}, {recurrenceText()}
+        {:else}
+          Runs at {fmtHourLabel(formHour)}{formMinute > 0 ? `:${String(formMinute).padStart(2, '0')}` : ''}, {recurrenceText()}
+        {/if}
+      </div>
+    </div>
+
+    <!-- Error -->
+    {#if formError}
+      <div class="text-xs text-error">{formError}</div>
+    {/if}
+
     <!-- Save -->
     <button
-      class="btn btn-primary btn-sm w-full mt-1"
-      disabled={!formAgent || !formLabel.trim() || formDays.length === 0}
+      class="btn btn-primary btn-sm w-full"
+      disabled={!formAgent || !formLabel.trim() || formDays.length === 0 || formSaving}
       onclick={handleSave}
-    >Create Event</button>
+    >
+      {#if formSaving}
+        <span class="loading loading-spinner loading-xs"></span>
+      {/if}
+      Schedule Task
+    </button>
   </div>
 
 {:else if showDetail && item}
@@ -308,20 +343,18 @@
   <div class="w-80 border-l border-base-content/10 bg-base-100 p-5 flex flex-col gap-3 shrink-0 overflow-y-auto">
     <!-- Header -->
     <div class="flex items-start gap-3">
-      <span class="font-mono text-lg shrink-0 {c?.textClass}">
-        {triggerGlyph(item.kind)}
+      <span
+        class="inline-flex items-center gap-1.5 mt-0.5 px-2 py-0.5 rounded-full text-xs font-medium shrink-0 {c?.fillClass} {c?.textClass}"
+      >
+        <span class="w-1.5 h-1.5 rounded-full {c?.dotClass}"></span>
+        {agent?.name ?? item.agent}
       </span>
-      <div class="flex-1 min-w-0">
-        <div class="text-sm font-semibold truncate">{item.label}</div>
-        <span
-          class="inline-flex items-center gap-1.5 mt-1 px-2 py-0.5 rounded-full text-xs font-medium {c?.fillClass} {c?.textClass}"
-        >
-          <span class="w-1.5 h-1.5 rounded-full {c?.dotClass}"></span>
-          {agent?.name ?? item.agent}
-        </span>
-      </div>
+      <div class="flex-1"></div>
       <button class="w-6 h-6 rounded grid place-items-center hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors text-lg leading-none" onclick={onclose}>×</button>
     </div>
+
+    <!-- Full title (never truncated) -->
+    <div class="text-sm font-semibold leading-snug">{item.label}</div>
 
     {#if editing}
       <!-- ─── Inline Edit ──────────────────────────────────── -->
@@ -341,19 +374,6 @@
                 <option value={m}>{String(m).padStart(2, '0')}</option>
               {/each}
             </select>
-          </div>
-        </div>
-
-        <!-- Duration -->
-        <div class="flex flex-col gap-1">
-          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Duration</span>
-          <div class="flex flex-wrap gap-1">
-            {#each durationPresets as d}
-              <button
-                class="px-2 py-0.5 rounded-md text-xs cursor-pointer border transition-colors {editDurMinutes === d ? 'bg-primary text-primary-content border-primary' : 'bg-base-200 border-base-300 hover:bg-base-300'}"
-                onclick={() => editDurMinutes = d}
-              >{d < 60 ? `${d}m` : `${d / 60}h`}</button>
-            {/each}
           </div>
         </div>
 
@@ -378,65 +398,56 @@
     {:else}
       <!-- ─── Read-only details ────────────────────────────── -->
       <div class="flex flex-col gap-3 text-sm">
-        <!-- When -->
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-0.5">When</div>
-          <div class="flex items-center justify-between">
-            <div>
-              <div class="text-base-content">{fmtTime(item.hour)} – {fmtTime(item.end)}</div>
-              {#if item.recurrence}
-                <div class="text-xs text-base-content/70 mt-0.5">{item.recurrence}</div>
-              {/if}
-            </div>
-            {#if isEditable}
-              <button
-                class="text-xs text-primary hover:underline cursor-pointer"
-                onclick={startEditing}
-              >Edit</button>
-            {/if}
-          </div>
-        </div>
-
-        <!-- Last Run -->
-        {#if item.run}
-          <div>
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-0.5">Last Run</div>
-            <div class="flex items-center gap-2">
-              <span class="font-mono text-xs {statusColor(item.run.status)}">{statusIcon(item.run.status)}</span>
-              <span class="text-base-content font-mono text-xs">{item.run.actualDuration}</span>
-              {#if item.run.tokens}
-                <span class="text-xs text-base-content/50">· {item.run.tokens.input.toLocaleString()} in / {item.run.tokens.output.toLocaleString()} out</span>
-              {/if}
-            </div>
-            {#if item.run.startedAt}
-              <div class="text-xs text-base-content/50 mt-0.5">{item.run.startedAt}</div>
-            {/if}
-          </div>
+        <!-- Description (from workflow definition) -->
+        {#if workflowDef?.description && workflowDef.description !== item.label}
+          <div class="text-xs text-base-content/70 leading-relaxed">{workflowDef.description}</div>
         {/if}
 
-        <!-- Trigger -->
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-0.5">Trigger</div>
-          <div class="text-base-content text-xs">
-            {item.triggerType === 'heartbeat' ? 'Heartbeat · interval' : item.kind === 'sched' ? 'Scheduled · recurring' : item.kind === 'event' ? 'Event · webhook' : 'You · manual'}
+        <!-- Schedule + Edit -->
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-base-content/70">{fmtTime(item.hour)} – {fmtTime(item.end)}</span>
+            {#if item.recurrence}
+              <span class="text-xs text-base-content/50">· {item.recurrence}</span>
+            {/if}
           </div>
+          {#if isEditable}
+            <button
+              class="text-xs text-primary hover:underline cursor-pointer"
+              onclick={startEditing}
+            >Edit</button>
+          {/if}
         </div>
 
-        <!-- Open in Canvas -->
-        {#if item.agentFull && item.workflowId && onopencanvas}
-          <button
-            class="btn btn-sm btn-ghost gap-1.5 w-full justify-start text-primary"
-            onclick={() => onopencanvas(item.agentFull)}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
-            <span class="text-xs">Open in Canvas</span>
-          </button>
+        <!-- Trigger + meta badges -->
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs bg-base-200 text-base-content/70">
+            {triggerGlyph(item.kind)}
+            {item.triggerType === 'heartbeat' ? 'Interval' : item.kind === 'sched' ? 'Scheduled' : item.kind === 'event' ? 'Event-triggered' : 'Manual'}
+          </span>
+          {#if workflowDef?.emit}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs bg-accent/10 text-accent">
+              Emits: {workflowDef.emit}
+            </span>
+          {/if}
+          {#if workflowDef?.isActive === false}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs bg-warning/10 text-warning">
+              Paused
+            </span>
+          {/if}
+        </div>
+
+        <!-- Last Fired (from workflow definition) -->
+        {#if workflowDef?.lastFired}
+          <div class="text-xs text-base-content/50 font-mono">Last fired: {workflowDef.lastFired}</div>
         {/if}
 
         <!-- Workflow Activities -->
         {#if workflowActivities.length > 0}
           <div class="pt-2 border-t border-base-content/5">
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Workflow</div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">
+              Activities ({workflowActivities.length})
+            </div>
             {#each workflowActivities as activity, i}
               {@const runActivity = item.run?.activities?.find((a) => a.id === activity.id)}
               <div class="flex items-start gap-2 py-1.5 {i < workflowActivities.length - 1 ? 'border-b border-base-content/5' : ''}">
@@ -447,7 +458,16 @@
                 {/if}
                 <div class="flex-1 min-w-0">
                   <div class="text-xs font-medium">{activity.id}</div>
-                  <div class="text-xs text-base-content/50 leading-snug">{activity.intent}</div>
+                  {#if activity.intent}
+                    <div class="text-xs text-base-content/50 leading-snug">{activity.intent}</div>
+                  {/if}
+                  {#if activity.skills?.length}
+                    <div class="flex flex-wrap gap-1 mt-1">
+                      {#each activity.skills as skill}
+                        <span class="px-1.5 py-0.5 rounded text-xs bg-base-200 text-base-content/50 font-mono">{skill}</span>
+                      {/each}
+                    </div>
+                  {/if}
                 </div>
                 {#if runActivity?.duration}
                   <span class="font-mono text-xs text-base-content/50 shrink-0">{runActivity.duration}</span>
@@ -457,19 +477,85 @@
           </div>
         {/if}
 
+        <!-- Connections (activity flow) -->
+        {#if workflowConnections.length > 0}
+          <div class="pt-2 border-t border-base-content/5">
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Flow</div>
+            <div class="flex flex-col gap-1">
+              {#each workflowConnections as conn}
+                <div class="flex items-center gap-1.5 text-xs text-base-content/70">
+                  <span class="font-mono font-medium">{conn.from}</span>
+                  <span class="text-base-content/30">&rarr;</span>
+                  <span class="font-mono font-medium">{conn.to}</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Last Run -->
+        {#if item.run}
+          <div class="pt-2 border-t border-base-content/5">
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Last Run</div>
+            <div class="flex items-center gap-2 mb-1">
+              <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium {item.run.status === 'success' ? 'bg-success/10 text-success' : item.run.status === 'failed' ? 'bg-error/10 text-error' : 'bg-base-200 text-base-content/70'}">
+                {statusIcon(item.run.status)} {item.run.status}
+              </span>
+              {#if item.run.actualDuration}
+                <span class="text-xs text-base-content/50 font-mono">{item.run.actualDuration}</span>
+              {/if}
+              {#if item.run.totalTokensUsed}
+                <span class="text-xs text-base-content/50 font-mono">· {item.run.totalTokensUsed.toLocaleString()} tok</span>
+              {/if}
+            </div>
+            {#if item.run.startedAt}
+              <div class="text-xs text-base-content/50 mb-2">{item.run.startedAt}</div>
+            {/if}
+
+            <!-- Run output preview -->
+            {#if item.run.output}
+              <div class="rounded-lg bg-base-200/50 border border-base-300 p-3 mb-2">
+                <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Output</div>
+                <div class="text-xs text-base-content leading-relaxed whitespace-pre-wrap break-words max-h-40 overflow-y-auto">{item.run.output.length > 500 ? item.run.output.slice(0, 500) + '...' : item.run.output}</div>
+              </div>
+            {/if}
+
+            <!-- Error details -->
+            {#if item.run.status === 'failed' && item.run.error}
+              <div class="rounded-lg bg-error/5 border border-error/20 p-3 mb-2">
+                <div class="text-xs font-semibold uppercase tracking-wider text-error/70 mb-1">Error{item.run.errorActivity ? ` in ${item.run.errorActivity}` : ''}</div>
+                <div class="text-xs text-error leading-relaxed whitespace-pre-wrap break-words">{item.run.error}</div>
+              </div>
+            {/if}
+          </div>
+        {:else if !workflowDef}
+          <div class="pt-2 border-t border-base-content/5">
+            <div class="text-xs text-base-content/50">No runs yet</div>
+          </div>
+        {/if}
+
         <!-- Recent Runs -->
         {#if recentRuns.length > 0}
           <div class="pt-2 border-t border-base-content/5">
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Recent Runs</div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">History</div>
             {#each recentRuns as run}
-              <div class="flex items-center gap-2 py-1 border-b border-base-content/5 last:border-b-0">
-                <span class="font-mono text-xs {statusColor(run.status)}">{statusIcon(run.status)}</span>
-                <span class="flex-1 text-xs text-base-content/70 truncate">{run.date}</span>
-                <span class="font-mono text-xs text-base-content/50">{run.duration}</span>
+              <div class="py-1.5 border-b border-base-content/5 last:border-b-0">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-xs {statusColor(run.status)}">{statusIcon(run.status)}</span>
+                  <span class="flex-1 text-xs text-base-content/70 truncate">{run.date}</span>
+                  <span class="font-mono text-xs text-base-content/50">{run.duration}</span>
+                </div>
+                {#if run.output}
+                  <div class="text-xs text-base-content/50 mt-0.5 ml-5 truncate">{run.output.slice(0, 80)}{run.output.length > 80 ? '...' : ''}</div>
+                {/if}
+                {#if run.status === 'failed' && run.error}
+                  <div class="text-xs text-error/70 mt-0.5 ml-5 truncate">{run.error.slice(0, 80)}{run.error.length > 80 ? '...' : ''}</div>
+                {/if}
               </div>
             {/each}
           </div>
         {/if}
+
       </div>
     {/if}
   </div>

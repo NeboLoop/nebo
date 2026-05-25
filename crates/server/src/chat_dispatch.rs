@@ -63,6 +63,15 @@ pub struct ChatConfig {
     /// Injected as a system-role message after the user prompt — visible to the
     /// LLM but not rendered in the frontend. Used for @mention routing context.
     pub mention_context: Option<String>,
+    /// Tool scope name from agent.json. Restricts sidecar tools/skills/plugins
+    /// to those declared in the named scope.
+    pub tool_scope: Option<String>,
+    /// When true, agent presents a plan before executing tool calls (Plan Mode).
+    pub plan_mode: bool,
+    /// Channel context (Slack/Discord/etc.) when this run was triggered by an
+    /// inbound channel message. Propagated to `ToolContext.channel` so plugin
+    /// uploads target the right destination. None for web UI / scheduled runs.
+    pub channel_ctx: Option<tools::ChannelContext>,
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -153,6 +162,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let images = config.images;
     let origin_agent_id = config.origin_agent_id;
     let mention_context = config.mention_context;
+    let tool_scope = config.tool_scope;
+    let plan_mode = config.plan_mode;
 
     // Broadcast chat_created so frontend can track new conversations
     {
@@ -231,6 +242,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             proactive_inbox: Some(proactive_inbox.clone()),
             progress: Some(progress),
             mention_context,
+            tool_scope,
+            plan_mode,
             ..Default::default()
         };
 
@@ -258,7 +271,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             if !text_buffer.is_empty() {
                                 hub.broadcast("chat_stream", ws_payload!(
                                     "content": &text_buffer,
-                                    "html": md_to_html(&full_response),
                                 ));
                                 text_buffer.clear();
                             }
@@ -283,7 +295,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "chat_stream",
                                     ws_payload!(
                                         "content": &text_buffer,
-                                        "html": md_to_html(&full_response),
                                     ),
                                 );
                                 text_buffer.clear();
@@ -323,6 +334,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                             task_status: None,
                                             artifacts: vec![],
                                             error: None,
+                                            attachments: vec![],
                                         };
                                         if let Err(e) = send_to_channel(
                                             &cfg.provider,
@@ -356,7 +368,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "chat_stream",
                                     ws_payload!(
                                         "content": &text_buffer,
-                                        "html": md_to_html(&full_response),
                                     ),
                                 );
                                 text_buffer.clear();
@@ -406,11 +417,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             if let Some(ref usage) = event.usage {
                                 hub.broadcast(
                                     "usage",
-                                    serde_json::json!({
-                                        "session_id": sid,
+                                    ws_payload!(
                                         "input_tokens": usage.input_tokens,
                                         "output_tokens": usage.output_tokens,
-                                    }),
+                                        "cache_read_input_tokens": usage.cache_read_input_tokens,
+                                        "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+                                    ),
                                 );
                             }
                         }
@@ -438,6 +450,27 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 payload["widgets"] = widgets.clone();
                             }
                             hub.broadcast("ask_request", payload);
+                        }
+                        StreamEventType::PlanApproval => {
+                            let request_id = event.error.as_deref().unwrap_or("");
+                            let mut payload = ws_payload!(
+                                "request_id": request_id,
+                                "plan": event.text,
+                            );
+                            if let Some(tools) = &event.widgets {
+                                payload["tools"] = tools.clone();
+                            }
+                            hub.broadcast("plan_approval", payload);
+                        }
+                        StreamEventType::FollowupSuggestions => {
+                            if let Some(ref suggestions) = event.widgets {
+                                hub.broadcast(
+                                    "followup_suggestions",
+                                    ws_payload!(
+                                        "suggestions": suggestions,
+                                    ),
+                                );
+                            }
                         }
                         StreamEventType::RateLimit => {
                             if let Some(ref rl) = event.rate_limit {
@@ -517,6 +550,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                             hub.broadcast("subagent_complete", payload);
                         }
+                        StreamEventType::ToolSummary => {
+                            hub.broadcast(
+                                "tool_summary",
+                                ws_payload!(
+                                    "summary": &event.text,
+                                ),
+                            );
+                        }
                         StreamEventType::Done => {}
                     }
                 }
@@ -566,6 +607,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 task_status: None,
                                 artifacts: vec![],
                                 error: None,
+                                attachments: vec![],
                             };
                             if let Err(e) = send_to_channel(
                                 &reply_config.provider,
@@ -607,6 +649,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 task_status: None,
                                 artifacts: vec![],
                                 error: None,
+                                attachments: vec![],
                             };
                             if let Err(e) = send_to_channel(
                                 &reply_config.provider,
@@ -774,6 +817,8 @@ pub async fn run_chat_events(
         proactive_inbox: Some(proactive_inbox),
         progress: Some(progress),
         mention_context: config.mention_context,
+        tool_scope: config.tool_scope,
+        channel_ctx: config.channel_ctx,
         ..Default::default()
     };
 

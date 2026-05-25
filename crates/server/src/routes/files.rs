@@ -19,6 +19,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::files::pick_folder),
         )
         .route(
+            "/files/upload",
+            axum::routing::post(handlers::files::upload_file),
+        )
+        .route(
             "/files/{*path}",
             axum::routing::get(handlers::files::serve_file),
         )

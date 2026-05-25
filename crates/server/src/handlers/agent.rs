@@ -44,11 +44,16 @@ pub async fn get_session_messages(
     Path(id): Path<String>,
     Query(q): Query<SessionMessagesQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    // Session has a scope/scope_id that maps to a chat
+    // Look up session by UUID first, then by name (session key).
+    // The embed chat passes the session key (e.g. "agent:brief:app:docId")
+    // not the internal UUID.
     let session = state
         .store
         .get_session(&id)
         .map_err(to_error_response)?
+        .or_else(|| {
+            state.store.get_session_by_name(&id).ok().flatten()
+        })
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     // Messages are stored under session.name (the session_key / chat_id).

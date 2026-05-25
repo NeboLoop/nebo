@@ -19,6 +19,7 @@ This document makes any Claude Code session an immediate expert on Nebo-rs code 
 | 7 | **API design standards** | Response format, pagination, path conventions, type conventions |
 | 8 | **Architecture** | No competing pathways, boundary awareness, dependency direction, handler-owns-logic |
 | 9 | **Concurrency safety** | No blocking under async locks, no lock ordering violations, Arc discipline, CancellationToken for runs |
+| 10 | **No quick fixes** | Always do the right fix. Never present "quick vs right" as a choice. No workarounds, bandaids, `#[allow]`, or `// TODO fix later` shipped as final code |
 
 ---
 
@@ -36,19 +37,31 @@ Every handler module groups a domain. Before creating a new handler, check if on
 
 ```
 crates/server/src/handlers/
-├── mod.rs           ← HandlerResult type, to_error_response helper, ErrorResponse struct
-├── agent.rs         ← Agent settings, status, advisors, memory, lanes
-├── auth.rs          ← Login, register, token refresh
-├── chat.rs          ← Chat CRUD, messaging, search, history
-├── extensions.rs    ← Skills CRUD, toggle
-├── integration.rs   ← MCP integrations CRUD, test
-├── notification.rs  ← Notification CRUD, read/unread
-├── plugins.rs       ← Plugin settings, store apps/skills
-├── provider.rs      ← Auth profiles (API keys), models, task routing
-├── setup.rs         ← First-run setup wizard
-├── tasks.rs         ← Scheduled tasks CRUD, toggle, run, history
-├── user.rs          ← User profile, preferences
-└── ws.rs            ← WebSocket handler, ClientHub, message dispatch
+├── mod.rs              ← HandlerResult type, to_error_response helper, ErrorResponse struct
+├── agent.rs            ← Agent settings, status, advisors, memory, lanes
+├── agents.rs           ← Multi-agent CRUD, agent list, agent runs
+├── apps.rs             ← App lifecycle, sidecar management
+├── artifact_updates.rs ← Marketplace artifact update checks
+├── auth.rs             ← Login, register, token refresh
+├── chat.rs             ← Chat CRUD, messaging, search, history
+├── commander.rs        ← Commander org chart, hierarchy
+├── entity_config.rs    ← Per-entity config (persona, rules, routing)
+├── files.rs            ← File upload proxy (NeboLoop attachments)
+├── integrations.rs     ← MCP integrations CRUD, test
+├── mcp_server.rs       ← MCP server management (remote servers, OAuth)
+├── memory.rs           ← Memory search, layers, CRUD
+├── neboloop.rs         ← NeboLoop connection, OAuth, loop management
+├── notification.rs     ← Notification CRUD, read/unread
+├── plugins.rs          ← Plugin settings, store apps/skills
+├── provider.rs         ← Auth profiles (API keys), models, task routing
+├── setup.rs            ← First-run setup wizard
+├── skills.rs           ← Skills CRUD, toggle, marketplace install
+├── store.rs            ← Marketplace store browsing, install
+├── tasks.rs            ← Scheduled tasks CRUD, toggle, run, history
+├── user.rs             ← User profile, preferences
+├── voice.rs            ← Voice input/TTS
+├── workflows.rs        ← Workflow CRUD, inline triggers, runs
+└── ws.rs               ← WebSocket handler, ClientHub, message dispatch
 ```
 
 #### The Handler Pattern
@@ -927,7 +940,7 @@ Middleware ordering in Axum: **last applied = first executed**. Security headers
 | `notify` | Notification system | `types` |
 | `updater` | Background version checker | `types`, `config` |
 | `cli` | CLI tool detection | `types`, `config` |
-| `apps` | Third-party app integration | `types` |
+| `napp` | App packaging format, InstallEvent handling | `types` |
 | `server` | Axum server, handlers, routes, state | All of the above |
 
 **Rule:** `types` is the leaf crate — it never depends on other workspace crates. All other crates depend on `types` for `NeboError`.
@@ -1107,6 +1120,102 @@ tokio::spawn(async move {
 
 ---
 
+## Section 10: No Quick Fixes (CRITICAL)
+
+Every quick fix is tech debt we never remember. A `// TODO come back to this` never gets revisited. The workaround you ship today is a bug report next quarter and an architectural rewrite next year. This rule exists because the cost of doing the right thing now is *always* lower than the cost of doing the wrong thing now plus the right thing later.
+
+### 10.1 Never frame "quick vs right" as a choice
+
+If you know the right fix, do the right fix. Don't present a menu of options.
+
+```
+WRONG (presents shortcut as an option):
+  "Two options:
+   1. Quick fix — switch to deprecated files.upload (works for <1MB files)
+   2. Right fix — implement the 3-step external upload flow
+   Which do you want?"
+
+CORRECT (just does the right fix):
+  "Implementing the proper 3-step files.getUploadURLExternal flow.
+   The single-call files.upload is deprecated and has a 1MB limit."
+```
+
+Presenting a quick option biases the decision toward it. Even when "right" is only marginally more effort, naming the shortcut puts it on the table.
+
+### 10.2 Never ship a workaround as the final answer
+
+Workarounds during diagnosis are fine — `let me try X to confirm the hypothesis`. The patch that lands MUST be the proper fix.
+
+If you patched around a symptom to unblock a demo, **the same PR must include the root-cause fix**, or the demo gets rolled back until the proper fix is ready.
+
+### 10.3 Never leave a bandaid behind
+
+These patterns are forbidden in committed code:
+
+| Pattern | Why it's banned |
+|---|---|
+| `// TODO: fix this properly later` | It won't get fixed. The comment becomes archeology. |
+| `// FIXME` without an issue number AND owner | Same — unowned FIXMEs rot. |
+| `// HACK: ...` | If it's a hack, redo it before committing. |
+| Commented-out "old" / "alternate" code paths | If it's worth keeping, keep it. If not, delete it. Git remembers. |
+| `#[allow(dead_code)]` to silence a warning | Either it's used (rename, wire it up) or it's dead (delete). |
+| `#[allow(clippy::...)]` to silence a lint | Fix what the lint flagged. Lints exist for reasons. |
+| `--no-verify` to skip pre-commit hooks | Fix what the hook caught. |
+| Wider type signatures to dodge type errors (`Box<dyn Any>`, `serde_json::Value` everywhere) | Use the actual type. |
+| `.unwrap()` / `.expect()` instead of proper error handling | Use `?` with `map_err(to_error_response)`. |
+| Magic-number constants without a `const` name explaining what they are | Name them. |
+
+### 10.4 Never bypass a constraint to "make it work"
+
+If a check is blocking you, fix the underlying issue. Don't:
+
+- Disable a test ("it's flaky") — fix the flake or delete the test
+- Comment out an assertion to ship — the assertion was protecting something
+- Widen permissions to bypass a security check — request the right permission
+- Add a feature flag to ship broken behavior to "some" users — finish the feature
+- Cast away a Result with `let _ =` — handle it, or document why discard is correct
+
+### 10.5 Never add a competing pathway
+
+This is the corollary of Rule 8. The temptation to "just add one more way to do X" because the existing way is awkward IS the quick-fix mindset. Either fix the existing way or replace it — never duplicate.
+
+Recent example: the bridge plugin already exposes one way for the agent to interact with a channel (CLI subcommands invoked via plugin tool). Adding a parallel `message channel attach` tool in Nebo to "make it easier" created a competing pathway: now there are two ways to send a file to a channel, and the model gets confused choosing between them. The right fix was a `slack upload` subcommand in the plugin — single canonical path.
+
+### 10.6 Quick-fix triggers — recognize and reject these phrasings
+
+When you find yourself about to write any of these, STOP:
+
+- "for the demo tomorrow, let's just..."
+- "as a temporary fix..."
+- "we can come back to this later, but..."
+- "this isn't ideal, but..."
+- "let me just suppress this warning..."
+- "I'll patch it here and the real fix lives in..."
+- "two options: quick / right"
+- "MVP version, we'll iterate..."
+- "let's just disable this for now..."
+
+If the demo / deadline pressure is real, the answer is to descope, not to short-cut. Cut a feature, don't half-ship one.
+
+### 10.7 The six-month test
+
+Before committing, ask: **"If someone reading this code in six months goes 'huh, why is it done this temporary-feeling way?' — will they have an answer?"**
+
+If the answer requires a Slack search to find the original conversation, you took a shortcut. The code itself, plus its commit message, must explain why it's the way it is. If it can't, redo it.
+
+### 10.8 Common excuses (and why they're wrong)
+
+| Excuse | Why it's wrong |
+|---|---|
+| "It works." | Quick fixes always work. That's their seduction. They work *and* they rot. |
+| "It's just a one-line workaround." | One line × N quick fixes = an unmaintainable codebase. |
+| "I'll remember to fix it." | You won't. Nobody does. The next engineer to read it won't either. |
+| "We don't have time for the right fix." | You don't have time for the right fix *plus* the bugs the quick fix causes. |
+| "The customer needs this tomorrow." | Then descope. Ship less, ship right. Or push the date. |
+| "The right fix is risky." | Then the right fix needs design review, not a workaround. Surface the risk. |
+
+---
+
 ## Audit Checklist
 
 Use this before committing or when reviewing code.
@@ -1184,6 +1293,20 @@ Use this before committing or when reviewing code.
 - [ ] `cargo test` passes (72+ tests across workspace)
 - [ ] `cd ../../app && pnpm check` passes (if frontend changed)
 - [ ] No new `// TODO` or `// FIXME` without a tracking issue
+
+### No Quick Fixes (Rule 10)
+
+- [ ] No `// TODO: fix properly later` or `// FIXME` / `// HACK` in committed code
+- [ ] No `#[allow(dead_code)]`, `#[allow(unused)]`, `#[allow(clippy::...)]` added to silence warnings
+- [ ] No `--no-verify`, no `--no-gpg-sign`, no bypass of pre-commit hooks
+- [ ] No commented-out alternate code paths left behind
+- [ ] No `.unwrap()` / `.expect()` added in handler/business logic (only in startup, tests, or panic-on-bug situations with a comment explaining why)
+- [ ] No widened type signatures (`serde_json::Value`, `Box<dyn Any>`, generic `String`) used to dodge a type error
+- [ ] No disabled tests, no commented-out assertions
+- [ ] No feature flags introduced to ship broken behavior to "some" users
+- [ ] No competing pathway added — if existing code does it awkwardly, fix the existing path, don't add a parallel one
+- [ ] If something feels "temporary," it isn't done — finish it or descope the feature
+- [ ] Six-month test: a future reader of this code, with only the code + commit message, can answer "why is it done this way?"
 
 ---
 

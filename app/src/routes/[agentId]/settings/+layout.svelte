@@ -15,9 +15,11 @@
     { id: 'general', label: 'General' },
     { id: 'identity', label: 'Identity' },
     { id: 'persona', label: 'Persona' },
+    { id: 'soul', label: 'Soul' },
     { id: 'configure', label: 'Configure' },
     { id: 'workflows', label: 'Workflows' },
     { id: 'skills', label: 'Skills' },
+    { id: 'channels', label: 'Channels' },
     { id: 'memory', label: 'Memory' },
     { id: 'permissions', label: 'Permissions' },
   ];
@@ -27,7 +29,7 @@
 
 <!-- Column 2: Settings nav -->
 <div class="w-[260px] min-w-[260px] border-r border-base-content/10 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.06)] relative shrink-0 flex flex-col bg-base-200/50">
-  <AgentTabBar agentId={agentId} agentName={agent?.name ?? ''} agentInitial={agent?.initial ?? ''} status={agentStatusVal} />
+  <AgentTabBar agentId={agentId} agentName={agent?.name ?? ''} agentInitial={agent?.initial ?? ''} status={agentStatusVal} isApp={ctx.isApp} />
 
   <div class="flex-1 overflow-y-auto">
     <div class="p-1.5 flex flex-col gap-0.5">

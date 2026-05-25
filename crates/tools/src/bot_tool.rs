@@ -286,11 +286,14 @@ impl AgentTool {
                 let namespace = input["namespace"].as_str().unwrap_or("");
                 let limit = input["limit"].as_i64().unwrap_or(50);
 
-                let memories = if namespace.is_empty() {
-                    self.store.list_memories(limit, 0)
-                } else {
-                    self.store.list_memories_by_namespace(namespace, limit, 0)
-                };
+                // Always scope to current user/agent — never list cross-agent memories
+                let ns_prefix = if namespace.is_empty() { "tacit/" } else { namespace };
+                let memories = self.store.list_memories_by_user_and_namespace(
+                    &ctx.user_id,
+                    ns_prefix,
+                    limit,
+                    0,
+                );
 
                 match memories {
                     Ok(mems) => {
@@ -318,46 +321,16 @@ impl AgentTool {
                 if key.is_empty() {
                     return ToolResult::error("key is required");
                 }
-                // Delete cascade: user+namespace+key → namespace+key → key-only
-                let mut total = 0usize;
-
-                // Step 1: exact scope (namespace + key + user_id)
-                if let Ok(n) =
-                    self.store
-                        .delete_memory_by_key_and_user(namespace, key, &ctx.user_id)
+                // Delete scoped to current user/agent only — never cross-agent
+                match self
+                    .store
+                    .delete_memory_by_key_and_user(namespace, key, &ctx.user_id)
                 {
-                    total += n;
-                }
-
-                // Step 2: namespace-scoped (catches user_id mismatches)
-                if let Ok(n) = self.store.delete_memory_by_key_and_user(namespace, key, "") {
-                    total += n;
-                }
-
-                // Step 3: key-only across all namespaces (catches namespace mismatches)
-                match self.store.delete_memory_by_key_only(key) {
-                    Ok(n) => {
-                        total += n;
-                        if n > 0 && total > n {
-                            warn!(
-                                key = key,
-                                namespace = namespace,
-                                total = total,
-                                "delete: required broader fallback to fully purge"
-                            );
-                        }
-                        ToolResult::ok(format!("Deleted {} memory entries for key: {}", total, key))
+                    Ok(n) if n > 0 => {
+                        ToolResult::ok(format!("Deleted {} memory entries for key: {}", n, key))
                     }
-                    Err(e) => {
-                        if total > 0 {
-                            ToolResult::ok(format!(
-                                "Deleted {} memory entries for key: {}",
-                                total, key
-                            ))
-                        } else {
-                            ToolResult::error(format!("Failed to delete: {}", e))
-                        }
-                    }
+                    Ok(_) => ToolResult::ok(format!("No memory found with key: {}", key)),
+                    Err(e) => ToolResult::error(format!("Failed to delete: {}", e)),
                 }
             }
             "clear" => {
@@ -396,6 +369,30 @@ impl AgentTool {
                 let model_override = input["model_override"].as_str().unwrap_or("");
                 let wait = input["wait"].as_bool().unwrap_or(true);
                 let max_iterations = input["max_iterations"].as_u64().unwrap_or(0) as usize;
+                let skills: Vec<String> = input["skills"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let plugins: Vec<String> = input["plugins"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let tools: Vec<String> = input["tools"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
 
                 if task_prompt.is_empty() {
                     return ToolResult::error("prompt is required for task spawn");
@@ -417,6 +414,11 @@ impl AgentTool {
                     wait,
                     parent_cancel: Some(ctx.cancel_token.clone()),
                     max_iterations,
+                    skills,
+                    plugins,
+                    tools,
+                    parent_stream_tx: ctx.stream_tx.clone(),
+                    agent_id: String::new(),
                 };
 
                 match orch.spawn(req).await {
@@ -469,6 +471,18 @@ impl AgentTool {
                             .as_str()
                             .unwrap_or(&prompt[..prompt.len().min(80)])
                             .to_string();
+                        let task_skills: Vec<String> = t["skills"]
+                            .as_array()
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .unwrap_or_default();
+                        let task_plugins: Vec<String> = t["plugins"]
+                            .as_array()
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .unwrap_or_default();
+                        let task_tools: Vec<String> = t["tools"]
+                            .as_array()
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .unwrap_or_default();
                         crate::orchestrator::SpawnRequest {
                             prompt,
                             description,
@@ -480,6 +494,11 @@ impl AgentTool {
                             wait: true, // spawn_parallel always waits for all
                             parent_cancel: Some(ctx.cancel_token.clone()),
                             max_iterations: t["max_iterations"].as_u64().unwrap_or(0) as usize,
+                            skills: task_skills,
+                            plugins: task_plugins,
+                            tools: task_tools,
+                            parent_stream_tx: ctx.stream_tx.clone(),
+                            agent_id: String::new(),
                         }
                     })
                     .collect();
@@ -1244,10 +1263,16 @@ impl DynTool for AgentTool {
          USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, analyzing images, or asking the user a question.\n\n\
          Sub-agents (parallel work):\n\
          - agent(resource: \"task\", action: \"spawn\", prompt: \"Research competitor pricing\") — Spawn and wait (default)\n\
+         - agent(resource: \"task\", action: \"spawn\", prompt: \"Draft an NDA for...\", skills: [\"docx-generation\", \"contract-summary\"]) — Spawn with skills pre-loaded\n\
+         - agent(resource: \"task\", action: \"spawn\", prompt: \"Check inbox for urgent items\", plugins: [\"PLUG-PJ3Z-ECFV\"], tools: [\"loop\", \"message\"]) — Spawn with plugin and tool docs\n\
          - agent(resource: \"task\", action: \"spawn\", prompt: \"...\", wait: false) — Background; result delivered when done\n\
          - agent(resource: \"task\", action: \"status\", agent_id: \"...\") — Check background agent status\n\
          - agent(resource: \"task\", action: \"cancel\", agent_id: \"...\") — Cancel a running sub-agent\n\
-         Spawn when: multiple independent tasks, long-running research. Do it yourself when: simple task, dependent results.\n\n\
+         IMPORTANT: Always pass plugins and tools the sub-agent needs. Sub-agents are born blind — they only know what you tell them.\n\
+         - plugins: install codes for plugins the sub-agent should use (from your agent config or current session)\n\
+         - tools: STRAP tool names the sub-agent needs (\"web\", \"loop\", \"message\", \"system\", etc.)\n\
+         - skills: skill names for SKILL.md instructions pre-loaded into context\n\
+         Spawn when: multiple independent tasks, long-running research, skill-heavy work. Do it yourself when: simple task, dependent results.\n\n\
          Work tracking:\n\
          - agent(resource: \"task\", action: \"create\", subject: \"Test shell tool\") — Create a trackable step\n\
          - agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\") — Mark done\n\
@@ -1300,6 +1325,9 @@ impl DynTool for AgentTool {
                 "description": { "type": "string", "description": "Short description of the sub-agent task" },
                 "agent_type": { "type": "string", "description": "Sub-agent type: general, explore, plan" },
                 "model_override": { "type": "string", "description": "Model override for sub-agent" },
+                "skills": { "type": "array", "items": { "type": "string" }, "description": "Skill names to pre-load in the sub-agent's context. The full SKILL.md is injected so the sub-agent has instructions without needing to discover them." },
+                "plugins": { "type": "array", "items": { "type": "string" }, "description": "Plugin install codes (e.g. PLUG-XXXX-XXXX) to give the sub-agent. Plugin docs and capabilities are injected so it knows how to use them." },
+                "tools": { "type": "array", "items": { "type": "string" }, "description": "STRAP domain tool names (e.g. \"web\", \"loop\", \"message\") the sub-agent needs. Tool docs are injected so it knows resources, actions, and usage." },
                 "wait": { "type": "boolean", "description": "Wait for sub-agent to complete (default: true)" },
                 "session_id": { "type": "string", "description": "Session ID" },
                 "task": { "type": "string", "description": "Task description for advisor deliberation" },
@@ -1318,6 +1346,24 @@ impl DynTool for AgentTool {
         false
     }
 
+    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+        let resource = if resource.is_empty() {
+            self.infer_resource(action)
+        } else {
+            resource
+        };
+        match resource {
+            "task" => matches!(action, "list" | "status"),
+            "memory" => matches!(action, "recall" | "search"),
+            "session" => matches!(action, "list" | "status" | "history" | "query"),
+            "context" => matches!(action, "summary"),
+            "profile" => matches!(action, "get"),
+            _ => false,
+        }
+    }
+
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
@@ -1329,10 +1375,18 @@ impl DynTool for AgentTool {
                 Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
             };
 
-            let resource = if domain_input.resource.is_empty() {
-                self.infer_resource(&domain_input.action).to_string()
-            } else {
-                domain_input.resource
+            let mut input = input;
+            let resource = {
+                let corrected = crate::domain::auto_correct_resource(
+                    &domain_input,
+                    &mut input,
+                    &["memory", "task", "session", "context", "advisors", "ask", "research"],
+                );
+                if corrected.is_empty() {
+                    self.infer_resource(&domain_input.action).to_string()
+                } else {
+                    corrected
+                }
             };
 
             if resource.is_empty() {

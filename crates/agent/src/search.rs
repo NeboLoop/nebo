@@ -4,6 +4,7 @@ use std::sync::Arc;
 use ai::EmbeddingProvider;
 use db::Store;
 use tracing::{debug, warn};
+use turbovec::IdMapIndex;
 
 /// A search result with merged score.
 #[derive(Debug, Clone)]
@@ -34,12 +35,15 @@ impl Default for SearchConfig {
 }
 
 /// Perform hybrid search combining FTS5 text search and vector similarity.
+/// When a `vector_index` is provided, uses TurboVec ANN search instead of
+/// brute-force cosine scan over all embeddings.
 pub async fn hybrid_search(
     store: &Arc<Store>,
     embedding_provider: Option<&dyn EmbeddingProvider>,
     query: &str,
     user_id: &str,
     config: &SearchConfig,
+    vector_index: Option<&IdMapIndex>,
 ) -> Vec<SearchResult> {
     let query_class = classify_query(query);
     let (vector_weight, text_weight) = adaptive_weights(&query_class);
@@ -124,60 +128,32 @@ pub async fn hybrid_search(
         match provider.embed(&[query.to_string()]).await {
             Ok(query_vecs) if !query_vecs.is_empty() => {
                 let query_vec = &query_vecs[0];
-                let model = provider.id().to_string();
 
-                if let Ok(all_embeddings) = store.get_all_embeddings_by_user(user_id, &model) {
-                    for (chunk_id, blob) in &all_embeddings {
-                        let stored_vec = ai::bytes_to_f32(blob);
-                        let sim = cosine_similarity(query_vec, &stored_vec);
+                if let Some(index) = vector_index.filter(|idx| !idx.is_empty()) {
+                    // Fast path: ANN search via TurboVec
+                    let k = config.limit * 3;
+                    let (scores, ids) = index.search(query_vec, k);
+                    for (score, id) in scores.iter().zip(ids.iter()) {
+                        let sim = *score as f64;
                         if sim < config.min_score {
                             continue;
                         }
-
-                        let vector_score = sim * vector_weight;
-
-                        if let Ok(Some((_, memory_id, text, _source))) =
-                            store.get_memory_chunk(*chunk_id)
-                        {
-                            let merge_key = if let Some(mid) = memory_id {
-                                format!("mem:{}", mid)
-                            } else {
-                                format!("chunk:{}", chunk_id)
-                            };
-
-                            let entry = merged.entry(merge_key).or_insert_with(|| {
-                                let (key, value, namespace) = if let Some(mid) = memory_id {
-                                    store
-                                        .get_memory(mid)
-                                        .ok()
-                                        .flatten()
-                                        .map(|m| (m.key, m.value, m.namespace))
-                                        .unwrap_or_else(|| {
-                                            (
-                                                "chunk".to_string(),
-                                                text.clone(),
-                                                "unknown".to_string(),
-                                            )
-                                        })
-                                } else {
-                                    (
-                                        "session_chunk".to_string(),
-                                        text.clone(),
-                                        "session".to_string(),
-                                    )
-                                };
-
-                                SearchResult {
-                                    memory_id,
-                                    chunk_id: Some(*chunk_id),
-                                    key,
-                                    value,
-                                    namespace,
-                                    score: 0.0,
-                                    source: "vector".to_string(),
-                                }
-                            });
-                            entry.score += vector_score;
+                        let chunk_id = *id as i64;
+                        merge_vector_hit(store, &mut merged, chunk_id, sim * vector_weight);
+                    }
+                } else {
+                    // Brute-force fallback: load all embeddings and cosine scan
+                    let model = provider.id().to_string();
+                    if let Ok(all_embeddings) =
+                        store.get_all_embeddings_by_user(user_id, &model)
+                    {
+                        for (chunk_id, blob) in &all_embeddings {
+                            let stored_vec = ai::bytes_to_f32(blob);
+                            let sim = cosine_similarity(query_vec, &stored_vec);
+                            if sim < config.min_score {
+                                continue;
+                            }
+                            merge_vector_hit(store, &mut merged, *chunk_id, sim * vector_weight);
                         }
                     }
                 }
@@ -268,6 +244,86 @@ fn classify_query(query: &str) -> QueryClass {
     } else {
         QueryClass::Long
     }
+}
+
+/// Merge a single vector search hit into the results map.
+fn merge_vector_hit(
+    store: &Arc<Store>,
+    merged: &mut HashMap<String, SearchResult>,
+    chunk_id: i64,
+    vector_score: f64,
+) {
+    if let Ok(Some((_, memory_id, text, _source))) = store.get_memory_chunk(chunk_id) {
+        let merge_key = if let Some(mid) = memory_id {
+            format!("mem:{}", mid)
+        } else {
+            format!("chunk:{}", chunk_id)
+        };
+
+        let entry = merged.entry(merge_key).or_insert_with(|| {
+            let (key, value, namespace) = if let Some(mid) = memory_id {
+                store
+                    .get_memory(mid)
+                    .ok()
+                    .flatten()
+                    .map(|m| (m.key, m.value, m.namespace))
+                    .unwrap_or_else(|| ("chunk".to_string(), text.clone(), "unknown".to_string()))
+            } else {
+                (
+                    "session_chunk".to_string(),
+                    text.clone(),
+                    "session".to_string(),
+                )
+            };
+
+            SearchResult {
+                memory_id,
+                chunk_id: Some(chunk_id),
+                key,
+                value,
+                namespace,
+                score: 0.0,
+                source: "vector".to_string(),
+            }
+        });
+        entry.score += vector_score;
+    }
+}
+
+/// Build a TurboVec index from all embeddings stored in the DB for a user.
+/// The index maps chunk_id (as u64) to quantized vectors for fast ANN search.
+pub fn load_vector_index(store: &Arc<Store>, user_id: &str, model: &str) -> Option<IdMapIndex> {
+    let all_embeddings = store.get_all_embeddings_by_user(user_id, model).ok()?;
+    if all_embeddings.is_empty() {
+        return None;
+    }
+
+    // Infer dimensionality from the first embedding
+    let first_blob = &all_embeddings[0].1;
+    let dims = first_blob.len() / 4; // f32 = 4 bytes
+    if dims == 0 {
+        return None;
+    }
+
+    let mut index = IdMapIndex::new(dims, 4); // 4-bit quantization, 8x compression
+
+    for (chunk_id, blob) in &all_embeddings {
+        let vec = ai::bytes_to_f32(blob);
+        if vec.len() != dims {
+            continue;
+        }
+        if let Err(e) = index.add_with_ids(&vec, &[*chunk_id as u64]) {
+            warn!(chunk_id, error = ?e, "failed to add vector to index");
+        }
+    }
+
+    debug!(
+        user_id,
+        vectors = index.len(),
+        dims,
+        "loaded TurboVec index from DB"
+    );
+    Some(index)
 }
 
 /// Adaptive weights: (vector_weight, text_weight) based on query class.

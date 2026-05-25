@@ -117,14 +117,24 @@ fn extract_confidence_from_metadata(mem: &Memory) -> Option<f64> {
 }
 
 /// Extract facts from conversation messages.
+/// When `store` and `user_id` are provided, existing memory keys are loaded
+/// and included in the prompt so the LLM avoids extracting duplicates.
 pub async fn extract_facts(
     provider: &dyn Provider,
     messages: &[ChatMessage],
+    store: Option<&Store>,
+    user_id: Option<&str>,
 ) -> Option<ExtractedFacts> {
     let conversation = build_conversation_text(messages);
     if conversation.is_empty() {
         return None;
     }
+
+    // Pattern 9: load existing memory keys to prevent duplicate extraction
+    let existing_memories_section = match (store, user_id) {
+        (Some(s), Some(uid)) => build_existing_memories_section(s, uid),
+        _ => String::new(),
+    };
 
     let prompt = format!(
         "Extract key facts from this conversation. Return a JSON object with these categories:\n\
@@ -135,9 +145,29 @@ pub async fn extract_facts(
          - artifacts: content produced for the user\n\
          - task_context: task parameters (dates, budgets, quantities)\n\n\
          Each fact should have: key (string), value (string), category (string), tags (string array), confidence (0-1), explicit (boolean — true if user directly stated it, false if inferred).\n\n\
+         When writing the value field, prefix it with a category tag in brackets when applicable:\n\
+         - [preference] for user preferences, likes, dislikes\n\
+         - [project] for project details, goals, tech stack\n\
+         - [workflow] for recurring workflows, processes, habits\n\
+         - [contact] for people, relationships, organizations\n\
+         - [decision] for decisions made, choices, rationale\n\
+         - [error] for errors encountered, solutions found\n\
+         - [file] for files modified, paths discussed\n\n\
+         Examples:\n\
+         - [preference] User prefers dark mode in all editors\n\
+         - [project] Brief app uses SvelteKit + Tauri stack\n\
+         - [error] SQLite WAL mode fix: set journal_mode before writes\n\n\
+         Facts that don't fit a category should be written without a prefix.\n\n\
+         Do NOT save:\n\
+         - Code snippets, file paths, or architecture details (derivable from the codebase)\n\
+         - Debugging solutions (the fix is already in the code)\n\
+         - Anything already in .nebo.md or agent configuration files\n\
+         - Ephemeral task details or step-by-step instructions\n\
+         - Information the user explicitly asked you NOT to remember\n\n\
+         {}\
          Conversation:\n{}\n\n\
          Return ONLY valid JSON, no markdown fences.",
-        conversation
+        existing_memories_section, conversation
     );
 
     let req = ai::ChatRequest {
@@ -186,9 +216,23 @@ pub async fn extract_facts(
 
 /// Store extracted facts in the database.
 /// Style facts go through reinforcement, others are upserted directly.
-pub fn store_facts(store: &Store, facts: &ExtractedFacts, user_id: &str) {
+/// If an embedding provider is supplied, newly stored memories are also
+/// chunked and embedded in the background for vector search.
+pub fn store_facts(
+    store: &Arc<Store>,
+    facts: &ExtractedFacts,
+    user_id: &str,
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+) {
     let entries = format_for_storage(facts);
+    let mut stored_entries: Vec<MemoryEntry> = Vec::new();
     for entry in entries {
+        // Skip entries that contain credential patterns (protect non-technical users)
+        if crate::secret_scan::contains_secret(&entry.value) {
+            warn!(key = %entry.key, "skipping memory storage — credential pattern detected");
+            continue;
+        }
+
         // Skip entries that look like prompt injection
         if sanitize::detect_prompt_injection(&entry.key)
             || sanitize::detect_prompt_injection(&entry.value)
@@ -229,6 +273,15 @@ pub fn store_facts(store: &Store, facts: &ExtractedFacts, user_id: &str) {
                 "failed to store memory entry {}/{}: {}",
                 entry.namespace, entry.key, e
             );
+        } else {
+            stored_entries.push(entry);
+        }
+    }
+
+    // Embed stored memories in the background for vector search
+    if let Some(ep) = embedding_provider {
+        if !stored_entries.is_empty() {
+            embed_memories_async(store.clone(), ep, stored_entries, user_id.to_string());
         }
     }
 }
@@ -407,6 +460,36 @@ fn normalize_key(key: &str) -> String {
         .to_string()
 }
 
+/// Build a prompt section listing existing memory keys so the LLM
+/// avoids extracting duplicates. Returns an empty string if no memories
+/// exist or loading fails.
+fn build_existing_memories_section(store: &Store, user_id: &str) -> String {
+    let memories = match store.get_tacit_memories_by_user(user_id, 100) {
+        Ok(m) => m,
+        Err(_) => return String::new(),
+    };
+    if memories.is_empty() {
+        return String::new();
+    }
+
+    let mut section = String::from("Existing memories (do not duplicate):\n");
+    for mem in &memories {
+        // Truncate value to keep prompt compact
+        let short_value = if mem.value.len() > 80 {
+            let mut end = 80;
+            while end > 0 && !mem.value.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}...", &mem.value[..end])
+        } else {
+            mem.value.clone()
+        };
+        section.push_str(&format!("- {}: {}\n", mem.key, short_value));
+    }
+    section.push('\n');
+    section
+}
+
 /// Build conversation text for extraction, truncating per message and total.
 fn build_conversation_text(messages: &[ChatMessage]) -> String {
     let mut parts = Vec::new();
@@ -444,6 +527,11 @@ fn build_conversation_text(messages: &[ChatMessage]) -> String {
     // Reverse to get chronological order (we built from the end)
     parts.reverse();
     parts.join("\n")
+}
+
+/// Find the first balanced JSON object in a response string (public for reuse).
+pub fn extract_json_object_pub(text: &str) -> Option<String> {
+    extract_json_object(text)
 }
 
 /// Find the first balanced JSON object in a response string.
@@ -620,10 +708,17 @@ pub fn load_memory_context(store: &Store, user_id: &str) -> String {
 }
 
 /// Load scored tacit memories for use in prompt assembly.
-pub fn load_scored_memories(store: &Store, user_id: &str, limit: usize) -> Vec<ScoredMemory> {
+/// Merges primary scope with inherited scopes (agent-wide, user preferences).
+/// Inherited memories are scored at 0.8x to rank below local memories.
+pub fn load_scored_memories(
+    store: &Store,
+    user_id: &str,
+    inherit_scopes: &[crate::db_context::InheritScope],
+    limit: usize,
+) -> Vec<ScoredMemory> {
     let mut all_scored: Vec<ScoredMemory> = Vec::new();
 
-    // Tacit memories with minimum confidence
+    // Primary scope (agent or context-level memories)
     if let Ok(memories) = store.get_tacit_memories_with_min_confidence(
         user_id,
         "tacit/",
@@ -633,6 +728,30 @@ pub fn load_scored_memories(store: &Store, user_id: &str, limit: usize) -> Vec<S
         all_scored = rank_memories(memories, limit);
     }
 
+    // Inherited scopes (user preferences, agent-wide for context-isolated)
+    for scope in inherit_scopes {
+        if let Ok(memories) = store.get_tacit_memories_with_min_confidence(
+            &scope.user_id,
+            &scope.namespace_prefix,
+            MIN_CONFIDENCE_THRESHOLD,
+            (limit * 2) as i64,
+        ) {
+            for mut m in rank_memories(memories, limit) {
+                m.score *= 0.8; // inherited memories rank below local
+                all_scored.push(m);
+            }
+        }
+    }
+
+    // Deduplicate by key (keep highest score)
+    all_scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut seen = std::collections::HashSet::new();
+    all_scored.retain(|m| seen.insert(m.memory.key.clone()));
+    all_scored.truncate(limit);
     all_scored
 }
 

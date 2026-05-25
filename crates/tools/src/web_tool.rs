@@ -209,10 +209,14 @@ impl WebTool {
                 match resp.text().await {
                     Ok(body) => {
                         let display_body = if body.len() > 50_000 {
-                            let offset =
+                            let raw_offset =
                                 input.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                             let chunk_size = 20_000;
-                            let end = (offset + chunk_size).min(body.len());
+                            // Snap both ends to char boundaries so multi-byte
+                            // UTF-8 chars don't cause an index panic.
+                            let offset = types::strutil::floor_char_boundary(&body, raw_offset);
+                            let raw_end = (offset + chunk_size).min(body.len());
+                            let end = types::strutil::floor_char_boundary(&body, raw_end);
                             let chunk = &body[offset..end];
                             format!(
                                 "[Showing bytes {}-{} of {}]\n{}",
@@ -1166,6 +1170,11 @@ impl DynTool for WebTool {
         }
     }
 
+    fn is_concurrent_safe(&self, _input: &serde_json::Value) -> bool {
+        // Web operations are read-only by nature (fetch, search, browse).
+        true
+    }
+
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
@@ -1177,10 +1186,18 @@ impl DynTool for WebTool {
                 Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
             };
 
-            let resource = if domain_input.resource.is_empty() {
-                self.infer_resource(&domain_input.action).to_string()
-            } else {
-                domain_input.resource
+            let mut input = input;
+            let resource = {
+                let corrected = crate::domain::auto_correct_resource(
+                    &domain_input,
+                    &mut input,
+                    &["http", "search", "browser", "devtools"],
+                );
+                if corrected.is_empty() {
+                    self.infer_resource(&domain_input.action).to_string()
+                } else {
+                    corrected
+                }
             };
 
             if resource.is_empty() {
@@ -1435,8 +1452,10 @@ fn truncate_snapshot(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_string();
     }
-    let truncated = &text[..max_chars];
-    let last_newline = truncated.rfind('\n').unwrap_or(max_chars);
+    // Char-boundary safe: snap to a valid boundary so &text[..safe_max] never panics.
+    let safe_max = types::strutil::floor_char_boundary(text, max_chars);
+    let truncated = &text[..safe_max];
+    let last_newline = truncated.rfind('\n').unwrap_or(safe_max);
     let clean = &text[..last_newline];
     let omitted = text.len() - last_newline;
     format!(

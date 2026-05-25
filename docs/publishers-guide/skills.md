@@ -85,6 +85,8 @@ These fields are Nebo-specific extensions. Other platforms ignore fields they do
 | `priority` | int | `0` | Higher = matched first when multiple skills match |
 | `max_turns` | int | `0` | Max agent turns (0 = unlimited) |
 | `dependencies` | string[] | `[]` | Other skill qualified names this depends on. Verified at load time. |
+| `requires` | object[] | `[]` | Skill-to-skill dependencies with version ranges. Each entry has `name` (qualified name) and `version` (semver range). |
+| `plugins` | object[] | `[]` | Plugin dependencies (see [Plugin Dependencies](#plugin-dependencies)) |
 | `metadata` | map | `{}` | Arbitrary key-value metadata |
 
 ### Capabilities
@@ -195,9 +197,12 @@ If `platform` is empty, the skill loads on all platforms. If specified, it only 
 
 ## Loading Order
 
-1. **Bundled skills** load first (shipped with Nebo)
-2. **Installed skills** load second (from marketplace)
-3. **User skills** load last and **override** bundled or installed skills with the same name
+Skills load in priority order — later sources override earlier ones by name:
+
+1. **Embedded bundled skills** — compiled into the Nebo binary
+2. **Installed skills** — extracted from `.napp` archives in `nebo/skills/`
+3. **User skills** — loose files in `user/skills/`
+4. **App skills** — loaded dynamically from an agent's `skills/` directory when the app activates (overrides by name)
 
 Skills are loaded from subdirectories — each skill lives in its own folder containing a `SKILL.md` file (case-insensitive filename matching).
 
@@ -298,6 +303,108 @@ Skills are portable across the Agent Skills ecosystem:
 | OpenClaw | Compatible — Nebo extensions in frontmatter are ignored |
 
 The required fields (`name`, `description`) are universal. Nebo-specific fields (`capabilities`, `triggers`, `priority`, `max_turns`, `dependencies`) are silently ignored by other platforms.
+
+---
+
+## Sealed .napp Archives
+
+Skills can be distributed as sealed `.napp` archives — encrypted, signed packages from the NeboLoop marketplace. Sealed skills are read in memory only (never extracted to disk) and require a license key to decrypt.
+
+- `persist_skill_from_api()` downloads and extracts skill content from the marketplace during install
+- License keys are cached locally and re-injected at runtime for template loading
+- Sealed skills appear in the catalog like any other skill; the encryption is transparent
+
+For packaging details, see [Packaging](packaging.md).
+
+---
+
+## Plugin Dependencies
+
+SKILL.md frontmatter can declare plugin dependencies using the `plugins` field:
+
+```yaml
+---
+name: google-calendar
+description: Manage Google Calendar events
+plugins:
+  - name: gws
+    version: ">=1.2.0"
+    optional: false
+---
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Plugin slug (matches the plugin's registered name) |
+| `version` | string | `"*"` | Semver version range (e.g. `">=1.2.0"`, `"^2.0.0"`) |
+| `optional` | bool | `false` | If `true`, the skill loads without the plugin but features may be degraded |
+
+When `optional` is `false` and the plugin is missing or doesn't satisfy the version range, the skill is dropped during dependency verification. When `optional` is `true`, the skill loads but operates in a degraded mode.
+
+Skills embedded inside a plugin directory automatically inherit the parent plugin as a required dependency.
+
+---
+
+## Template Variables
+
+Skill SKILL.md body and bundled scripts can use template variables that Nebo expands at runtime. Variables use `${...}` syntax.
+
+### Available Variables
+
+| Variable | Example Value | Description |
+|----------|---------------|-------------|
+| `${NEBO_SKILL_DIR}` | `~/.nebo/nebo/skills/my-skill` | Directory containing the SKILL.md |
+| `${NEBO_DATA_DIR}` | `~/.nebo/appdata/skills/my-skill` | Persistent data directory for this skill. Physically separated from the code directory — survives upgrades and reinstalls. Created lazily on first use. |
+| `${NEBO_USER_NAME}` | `Alex` | User's configured display name |
+| `${NEBO_OS}` | `macos` | Operating system (`macos`, `linux`, or `windows`) |
+| `${NEBO_ARCH}` | `aarch64` | CPU architecture (e.g. `aarch64`, `x86_64`) |
+| `${plugin.SLUG_BIN}` | `/path/to/gws` | Resolved binary path for a plugin dependency. `SLUG` is uppercased with hyphens replaced by underscores (e.g. `gws` → `${plugin.GWS_BIN}`) |
+| `${secret.KEY}` | `sk-abc123...` | Decrypted secret value. Secrets are configured per-skill in Settings > Secrets. |
+
+### Usage in SKILL.md
+
+```markdown
+## Calendar Sync
+
+Run the sync script to fetch today's calendar:
+```bash
+${plugin.GWS_BIN} calendar list --date today --output ${NEBO_DATA_DIR}/calendar.json
+```
+
+Check the output:
+```bash
+cat ${NEBO_DATA_DIR}/calendar.json
+```
+```
+
+### Data Directory
+
+The `${NEBO_DATA_DIR}` directory is **separate from the skill's code directory**. It lives at `<data_dir>/appdata/skills/<name>/` (typically `~/.nebo/appdata/skills/<name>/`), not inside the skill folder. This means:
+
+- Upgrading the skill (replacing SKILL.md, scripts, etc.) never touches data
+- Uninstalling and reinstalling preserves data
+- The skill owns its own data migrations across versions
+
+Store databases, caches, generated files, and any persistent state here — never in `${NEBO_SKILL_DIR}`.
+
+---
+
+## Concurrency Safety
+
+Read-only skill tool actions run in parallel: `catalog`, `discover`, `help`, `browse`, `read_resource`, `featured`, `popular`, `reviews`, `secrets`.
+
+Write operations (`install`, `uninstall`, `create`, `update`, `delete`) run serially to prevent conflicts. Serialization of writes is enforced by the internal `RwLock` — readers acquire shared locks while writers acquire exclusive locks.
+
+---
+
+## Skill Tool Actions Reference
+
+In addition to the actions documented above (`catalog`, `discover`, `help`, `browse`, `read_resource`, `load`, `unload`, `create`, `update`, `delete`, `install`, `configure`, `featured`, `popular`):
+
+| Action | Description |
+|--------|-------------|
+| `secrets` | Shows configured vs missing secrets for a skill. Lists each declared secret with its status (configured, MISSING, or not set). |
+| `reviews` | Marketplace reviews for a skill (synced from NeboLoop; placeholder). |
 
 ---
 

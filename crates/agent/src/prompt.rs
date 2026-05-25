@@ -20,8 +20,6 @@ pub struct PromptContext {
     pub mode: PromptMode,
     pub agent_name: String,
     pub active_skill: Option<String>,
-    /// Compact skill catalog: "## Available Skills\n- name: description\n..."
-    pub skill_catalog: String,
     pub model_aliases: String,
     pub channel: String,
     pub platform: String,
@@ -31,8 +29,16 @@ pub struct PromptContext {
     pub db_context: Option<String>,
     /// Active agent AGENT.md body, injected before identity when set.
     pub active_agent: Option<String>,
-    /// Installed plugin inventory (env vars + binary paths) for the system prompt.
-    pub plugin_inventory: String,
+    /// Per-agent soul: voice, tone, personality, boundaries (SOUL.md content).
+    pub agent_soul: Option<String>,
+    /// Per-agent rules: behavior constraints and guardrails.
+    pub agent_rules: Option<String>,
+    /// Focused context for agent-required plugins (descriptions + skill names).
+    pub agent_plugin_context: String,
+    /// Agent self-awareness: workflows, skills, and capabilities the agent knows about itself.
+    pub agent_self_context: String,
+    /// Compact agent catalog: "## Installed Agents (N)\n- name: description\n..."
+    pub agent_catalog: String,
     /// When set, research methodology is appended to the system prompt.
     /// Injected when bot(action: "research") activates research mode.
     pub research_prompt: Option<String>,
@@ -69,13 +75,41 @@ pub struct DynamicContext {
 /// semi-dynamic content (skill hints, active skill, model aliases).
 /// Providers that support prompt caching can split at this boundary
 /// to maximise cache hit rates on the stable prefix.
-pub const CACHE_BOUNDARY: &str = "\n<!-- CACHE_BOUNDARY -->\n";
+///
+/// Static sections (persona, tool definitions, skill catalog, rules) live
+/// ABOVE this marker. Dynamic sections (current time, active memories,
+/// session-specific context) live BELOW it, so volatile content never
+/// invalidates the cached prefix.
+pub const CACHE_BOUNDARY: &str =
+    "\n<!-- CACHE_BOUNDARY -->\n[--- cache boundary: content below changes per-turn ---]\n";
 
 /// Find the byte offset of `CACHE_BOUNDARY` within a static system prompt.
 /// Returns `None` when the marker is absent (e.g. the prompt was built
 /// without the boundary, or has been mutated by a hook).
 pub fn cache_boundary_offset(static_system: &str) -> Option<usize> {
     static_system.find(CACHE_BOUNDARY)
+}
+
+/// Wrap content in code fences, adapting fence length to prevent injection.
+/// Scans content for the longest run of backticks and uses that + 1.
+pub fn adaptive_fence(content: &str, tag: &str) -> String {
+    let max_backticks = content
+        .split('`')
+        .fold((0usize, 0usize), |(max, current), segment| {
+            if segment.is_empty() {
+                (max.max(current + 1), current + 1)
+            } else {
+                (max.max(current), 0)
+            }
+        })
+        .0;
+    let fence_len = (max_backticks + 1).max(3);
+    let fence: String = std::iter::repeat('`').take(fence_len).collect();
+    if tag.is_empty() {
+        format!("{}\n{}\n{}", fence, content, fence)
+    } else {
+        format!("{}{}\n{}\n{}", fence, tag, content, fence)
+    }
 }
 
 // --- Prompt section constants ---
@@ -108,7 +142,28 @@ const SECTION_CAPABILITIES: &str = r#"# Doing tasks
  - If the user asks for help inform them of the following:
    - For help, visit https://neboloop.com"#;
 
-const SECTION_TOOLS_DECLARATION: &str = "## Your Tools\n\nYour tools are listed in the tool definitions sent with this request. Use them directly.";
+const SECTION_TOOLS_DECLARATION: &str = r#"## Your Tools
+
+Tools use the STRAP pattern: tool(resource: "...", action: "...", param: "value").
+
+**Core tools** (always available):
+- **agent** — spawn sub-agents, manage tasks, memory, sessions, context, advisors
+- **skill** — discover and inspect skills (specialized knowledge)
+- **plugin** — run installed plugin binaries (subcommand only — binary auto-resolved)
+- **os** — file read/write/edit, shell commands, search. Write requires the `content` field.
+- **event** — scheduling, reminders, alarms
+- **message** — user communication, notifications
+- **tool_search** — discover additional tools not listed here
+
+**Discovery pattern:**
+1. Use tool_search(query: "...") to find tools by keyword
+2. Use skill(action: "discover", query: "...") to find skills by capability
+3. Use plugin(resource: "<slug>", action: "services") to list plugin commands
+
+**Context protection — use sub-agents for heavy work:**
+- Spawn sub-agents for skill-based tasks: agent(resource: "task", action: "spawn", prompt: "...", skills: ["name"])
+- Sub-agents get isolated context — keeps this conversation lean
+- Never load full skill bodies into this conversation"#;
 
 const SECTION_COMM_STYLE: &str = r#"# Executing actions with care
 
@@ -186,6 +241,12 @@ Imperative phrasing gets re-read as a directive in later sessions and can cause 
 ## Rules:
 - Never say "I don't have persistent memory" — you do
 - Never describe your memory system's internals to users"#;
+
+const TRUSTING_RECALL_SECTION: &str = "When using recalled memories:\n\
+- If a memory names a file path, verify it still exists before asserting\n\
+- If a memory names a specific value or detail, check it is still current\n\
+- Memories are point-in-time observations, not live state\n\
+- If a memory seems stale or wrong, update or remove it rather than acting on it";
 
 const SECTION_TOOL_GUIDE: &str = r#"# Using your tools
  - Do NOT use os(resource: "shell") to run commands when a relevant dedicated tool action is provided. Using dedicated tools allows for better results. This is CRITICAL:
@@ -393,15 +454,31 @@ fn build_model_specific_guidance(provider_name: &str, model_name: &str) -> Strin
     sb
 }
 
-// --- Skill preamble (prepended to skill catalog in system prompt) ---
-
-const SKILL_PREAMBLE: &str = r#"Before replying, scan the skills listed below. If a skill matches or is even partially relevant to your task, load it with skill(action: "load", name: "...") and follow its instructions. Err on the side of loading — it is always better to have context you don't need than to miss critical steps or established workflows. Skills contain specialized knowledge, proven workflows, and the user's preferred conventions that outperform general-purpose approaches. Load skills even for tasks you already know how to do — the skill defines how it should be done here. If a loaded skill had wrong commands or missing steps, offer to update it. After difficult/iterative tasks (5+ tool calls), offer to save the approach as a new skill."#;
-
 // --- STRAP tool documentation (compile-time includes) ---
-// Core tool docs have moved into each tool's description() method (tool schema).
-// Only sub-context docs remain here (keyword-activated, extend the system tool).
+// Core tool docs provide call-syntax examples (resource/action/params) that the
+// model needs to correctly invoke STRAP tools.  Injected per active tool name.
+// Sub-context docs extend the OS tool with keyword-activated capabilities.
 
-// OS sub-context docs (loaded dynamically based on keyword matching)
+// Core tool docs (injected when the tool is active)
+#[cfg(target_os = "windows")]
+const STRAP_OS: &str = include_str!("strap/os_windows.txt");
+#[cfg(target_os = "linux")]
+const STRAP_OS: &str = include_str!("strap/os_linux.txt");
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+const STRAP_OS: &str = include_str!("strap/os_macos.txt");
+
+const STRAP_AGENT: &str = include_str!("strap/agent.txt");
+const STRAP_WEB: &str = include_str!("strap/web.txt");
+const STRAP_EVENT: &str = include_str!("strap/event.txt");
+const STRAP_LOOP: &str = include_str!("strap/loop.txt");
+const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
+const STRAP_SKILL: &str = include_str!("strap/skill.txt");
+const STRAP_WORK: &str = include_str!("strap/work.txt");
+const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
+const STRAP_MCP: &str = include_str!("strap/mcp.txt");
+const STRAP_AGENTS: &str = include_str!("strap/agents.txt");
+
+// OS sub-context docs (keyword-activated, extend the OS tool)
 #[cfg(target_os = "windows")]
 const STRAP_DESKTOP: &str = include_str!("strap/desktop_windows.txt");
 #[cfg(target_os = "linux")]
@@ -416,8 +493,26 @@ const STRAP_SETTINGS: &str = include_str!("strap/settings.txt");
 const STRAP_SPOTLIGHT: &str = include_str!("strap/spotlight.txt");
 const STRAP_ORGANIZER: &str = include_str!("strap/organizer.txt");
 
+/// Get STRAP doc for a core tool (injected when the tool is active).
+pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        "os" | "system" => Some(STRAP_OS),
+        "agent" => Some(STRAP_AGENT),
+        "web" => Some(STRAP_WEB),
+        "event" => Some(STRAP_EVENT),
+        "loop" => Some(STRAP_LOOP),
+        "message" => Some(STRAP_MESSAGE),
+        "skill" => Some(STRAP_SKILL),
+        "work" => Some(STRAP_WORK),
+        "execute" => Some(STRAP_EXECUTE),
+        "mcp" => Some(STRAP_MCP),
+        "agents" => Some(STRAP_AGENTS),
+        _ => None,
+    }
+}
+
 /// Get STRAP doc for an OS sub-context (activated by keyword matching).
-fn strap_context_doc(context_name: &str) -> Option<&'static str> {
+pub fn strap_context_doc(context_name: &str) -> Option<&'static str> {
     match context_name {
         "desktop" => Some(STRAP_DESKTOP),
         "app" => Some(STRAP_APP),
@@ -434,13 +529,38 @@ fn strap_context_doc(context_name: &str) -> Option<&'static str> {
 /// Called per-iteration with the filtered tool list and keyword-matched contexts.
 /// Tool names drive which core STRAP docs load; active_contexts drive which
 /// OS sub-docs (desktop, app, music, etc.) get injected.
-pub fn build_strap_section(tool_names: &[String], active_contexts: &[String]) -> String {
-    let mut sb = String::from(SECTION_STRAP_HEADER);
+/// Tools whose STRAP docs are always-on core tools. Their schemas already contain
+/// enough info for the model to call them. STRAP docs are only injected when
+/// the tool is contextually activated (keyword match or called_tools).
+const STRAP_DEFERRED_DOCS: &[&str] = &["agent", "skill", "event", "message"];
 
-    // Core tool docs are now in each tool's description() method (tool schema).
-    // Only inject keyword-activated OS sub-context docs here (they extend the system tool
-    // but don't have their own registered tools).
+pub fn build_strap_section(
+    tool_names: &[String],
+    active_contexts: &[String],
+    called_tools: &[String],
+) -> String {
+    let mut sb = String::from(SECTION_STRAP_HEADER);
     let mut seen = HashSet::new();
+    let called: HashSet<&str> = called_tools.iter().map(|s| s.as_str()).collect();
+
+    // 1. Tool docs — only inject for tools that are contextually active.
+    //    Core always-on tools (agent, skill, event, message) defer their STRAP
+    //    docs until the tool is actually called — their schemas are sufficient.
+    for name in tool_names {
+        let n = name.as_str();
+        if seen.insert(n) {
+            // Skip deferred-doc tools unless they've been called this session
+            if STRAP_DEFERRED_DOCS.contains(&n) && !called.contains(n) {
+                continue;
+            }
+            if let Some(doc) = strap_tool_doc(n) {
+                sb.push_str("\n\n");
+                sb.push_str(doc);
+            }
+        }
+    }
+
+    // 2. OS sub-context docs — keyword-activated extensions (desktop, music, etc.).
     for ctx in active_contexts {
         if seen.insert(ctx.as_str()) {
             if let Some(doc) = strap_context_doc(ctx) {
@@ -539,22 +659,27 @@ pub fn build_static(pctx: &PromptContext) -> String {
     let is_minimal = matches!(pctx.mode, PromptMode::Minimal);
     let mut parts: Vec<String> = Vec::new();
 
-    // 1. Rich DB context or simple memory context
-    if let Some(ref db_ctx) = pctx.db_context {
-        if !db_ctx.is_empty() {
-            parts.push(db_ctx.clone());
-        }
-    } else if !pctx.memory_context.is_empty() {
-        parts.push(format!("# Remembered Facts\n{}", pctx.memory_context));
-    }
+    // ── STABLE PREFIX (cacheable) ──
+    // These sections NEVER change between turns. Providers that support
+    // prefix caching (Anthropic, OpenAI, DashScope) will cache this block
+    // and reuse it across every request in the session.
+    //
+    // CRITICAL: Nothing mutable (memories, personality, user profile)
+    // goes above CACHE_BOUNDARY. Mutating the prefix busts the cache
+    // and forces re-processing of the entire prompt on every turn.
 
-    // 2. Separator
-    parts.push("---".to_string());
-
-    // 3. Identity: agent AGENT.md is injected AFTER the base identity.
-    //    The base identity establishes "You are {agent_name}" and core behavior.
-    //    The AGENT.md adds the agent's unique persona/instructions on top.
+    // 1. Identity: agent AGENT.md is injected AFTER the base identity.
     parts.push(SECTION_IDENTITY.to_string());
+    if let Some(ref soul) = pctx.agent_soul {
+        if !soul.is_empty() {
+            parts.push(format!("## Soul\n\nEmbody this personality and tone. This is who you ARE — your voice, values, and boundaries.\n\n{}", soul));
+        }
+    }
+    if let Some(ref rules) = pctx.agent_rules {
+        if !rules.is_empty() {
+            parts.push(format!("## Rules\n\nYou MUST follow these behavior constraints and guardrails.\n\n{}", rules));
+        }
+    }
     if let Some(ref agent_md) = pctx.active_agent {
         if !agent_md.is_empty() {
             parts.push(format!("## Your Persona\n\n{}", agent_md));
@@ -566,28 +691,53 @@ pub fn build_static(pctx: &PromptContext) -> String {
     // Minimal mode: skip comm style, media, memory docs, tool routing, autonomy, etiquette
     if !is_minimal {
         parts.push(SECTION_COMM_STYLE.to_string());
-
-        // 4. Media section
         parts.push(SECTION_MEDIA.to_string());
-
-        // 5. Memory docs
         parts.push(SECTION_MEMORY_DOCS.to_string());
-
-        // 6. Tool routing guide
         parts.push(SECTION_TOOL_GUIDE.to_string());
     }
 
-    // 7. Behavior (always included — core execution rules)
+    // Behavior (always included — core execution rules)
     parts.push(SECTION_BEHAVIOR.to_string());
 
     if !is_minimal {
-        // 8. System etiquette (autonomy merged into SECTION_IDENTITY)
         parts.push(SECTION_SYSTEM_ETIQUETTE.to_string());
+    }
 
-        // Plugin inventory (installed plugin binaries the agent can use)
-        if !pctx.plugin_inventory.is_empty() {
-            parts.push(pctx.plugin_inventory.clone());
+    // ── Cache boundary ──
+    // Everything ABOVE this line is stable across turns and should be
+    // cached by the provider. Everything BELOW may change per turn
+    // (memories, personality, skills, model aliases, workspace context).
+    parts.push(CACHE_BOUNDARY.to_string());
+
+    // ── MUTABLE SECTION (below cache boundary) ──
+
+    // DB context: memories, personality, user profile — changes as memories are stored
+    let has_memories;
+    if let Some(ref db_ctx) = pctx.db_context {
+        has_memories = !db_ctx.is_empty();
+        if has_memories {
+            parts.push(db_ctx.clone());
         }
+    } else if !pctx.memory_context.is_empty() {
+        has_memories = true;
+        parts.push(format!("# Remembered Facts\n{}", pctx.memory_context));
+    } else {
+        has_memories = false;
+    }
+
+    // Inject trusting-recall guidance when memories are present
+    if has_memories {
+        parts.push(TRUSTING_RECALL_SECTION.to_string());
+    }
+
+    // Agent-required plugin context (focused details for this agent's declared plugins)
+    if !pctx.agent_plugin_context.is_empty() {
+        parts.push(pctx.agent_plugin_context.clone());
+    }
+
+    // Agent self-awareness (workflows, skills, capabilities)
+    if !pctx.agent_self_context.is_empty() {
+        parts.push(pctx.agent_self_context.clone());
     }
 
     // Workspace context file (.nebo.md / NEBO.md)
@@ -597,16 +747,10 @@ pub fn build_static(pctx: &PromptContext) -> String {
         }
     }
 
-    // ── Cache boundary ──
-    // Everything above is stable across iterations (identity, capabilities,
-    // behaviour, memory docs, tool routing, etiquette). Everything below
-    // varies with the active skill set and model list.
-    parts.push(CACHE_BOUNDARY.to_string());
-
     if !is_minimal {
-        // Compact skill catalog with mandatory-load preamble
-        if !pctx.skill_catalog.is_empty() {
-            parts.push(format!("{}\n\n{}", SKILL_PREAMBLE, pctx.skill_catalog));
+        // Installed agent catalog
+        if !pctx.agent_catalog.is_empty() {
+            parts.push(pctx.agent_catalog.clone());
         }
     }
 
@@ -890,19 +1034,34 @@ mod tests {
     }
 
     #[test]
-    fn test_strap_header_only_no_core_docs() {
-        // Core tool docs moved to tool description() methods — build_strap_section
-        // should NOT inject them.
-        let result = build_strap_section(&["web".to_string(), "agent".to_string()], &[]);
+    fn test_strap_defers_core_tool_docs() {
+        // Core tool docs (agent, skill, event, message) are deferred until called.
+        // Web is NOT deferred (it's contextually activated, not always-on).
+        let result = build_strap_section(
+            &["web".to_string(), "agent".to_string()],
+            &[],
+            &[],
+        );
         assert!(result.contains("STRAP Pattern"));
-        // Core tool docs should NOT be present (they're in tool schemas now)
-        assert!(!result.contains("### web"));
-        assert!(!result.contains("### agent"));
+        assert!(result.contains("### web"), "web doc should be injected (not deferred)");
+        assert!(!result.contains("### agent"), "agent doc deferred until called");
+    }
+
+    #[test]
+    fn test_strap_core_docs_load_when_called() {
+        // When a core tool is called, its STRAP doc loads
+        let result = build_strap_section(
+            &["agent".to_string(), "skill".to_string()],
+            &[],
+            &["agent".to_string()],
+        );
+        assert!(result.contains("### agent"), "agent doc loads when called");
+        assert!(!result.contains("### skill"), "skill not called yet, stays deferred");
     }
 
     #[test]
     fn test_strap_empty_is_header_only() {
-        let result = build_strap_section(&[], &[]);
+        let result = build_strap_section(&[], &[], &[]);
         assert!(result.contains("STRAP Pattern"));
         assert!(!result.contains("### "));
     }
@@ -918,6 +1077,7 @@ mod tests {
                 "settings".to_string(),
                 "spotlight".to_string(),
             ],
+            &[],
         );
         // Sub-context docs should be included (keyword-activated)
         assert!(result.contains("App Lifecycle"));
@@ -1036,24 +1196,6 @@ mod tests {
     }
 
     #[test]
-    fn test_skill_preamble_in_catalog() {
-        let pctx = PromptContext {
-            agent_name: "Nebo".to_string(),
-            skill_catalog: "## Available Skills\n- gmail: Manage email".to_string(),
-            ..Default::default()
-        };
-        let result = build_static(&pctx);
-        assert!(
-            result.contains("scan the skills listed below"),
-            "skill preamble should be injected"
-        );
-        assert!(
-            result.contains("Available Skills"),
-            "skill catalog should follow preamble"
-        );
-    }
-
-    #[test]
     fn test_model_aliases_section() {
         let pctx = PromptContext {
             agent_name: "Nebo".to_string(),
@@ -1114,22 +1256,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_boundary_before_skill_catalog() {
-        let pctx = PromptContext {
-            agent_name: "Nebo".to_string(),
-            skill_catalog: "## Available Skills\n- test_skill: does testing".to_string(),
-            ..Default::default()
-        };
-        let result = build_static(&pctx);
-        let offset = cache_boundary_offset(&result).unwrap();
-        let suffix = &result[offset..];
-        assert!(
-            suffix.contains("test_skill"),
-            "skill catalog should be after cache boundary"
-        );
-    }
-
-    #[test]
     fn test_cache_boundary_before_model_aliases() {
         let pctx = PromptContext {
             agent_name: "Nebo".to_string(),
@@ -1163,9 +1289,7 @@ mod tests {
         let pctx = PromptContext {
             mode: PromptMode::Minimal,
             agent_name: "Nebo".to_string(),
-            skill_catalog: "## Available Skills\n- test: does testing".to_string(),
             model_aliases: "- opus: anthropic/claude-opus-4".to_string(),
-            plugin_inventory: "## Plugins\n- gws: /path/to/gws".to_string(),
             ..Default::default()
         };
         let result = build_static(&pctx);
@@ -1191,14 +1315,9 @@ mod tests {
             "should drop SECTION_SYSTEM_ETIQUETTE"
         );
         assert!(
-            !result.contains("Available Skills"),
-            "should drop skill catalog"
-        );
-        assert!(
             !result.contains("Model Switching"),
             "should drop model aliases"
         );
-        assert!(!result.contains("Plugins"), "should drop plugin inventory");
     }
 
     #[test]

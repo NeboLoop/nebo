@@ -1,0 +1,11 @@
+### agents — Agent Management
+USE THIS when: user wants to manage agents (list, activate, deactivate), delegate tasks to a specific agent, or install a new agent.
+
+- agents(action: "list") — List available agents
+- agents(action: "activate", name: "chief-of-staff") — Activate an agent (injects persona, registers triggers)
+- agents(action: "deactivate") — Deactivate current agent, revert to default
+- agents(action: "info", name: "chief-of-staff") — Show agent details
+- agents(action: "create", name: "my-agent", agent_md: "# Agent...") — Create a user agent
+- agents(action: "install", code: "AGNT-XXXX-XXXX") — Install from marketplace
+- agents(action: "delegate", name: "chief-of-staff", prompt: "Check my email for urgent items") — Delegate task to installed agent (loads full identity + plugins + skills)
+- agents(action: "delegate", id: "13223420-...", prompt: "...", wait: false) — Background delegation

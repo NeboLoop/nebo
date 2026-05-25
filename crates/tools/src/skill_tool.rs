@@ -107,6 +107,11 @@ impl DynTool for SkillTool {
         false
     }
 
+    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        matches!(action, "catalog" | "discover" | "help" | "browse" | "read_resource" | "featured" | "popular" | "reviews" | "secrets")
+    }
+
     fn execute_dyn<'a>(
         &'a self,
         _ctx: &'a ToolContext,
@@ -120,37 +125,43 @@ impl DynTool for SkillTool {
 
             match domain_input.action.as_str() {
                 "catalog" | "list" => {
+                    // Budget-constrained catalog (Claude Code pattern): show count +
+                    // capped entries with truncated descriptions. Never dump the full
+                    // catalog — use discover(query) for targeted search.
+                    const MAX_CATALOG_ENTRIES: usize = 30;
+                    const MAX_DESC_CHARS: usize = 120;
+
                     let skills = self.loader.list_summaries().await;
                     if skills.is_empty() {
                         ToolResult::ok(
                             "No skills installed. Create one with skill(action: \"create\", name: \"my-skill\", content: \"...\")",
                         )
                     } else {
+                        let total = skills.len();
+                        let enabled = skills.iter().filter(|s| s.enabled).count();
                         let lines: Vec<String> = skills
                             .iter()
+                            .filter(|s| s.enabled)
+                            .take(MAX_CATALOG_ENTRIES)
                             .map(|s| {
-                                let status = if s.enabled { "enabled" } else { "disabled" };
-                                let source_label = match s.source {
-                                    SkillSource::Installed => "nebo",
-                                    SkillSource::User => "user",
-                                };
-                                let triggers = if s.triggers.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" (triggers: {})", s.triggers.join(", "))
-                                };
-                                let caps = if s.capabilities.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" [caps: {}]", s.capabilities.join(", "))
-                                };
-                                format!(
-                                    "- {} [{}|{}] — {}{}{}",
-                                    s.name, status, source_label, s.description, caps, triggers
-                                )
+                                let mut desc = s.description.clone();
+                                if desc.len() > MAX_DESC_CHARS {
+                                    desc.truncate(MAX_DESC_CHARS);
+                                    desc.push_str("...");
+                                }
+                                format!("- **{}** — {}", s.name, desc)
                             })
                             .collect();
-                        ToolResult::ok(format!("{} skills:\n{}", skills.len(), lines.join("\n")))
+                        let shown = lines.len();
+                        let mut result = format!("{} skills ({} enabled):\n{}", total, enabled, lines.join("\n"));
+                        if enabled > shown {
+                            result.push_str(&format!(
+                                "\n\n... and {} more. Use skill(action: \"discover\", query: \"...\") to search.",
+                                enabled - shown
+                            ));
+                        }
+                        result.push_str("\n\nTo use a skill: skill(action: \"help\", name: \"<name>\") for instructions, then spawn a sub-agent with the skill pre-loaded.");
+                        ToolResult::ok(result)
                     }
                 }
                 "discover" => {
@@ -200,6 +211,14 @@ impl DynTool for SkillTool {
                                 output.push_str(&format!(
                                     "**Capabilities:** {}\n",
                                     skill.capabilities.join(", ")
+                                ));
+                            }
+                            if !skill.plugins.is_empty() {
+                                let slug = &skill.plugins[0].name;
+                                output.push_str(&format!(
+                                    "\n**Execute via:** `plugin(resource: \"{}\", action: \"exec\", command: \"...\")`\n\
+                                     Do NOT use os/shell. The plugin tool handles auth and binary resolution.\n",
+                                    slug
                                 ));
                             }
                             if !skill.template.is_empty() {

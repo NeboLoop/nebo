@@ -188,19 +188,22 @@ pub struct StreamEvent {
 }
 
 pub enum StreamEventType {
-    Text,             // Incremental text output
-    ToolCall,         // Tool/function call request
-    ToolResult,       // Tool execution result
-    Error,            // Provider error
-    Done,             // Stream complete
-    Thinking,         // Extended thinking output (Anthropic)
-    Usage,            // Token usage report
-    RateLimit,        // Rate limit metadata
-    ApprovalRequest,  // Tool approval request (CLI providers)
-    AskRequest,       // User input request (CLI providers)
-    SubagentStart,    // Subagent execution started
-    SubagentProgress, // Subagent progress update
-    SubagentComplete, // Subagent execution finished
+    Text,              // Incremental text output
+    ToolCall,          // Tool/function call request
+    ToolResult,        // Tool execution result
+    Error,             // Provider error
+    Done,              // Stream complete
+    Thinking,          // Extended thinking output (Anthropic)
+    Usage,             // Token usage report
+    RateLimit,         // Rate limit metadata from provider
+    ApprovalRequest,   // Tool approval flow (CLI providers)
+    AskRequest,        // User question widget (CLI providers)
+    PlanApproval,      // Multi-tool plan approval
+    FollowupSuggestions, // Chat continuation suggestions
+    SubagentStart,     // Subagent delegation started
+    SubagentProgress,  // Subagent progress update
+    SubagentComplete,  // Subagent delegation finished
+    ToolSummary,       // Tool result summarization
 }
 ```
 
@@ -239,15 +242,22 @@ pub struct RateLimitMeta {
     pub remaining_tokens: Option<u64>,
     pub reset_after_secs: Option<f64>,
     pub retry_after_secs: Option<u64>,
-    // Janus session/weekly rate limit windows
-    pub session_limit_tokens: Option<u64>,
-    pub session_remaining_tokens: Option<u64>,
-    pub session_reset_at: Option<String>,      // ISO8601 timestamp
-    pub weekly_limit_tokens: Option<u64>,
-    pub weekly_remaining_tokens: Option<u64>,
-    pub weekly_reset_at: Option<String>,       // ISO8601 timestamp
+    // Janus session/weekly rate limit windows (values are microdollars)
+    pub session_limit_credits: Option<u64>,
+    pub session_remaining_credits: Option<u64>,
+    pub session_reset_at: Option<String>,       // ISO8601 timestamp
+    pub weekly_limit_credits: Option<u64>,
+    pub weekly_remaining_credits: Option<u64>,
+    pub weekly_reset_at: Option<String>,        // ISO8601 timestamp
+    // Janus budget pool headers
+    pub budget_free_available: Option<u64>,      // Free-tier credits remaining
+    pub budget_gift_available: Option<u64>,      // Gift/promo credits remaining
+    pub budget_credits_cents: Option<u64>,       // Paid credits remaining (cents)
+    pub budget_active_pool: Option<String>,      // Which pool is currently active ("free", "gift", "credits")
 }
 ```
+
+Janus rate limit fields were renamed from `*_tokens` to `*_credits` to reflect the shift from token-based to credit-based metering. Budget pool fields track the three spending pools that Janus draws from in priority order: free, gift, then paid credits.
 
 ### 2.9 ProviderError
 
@@ -379,9 +389,9 @@ Uses raw `reqwest::Client` with `bytes_stream()` instead of `reqwest-eventsource
 
 All four workarounds activate based on stream behavior (backward-compatible with standard OpenAI):
 
-**Quirk 1 -- Tool Name Duplication**: Janus sends tool name in every chunk. Tracked via `HashSet<u32>` of seen indices; duplicates after first are ignored.
+**Quirk 1 -- Tool Name Duplication**: Janus sends tool name in every chunk. Tracked via `seen_tool_name: HashSet<u32>` keyed by tool index; duplicates after first are ignored.
 
-**Quirk 2 -- Complete JSON Arguments**: Janus sends complete JSON args in one chunk, then repeats. Detection: attempt `serde_json::from_str()` -- if valid JSON, mark as seen via `HashSet<u32>` and skip subsequent chunks. Falls through to standard incremental `push_str` accumulation for OpenAI.
+**Quirk 2 -- Complete JSON Arguments**: Janus sends complete JSON args in one chunk, then repeats. Detection: attempt `serde_json::from_str()` -- if valid JSON, mark as seen via `seen_tool_args: HashSet<u32>` and skip subsequent chunks. Falls through to standard incremental `push_str` accumulation for OpenAI.
 
 **Quirk 3 -- Missing `[DONE]` Sentinel**: Janus may not send `data: [DONE]` after `finish_reason`. The stream breaks immediately on any non-empty `finish_reason` rather than waiting for the sentinel.
 
@@ -411,14 +421,15 @@ Called by the runner on GOAWAY or persistent connection errors.
 
 ### 4.8 Message Building
 
-- Orphan tool calls (no matching response) are filtered out
+- **Cache breakpoints:** When `req.cache_breakpoints` is non-empty, the system prompt is split at those byte offsets into separate system messages. Janus wraps each system message with `cache_control: ephemeral`, enabling provider-side prefix caching (Anthropic, DashScope, OpenAI). The stable prefix is cached; the mutable tail changes per turn without busting the cache. If empty, a single system message is sent as before.
+- **Orphaned tool call cleanup:** Tool calls that don't have matching tool results in the conversation are filtered out before sending. Prevents provider errors from mismatched `tool_call_id` references. Logged via `debug!(skipped_orphans, "cleaned orphaned tool_calls from history")`.
 - Tool call IDs are deduplicated across history
 - Assistant messages with empty content but tool_calls get content `" "` (Gemini backend compat)
 - Uses `async-openai` SDK types for request construction but raw reqwest for execution
 
 ### 4.9 Provider Metadata (Tool Stickiness)
 
-Janus includes `provider_metadata` in SSE stream data. The OpenAI provider extracts this and attaches it to the `StreamEvent::Done` event via `provider_metadata` field. On the next request, it's echoed back via `ChatRequest.metadata` → serialized as `"metadata"` in the JSON body.
+Janus includes `provider_metadata` in SSE stream data. The OpenAI provider extracts this from the raw JSON value (`val.get("provider_metadata")`) during streaming and stores it in `last_provider_metadata`. On stream completion, it is attached to the `StreamEvent::Done` event via the `provider_metadata` field. On the next request, the metadata is echoed back via `ChatRequest.metadata` → injected as `"metadata"` in the JSON body. This allows Janus to route subsequent requests to the same backend based on tool usage patterns.
 
 ### 4.10 Rate Limit Headers
 
@@ -427,17 +438,22 @@ Janus includes `provider_metadata` in SSE stream data. The OpenAI provider extra
 x-ratelimit-remaining-requests
 x-ratelimit-remaining-tokens
 x-ratelimit-reset-requests
-# Janus session window:
-x-ratelimit-session-limit-tokens
-x-ratelimit-session-remaining-tokens
+# Janus session window (tries -credits first, falls back to -tokens for rollout):
+x-ratelimit-session-limit-credits      (fallback: x-ratelimit-session-limit-tokens)
+x-ratelimit-session-remaining-credits   (fallback: x-ratelimit-session-remaining-tokens)
 x-ratelimit-session-reset              # ISO8601 timestamp
-# Janus weekly window:
-x-ratelimit-weekly-limit-tokens
-x-ratelimit-weekly-remaining-tokens
+# Janus weekly window (tries -credits first, falls back to -tokens):
+x-ratelimit-weekly-limit-credits        (fallback: x-ratelimit-weekly-limit-tokens)
+x-ratelimit-weekly-remaining-credits    (fallback: x-ratelimit-weekly-remaining-tokens)
 x-ratelimit-weekly-reset               # ISO8601 timestamp
+# Janus budget pool headers:
+x-budget-free-available                 # Free-tier credits remaining
+x-budget-gift-available                 # Gift/promo credits remaining
+x-budget-credits-cents                  # Paid credits remaining (cents)
+x-budget-active-pool                    # Active pool: "free", "gift", "credits"
 ```
 
-The `remaining_tokens` field in `RateLimitMeta` uses `session_remaining` if available (tighter constraint), otherwise falls back to standard `remaining_tokens`.
+The `remaining_tokens` field in `RateLimitMeta` uses `session_remaining` if available (tighter constraint), otherwise falls back to standard `remaining_tokens`. Header parsing prefers the new `-credits` suffixed headers with graceful fallback to the legacy `-tokens` variants during the rollout period.
 
 ---
 

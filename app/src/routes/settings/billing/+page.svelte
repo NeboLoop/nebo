@@ -6,6 +6,7 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import TriangleAlert from 'lucide-svelte/icons/triangle-alert';
   import * as api from '$lib/api/nebo';
+  import { listMarketplaceSubscriptions, cancelMarketplaceSubscription, type MarketplaceSubscriptionInfo } from '$lib/api/index';
   import type {
     AccountStatusResponse,
     NeboLoopBillingSubscriptionResponse,
@@ -20,6 +21,7 @@
   let subscription = $state<NeboLoopBillingSubscriptionResponse | null>(null);
   let paymentMethods = $state<PaymentMethodInfo[]>([]);
   let invoices = $state<InvoiceInfo[]>([]);
+  let marketplaceSubs = $state<MarketplaceSubscriptionInfo[]>([]);
   let actionLoading = $state('');
   let actionError = $state('');
   let showInvoices = $state(false);
@@ -31,20 +33,23 @@
   let paymentElementContainer = $state<HTMLDivElement | undefined>(undefined);
   let stripeInstance: any = null;
   let elementsInstance = $state<any>(null);
+  let cancellingSubId = $state('');
 
   onMount(() => {
     (async () => {
       try {
         status = (await api.neboLoopAccountStatus()) as AccountStatusResponse;
         if (status?.connected) {
-          const [subResp, pmResp, invResp] = await Promise.allSettled([
+          const [subResp, pmResp, invResp, mktResp] = await Promise.allSettled([
             api.neboLoopBillingSubscription(),
             api.neboLoopBillingPaymentMethods(),
-            api.neboLoopBillingInvoices()
+            api.neboLoopBillingInvoices(),
+            listMarketplaceSubscriptions()
           ]);
           if (subResp.status === 'fulfilled') subscription = subResp.value;
           if (pmResp.status === 'fulfilled') paymentMethods = pmResp.value?.methods || [];
           if (invResp.status === 'fulfilled') invoices = invResp.value?.invoices || [];
+          if (mktResp.status === 'fulfilled') marketplaceSubs = mktResp.value?.subscriptions || [];
         }
       } catch {
         status = null;
@@ -317,6 +322,64 @@
           </div>
         {/each}
       </div>
+    {/if}
+
+    <!-- Marketplace Subscriptions -->
+    {#if marketplaceSubs.length > 0}
+      <section>
+        <p class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Marketplace Subscriptions</p>
+        <div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10">
+          {#each marketplaceSubs as sub}
+            <div class="flex items-center justify-between p-4">
+              <div>
+                <div class="flex items-center gap-2">
+                  <p class="text-sm font-medium text-base-content">{sub.artifactName || sub.targetId}</p>
+                  <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70">{sub.targetType}</span>
+                </div>
+                <div class="flex items-center gap-3 mt-1">
+                  {#if sub.priceCents}
+                    <span class="text-xs text-base-content/50">{formatPrice(sub.priceCents, sub.billingInterval || 'usd')}/{sub.billingInterval === 'year' ? 'yr' : 'mo'}</span>
+                  {/if}
+                  {#if sub.currentPeriodEnd}
+                    <span class="text-xs text-base-content/50">Renews {formatDate(sub.currentPeriodEnd)}</span>
+                  {/if}
+                  <span class="px-1.5 py-0.5 rounded text-xs font-semibold {sub.status === 'active' ? 'bg-success/10 text-success' : sub.status === 'cancelled' ? 'bg-error/10 text-error' : 'bg-warning/10 text-warning'}">{sub.status}</span>
+                </div>
+              </div>
+              {#if sub.status === 'active'}
+                {#if cancellingSubId === sub.id}
+                  <div class="flex items-center gap-2">
+                    <button onclick={() => (cancellingSubId = '')} class="px-2 py-1 rounded-lg border border-base-content/10 text-xs cursor-pointer hover:bg-base-200 transition-colors bg-transparent">Keep</button>
+                    <button
+                      class="px-2 py-1 rounded-lg bg-error text-error-content text-xs font-medium cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-50"
+                      disabled={actionLoading === `cancel-mkt-${sub.id}`}
+                      onclick={async () => {
+                        actionLoading = `cancel-mkt-${sub.id}`;
+                        try {
+                          await cancelMarketplaceSubscription(sub.id);
+                          marketplaceSubs = marketplaceSubs.map(s => s.id === sub.id ? { ...s, status: 'cancelled' } : s);
+                          cancellingSubId = '';
+                        } catch (e) {
+                          actionError = (e as any)?.message || 'Failed to cancel';
+                        } finally {
+                          actionLoading = '';
+                        }
+                      }}
+                    >
+                      {#if actionLoading === `cancel-mkt-${sub.id}`}<Spinner size={12} />{:else}Cancel{/if}
+                    </button>
+                  </div>
+                {:else}
+                  <button
+                    onclick={() => (cancellingSubId = sub.id)}
+                    class="text-xs text-error/70 hover:text-error transition-colors cursor-pointer bg-transparent border-none"
+                  >Cancel</button>
+                {/if}
+              {/if}
+            </div>
+          {/each}
+        </div>
+      </section>
     {/if}
 
     <!-- Give Nebo -->

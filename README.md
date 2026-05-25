@@ -217,10 +217,8 @@ cd ../../app && pnpm dev             # SvelteKit dev server (port 5173)
 
 ## Author
 
-**Alma Tuck**
-- Website: [almatuck.com](https://almatuck.com)
-- LinkedIn: [linkedin.com/in/almatuck](https://linkedin.com/in/almatuck)
-- X: [@almatuck](https://x.com/almatuck)
+**NeboLoop**
+- Website: [neboloop.com](https://neboloop.com)
 
 ## License
 

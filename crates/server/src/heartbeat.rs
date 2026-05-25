@@ -227,6 +227,8 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             entity_name: String::new(),
             origin_agent_id: None,
             mention_context: None,
+            tool_scope: None, plan_mode: false,
+            channel_ctx: None,
         };
 
         run_chat(state, config).await;

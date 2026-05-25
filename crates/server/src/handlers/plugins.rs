@@ -139,7 +139,6 @@ pub async fn auth_login(
 
     let hub = state.hub.clone();
     let slug_owned = slug.clone();
-    let plugin_path = state.plugin_store.path_with_plugins();
     let store_for_restart = state.store.clone();
     let workers_for_restart = state.agent_workers.clone();
     let plugin_store_for_auth = state.plugin_store.clone();
@@ -157,18 +156,14 @@ pub async fn auth_login(
     // Spawn background task — auth login may take minutes (user authorizes in browser).
     // gws writes the OAuth URL to stderr, so we read both streams and open the URL
     // with open::that(), mirroring how onboarding opens the browser.
+    let login_command = auth.commands.login.clone();
+    let plugin_store_clone = state.plugin_store.clone();
     tokio::spawn(async move {
-        let args: Vec<&str> = auth.commands.login.split_whitespace().collect();
-        let mut cmd = tokio::process::Command::new(&binary_path);
-        cmd.args(&args);
-        cmd.env("PATH", &plugin_path);
+        let runtime = napp::PluginRuntime::new(&slug_owned, binary_path, plugin_store_clone);
+        let mut cmd = runtime.command(&login_command);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-
-        for (key, value) in &auth.env {
-            cmd.env(key, value);
-        }
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -398,13 +393,8 @@ pub async fn auth_logout(
         ))
     })?;
 
-    let args: Vec<&str> = logout_cmd.split_whitespace().collect();
-    let mut cmd = tokio::process::Command::new(&binary_path);
-    cmd.args(&args);
-    cmd.env("PATH", state.plugin_store.path_with_plugins());
-    for (key, value) in &auth.env {
-        cmd.env(key, value);
-    }
+    let runtime = napp::PluginRuntime::new(&slug, binary_path, state.plugin_store.clone());
+    let mut cmd = runtime.command(logout_cmd);
 
     let output = cmd
         .output()
@@ -519,18 +509,13 @@ pub async fn list_dependents(
 /// Returns `None` if the plugin has no auth config or no status command,
 /// `Some(true)` if authenticated, `Some(false)` if not.
 pub(crate) async fn check_plugin_auth(
-    plugin_store: &napp::plugin::PluginStore,
+    plugin_store: &std::sync::Arc<napp::plugin::PluginStore>,
     slug: &str,
 ) -> Option<bool> {
-    let (binary_path, auth) = plugin_store.get_auth_info(slug)?;
-    let status_cmd = auth.commands.status.as_deref()?;
-    let args: Vec<&str> = status_cmd.split_whitespace().collect();
-    let mut cmd = tokio::process::Command::new(&binary_path);
-    cmd.args(&args);
-    cmd.env("PATH", plugin_store.path_with_plugins());
-    for (key, value) in &auth.env {
-        cmd.env(key, value);
-    }
+    let (binary_path, _auth) = plugin_store.get_auth_info(slug)?;
+    let status_cmd = _auth.commands.status.as_deref()?;
+    let runtime = napp::PluginRuntime::new(slug, binary_path, plugin_store.clone());
+    let mut cmd = runtime.command(status_cmd);
     match cmd.output().await {
         Ok(output) => Some(output.status.success()),
         Err(_) => Some(false),
@@ -558,13 +543,8 @@ pub async fn auth_status(
         }
     };
 
-    let args: Vec<&str> = status_cmd.split_whitespace().collect();
-    let mut cmd = tokio::process::Command::new(&binary_path);
-    cmd.args(&args);
-    cmd.env("PATH", state.plugin_store.path_with_plugins());
-    for (key, value) in &auth.env {
-        cmd.env(key, value);
-    }
+    let runtime = napp::PluginRuntime::new(&slug, binary_path, state.plugin_store.clone());
+    let mut cmd = runtime.command(status_cmd);
 
     let output = cmd
         .output()
@@ -781,6 +761,13 @@ pub async fn set_plugin_config(
         }
     }
 
+    // Update in-memory env var cache so plugin commands get the new values immediately
+    for (key, value) in &body {
+        if auth_env_keys.contains(key.as_str()) || schema_map.contains_key(key.as_str()) {
+            state.plugin_store.set_env_var(&slug, key, value);
+        }
+    }
+
     info!(plugin = %slug, keys = body.len(), "updated plugin config");
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -847,20 +834,13 @@ pub async fn proxy_plugin_route(
         .resolve(&slug, "*")
         .ok_or_else(|| to_error_response(NeboError::Internal("plugin binary not found".into())))?;
 
-    let args: Vec<&str> = route_def.command.split_whitespace().collect();
-    let mut cmd = tokio::process::Command::new(&binary);
-    cmd.args(&args);
+    let runtime = napp::PluginRuntime::new(&slug, binary, state.plugin_store.clone())
+        .with_permissions();
+    let timeout = runtime.effective_timeout(Duration::from_secs(30));
+    let mut cmd = runtime.command(&route_def.command);
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    cmd.env("PATH", state.plugin_store.path_with_plugins());
-
-    // Auth env vars
-    if let Some((_bin, auth)) = state.plugin_store.get_auth_info(&slug) {
-        for (k, v) in &auth.env {
-            cmd.env(k, v);
-        }
-    }
 
     let mut child = cmd
         .spawn()
@@ -873,7 +853,7 @@ pub async fn proxy_plugin_route(
         drop(stdin);
     }
 
-    let output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| to_error_response(NeboError::Internal("route handler timed out".into())))?
         .map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?;
@@ -938,4 +918,127 @@ fn extract_url(text: &str, complete: bool) -> Option<String> {
         }
     }
     None
+}
+
+/// GET /plugins/{slug}/help — list help docs from the plugin's help/ directory.
+pub async fn get_plugin_help(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let docs = state.plugin_store.list_help_docs(&slug);
+    let entries: Vec<serde_json::Value> = docs
+        .into_iter()
+        .map(|(name, content)| {
+            serde_json::json!({
+                "name": name,
+                "content": content,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "docs": entries })))
+}
+
+/// POST /plugins/{slug}/help/chat — open an interactive help chat session.
+///
+/// Creates a dedicated help session with plugin docs as context, seeds it
+/// with an assistant greeting, and returns the session key + chat ID.
+/// The frontend embeds a mini chat in the setup modal and sends follow-up
+/// messages via WebSocket using the returned session key.
+pub async fn start_help_chat(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    let agent_id = body["agentId"]
+        .as_str()
+        .unwrap_or("assistant")
+        .to_string();
+
+    // Load plugin manifest for name
+    let plugin_name = state
+        .plugin_store
+        .get_manifest(&slug)
+        .map(|m| m.name)
+        .unwrap_or_else(|| slug.clone());
+
+    // Load help docs
+    let docs = state.plugin_store.list_help_docs(&slug);
+
+    // Also load inline help from auth config
+    let auth_help_text = state
+        .plugin_store
+        .get_manifest(&slug)
+        .and_then(|m| m.auth)
+        .and_then(|a| a.help)
+        .and_then(|h| h.text);
+
+    // Build system context from all help sources
+    let mut system_parts = vec![format!(
+        "You are a setup assistant for the {} plugin. \
+         Help the user configure and connect this plugin. \
+         Be concise and guide them step by step. \
+         If they ask something outside the scope of this plugin, \
+         politely redirect them to the main chat.",
+        plugin_name
+    )];
+
+    if let Some(text) = &auth_help_text {
+        system_parts.push(format!("## Quick Setup\n{text}"));
+    }
+
+    for (name, content) in &docs {
+        system_parts.push(format!("## {name}\n{content}"));
+    }
+
+    let system_context = system_parts.join("\n\n");
+
+    // Create a dedicated help session so the context stays isolated.
+    // Don't rotate — the default chat (keyed by session name) is used for
+    // both storage and retrieval, keeping get_session_messages compatible.
+    let session_key =
+        agent::keyparser::build_agent_session_key(&agent_id, &format!("help:{slug}"));
+
+    let session = state
+        .runner
+        .sessions()
+        .get_or_create(&session_key, "")
+        .map_err(to_error_response)?;
+
+    // Only seed if this is a fresh session (no messages yet).
+    let existing = state
+        .runner
+        .sessions()
+        .get_messages(&session.id)
+        .unwrap_or_default();
+
+    if existing.is_empty() {
+        // Inject the help docs as a system message so every follow-up turn
+        // has context, then add an assistant greeting.
+        let _ = state.runner.sessions().append_message(
+            &session.id,
+            "system",
+            &system_context,
+            None,
+            None,
+            None,
+        );
+
+        let greeting = format!(
+            "Hi! I'm here to help you set up **{}**. What would you like to know?",
+            plugin_name
+        );
+        let _ = state.runner.sessions().append_message(
+            &session.id,
+            "assistant",
+            &greeting,
+            None,
+            None,
+            None,
+        );
+    }
+
+    Ok(Json(serde_json::json!({
+        "sessionKey": session_key,
+        "agentId": agent_id,
+    })))
 }

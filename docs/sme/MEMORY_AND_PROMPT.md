@@ -1,6 +1,6 @@
 # Memory & Prompt System -- SME Deep-Dive
 
-> **Last updated:** 2026-05-13
+> **Last updated:** 2026-05-25
 >
 > **Purpose:** Definitive technical reference for Nebo's entire memory system and system prompt pipeline -- storage, extraction, personality synthesis, hybrid search, embeddings, session transcript indexing, prompt assembly, steering, and context management. Dead code (functions ported but never called from the runner) is explicitly flagged.
 
@@ -13,10 +13,13 @@
 | `crates/agent/src/runner.rs` | Agentic loop with provider fallback, objective detection | Active |
 | `crates/agent/src/prompt.rs` | `build_static()`, `build_dynamic_suffix()`, STRAP docs, cache boundary | Active |
 | `crates/agent/src/db_context.rs` | `DBContext` struct, `load_db_context()`, `format_for_system_prompt()` (9-section assembly) | Active |
-| `crates/agent/src/memory.rs` | Extraction, storage, confidence, decay scoring, `load_memory_context()`, `embed_memories_async()` | Active (embed not called) |
-| `crates/agent/src/memory_debounce.rs` | Debounced extraction timer (5s per session) | Active |
-| `crates/agent/src/memory_flush.rs` | Pre-compaction memory flush (`should_run_memory_flush`, `run_memory_flush`) | Dead code |
-| `crates/agent/src/personality.rs` | `synthesize_directive()` with decay, LLM generation, style loading | Dead code |
+| `crates/agent/src/memory.rs` | Extraction, storage, confidence, decay scoring, `load_memory_context()`, `embed_memories_async()` | Active (embedding called from `store_facts()` when provider available) |
+| `crates/agent/src/memory_debounce.rs` | Debounced extraction with turn interval + tool call gates | Active |
+| `crates/agent/src/memory_flush.rs` | Pre-compaction memory flush with overlap guard + extraction tracking | Active (runner.rs:1062-1075) |
+| `crates/agent/src/secret_scan.rs` | Pre-write secret scanner (15 regex patterns for API keys, tokens, private keys) | Wired for automatic extraction; explicit memory tool store still bypasses it |
+| `crates/agent/src/summarizer.rs` | `summarize_tool_batch()` + `generate_session_title()` via cheap provider | Active |
+| `crates/agent/src/memory_consolidation.rs` | Background memory consolidation — dedup, merge, prune per user_id scope | Active (spawned from server/lib.rs) |
+| `crates/agent/src/personality.rs` | `synthesize_directive()` with decay, LLM generation, style loading | Active (runner.rs:2625) |
 | `crates/agent/src/steering.rs` | 15 steering generators, format_directives, pipeline, should_force_break | Active |
 | `crates/agent/src/pruning.rs` | Sliding window, micro-compact, LLM summary, token estimation | Active |
 | `crates/agent/src/compaction.rs` | Tool failure collection, enhanced summary | Dead code |
@@ -24,7 +27,7 @@
 | `crates/agent/src/search.rs` | Hybrid search: FTS5 + vector + adaptive weights + cosine similarity | Active |
 | `crates/agent/src/search_adapter.rs` | `HybridSearchAdapter`: bridges `hybrid_search()` to bot tool's `HybridSearcher` trait | Active |
 | `crates/agent/src/chunking.rs` | Sentence-boundary text chunking with overlap | Active |
-| `crates/agent/src/transcript.rs` | Session transcript indexing (post-compaction embedding) | Dead code |
+| `crates/agent/src/transcript.rs` | Session transcript indexing (post-compaction embedding) | Active (called after sliding-window eviction when embedding provider exists) |
 | `crates/agent/src/sanitize.rs` | Prompt injection detection, key/value sanitization | Active |
 | `crates/ai/src/types.rs` | StreamEvent (stop_reason), ChatRequest, Provider trait | Active |
 | `crates/ai/src/embedding.rs` | EmbeddingProvider trait, OpenAI + Ollama providers, cached wrapper | Active |
@@ -38,6 +41,8 @@
 1. [Architecture Overview](#1-architecture-overview)
 2. [Three-Tier Storage Model](#2-three-tier-storage-model)
 3. [Memory Extraction (Automatic)](#3-memory-extraction-automatic)
+   - 3.1 [Secret Scanning](#31-secret-scanning)
+   - 3.2 [Summarizer](#32-summarizer)
 4. [Personality Synthesis](#4-personality-synthesis)
 5. [Memory Tool (Agent Actions)](#5-memory-tool-agent-actions)
 6. [Hybrid Search (FTS5 + Vector)](#6-hybrid-search-fts5--vector)
@@ -63,6 +68,8 @@
 25. [Configuration Reference](#25-configuration-reference)
 26. [Key Design Decisions](#26-key-design-decisions)
 27. [Gotchas & Edge Cases](#27-gotchas--edge-cases)
+28. [Scoped Memory Architecture](#28-scoped-memory-architecture)
+29. [Background Memory Consolidation](#29-background-memory-consolidation)
 
 ---
 
@@ -77,7 +84,7 @@ The memory and prompt systems form a **circular pipeline**. Memory is the data l
 |  Conversation                                                                |
 |       |                                                                      |
 |       v                                                                      |
-|  Memory Extraction (per-turn, debounced 5s)                                  |
+|  Memory Extraction (every 3rd turn + 3 tool calls, debounced 5s)             |
 |       | LLM extracts 6 fact categories from last 6 messages                  |
 |       v                                                                      |
 |  SQLite Storage (memories, memory_chunks, memory_embeddings)                 |
@@ -187,7 +194,13 @@ layer="",     namespace=""           -> "default" (for store), "" (for search --
 
 ### Trigger: Debounced Idle Extraction
 
-**When:** After every agentic loop completion (no more tool calls), debounced by 5 seconds.
+**When:** After every agentic loop completion (no more tool calls), gated by three thresholds:
+
+1. **5-second debounce** — new messages reset the timer so extraction only runs when idle
+2. **Turn interval** — `EXTRACTION_TURN_INTERVAL = 3` — at least 3 turns must pass since last extraction
+3. **Tool call minimum** — `MIN_TOOL_CALLS = 3` — at least 3 tool invocations must be recorded
+
+All three conditions must be met simultaneously. Turn and tool call counts are tracked per session via `turn_counts` and `tool_call_counts` HashMaps inside `MemoryDebouncer`. The `record_tool_call(session_id)` method must be called each time a tool is invoked so the extraction threshold can be met. Both counters reset to 0 when extraction fires.
 
 **Scope:** Last 6 messages only. (Older messages were already processed in their respective turns.)
 
@@ -195,6 +208,8 @@ layer="",     namespace=""           -> "default" (for store), "" (for search --
 ```
 runLoop completes (text-only response, no tool calls)
   -> MemoryDebouncer.schedule(session_id, callback)
+    -> Increment turn counter; check turn >= 3 AND tool_calls >= 3
+    -> If either threshold unmet, return immediately (no timer scheduled)
     -> Cancels existing timer via CancellationToken (debounce reset)
     -> tokio::spawn with 5s sleep
       -> extract_facts(provider, messages) with temperature=0.0, max_tokens=4096
@@ -273,24 +288,91 @@ Each fact should have:
 | `explicit: false` | 0.6 | Inferred from context/behavior |
 | No explicit field | Raw value clamped 0-1 | Fallback |
 
-### Dead Code: Pre-Compaction Memory Flush
+### Pre-Compaction Memory Flush
 
-`crates/agent/src/memory_flush.rs` (~86 lines) contains infrastructure for a second extraction trigger that would fire before compaction on ALL messages (not just last 6). Functions `should_run_memory_flush()` and `run_memory_flush()` exist with dedup guards (compares `compaction_count` vs `memory_flush_compaction_count`). **Not called from runner.**
+`crates/agent/src/memory_flush.rs` (~240 lines) — a second extraction trigger that fires before compaction on ALL messages (not just last 6). Functions `should_run_memory_flush()` and `run_memory_flush()` with dedup guards (compares `compaction_count` vs `memory_flush_compaction_count`). **Called from runner.rs:1062-1075 — guarded by should_run_memory_flush() dedup check.**
+
+**Overlap guard:** If a flush is already running (`FLUSH_IN_PROGRESS` AtomicBool), the new context is stashed as `PendingFlush` (session_id + user_id). When the in-progress flush finishes, it checks for and runs the pending one. This prevents concurrent extractions from corrupting state while ensuring no context is silently dropped.
+
+**Graceful shutdown tracking:** `track_extraction(handle)` registers spawned background tasks (memory extraction, LLM summary, indexing, personality synthesis) in a global `EXTRACTION_HANDLES` registry (`OnceLock<Mutex<Vec<JoinHandle>>>`). Finished handles are pruned on each registration. `drain_extractions()` awaits all in-flight tasks with a 10-second timeout (`DRAIN_TIMEOUT`), called from the server shutdown path.
+
+**Watermark update:** After successful extraction, updates `sessions.memory_flush_compaction_count` to the current `compaction_count`, preventing re-extraction until the next compaction.
 
 ### Known Gaps
 
 - No `IsDuplicate()` check before storing (relies on upsert for collision handling)
-- No concurrent extraction guard per session (debouncer cancels previous timer but no execution-level lock)
 - No timeout on extraction (provider stream may hang indefinitely)
 - Uses `prov_lock.first()` for model selection, not cost-optimized
+- Explicit memory tool stores (`agent(resource: "memory", action: "store")`) bypass `secret_scan.rs` and prompt-injection checks because they call `upsert_memory()` directly in `bot_tool.rs`.
 
-**Files:** `crates/agent/src/memory.rs`, `crates/agent/src/memory_debounce.rs`
+**Files:** `crates/agent/src/memory.rs`, `crates/agent/src/memory_debounce.rs`, `crates/agent/src/memory_flush.rs`
+
+---
+
+### 3.1 Secret Scanning
+
+> **Status: Partially wired.** Module exists at `crates/agent/src/secret_scan.rs` (~90 lines). Automatic memory extraction calls it from `store_facts()` before persistence. Explicit memory tool stores in `crates/tools/src/bot_tool.rs` still bypass it.
+
+Pre-write scanner for memory persistence. Scans fact values for common credential patterns before storage.
+
+**15 regex patterns:**
+
+| Pattern Name | Regex Match |
+|-------------|-------------|
+| AWS Access Key | `AKIA[0-9A-Z]{16}` |
+| AWS Secret Key | `aws_secret_access_key\s*=\s*\S{20,}` (case-insensitive) |
+| OpenAI API Key | `sk-[A-Za-z0-9]{32,}` |
+| Anthropic API Key | `sk-ant-[A-Za-z0-9\-]{40,}` |
+| GitHub Token | `gh[pousr]_[A-Za-z0-9]{36,}` |
+| Generic API Key | `(api[_-]?key|apikey)\s*[:=]\s*['"]?[A-Za-z0-9\-_.]{20,}` (case-insensitive) |
+| Bearer Token | `bearer\s+[A-Za-z0-9\-_.]{20,}` (case-insensitive) |
+| Private Key | `-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----` |
+| Slack Token | `xox[bprs]-[A-Za-z0-9\-]{10,}` |
+| Google API Key | `AIza[A-Za-z0-9\-_]{35}` |
+| Stripe Key | `(sk|pk)_(live|test)_[A-Za-z0-9]{20,}` |
+| Twilio Auth Token | `twilio.*[0-9a-f]{32}` (case-insensitive) |
+| SendGrid Key | `SG\.[A-Za-z0-9\-_.]{22,}\.[A-Za-z0-9\-_.]{43}` |
+| npm Token | `npm_[A-Za-z0-9]{36}` |
+| Heroku API Key | `heroku.*[0-9a-f]{8}-...-[0-9a-f]{12}` (case-insensitive) |
+
+**Two public functions:**
+- `contains_secret(text) -> bool` — fast check, returns on first match
+- `detect_secret(text) -> Option<&str>` — returns the pattern name (e.g., "AWS Access Key") of the first match
+
+**Compiled regex cached via `OnceLock`** — patterns compiled once on first call, reused across all subsequent calls.
+
+**Wiring plan:** Call `contains_secret()` or `detect_secret()` in `store_facts()` before `upsert_memory()`. Skip or redact entries containing secrets, with debug logging of the pattern name.
+
+---
+
+### 3.2 Summarizer
+
+File: `crates/agent/src/summarizer.rs` (~192 lines)
+
+Two utility functions for cheap LLM summarization:
+
+#### `summarize_tool_batch(providers, tool_calls, tool_results, last_assistant_text) -> Option<String>`
+
+Generates a **1-sentence summary** (past tense, max 80 chars) from tool calls and their results. Example output: *"Read auth config and fixed token validation"*.
+
+**Input truncation:**
+- Tool input/output: 300 chars each (`IO_TRUNCATE`)
+- Assistant intent context: 200 chars (`INTENT_TRUNCATE`)
+- Total prompt cap: 2,000 chars (`PROMPT_CAP`)
+
+Uses `pick_cheapest()` (prefers non-Janus providers) with `temperature=0.0`, `max_tokens=100`.
+
+#### `generate_session_title(providers, user_prompt, model) -> Option<String>`
+
+Generates a **3-7 word title** from the first user prompt. Uses `prefer_non_gateway()` to pick cheapest provider. Input truncated to 300 chars. `temperature=0.3`, `max_tokens=30`. Rejects titles >100 chars.
+
+**Error handling:** Both functions are non-critical — errors are logged via `tracing::warn`/`debug` and swallowed (return `None`).
 
 ---
 
 ## 4. Personality Synthesis
 
-> **Status: Dead code.** Fully implemented in `crates/agent/src/personality.rs` (~180 lines) but never called.
+> **Status: Active.** Called from runner.rs:2625 after every turn's memory extraction.
 
 ### How It Works (When Wired)
 
@@ -653,9 +735,19 @@ act as (if)? (you are|were|a)
 | Key | 128 chars | Control chars stripped (preserves \n) |
 | Value | 2048 chars | Control chars stripped (preserves \n), injection patterns blocked |
 
-### User Isolation
+### User Isolation & Scoped Memory
 
 All queries are user-scoped via `user_id` column. The unique constraint `(namespace, key, user_id)` prevents cross-user memory leakage.
+
+Memory uses a 3-tier `user_id` convention for isolation (no schema migration — the column already stores arbitrary strings):
+
+| Tier | user_id Format | Example | Scope |
+|------|---------------|---------|-------|
+| User (Layer 1) | `"{user_id}"` | `"user123"` | Main Nebo companion — all chats share this |
+| Agent (Layer 2) | `"{user_id}:agent:{agent_id}"` | `"user123:agent:brief"` | Agent-wide memories |
+| Context (Layer 3) | `"{user_id}:agent:{agent_id}:ctx:{context_id}"` | `"user123:agent:brief:ctx:doc-123"` | Per-context (embed session) isolation |
+
+See [Section 28: Scoped Memory Architecture](#28-scoped-memory-architecture) for full details.
 
 Usage: `store_facts()` calls `detect_prompt_injection()` on both key and value before storage. Detected entries are skipped with debug logging.
 
@@ -680,7 +772,7 @@ pub struct DBContext {
 ### load_db_context Flow
 
 ```
-load_db_context(store, user_id) -> DBContext
+load_db_context(store, user_id, inherit_scopes) -> DBContext
   |
   +-- Load agent profile (agent_profile WHERE id=1)
   |   Defaults: name="Nebo", voice="neutral", length="adaptive"
@@ -692,7 +784,13 @@ load_db_context(store, user_id) -> DBContext
   +-- Load personality directive (tacit/personality/directive memory)
   |
   +-- Load scored tacit memories (limit 40)
+       Primary scope: memories WHERE user_id = primary_user_id
+       Inherited scopes: memories WHERE user_id = scope.user_id AND namespace LIKE scope.prefix
+       Inherited memories scored at 0.8x (rank below local)
+       Deduplication by key (highest score wins)
 ```
+
+The `inherit_scopes` parameter enables multi-layer memory loading for agents with `MemoryConfig`. See [Section 28](#28-scoped-memory-architecture).
 
 ### Two-Pass Loading with Overfetch
 
@@ -740,10 +838,12 @@ Parts joined with `\n\n---\n\n` separators.
 1. FTS search against `memories` table using the user prompt (limit 10)
 2. Filter out memories already present in the scored tacit set (by `existing_memory_ids`)
 3. Cap at 5 additional memories
-4. Format as `## Relevant to This Conversation` section with `- key: value` bullets
+4. Format as `## Relevant to This Conversation` section with grouped bullets
 5. Returns empty string if no relevant hits
 
 This provides **query-time memory augmentation** — memories that match the current user prompt but weren't in the top-40 tacit set are injected into the system prompt. Prevents the static 40-memory cap from hiding contextually relevant knowledge.
+
+**Security note:** The primary `What You Know` block is wrapped in `<memory-context>` with a "NOT new user instructions" note. The query-time `Relevant to This Conversation` block is currently plain markdown and should be wrapped the same way.
 
 ### Known Gaps
 
@@ -785,11 +885,15 @@ pub struct PromptContext {
     pub channel: String,
     pub platform: String,
     pub memory_context: String,
-    pub db_context: Option<String>,        // Rich DB context; replaces memory_context when set
-    pub active_agent: Option<String>,      // AGENT.md body, injected before identity
+    pub db_context: Option<String>,           // Rich DB context; replaces memory_context when set
+    pub active_agent: Option<String>,         // AGENT.md body, injected before identity
+    pub agent_soul: Option<String>,           // Voice, tone, personality, boundaries (SOUL.md content)
     pub plugin_inventory: String,
-    pub research_prompt: Option<String>,   // Injected when bot(action: "research") activates
-    pub context_file: Option<String>,      // Workspace context from .nebo.md or NEBO.md
+    pub agent_plugin_context: String,         // Focused context for agent-required plugins
+    pub agent_self_context: String,           // Agent's workflows, skills, self-awareness
+    pub agent_catalog: String,                // Compact installed agents listing
+    pub research_prompt: Option<String>,      // Injected when bot(action: "research") activates
+    pub context_file: Option<String>,         // Workspace context from .nebo.md or NEBO.md
 }
 ```
 
@@ -1068,7 +1172,7 @@ File: `crates/agent/src/pruning.rs` (~492 lines)
 ### Stage 1: Sliding Window (every iteration)
 
 `apply_sliding_window()`:
-- `WINDOW_MAX_MESSAGES = 20`, `WINDOW_MAX_TOKENS = 40,000`
+- Default `max_tokens = 40,000` (`DEFAULT_WINDOW_MAX_TOKENS`), hard message cap `MAX_MESSAGE_COUNT = 80`
 - Walk backwards from most recent, accumulate tokens
 - Never evict current-run messages (created_at ≥ run_start_time)
 - Fix tool-pair boundaries (don't split tool_use from tool_result)
@@ -1084,20 +1188,49 @@ When messages are evicted by the sliding window:
 
 `micro_compact()`:
 - Trims old tool results to `[trimmed: {tool} result]`
-- Protects 5 most recent tool results (`MICRO_COMPACT_KEEP_RECENT`)
-- Min savings threshold: 3,000 tokens (`MICRO_COMPACT_MIN_SAVINGS`)
+- Protects 3 most recent tool results (`MICRO_COMPACT_KEEP_RECENT`)
+- Min savings threshold: 1,000 tokens (`MICRO_COMPACT_MIN_SAVINGS`)
 - Priority ordering: web → file → shell/system → other
+- **Count-based trigger:** If >4 compactable tool results (`MICRO_COMPACT_COUNT_TRIGGER`), strip aggressively regardless of age (keep only `MICRO_COMPACT_KEEP_RECENT` most recent)
+- **Time-based trigger:** If >5 minutes (`TIME_BASED_GAP_THRESHOLD_SECS = 300`) since last activity, keep only 1 recent result (`TIME_BASED_KEEP_RECENT = 1`). Matches Claude Code parity.
+
+### Hard Message Cap
+
+`MAX_MESSAGE_COUNT = 80` — regardless of token budget, the sliding window enforces a hard cap on message count. Even short messages add serialization and attention overhead at the provider. `80 msgs × ~120 tokens/msg = ~9,600 tokens`, well within budget. If both total tokens fit and message count is under 80, the sliding window short-circuits entirely.
+
+### Graduated Context Thresholds
+
+`ContextThresholds` struct computes graduated warning/error/auto_compact thresholds from the model's context window:
+
+```rust
+pub struct ContextThresholds {
+    pub warning: usize,       // Micro-compact activates above this
+    pub error: usize,         // Log warning about context size
+    pub auto_compact: usize,  // Trigger full compaction
+}
+```
+
+`ContextThresholds::from_context_window(context_window, prompt_overhead)`:
+- `auto_compact = min(effective, 500_000)`
+- `error = auto_compact - 10,000`
+- `warning = auto_compact - 20,000`
+- Minimums: `warning >= 40,000`, `error >= 50,000`
+
+The caller passes `ContextThresholds::auto_compact` as `max_tokens` to `apply_sliding_window()`, so eviction only fires when approaching the context limit (like Claude Code's ~83% threshold).
 
 ### Key Constants
 
 ```
 CHARS_PER_TOKEN = 4
 IMAGE_CHAR_ESTIMATE = 8000
-MICRO_COMPACT_MIN_SAVINGS = 3000
-MICRO_COMPACT_KEEP_RECENT = 5
-WINDOW_MAX_MESSAGES = 20
-WINDOW_MAX_TOKENS = 40,000
-COMPACTION_MAX_TOKENS = 2000
+MICRO_COMPACT_MIN_SAVINGS = 1,000
+MICRO_COMPACT_KEEP_RECENT = 3
+MICRO_COMPACT_COUNT_TRIGGER = 4
+TIME_BASED_GAP_THRESHOLD_SECS = 300 (5 minutes)
+TIME_BASED_KEEP_RECENT = 1
+MAX_MESSAGE_COUNT = 80
+DEFAULT_WINDOW_MAX_TOKENS = 40,000
+COMPACTION_MAX_TOKENS = 4000
 COMPACTION_CONTENT_CAP = 80,000
 ```
 
@@ -1108,7 +1241,6 @@ COMPACTION_CONTENT_CAP = 80,000
 - No tiered cumulative summaries (Earlier/Recent/Current)
 - No file re-injection after eviction
 - No base64 image stripping
-- Pre-compaction memory flush infrastructure exists (`memory_flush.rs`) but not wired
 - Tool failure collection exists (`compaction.rs`) but not integrated into summary
 
 ---
@@ -1150,12 +1282,12 @@ pub struct SessionManager {
 
 ## 17. Session Transcript Indexing
 
-> **Status: Dead code.** Fully implemented in `crates/agent/src/transcript.rs` (~156 lines) but never called.
+> **Status: Active.** Fully implemented in `crates/agent/src/transcript.rs` and called from `runner.rs` after sliding-window eviction when an embedding provider is configured.
 
-### How It Works (When Wired)
+### How It Works
 
 ```
-Post-eviction hook (not yet implemented)
+Post-eviction hook in runner.rs
   -> index_compacted_messages(store, embedding_provider, session_id)
     1. Read last_embedded_message_id (high-water mark)
     2. Fetch messages after that ID (user + assistant roles, non-empty)
@@ -1323,7 +1455,7 @@ Runner.run(ctx, req)
     |    Date/time, model context, summary, background objective
     |
     +-- enrichedPrompt = staticSystem + dynamicSuffix
-    +-- micro_compact (trim old tool results, 3k min savings)
+    +-- micro_compact (trim old tool results, 1k min savings)
     |
     +-- Steering pipeline generates directives (15 generators)
     |    format_directives() into dynamic suffix
@@ -1348,8 +1480,8 @@ Runner.run(ctx, req)
   v
   After loop exits:
     memory_debouncer.schedule(session_id)
-      -> 5s debounce
-      -> extract_facts() -> store_facts()
+      -> Turn interval (3) + tool call threshold (3) checked first
+      -> If thresholds met: 5s debounce -> extract_facts() -> store_facts()
          With confidence mapping and style reinforcement
 ```
 
@@ -1378,16 +1510,17 @@ Runner.run(ctx, req)
     +-- 10. Execute tool calls (hash results for stale detection)
     +-- 10a. Max output recovery (stop_reason=length → retry up to 3x)
     +-- 10b. Token budget continuation (min_iterations → force-continue)
-    +-- 10c. Auto-continuation (pause detection → continue up to 5x)
+    +-- 10c. Work-task auto-continuation (incomplete tasks + cycle guard → continue up to limit)
   |
   v
   After loop exits:
     11. memory_debouncer.schedule(session_id)
-        -> 5s debounce
+        -> Turn interval (3) + tool call threshold (3) checked
+        -> If thresholds met: 5s debounce
         -> extract_facts() -> store_facts() -> style reinforcement
 
 Next Runner.run():
-    Step 1 now sees memories from step 11  <- one-turn lag
+    Step 1 now sees memories from step 11  <- one-turn lag (at minimum 3-turn lag due to extraction interval)
 ```
 
 ### Visibility Timeline
@@ -1634,7 +1767,7 @@ Both `agent_profile` and `user_profiles` are queried by `db_context::load_db_con
 
 5. **Memory budget caps** -- Max 10 personality observations out of 40 total tacit memories. Prevents style notes from crowding out actionable memories.
 
-6. **Automatic extraction handles the common case** -- Idle extraction (5s debounce, last 6 messages) captures most knowledge without explicit agent action.
+6. **Automatic extraction handles the common case** -- Idle extraction (every 3rd turn with 3+ tool calls, 5s debounce, last 6 messages) captures most knowledge without explicit agent action. The turn and tool call gates reduce LLM calls on short Q&A exchanges.
 
 7. **Confidence as quality gate** -- Inferred facts (< 0.65) stay searchable but don't pollute the system prompt until reinforced.
 
@@ -1650,7 +1783,7 @@ Both `agent_profile` and `user_profiles` are queried by `db_context::load_db_con
 
 1. **One-turn lag for auto-extracted memories in prompt.** Memories extracted in Turn N appear in the system prompt at Turn N+1. The agent CAN search/recall them in the same turn via hybrid search -- they are immediately searchable.
 
-2. **Personality slot competition.** The 10-slot reservation for `tacit/personality` is shared between style observations AND the directive. With many observations, some will be excluded even though they contributed to the directive. Note: `synthesize_directive()` is dead code so no directives are auto-generated yet.
+2. **Personality slot competition.** The 10-slot reservation for `tacit/personality` is shared between style observations AND the directive. With many observations, some will be excluded even though they contributed to the directive. Note: `synthesize_directive()` is called from runner.rs:2625 after every turn's memory extraction.
 
 3. **Session chunks in FTS are dampened.** Session transcript chunks participate in FTS with a 0.6× dampening factor, and in vector search via LEFT JOIN. They are less precise than dedicated memory records.
 
@@ -1672,6 +1805,305 @@ Both `agent_profile` and `user_profiles` are queried by `db_context::load_db_con
 
 12. **FTS uses OR join.** Queries like "golang tutorials" match either word, not both. This casts a wider net but may return less precise results.
 
-13. **Dead code inventory.** The following modules are fully implemented but never called from the runner: `personality.rs` (synthesis), `memory_flush.rs` (pre-compaction flush), `transcript.rs` (session indexing), `compaction.rs` (tool failure collection), `embed_memories_async()` (memory embedding). These represent ready-to-wire infrastructure.
+13. **Dead code inventory.** `compaction.rs` (tool failure collection) is still fully implemented but not integrated into the active runner path. `transcript.rs` and `embed_memories_async()` are now wired.
 
 14. **Removed steering generators.** The following generators were removed from earlier versions: `ProactiveResults` (×2), `DateTimeRefresh`, `MemoryNudge`, `TaskParameterNudge`, `ObjectiveTaskNudge`, `TaskProgress`, `ActiveObjectiveReminder`, `ProgressNudge`, `AutomationSpeed`. Proactive results are now handled inline in `Pipeline::generate()`, not as a registered generator. Date/time is always in the dynamic suffix (no refresh needed). Task-related nudges were consolidated into `PendingTaskAction`. `AutomationSpeed` was replaced by `TaskTrackingNudge` and `TaskCompletionNudge`.
+
+---
+
+## 28. Hermes Agent Comparison & Improvement Roadmap
+
+> **Sources:** `hermes-agent/docs/SME_MEMORY_SYSTEM.md` and `SME_CONTEXT_MANAGEMENT.md` (2026-05-13)
+> Hermes is a Python-based AI agent by Nous Research. This section documents what Nebo can learn from its memory, prompt, and context management architecture.
+
+### Hermes Architecture (Brief)
+
+**Memory:** Three tiers — Active (MEMORY.md + USER.md frozen snapshot, ~1,300 tokens), Episodic (FTS5 session search + LLM summarization), Extended (pluggable MemoryProvider ABC, 8 bundled providers).
+
+**Prompt:** 12-layer system prompt built once per session. Dynamic content (memory recall, context references, plugin injections) injected into user messages at API-call time, never into the cached system prompt. Anthropic `system_and_3` cache breakpoints.
+
+**Compression:** 5-phase pipeline — (1) Tool output pruning with smart per-tool summaries, (2) Boundary determination with token-budget tail protection, (3) LLM summarization with structured 12-section handoff template, (4) Tool pair integrity repair, (5) Assembly + anti-thrashing. Session splitting on compression with lineage tracking. Iterative summary updates on re-compression.
+
+### What Nebo Does Better
+
+| Capability | Nebo | Hermes |
+|-----------|------|--------|
+| Automatic fact extraction | LLM extracts 6 categories from last 6 msgs, debounced 5s | Manual only — agent must call memory tool |
+| Search | Hybrid FTS5 + vector with adaptive query weighting | FTS5 only |
+| Confidence scoring | explicit=0.9, inferred=0.6, reinforcement boost | None |
+| Decay scoring | `access_count × 0.7^(days/30)` | None |
+| Style reinforcement | Tracks observations, boosts confidence asymptotically | None |
+| Dynamic prompt augmentation | Per-iteration `load_prompt_relevant_memories()` via FTS | All entries always injected (no filtering) |
+| Pre-compaction extraction | `memory_flush.rs` extracts from ALL messages before eviction | Built-in provider doesn't implement `on_pre_compress()` |
+| Personality synthesis | `personality.rs` — LLM synthesizes directive from style observations | None |
+| Per-iteration dynamic suffix | `build_dynamic_suffix()` with date/time, summary, tasks, steering | System prompt fully frozen per session |
+| Steering directives | 15 behavioral generators (loop detection, error recovery, etc.) | None — no equivalent behavioral steering |
+| Per-agent persona | AGENT.md (three-tier: embedded → marketplace → user) + AgentProfile (20 fields) | Single SOUL.md file, no per-agent profiles |
+| Plugin ecosystem | Native binary plugins (PLUGIN.md + plugin.json) with capabilities, auth, events, hooks, providers | Memory provider ABC only — no general plugin system |
+| Multi-agent architecture | Agent registry, sub-agents, delegation, per-agent sessions | Single agent only |
+
+### What Hermes Does Better — Memory
+
+| Gap | Hermes Pattern | Nebo Status |
+|-----|---------------|-------------|
+| **Context fencing** | `<memory-context>` XML tags + "NOT new user input" system note | Partially done — primary `What You Know` is fenced; prompt-relevant memories are not fenced yet |
+| **Memory overflow management** | Hard char limits (2,200 + 1,375) with overflow error + usage stats | No limits — DB grows unbounded, 40-entry prompt cap hides old memories |
+| **Usage metrics in prompt** | `[67% — 1,474/2,200 chars]` in memory header | Agent has zero visibility into memory count |
+| **LLM-summarized session search** | FTS5 results summarized by auxiliary LLM per-session | Brute-force substring matching in bot_tool.rs session "query" |
+| **Memory diff between sessions** | Compares loaded entries vs previous snapshot | No diff — agent doesn't know what changed |
+| **Memory provider plugins** | `MemoryProvider` ABC with lifecycle hooks | Single built-in system — but Nebo's plugin system (PLUGIN.md) already supports capability types (tools, hooks, providers, events). A memory provider could be added as a new plugin capability type rather than a separate ABC. |
+
+### What Hermes Does Better — Prompt & Security
+
+> **Note:** Hermes is a single-agent CLI tool that runs inside project directories. Nebo is a multi-agent desktop companion running at the machine level. Patterns like subdirectory hint discovery and project context file walking up to git root don't directly apply, but context references (`@file:`, `@url:`, etc.) are universally useful — users reference files, URLs, and documents regardless of whether there's a project root.
+
+| Gap | Hermes Pattern | Nebo Status |
+|-----|---------------|-------------|
+| **Cache breakpoints** | Anthropic `system_and_3` — 4 explicit `cache_control` markers | `CACHE_BOUNDARY` marker but no explicit API-level breakpoints |
+| **Context references** | `@file:`, `@folder:`, `@diff`, `@url:` injected into user messages at API-call time with token budget protection (hard limit 50%, soft limit 25%) | No equivalent — users can't inline file/URL content into conversations |
+| **Secret redaction** | 30+ regex patterns masking API keys, JWTs, private keys before summarization/logs | `secret_scan.rs` blocks automatic memory persistence for common credential patterns; explicit memory tool stores and compression/log redaction still need coverage |
+
+### What Hermes Does Better — Context Compression
+
+| Gap | Hermes Pattern | Nebo Status |
+|-----|---------------|-------------|
+| **Toolset-based schema filtering** | `get_tool_definitions(enabled_toolsets=..., disabled_toolsets=...)` + platform-specific configs | Contextual filtering is active; remaining gap is tighter per-agent/activity scoping and continued schema reduction |
+| **Tool output pruning** | Smart per-tool summaries: `[terminal] ran npm test → exit 0, 47 lines` | `micro_compact` trims to `[trimmed: {tool} result]` — no tool-specific intelligence |
+| **Structured summary template** | 12-section handoff (Active Task, Completed Actions, Key Decisions, Remaining Work, etc.) | Single LLM summary or quick fallback plaintext |
+| **Iterative summary updates** | 2nd+ compression UPDATES previous summary, preserves info across compressions | Each eviction replaces previous summary — no tiered accumulation |
+| **Anti-thrashing** | Skips compression if last 2 each saved <10%; warns user to start fresh | No anti-thrashing guards |
+| **Session splitting** | Creates new session with lineage link on compression; `session_search` traverses lineage | No session splitting — single continuous session |
+| **Token-budget tail protection** | Dynamic tail size based on token budget, not message count; ensures latest user msg is in tail | Fixed `WINDOW_MAX_MESSAGES=20` count-based window |
+| **Focused compression** | `/compact <topic>` prioritizes preserving specific topic details | No equivalent |
+| **Tool pair integrity** | Post-compression repair of orphaned tool_call/result pairs with stubs | `sanitize_messages()` removes orphans but doesn't stub |
+| **Compression provider hooks** | `on_pre_compress()` lets ALL providers extract before discard | Only `memory_flush.rs` (no plugin hook architecture) |
+| **Rate limit coordination** | Cross-session file-backed rate guards preventing retry amplification | No cross-session rate tracking |
+
+### Former Dead Code Now Wired
+
+| Module | What It Does | Gap It Closes |
+|--------|-------------|---------------|
+| `transcript.rs::index_compacted_messages()` | Groups evicted msgs into blocks of 5, chunks, embeds, stores in `memory_chunks` | Wired after sliding-window eviction when an embedding provider exists |
+| `memory.rs::embed_memories_async()` | Chunks memory entries, embeds, stores in `memory_embeddings` | Wired from `store_facts()` when an embedding provider exists |
+
+### Critical Finding: Tool Schema Token Bloat (Provider-Agnostic)
+
+**The problem:** 640:1 input-to-output ratio. 80K avg input tokens, 125 avg output. 7s latency per request. 27.5K tokens (~34%) are tool schemas that are **identical on every request**.
+
+**Why caching won't fix it:** ~80% of traffic routes through DashScope (Qwen 3.5 Flash), which has no prompt caching. ~15% goes to OpenAI (auto-caches >1024 tokens). Anthropic is banned/~0% traffic. So caching only helps ~15% of requests.
+
+**The fix must reduce actual token count.** Three approaches (can combine):
+
+> **Note:** Hermes has this exact same problem (identified as limitation P7 in their SME doc: "No tool schema pruning"). They mitigate via toolset-based filtering, dependency-based removal, and token-aware setup — but haven't fully solved it either.
+
+**A. Activity-scoped tool sets (biggest win, Nebo-side):**
+- `tool_filter::filter_tools_with_context()` in `crates/agent/src/tool_filter.rs` currently returns ALL tools unchanged
+- Workflows have distinct activities (detect-meeting, send-reply, etc.). Each activity needs only 2-3 of the 9 tools
+- Change: filter the `tool_defs` vector (not just `active_contexts`) based on the current activity/context
+- Savings: 27.5K → ~6K per request (~78% reduction)
+- Hermes equivalent: `get_tool_definitions(enabled_toolsets=["file", "terminal"], disabled_toolsets=["browser"])` + platform-specific toolset configs
+- Impact on the math: 80K input → ~25K, latency 7s → 2-3s, ratio 640:1 → ~200:1
+
+**B. Schema compression (medium win, Nebo-side):**
+- The `os` tool alone is ~8-10K tokens (25 resources × nested properties)
+- Reduce descriptions to 1-2 sentences, remove example values, use $ref for shared types
+- Savings: ~10-15K tokens
+
+**C. Deferred-by-default for heavy tools (easy win, Nebo-side):**
+- Currently only `loop`, `work`, `execute`, `plugin`, `publisher` are deferred
+- Make `os`, `web`, `desktop` deferred too — activate on first keyword match
+- Savings: ~15K tokens until activation
+- Already partially implemented in `tool_filter.rs`
+
+**Janus-side note:** When traffic eventually routes to providers with caching (Anthropic, OpenAI), Janus should pass through cache markers. Currently `janus/internal/ai/types.go:69-73` `ToolDefinition` has no `CacheControl` field, so markers are stripped. Also: ensure tools come BEFORE dynamic conversation content in the API payload so Anthropic's prefix-based caching covers them.
+
+**The math:**
+
+| Scenario | Input Tokens | Latency (est.) |
+|----------|-------------|----------------|
+| Current (all 9 tools, no cache) | ~80K | 7s |
+| Activity-scoped (2-3 tools) | ~25K | 2-3s |
+| Scoped + schema compression | ~15K | 1-2s |
+
+### Prioritized Improvement List
+
+> **Revised 2026-05-13** after peer review. Key changes: structured compression promoted to P0, tool output pruning demoted to P1, Janus cache demoted to P2, sub-agent tool scoping and OS deferral added, anti-thrashing elevated for multi-agent safety.
+
+#### P0 — Do This Week
+
+1. **Tool schema reduction + sub-agent scoping** — Contextual filtering and `os` deferral are active, but the next win is tighter per-agent/activity scopes and schema compression for large tools.
+2. **Wire plugin env injection into ExecuteTool registration** — `ExecuteTool` supports `with_plugin_store()`, but registry construction currently registers it without the plugin store, so skill scripts may not receive plugin binary env vars.
+3. **Secret scan explicit memory stores** — Add `secret_scan` and prompt-injection checks to `agent(resource: "memory", action: "store")`, not only automatic extraction.
+4. **Fence prompt-relevant memories** — The main memory section is fenced; query-time `Relevant to This Conversation` should use the same `<memory-context>` wrapper.
+5. **Structured compression summary** — Replace single LLM summary with 12-section handoff template (Active Task, Completed Actions, Key Decisions, Remaining Work, etc.). Second-biggest context quality issue after tool schemas. When sliding window evicts 20 messages, the quality of what survives determines whether the agent stays on-task. For 4-step workflows, losing active task context mid-workflow causes multi-minute burns. Prerequisite for iterative summary updates.
+
+#### P1 — Next Sprint
+
+7. **Iterative summary updates** — On re-compression, UPDATE previous summary instead of replacing. Critical for multi-step workflows: detect-meeting → classify-email → check-calendar → send-reply may hit 2-3 compressions. Without iterative updates, by step 4 the agent only remembers step 3's summary — steps 1-2 are gone. Depends on P0.6 (structured template).
+8. **Smart tool output pruning** — Upgrade `micro_compact` from generic `[trimmed: {tool} result]` to tool-specific summaries (`[os:shell] ran npm test → exit 0, 47 lines`). Nice but marginal token savings — the 640:1 ratio is driven by input schemas, not output trimming.
+9. **Anti-thrashing** — Skip compression if last 2 attempts each saved <10%. For single-agent CLI this is nice-to-have; for Nebo's multi-agent workflows where sub-agents run autonomously, an infinite compression loop can silently consume quota and time. Should detect and abort the sub-agent with a clear error rather than looping.
+10. **Memory usage metrics** — Add count + capacity display to "What You Know" header.
+11. **Secret redaction** — Add regex patterns for API keys, JWTs, private keys in `sanitize.rs`. Apply before compression summaries. More critical for Nebo than CLI agents since it has machine-level access to user's files and credentials.
+12. **LLM-summarized session search** — Upgrade bot_tool.rs session "query" from brute-force substring matching to hybrid search + auxiliary LLM summarization.
+
+#### P2 — Backlog
+
+13. **Token-budget tail protection** — Switch from fixed `WINDOW_MAX_MESSAGES=20` count to dynamic token-budget-based tail sizing.
+14. **Session splitting on compression** — Create new session with lineage link on compression. Enable search across lineage.
+15. **OS tool decomposition** — Split `os` into 3-4 smaller tools (`os_shell`, `os_desktop`, `os_media`, `os_pim`) for independent deferral and per-agent scoping. Proper fix for the quick deferral in P0.2.
+16. ~~**Memory overflow management**~~ — **DONE (2026-05-15).** Background consolidation implemented in `memory_consolidation.rs`. Sweeps every 30 min, LLM-driven dedup/merge/prune per user_id scope. Gate chain: enabled check → 24h cooldown → 20+ memories → scope lock.
+17. **Context references** — `@file:`, `@url:` injection into user messages at API-call time with token budget protection.
+18. **Tool pair integrity** — Stub missing tool results after compression instead of removing orphans.
+19. **Janus tool cache passthrough** — Add `CacheControl` field to `janus/internal/ai/types.go:ToolDefinition` and forward to Anthropic/OpenAI providers. Premature while ~80% of traffic is DashScope (no caching) and Anthropic is ~0%. Do when provider mix changes.
+20. **Memory provider as plugin capability** — Add `memory` to plugin capability types (alongside tools, hooks, providers, events). Enables external memory backends (Mem0, Hindsight, etc.) as plugins.
+
+### Personality Synthesis — Active, Needs Verification
+
+`personality.rs` is actively called from `runner.rs:2625` after every turn's memory extraction. It synthesizes a personality directive from style observations. This is a major Nebo advantage over Hermes (which has nothing equivalent). The outstanding question is not "wire it in" but "verify it's working correctly" — confirm the synthesized directive is actually influencing behavior and appearing in the prompt. If it is, document it as a proven differentiator.
+
+### Anthropic Cost Revisit
+
+The plan notes Anthropic is "banned/~0% traffic." If by policy, fine. But the prompt caching calculus is worth revisiting: with Anthropic's prompt caching, 80K-token requests would cost ~90% less on cache hits. Tool schema reduction + caching together could make per-request cost comparable to DashScope. The 7s latency would drop to ~1-2s. Running the math on total cost (tokens × price × volume) might show Anthropic with caching is cheaper than DashScope without caching at current volume.
+
+---
+
+## 28. Scoped Memory Architecture
+
+> **Added 2026-05-15.** Three-tier memory isolation + read inheritance for multi-agent memory scoping.
+
+### Problem
+
+Nebo is a multi-agent platform. The main Nebo companion learns about the user. Installed agents like Brief (legal) handle domain-specific work with sensitive per-client data. Before this change:
+
+1. **No context-level isolation** — Brief stored Client A and Client B memories in the same bucket. Client A's privileged facts could leak into Client B's documents.
+2. **No shared user layer** — Brief couldn't access the user's timezone or communication preferences stored by main Nebo.
+3. **No consolidation** — memories accumulated but were never reviewed, deduplicated, or pruned across sessions.
+
+### Design: Extend the user_id Convention
+
+No schema migration needed. The existing `user_id` column already stores composite strings. We added a third tier:
+
+```
+Layer 1 (User):     user_id = "user123"                           ← main Nebo
+Layer 2 (Agent):    user_id = "user123:agent:brief"               ← agent-wide
+Layer 3 (Context):  user_id = "user123:agent:brief:ctx:doc-123"   ← per-context
+```
+
+### MemoryConfig (agent.json)
+
+File: `crates/napp/src/agent.rs`
+
+```rust
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    pub inherit_user: bool,      // READ user's tacit/preferences (read-only)
+    pub context_isolated: bool,  // Memories scoped per contextId from SDK embed
+}
+```
+
+Added to `AgentConfig` as `memory: MemoryConfig` (defaults to both `false`).
+
+```json
+{
+  "memory": {
+    "inherit_user": true,
+    "context_isolated": true
+  }
+}
+```
+
+### Behavior Matrix
+
+| Agent Config | Writes to | Reads from |
+|-------------|-----------|------------|
+| No memory config (default) | `user_id:agent:X` | `user_id:agent:X` only |
+| `inherit_user: true` | `user_id:agent:X` | `user_id:agent:X` + `tacit/preferences` from `user_id` (read-only) |
+| `context_isolated: true` | `user_id:agent:X:ctx:CTX` | `user_id:agent:X:ctx:CTX` + `user_id:agent:X` (agent-wide) |
+| Both | `user_id:agent:X:ctx:CTX` | all 3 layers |
+
+### Context ID Source
+
+The `contextId` flows through the system via the session key:
+
+- SDK: `chat.mount(el, { contextId: 'doc-123' })`
+- Embed URL: `?ctx=doc-123`
+- Session key: `"agent:brief:app:doc-123"`
+
+Extracted in `runner.rs` by splitting the session key: `agent:{agent_id}:{channel}:{context_id}` — the 4th segment (if present) is the `context_id`.
+
+### Memory vs Chat/Thread Scoping
+
+Memories are scoped by `user_id`, NOT by chat_id or session_id. This is intentional:
+
+- **`/new` (rotate_chat)**: Creates a new conversation under the same session. Memories persist — all chats share the same memory pool.
+- **Threads**: Same — threads within a session share the same memory pool.
+- **Main Nebo**: All companion chats share `user_id = "user123"` memories.
+- **Agents**: All chats for the same agent share `user_id = "user123:agent:brief"`. With `context_isolated: true`, embed chats with different `contextId` get separate memory pools.
+
+### Inherited Memory Scoring
+
+Inherited memories (from parent scopes) are scored at 0.8x their normal score, so they rank below local memories but still appear when relevant. Deduplication by key keeps only the highest-scored version.
+
+### Implementation Files
+
+| File | Change |
+|------|--------|
+| `crates/napp/src/agent.rs` | `MemoryConfig` struct + `memory` field on `AgentConfig` |
+| `crates/agent/src/runner.rs` | Extract context_id from session key; build 3-tier `memory_user_id`; build inherit chain; pass to db_context; fix `ToolContext.user_id` to use `memory_user_id` |
+| `crates/agent/src/db_context.rs` | `InheritScope` struct; `load_db_context()` accepts `&[InheritScope]` |
+| `crates/agent/src/memory.rs` | `load_scored_memories()` merges primary + inherited scopes with dedup |
+
+### Critical Fix: ToolContext.user_id
+
+Before this change, `run_loop` received the raw `user_id` and set it in `ToolContext.user_id`. This meant bot tool memory actions (`agent(resource: "memory", action: "store")`) bypassed agent scoping entirely — they wrote to the raw `user_id`, not the agent-scoped one. Now `ToolContext.user_id` is set to `memory_user_id` (the fully scoped value).
+
+---
+
+## 29. Background Memory Consolidation
+
+> **Added 2026-05-15.** Periodic LLM-driven deduplication, merging, and pruning of memories.
+
+File: `crates/agent/src/memory_consolidation.rs`
+
+### Gate Chain (cheapest → most expensive)
+
+1. **Feature check**: `get_plugin_setting("nebo", "memory_consolidation")` — enabled by default, disable with value `"disabled"`
+2. **Time gate**: >= 24h since last consolidation for this scope (in-memory timestamp map)
+3. **Memory count**: >= 20 memories in the scope
+4. **Scope lock**: in-memory mutex per user_id (prevents concurrent consolidation of same scope)
+
+### Scheduling
+
+- Background `tokio::spawn` task, runs every 30 minutes
+- Iterates over all distinct `user_id` values in the memories table
+- Each scope that passes all 4 gates gets consolidated
+
+### Consolidation Prompt
+
+```
+You are a memory curator. Review these N facts stored for a user and:
+1. Identify duplicates — keep the most complete version, mark others for deletion
+2. Identify contradictions — newer facts (higher id) supersede older ones
+3. Identify stale or irrelevant facts that should be removed
+4. Identify facts that can be merged into a single, more useful entry
+
+Return JSON: { "keep": [...ids], "update": [{id, value}], "delete": [...ids] }
+```
+
+### Scope Isolation
+
+Each distinct `user_id` is consolidated independently. `"user123:agent:brief:ctx:doc-A"` is **never** merged with `"user123:agent:brief:ctx:doc-B"`. This preserves the 3-tier memory isolation.
+
+### DB Method
+
+`Store::get_distinct_memory_user_ids()` — returns all unique user_id values with memory counts, ordered by count descending.
+
+### Startup
+
+Spawned from `crates/server/src/lib.rs` after runner creation:
+
+```rust
+agent::memory_consolidation::spawn_sweep(store.clone(), runner.providers());
+```
+
+Uses `prefer_non_gateway()` to pick the cheapest available provider (avoids burning Janus credits on background work).

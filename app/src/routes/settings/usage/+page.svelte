@@ -73,8 +73,9 @@
   async function refresh() {
     if (refreshing) return;
     refreshing = true;
+    const min = new Promise(r => setTimeout(r, 800));
     try {
-      const raw = (await api.neboLoopJanusUsageRefresh()) as TypedJanusUsage;
+      const [raw] = await Promise.all([api.neboLoopJanusUsageRefresh() as Promise<TypedJanusUsage>, min]);
       usage = raw;
     } catch { /* ignore */ }
     refreshing = false;

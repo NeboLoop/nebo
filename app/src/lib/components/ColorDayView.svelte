@@ -7,7 +7,7 @@
   import type { CalendarItem } from '$lib/stores/schedule.js';
   import DayDetailPane from './DayDetailPane.svelte';
 
-  let { enabled, selectedDate, onopencanvas }: { enabled: Record<string, boolean>; selectedDate: Date; onopencanvas?: (agentFull: string) => void } = $props();
+  let { enabled, selectedDate, onopencanvas, showHeartbeats = false }: { enabled: Record<string, boolean>; selectedDate: Date; onopencanvas?: (agentFull: string) => void; showHeartbeats?: boolean } = $props();
 
   const HOUR_PX = 80;
 
@@ -37,11 +37,34 @@
     if (scrollEl) scrollEl.scrollTop = 7 * HOUR_PX;
   });
 
-  const items = $derived(
+  const allItems = $derived(
     attachRunData(flattenForDate(weekday, enabled, $userScheduleItems))
   );
 
-  const packed = $derived(packLanes(items));
+  function expandBand(band: CalendarItem & { _id: string }): Array<CalendarItem & { _id: string }> {
+    const intervalStr = band.interval || '30m';
+    const hMatch = intervalStr.match(/(\d+)h/);
+    const mMatch = intervalStr.match(/(\d+)m/);
+    const minutes = (hMatch ? parseInt(hMatch[1]) * 60 : 0) + (mMatch ? parseInt(mMatch[1]) : 0);
+    if (minutes <= 0) return [band];
+    const step = minutes / 60;
+    const items: Array<CalendarItem & { _id: string }> = [];
+    let h = band.hour;
+    let idx = 0;
+    while (h < band.end) {
+      items.push({ ...band, _id: `${band._id}:${idx}`, hour: h, dur: 0.25, end: h + 0.25 });
+      h += step;
+      idx++;
+    }
+    return items;
+  }
+
+  const packed = $derived.by(() => {
+    const regular = allItems.filter(i => i.triggerType !== 'heartbeat');
+    if (!showHeartbeats) return packLanes(regular);
+    const expanded = allItems.filter(i => i.triggerType === 'heartbeat').flatMap(expandBand);
+    return packLanes([...regular, ...expanded]);
+  });
   const rulerMarks = Array.from({ length: 24 }, (_, i) => i);
   const selectedItem = $derived(selected ? packed.find(p => p._id === selected) ?? null : null);
 
@@ -94,6 +117,7 @@
             <div class="absolute left-0 right-0 h-0.5 bg-error z-10" style="top:{nowHour * HOUR_PX}px"></div>
           {/if}
 
+          <!-- Event items (z-index:2+) -->
           {#each packed as item}
             {@const top = item.hour * HOUR_PX}
             {@const height = Math.max(32, item.dur * HOUR_PX)}
@@ -104,17 +128,18 @@
             {@const widthPct = item.totalLanes > 1 ? 100 - leftPct - (item.lane < item.totalLanes - 1 ? 5 : 0) : 100}
             {@const isSelected = selected === item._id}
             {@const zBase = 2 + item.lane}
+            {@const isHeartbeat = item.triggerType === 'heartbeat'}
             <div
               class="absolute rounded-sm overflow-hidden cursor-pointer flex items-start transition-shadow border-l-[3px] px-1.5 pt-[3px] {c.fillClass} {c.edgeClass} {c.textClass}"
               class:ring-2={isSelected}
-              style="left:calc({leftPct}% + 4px); width:calc({widthPct}% - 8px); top:{top}px; height:{height}px; {isSelected ? `--tw-ring-color:${c.edgeVar}; z-index:20` : `z-index:${zBase}`}"
-              title="{a?.name ?? item.agent}: {item.label}"
+              style="left:calc({leftPct}% + 4px); width:calc({widthPct}% - 8px); top:{top}px; height:{height}px; {isHeartbeat ? 'border-left-style:dashed; ' : ''}{isSelected ? `--tw-ring-color:${c.edgeVar}; z-index:20` : `z-index:${zBase}`}"
+              title="{a?.name ?? item.agent}: {item.label}{isHeartbeat && item.interval ? ` (every ${item.interval})` : ''}"
               onclick={(e) => { e.stopPropagation(); selected = item._id; createData = null; }}
               onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selected = item._id; createData = null; } }}
               role="button"
               tabindex="0"
             >
-              <span class="text-xs font-semibold overflow-hidden text-ellipsis whitespace-nowrap flex-1">{a?.name ?? item.agent}: {item.label}</span>
+              <span class="text-xs font-semibold overflow-hidden text-ellipsis whitespace-nowrap flex-1">{isHeartbeat ? '↻ ' : ''}{a?.name ?? item.agent}: {item.label}</span>
               {#if item.run}
                 <span class="w-1.5 h-1.5 rounded-full shrink-0 ml-1 mt-1 {item.run.status === 'success' ? 'bg-success' : item.run.status === 'failed' ? 'bg-error' : item.run.status === 'skipped' ? 'bg-warning' : 'bg-base-content/30'}"></span>
               {/if}

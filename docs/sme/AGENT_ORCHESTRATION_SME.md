@@ -6,7 +6,7 @@
 > automation platform.
 
 **Created:** 2026-03-29
-**Last verified against source:** 2026-04-13
+**Last verified against source:** 2026-05-15
 **Status:** Design — Phase 1 ready to implement (ROLE → AGENT rename complete, A2UI Phase 1 shipped)
 
 ---
@@ -23,8 +23,12 @@
 8. [Intelligence at Every Layer](#8-intelligence-at-every-layer)
 9. [Enterprise Positioning](#9-enterprise-positioning)
 10. [Rename: ROLE → AGENT](#10-rename-role--agent)
-11. [Build Order](#11-build-order)
-12. [Key Files Reference](#12-key-files-reference)
+11. [Task Recovery & Crash Resilience](#11-task-recovery--crash-resilience)
+12. [Progress Heartbeat Monitoring](#12-progress-heartbeat-monitoring)
+13. [SubagentProgress Tracking](#13-subagentprogress-tracking)
+14. [Orchestrator Task Prefix](#14-orchestrator-task-prefix)
+15. [Build Order](#15-build-order)
+16. [Key Files Reference](#16-key-files-reference)
 
 ---
 
@@ -436,7 +440,176 @@ Migration `0070` + `0071` handled the DB layer. All file renames, identifier ren
 
 ---
 
-## 11. Build Order
+## 11. Task Recovery & Crash Resilience
+
+### What It Is
+
+On startup, the orchestrator recovers incomplete tasks that were interrupted by
+a crash or shutdown. `recover_internal()` loads all recoverable pending tasks
+and applies a completion heuristic to decide whether to mark them done or
+re-spawn them.
+
+### Completion Heuristic (`check_completion_heuristic`)
+
+Applied to the message history of the task's session:
+
+1. **No messages** → incomplete
+2. **Has tool calls** → complete (side effects likely occurred)
+3. **Multiple messages + assistant turns** (assistant count > 0, total > 2) → complete
+4. **Last message is assistant with >50 chars** → complete
+5. **Otherwise** → incomplete, eligible for re-spawn
+
+### Recovery Filters
+
+| Filter | Value | Behavior |
+|---|---|---|
+| Task type | `subagent` or `dag` only | Other types are skipped |
+| Task age | >2 hours | Marked failed ("Stale: older than 2 hours") |
+| Retry limit | `max_attempts` (default 3) | Marked failed ("Max retry attempts exceeded") |
+
+### Re-Spawn Flow
+
+Viable tasks are re-spawned with:
+- `skip_memory_extract: true`
+- `origin: System`
+- `channel: "recovery"`
+- Lane routing: if `LaneManager` is available, the task routes through lanes
+  (lane name from `task.lane` or default `"subagent"`). Otherwise falls back to
+  `tokio::spawn`.
+
+**Source:** `Orchestrator::recover_internal()` in `crates/agent/src/orchestrator.rs`
+
+---
+
+## 12. Progress Heartbeat Monitoring
+
+### What It Is
+
+During sub-agent runs, the parent stream can go silent for extended periods.
+`run_and_collect()` sends periodic heartbeat updates to the parent so the user
+sees activity instead of nothing.
+
+### Mechanism
+
+A 30-second `tokio::time::interval` fires inside the `run_and_collect()` select
+loop. On each tick, if a `parent_stream_tx` is provided, it sends:
+
+```
+StreamEvent::text(format!("\n_{}_\n", desc))
+```
+
+Where `desc` is either `"Working..."` (no tool activity yet) or
+`"Working on: <last_operation>"` (truncated to 50 chars).
+
+### Tracked Metrics
+
+| Metric | Source |
+|---|---|
+| `tool_count` | Incremented on each `StreamEventType::ToolResult` |
+| `token_count` | Accumulated from `StreamEventType::Usage` events |
+| `last_operation` | Updated on each `StreamEventType::ToolCall` via `describe_tool_call()` |
+
+### `describe_tool_call()` — Human-Readable Descriptions
+
+Extracts a readable label from a `ToolCall`:
+
+| Tool Type | Format | Example |
+|---|---|---|
+| STRAP tools | `resource: action` | `"file: read"` |
+| Plugin tools | `slug: command_prefix` | `"gws: list"` |
+| Fallback | tool name | `"agent"` |
+
+Extraction logic: reads `resource`, `action`, and `command` fields from the
+tool call's input JSON. For plugins, takes the first whitespace-delimited word
+of `command` as the prefix.
+
+### Frontend Deduplication
+
+The frontend strips prior `\n_Working..._\n` status lines before appending new
+ones, preventing accumulation of stale heartbeat messages in the chat view.
+
+**Source:** `run_and_collect()` and `describe_tool_call()` in `crates/agent/src/orchestrator.rs`
+
+---
+
+## 13. SubagentProgress Tracking
+
+### What It Is
+
+During parallel execution (`spawn_parallel_internal`), per-agent progress
+events are collected and forwarded to the parent stream so the UI can render
+live status for each running sub-agent.
+
+### SubagentProgress Struct
+
+```rust
+pub struct SubagentProgress {
+    pub task_id: String,
+    pub tool_count: usize,
+    pub token_count: i32,
+    pub current_operation: String,
+}
+```
+
+### Event Types
+
+| Event | When | Payload (via `widgets` JSON) |
+|---|---|---|
+| `SubagentStart` | Sub-agent spawned | `task_id`, `description`, `agent_type`, `total_count` |
+| `SubagentProgress` | Tool call/result received | `task_id`, `tool_count`, `token_count`, `current_operation` |
+| `SubagentComplete` | Sub-agent finished | `task_id`, `success`, `tool_count`, `token_count` |
+
+### Concurrent Collection
+
+`spawn_parallel_internal` uses `tokio::select!` to interleave two streams:
+
+1. **`prog_rx.recv()`** — progress updates from all sub-agents via a shared
+   `mpsc::channel::<SubagentProgress>(64)`. Each sub-agent sends progress on
+   tool calls and tool results. Forwarded to the parent as `SubagentProgress`
+   stream events.
+2. **`running.next()`** — `FuturesUnordered` yielding completed sub-agents.
+   On completion, a `SubagentComplete` event is sent with final metrics
+   (pulled from `agent_metrics` HashMap).
+
+The internal `prog_tx` is dropped after all sub-agents are spawned, so
+`prog_rx` closes naturally when the last sub-agent finishes.
+
+**Source:** `Orchestrator::spawn_parallel_internal()` in `crates/agent/src/orchestrator.rs`
+
+---
+
+## 14. Orchestrator Task Prefix
+
+### What It Is
+
+`task_prefix_for_type()` generates behavioral constraints prepended to the
+user's prompt (not the system prompt) based on the sub-agent's `AgentType`.
+This keeps sub-agents on-rail without needing separate system prompts.
+
+### Prefixes by Type
+
+| AgentType | Prefix |
+|---|---|
+| `Explore` | `[EXPLORATION agent — search, read, research only. Do NOT modify files or execute destructive commands. Report findings clearly.]` |
+| `Plan` | `[PLANNING agent — analyze, break down steps, identify files and patterns. Produce a clear actionable plan. Do NOT implement anything.]` |
+| `General` | `[Execute the task using whatever tools are needed.]` |
+
+### Sub-Agent Request Configuration
+
+All sub-agents use `build_subagent_request()` which enforces:
+
+| Parameter | Value | Why |
+|---|---|---|
+| `prompt_mode` | `PromptMode::Minimal` | Identity + capabilities + behavior only; skips memory docs, tool routing guide, etiquette, comm style, autonomy sections |
+| `channel` | `"subagent"` | Steering generators skip this channel — sub-agents don't get steering injections |
+| `skip_memory_extract` | `true` | Sub-agent runs don't trigger memory extraction |
+| `origin` | `Origin::System` | Distinguishes sub-agent runs from user-initiated runs |
+
+**Source:** `task_prefix_for_type()` and `build_subagent_request()` in `crates/agent/src/orchestrator.rs`
+
+---
+
+## 15. Build Order
 
 ### Phase 1 — Commander + Isolation (enables the core multi-agent vision)
 
@@ -496,7 +669,7 @@ Migration `0070` + `0071` handled the DB layer. All file renames, identifier ren
 
 ---
 
-## 12. Key Files Reference
+## 16. Key Files Reference
 
 | File | Relevance |
 |---|---|
@@ -518,9 +691,8 @@ Migration `0070` + `0071` handled the DB layer. All file renames, identifier ren
 | `docs/sme/AGENTS_SME.md` | Full agent system reference (renamed from ROLES_SME.md) |
 | `crates/server/src/a2ui.rs` | A2UIManager — surface lifecycle, action dedup, message broadcast |
 | `crates/server/src/a2ui_actions.rs` | Deterministic action dispatch (mcp_call, navigate, update_data) |
-| `crates/server/src/a2ui_bindings.rs` | DataBindingManager — poll MCP tools, inject into data model |
 | `crates/tools/src/a2ui_tool.rs` | A2UITool STRAP interface, A2UIHost trait |
 
 ---
 
-*Last updated: 2026-04-13 — reflects actual codebase state including A2UI Phase 1, filesystem watcher events, ROLE→AGENT rename completion*
+*Last updated: 2026-05-15 — reflects actual codebase state including A2UI Phase 1, filesystem watcher events, ROLE→AGENT rename completion, task recovery, progress heartbeat, subagent progress tracking, task prefixes*

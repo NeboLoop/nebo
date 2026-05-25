@@ -694,10 +694,12 @@ impl ChannelMessagesResponse {
                     content: String::new(),
                     created_at: raw.created_at.clone(),
                     role: None,
+                    attachments: vec![],
                 };
                 // Parse nested payload JSON
                 if let Ok(p) = serde_json::from_str::<ChannelPayload>(&raw.payload) {
                     item.content = p.content.text;
+                    item.attachments = p.content.attachments;
                     if !p.metadata.role.is_empty() {
                         item.role = Some(p.metadata.role);
                     }
@@ -718,6 +720,9 @@ pub struct NormalizedChannelMessage {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// File/image/video attachments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::wire::Attachment>,
 }
 
 /// Nested JSON inside ChannelMessageRaw.payload.
@@ -733,6 +738,8 @@ struct ChannelPayload {
 struct ChannelContent {
     #[serde(default)]
     text: String,
+    #[serde(default)]
+    attachments: Vec<crate::wire::Attachment>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

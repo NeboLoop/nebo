@@ -20,6 +20,97 @@ use crate::handlers::{HandlerResult, to_error_response};
 use crate::state::AppState;
 use db;
 
+/// Validate the per-app auth token from the `Authorization: Bearer <token>` header.
+///
+/// Returns Ok(()) if the token matches the running app's token.
+/// Returns 401 if the token is missing/invalid, or if the app has no running lifecycle.
+async fn validate_app_token(
+    state: &AppState,
+    agent_id: &str,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), Response> {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    let token = match token {
+        Some(t) => t,
+        None => {
+            return Err((StatusCode::UNAUTHORIZED, "missing Authorization: Bearer <token>").into_response());
+        }
+    };
+
+    let lifecycles = state.app_lifecycles.read().await;
+    let lifecycle = match lifecycles.get(agent_id) {
+        Some(lc) => lc,
+        None => {
+            return Err((StatusCode::UNAUTHORIZED, "app not running").into_response());
+        }
+    };
+
+    let expected = lifecycle.app_token().await;
+    if expected.is_empty() || token != expected {
+        return Err((StatusCode::UNAUTHORIZED, "invalid app token").into_response());
+    }
+
+    Ok(())
+}
+
+/// Check that the app has `network:{domain}` permission for the target URL.
+async fn check_network_permission(
+    state: &AppState,
+    agent_id: &str,
+    url: &str,
+) -> Result<(), Response> {
+    let domain = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(String::from));
+    let domain = match domain {
+        Some(d) => d,
+        None => {
+            return Err((StatusCode::BAD_REQUEST, "invalid URL").into_response());
+        }
+    };
+
+    let lifecycles = state.app_lifecycles.read().await;
+    if let Some(lifecycle) = lifecycles.get(agent_id) {
+        let perm = format!("network:{}", domain);
+        if !lifecycle.has_permission(&perm).await {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("app lacks permission: {}", perm),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
+}
+
+/// Check that the app has `subagent:{target}` permission to invoke another agent.
+async fn check_subagent_permission(
+    state: &AppState,
+    app_agent_id: &str,
+    target_agent_id: &str,
+) -> Result<(), Response> {
+    // Self-invocation is always allowed
+    if app_agent_id == target_agent_id {
+        return Ok(());
+    }
+    let lifecycles = state.app_lifecycles.read().await;
+    if let Some(lifecycle) = lifecycles.get(app_agent_id) {
+        let perm = format!("subagent:{}", target_agent_id);
+        if !lifecycle.has_permission(&perm).await {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("app lacks permission: {}", perm),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct InvokeRequest {
     message: String,
@@ -139,7 +230,7 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str) -> Res
 /// GET /sdk/nebo.global.js — serve the app SDK IIFE build for vanilla/HTMX apps.
 pub async fn serve_sdk_iife() -> Response {
     let path =
-        StdPath::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/app-sdk/dist/nebo.global.js");
+        StdPath::new(env!("CARGO_MANIFEST_DIR")).join("../../app/node_modules/@neboai/app-sdk/dist/nebo.global.js");
     match fs::read(&path).await {
         Ok(contents) => {
             let mut response = Response::new(Body::from(contents));
@@ -161,7 +252,11 @@ pub async fn serve_sdk_iife() -> Response {
 pub async fn get_storage(
     State(state): State<AppState>,
     Path((agent_id, key)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
     let plugin_name = format!("app:{}", agent_id);
     match state.store.get_plugin_setting(&plugin_name, &key) {
         Ok(Some(v)) => axum::Json(serde_json::json!({ "key": key, "value": v })).into_response(),
@@ -176,8 +271,12 @@ pub async fn get_storage(
 pub async fn put_storage(
     State(state): State<AppState>,
     Path((agent_id, key)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
     let plugin_name = format!("app:{}", agent_id);
     let value = match body.get("value") {
         Some(v) => v.to_string(),
@@ -199,7 +298,11 @@ pub async fn put_storage(
 pub async fn delete_storage(
     State(state): State<AppState>,
     Path((agent_id, key)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
     let plugin_name = format!("app:{}", agent_id);
     // Delete by setting empty — plugin_settings doesn't have a delete, use set with empty
     match state.store.set_plugin_setting(&plugin_name, &key, "") {
@@ -211,7 +314,14 @@ pub async fn delete_storage(
     }
 }
 
-pub async fn list_storage(State(state): State<AppState>, Path(agent_id): Path<String>) -> Response {
+pub async fn list_storage(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
     let plugin_name = format!("app:{}", agent_id);
     match state.store.list_plugin_settings(&plugin_name) {
         Ok(items) => axum::Json(serde_json::json!({ "items": items })).into_response(),
@@ -226,27 +336,43 @@ pub async fn list_storage(State(state): State<AppState>, Path(agent_id): Path<St
 pub async fn invoke_agent(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<InvokeRequest>,
-) -> HandlerResult<InvokeResponse> {
-    let (target_agent_id, agent_name) =
-        validate_app_agent(&state, &agent_id, body.agent.as_deref()).map_err(to_error_response)?;
-    let (text, tools) = run_agent_collect(&state, &target_agent_id, &agent_name, body)
-        .await
-        .map_err(to_error_response)?;
-    Ok(axum::Json(InvokeResponse { text, tools }))
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    let (target_agent_id, agent_name) = match validate_app_agent(&state, &agent_id, body.agent.as_deref()) {
+        Ok(v) => v,
+        Err(e) => return to_error_response(e).into_response(),
+    };
+    if let Err(r) = check_subagent_permission(&state, &agent_id, &target_agent_id).await {
+        return r;
+    }
+    match run_agent_collect(&state, &target_agent_id, &agent_name, body).await {
+        Ok((text, tools)) => axum::Json(InvokeResponse { text, tools }).into_response(),
+        Err(e) => to_error_response(e).into_response(),
+    }
 }
 
 /// POST /apps/{agent_id}/agents/stream — run the app's agent and stream SSE chunks.
 pub async fn stream_agent(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<InvokeRequest>,
 ) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
     let (target_agent_id, agent_name) =
         match validate_app_agent(&state, &agent_id, body.agent.as_deref()) {
             Ok(v) => v,
             Err(e) => return to_error_response(e).into_response(),
         };
+    if let Err(r) = check_subagent_permission(&state, &agent_id, &target_agent_id).await {
+        return r;
+    }
     let stream = run_agent_sse(state, target_agent_id, agent_name, body).await;
     Sse::new(stream).into_response()
 }
@@ -255,23 +381,33 @@ pub async fn stream_agent(
 pub async fn janus_complete(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<JanusRequest>,
-) -> HandlerResult<serde_json::Value> {
-    validate_app_agent(&state, &agent_id, None).map_err(to_error_response)?;
-    let (text, usage) = run_janus_collect(&state, body)
-        .await
-        .map_err(to_error_response)?;
-    Ok(axum::Json(
-        serde_json::json!({ "text": text, "usage": usage }),
-    ))
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    if let Err(e) = validate_app_agent(&state, &agent_id, None) {
+        return to_error_response(e).into_response();
+    }
+    match run_janus_collect(&state, body).await {
+        Ok((text, usage)) => {
+            axum::Json(serde_json::json!({ "text": text, "usage": usage })).into_response()
+        }
+        Err(e) => to_error_response(e).into_response(),
+    }
 }
 
 /// POST /apps/{agent_id}/janus/stream — direct provider SSE streaming for apps.
 pub async fn janus_stream(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<JanusRequest>,
 ) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
     if let Err(e) = validate_app_agent(&state, &agent_id, None) {
         return to_error_response(e).into_response();
     }
@@ -288,6 +424,13 @@ pub async fn proxy_to_sidecar(
     Path((agent_id, path)): Path<(String, String)>,
     req: axum::http::Request<Body>,
 ) -> Response {
+    // Block access to internal sidecar endpoints — these are for Nebo's internal
+    // use only (tool discovery, health checks). Never expose to HTTP clients.
+    let clean = path.trim_start_matches('/');
+    if clean == "_tools" || clean.starts_with("_") {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     let agent = match state.store.get_agent(&agent_id) {
         Ok(Some(a)) if a.is_app.unwrap_or(0) != 0 => a,
         _ => return StatusCode::NOT_FOUND.into_response(),
@@ -308,6 +451,9 @@ pub async fn proxy_to_sidecar(
                     agent_id.clone(),
                     tool_dir,
                     state.hub.clone(),
+                    state.tools.clone(),
+                    state.skill_loader.clone(),
+                    state.config.port,
                 );
                 match lifecycle.launch().await {
                     Ok(()) => {
@@ -510,6 +656,8 @@ async fn start_app_agent_run(
             entity_name: agent_name.to_string(),
             origin_agent_id: None,
             mention_context,
+            tool_scope: None, plan_mode: false,
+            channel_ctx: None,
         },
     )
     .await
@@ -603,14 +751,23 @@ async fn start_janus_stream(
 
 /// POST /apps/{agent_id}/http/proxy — CORS-free outbound HTTP proxy.
 pub async fn http_proxy(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
     let url = match body.get("url").and_then(|v| v.as_str()) {
         Some(u) => u.to_string(),
         None => return (StatusCode::BAD_REQUEST, "missing url field").into_response(),
     };
+
+    // Enforce network: permission from manifest
+    if let Err(r) = check_network_permission(&state, &agent_id, &url).await {
+        return r;
+    }
 
     let method = body
         .get("method")

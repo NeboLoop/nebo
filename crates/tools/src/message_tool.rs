@@ -85,10 +85,18 @@ impl DynTool for MessageTool {
                 Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
             };
 
-            let resource = if domain_input.resource.is_empty() {
-                self.infer_resource(&domain_input.action).to_string()
-            } else {
-                domain_input.resource
+            let mut input = input;
+            let resource = {
+                let corrected = crate::domain::auto_correct_resource(
+                    &domain_input,
+                    &mut input,
+                    &["owner", "sms", "notify"],
+                );
+                if corrected.is_empty() {
+                    self.infer_resource(&domain_input.action).to_string()
+                } else {
+                    corrected
+                }
             };
 
             match resource.as_str() {

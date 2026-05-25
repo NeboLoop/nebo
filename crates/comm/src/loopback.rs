@@ -188,6 +188,7 @@ mod tests {
             task_status: None,
             artifacts: vec![],
             error: None,
+            attachments: vec![],
         });
 
         assert!(received.load(Ordering::SeqCst));

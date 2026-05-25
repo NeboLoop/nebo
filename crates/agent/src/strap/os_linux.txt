@@ -6,8 +6,10 @@ Prefer file actions over shell commands: file read NOT shell cat, file grep NOT 
 - os(resource: "file", action: "read", path: "/path/to/file") — Read file contents
 - os(resource: "file", action: "write", path: "/path", content: "...") — Write/create a file
 - os(resource: "file", action: "edit", path: "/path", old_string: "...", new_string: "...") — Edit a file
-- os(resource: "file", action: "glob", pattern: "**/*.go") — Find files by pattern
-- os(resource: "file", action: "grep", pattern: "search term", path: "/dir") — Search file contents
+- os(resource: "file", action: "glob", pattern: "*.{rs,toml,md}", path: "/dir") — Find files by pattern (supports brace expansion)
+- os(resource: "file", action: "grep", regex: "search term", path: "/dir") — Search file contents
+- os(resource: "file", action: "grep", regex: "TODO", path: "/dir", output_mode: "files") — List files containing matches
+- os(resource: "file", action: "grep", regex: "fn main", path: ".", context_before: 2, context_after: 5) — Show surrounding code
 
 **Shell operations:**
 - os(resource: "shell", action: "exec", command: "ls -la") — Run a command
