@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  RUST_VERSION: "1.88"
+  RUST_VERSION: "1.95"
   NODE_VERSION: "20"
 
 jobs:
