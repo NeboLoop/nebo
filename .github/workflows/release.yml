@@ -34,11 +34,10 @@ jobs:
           pnpm run build
 
       - name: Upload frontend build
-        uses: actions/upload-artifact@v4
+        uses: actions/cache/save@v4
         with:
-          name: frontend-build
+          key: frontend-build-${{ github.sha }}
           path: app/build/
-          retention-days: 1
 
   # ─── macOS desktop builds (Tauri 2) ───────────────────────────────────
   build-macos:
@@ -71,10 +70,11 @@ jobs:
           workspaces: ". -> target"
 
       - name: Download frontend build
-        uses: actions/download-artifact@v4
+        uses: actions/cache/restore@v4
         with:
-          name: frontend-build
+          key: frontend-build-${{ github.sha }}
           path: app/build/
+          fail-on-cache-miss: true
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
@@ -162,9 +162,9 @@ jobs:
           APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
           cp "$APP_PATH/Contents/MacOS/nebo" nebo-darwin-${{ matrix.arch }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/cache/save@v4
         with:
-          name: nebo-darwin-${{ matrix.arch }}-binary
+          key: release-${{ github.run_id }}-nebo-darwin-${{ matrix.arch }}-binary
           path: nebo-darwin-${{ matrix.arch }}
 
       - name: Create .dmg from signed .app
@@ -223,11 +223,11 @@ jobs:
           xcrun stapler staple "$DMG_FILE"
           echo "Notarization complete"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/cache/save@v4
         if: ${{ steps.dmg.outputs.dmg_path != '' }}
         with:
-          name: nebo-darwin-${{ matrix.arch }}
-          path: dist/Nebo-*.dmg
+          key: release-${{ github.run_id }}-nebo-darwin-${{ matrix.arch }}-dmg
+          path: dist/
 
   # ─── Linux desktop builds (Tauri 2 — WebKitGTK) ──────────────────────
   build-linux:
@@ -266,10 +266,11 @@ jobs:
             build-essential
 
       - name: Download frontend build
-        uses: actions/download-artifact@v4
+        uses: actions/cache/restore@v4
         with:
-          name: frontend-build
+          key: frontend-build-${{ github.sha }}
           path: app/build/
+          fail-on-cache-miss: true
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
@@ -302,30 +303,20 @@ jobs:
       - name: Extract headless binary
         run: cp target/release/nebo-cli nebo-linux-${{ matrix.arch }}-headless
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nebo-linux-${{ matrix.arch }}
-          path: nebo-linux-${{ matrix.arch }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nebo-linux-${{ matrix.arch }}-headless
-          path: nebo-linux-${{ matrix.arch }}-headless
-
-      - name: Collect .deb
-        id: deb
+      - name: Stage release artifacts
         run: |
+          mkdir -p release-artifacts
+          cp nebo-linux-${{ matrix.arch }} release-artifacts/
+          cp nebo-linux-${{ matrix.arch }}-headless release-artifacts/
           DEB=$(ls target/release/bundle/deb/*.deb 2>/dev/null || true)
           if [ -n "$DEB" ]; then
-            cp $DEB .
-            echo "has_deb=true" >> "$GITHUB_OUTPUT"
+            cp $DEB release-artifacts/
           fi
 
-      - uses: actions/upload-artifact@v4
-        if: ${{ steps.deb.outputs.has_deb == 'true' }}
+      - uses: actions/cache/save@v4
         with:
-          name: nebo-deb-${{ matrix.arch }}
-          path: "*.deb"
+          key: release-${{ github.run_id }}-linux-${{ matrix.arch }}
+          path: release-artifacts/
 
   # ─── Windows desktop build (Tauri 2 — WebView2) ──────────────────────
   build-windows:
@@ -346,10 +337,11 @@ jobs:
           workspaces: ". -> target"
 
       - name: Download frontend build
-        uses: actions/download-artifact@v4
+        uses: actions/cache/restore@v4
         with:
-          name: frontend-build
+          key: frontend-build-${{ github.sha }}
           path: app/build/
+          fail-on-cache-miss: true
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
@@ -388,16 +380,17 @@ jobs:
             echo "::warning::No MSI found in target/release/bundle/msi/"
           fi
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nebo-windows-amd64
-          path: Nebo-*-setup.exe
+      - name: Stage release artifacts
+        shell: bash
+        run: |
+          mkdir -p release-artifacts
+          cp Nebo-*-setup.exe release-artifacts/ 2>/dev/null || true
+          cp *.msi release-artifacts/ 2>/dev/null || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/cache/save@v4
         with:
-          name: nebo-windows-msi
-          path: "*.msi"
-          if-no-files-found: warn
+          key: release-${{ github.run_id }}-windows-amd64
+          path: release-artifacts/
 
   # ─── Sign Windows binaries (Azure Trusted Signing) ───────────────────
   sign-windows:
@@ -407,17 +400,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Windows binary
-        uses: actions/download-artifact@v4
+      - name: Download Windows artifacts
+        uses: actions/cache/restore@v4
         with:
-          name: nebo-windows-amd64
-          path: .
+          key: release-${{ github.run_id }}-windows-amd64
+          path: release-artifacts/
+          fail-on-cache-miss: true
 
-      - name: Download Windows MSI
-        uses: actions/download-artifact@v4
-        with:
-          name: nebo-windows-msi
-          path: .
+      - name: Stage for signing
+        shell: bash
+        run: |
+          cp release-artifacts/* . 2>/dev/null || true
+          rm -rf release-artifacts
 
       - name: Sign binaries (Authenticode)
         uses: azure/trusted-signing-action@v1
@@ -435,16 +429,17 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nebo-windows-amd64-signed
-          path: Nebo-*-setup.exe
+      - name: Save signed artifacts
+        shell: bash
+        run: |
+          mkdir -p signed-artifacts
+          cp Nebo-*-setup.exe signed-artifacts/ 2>/dev/null || true
+          cp *.msi signed-artifacts/ 2>/dev/null || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/cache/save@v4
         with:
-          name: nebo-windows-msi-signed
-          path: "*.msi"
-          if-no-files-found: warn
+          key: release-${{ github.run_id }}-windows-signed
+          path: signed-artifacts/
 
   # ─── Create GitHub release with all artifacts ─────────────────────────
   release:
@@ -456,23 +451,74 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: "[nN]ebo-*"
-          merge-multiple: true
+      - name: Restore macOS artifacts
+        run: mkdir -p artifacts
 
-      - name: Stage signed Windows artifacts (if available)
-        run: |
-          if [ -d "artifacts" ]; then
-            # Prefer signed variants — overwrite unsigned with signed
-            for f in artifacts/*-signed*; do
-              [ -f "$f" ] || continue
-              dest="artifacts/$(basename "$f" | sed 's/-signed//')"
-              cp "$f" "$dest"
-            done
-          fi
+      - uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-arm64-binary
+          path: nebo-darwin-arm64
+          fail-on-cache-miss: false
+      - run: cp nebo-darwin-arm64 artifacts/ 2>/dev/null || true
+
+      - uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-amd64-binary
+          path: nebo-darwin-amd64
+          fail-on-cache-miss: false
+      - run: cp nebo-darwin-amd64 artifacts/ 2>/dev/null || true
+
+      - uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-arm64-dmg
+          path: dist/
+          fail-on-cache-miss: false
+      - run: cp dist/Nebo-*.dmg artifacts/ 2>/dev/null || true; rm -rf dist
+
+      - uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-amd64-dmg
+          path: dist/
+          fail-on-cache-miss: false
+      - run: cp dist/Nebo-*.dmg artifacts/ 2>/dev/null || true; rm -rf dist
+
+      - name: Restore Linux artifacts
+        uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-linux-amd64
+          path: release-artifacts/
+          fail-on-cache-miss: false
+      - run: cp release-artifacts/* artifacts/ 2>/dev/null || true; rm -rf release-artifacts
+
+      - uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-linux-arm64
+          path: release-artifacts/
+          fail-on-cache-miss: false
+      - run: cp release-artifacts/* artifacts/ 2>/dev/null || true; rm -rf release-artifacts
+
+      - name: Restore Windows artifacts (prefer signed)
+        uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-windows-signed
+          path: signed-artifacts/
+          fail-on-cache-miss: false
+      - run: cp signed-artifacts/* artifacts/ 2>/dev/null || true; rm -rf signed-artifacts
+
+      - name: Restore unsigned Windows (fallback)
+        uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-windows-amd64
+          path: release-artifacts/
+          fail-on-cache-miss: false
+      - run: |
+          # Only copy unsigned if signed versions don't exist
+          for f in release-artifacts/*; do
+            [ -f "$f" ] || continue
+            dest="artifacts/$(basename "$f")"
+            [ -f "$dest" ] || cp "$f" "$dest"
+          done
+          rm -rf release-artifacts
 
       - name: List artifacts
         run: ls -la artifacts/ 2>/dev/null || echo "No artifacts"
@@ -546,12 +592,22 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore macOS DMGs
+        run: mkdir -p artifacts
+
+      - uses: actions/cache/restore@v4
         with:
-          path: artifacts
-          pattern: nebo-darwin-*
-          merge-multiple: true
+          key: release-${{ github.run_id }}-nebo-darwin-arm64-dmg
+          path: dist/
+          fail-on-cache-miss: true
+      - run: cp dist/Nebo-*.dmg artifacts/ 2>/dev/null || true; rm -rf dist
+
+      - uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-amd64-dmg
+          path: dist/
+          fail-on-cache-miss: true
+      - run: cp dist/Nebo-*.dmg artifacts/ 2>/dev/null || true; rm -rf dist
 
       - name: Compute SHA256 checksums
         id: checksums
@@ -599,12 +655,21 @@ jobs:
     env:
       HAS_GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
     steps:
-      - name: Download .deb packages
-        uses: actions/download-artifact@v4
+      - name: Restore Linux artifacts (amd64)
+        uses: actions/cache/restore@v4
         with:
-          pattern: nebo-deb-*
-          path: debs
-          merge-multiple: true
+          key: release-${{ github.run_id }}-linux-amd64
+          path: release-artifacts/
+          fail-on-cache-miss: true
+      - run: mkdir -p debs && cp release-artifacts/*.deb debs/ 2>/dev/null || true; rm -rf release-artifacts
+
+      - name: Restore Linux artifacts (arm64)
+        uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-linux-arm64
+          path: release-artifacts/
+          fail-on-cache-miss: true
+      - run: cp release-artifacts/*.deb debs/ 2>/dev/null || true; rm -rf release-artifacts
 
       - name: Checkout apt repo
         uses: actions/checkout@v4
