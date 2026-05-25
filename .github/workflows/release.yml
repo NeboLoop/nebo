@@ -56,6 +56,7 @@ jobs:
     env:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
       HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
+      HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -96,7 +97,7 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
 
       - name: Prepare bundled .napp files
-        if: ${{ secrets.NEBOLOOP_CDN_URL != '' }}
+        if: ${{ env.HAS_CDN_URL == 'true' }}
         env:
           NEBOLOOP_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL }}
         run: |
@@ -239,6 +240,8 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    env:
+      HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -272,7 +275,7 @@ jobs:
         run: cargo install tauri-cli --version "^2" --locked
 
       - name: Prepare bundled .napp files
-        if: ${{ secrets.NEBOLOOP_CDN_URL != '' }}
+        if: ${{ env.HAS_CDN_URL == 'true' }}
         env:
           NEBOLOOP_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL }}
         run: |
@@ -328,6 +331,8 @@ jobs:
   build-windows:
     needs: frontend
     runs-on: windows-latest
+    env:
+      HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -353,7 +358,7 @@ jobs:
         run: choco install wixtoolset -y --no-progress || echo "WiX already installed, continuing"
 
       - name: Prepare bundled .napp files
-        if: ${{ secrets.NEBOLOOP_CDN_URL != '' }}
+        if: ${{ env.HAS_CDN_URL == 'true' }}
         shell: bash
         env:
           NEBOLOOP_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL }}
