@@ -3,10 +3,3 @@
 # The Rust toolchain defaults to 10.13 for aarch64-apple-darwin, causing C++ build failures.
 # force=true ensures this overrides any pre-existing env value.
 MACOSX_DEPLOYMENT_TARGET = { value = "10.15", force = true }
-
-[build]
-rustc-wrapper = "/opt/homebrew/bin/sccache"
-
-[target.aarch64-apple-darwin]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=/opt/homebrew/bin/ld64.lld"]
