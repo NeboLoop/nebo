@@ -49,7 +49,7 @@ jobs:
           - runner: macos-latest
             target: aarch64-apple-darwin
             arch: arm64
-          - runner: macos-latest
+          - runner: macos-13
             target: x86_64-apple-darwin
             arch: amd64
     runs-on: ${{ matrix.runner }}
@@ -60,6 +60,9 @@ jobs:
       RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: brew install protobuf
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -262,7 +265,8 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             pkg-config \
-            build-essential
+            build-essential \
+            protobuf-compiler
 
       - name: Download frontend build
         uses: actions/cache/restore@v4
@@ -343,6 +347,9 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm exec svelte-kit sync
           pnpm run build
+
+      - name: Install protobuf compiler
+        run: choco install protoc -y --no-progress
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
