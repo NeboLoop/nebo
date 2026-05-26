@@ -57,6 +57,7 @@ jobs:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
       HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
       HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -243,6 +244,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -320,6 +322,7 @@ jobs:
     runs-on: windows-latest
     env:
       HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
 
