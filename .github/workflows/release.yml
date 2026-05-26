@@ -201,6 +201,7 @@ jobs:
 
       - name: Notarize .dmg
         if: ${{ env.HAS_NOTARIZE_CREDS == 'true' && steps.dmg.outputs.dmg_path != '' }}
+        continue-on-error: true
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
@@ -208,7 +209,6 @@ jobs:
         run: |
           DMG_FILE="${{ steps.dmg.outputs.dmg_path }}"
           echo "Submitting $DMG_FILE for notarization..."
-          # Capture submission output to extract ID for log retrieval
           SUBMIT_OUT=$(xcrun notarytool submit "$DMG_FILE" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
@@ -217,11 +217,15 @@ jobs:
           echo "$SUBMIT_OUT"
           SUB_ID=$(echo "$SUBMIT_OUT" | grep "id:" | head -1 | awk '{print $2}')
           if echo "$SUBMIT_OUT" | grep -q "status: Invalid"; then
-            echo "Notarization failed — fetching detailed log..."
+            echo "::warning::Notarization rejected — fetching detailed log..."
             xcrun notarytool log "$SUB_ID" \
               --apple-id "$APPLE_ID" \
               --password "$APPLE_APP_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" 2>&1 || true
+            exit 1
+          fi
+          if echo "$SUBMIT_OUT" | grep -q "403\|expired\|agreement"; then
+            echo "::warning::Notarization skipped — Apple developer agreement needs renewal"
             exit 1
           fi
           xcrun stapler staple "$DMG_FILE"
