@@ -15,8 +15,8 @@ importers:
         specifier: ^0.1.0
         version: 0.1.0
       '@tauri-apps/api':
-        specifier: ^2.11.0
-        version: 2.11.0
+        specifier: ~2.10.0
+        version: 2.10.1
       '@tiptap/core':
         specifier: ^3.22.5
         version: 3.22.5(@tiptap/pm@3.22.5)
@@ -685,8 +685,8 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  '@tauri-apps/api@2.11.0':
-    resolution: {integrity: sha512-7CinYODhky9lmO23xHnUFv0Xt43fbtWMyxZcLcRBlFkcgXKuEirBvHpmtJ89YMhyeGcq20Wuc47Fa4XjyniywA==}
+  '@tauri-apps/api@2.10.1':
+    resolution: {integrity: sha512-hKL/jWf293UDSUN09rR69hrToyIXBb8CjGaWC7gfinvnQrBVvnLr08FeFi38gxtugAVyVcTa5/FD/Xnkb1siBw==}
 
   '@tiptap/core@3.22.5':
     resolution: {integrity: sha512-L1lhWz6ujGny8LduTJ7MBWYhzigwOvfUJUrJ7IzOJSuy3+OAzisdGDD1GV7LEO/hU0Hr2Mkm1wajRIHExvS9HQ==}
@@ -1700,7 +1700,7 @@ snapshots:
       tailwindcss: 4.2.4
       vite: 8.0.10(@types/node@25.6.2)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)
 
-  '@tauri-apps/api@2.11.0': {}
+  '@tauri-apps/api@2.10.1': {}
 
   '@tiptap/core@3.22.5(@tiptap/pm@3.22.5)':
     dependencies:
