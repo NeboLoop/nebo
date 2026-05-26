@@ -69,11 +69,6 @@ jobs:
       - name: Ensure target is installed
         run: rustup target add ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-          prefix-key: v1-${{ matrix.arch }}
-
       - name: Download frontend build
         uses: actions/cache/restore@v4
         with:
@@ -256,11 +251,6 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-          prefix-key: v1-linux-${{ matrix.arch }}
-
       - name: Install Tauri Linux dependencies
         run: |
           sudo apt-get update
@@ -337,10 +327,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
 
       - uses: actions/setup-node@v4
         with:
