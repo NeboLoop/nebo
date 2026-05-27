@@ -273,6 +273,11 @@ jobs:
             protobuf-compiler \
             libopenblas-dev
 
+      - name: Configure OpenBLAS library path
+        run: |
+          MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+          echo "LIBRARY_PATH=/usr/lib/${MULTIARCH}" >> $GITHUB_ENV
+
       - name: Download frontend build
         uses: actions/cache/restore@v4
         with:

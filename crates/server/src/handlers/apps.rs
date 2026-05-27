@@ -484,44 +484,51 @@ pub async fn proxy_to_sidecar(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    // Connect to sidecar via Unix socket gRPC
-    let channel = tonic::transport::Endpoint::from_static("http://[::]:50051")
-        .connect_with_connector_lazy(tower::service_fn(move |_: tonic::transport::Uri| {
-            let sock = sock_path.clone();
-            async move {
-                tokio::net::UnixStream::connect(sock)
-                    .await
-                    .map(hyper_util::rt::TokioIo::new)
-            }
-        }));
+    #[cfg(not(unix))]
+    {
+        return (StatusCode::SERVICE_UNAVAILABLE, "sidecar proxy requires Unix sockets").into_response();
+    }
 
-    let mut client = proto::ui_service_client::UiServiceClient::new(channel);
-    let grpc_req = proto::HttpRequest {
-        method,
-        path: path.trim_start_matches('/').to_string(),
-        query,
-        headers: headers_map,
-        body: body_bytes,
-    };
-
-    match client.handle_request(grpc_req).await {
-        Ok(resp) => {
-            let inner = resp.into_inner();
-            let status = StatusCode::from_u16(inner.status_code as u16)
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            let mut response = Response::builder().status(status);
-            for (name, value) in &inner.headers {
-                if let Ok(v) = HeaderValue::from_str(value) {
-                    response = response.header(name.as_str(), v);
+    #[cfg(unix)]
+    {
+        let channel = tonic::transport::Endpoint::from_static("http://[::]:50051")
+            .connect_with_connector_lazy(tower::service_fn(move |_: tonic::transport::Uri| {
+                let sock = sock_path.clone();
+                async move {
+                    tokio::net::UnixStream::connect(sock)
+                        .await
+                        .map(hyper_util::rt::TokioIo::new)
                 }
+            }));
+
+        let mut client = proto::ui_service_client::UiServiceClient::new(channel);
+        let grpc_req = proto::HttpRequest {
+            method,
+            path: path.trim_start_matches('/').to_string(),
+            query,
+            headers: headers_map,
+            body: body_bytes,
+        };
+
+        match client.handle_request(grpc_req).await {
+            Ok(resp) => {
+                let inner = resp.into_inner();
+                let status = StatusCode::from_u16(inner.status_code as u16)
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                let mut response = Response::builder().status(status);
+                for (name, value) in &inner.headers {
+                    if let Ok(v) = HeaderValue::from_str(value) {
+                        response = response.header(name.as_str(), v);
+                    }
+                }
+                response
+                    .body(Body::from(inner.body))
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
             }
-            response
-                .body(Body::from(inner.body))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-        }
-        Err(e) => {
-            warn!(agent = %agent_id, error = %e, "sidecar gRPC call failed");
-            (StatusCode::BAD_GATEWAY, format!("sidecar error: {}", e)).into_response()
+            Err(e) => {
+                warn!(agent = %agent_id, error = %e, "sidecar gRPC call failed");
+                (StatusCode::BAD_GATEWAY, format!("sidecar error: {}", e)).into_response()
+            }
         }
     }
 }

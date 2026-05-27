@@ -15,6 +15,7 @@ struct GrpcSidecarCaller {
     sock_path: PathBuf,
 }
 
+#[cfg(unix)]
 impl SidecarCaller for GrpcSidecarCaller {
     fn call(
         &self,
@@ -65,6 +66,21 @@ impl SidecarCaller for GrpcSidecarCaller {
                 Err(e) => Err(format!("gRPC call failed: {}", e)),
             }
         })
+    }
+}
+
+#[cfg(not(unix))]
+impl SidecarCaller for GrpcSidecarCaller {
+    fn call(
+        &self,
+        _method: &str,
+        _path: &str,
+        _query: &str,
+        _body: &[u8],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SidecarResponse, String>> + Send + '_>,
+    > {
+        Box::pin(async { Err("gRPC sidecar requires Unix sockets".to_string()) })
     }
 }
 
