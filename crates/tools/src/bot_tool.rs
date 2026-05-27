@@ -1332,10 +1332,10 @@ impl DynTool for AgentTool {
                 "session_id": { "type": "string", "description": "Session ID" },
                 "task": { "type": "string", "description": "Task description for advisor deliberation" },
                 "text": { "type": "string", "description": "Text for ask prompts" },
-                "options": { "type": "array", "description": "Options for select action" },
+                "options": { "type": "array", "items": { "type": "string" }, "description": "Options for select action" },
                 "subtask_id": { "type": "string", "description": "Subtask ID for submit_findings" },
-                "findings": { "type": "array", "description": "Array of findings from research worker" },
-                "gaps": { "type": "array", "description": "Array of gaps (unanswered questions) from research worker" },
+                "findings": { "type": "array", "items": { "type": "object", "properties": { "claim": { "type": "string" }, "source_url": { "type": "string" }, "source_ref": { "type": "string" }, "confidence": { "type": "number" }, "quote": { "type": "string" } }, "required": ["claim"] }, "description": "Array of findings from research worker" },
+                "gaps": { "type": "array", "items": { "type": "string" }, "description": "Array of gaps (unanswered questions) from research worker" },
                 "max_iterations": { "type": "integer", "description": "Max iterations for sub-agent (default: 100)" }
             },
             "required": ["resource", "action"]
