@@ -273,10 +273,11 @@ jobs:
             protobuf-compiler \
             libopenblas-dev
 
-      - name: Configure OpenBLAS library path
+      - name: Configure OpenBLAS paths
         run: |
           MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
-          echo "LIBRARY_PATH=/usr/lib/${MULTIARCH}" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/${MULTIARCH}/pkgconfig" >> $GITHUB_ENV
+          echo "RUSTFLAGS=-C link-arg=-L/usr/lib/${MULTIARCH}" >> $GITHUB_ENV
 
       - name: Download frontend build
         uses: actions/cache/restore@v4
@@ -364,9 +365,6 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Install WiX Toolset v3
-        run: choco install wixtoolset -y --no-progress || echo "WiX already installed, continuing"
-
       - name: Prepare bundled .napp files
         if: ${{ env.HAS_CDN_URL == 'true' }}
         shell: bash
@@ -384,26 +382,26 @@ jobs:
           fi
 
       - name: Build Tauri desktop app
-        run: cargo tauri build
+        run: cargo tauri build --bundles nsis
 
-      - name: Extract binary and MSI
+      - name: Extract binary and installer
         shell: bash
         run: |
           PKG_VERSION="${GITHUB_REF_NAME#v}"
-          cp target/release/nebo.exe "Nebo-${PKG_VERSION}-setup.exe"
-          MSI=$(ls target/release/bundle/msi/*.msi 2>/dev/null || true)
-          if [ -n "$MSI" ]; then
-            cp $MSI "Nebo-${PKG_VERSION}-amd64.msi"
+          cp target/release/nebo.exe "nebo-windows-amd64.exe"
+          NSIS=$(ls target/release/bundle/nsis/*.exe 2>/dev/null || true)
+          if [ -n "$NSIS" ]; then
+            cp $NSIS "Nebo-${PKG_VERSION}-setup.exe"
           else
-            echo "::warning::No MSI found in target/release/bundle/msi/"
+            echo "::warning::No NSIS installer found"
           fi
 
       - name: Stage release artifacts
         shell: bash
         run: |
           mkdir -p release-artifacts
+          cp nebo-windows-amd64.exe release-artifacts/ 2>/dev/null || true
           cp Nebo-*-setup.exe release-artifacts/ 2>/dev/null || true
-          cp *.msi release-artifacts/ 2>/dev/null || true
 
       - uses: actions/cache/save@v4
         with:
@@ -451,8 +449,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p signed-artifacts
+          cp nebo-windows-amd64.exe signed-artifacts/ 2>/dev/null || true
           cp Nebo-*-setup.exe signed-artifacts/ 2>/dev/null || true
-          cp *.msi signed-artifacts/ 2>/dev/null || true
 
       - uses: actions/cache/save@v4
         with:
@@ -551,8 +549,8 @@ jobs:
             nebo-darwin-arm64 nebo-darwin-amd64 \
             nebo-linux-amd64 nebo-linux-arm64 \
             nebo-linux-amd64-headless nebo-linux-arm64-headless \
-            Nebo-*-setup.exe \
-            Nebo-*.dmg Nebo-*.msi 2>/dev/null | tee checksums.txt
+            nebo-windows-amd64.exe Nebo-*-setup.exe \
+            Nebo-*.dmg 2>/dev/null | tee checksums.txt
           echo "Generated checksums:"
           cat checksums.txt
 
