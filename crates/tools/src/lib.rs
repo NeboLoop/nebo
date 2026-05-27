@@ -4,6 +4,7 @@ pub mod a2ui_tool;
 pub mod agent_tool;
 pub mod app_tool;
 pub mod bot_tool;
+pub mod channel_bridge;
 pub mod desktop_daemon;
 pub mod desktop_snapshot;
 pub mod desktop_tool;
@@ -63,6 +64,10 @@ pub use agent_tool::{
 };
 pub use app_tool::AppTool;
 pub use bot_tool::{AdvisorDeliberator, AgentTool, HybridSearchResult, HybridSearcher};
+pub use channel_bridge::{
+    ChannelBridgeHandle, ChannelBridgeRegistry, OpResult, PendingOps, channel_bridge_key,
+    channel_bridges, new_channel_bridge_registry, new_pending_ops, set_channel_bridges,
+};
 pub use domain::*;
 pub use emit_tool::EmitTool;
 pub use event_tool::EventTool;

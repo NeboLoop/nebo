@@ -1,39 +1,42 @@
 # Channel Plugins
 
-A **channel plugin** is a plugin that connects a Nebo agent to a messaging surface — Slack, Discord, Microsoft Teams, IRC, etc. Agents can listen for inbound messages, reply with text, and **upload files** to the channel.
+A **channel plugin** is a plugin that connects a Nebo agent to a messaging surface — Slack, Discord, Microsoft Teams, IRC, etc. The plugin owns the persistent connection to the platform (Socket Mode WebSocket, webhook receiver, etc.) and exchanges messages with Nebo through a single canonical pathway: NDJSON ops on the bridge process's stdin/stdout.
 
-This guide describes the conventions a channel plugin MUST follow so that Nebo can route messages, attach files, and thread replies consistently across platforms. The convention exists because the agent's mental model is **"use the channel plugin for channel things"** — and Nebo enforces that by making sure all channel operations live in the plugin's own CLI rather than in some out-of-band Nebo tool.
+This guide describes the conventions a channel plugin MUST follow. The convention exists because **every channel plugin in Nebo MUST have exactly one canonical pathway for every messaging operation**. Two invocation models for the same operation (e.g. a CLI subcommand and a bridge handler) race for the upstream socket and create silent failures — we've shipped fewer pathways, not more.
+
+This shape mirrors the trait-based adapters used by [openclaw](https://github.com/openclaw/openclaw)'s `ChannelPlugin<TAccount, TProbe>` and the `BasePlatformAdapter` ABC in hermes-agent — expressed through Nebo's sidecar process model.
 
 ---
 
 ## Required Subcommands
 
-A channel plugin MUST expose these subcommands. Names and flags are NOT optional — Nebo's runtime, docs, and agent system prompts assume them.
+A channel plugin MUST expose these subcommands. Names are NOT optional — Nebo's runtime, docs, and agent system prompts assume them.
 
-| Subcommand | Purpose | Lifecycle |
-|---|---|---|
-| `bridge --listen` | Long-running bidirectional channel bridge. Reads inbound messages from the platform and prints them as NDJSON on stdout; reads outbound reply NDJSON from stdin and posts them. | Long-running |
-| `upload --path <file> [--channel <id>] [--thread_ts <id>] [--caption <text>]` | Upload a local file to a channel. Uses the plugin's own API client + auth token. | One-shot |
-| `auth login` / `auth status` / `auth logout` | Authentication management. | One-shot |
+| Subcommand | Purpose | Lifecycle | Why CLI vs bridge |
+|---|---|---|---|
+| `bridge --listen` | Long-running bidirectional channel bridge. Owns the live platform connection. Reads outbound ops as NDJSON from stdin (reply/post/upload/dm); prints inbound platform events as NDJSON on stdout. | Long-running | Owns the persistent connection — all real-time ops route through it. |
+| `auth login` / `auth status` / `auth logout` | Authentication management. | One-shot | Stateless; doesn't need the live connection. |
+| `init` | Initialize local state (DB, default workspace) | One-shot | Stateless; runs once at install. |
+| `doctor` | Diagnostics (connectivity, scopes, archive integrity) | One-shot | Reports state; doesn't need to be inside the bridge. |
 
-Optional but recommended:
+Optional but recommended for archiver-style plugins:
 
 | Subcommand | Purpose |
 |---|---|
-| `init` | Initialize local state (DB, default workspace) |
-| `doctor` | Diagnostics |
-| `sync` | Archive workspace messages |
-| `search`, `users`, `channels` | Read-only queries |
+| `sync` | Download workspace history into a local archive |
+| `search`, `users`, `channels`, `messages` | Read-only queries against the local archive |
+
+**Real-time messaging operations (reply, post, upload, dm) have NO CLI subcommand.** They route through the bridge's stdin. See [Bridge Stdin Protocol](#bridge-stdin-protocol).
 
 ---
 
 ## The Bridge Process
 
-The `bridge --listen` process is how messages flow in real time. Nebo spawns one bridge per agent that has the plugin enabled, and supervises the process for its lifetime.
+The `bridge --listen` process is how messages flow in real time. Nebo spawns one bridge per `(agent_id, plugin_slug)` pair — each agent that has the plugin enabled gets its own bridge process with its own credentials. Nebo supervises the process for its lifetime; the bridge exits when the channel is toggled off, the parent Nebo exits, or `cancel` is signalled.
 
 ### stdout — inbound (plugin → Nebo)
 
-NDJSON, one event per line, flushed after each write.
+NDJSON, one event per line, flushed after each write. Inbound events represent something that happened on the upstream platform (a user sent a message, a file was shared, etc.).
 
 ```json
 {
@@ -46,100 +49,177 @@ NDJSON, one event per line, flushed after each write.
 }
 ```
 
-Required fields: `text`, `channel`. Recommended: `user`, `thread_ts`, `placeholder_ts` (the timestamp of a "_Thinking..._" placeholder the bridge posted, so Nebo can update it with the final reply).
+Required fields: `text`, `channel`. Recommended: `user`, `thread_ts`, `placeholder_ts` — the timestamp of a "_Thinking..._" placeholder the bridge posts immediately on receiving an inbound message, so Nebo can later update it with the final agent reply.
 
 ### stdin — outbound (Nebo → plugin)
 
-NDJSON, one reply per line. The bridge reads these and posts them to the channel — typically by updating the `placeholder_ts` message with the agent's response.
+NDJSON, one op per line. Each line MUST include an `op` field that selects the handler. There is no fallback for missing-`op` lines — they are logged and dropped.
 
 ```json
-{
-  "channel": "C1234567890",
-  "thread_ts": "1700000000.123456",
-  "placeholder_ts": "1700000061.345678",
-  "user": "U0987654321",
-  "text": "Here's the Q4 summary: ...",
-  "username": "Nebo Assistant"
-}
+{ "op": "reply",  "req_id": "…", "channel": "C1", "thread_ts": "1.2", "user_ts": "1.3", "text": "...", "files": [{"path": "/abs/x.png", "title": "..."}], "username": "Nebo" }
+{ "op": "post",   "req_id": "…", "channel": "C1", "thread_ts": null, "text": "...", "files": [], "username": "Nebo" }
+{ "op": "upload", "req_id": "…", "channel": "C1", "thread_ts": null, "path": "/abs/file", "caption": "Q4 report" }
+{ "op": "dm",     "req_id": "…", "user": "U1",   "text": "...", "files": [], "username": "Nebo" }
 ```
 
-**Replies carry text only.** Files are NOT included in the reply payload — see [File Uploads](#file-uploads) below.
+When Nebo sends a `req_id`, the bridge MUST echo it back in an `op_result`
+event on stdout once the handler finishes (success or failure). Without
+this correlation, the agent-side tool result would acknowledge "sent"
+based purely on stdin acceptance — and the agent would tell the user
+"uploaded" even when the bridge's handler later failed. See
+`crates/tools/src/plugin_tool.rs::route_through_bridge` for the awaiter.
+
+Paths like `~/Desktop/foo.pdf` are expanded by the bridge before reading —
+plugin handlers should treat the incoming `path` as a real local path and
+not require the agent to canonicalize it.
+
+### stdout `op_result` event — outcome correlation
+
+For every stdin op carrying a `req_id`, the bridge writes exactly one
+NDJSON line back with this shape, after the handler returns:
+
+```json
+{ "event": "op_result", "req_id": "…", "op": "upload", "ok": true,  "error": null }
+{ "event": "op_result", "req_id": "…", "op": "upload", "ok": false, "error": "files.completeUploadExternal failed: missing_scope" }
+```
+
+Required: `event="op_result"`, `req_id`, `ok`. Recommended: `op`, `error`
+when `ok=false`. Nebo's `channel_loop` looks up the `req_id` in its
+pending-ops map and forwards the outcome to the awaiting agent-side
+caller. If the bridge crashes or restarts before responding, the awaiter
+sees a "bridge closed before reporting" error after a 30s timeout —
+either way the agent never silently believes a failed op succeeded.
+
+### stdout `keepalive` event — bridge liveness contract
+
+Every channel plugin's `bridge --listen` process MUST emit a keepalive
+NDJSON line on stdout **at least every 10 seconds** for as long as the
+process is running:
+
+```json
+{ "event": "keepalive", "status": "connected" }
+{ "event": "keepalive", "status": "disconnected" }
+```
+
+Required: `event="keepalive"`. Recommended: `status` ∈
+`{"connected", "disconnected"}` reflecting the upstream platform
+connection — `connected` while the WebSocket / poller / webhook receiver
+is healthy, `disconnected` while the bridge is in its internal
+reconnect-backoff. Nebo logs the status but does not act on it; the
+event being received at all is what matters.
+
+**Why this matters:** the bridge process can stay alive while its
+upstream connection silently dies (NAT timeout, post-sleep half-open
+socket, wifi blip without TCP `RST`). Without an explicit liveness
+signal, Nebo would never notice — the bridge sits parked on `read()`,
+no events flow, and from Nebo's side the channel looks idle rather than
+broken. The keepalive event is the cross-plugin signal Nebo's watchdog
+uses to detect this.
+
+**Nebo's watchdog**: `channel_loop` tracks the last keepalive timestamp
+per bridge. If no keepalive arrives within **30 seconds**, Nebo kills
+the child process; the outer loop respawns with backoff. This handles
+"process alive but channel dead" generically — independent of which
+platform the plugin talks to. The 30-second threshold tolerates two
+missed keepalives at the 10s cadence — tight enough that a hung bridge
+recovers before the user notices.
+
+**Naming note:** we deliberately do NOT call this a "heartbeat."
+`heartbeat` is reserved in Nebo for the workflow trigger type
+(`type: heartbeat`, `interval: 30m`) that fires agent workflows on a
+schedule. The bridge liveness signal is `keepalive` to avoid that
+collision.
+
+**Protocol-level keepalive is each plugin's responsibility.** This
+stdout event is for Nebo↔bridge liveness only. The upstream connection's
+own keepalive idiom is unrelated and lives inside the plugin:
+
+| Platform | Plugin-internal keepalive |
+|---|---|
+| Slack Socket Mode | Outbound WebSocket `Ping` every 30s + 60s idle-read timeout (`slack-core/socket_mode.rs`). Slack also pings us ~every 15s; either resets the idle clock. |
+| Discord Gateway | Application-level heartbeat (op code 1 / ACK op code 11) on the server-dictated interval from the `Hello` payload. WebSocket `Ping` frames are NOT used. |
+| Microsoft Teams (Bot Framework) | Inbound webhooks — no persistent connection, no keepalive needed. |
+| IMAP IDLE | `NOOP` every ~29 minutes (before the server's 30-minute IDLE timeout). |
+| Telegram long-poll | Server-held request, client just dials again after each timeout. |
+
+A plugin that has only a stdout keepalive but no protocol-level keepalive
+will appear healthy to Nebo while silently failing to receive events
+from its upstream. Implement both.
 
 ---
 
-## File Uploads
+## Bridge Stdin Protocol
 
-This is the part publishers most often get wrong, so read carefully.
+| op | Required fields | Optional fields | When to expect it |
+|---|---|---|---|
+| `reply` | `channel`, `text` | `thread_ts`, `user_ts`, `files`, `username` | After an inbound message: the agent has produced a response. Bridge clears any working-indicator reaction it placed on the user's message (using `user_ts`), then posts a **fresh** message in the thread. Posting fresh (instead of editing a placeholder) preserves notifications — see Working Indicator Pattern below. |
+| `post` | `channel`, `text` | `thread_ts`, `files`, `username` | Agent posts unsolicited (e.g. a scheduled briefing fires, a workflow output is fanned out). Bridge always posts a new message. |
+| `upload` | `channel`, `path` | `thread_ts`, `caption` | Agent attaches a file without a text body. Bridge uploads via the platform's file API. |
+| `dm` | `user`, `text` | `files`, `username` | Agent direct-messages a specific user. Bridge resolves the DM channel (e.g. Slack's `conversations.open`) before posting. |
 
-**Rule:** file uploads are handled by your plugin's `upload` CLI subcommand. They are NOT routed through the bridge stdin reply.
+### Working Indicator Pattern
 
-### Why this convention
+Channel plugins SHOULD give the user immediate feedback that the agent has received their message — but **never** by posting a placeholder message that the agent will later edit.
 
-The agent that wants to upload a file calls `plugin(resource: "yourplugin", action: "exec", command: "upload --path /abs/file.png")`. That:
+**Why edits are wrong:** Slack (and most messaging platforms) do not send mobile/desktop notifications for edited messages. A `_Thinking..._` placeholder that becomes the agent's response via `chat.update` arrives silently — users have to be actively watching the channel to know the agent responded. We shipped this pattern once and it cost us notifications on every reply. Don't.
 
-1. Keeps the agent's mental model clean — "use the channel's plugin for channel things"
-2. Lets your plugin use its own existing API client + auth token (no IPC needed)
-3. Avoids a separate "send-this-file" Nebo tool that would compete with your plugin
-4. Works identically across channel plugins (Slack, Discord, etc.) once each publishes an `upload` subcommand
+**Why typing indicators don't help:** Slack does not expose a typing API for bots. The Web API has no `setTyping` endpoint; Socket Mode only RECEIVES `user_typing` events; the legacy RTM API that had one is deprecated. This is a platform limitation across most messaging APIs — Discord and Teams have the same constraint for bots.
 
-### Environment variables Nebo injects
+**The pattern:** add a 👀 (or platform-equivalent) reaction to the user's message on inbound, then remove the reaction and post the response as a **fresh** message on reply. The reaction provides immediate feedback; the fresh post preserves notification delivery.
 
-When a tool call is triggered by an inbound channel message, Nebo injects these env vars into every plugin invocation:
+Slack reference:
+- Inbound handler: `client.reactions_add(channel, ts, "eyes")` — eyes is Slack convention for "I saw this and I'm working on it" (Slackbot itself uses it on auto-acked messages).
+- Stdout event includes `ts` (the user message's timestamp).
+- Nebo echoes `ts` back as `user_ts` on the `reply` op.
+- Reply handler: `client.reactions_remove(channel, user_ts, "eyes")` (best-effort) then `chat.postMessage` — a brand-new message in the same thread.
+- Required scope: `reactions:write`. If missing, the bridge logs a warning and skips the reaction — responses still post, just without the immediate indicator.
 
-| Variable | Source | Example |
+Plugins targeting other platforms should pick the equivalent. Discord: react with `:eyes:` via `PUT /channels/{channel.id}/messages/{message.id}/reactions/{emoji}/@me`. Teams: there's no clean equivalent — accept that the working indicator is best-effort across platforms and that the canonical UX is the fresh-post notification, not the indicator.
+
+The `files` array carries file refs by absolute path on the host running Nebo:
+
+```json
+"files": [
+  { "path": "/Users/me/Desktop/report.pdf", "name": "Q4-Report.pdf", "title": "Quarterly report" }
+]
+```
+
+The bridge reads file bytes itself — Nebo does not stream bytes through stdin. The bridge plugin already has the credentials and API client for its upstream platform; reading a local file is one more `std::fs::read` away.
+
+---
+
+## Where ops come from
+
+| op source | Triggered by | Channel / target chosen by |
 |---|---|---|
-| `NEBO_CHANNEL_KIND` | Plugin slug | `slack` |
-| `NEBO_CHANNEL_ID` | Inbound message `channel` field | `C1234567890` |
-| `NEBO_THREAD_TS` | Inbound message `thread_ts` (optional) | `1700000000.123456` |
+| `reply` | Agent finishes responding to an inbound message picked up on the bridge's stdout | Echoed back from inbound payload (channel, thread_ts, placeholder_ts) |
+| `post` | Agent calls `plugin(resource: "<slug>", command: "post --channel <id> --text <body>")` directly, OR a cron job with a captured `ChannelContext` fires and the scheduler routes its response back here | Agent supplies `--channel` / `--thread_ts`, or scheduler restores them from the saved cron job context |
+| `upload` | Agent calls `plugin(resource: "<slug>", command: "upload --channel <id> --path <abs>")` | Agent's args |
+| `dm` | Agent calls `plugin(resource: "<slug>", command: "dm --user <id> --text <body>")` | Agent's args |
 
-Your `upload` subcommand SHOULD default `--channel` to `$NEBO_CHANNEL_ID` and `--thread_ts` to `$NEBO_THREAD_TS` when those flags aren't passed explicitly. That way the agent only needs to provide `--path`:
-
-```
-slack upload --path /abs/file.png
-```
-
-…and the file lands in the right channel + thread automatically.
-
-### Required behavior
-
-The `upload` subcommand MUST:
-
-- Accept `--path <abs-path>` (required)
-- Accept `--channel <id>` (optional; default to `$NEBO_CHANNEL_ID`)
-- Accept `--thread_ts <id>` (optional; default to `$NEBO_THREAD_TS`)
-- Accept `--caption <text>` (optional)
-- Reject relative paths or missing files with a clear error
-- Use the plugin's own authenticated API client (no calling back into Nebo)
-- Print JSON to stdout on success:
-  ```json
-  {"ok": true, "channel": "C123", "thread_ts": "...", "filename": "report.pdf", "size": 12345, "caption": "Q4 report"}
-  ```
-- Print a structured JSON error to stderr on failure (Nebo's plugin tool surfaces this to the agent)
-
-### Reference: Slack plugin
-
-See `crates/slack-cli/src/commands/upload.rs` in the Slack plugin repo for a reference implementation. The full call from the agent looks like:
-
-```
-plugin(
-  resource: "slack",
-  action: "exec",
-  command: "upload --path /Users/me/Desktop/report.pdf --caption \"Q4 report\""
-)
-```
-
-Nebo injects `NEBO_CHANNEL_ID` + `NEBO_THREAD_TS`, the plugin uses its `SLACK_BOT_TOKEN` to call `files.uploadV2`, and the file appears in the right Slack thread.
+Nebo's plugin tool routes these calls through the running bridge's stdin — see `crates/tools/src/plugin_tool.rs::handle_exec` — by looking up the bridge in `AppState.channel_bridges` keyed by `{agent_id}:{plugin_slug}`. If no bridge is registered for the current agent, plugin_tool returns a structured error pointing the user at Settings → Channels. **There is no fallback to a one-shot CLI invocation.** That fallback IS the competing pathway we eliminated.
 
 ---
 
-## Multi-Bot Support
+## How AppState routes ops
 
-Nebo supports multiple bots per channel platform two ways:
+The handle that connects the agent side to the bridge stdin lives in `AppState.channel_bridges`:
 
-1. **Per-agent credentials** — each agent that enables your plugin gets its own bridge process with its own env (its own `SLACK_BOT_TOKEN`, for example). This is the default when an agent supplies plugin-specific config.
-2. **Shared bridge** — one bridge per plugin instance, with Nebo routing inbound messages to whichever agent's name matches. Use this when one workspace serves several agents.
+- **Type**: `Arc<RwLock<HashMap<String, ChannelBridgeHandle>>>` (re-exported as `tools::ChannelBridgeRegistry`)
+- **Key format**: `{agent_id}:{plugin_slug}` — see `tools::channel_bridge_key`
+- **Producer**: `agent_worker::channel_loop` registers a handle when it spawns the bridge sidecar, removes it on child exit / cancel
+- **Consumer**: `plugin_tool::handle_exec` looks up the handle and writes the op as one NDJSON line on the bridge's stdin
+- **Secondary producer**: the scheduler (`crates/server/src/scheduler.rs`) writes `op: "post"` directly when a cron job that captured its originating `ChannelContext` fires — bypassing the plugin tool because the agent's response is already in hand
 
-Your plugin does NOT need to multiplex bots internally — Nebo handles that by spawning multiple plugin processes with different env. The `upload` subcommand reads its credentials from env on each invocation, so per-bot uploads just work.
+This is the *only* place real-time channel ops live. Plugin authors don't interact with the registry directly — they just keep the bridge process alive and dispatch on `op`.
+
+---
+
+## Multi-Agent Support
+
+Each agent that enables your plugin gets its own bridge process with its own env (its own `SLACK_BOT_TOKEN`, etc.). Nebo's `channel_loop` spawns one bridge per `(agent_id, plugin_slug)` and registers it in `AppState.channel_bridges` under the matching key. Two agents using the same Slack workspace get two distinct bridges — that's by design, since they may have different bot identities, different scopes, or different rate-limit budgets.
+
+There's no plugin-side multiplexing required. Your bridge reads `SLACK_BOT_TOKEN` from env on startup; if Nebo spawns multiple bridges for multiple agents, each instance gets its own token.
 
 ---
 
@@ -149,11 +229,11 @@ Don't do these:
 
 | Anti-pattern | Why it's wrong |
 |---|---|
-| Routing file uploads through bridge stdin (passing `files: [...]` in the reply) | Creates a competing pathway with `upload`. The agent then has two ways to attach files, and picks the wrong one. |
-| Reading file bytes from Nebo and posting via a Nebo-side tool | Forces every channel plugin's upload to flow through one Nebo tool. Doesn't scale across plugins. |
-| Adding a new top-level Nebo tool (e.g. `message channel attach`) for uploads | Same problem — competes with the per-plugin `upload`. Don't. |
-| Spawning a gRPC server in the bridge to accept upload requests | Over-engineered. The plugin already has API client + auth in one binary. CLI subcommand is the right granularity. |
-| Hardcoding `--channel` instead of reading `NEBO_CHANNEL_ID` | Breaks the convention; the agent must then look up channel IDs, which it doesn't have natively. |
+| Adding a CLI subcommand like `slack post` / `slack upload` that talks to the platform | Competes with the bridge. Two processes hitting the same Slack workspace race each other — we've watched four orphan slack bridges all post "_Thinking..._" for one inbound message. CLI is for stateless local ops only. |
+| Spawning a gRPC server inside the bridge | Over-engineered. NDJSON on stdin/stdout is the canonical Nebo plugin protocol; adding gRPC creates a second pathway and breaks Nebo's process supervision. |
+| Reading file bytes from Nebo and shipping them over stdin | Use file paths. The bridge already has API access; opening a local file is cheaper and more reliable than streaming bytes through pipes. |
+| Treating `op` as optional / falling back to "reply" | Nebo 0.10+ always sends `op`. Lines without it are logged and skipped — silent dispatch was the failure mode we eliminated. |
+| Hardcoding channel IDs in your bridge instead of taking them from each op | Breaks Scenario 3 (agent posts to an arbitrary channel). The bridge is a pipe, not a policy. |
 
 ---
 
@@ -161,3 +241,7 @@ Don't do these:
 
 - [Plugins](plugins.md) — general plugin authoring guide
 - [Packaging](packaging.md) — how to publish a plugin
+- `crates/tools/src/channel_bridge.rs` — registry types
+- `crates/agent/src/agent_worker.rs::channel_loop` — bridge spawn + stdin forwarder
+- `crates/tools/src/plugin_tool.rs::route_through_bridge` — op routing
+- `crates/server/src/scheduler.rs::execute_agent_channel_bound` — scheduler-side `op: "post"` write

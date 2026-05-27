@@ -51,6 +51,8 @@ pub async fn create_task(
     let instructions = body["instructions"].as_str();
     let enabled = body["enabled"].as_bool().unwrap_or(true);
 
+    let agent_id = body["agentId"].as_str();
+    let channel_ctx_json = body["channelCtxJson"].as_str();
     let task = state
         .store
         .create_cron_job(
@@ -62,6 +64,8 @@ pub async fn create_task(
             deliver,
             instructions,
             enabled,
+            agent_id,
+            channel_ctx_json,
         )
         .map_err(to_error_response)?;
     Ok(Json(serde_json::json!(task)))
@@ -104,6 +108,12 @@ pub async fn update_task(
         .as_bool()
         .unwrap_or(existing.enabled.map(|e| e != 0).unwrap_or(true));
 
+    let agent_id = body["agentId"]
+        .as_str()
+        .or(existing.agent_id.as_deref());
+    let channel_ctx_json = body["channelCtxJson"]
+        .as_str()
+        .or(existing.channel_ctx_json.as_deref());
     state
         .store
         .upsert_cron_job(
@@ -115,6 +125,8 @@ pub async fn update_task(
             deliver,
             instructions,
             enabled,
+            agent_id,
+            channel_ctx_json,
         )
         .map_err(to_error_response)?;
 

@@ -481,6 +481,7 @@ async fn install_plugin(
                     .tools
                     .register(Box::new(tools::plugin_tool::PluginTool::new(
                         state.plugin_store.clone(),
+                        state.store.clone(),
                     )))
                     .await;
             }

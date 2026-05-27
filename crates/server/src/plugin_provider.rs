@@ -71,6 +71,9 @@ impl Provider for PluginProvider {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        // Reap any pre-existing instance of this provider binary.
+        napp::child_guard::reap_existing_for(&self.binary_path);
+
         let mut child = cmd.spawn().map_err(|e| {
             ProviderError::Request(format!(
                 "plugin provider '{}' spawn failed: {}",

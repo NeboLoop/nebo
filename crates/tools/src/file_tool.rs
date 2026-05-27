@@ -84,11 +84,21 @@ impl FileTool {
             return ToolResult::error("Error: path is required");
         }
 
-        if let Err(e) = validate_file_path(&input.path, "read") {
+        // Resolve the user-supplied path through the canonical resolver:
+        // tilde expansion plus a Unicode-whitespace-tolerant fallback. This
+        // is the seam that handles macOS Screenshot filenames containing
+        // U+202F (narrow no-break space) — the LLM types a regular space
+        // and the literal lookup fails. See `types::pathres` for the
+        // safety contract (exact-or-one-fuzzy-or-error).
+        let path = match types::pathres::resolve(&input.path) {
+            Ok(p) => p.to_string_lossy().into_owned(),
+            Err(e) => return ToolResult::error(format!("Error: {}", e)),
+        };
+
+        if let Err(e) = validate_file_path(&path, "read") {
             return ToolResult::error(format!("Error: {}", e));
         }
 
-        let path = expand_path(&input.path);
         let offset = if input.offset <= 0 { 1 } else { input.offset } as usize;
         let limit = if input.limit <= 0 { 2000 } else { input.limit } as usize;
 
@@ -280,11 +290,15 @@ impl FileTool {
             return ToolResult::error("Error: old_string and new_string are identical");
         }
 
-        if let Err(e) = validate_file_path(&input.path, "edit") {
+        // Same fuzzy fallback as read: edit requires the file to exist.
+        let path = match types::pathres::resolve(&input.path) {
+            Ok(p) => p.to_string_lossy().into_owned(),
+            Err(e) => return ToolResult::error(format!("Error: {}", e)),
+        };
+
+        if let Err(e) = validate_file_path(&path, "edit") {
             return ToolResult::error(format!("Error: {}", e));
         }
-
-        let path = expand_path(&input.path);
 
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
@@ -622,14 +636,11 @@ fn path_matches_or_inside(path: &str, target: &str) -> bool {
     path.starts_with(&target_with_sep)
 }
 
-/// Expand ~ to home directory.
+/// Expand `~` to the user's home directory. Tilde-only (no fuzzy
+/// fallback) — call `types::pathres::resolve` directly when the file
+/// must exist. Kept as a thin wrapper for legacy call sites.
 pub fn expand_path(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return format!("{}/{}", home.display(), rest);
-        }
-    }
-    path.to_string()
+    types::pathres::expand(path).to_string_lossy().into_owned()
 }
 
 #[cfg(test)]

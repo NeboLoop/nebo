@@ -1039,6 +1039,10 @@ async fn watch_loop(
         // setup, then released so other watches can start.
         let _spawn_permit = watch_semaphore.acquire().await;
 
+        // Reap any pre-existing instance of this binary — orphans from a
+        // prior crashed Nebo will hold its events/sockets otherwise.
+        napp::child_guard::reap_existing_for(&binary_path);
+
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -1685,6 +1689,11 @@ async fn channel_loop(
 
         let _spawn_permit = spawn_semaphore.acquire().await;
 
+        // Reap any pre-existing instance of this channel bridge — orphans
+        // would race for the same upstream socket (e.g. Slack Socket Mode),
+        // each posting placeholders for the same inbound message.
+        napp::child_guard::reap_existing_for(&binary_path);
+
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -1716,6 +1725,72 @@ async fn channel_loop(
         let mut lines = BufReader::new(stdout).lines();
         let stdin = Arc::new(tokio::sync::Mutex::new(stdin));
 
+        // Register an agent-side stdin forwarder for plugin_tool messaging ops
+        // (post/upload/dm/reply). The forwarder reads ops off an mpsc channel
+        // and writes them as NDJSON lines through the same `stdin` mutex the
+        // inbound-reply writer uses — the mutex serializes the two producers
+        // so they never interleave inside a single line.
+        let (bridge_tx, mut bridge_rx) =
+            tokio::sync::mpsc::channel::<serde_json::Value>(64);
+        let bridge_stdin = stdin.clone();
+        let bridge_agent = agent_id.clone();
+        let bridge_channel = channel_name.clone();
+        let bridge_forwarder = tokio::spawn(async move {
+            while let Some(op) = bridge_rx.recv().await {
+                let line = match serde_json::to_string(&op) {
+                    Ok(s) => format!("{s}\n"),
+                    Err(e) => {
+                        warn!(
+                            agent = %bridge_agent,
+                            channel = %bridge_channel,
+                            error = %e,
+                            "bridge forwarder: failed to serialize op"
+                        );
+                        continue;
+                    }
+                };
+                let mut guard = bridge_stdin.lock().await;
+                if let Err(e) = guard.write_all(line.as_bytes()).await {
+                    warn!(
+                        agent = %bridge_agent,
+                        channel = %bridge_channel,
+                        error = %e,
+                        "bridge forwarder: failed to write to plugin stdin"
+                    );
+                    break;
+                }
+                let _ = guard.flush().await;
+            }
+        });
+
+        // Insert into the global bridge registry so plugin_tool can route ops
+        // through this bridge. Removed on child exit / cancel below.
+        // `pending_ops` correlates op req_ids with their `op_result` events
+        // from the bridge's stdout — see `channel_bridge.rs` for the protocol.
+        let bridge_key = tools::channel_bridge_key(&agent_id, &plugin_slug);
+        let pending_ops = tools::new_pending_ops();
+        if let Some(registry) = tools::channel_bridges() {
+            let handle = tools::ChannelBridgeHandle {
+                stdin_tx: bridge_tx.clone(),
+                agent_id: agent_id.clone(),
+                plugin_slug: plugin_slug.clone(),
+                pending_ops: pending_ops.clone(),
+            };
+            registry.write().await.insert(bridge_key.clone(), handle);
+            info!(
+                agent = %agent_id,
+                channel = %channel_name,
+                key = %bridge_key,
+                "channel bridge: registered for messaging ops"
+            );
+        } else {
+            warn!(
+                agent = %agent_id,
+                channel = %channel_name,
+                "channel bridge: registry not wired yet — bridge spawned without registration"
+            );
+        }
+
         // Stderr collector for auth error detection
         let stderr = child.stderr.take();
         let stderr_agent = agent_id.clone();
@@ -1735,6 +1810,48 @@ async fn channel_loop(
                     let mut buf = stderr_buf.lock().await;
                     buf.push_str(&line);
                     buf.push('\n');
+                }
+            }
+        });
+
+        // Bridge liveness watchdog. Per the canonical bridge protocol every
+        // channel plugin emits `{"event":"keepalive", "status":...}` on
+        // stdout at least every 10s. If we go > 30s without seeing one, the
+        // bridge process is presumed hung — cancel the inner loop so we
+        // kill + respawn. Each plugin handles its own protocol-level
+        // keepalive (Slack WS ping, future Discord op-1 heartbeat, IMAP
+        // NOOP); Nebo only watches the cross-plugin keepalive event.
+        // See docs/publishers-guide/channel-plugins.md "Bridge Keepalive".
+        let last_keepalive = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
+        let bridge_stale = CancellationToken::new();
+        let watchdog_last = last_keepalive.clone();
+        let watchdog_signal = bridge_stale.clone();
+        let watchdog_outer = cancel.clone();
+        let watchdog_agent = agent_id.clone();
+        let watchdog_channel = channel_name.clone();
+        let watchdog_handle = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Skip the immediate tick — give the bridge time to emit its
+            // first keepalive (which our initial timestamp already covers
+            // for a 10s grace).
+            tick.tick().await;
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        let elapsed = watchdog_last.lock().await.elapsed();
+                        if elapsed > std::time::Duration::from_secs(30) {
+                            warn!(
+                                agent = %watchdog_agent,
+                                channel = %watchdog_channel,
+                                elapsed_secs = elapsed.as_secs(),
+                                "bridge watchdog: no keepalive for > 30s, triggering respawn"
+                            );
+                            watchdog_signal.cancel();
+                            return;
+                        }
+                    }
+                    _ = watchdog_outer.cancelled() => return,
                 }
             }
         });
@@ -1762,6 +1879,63 @@ async fn channel_loop(
                                     continue;
                                 }
                             };
+
+                            // Bridge keepalive: reset watchdog. Status is
+                            // logged for observability; future versions can
+                            // surface it in the UI ("Slack reconnecting...")
+                            // but Nebo doesn't act on the value yet — a
+                            // bridge in `disconnected` state is still
+                            // alive and reconnecting under its own logic.
+                            if payload.get("event").and_then(|v| v.as_str())
+                                == Some("keepalive")
+                            {
+                                *last_keepalive.lock().await = std::time::Instant::now();
+                                if let Some(status) = payload
+                                    .get("status")
+                                    .and_then(|v| v.as_str())
+                                {
+                                    debug!(
+                                        agent = %agent_id,
+                                        channel = %channel_name,
+                                        status = %status,
+                                        "bridge keepalive"
+                                    );
+                                }
+                                continue;
+                            }
+
+                            // Bridge → Nebo op_result correlation: when the
+                            // bridge finishes a stdin-routed op (post / upload /
+                            // dm / reply), it writes
+                            // `{event:"op_result", req_id, ok, error?}` here.
+                            // Route it to the waiting plugin_tool caller via
+                            // the per-bridge pending_ops map.
+                            if payload.get("event").and_then(|v| v.as_str())
+                                == Some("op_result")
+                            {
+                                if let Some(req_id) = payload
+                                    .get("req_id")
+                                    .and_then(|v| v.as_str())
+                                {
+                                    let ok = payload
+                                        .get("ok")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
+                                    let error = payload
+                                        .get("error")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
+                                    if let Some(sender) =
+                                        pending_ops.lock().await.remove(req_id)
+                                    {
+                                        let _ = sender.send(tools::OpResult {
+                                            ok,
+                                            error,
+                                        });
+                                    }
+                                }
+                                continue;
+                            }
 
                             // Skip error payloads
                             if payload.get("error").is_some() {
@@ -1920,14 +2094,27 @@ async fn channel_loop(
                                 };
 
                                 // Build reply: echo back routing fields + response text.
-                                // Files are uploaded by the channel plugin's own CLI
-                                // (see docs/publishers-guide/channel-plugins.md) — not
-                                // forwarded through this reply pipeline.
+                                // The `op: "reply"` discriminator selects the bridge's
+                                // reply handler — see docs/publishers-guide/channel-plugins.md
+                                // for the full op protocol (reply/post/upload/dm).
+                                //
+                                // `user_ts` is the inbound user message's timestamp; the
+                                // bridge uses it to clear the 👀 working-indicator reaction
+                                // before posting a fresh response. This replaces the old
+                                // placeholder_ts/chat.update pattern which caused
+                                // `(edited)` and suppressed Slack notifications.
                                 let mut reply = serde_json::Map::new();
-                                for key in &["channel", "thread_ts", "user", "placeholder_ts"] {
+                                reply.insert(
+                                    "op".into(),
+                                    serde_json::Value::String("reply".into()),
+                                );
+                                for key in &["channel", "thread_ts", "user"] {
                                     if let Some(v) = reply_payload.get(*key) {
                                         reply.insert((*key).to_string(), v.clone());
                                     }
+                                }
+                                if let Some(v) = reply_payload.get("ts") {
+                                    reply.insert("user_ts".into(), v.clone());
                                 }
                                 reply.insert("text".into(), serde_json::Value::String(response));
                                 reply.insert(
@@ -1980,10 +2167,24 @@ async fn channel_loop(
                         }
                     }
                 }
+                _ = bridge_stale.cancelled() => {
+                    warn!(
+                        agent = %agent_id,
+                        channel = %channel_name,
+                        "channel bridge flagged stale by keepalive watchdog, killing for respawn"
+                    );
+                    let _ = child.kill().await;
+                    break;
+                }
                 _ = cancel.cancelled() => {
                     info!(agent = %agent_id, channel = %channel_name, "channel cancelled, killing process");
                     let _ = child.kill().await;
                     stderr_handle.abort();
+                    bridge_forwarder.abort();
+                    watchdog_handle.abort();
+                    if let Some(registry) = tools::channel_bridges() {
+                        registry.write().await.remove(&bridge_key);
+                    }
                     return;
                 }
             }
@@ -1993,6 +2194,11 @@ async fn channel_loop(
         napp::child_guard::unregister_child(child_pid);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         stderr_handle.abort();
+        bridge_forwarder.abort();
+        watchdog_handle.abort();
+        if let Some(registry) = tools::channel_bridges() {
+            registry.write().await.remove(&bridge_key);
+        }
 
         if cancel.is_cancelled() {
             break;
@@ -2130,6 +2336,9 @@ async fn shared_channel_loop(
 
         let _spawn_permit = spawn_semaphore.acquire().await;
 
+        // Reap any pre-existing instance of this shared channel bridge.
+        napp::child_guard::reap_existing_for(&binary_path);
+
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -2184,6 +2393,38 @@ async fn shared_channel_loop(
             }
         });
 
+        // Bridge liveness watchdog — same contract as per-agent channel_loop.
+        // Required across plugin types because a hung shared bridge starves
+        // every agent registered against it.
+        let last_keepalive = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
+        let bridge_stale = CancellationToken::new();
+        let watchdog_last = last_keepalive.clone();
+        let watchdog_signal = bridge_stale.clone();
+        let watchdog_outer = cancel.clone();
+        let watchdog_channel = channel_name.clone();
+        let watchdog_handle = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tick.tick().await;
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        let elapsed = watchdog_last.lock().await.elapsed();
+                        if elapsed > std::time::Duration::from_secs(30) {
+                            warn!(
+                                channel = %watchdog_channel,
+                                elapsed_secs = elapsed.as_secs(),
+                                "shared bridge watchdog: no keepalive for > 30s, triggering respawn"
+                            );
+                            watchdog_signal.cancel();
+                            return;
+                        }
+                    }
+                    _ = watchdog_outer.cancelled() => return,
+                }
+            }
+        });
+
         // Read inbound NDJSON, route to correct agent, write response to stdin
         loop {
             tokio::select! {
@@ -2206,6 +2447,15 @@ async fn shared_channel_loop(
                                     continue;
                                 }
                             };
+
+                            // Bridge keepalive resets the watchdog. Must be
+                            // checked BEFORE the catch-all event drop below.
+                            if payload.get("event").and_then(|v| v.as_str())
+                                == Some("keepalive")
+                            {
+                                *last_keepalive.lock().await = std::time::Instant::now();
+                                continue;
+                            }
 
                             if payload.get("error").is_some() || payload.get("event").is_some() {
                                 continue;
@@ -2253,10 +2503,17 @@ async fn shared_channel_loop(
                                             return;
                                         }
                                         let mut reply = serde_json::Map::new();
-                                        for key in &["channel", "thread_ts", "user", "placeholder_ts"] {
+                                        reply.insert(
+                                            "op".into(),
+                                            serde_json::Value::String("reply".into()),
+                                        );
+                                        for key in &["channel", "thread_ts", "user"] {
                                             if let Some(v) = reply_payload.get(*key) {
                                                 reply.insert((*key).to_string(), v.clone());
                                             }
+                                        }
+                                        if let Some(v) = reply_payload.get("ts") {
+                                            reply.insert("user_ts".into(), v.clone());
                                         }
                                         reply.insert(
                                             "text".into(),
@@ -2301,10 +2558,19 @@ async fn shared_channel_loop(
                         }
                     }
                 }
+                _ = bridge_stale.cancelled() => {
+                    warn!(
+                        channel = %channel_name,
+                        "shared channel bridge flagged stale by keepalive watchdog, killing for respawn"
+                    );
+                    let _ = child.kill().await;
+                    break;
+                }
                 _ = cancel.cancelled() => {
                     info!(channel = %channel_name, "shared channel cancelled");
                     let _ = child.kill().await;
                     stderr_handle.abort();
+                    watchdog_handle.abort();
                     return;
                 }
             }
@@ -2314,6 +2580,7 @@ async fn shared_channel_loop(
         napp::child_guard::unregister_child(child_pid);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         stderr_handle.abort();
+        watchdog_handle.abort();
 
         if cancel.is_cancelled() {
             break;

@@ -11,6 +11,11 @@ use crate::skills::{Loader, SkillSource};
 pub struct SkillTool {
     loader: Arc<Loader>,
     store: Option<Arc<db::Store>>,
+    /// Optional reference to the live plugin registry. When set, skill
+    /// discover/help can detect when the LLM has confused a plugin slug
+    /// for a skill name and redirect to the `plugin` tool instead of
+    /// returning a dead "not found." Runtime-driven — no hardcoded slugs.
+    plugin_store: Option<Arc<napp::plugin::PluginStore>>,
 }
 
 impl SkillTool {
@@ -18,12 +23,41 @@ impl SkillTool {
         Self {
             loader,
             store: None,
+            plugin_store: None,
         }
     }
 
     pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
         self.store = Some(store);
         self
+    }
+
+    pub fn with_plugin_store(mut self, plugin_store: Arc<napp::plugin::PluginStore>) -> Self {
+        self.plugin_store = Some(plugin_store);
+        self
+    }
+
+    /// Find an installed plugin whose slug matches `term` (case-insensitive
+    /// exact or substring). Returns the canonical slug if matched.
+    fn match_plugin_slug(&self, term: &str) -> Option<String> {
+        let store = self.plugin_store.as_ref()?;
+        let needle = term.trim().to_lowercase();
+        if needle.is_empty() {
+            return None;
+        }
+        let mut exact: Option<String> = None;
+        let mut substring: Option<String> = None;
+        for (slug, _ver, _path, _src) in store.list_installed() {
+            let lower = slug.to_lowercase();
+            if lower == needle {
+                exact = Some(slug);
+                break;
+            }
+            if substring.is_none() && (lower.contains(&needle) || needle.contains(&lower)) {
+                substring = Some(slug);
+            }
+        }
+        exact.or(substring)
     }
 
     fn user_skills_dir() -> Result<std::path::PathBuf, String> {
@@ -41,6 +75,9 @@ impl DynTool for SkillTool {
     fn description(&self) -> String {
         "Capabilities & knowledge — skill catalog, loading, and execution.\n\
          USE THIS when: user asks for something unfamiliar, or you're unsure if a specialized skill exists for the task.\n\n\
+         NEVER USE this tool for channel messaging (slack/discord/teams/etc.). \
+         Channels are PLUGINS, not skills — route channel I/O through the `plugin` tool with the channel name as `resource`. \
+         `skill discover` will not find any channel by name; `skill help` will not return a channel's commands.\n\n\
          Before replying to any request, scan your available skills:\n\
          1. If a skill clearly applies → load it with skill(name: \"...\") to get detailed instructions, then follow them\n\
          2. If multiple skills could apply → choose the most specific one\n\
@@ -173,6 +210,20 @@ impl DynTool for SkillTool {
                     }
                     let matches = self.loader.discover_summaries(query).await;
                     if matches.is_empty() {
+                        // If the query matches a registered plugin slug
+                        // (channel plugins like slack/discord, or any
+                        // other installed plugin), the LLM probably
+                        // meant to call the plugin tool. Redirect rather
+                        // than returning a dead "no skills match."
+                        if let Some(slug) = self.match_plugin_slug(query) {
+                            return ToolResult::ok(format!(
+                                "`{}` is a plugin, not a skill. Skills are local capability bundles; plugins are managed binaries. \
+                                 USE: plugin(resource: \"{}\", action: \"exec\", command: \"help\") to see its commands, \
+                                 then call plugin(resource: \"{}\", command: \"<subcommand> ...\") to use it. \
+                                 For channel messaging (upload/post/dm/reply), the bridge fills channel and thread from context — you only need the operation and its arguments.",
+                                slug, slug, slug
+                            ));
+                        }
                         ToolResult::ok(format!(
                             "No skills match \"{}\". Try a different query or check the catalog.",
                             query
@@ -270,6 +321,19 @@ impl DynTool for SkillTool {
                             } else if skill_md_disabled.exists() {
                                 skill_md_disabled
                             } else {
+                                // The LLM may have confused a plugin slug
+                                // (slack, discord, gws, ...) for a skill
+                                // name. Redirect to the plugin tool rather
+                                // than returning a dead "not found."
+                                if let Some(slug) = self.match_plugin_slug(name) {
+                                    return ToolResult::ok(format!(
+                                        "`{}` is a plugin, not a skill. \
+                                         USE: plugin(resource: \"{}\", action: \"exec\", command: \"help\") to see its commands, \
+                                         then plugin(resource: \"{}\", command: \"<subcommand> ...\") to invoke them. \
+                                         For channel messaging (upload/post/dm/reply), the bridge fills channel and thread from context.",
+                                        slug, slug, slug
+                                    ));
+                                }
                                 return ToolResult::error(format!("Skill '{}' not found", name));
                             };
                             match std::fs::read_to_string(&path) {

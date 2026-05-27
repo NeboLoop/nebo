@@ -87,6 +87,114 @@ pub fn tracked_pids() -> Vec<u32> {
     }
 }
 
+/// Reap any process currently running the given binary that ISN'T tracked
+/// by us. Call this BEFORE spawning a plugin child to guarantee Nebo owns
+/// the lifecycle of every running instance of that binary.
+///
+/// Why this exists: plugins like the Slack bridge open a single WebSocket
+/// to a remote service. If a prior Nebo crashed or was SIGKILL'd, its
+/// plugin children were reparented to init and kept holding that socket.
+/// The next Nebo spawns its OWN bridge, and now two bridges race for the
+/// same inbound messages — each posting "_Thinking..._" placeholders,
+/// only one of which can be answered. Reaping pre-spawn eliminates the race
+/// at the source, regardless of how the previous Nebo died (SIGTERM,
+/// SIGKILL, panic, crashed without unwinding).
+///
+/// Safe to call repeatedly. Won't kill children we currently track
+/// (children of the running Nebo). Returns the count of processes killed.
+#[cfg(unix)]
+pub fn reap_existing_for(binary_path: &std::path::Path) -> usize {
+    use std::process::Command;
+
+    let target = binary_path.to_string_lossy();
+    if target.is_empty() {
+        return 0;
+    }
+
+    let out = match Command::new("ps")
+        .args(["-A", "-o", "pid=,command="])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            warn!(error = %e, "reap_existing_for: ps invocation failed");
+            return 0;
+        }
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    let tracked: HashSet<u32> = match registry().lock() {
+        Ok(g) => g.iter().copied().collect(),
+        Err(_) => HashSet::new(),
+    };
+
+    let mut killed = 0usize;
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let pid: u32 = match parts.next().and_then(|s| s.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+        // Don't kill our own currently-tracked children.
+        if tracked.contains(&pid) {
+            continue;
+        }
+        let exe = match parts.next() {
+            Some(e) => e,
+            None => continue,
+        };
+        if exe == target.as_ref() {
+            info!(
+                pid,
+                exe = exe,
+                "reap_existing_for: killing pre-existing process for binary"
+            );
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+            killed += 1;
+        }
+    }
+
+    if killed > 0 {
+        // Brief grace, then SIGKILL holdouts.
+        std::thread::sleep(Duration::from_millis(200));
+        let out2 = Command::new("ps")
+            .args(["-A", "-o", "pid=,command="])
+            .output();
+        if let Ok(o2) = out2 {
+            let text2 = String::from_utf8_lossy(&o2.stdout);
+            for line in text2.lines() {
+                let mut parts = line.split_whitespace();
+                let pid: u32 = match parts.next().and_then(|s| s.parse().ok()) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                if tracked.contains(&pid) {
+                    continue;
+                }
+                let exe = match parts.next() {
+                    Some(e) => e,
+                    None => continue,
+                };
+                if exe == target.as_ref() {
+                    unsafe {
+                        libc::kill(pid as i32, libc::SIGKILL);
+                    }
+                }
+            }
+        }
+    }
+
+    killed
+}
+
+#[cfg(not(unix))]
+pub fn reap_existing_for(_binary_path: &std::path::Path) -> usize {
+    // Windows: relies on tokio's `kill_on_drop` + future Job Object work.
+    0
+}
+
 /// SIGTERM every tracked child, wait briefly, then SIGKILL anything still alive.
 /// Safe to call from a signal handler (uses only async-signal-safe syscalls).
 ///
@@ -210,24 +318,30 @@ pub fn cleanup_orphans_at_startup() -> usize {
 
         let mut killed = 0usize;
         for line in text.lines() {
-            let mut parts = line.trim_start().splitn(3, char::is_whitespace);
-            let pid: u32 = match parts.next().and_then(|s| s.trim().parse().ok()) {
+            // `ps` columns are separated by runs of whitespace, so
+            // `split_whitespace()` (which collapses runs) is correct here.
+            // An earlier version used `splitn(3, char::is_whitespace)` and
+            // silently failed because adjacent spaces produced empty parts
+            // that `.parse::<u32>()` rejected — every line continued, every
+            // orphan survived. Don't repeat that mistake.
+            let mut parts = line.split_whitespace();
+            let pid: u32 = match parts.next().and_then(|s| s.parse().ok()) {
                 Some(p) => p,
                 None => continue,
             };
-            let ppid: u32 = match parts.next().and_then(|s| s.trim().parse().ok()) {
+            let ppid: u32 = match parts.next().and_then(|s| s.parse().ok()) {
                 Some(p) => p,
-                None => continue,
-            };
-            let cmd = match parts.next() {
-                Some(c) => c,
                 None => continue,
             };
             if ppid != 1 {
                 continue;
             }
-            // Match the leading executable path. Skip if our own pid (paranoia).
-            let exe = cmd.split_whitespace().next().unwrap_or("");
+            // Next whitespace-delimited token is the executable path.
+            // (The rest of argv is dropped — we only need to match the path.)
+            let exe = match parts.next() {
+                Some(e) => e,
+                None => continue,
+            };
             if exe.starts_with(&plugins_prefix) || exe.starts_with(&agents_prefix) {
                 info!(orphan_pid = pid, exe = exe, "startup: killing orphan plugin process");
                 unsafe {

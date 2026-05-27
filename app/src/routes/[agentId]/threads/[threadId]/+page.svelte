@@ -39,7 +39,6 @@
   // Start loading immediately if navigated from a fresh send (?active=1)
   const startActive = $page.url.searchParams.get('active') === '1';
 
-  // Use initial route params — sessionKey is updated reactively via setSessionKey in $effect below
   const initialAgentId = $page.params.agentId ?? '';
   const initialThreadId = $page.params.threadId ?? '';
   const chat = createChatController({ agentId: initialAgentId, sessionKey: `agent:${initialAgentId}:thread:${initialThreadId}` });
@@ -95,10 +94,11 @@
     chat.destroy();
   });
 
-  // Reload when threadId changes and update session scope
   $effect(() => {
-    if (threadId) {
-      chat.setSessionKey(`agent:${agentId}:thread:${threadId}`);
+    if (threadId && agentId) {
+      const sk = `agent:${agentId}:thread:${threadId}`;
+      console.log('[THREAD-DEBUG] setting session key:', sk, 'threadId:', threadId);
+      chat.setSessionKey(sk);
       loadMessages();
     }
   });

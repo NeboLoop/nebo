@@ -17,6 +17,8 @@ pub fn register_schedule_trigger(workflow_id: &str, cron: &str, store: &Store) {
         None,        // deliver
         None,        // instructions
         true,        // enabled
+        None,        // agent_id (workflow triggers aren't bound to a single agent)
+        None,        // channel_ctx_json
     ) {
         Ok(_) => info!(workflow = workflow_id, cron, "registered schedule trigger"),
         Err(e) => warn!(
@@ -52,6 +54,8 @@ pub fn register_agent_triggers(
                 None,
                 None,
                 true,
+                Some(agent_id),
+                None,
             ) {
                 Ok(_) => info!(
                     agent = agent_id,

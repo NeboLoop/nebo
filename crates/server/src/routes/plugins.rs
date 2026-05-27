@@ -18,6 +18,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::delete(handlers::plugins::remove_plugin),
         )
         .route(
+            "/plugins/{slug}/toggle",
+            axum::routing::post(handlers::plugins::toggle_plugin),
+        )
+        .route(
             "/plugins/{slug}/events",
             axum::routing::get(handlers::plugins::list_plugin_events),
         )

@@ -105,6 +105,11 @@ pub struct AppState {
     pub personal_loop_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Channel providers for routing agent responses (NeboLoop, future: Slack, Discord)
     pub channel_providers: Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn ChannelProvider>>>>,
+    /// Registered channel-plugin bridges, keyed by `{agent_id}:{plugin_slug}`.
+    /// Each entry is a handle to the long-running bridge sidecar's stdin — agents
+    /// route messaging ops (reply/post/upload/dm) through it instead of spawning
+    /// one-shot CLI invocations. See `docs/publishers-guide/channel-plugins.md`.
+    pub channel_bridges: tools::ChannelBridgeRegistry,
     /// A2UI surface manager — surface lifecycle, broadcasting, persistence
     pub a2ui: Arc<A2UIManager>,
     /// Running app sidecars keyed by agent ID.

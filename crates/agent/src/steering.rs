@@ -74,6 +74,7 @@ impl Pipeline {
         let generators: Vec<Box<dyn Generator>> = vec![
             Box::new(IdentityGuard),
             Box::new(ChannelAdapter),
+            Box::new(ChannelPluginRouting),
             Box::new(ToolNudge),
             Box::new(PendingTaskAction),
             Box::new(OutputDiscipline),
@@ -87,6 +88,7 @@ impl Pipeline {
             Box::new(TaskTrackingNudge),
             Box::new(TaskCompletionNudge),
             Box::new(AskToolNudge),
+            Box::new(ResearchDelegationNudge),
         ];
 
         Self { generators }
@@ -290,6 +292,55 @@ impl Generator for ChannelAdapter {
             label: "Channel".to_string(),
             content: content.to_string(),
             priority: 3,
+        }]
+    }
+}
+
+// 2b. Channel Plugin Routing — when the agent is operating inside a
+// channel that's served by a plugin (slack, discord, teams, future ones),
+// steer it toward the right tool and the right default action.
+//
+// Triggers on any non-internal `ctx.channel`. Internal channel types are
+// Nebo-architectural concepts; everything else is plugin-backed by
+// definition. No hardcoded plugin slugs — `{kind}` is filled from the
+// runtime channel string. Adding a new channel plugin requires zero edits
+// here.
+struct ChannelPluginRouting;
+impl Generator for ChannelPluginRouting {
+    fn name(&self) -> &str {
+        "channel_plugin_routing"
+    }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        // Internal channel types Nebo owns directly — no plugin layer.
+        // Keep this list minimal; it's the boundary between built-in
+        // surfaces and plugin-backed surfaces.
+        const INTERNAL_CHANNELS: &[&str] = &["", "web", "dm", "cli", "voice"];
+        if INTERNAL_CHANNELS.contains(&ctx.channel.as_str()) {
+            return vec![];
+        }
+
+        let kind = &ctx.channel;
+        // Imperative dual-reinforcement style — same shape as
+        // claude-code's tool-selection prompts ("ALWAYS use X. NEVER
+        // use Y."). Phrased generically: no `slack` / `discord` baked
+        // in, only the runtime `{kind}`.
+        let content = format!(
+            "Channel context: `{kind}`. \
+             ALWAYS route channel I/O through `plugin(resource: \"{kind}\", command: \"...\")`. \
+             NEVER use `skill` for channel messaging — channels are plugins, not skills, \
+             and `skill discover` will not find `{kind}`. \
+             When the user references a local file or asks you to grab/share/send/upload one, \
+             the DEFAULT action is to upload it into this channel via \
+             `plugin(resource: \"{kind}\", command: \"upload --path <abs_path>\")` — \
+             the bridge fills in the channel and thread automatically, you only need the path. \
+             Do NOT offer to copy, extract, or link a file unless the user explicitly asks \
+             for that instead. For plain text replies, just write your response — \
+             the channel layer posts it for you."
+        );
+        vec![SteeringDirective {
+            label: "Channel Routing".to_string(),
+            content,
+            priority: 2,
         }]
     }
 }
@@ -843,6 +894,60 @@ impl Generator for AskToolNudge {
                      Never ask questions as plain text �� use the ask tool so the user gets interactive buttons."
                 .to_string(),
             priority: 7,
+        }]
+    }
+}
+
+/// Detects when the main agent is in an exploratory research loop —
+/// repeatedly calling discovery-flavored tools (`tool_search`, `skill`,
+/// `plugin help/events`) trying to figure out how to do something — and
+/// nudges it to delegate the discovery to a sub-agent instead.
+///
+/// Why: every exploratory tool call adds a user message + tool result pair
+/// to the main conversation, polluting the context window for the
+/// downstream turn. A sub-agent burns its OWN context on the research and
+/// returns one consolidated answer, keeping the main chat history clean.
+///
+/// Triggers when 3+ of the recent (≤8) tool calls were discovery-flavored.
+struct ResearchDelegationNudge;
+impl Generator for ResearchDelegationNudge {
+    fn name(&self) -> &str {
+        "research_delegation_nudge"
+    }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        let recent = &ctx.recent_tool_names;
+        if recent.len() < 3 {
+            return vec![];
+        }
+        let window: Vec<&String> = recent.iter().rev().take(8).collect();
+        let mut discovery_count = 0usize;
+        let mut plugin_count = 0usize;
+        for name in &window {
+            match name.as_str() {
+                "tool_search" | "skill" => discovery_count += 1,
+                "plugin" => plugin_count += 1,
+                _ => {}
+            }
+        }
+        // Treat repeated plugin probes as additional discovery signal
+        // (agent calling the same plugin tool multiple times to look up
+        // syntax via +help / --help / events).
+        if plugin_count >= 2 {
+            discovery_count += plugin_count.saturating_sub(1);
+        }
+        if discovery_count < 3 {
+            return vec![];
+        }
+
+        vec![SteeringDirective {
+            label: "Delegate Research".to_string(),
+            content: "You've made several discovery / how-to tool calls in this turn. \
+                      STOP exploring inline — it pollutes the main context. \
+                      Spawn a sub-agent to do the research and report back: \
+                      agent(resource: \"task\", action: \"spawn\", prompt: \"Figure out exactly how to <specific question>. Return the exact command / syntax / path as a single answer.\"). \
+                      The sub-agent uses its own context for the exploration; you get one consolidated answer to act on."
+                .to_string(),
+            priority: 8,
         }]
     }
 }

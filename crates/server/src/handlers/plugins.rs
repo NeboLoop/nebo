@@ -124,6 +124,30 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
     })))
 }
 
+/// POST /plugins/{slug}/toggle
+///
+/// Toggles a plugin's enabled state. Refreshes the plugin tool definition so the
+/// LLM sees the updated set of active plugins.
+pub async fn toggle_plugin(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let current = state
+        .store
+        .get_plugin_by_slug(&slug)
+        .map_err(to_error_response)?;
+    let was_enabled = current.map(|r| r.is_enabled != 0).unwrap_or(true);
+    state
+        .store
+        .set_plugin_enabled(&slug, !was_enabled)
+        .map_err(to_error_response)?;
+    state.tools.refresh_definition("plugin").await;
+    Ok(Json(serde_json::json!({
+        "slug": slug,
+        "enabled": !was_enabled,
+    })))
+}
+
 /// POST /plugins/{slug}/auth/login
 ///
 /// Spawns the plugin's auth login command in the background. Returns immediately.
@@ -142,6 +166,7 @@ pub async fn auth_login(
     let store_for_restart = state.store.clone();
     let workers_for_restart = state.agent_workers.clone();
     let plugin_store_for_auth = state.plugin_store.clone();
+    let tools_for_refresh = state.tools.clone();
 
     info!(plugin = %slug, "starting plugin auth login");
 
@@ -314,6 +339,8 @@ pub async fn auth_login(
 
                 // Update in-memory auth cache so getAgent reflects the change instantly
                 plugin_store_for_auth.update_auth_status(&slug_owned).await;
+                // Readiness may have changed — refresh plugin tool definition
+                tools_for_refresh.refresh_definition("plugin").await;
 
                 // Restart agent workers that depend on this plugin
                 let store_r = store_for_restart.clone();
@@ -405,6 +432,7 @@ pub async fn auth_logout(
         info!(plugin = %slug, "plugin auth logout succeeded");
         // Update in-memory auth cache so getAgent reflects the change instantly
         state.plugin_store.update_auth_status(&slug).await;
+        state.tools.refresh_definition("plugin").await;
         Ok(Json(serde_json::json!({ "success": true })))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -767,6 +795,9 @@ pub async fn set_plugin_config(
             state.plugin_store.set_env_var(&slug, key, value);
         }
     }
+
+    // Readiness may have changed — refresh plugin tool definition
+    state.tools.refresh_definition("plugin").await;
 
     info!(plugin = %slug, keys = body.len(), "updated plugin config");
     Ok(Json(serde_json::json!({ "success": true })))

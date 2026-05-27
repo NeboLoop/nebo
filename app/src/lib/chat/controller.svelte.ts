@@ -540,7 +540,14 @@ export function createChatController(config: ChatControllerConfig) {
     setMessages,
     prependMessages,
     setAllAgents,
-    setSessionKey(key: string) { activeSessionKey = key; },
+    setSessionKey(key: string) {
+      if (key !== activeSessionKey) {
+        activeSessionKey = key;
+        isLoading = false;
+        activityStatus = '';
+        pendingTools.clear();
+      }
+    },
     dismissWarning,
     dismissFollowups() { followupSuggestions = []; },
     destroy,

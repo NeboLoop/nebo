@@ -92,7 +92,7 @@ jobs:
             --endpoint-url "$S3_ENDPOINT" \
             --acl public-read \
             --content-type application/zstd
-          echo "Published: cdn.neboloop.com/vm/${ARCH}/${SHA}/rootfs.img.zst"
+          echo "Published: cdn.neboai.com/vm/${ARCH}/${SHA}/rootfs.img.zst"
           echo ""
           echo "Update ROOTFS_SHA in crates/tools/src/vm_tool.rs to:"
           echo "  const ROOTFS_SHA: &str = \"${SHA}\";"

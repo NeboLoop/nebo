@@ -80,7 +80,7 @@ impl DynTool for EventTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
@@ -130,10 +130,38 @@ impl DynTool for EventTool {
                         (command, None::<&str>)
                     };
 
-                    match self
-                        .store
-                        .create_cron_job(name, &schedule, cmd, task_type, msg, None, None, true)
-                    {
+                    // Capture the originating agent + channel context so the
+                    // scheduler can route the response back to the same place
+                    // (e.g. timer set in a Slack thread → alert in the same
+                    // thread). agent_id is parsed from session_key, channel
+                    // is read from ctx.channel — both NULL when the task was
+                    // created outside an agent-bound channel conversation.
+                    let agent_id = if ctx.session_key.starts_with("agent:") {
+                        ctx.session_key.split(':').nth(1).map(|s| s.to_string())
+                    } else {
+                        None
+                    };
+                    let channel_ctx_json = ctx.channel.as_ref().map(|ch| {
+                        serde_json::json!({
+                            "kind": ch.kind,
+                            "channel_id": ch.channel_id,
+                            "thread_ts": ch.thread_ts,
+                        })
+                        .to_string()
+                    });
+
+                    match self.store.create_cron_job(
+                        name,
+                        &schedule,
+                        cmd,
+                        task_type,
+                        msg,
+                        None,
+                        None,
+                        true,
+                        agent_id.as_deref(),
+                        channel_ctx_json.as_deref(),
+                    ) {
                         Ok(job) => ToolResult::ok(format!(
                             "Created scheduled task '{}' (id={}): {} ({})",
                             name, job.id, schedule, task_type
@@ -344,6 +372,13 @@ impl DynTool for EventTool {
 
 /// Parse relative time strings like "in 5 minutes" into a one-shot cron expression.
 /// Returns a cron string like "0 25 18 14 3 *" (specific second/minute/hour/day/month).
+///
+/// Cron expressions are emitted in **local time** because Nebo is a desktop
+/// AI companion — the machine's local timezone IS the user's wall clock, and
+/// agents author schedules in those terms (e.g. "morning briefing at 7 AM"
+/// means 7 AM local). The scheduler (`crates/server/src/scheduler.rs::tick`)
+/// reads `Local::now()` and evaluates `schedule.after()` with a local-time
+/// `last_run`, so this side must match.
 fn parse_relative_time(input: &str) -> Option<String> {
     let s = input.trim().to_lowercase();
     let s = s.strip_prefix("in ").unwrap_or(&s);

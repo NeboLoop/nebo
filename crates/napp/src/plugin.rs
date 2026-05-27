@@ -570,7 +570,9 @@ pub struct PluginStore {
     diagnostics: Arc<std::sync::RwLock<Vec<PluginDiagnostic>>>,
     /// In-memory auth status per slug: `true` = authenticated, `false` = needs auth.
     /// Populated once at startup; updated on login/logout events.
-    auth_cache: Arc<tokio::sync::RwLock<HashMap<String, bool>>>,
+    /// Uses std::sync::RwLock because writes never span .await points and sync
+    /// reads are needed by PluginTool.description() (DynTool is a sync trait).
+    auth_cache: Arc<std::sync::RwLock<HashMap<String, bool>>>,
     /// In-memory cache of stored env var values per slug.
     /// Populated from DB at startup; updated when user saves plugin config.
     env_cache: Arc<std::sync::RwLock<HashMap<String, HashMap<String, String>>>>,
@@ -599,7 +601,7 @@ impl PluginStore {
             manifests: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             downloading: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             diagnostics: Arc::new(std::sync::RwLock::new(Vec::new())),
-            auth_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            auth_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
             env_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
@@ -645,7 +647,7 @@ impl PluginStore {
             .collect();
 
         let results = futures::future::join_all(futures).await;
-        let mut cache = self.auth_cache.write().await;
+        let mut cache = self.auth_cache.write().unwrap();
         for (slug, authed) in results {
             cache.insert(slug, authed);
         }
@@ -656,26 +658,26 @@ impl PluginStore {
     pub async fn update_auth_status(&self, slug: &str) {
         let path_env = self.path_with_plugins();
         let authed = run_auth_status_check(self, slug, &path_env).await;
-        self.auth_cache.write().await.insert(slug.to_string(), authed);
+        self.auth_cache.write().unwrap().insert(slug.to_string(), authed);
     }
 
     /// Check auth status for a single plugin on first access. Caches the result.
     /// Subsequent calls for the same slug return the cached value immediately.
     pub async fn check_auth_lazy(&self, slug: &str) -> bool {
         // Return cached if available
-        if let Some(status) = self.auth_cache.read().await.get(slug) {
+        if let Some(status) = self.auth_cache.read().unwrap().get(slug) {
             return *status;
         }
         // First access: run the check, cache it
         let path_env = self.path_with_plugins();
         let status = run_auth_status_check(self, slug, &path_env).await;
-        self.auth_cache.write().await.insert(slug.to_string(), status);
+        self.auth_cache.write().unwrap().insert(slug.to_string(), status);
         status
     }
 
     /// Get plugins that need auth (authenticated = false). Pure in-memory read.
     pub async fn plugins_needing_auth(&self) -> Vec<(String, PluginAuth)> {
-        let cache = self.auth_cache.read().await;
+        let cache = self.auth_cache.read().unwrap();
         let mut result = Vec::new();
         for (slug, authed) in cache.iter() {
             if !authed {
@@ -759,6 +761,67 @@ impl PluginStore {
             }
         }
         resolved
+    }
+
+    // ── Readiness ──────────────────────────────────────────────────
+
+    /// Check if a plugin is ready to execute based on its auth/config prerequisites.
+    /// Evaluates existing caches — no new state, no DB calls.
+    pub fn is_ready(&self, slug: &str) -> bool {
+        let manifest = match self.get_manifest(slug) {
+            Some(m) => m,
+            None => return false,
+        };
+
+        if let Some(ref auth) = manifest.auth {
+            if auth.commands.status.is_some() {
+                let authed = self
+                    .auth_cache
+                    .read()
+                    .unwrap()
+                    .get(slug)
+                    .copied()
+                    .unwrap_or(false);
+                if !authed {
+                    return false;
+                }
+            }
+            if auth.auth_type == "env" {
+                let stored = self
+                    .env_cache
+                    .read()
+                    .ok()
+                    .and_then(|c| c.get(slug).cloned())
+                    .unwrap_or_default();
+                if !auth.env.keys().all(|k| {
+                    stored.get(k).map(|v| !v.is_empty()).unwrap_or(false)
+                }) {
+                    return false;
+                }
+            }
+        }
+
+        if let Some(ref caps) = manifest.capabilities {
+            for field in &caps.config_schema {
+                if field.required {
+                    let has_value = self
+                        .env_cache
+                        .read()
+                        .ok()
+                        .and_then(|c| {
+                            c.get(slug)
+                                .and_then(|vars| vars.get(&field.key).cloned())
+                        })
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false);
+                    if !has_value {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
     }
 
     /// Root directory for installed (marketplace) plugin storage.
@@ -2280,7 +2343,7 @@ mod tests {
                         sha256: "abc123".into(),
                         signature: "sig==".into(),
                         size: 1024,
-                        download_url: "https://cdn.neboloop.com/plugins/gws/1.2.0/darwin-arm64/gws"
+                        download_url: "https://cdn.neboai.com/plugins/gws/1.2.0/darwin-arm64/gws"
                             .into(),
                     },
                 );
@@ -2441,7 +2504,7 @@ mod tests {
                         sha256: "abc123".into(),
                         signature: "sig==".into(),
                         size: 1024,
-                        download_url: "https://cdn.neboloop.com/gws".into(),
+                        download_url: "https://cdn.neboai.com/gws".into(),
                     },
                 );
                 m
@@ -2602,7 +2665,7 @@ mod tests {
                     "sha256": "abc",
                     "signature": "sig",
                     "size": 1024,
-                    "downloadUrl": "https://cdn.neboloop.com/digest"
+                    "downloadUrl": "https://cdn.neboai.com/digest"
                 }
             },
             "dependencies": [

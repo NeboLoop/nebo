@@ -22,6 +22,8 @@ pub struct Loader {
     skills: Arc<RwLock<HashMap<String, Skill>>>,
     /// Optional plugin store for verifying plugin dependencies.
     plugin_store: Option<Arc<napp::plugin::PluginStore>>,
+    /// Optional DB store for checking plugin enabled/disabled state.
+    db_store: Option<Arc<db::Store>>,
     /// When true, the filesystem watcher skips reload events.
     /// Set during plugin/skill extraction to prevent premature reloads.
     watcher_paused: Arc<AtomicBool>,
@@ -51,6 +53,7 @@ impl Loader {
             installed_dir,
             skills: Arc::new(RwLock::new(HashMap::new())),
             plugin_store: None,
+            db_store: None,
             watcher_paused: Arc::new(AtomicBool::new(false)),
             bundled_raw,
             cached_catalog: Arc::new(RwLock::new(String::new())),
@@ -72,6 +75,24 @@ impl Loader {
     pub fn with_plugin_store(mut self, store: Arc<napp::plugin::PluginStore>) -> Self {
         self.plugin_store = Some(store);
         self
+    }
+
+    /// Set the DB store for checking plugin enabled/disabled state during load.
+    pub fn with_db_store(mut self, store: Arc<db::Store>) -> Self {
+        self.db_store = Some(store);
+        self
+    }
+
+    /// Check if a plugin is active (not disabled by user + ready to execute).
+    fn is_plugin_active(&self, ps: &napp::plugin::PluginStore, slug: &str) -> bool {
+        if let Some(ref db) = self.db_store {
+            if let Ok(Some(row)) = db.get_plugin_by_slug(slug) {
+                if row.is_enabled == 0 {
+                    return false;
+                }
+            }
+        }
+        ps.is_ready(slug)
     }
 
     /// Set license keys for sealed .napp decryption (keyed by artifact_id).
@@ -184,6 +205,7 @@ impl Loader {
 
         // 2.5. Load skills embedded in plugins (override installed by name).
         // Auto-inject the parent plugin slug as a PluginDependency so GWS_BIN etc. get set.
+        // Only load skills for active plugins (not disabled + ready).
         if let Some(ref ps) = self.plugin_store {
             let plugins_dir = ps.plugins_dir();
             if plugins_dir.exists() {
@@ -197,6 +219,9 @@ impl Loader {
                             Some(s) => s.to_string(),
                             None => continue,
                         };
+                        if !self.is_plugin_active(ps, &plugin_slug) {
+                            continue;
+                        }
                         for mut skill in
                             load_skills_from_nested_dir(&slug_dir, SkillSource::Installed)
                         {
@@ -230,6 +255,9 @@ impl Loader {
                             Some(s) => s.to_string(),
                             None => continue,
                         };
+                        if !self.is_plugin_active(ps, &plugin_slug) {
+                            continue;
+                        }
                         for mut skill in
                             load_skills_from_nested_dir(&slug_dir, SkillSource::Installed)
                         {
@@ -632,6 +660,9 @@ impl Loader {
 
         for (slug, _, _, _) in &installed {
             if !seen.insert(slug.clone()) {
+                continue;
+            }
+            if !self.is_plugin_active(ps, slug) {
                 continue;
             }
             total += 1;

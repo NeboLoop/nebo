@@ -304,14 +304,14 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
       "sha256": "a1b2c3...",
       "signature": "base64...",
       "size": 45678900,
-      "downloadUrl": "https://cdn.neboloop.com/plugins/gws/1.2.3/darwin-arm64/gws"
+      "downloadUrl": "https://cdn.neboai.com/plugins/gws/1.2.3/darwin-arm64/gws"
     },
     "linux-amd64": {
       "binaryName": "gws",
       "sha256": "d4e5f6...",
       "signature": "base64...",
       "size": 42000000,
-      "downloadUrl": "https://cdn.neboloop.com/plugins/gws/1.2.3/linux-amd64/gws"
+      "downloadUrl": "https://cdn.neboai.com/plugins/gws/1.2.3/linux-amd64/gws"
     }
   },
   "signingKeyId": "key-001",
@@ -1257,7 +1257,7 @@ Same scoping and version resolution rules as skills. See [Packaging](packaging.m
       "sha256": "a1b2c3...",
       "signature": "base64...",
       "size": 45678900,
-      "downloadUrl": "https://cdn.neboloop.com/..."
+      "downloadUrl": "https://cdn.neboai.com/..."
     }
   },
   "signingKeyId": "key-001",

@@ -10,7 +10,7 @@
 //!   .auto_reinstall_attempted ← Marker (present during reinstall cycle)
 //!
 //! Download URL pattern:
-//!   https://cdn.neboloop.com/vm/{arch}/{sha}/rootfs.img.zst
+//!   https://cdn.neboai.com/vm/{arch}/{sha}/rootfs.img.zst
 //!
 //! Resolution order:
 //!   1. Local rootfs.img exists and SHA matches → use it
@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 /// Base URL for VM image downloads.
-const CDN_BASE: &str = "https://cdn.neboloop.com/vm";
+const CDN_BASE: &str = "https://cdn.neboai.com/vm";
 
 /// Bundle directory layout.
 pub struct Bundle {

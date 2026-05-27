@@ -98,12 +98,13 @@ impl Store {
         tool_results: Option<&str>,
         token_estimate: Option<i64>,
         metadata: Option<&str>,
+        session_name: Option<&str>,
     ) -> Result<ChatMessage, NeboError> {
         let conn = self.conn()?;
         // Ensure parent chat row exists (role/channel sessions don't pre-create one).
         conn.execute(
-            "INSERT OR IGNORE INTO chats (id, title, created_at, updated_at) VALUES (?1, ?1, unixepoch(), unixepoch())",
-            params![chat_id],
+            "INSERT OR IGNORE INTO chats (id, title, session_name, created_at, updated_at) VALUES (?1, ?1, ?2, unixepoch(), unixepoch())",
+            params![chat_id, session_name],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         conn.query_row(
@@ -455,11 +456,14 @@ impl Store {
 
     /// List all chats belonging to a session with message count and last-message
     /// preview in a single query (avoids N+1).
+    /// Accepts a prefix — e.g. `agent:<id>:` matches both legacy `agent:<id>:web`
+    /// and per-thread `agent:<id>:thread:<uuid>` session names.
     pub fn list_chats_by_session_enriched(
         &self,
-        session_name: &str,
+        session_name_prefix: &str,
     ) -> Result<Vec<(Chat, i64, String)>, NeboError> {
         let conn = self.conn()?;
+        let like_pattern = format!("{}%", session_name_prefix);
         let mut stmt = conn
             .prepare(
                 "SELECT c.*,
@@ -475,12 +479,12 @@ impl Store {
                      FROM chat_messages m
                      GROUP BY m.chat_id
                  ) s ON s.chat_id = c.id
-                 WHERE c.session_name = ?1
+                 WHERE c.session_name LIKE ?1
                  ORDER BY c.updated_at DESC",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
-            .query_map(params![session_name], |row| {
+            .query_map(params![like_pattern], |row| {
                 let chat = row_to_chat(row)?;
                 let msg_count: i64 = row.get("msg_count")?;
                 let last_content: String = row.get("last_content")?;

@@ -210,7 +210,7 @@ const TOOL_CONTEXTS: &[&str] = &["web", "event", "loop", "work", "execute", "emi
 
 /// Tools always included in the schema list regardless of context.
 /// These are core agent capabilities that should never be filtered out.
-const ALWAYS_INCLUDE_TOOLS: &[&str] = &["agent", "skill", "event", "message", "tool_search"];
+const ALWAYS_INCLUDE_TOOLS: &[&str] = &["agent", "skill", "event", "message", "tool_search", "plugin"];
 
 // Keyword-based deferred activation removed. Tools now load and unload via
 // message-history scanning (extract_discovered_deferred_tools), following

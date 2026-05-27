@@ -1572,7 +1572,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         session_id
     };
 
-    info!(session_id = %session_key, agent_id = %agent_id, "dispatching chat to agent");
+    info!(session_key = %session_key, agent_id = %agent_id, channel = %channel, "[THREAD-DEBUG] dispatch_chat final session_key");
 
     // Resolve entity config for the active entity
     let entity_config = {

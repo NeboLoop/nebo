@@ -231,6 +231,16 @@ pub struct CronJob {
     pub last_error: Option<String>,
     pub created_at: Option<String>,
     pub instructions: Option<String>,
+    /// Owning agent (the agent_id this job was created for). Populated when
+    /// `event(create)` is called from an agent-bound context; NULL for
+    /// system-created jobs without an owning agent.
+    pub agent_id: Option<String>,
+    /// Serialized `tools::ChannelContext` captured at job creation, when
+    /// the originating conversation was channel-bound (Slack DM, etc.).
+    /// At fire time, the scheduler restores it so the agent's response
+    /// routes back through the same channel bridge. NULL for jobs created
+    /// outside a channel.
+    pub channel_ctx_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

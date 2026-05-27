@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tracing::warn;
 
-const RELEASE_URL: &str = "https://cdn.neboloop.com/releases/version.json";
-const RELEASE_DOWNLOAD_URL: &str = "https://cdn.neboloop.com/releases";
+const RELEASE_URL: &str = "https://cdn.neboai.com/releases/version.json";
+const RELEASE_DOWNLOAD_URL: &str = "https://cdn.neboai.com/releases";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Outcome of an update check.

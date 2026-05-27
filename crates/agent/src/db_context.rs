@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use db::Store;
 use db::models::{AgentProfile, Memory, UserPreference, UserProfile};
 use regex::Regex;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::memory::{self, ScoredMemory};
 use crate::sanitize;
@@ -33,9 +33,16 @@ pub fn load_db_context(
     user_id: &str,
     inherit_scopes: &[InheritScope],
 ) -> DBContext {
+    let t0 = std::time::Instant::now();
+
     let agent = store.get_agent_profile().ok().flatten();
+    let t_agent = t0.elapsed();
+
     let user = store.get_user_profile().ok().flatten();
+    let t_user = t0.elapsed();
+
     let preferences = store.get_user_preferences().ok().flatten();
+    let t_prefs = t0.elapsed();
 
     // Load personality directive from tacit/personality/directive
     let personality_directive = store
@@ -43,9 +50,23 @@ pub fn load_db_context(
         .ok()
         .flatten()
         .map(|m| m.value);
+    let t_directive = t0.elapsed();
 
     // Load scored tacit memories (primary + inherited scopes)
     let tacit_memories = memory::load_scored_memories(store, user_id, inherit_scopes, 40);
+    let t_memories = t0.elapsed();
+
+    info!(
+        agent_ms = t_agent.as_millis() as u64,
+        user_ms = (t_user - t_agent).as_millis() as u64,
+        prefs_ms = (t_prefs - t_user).as_millis() as u64,
+        directive_ms = (t_directive - t_prefs).as_millis() as u64,
+        memories_ms = (t_memories - t_directive).as_millis() as u64,
+        total_ms = t_memories.as_millis() as u64,
+        memory_count = tacit_memories.len(),
+        inherit_scopes = inherit_scopes.len(),
+        "[telemetry] load_db_context"
+    );
 
     DBContext {
         agent,

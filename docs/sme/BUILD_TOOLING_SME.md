@@ -31,7 +31,7 @@ Last updated: 2026-05-15
 
 ```
                          +----------------------------+
-                         |  cdn.neboloop.com/releases |
+                         |  cdn.neboai.com/releases |
                          |                            |
                          |  version.json              |
                          |  v0.5.0/                   |
@@ -101,8 +101,8 @@ Last updated: 2026-05-15
 The updater checks for new versions by fetching a JSON manifest from the CDN.
 
 **CDN endpoints:**
-- `https://cdn.neboloop.com/releases/version.json` -- latest version pointer
-- `https://cdn.neboloop.com/releases/{tag}/` -- per-release assets
+- `https://cdn.neboai.com/releases/version.json` -- latest version pointer
+- `https://cdn.neboai.com/releases/{tag}/` -- per-release assets
 
 **version.json format:**
 ```json
@@ -163,13 +163,13 @@ The Rust arch names are mapped to CDN convention: `aarch64` -> `arm64`, `x86_64`
 
 **Download flow:**
 1. Detect install method -> choose asset (raw binary vs app bundle).
-2. Construct URL: `https://cdn.neboloop.com/releases/{tag}/{asset_name}`.
+2. Construct URL: `https://cdn.neboai.com/releases/{tag}/{asset_name}`.
 3. Stream download to a temp file (`/tmp/nebo-update-{uuid}`).
 4. Report progress via callback `(downloaded_bytes, total_bytes)`.
 5. Set executable permission on Unix (`chmod 755`).
 
 **Checksum verification:**
-1. Fetch `https://cdn.neboloop.com/releases/{tag}/checksums.txt`.
+1. Fetch `https://cdn.neboai.com/releases/{tag}/checksums.txt`.
 2. Parse format: `<sha256_hex>  <filename>` (standard `sha256sum` output).
 3. Find the line matching the downloaded asset name.
 4. Compute SHA256 of the downloaded file.
@@ -1167,8 +1167,8 @@ It reads `plugin.json` to determine the version and platform-specific binary nam
 
 | Constant | Value | Location |
 |---|---|---|
-| CDN version URL | `https://cdn.neboloop.com/releases/version.json` | `updater/src/lib.rs` |
-| CDN download base | `https://cdn.neboloop.com/releases` | `updater/src/lib.rs` |
+| CDN version URL | `https://cdn.neboai.com/releases/version.json` | `updater/src/lib.rs` |
+| CDN download base | `https://cdn.neboai.com/releases` | `updater/src/lib.rs` |
 | Update check timeout | 5 seconds | `updater/src/lib.rs` |
 | Download timeout | 600 seconds (10 min) | `updater/src/lib.rs` |
 | Background check interval | 3600 seconds (1 hour) | `server/src/lib.rs` |

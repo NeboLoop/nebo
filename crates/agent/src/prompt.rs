@@ -476,6 +476,7 @@ const STRAP_SKILL: &str = include_str!("strap/skill.txt");
 const STRAP_WORK: &str = include_str!("strap/work.txt");
 const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
 const STRAP_MCP: &str = include_str!("strap/mcp.txt");
+const STRAP_PLUGIN: &str = include_str!("strap/plugin.txt");
 const STRAP_AGENTS: &str = include_str!("strap/agents.txt");
 
 // OS sub-context docs (keyword-activated, extend the OS tool)
@@ -506,6 +507,7 @@ pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
         "work" => Some(STRAP_WORK),
         "execute" => Some(STRAP_EXECUTE),
         "mcp" => Some(STRAP_MCP),
+        "plugin" => Some(STRAP_PLUGIN),
         "agents" => Some(STRAP_AGENTS),
         _ => None,
     }
@@ -532,7 +534,7 @@ pub fn strap_context_doc(context_name: &str) -> Option<&'static str> {
 /// Tools whose STRAP docs are always-on core tools. Their schemas already contain
 /// enough info for the model to call them. STRAP docs are only injected when
 /// the tool is contextually activated (keyword match or called_tools).
-const STRAP_DEFERRED_DOCS: &[&str] = &["agent", "skill", "event", "message"];
+const STRAP_DEFERRED_DOCS: &[&str] = &["agent", "skill", "event", "message", "plugin"];
 
 pub fn build_strap_section(
     tool_names: &[String],

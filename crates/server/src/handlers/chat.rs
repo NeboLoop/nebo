@@ -597,6 +597,12 @@ pub async fn get_chat_messages(
         .map(|sid| state.runner.sessions().active_chat_id(&sid))
         .unwrap_or_else(|| id.clone());
 
+    tracing::info!(
+        raw_id = %id,
+        resolved_id = %resolved_id,
+        "[THREAD-DEBUG] get_chat_messages reading from"
+    );
+
     let mut messages = state
         .store
         .get_chat_messages_budgeted(&resolved_id, query.max_chars, query.before.as_deref())

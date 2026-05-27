@@ -14,7 +14,7 @@
 //! matching Cowork's pattern:
 //!   1. Check local rootfs.img with SHA origin file
 //!   2. Decompress cached .zst if available
-//!   3. Download from https://cdn.neboloop.com/vm/{arch}/{sha}/rootfs.img.zst
+//!   3. Download from https://cdn.neboai.com/vm/{arch}/{sha}/rootfs.img.zst
 //!
 //! The sidecar image (nebo-vm.{arch}.img) ships embedded in the app bundle.
 

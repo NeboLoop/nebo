@@ -1,0 +1,14 @@
+### plugin — Installed Plugin Binaries
+
+Before running a plugin command, load the skill for that service first:
+1. Use skill(action: "discover", query: "<service>") to find the matching skill (e.g., "gmail", "drive", "calendar")
+2. Load the skill with skill(action: "help", name: "<skill-name>") to get full syntax, flags, and examples
+3. Then execute: plugin(resource: "<slug>", action: "exec", command: "<subcommand and flags>")
+
+NEVER guess command syntax. Plugin commands have specific flags and formats documented in their skills.
+
+- plugin(resource: "gws", action: "exec", command: "gmail +triage --max 5") — run a plugin command
+- plugin(resource: "<slug>", action: "events") — list declared watch events
+
+If a command fails with an auth error, the plugin will auto-retry after re-authentication.
+If auth keeps failing, guide the user to Settings → Apps to reconnect.

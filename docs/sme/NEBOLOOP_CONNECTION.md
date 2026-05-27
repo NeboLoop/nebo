@@ -64,7 +64,7 @@ The local Nebo desktop app connects to the NeboLoop cloud gateway via a **binary
 
 ## 3. Connection Lifecycle
 
-### Initial Connection (`neboloop.rs:268-497`)
+### Initial Connection (`neboloop.rs:288-500`)
 
 ```
 0. Tear down existing connection (cancel old tasks, clear stale state)
@@ -84,7 +84,7 @@ The local Nebo desktop app connects to the NeboLoop cloud gateway via a **binary
 
 The token cache file at `<data_dir>/neboloop_token.cache` is persisted immediately on AUTH_OK to survive hot-reload kills (SIGKILL) that prevent the caller from writing to DB.
 
-### Activation (`codes.rs:794-904`)
+### Activation (`codes.rs:1241+`)
 
 `activate_neboloop()` is the canonical connection function:
 1. Guard: if already connected, return `Ok(())`
@@ -109,7 +109,7 @@ The token cache file at `<data_dir>/neboloop_token.cache` is persisted immediate
 
 Ping/pong frames are logged to devlog (dev builds only) for connection health visibility.
 
-### Auto-connect & Reconnect (`lib.rs:988-1027`)
+### Auto-connect & Reconnect (`lib.rs:1626-1700`)
 
 - **Startup**: If NeboLoop enabled + credentials exist → `activate_neboloop()` in background task
 - **Reconnect watcher**: Polls every `backoff_secs` (starts 30s, initial 60s delay)
@@ -126,7 +126,7 @@ Ping/pong frames are logged to devlog (dev builds only) for connection health vi
 
 ---
 
-## 4. Conversation Maps (`neboloop.rs:746-758`)
+## 4. Conversation Maps (`neboloop.rs:815-826`)
 
 In-memory maps rebuilt on each connection. Managed by the join processor task.
 
@@ -145,7 +145,7 @@ ConvMaps {
 }
 ```
 
-**Join Result Classification** (read loop, `neboloop.rs:1000-1046`):
+**Join Result Classification** (read loop, `neboloop.rs:1085-1131`):
 - If `agent_id` set → `JoinUpdate::AgentSpace`
 - Else if `peer_id` set → `JoinUpdate::Dm` (legacy)
 - Else if `channel_id` set → `JoinUpdate::Channel`
@@ -155,7 +155,7 @@ ConvMaps {
 
 ## 5. Inbound Message Flow
 
-### Read Loop (`neboloop.rs:805+`)
+### Read Loop (`neboloop.rs:874+`)
 
 1. Receive WS binary message
 2. Decode 47-byte header + payload
@@ -169,7 +169,7 @@ ConvMaps {
    - Call registered message handler callback (warns + logs if handler is None)
 6. For `TYPE_JOIN_CONVERSATION`: route to join processor
 
-### Message Handler (`lib.rs:974-985, 1212-1555`)
+### Message Handler (`lib.rs:2272+`)
 
 Single handler registration at startup — message handler is set once during `start_server()`, wrapping each incoming message in a spawned async task that calls `handle_comm_message()`.
 
@@ -183,7 +183,7 @@ Single handler registration at startup — message handler is set once during `s
 | `"chat"` or `"dm"` | Unified chat pipeline | Agent-space reroute check → optional @mention routing, session key = `neboloop:{topic}:{conv_id}` |
 | Other | Event bus + broadcast | Emit as `neboloop.{topic}`, broadcast raw to frontend |
 
-### Account Messages (`lib.rs:1222-1254`)
+### Account Messages (`lib.rs:2282-2318`)
 
 ```
 1. Parse JSON content for type="tokenRefresh"
@@ -194,7 +194,7 @@ Single handler registration at startup — message handler is set once during `s
 6. Return (no chat dispatch)
 ```
 
-### Agent Space Messages (`lib.rs:1272-1349`)
+### Agent Space Messages (`lib.rs:2366-2500`)
 
 ```
 1. Extract text from JSON content (msg.content.text or msg.content.content or raw)
@@ -212,7 +212,7 @@ Single handler registration at startup — message handler is set once during `s
 11. Emit event: "neboloop.agent_space.{slug}" → triggers agent event subscriptions
 ```
 
-### Chat/DM Messages (`lib.rs:1352-1500`)
+### Chat/DM Messages (`lib.rs:2523+`)
 
 ```
 1. Agent-space reroute check: call comm_manager.agent_slug_for_conv(conversation_id)
@@ -307,7 +307,7 @@ CommReplyConfig {
 
 ## 7. Outbound Message Flow
 
-### From Chat Reply (`chat_dispatch.rs:431-507`)
+### From Chat Reply (`chat_dispatch.rs:260-620`)
 
 ```
 During execution (500ms coalesce):
@@ -329,7 +329,7 @@ After completion (only if no chunks were streamed):
   } → comm_manager.send()
 ```
 
-### NeboLoopPlugin.send() (`neboloop.rs:517-581`)
+### NeboLoopPlugin.send() (`neboloop.rs:553-625`)
 
 ```
 1. Check connected flag → return NotConnected if false
@@ -374,7 +374,7 @@ COMM lane prevents NeboLoop message flood from blocking local user chat on MAIN 
 
 ## 9. Agent Registration
 
-When an agent is installed/activated, the bot registers an agent in the owner's personal loop (`codes.rs:1115-1133`):
+When an agent is installed/activated, the bot registers an agent in the owner's personal loop (`codes.rs:1576-1601`):
 
 ```
 1. Get API client from stored credentials
@@ -385,7 +385,7 @@ When an agent is installed/activated, the bot registers an agent in the owner's 
 
 Deregistration on agent removal: `DELETE /api/v1/loops/{loopId}/agents/{agentSlug}`
 
-### Reconciliation (`codes.rs:930-996`)
+### Reconciliation (`codes.rs:1384-1457`)
 
 On every successful connection, `reconcile_agents()` syncs local ↔ remote:
 - Fetches remote agents from NeboLoop
@@ -572,8 +572,8 @@ The frontend uploads through the local server (`POST /api/v1/files/upload`) whic
 ### Open: Ghost connections from hot-reload (dev mode)
 `cargo watch` sends SIGTERM/SIGKILL to the process. Spawned tokio tasks (read/write loops) are dropped immediately without running cleanup, so no WebSocket close frame is sent. The gateway keeps the old connection alive until its own keepalive timeout. A new process connects, creating a second connection for the same bot_id. The gateway may route inbound messages to the old (dead) connection, causing message loss. **Evidence:** devlog shows 46 connections with zero disconnect/error/cancel entries; only 1 inbound message received across all connections. **Mitigation:** Gateway should replace old connection when same bot_id reconnects. Client should implement SIGTERM handler for graceful disconnect.
 
-### Open: Reconnect watcher uses polling instead of `wait_disconnect()`
-The reconnect watcher in `lib.rs` polls `is_connected()` every 30s. The `wait_disconnect()` method exists on the plugin trait and fires immediately when the read loop exits unexpectedly, but it's not used. Using it would reduce reconnect latency from up to 30s to near-instant.
+### Fixed: Reconnect watcher now uses `wait_disconnect()`
+The reconnect watcher in `lib.rs:1642` uses `tokio::select!` with both `wait_disconnect()` (instant notification when read loop exits) and a backoff sleep (periodic fallback). Whichever fires first triggers reconnect. This replaced the earlier polling-only approach.
 
 ### Open: No guard against concurrent `activate_neboloop()` calls
 `activate_neboloop()` has a guard at the top (`if already connected, return Ok()`) but no mutex. If the function takes longer than the reconnect poll interval (30s), a second call can overlap. Both pass the guard (both see `false`), and both call `connect()`. The second `connect()` tears down the first at its top, but this creates wasted connections and confusing devlog entries.
@@ -593,7 +593,7 @@ The reconnect watcher in `lib.rs` polls `is_connected()` every 30s. The `wait_di
 **Proposed fix:** Self-healing in gateway's `subscribeToAgentSpaces()` — if `ListAgentSpacesByBot` returns empty, check loop memberships and call `EnsureAgentForBot` for each loop, then re-query. Fix proposed to NeboLoop team via Discuss (discussion `4e9cdce6`).
 
 ### Open: `reconcile_agents` does not cover the default bot agent
-`reconcile_agents()` (codes.rs:930-996) only syncs custom agents from `list_agents()`. The default bot agent (slug `bot_*`) is created by `EnsureAgentForBot` on the NeboLoop side during `AddMember`. If this default agent is missing (see above), `reconcile_agents` will not detect or repair it because it only iterates locally-installed agents, not the implicit default.
+`reconcile_agents()` (codes.rs:1384-1457) only syncs custom agents from `list_agents()`. The default bot agent (slug `bot_*`) is created by `EnsureAgentForBot` on the NeboLoop side during `AddMember`. If this default agent is missing (see above), `reconcile_agents` will not detect or repair it because it only iterates locally-installed agents, not the implicit default.
 
 ---
 
@@ -611,7 +611,7 @@ NeboLoop Gateway receives message
 TYPE_MESSAGE_DELIVERY frame → WebSocket → Nebo desktop app
   │
   ▼
-Read loop (neboloop.rs:805+)
+Read loop (neboloop.rs:874+)
   ├─ Decode 47-byte header + JSON payload
   ├─ Decompress if zstd flag set
   ├─ Dedup check (skip if duplicate msg_id)
@@ -619,7 +619,7 @@ Read loop (neboloop.rs:805+)
   └─ Call registered handler callback
   │
   ▼
-handle_comm_message (lib.rs:1212)
+handle_comm_message (lib.rs:2272)
   ├─ topic="account" → persist token/plan update (no chat)
   ├─ topic="installs" → napp_registry
   ├─ topic="agent_space" / "chat" / "dm":
@@ -649,7 +649,7 @@ Agent completes
   ├─ If no streaming happened → send full_response as single Message
   │
   ▼
-NeboLoopPlugin.send (neboloop.rs:517)
+NeboLoopPlugin.send (neboloop.rs:553)
   ├─ Resolve conversation_id (from CommReplyConfig)
   ├─ Build SendPayload{conversation_id, topic, content: {"text": response, "attachments": [...]}}
   ├─ Encode frame (TYPE_SEND_MESSAGE)

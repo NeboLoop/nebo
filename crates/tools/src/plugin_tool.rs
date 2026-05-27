@@ -7,6 +7,7 @@ use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info, warn};
 
+use crate::channel_bridge;
 use crate::origin::ToolContext;
 use crate::process;
 use crate::registry::{DynTool, ToolResult};
@@ -22,6 +23,7 @@ use crate::registry::{DynTool, ToolResult};
 /// the plugin's declared `auth login` command, and retries the original command.
 pub struct PluginTool {
     plugin_store: Arc<napp::plugin::PluginStore>,
+    db_store: Arc<db::Store>,
     broadcaster: Option<crate::web_tool::Broadcaster>,
 }
 
@@ -54,9 +56,11 @@ fn default_action() -> String {
 impl PluginTool {
     pub fn new(
         plugin_store: Arc<napp::plugin::PluginStore>,
+        db_store: Arc<db::Store>,
     ) -> Self {
         Self {
             plugin_store,
+            db_store,
             broadcaster: None,
         }
     }
@@ -66,15 +70,24 @@ impl PluginTool {
         self
     }
 
-    /// Build a deduplicated list of installed plugin slugs.
-    fn installed_slugs(&self) -> Vec<String> {
+    /// Build a deduplicated list of active plugin slugs (installed + not disabled + ready).
+    fn active_slugs(&self) -> Vec<String> {
         let installed = self.plugin_store.list_installed();
         let mut seen = std::collections::HashSet::new();
         let mut slugs = Vec::new();
         for (slug, _, _, _) in &installed {
-            if seen.insert(slug.clone()) {
-                slugs.push(slug.clone());
+            if !seen.insert(slug.clone()) {
+                continue;
             }
+            if let Ok(Some(row)) = self.db_store.get_plugin_by_slug(&slug) {
+                if row.is_enabled == 0 {
+                    continue;
+                }
+            }
+            if !self.plugin_store.is_ready(&slug) {
+                continue;
+            }
+            slugs.push(slug.clone());
         }
         slugs
     }
@@ -183,46 +196,64 @@ impl DynTool for PluginTool {
     }
 
     fn description(&self) -> String {
-        let slugs = self.installed_slugs();
+        let slugs = self.active_slugs();
         if slugs.is_empty() {
-            return "Execute installed plugin binaries. No plugins are currently installed.".to_string();
+            return "Execute installed plugin binaries. No plugins are currently active.".to_string();
         }
 
-        // Build a per-plugin command catalog. Every plugin's commands (sourced
-        // from its SKILL.md frontmatter) are surfaced here so the agent sees
-        // the full API upfront — no separate discovery step.
-        //
-        // Matches the Claude Code pattern: tool schema description IS the
-        // contract. The agent should never need to call a separate "list
-        // commands" action; if a command isn't in this description, it
-        // doesn't exist.
         let mut out = String::from("Execute installed plugin binaries.\n\n");
+        out.push_str("ALWAYS use this tool for channel messaging — Slack, Discord, Teams, and any other channel-backed plugin. \
+                      `plugin(resource: \"<channel-slug>\", command: \"upload|post|dm|reply ...\")` is the canonical pathway for \
+                      sending files, messages, and DMs out through a channel. \
+                      NEVER use `skill discover` or `skill help` to look up channel operations — channels are plugins, \
+                      not skills, and the skill catalog does not contain them.\n\n");
         out.push_str("Usage: plugin(resource: \"<plugin-slug>\", action: \"exec\", command: \"<subcommand and flags>\")\n");
         out.push_str("       plugin(resource: \"<plugin-slug>\", action: \"events\") — list declared NDJSON watch events\n\n");
         out.push_str("Installed plugins:\n\n");
 
-        // Soft cap per plugin so heavyweight catalogs (gws ships ~100 skills)
-        // don't blow up the system prompt. Above this size we truncate and
-        // include a count of omitted commands so the agent knows more exist.
         const PER_PLUGIN_BUDGET: usize = 4096;
+        const TOTAL_BUDGET: usize = 12_288;
 
-        for slug in &slugs {
-            let services = self.list_services(slug);
-            if services.is_empty() {
-                // Plugin didn't ship skill docs — surface the plugin name with
-                // a generic hint so the agent at least knows it's available.
-                out.push_str(&format!(
-                    "### {}\n  (no command catalog declared by this plugin — call `{} --help` via exec to discover commands)\n\n",
-                    slug, slug
-                ));
+        let mut with_services: Vec<(String, Vec<(String, String)>)> = slugs
+            .iter()
+            .map(|s| (s.clone(), self.list_services(s)))
+            .collect();
+        with_services.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+        let mut overflow_slugs: Vec<String> = Vec::new();
+        for (slug, services) in &with_services {
+            let is_channel = self.plugin_store.get_channel_def(slug).is_some();
+            if services.is_empty() && !is_channel {
+                overflow_slugs.push(slug.clone());
                 continue;
             }
             let mut section = format!("### {}\n", slug);
+            // Channel plugins expose real-time messaging ops via the running
+            // bridge. Lead with the USE CASE (what the user asked for), not
+            // the syntax — agents that picked the wrong tool ("send me this
+            // file in slack" → markdown image link instead of upload) did so
+            // because the description listed commands without naming the
+            // intent each one serves. Replies to inbound messages are NOT
+            // listed: the bridge sends `op: reply` automatically when the
+            // agent's response comes back through channel dispatch; the
+            // agent never invokes a reply command directly.
+            if is_channel {
+                section.push_str("  Channel actions (use these instead of generating markdown links / image syntax):\n");
+                section.push_str(&format!("  - Share a file with someone in this channel: plugin(resource: \"{slug}\", command: \"upload --channel <id> --path <abs-path> [--caption <text>] [--thread_ts <ts>]\")\n"));
+                section.push_str(&format!("    Use this when the user says \"send/share/attach/grab/let me see/upload a file\" — pass the absolute local path; the bridge handles the upload to the platform.\n"));
+                section.push_str(&format!("  - Post an unsolicited message: plugin(resource: \"{slug}\", command: \"post --channel <id> --text <body> [--thread_ts <ts>]\")\n"));
+                section.push_str(&format!("    Use for proactive posts (briefings, alerts, workflow output) when not directly replying to an inbound message.\n"));
+                section.push_str(&format!("  - Direct message a specific user: plugin(resource: \"{slug}\", command: \"dm --user <id> --text <body>\")\n"));
+                section.push_str("  Note: replies to inbound channel messages are automatic — your normal text response goes through the bridge with no command needed. Do NOT include markdown image links (`![alt](url)`) for files — call `upload` instead.\n");
+                if !services.is_empty() {
+                    section.push_str("  Stateless commands (auth/init/doctor/sync etc.):\n");
+                }
+            }
             let total = services.len();
             let mut included = 0usize;
             let mut truncated = false;
             for (name, desc) in services {
-                let label = display_command_for_skill(slug, &name);
+                let label = display_command_for_skill(slug, name);
                 let line = if desc.is_empty() {
                     format!("  - {}\n", label)
                 } else {
@@ -237,21 +268,31 @@ impl DynTool for PluginTool {
             }
             if truncated {
                 section.push_str(&format!(
-                    "  - … and {} more — call `{} --help` via exec to discover the rest\n",
+                    "  - … and {} more — use skill(action: \"discover\", query: \"{}\") for full list\n",
                     total - included,
                     slug
                 ));
             }
             section.push('\n');
+            if out.len() + section.len() > TOTAL_BUDGET {
+                overflow_slugs.push(slug.clone());
+                continue;
+            }
             out.push_str(&section);
         }
 
-        out.push_str("If a command isn't listed here, it isn't available. Don't guess flags or syntax — only call commands shown above.");
+        if !overflow_slugs.is_empty() {
+            out.push_str("Also installed: ");
+            out.push_str(&overflow_slugs.join(", "));
+            out.push_str("\nUse skill(action: \"discover\", query: \"<plugin-name>\") to see available commands.\n");
+        }
+
+        out.push_str("\nFor commands listed above, use the exact syntax shown. For other plugins, discover commands first via the skill tool.");
         out
     }
 
     fn schema(&self) -> serde_json::Value {
-        let slugs = self.installed_slugs();
+        let slugs = self.active_slugs();
         let enum_values: Vec<serde_json::Value> = slugs
             .iter()
             .map(|s| serde_json::Value::String(s.clone()))
@@ -406,6 +447,21 @@ impl PluginTool {
     }
 
     async fn handle_exec(&self, pi: &PluginInput, ctx: &ToolContext) -> ToolResult {
+        // Channel-plugin messaging ops route through the running bridge sidecar's
+        // stdin — never through a fresh CLI invocation. Two processes hitting the
+        // same upstream socket race each other (we observed this with orphan
+        // Slack bridges all posting "_Thinking..._" for one inbound message).
+        // See `docs/publishers-guide/channel-plugins.md` for the contract.
+        let verb = pi
+            .command
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        if matches!(verb.as_str(), "reply" | "post" | "upload" | "dm") {
+            return self.route_through_bridge(&verb, pi, ctx).await;
+        }
+
         let result = self.run_plugin_command(pi, ctx).await;
 
         // On error, check if it's an auth failure and attempt re-auth.
@@ -485,7 +541,7 @@ impl PluginTool {
         let binary_path = match self.plugin_store.resolve(&pi.resource, "*") {
             Some(p) => p,
             None => {
-                let slugs = self.installed_slugs();
+                let slugs = self.active_slugs();
                 return ToolResult::error(format!(
                     "Plugin '{}' not found. Available: {}",
                     pi.resource,
@@ -606,6 +662,165 @@ impl PluginTool {
                 }
 
                 ToolResult::ok(text)
+            }
+        }
+    }
+
+    /// Route a messaging op (reply/post/upload/dm) through the channel plugin's
+    /// running bridge sidecar instead of spawning a fresh process. This is the
+    /// canonical pathway — see `docs/publishers-guide/channel-plugins.md`.
+    ///
+    /// Resolves the bridge handle from the global registry by
+    /// `{agent_id}:{plugin_slug}`. If no bridge is registered for the current
+    /// agent, returns a structured error pointing the user at the channel
+    /// settings — there is NO fallback to one-shot CLI execution.
+    async fn route_through_bridge(
+        &self,
+        op: &str,
+        pi: &PluginInput,
+        ctx: &ToolContext,
+    ) -> ToolResult {
+        // Caller agent_id is encoded in session_key as "agent:<id>:..." for
+        // channel and chat runs. For non-agent runs (cron without channel
+        // context, system tasks) there's no agent to look up a bridge for.
+        let agent_id = if ctx.session_key.starts_with("agent:") {
+            ctx.session_key
+                .split(':')
+                .nth(1)
+                .unwrap_or("")
+                .to_string()
+        } else {
+            String::new()
+        };
+
+        if agent_id.is_empty() {
+            return ToolResult::error(format!(
+                "Cannot route `{op}` to channel plugin `{}` — this run has no agent context. \
+                 Channel ops only work inside agent-bound conversations or scheduled tasks \
+                 that preserve their originating channel.",
+                pi.resource
+            ));
+        }
+
+        let registry = match channel_bridge::channel_bridges() {
+            Some(r) => r,
+            None => {
+                return ToolResult::error(
+                    "Channel bridge registry not initialized — Nebo is still starting up.".to_string(),
+                );
+            }
+        };
+
+        let key = channel_bridge::channel_bridge_key(&agent_id, &pi.resource);
+        let handle = {
+            let guard = registry.read().await;
+            guard.get(&key).cloned()
+        };
+        let Some(handle) = handle else {
+            return ToolResult::error(format!(
+                "Channel plugin `{}` is not running for agent `{}`. \
+                 Enable it for this agent in Settings → Channels. \
+                 (Real-time messaging ops {{reply, post, upload, dm}} only work \
+                 when the bridge sidecar is live — there is no fallback CLI path.)",
+                pi.resource, agent_id
+            ));
+        };
+
+        // Build the op JSON. Args come from pi.args (named flags) plus any
+        // `--key value` flags inside pi.command after the verb.
+        let mut args = parse_command_flags(&pi.command);
+        for (k, v) in &pi.args {
+            args.insert(k.clone(), v.clone());
+        }
+
+        // Default channel/thread_ts from the run's ChannelContext when the
+        // caller didn't supply them explicitly.
+        if let Some(ch) = &ctx.channel {
+            if !args.contains_key("channel") && !ch.channel_id.is_empty() {
+                args.insert("channel".into(), ch.channel_id.clone());
+            }
+            if !args.contains_key("thread_ts") {
+                if let Some(ts) = &ch.thread_ts {
+                    args.insert("thread_ts".into(), ts.clone());
+                }
+            }
+        }
+
+        let mut op_json = match build_op_json(op, &args) {
+            Ok(v) => v,
+            Err(e) => {
+                return ToolResult::error(format!(
+                    "Channel op `{op}` for plugin `{}`: {e}",
+                    pi.resource
+                ));
+            }
+        };
+
+        // Generate a req_id, register a oneshot to await the bridge's
+        // `op_result` event, and stamp the id on the outgoing JSON. The
+        // bridge echoes req_id back in its op_result so we can correlate.
+        // Without this, the tool result would acknowledge the queueing
+        // (which always succeeds the moment the mpsc accepts the value)
+        // and the agent would tell the user "uploaded" even if the bridge
+        // then failed asynchronously — see Rule 10.2 in CODE_AUDITOR.md.
+        let req_id = uuid::Uuid::new_v4().to_string();
+        op_json
+            .as_object_mut()
+            .expect("build_op_json always returns an Object")
+            .insert("req_id".into(), serde_json::Value::String(req_id.clone()));
+
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        handle
+            .pending_ops
+            .lock()
+            .await
+            .insert(req_id.clone(), result_tx);
+
+        if let Err(e) = handle.stdin_tx.send(op_json).await {
+            handle.pending_ops.lock().await.remove(&req_id);
+            return ToolResult::error(format!(
+                "Bridge for plugin `{}` (agent `{}`) appears to have closed its \
+                 stdin: {e}. Restart the channel in Settings → Channels.",
+                pi.resource, agent_id
+            ));
+        }
+
+        info!(
+            plugin = %pi.resource,
+            agent = %agent_id,
+            op = %op,
+            req_id = %req_id,
+            "channel op routed through bridge; awaiting result"
+        );
+
+        // Bridge ops do real HTTP work; 30s is generous for the slowest
+        // case (large file uploads through `files.uploadV2`). Past that
+        // it's almost certainly a stuck bridge — drop the pending entry
+        // and surface a real timeout error instead of waiting forever.
+        match tokio::time::timeout(Duration::from_secs(30), result_rx).await {
+            Ok(Ok(res)) if res.ok => ToolResult::ok(format!(
+                "Op `{op}` completed on plugin `{}`.",
+                pi.resource
+            )),
+            Ok(Ok(res)) => ToolResult::error(format!(
+                "Op `{op}` on plugin `{}` failed: {}",
+                pi.resource,
+                res.error.unwrap_or_else(|| "unknown error".into())
+            )),
+            Ok(Err(_)) => ToolResult::error(format!(
+                "Bridge for plugin `{}` (agent `{}`) closed before reporting \
+                 the result of `{op}`. The op may or may not have run on the \
+                 platform — check the channel for evidence and retry if needed.",
+                pi.resource, agent_id
+            )),
+            Err(_) => {
+                handle.pending_ops.lock().await.remove(&req_id);
+                ToolResult::error(format!(
+                    "Op `{op}` on plugin `{}` timed out after 30s without a \
+                     result from the bridge. The op may still complete \
+                     asynchronously, but its outcome is unknown.",
+                    pi.resource
+                ))
             }
         }
     }
@@ -863,6 +1078,100 @@ fn open_auth_url(slug: &str, url: &str, broadcaster: &Option<crate::web_tool::Br
             }),
         );
     }
+}
+
+/// Pull `--key value` flags from a shlex-parsed command. The leading verb is
+/// dropped; only flag pairs are kept. Bare flags without a value are treated
+/// as boolean `true` so `--dryrun` works.
+fn parse_command_flags(command: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let Some(tokens) = shlex::split(command) else {
+        return out;
+    };
+    let mut it = tokens.into_iter();
+    let _verb = it.next();
+    let toks: Vec<String> = it.collect();
+    let mut i = 0;
+    while i < toks.len() {
+        let tok = &toks[i];
+        if let Some(key) = tok.strip_prefix("--") {
+            if i + 1 < toks.len() && !toks[i + 1].starts_with("--") {
+                out.insert(key.to_string(), toks[i + 1].clone());
+                i += 2;
+            } else {
+                out.insert(key.to_string(), "true".to_string());
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Translate parsed flag args into the NDJSON op JSON line that the channel
+/// plugin bridge expects on stdin. See
+/// `docs/publishers-guide/channel-plugins.md` for the op contract.
+///
+/// Required fields per op:
+///   - reply:  channel, text (placeholder_ts / thread_ts / files / username optional)
+///   - post:   channel, text (thread_ts / files / username optional)
+///   - upload: channel, path (thread_ts / caption optional)
+///   - dm:     user,    text (files / username optional)
+fn build_op_json(
+    op: &str,
+    args: &std::collections::HashMap<String, String>,
+) -> Result<serde_json::Value, String> {
+    let mut obj = serde_json::Map::new();
+    obj.insert("op".into(), serde_json::Value::String(op.to_string()));
+
+    let want = |key: &str| -> Result<String, String> {
+        args.get(key)
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("missing required `--{key}`"))
+    };
+    let opt = |key: &str| -> Option<String> {
+        args.get(key).cloned().filter(|s| !s.is_empty())
+    };
+
+    match op {
+        "reply" | "post" => {
+            obj.insert("channel".into(), serde_json::Value::String(want("channel")?));
+            obj.insert("text".into(), serde_json::Value::String(want("text")?));
+            if let Some(v) = opt("thread_ts") {
+                obj.insert("thread_ts".into(), serde_json::Value::String(v));
+            }
+            if op == "reply" {
+                if let Some(v) = opt("placeholder_ts") {
+                    obj.insert("placeholder_ts".into(), serde_json::Value::String(v));
+                }
+            }
+            if let Some(v) = opt("username") {
+                obj.insert("username".into(), serde_json::Value::String(v));
+            }
+        }
+        "upload" => {
+            obj.insert("channel".into(), serde_json::Value::String(want("channel")?));
+            obj.insert("path".into(), serde_json::Value::String(want("path")?));
+            if let Some(v) = opt("thread_ts") {
+                obj.insert("thread_ts".into(), serde_json::Value::String(v));
+            }
+            if let Some(v) = opt("caption").or_else(|| opt("title")) {
+                obj.insert("caption".into(), serde_json::Value::String(v));
+            }
+        }
+        "dm" => {
+            obj.insert("user".into(), serde_json::Value::String(want("user")?));
+            obj.insert("text".into(), serde_json::Value::String(want("text")?));
+            if let Some(v) = opt("username") {
+                obj.insert("username".into(), serde_json::Value::String(v));
+            }
+        }
+        other => return Err(format!("unknown op `{other}`")),
+    }
+
+    Ok(serde_json::Value::Object(obj))
 }
 
 #[cfg(test)]

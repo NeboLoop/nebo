@@ -145,6 +145,9 @@ pub trait DynTool: Send + Sync {
 /// Registry manages available tools.
 pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Box<dyn DynTool>>>>,
+    /// Cached tool definitions (description + schema) computed at registration time.
+    /// Avoids regenerating descriptions and JSON schemas on every LLM iteration.
+    def_cache: Arc<RwLock<HashMap<String, ToolDefinition>>>,
     /// Tools marked as deferred — not sent to LLM until keyword-activated or first called.
     deferred: Arc<RwLock<HashSet<String>>>,
     /// Maps agent_id → set of tool names owned by that agent's sidecar.
@@ -161,6 +164,7 @@ impl Registry {
     pub fn new(policy: Policy) -> Self {
         Self {
             tools: Arc::new(RwLock::new(HashMap::new())),
+            def_cache: Arc::new(RwLock::new(HashMap::new())),
             deferred: Arc::new(RwLock::new(HashSet::new())),
             agent_tools: Arc::new(RwLock::new(HashMap::new())),
             policy: Arc::new(RwLock::new(policy)),
@@ -190,11 +194,18 @@ impl Registry {
     /// Register a tool.
     pub async fn register(&self, tool: Box<dyn DynTool>) {
         let name = tool.name().to_string();
+        let def = ToolDefinition {
+            name: name.clone(),
+            description: tool.description(),
+            input_schema: tool.schema(),
+        };
         let mut tools = self.tools.write().await;
         if tools.contains_key(&name) {
             warn!(tool = %name, "tool already registered, overwriting");
         }
         tools.insert(name.clone(), tool);
+        drop(tools);
+        self.def_cache.write().await.insert(name.clone(), def);
         debug!(tool = %name, "registered tool");
     }
 
@@ -233,6 +244,7 @@ impl Registry {
         let mut tools = self.tools.write().await;
         if tools.remove(name).is_some() {
             self.deferred.write().await.remove(name);
+            self.def_cache.write().await.remove(name);
             debug!(tool = %name, "unregistered tool");
         }
     }
@@ -245,8 +257,10 @@ impl Registry {
         };
         if !names.is_empty() {
             let mut tools = self.tools.write().await;
+            let mut cache = self.def_cache.write().await;
             for name in &names {
                 tools.remove(name);
+                cache.remove(name);
             }
             debug!(agent = %agent_id, tools = ?names, "unregistered agent sidecar tools");
         }
@@ -269,58 +283,57 @@ impl Registry {
 
     /// List all tools as AI tool definitions.
     pub async fn list(&self) -> Vec<ToolDefinition> {
-        let tools = self.tools.read().await;
-        tools
-            .values()
-            .map(|tool| ToolDefinition {
-                name: tool.name().to_string(),
-                description: tool.description(),
-                input_schema: tool.schema(),
-            })
-            .collect()
+        self.def_cache.read().await.values().cloned().collect()
     }
 
     /// List only non-deferred tools as full AI tool definitions.
     /// Deferred tools are excluded — use `list_deferred_stubs()` for compact listings.
     pub async fn list_active(&self, activated: &HashSet<String>) -> Vec<ToolDefinition> {
-        let tools = self.tools.read().await;
         let deferred = self.deferred.read().await;
-        tools
+        let cache = self.def_cache.read().await;
+        cache
             .values()
-            .filter(|tool| {
-                let name = tool.name();
-                !deferred.contains(name) || activated.contains(name)
-            })
-            .map(|tool| ToolDefinition {
-                name: tool.name().to_string(),
-                description: tool.description(),
-                input_schema: tool.schema(),
-            })
+            .filter(|def| !deferred.contains(&def.name) || activated.contains(&def.name))
+            .cloned()
             .collect()
     }
 
     /// List deferred tools that haven't been activated yet as compact stubs.
     /// Returns (name, first_line_of_description) pairs for system prompt listing.
     pub async fn list_deferred_stubs(&self, activated: &HashSet<String>) -> Vec<(String, String)> {
-        let tools = self.tools.read().await;
         let deferred = self.deferred.read().await;
+        let cache = self.def_cache.read().await;
         deferred
             .iter()
             .filter(|name| !activated.contains(name.as_str()))
             .filter_map(|name| {
-                tools.get(name.as_str()).map(|tool| {
-                    let desc = tool.description();
-                    let short = desc.lines().next().unwrap_or("").to_string();
+                cache.get(name.as_str()).map(|def| {
+                    let short = def.description.lines().next().unwrap_or("").to_string();
                     (name.clone(), short)
                 })
             })
             .collect()
     }
 
+    /// Refresh the cached definition for a tool (e.g. after plugin install/uninstall).
+    pub async fn refresh_definition(&self, name: &str) {
+        let tools = self.tools.read().await;
+        if let Some(tool) = tools.get(name) {
+            let def = ToolDefinition {
+                name: name.to_string(),
+                description: tool.description(),
+                input_schema: tool.schema(),
+            };
+            drop(tools);
+            self.def_cache.write().await.insert(name.to_string(), def);
+            debug!(tool = %name, "refreshed cached tool definition");
+        }
+    }
+
     /// Get the full description of a specific tool (used for steering injection on first use).
     pub async fn get_tool_description(&self, name: &str) -> Option<String> {
-        let tools = self.tools.read().await;
-        tools.get(name).map(|t| t.description())
+        let cache = self.def_cache.read().await;
+        cache.get(name).map(|def| def.description.clone())
     }
 
     /// Check whether a tool call is safe to run concurrently with other tools.
@@ -341,23 +354,19 @@ impl Registry {
         &self,
         permissions: Option<&std::collections::HashMap<String, bool>>,
     ) -> Vec<ToolDefinition> {
-        let tools = self.tools.read().await;
-        tools
+        let cache = self.def_cache.read().await;
+        cache
             .values()
-            .filter(|tool| {
+            .filter(|def| {
                 if let Some(perms) = permissions {
-                    let cat = tool_category(tool.name());
+                    let cat = tool_category(&def.name);
                     if let Some(&allowed) = perms.get(cat) {
                         return allowed;
                     }
                 }
                 true // no permission set = allowed
             })
-            .map(|tool| ToolDefinition {
-                name: tool.name().to_string(),
-                description: tool.description(),
-                input_schema: tool.schema(),
-            })
+            .cloned()
             .collect()
     }
 
@@ -625,17 +634,26 @@ impl Registry {
 
         // Skill tool (skill management) — always registered (core)
         if let Some(ref loader) = skill_loader {
-            self.register(Box::new(
-                crate::skill_tool::SkillTool::new(loader.clone()).with_store(store.clone()),
-            ))
-            .await;
+            let mut skill_tool =
+                crate::skill_tool::SkillTool::new(loader.clone()).with_store(store.clone());
+            // Wire the plugin registry so skill discover/help can redirect
+            // when the LLM confuses a plugin slug for a skill name.
+            let ps_opt = self.plugin_store.read().unwrap().clone();
+            if let Some(ps) = ps_opt {
+                skill_tool = skill_tool.with_plugin_store(ps);
+            }
+            self.register(Box::new(skill_tool)).await;
         } else {
             let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let installed_dir = data.join("nebo").join("skills");
             let user_dir = data.join("user").join("skills");
             let loader_default = Arc::new(crate::skills::Loader::new(installed_dir, user_dir));
-            self.register(Box::new(crate::skill_tool::SkillTool::new(loader_default)))
-                .await;
+            let mut skill_tool = crate::skill_tool::SkillTool::new(loader_default);
+            let ps_opt = self.plugin_store.read().unwrap().clone();
+            if let Some(ps) = ps_opt {
+                skill_tool = skill_tool.with_plugin_store(ps);
+            }
+            self.register(Box::new(skill_tool)).await;
         }
 
         // Execute tool (script execution) — deferred (only activated when user mentions scripts/code)
@@ -693,15 +711,15 @@ impl Registry {
             .await;
         }
 
-        // Plugin tool (installed plugin binaries as STRAP resources) — deferred (activated by skill docs or keyword)
+        // Plugin tool (installed plugin binaries as STRAP resources) — always active when plugins are installed
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
             if !ps.list_installed().is_empty() {
-                let mut pt = crate::plugin_tool::PluginTool::new(ps);
+                let mut pt = crate::plugin_tool::PluginTool::new(ps, store.clone());
                 if let Some(ref bc) = broadcaster {
                     pt = pt.with_broadcaster(bc.clone());
                 }
-                self.register_deferred(Box::new(pt)).await;
+                self.register(Box::new(pt)).await;
             }
         }
 

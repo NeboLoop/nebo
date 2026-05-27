@@ -189,6 +189,10 @@ impl Runtime {
             }
         }
 
+        // Reap any pre-existing instance of this sidecar binary — orphans
+        // would hold the same Unix socket and produce silent failures.
+        crate::child_guard::reap_existing_for(&binary);
+
         let child = cmd
             .spawn()
             .map_err(|e| NappError::Runtime(format!("spawn tool: {}", e)))?;

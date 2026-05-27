@@ -248,8 +248,8 @@ mod tests {
             filename: "photo.jpg".into(),
             mime_type: "image/jpeg".into(),
             size: 1048576,
-            url: "https://cdn.neboloop.com/files/f-abc123".into(),
-            thumbnail_url: Some("https://cdn.neboloop.com/thumbs/f-abc123".into()),
+            url: "https://cdn.neboai.com/files/f-abc123".into(),
+            thumbnail_url: Some("https://cdn.neboai.com/thumbs/f-abc123".into()),
             width: Some(1920),
             height: Some(1080),
             duration: None,
@@ -273,7 +273,7 @@ mod tests {
                 "filename": "doc.pdf",
                 "mimeType": "application/pdf",
                 "size": 245000,
-                "url": "https://cdn.neboloop.com/files/f-1"
+                "url": "https://cdn.neboai.com/files/f-1"
             }]
         });
         let attachments: Vec<Attachment> = content

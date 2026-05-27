@@ -17,7 +17,7 @@
 - [ ] **Tag** the release: `git tag vX.Y.Z`
 - [ ] **Push tag** to trigger pipeline: `git push origin vX.Y.Z`
 - [ ] **Monitor pipeline** — `gh run list --limit 1` should show the release run
-- [ ] **Verify CDN** after pipeline completes: `curl -s https://cdn.neboloop.com/releases/version.json`
+- [ ] **Verify CDN** after pipeline completes: `curl -s https://cdn.neboai.com/releases/version.json`
 - [ ] **Verify GitHub Release** — `gh release view vX.Y.Z` should list all 13 assets
 - [ ] **Smoke test** — install on at least one platform and confirm:
   - About page shows correct version
@@ -116,7 +116,7 @@ Nebo_X.Y.Z_arm64.deb          # Debian/Ubuntu ARM64 package
 
 ## CDN Structure
 
-**Provider:** DigitalOcean Spaces → `https://cdn.neboloop.com`
+**Provider:** DigitalOcean Spaces → `https://cdn.neboai.com`
 
 ```
 releases/

@@ -89,10 +89,12 @@
       const newChatId = (resp as Record<string, any>)?.chat?.id;
       if (!newChatId) return;
 
+      const sessionKey = `agent:${agentId}:thread:${newChatId}`;
+      console.log('[THREAD-DEBUG] new thread send:', { sessionKey, newChatId, agentId });
       const { getWebSocketClient } = await import('$lib/websocket/client');
       const ws = getWebSocketClient();
       if (ws.isConnected()) {
-        ws.send('chat', { prompt: text, agent_id: agentId });
+        ws.send('chat', { prompt: text, agent_id: agentId, session_id: sessionKey });
       } else {
         await api.chatWithAgent(agentId, { prompt: text });
       }

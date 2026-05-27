@@ -46,13 +46,31 @@ impl SessionManager {
             self.store
                 .get_or_create_scoped_session(&id, session_key, scope, scope_id, None)?;
 
-        // Ensure active_chat_id is set. Existing sessions get it from the migration
-        // backfill; truly new sessions or missed migrations need a runtime fallback.
-        let chat_id = if let Some(ref cid) = session.active_chat_id {
+        tracing::info!(
+            session_key = %session_key,
+            session_id = %session.id,
+            active_chat_id = ?session.active_chat_id,
+            "[THREAD-DEBUG] get_or_create session"
+        );
+
+        // For thread session keys, the chat_id is always the embedded UUID —
+        // regardless of what active_chat_id currently holds (it may have been
+        // set to the full key string by older code).
+        let chat_id = if session_key.contains(":thread:") {
+            let extracted = extract_chat_id_from_key(session_key);
+            if session.active_chat_id.as_deref() != Some(extracted.as_str()) {
+                tracing::info!(
+                    old = ?session.active_chat_id,
+                    new = %extracted,
+                    "[THREAD-DEBUG] correcting active_chat_id for thread session"
+                );
+                let _ = self.store.set_session_active_chat_id(&session.id, &extracted);
+            }
+            extracted
+        } else if let Some(ref cid) = session.active_chat_id {
             cid.clone()
         } else {
-            // Legacy session without active_chat_id — use session name (= old behavior).
-            let fallback = session.name.clone().unwrap_or_default();
+            let fallback = extract_chat_id_from_key(session_key);
             if !fallback.is_empty() {
                 if let Err(e) = self
                     .store
@@ -67,6 +85,11 @@ impl SessionManager {
             }
             fallback
         };
+        tracing::info!(
+            session_key = %session_key,
+            chat_id = %chat_id,
+            "[THREAD-DEBUG] get_or_create resolved chat_id"
+        );
 
         // Cache both mappings.
         let key = session.name.clone().unwrap_or_default();
@@ -188,6 +211,20 @@ impl SessionManager {
 
         let token_estimate = estimate_tokens(content, tool_calls, tool_results);
 
+        let session_name = self
+            .session_keys
+            .read()
+            .ok()
+            .and_then(|c| c.get(session_id).cloned());
+
+        tracing::info!(
+            session_id = %session_id,
+            chat_id = %chat_id,
+            session_name = ?session_name,
+            role = %role,
+            "[THREAD-DEBUG] append_message writing to chat_id"
+        );
+
         let msg = self.store.create_chat_message_for_runner(
             &msg_id,
             &chat_id,
@@ -197,6 +234,7 @@ impl SessionManager {
             tool_results,
             Some(token_estimate),
             metadata,
+            session_name.as_deref(),
         )?;
 
         let _ = self.store.increment_session_message_count(session_id);
@@ -347,6 +385,17 @@ fn estimate_tokens(content: &str, tool_calls: Option<&str>, tool_results: Option
         chars += tr.len();
     }
     (chars / 4) as i64
+}
+
+/// Extract the chat_id from a session key.
+/// For thread keys like `agent:<id>:thread:<UUID>`, returns just the UUID.
+/// For everything else, returns the full key (legacy behavior).
+fn extract_chat_id_from_key(key: &str) -> String {
+    if let Some(pos) = key.find(":thread:") {
+        key[pos + 8..].to_string()
+    } else {
+        key.to_string()
+    }
 }
 
 /// Remove orphaned tool results that have no matching tool call in the conversation.

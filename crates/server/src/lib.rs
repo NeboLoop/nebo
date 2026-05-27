@@ -643,7 +643,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let user_skills_dir = data_dir.join("user").join("skills");
     let skill_loader = Arc::new(
         tools::skills::Loader::new(installed_skills_dir, user_skills_dir)
-            .with_plugin_store(plugin_store.clone()),
+            .with_plugin_store(plugin_store.clone())
+            .with_db_store(store.clone()),
     );
 
     // Load cached license keys from DB for sealed .napp decryption.
@@ -1439,6 +1440,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         run_registry: run_registry::RunRegistry::new(),
         personal_loop_id: Arc::new(tokio::sync::RwLock::new(None)),
         channel_providers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        channel_bridges: tools::new_channel_bridge_registry(),
         a2ui: a2ui_manager,
         app_lifecycles: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         voice: Arc::new(voice::VoicePipeline::new(
@@ -1448,6 +1450,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Wire RunRegistry into the tool-layer run querier (late binding via OnceLock)
     let _ = run_querier_handle.set(Box::new(state.run_registry.clone()));
+
+    // Wire the channel-bridge registry into the tools crate so plugin_tool and
+    // agent_worker can reach the same registry without an AppState back-reference.
+    tools::set_channel_bridges(state.channel_bridges.clone());
 
     // Wire channel dispatcher into agent workers (late binding via OnceLock).
     // Workers started before this point have channel_dispatch = None, so channels
@@ -1788,7 +1794,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     } // end if !debug_assertions
 
-    // Spawn cron scheduler
+    // Spawn cron scheduler. Pass the channel-bridge registry so jobs that
+    // captured their originating channel context can route the response back
+    // via the bridge when they fire (e.g. "set 1-min timer" from Slack →
+    // alert lands in the same Slack thread).
     scheduler::spawn(
         state.store.clone(),
         state.runner.clone(),
@@ -1796,6 +1805,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         state.snapshot_store.clone(),
         state.workflow_manager.clone(),
         state.run_registry.clone(),
+        state.clone(),
     );
 
     // Spawn heartbeat scheduler for per-entity heartbeats

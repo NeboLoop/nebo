@@ -919,6 +919,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
             .tools
             .register(Box::new(tools::plugin_tool::PluginTool::new(
                 plugin_store.clone(),
+                state.store.clone(),
             )))
             .await;
     }

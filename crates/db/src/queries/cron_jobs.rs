@@ -10,7 +10,8 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, schedule, command, task_type, message, deliver, instructions,
-                        enabled, last_run, run_count, last_error, created_at
+                        enabled, last_run, run_count, last_error, created_at,
+                        agent_id, channel_ctx_json
                  FROM cron_jobs ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -25,7 +26,8 @@ impl Store {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT id, name, schedule, command, task_type, message, deliver, instructions,
-                    enabled, last_run, run_count, last_error, created_at
+                    enabled, last_run, run_count, last_error, created_at,
+                    agent_id, channel_ctx_json
              FROM cron_jobs WHERE id = ?1",
             params![id],
             row_to_cron_job,
@@ -38,7 +40,8 @@ impl Store {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT id, name, schedule, command, task_type, message, deliver, instructions,
-                    enabled, last_run, run_count, last_error, created_at
+                    enabled, last_run, run_count, last_error, created_at,
+                    agent_id, channel_ctx_json
              FROM cron_jobs WHERE name = ?1",
             params![name],
             row_to_cron_job,
@@ -57,14 +60,17 @@ impl Store {
         deliver: Option<&str>,
         instructions: Option<&str>,
         enabled: bool,
+        agent_id: Option<&str>,
+        channel_ctx_json: Option<&str>,
     ) -> Result<CronJob, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              RETURNING id, name, schedule, command, task_type, message, deliver, instructions,
-                       enabled, last_run, run_count, last_error, created_at",
-            params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64],
+                       enabled, last_run, run_count, last_error, created_at,
+                       agent_id, channel_ctx_json",
+            params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json],
             row_to_cron_job,
         )
         .map_err(|e| NeboError::Database(e.to_string()))
@@ -80,17 +86,20 @@ impl Store {
         deliver: Option<&str>,
         instructions: Option<&str>,
         enabled: bool,
+        agent_id: Option<&str>,
+        channel_ctx_json: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(name) DO UPDATE SET
                 schedule = excluded.schedule, command = excluded.command,
                 task_type = excluded.task_type, message = excluded.message,
                 deliver = excluded.deliver, instructions = excluded.instructions,
-                enabled = excluded.enabled",
-            params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64],
+                enabled = excluded.enabled,
+                agent_id = excluded.agent_id, channel_ctx_json = excluded.channel_ctx_json",
+            params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -174,7 +183,8 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, schedule, command, task_type, message, deliver, instructions,
-                        enabled, last_run, run_count, last_error, created_at
+                        enabled, last_run, run_count, last_error, created_at,
+                        agent_id, channel_ctx_json
                  FROM cron_jobs WHERE enabled = 1 ORDER BY name",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -265,6 +275,8 @@ fn row_to_cron_job(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
         run_count: row.get("run_count")?,
         last_error: row.get("last_error")?,
         created_at: row.get("created_at")?,
+        agent_id: row.get("agent_id")?,
+        channel_ctx_json: row.get("channel_ctx_json")?,
     })
 }
 

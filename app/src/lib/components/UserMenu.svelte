@@ -35,8 +35,8 @@
   }
 
   const menuItems = [
-    { href: '/settings/account', label: 'Settings', icon: '⚙' },
-    { href: '/settings/profile', label: 'Account', icon: '👤' },
+    { href: '/settings/profile', label: 'Settings', icon: '⚙' },
+    { href: '/settings/account', label: 'Account', icon: '👤' },
     { href: '/settings/billing', label: 'Billing', icon: '💳' },
     { href: '/upgrade', label: 'Upgrade', icon: '↑' },
     null,

@@ -1105,7 +1105,11 @@ pub async fn list_event_sources(State(state): State<AppState>) -> HandlerResult<
 /// GET /agents/active — returns currently active agents from the AgentRegistry.
 pub async fn list_active_agents(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let registry = state.agent_registry.read().await;
-    let now = chrono::Utc::now();
+    // `nextFireAt` is computed by evaluating each binding's cron in the
+    // machine's local timezone — same as `scheduler::tick`. If we used UTC
+    // here, the frontend's "Next: 7:00 AM" would diverge from when the
+    // scheduler actually fires the job.
+    let now = chrono::Local::now();
 
     let agents: Vec<serde_json::Value> = registry
         .values()
@@ -1145,7 +1149,7 @@ pub async fn list_active_agents(State(state): State<AppState>) -> HandlerResult<
 fn compute_next_fire(
     store: &db::Store,
     agent_id: &str,
-    now: &chrono::DateTime<chrono::Utc>,
+    now: &chrono::DateTime<chrono::Local>,
 ) -> Option<i64> {
     let bindings = store.list_agent_workflows(agent_id).ok()?;
     let mut earliest: Option<i64> = None;
@@ -2224,6 +2228,8 @@ async fn register_binding_triggers(
             None,
             None,
             true,
+            Some(agent_id),
+            None,
         ) {
             warn!(agent = agent_id, binding = binding_name, error = %e, "failed to register cron job");
         }
@@ -2761,38 +2767,40 @@ pub async fn list_agent_chats(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
+    let session_prefix = format!("agent:{}:", id);
 
-    // Resolve active chat_id from session (if session exists).
+    // Resolve active chat_id from the legacy web session (if it exists).
+    let legacy_session_key = agent::keyparser::build_agent_session_key(&id, "web");
     let active_chat_id = state
         .runner
         .sessions()
-        .resolve_session_id_by_key(&session_key)
+        .resolve_session_id_by_key(&legacy_session_key)
         .ok()
         .map(|sid| state.runner.sessions().active_chat_id(&sid))
         .unwrap_or_default();
 
-    // Single query: get all chats with message count + last message preview.
+    // Prefix query: catches both legacy `agent:<id>:web` and new `agent:<id>:thread:<uuid>`.
     let mut enriched_chats = state
         .store
-        .list_chats_by_session_enriched(&session_key)
+        .list_chats_by_session_enriched(&session_prefix)
         .unwrap_or_default();
 
     // Backfill: legacy agent chats store messages under the session key as chat_id
     // but have no `chats` row. If we found no chats but messages exist, create the row.
     if enriched_chats.is_empty() {
         let legacy_chat_id = if active_chat_id.is_empty() {
-            &session_key
+            &legacy_session_key
         } else {
             &active_chat_id
         };
         let msg_count = state.store.count_chat_messages(legacy_chat_id).unwrap_or(0);
         if msg_count > 0 {
-            if let Ok(chat) =
-                state
-                    .store
-                    .create_chat_for_session(legacy_chat_id, &session_key, "Chat 1", None)
-            {
+            if let Ok(chat) = state.store.create_chat_for_session(
+                legacy_chat_id,
+                &legacy_session_key,
+                "Chat 1",
+                None,
+            ) {
                 enriched_chats.push((chat, msg_count, String::new()));
             }
         }
@@ -2852,31 +2860,26 @@ fn format_relative_time(epoch: i64, now: i64) -> String {
     }
 }
 
-/// POST /api/v1/agents/{id}/chats — create a new chat under the agent's session.
+/// POST /api/v1/agents/{id}/chats — create a new chat under a per-thread session.
 pub async fn create_new_agent_chat(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
+    let new_chat_id = uuid::Uuid::new_v4().to_string();
+    let session_key = format!("agent:{}:thread:{}", id, new_chat_id);
 
-    // Ensure the session exists (get_or_create lazily creates it).
-    let session = state
+    // Creates a new session with active_chat_id = new_chat_id (via extract_chat_id_from_key).
+    let _session = state
         .runner
         .sessions()
         .get_or_create(&session_key, "")
         .map_err(to_error_response)?;
 
-    let new_chat_id = state
-        .runner
-        .sessions()
-        .rotate_chat(&session.id, None)
-        .map_err(to_error_response)?;
-
+    // Create the chat row linked to this session.
     let chat = state
         .store
-        .get_chat(&new_chat_id)
-        .map_err(to_error_response)?
-        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+        .create_chat_for_session(&new_chat_id, &session_key, "New Chat", None)
+        .map_err(to_error_response)?;
 
     Ok(Json(serde_json::json!({
         "chat": chat,

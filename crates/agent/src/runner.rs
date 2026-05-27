@@ -316,6 +316,7 @@ impl Runner {
     /// Run the agentic loop: prompt -> stream -> tool calls -> loop.
     /// Returns a receiver of streaming events.
     pub async fn run(&self, req: RunRequest) -> Result<mpsc::Receiver<StreamEvent>, ProviderError> {
+        let t_run_entry = std::time::Instant::now();
         info!(session_key = %req.session_key, channel = %req.channel, "Runner.run() called");
         {
             let lock = self.providers.read().await;
@@ -344,7 +345,7 @@ impl Runner {
             })?;
 
         let session_id = session.id.clone();
-        info!(session_id = %session_id, "session ready");
+        info!(session_id = %session_id, ms = t_run_entry.elapsed().as_millis() as u64, "[telemetry] session ready");
 
         // Pre-load skills into the sub-agent's conversation (Claude Code pattern).
         // Each skill becomes a user message with isMeta metadata so the UI doesn't
@@ -530,6 +531,7 @@ impl Runner {
                 (req.prompt.clone(), metadata)
             };
 
+            let t_msg_save = std::time::Instant::now();
             info!(session_id = %session_id, prompt_len = effective_content.len(), "appending user message");
             self.sessions
                 .append_message(
@@ -544,6 +546,8 @@ impl Runner {
                     warn!(session_id = %session_id, error = %e, "failed to append user message");
                     ProviderError::Request(format!("failed to store message: {}", e))
                 })?;
+
+            info!(ms = t_msg_save.elapsed().as_millis() as u64, session_id = %session_id, "[telemetry] user message saved");
 
             // Inject @mention routing context as an invisible system message
             if let Some(ref ctx) = req.mention_context {
@@ -1091,7 +1095,10 @@ async fn run_loop(
     }
 
     // Load rich DB context (agent profile, user profile, personality directive, scored memories)
+    let t_run_start = std::time::Instant::now();
     let db_ctx = db_context::load_db_context(store, &memory_user_id, &inherit_scopes);
+    let t_db_ctx = t_run_start.elapsed();
+    info!(ms = t_db_ctx.as_millis() as u64, session_id, "[telemetry] db_context loaded");
 
     // Extract user-configured timezone for date/time in the dynamic suffix
     let user_timezone = db_ctx
@@ -1146,6 +1153,7 @@ async fn run_loop(
 
     // Pre-load prompt-relevant memories via FTS (surfaces memories the decay scoring may miss)
     if !user_prompt.is_empty() {
+        let t_fts = std::time::Instant::now();
         let existing_ids: std::collections::HashSet<i64> = db_ctx
             .tacit_memories
             .iter()
@@ -1160,6 +1168,7 @@ async fn run_loop(
         if !relevant.is_empty() {
             db_context_formatted.push_str(&relevant);
         }
+        info!(ms = t_fts.elapsed().as_millis() as u64, session_id, "[telemetry] FTS memory search");
     }
 
     // Get active task (mutable: refreshed periodically to catch async detect_objective)
@@ -1581,6 +1590,7 @@ async fn run_loop(
             }
         }
 
+        let t_iter_start = std::time::Instant::now();
         info!(iteration, session_id, "agentic loop iteration");
 
         // Load messages from session, then sanitize ordering.
@@ -1591,6 +1601,8 @@ async fn run_loop(
                 .get_messages(session_id)
                 .map_err(|e| format!("failed to load messages: {}", e))?,
         );
+        let t_msg_load = t_iter_start.elapsed();
+        info!(ms = t_msg_load.as_millis() as u64, iteration, session_id, msg_count = all_messages.len(), "[telemetry] messages loaded");
 
         // Refresh active_task from DB periodically to catch:
         // 1. Background detect_objective() completing after initial read
@@ -1784,6 +1796,7 @@ async fn run_loop(
         // Follows Claude Code's extractDiscoveredToolNames pattern — tools load when
         // tool_search results or direct calls appear in messages, and unload when
         // those messages are evicted by sliding window compaction.
+        let t_tools_start = std::time::Instant::now();
         let deferred_names = tools.get_deferred_names().await;
         let mut active_deferred =
             tool_filter::extract_discovered_deferred_tools(&window_messages, &deferred_names);
@@ -1877,6 +1890,8 @@ async fn run_loop(
         // Build compact listing of deferred (not yet discovered) tools
         let deferred_stubs = tools.list_deferred_stubs(&active_deferred).await;
         let deferred_listing = prompt::build_deferred_listing(&deferred_stubs);
+        let tools_ms = t_tools_start.elapsed().as_millis() as u64;
+        info!(ms = tools_ms, iteration, session_id, tool_count = tool_defs.len(), "[telemetry] tools filtered + prompt sections built");
 
         // Select model: use override if set, otherwise ask the selector
         let selected_model = if !model_override.is_empty() {
@@ -1942,7 +1957,9 @@ async fn run_loop(
             break;
         }
 
+        let t_steering = std::time::Instant::now();
         let (mut all_directives, proactive_context) = steering_pipeline.generate(&steering_ctx);
+        info!(ms = t_steering.elapsed().as_millis() as u64, iteration, session_id, "[telemetry] steering generated");
 
         // Hook: steering.generate — let apps inject additional directives
         if hooks.has_subscribers("steering.generate") {
@@ -2072,9 +2089,22 @@ async fn run_loop(
 
         // Log prompt component sizes for debugging token bloat
         {
-            let tool_schema_chars: usize = tool_defs.iter().map(|t| {
-                t.description.len() + t.input_schema.to_string().len()
-            }).sum();
+            let mut tool_sizes: Vec<(String, usize, usize)> = tool_defs.iter().map(|t| {
+                let desc_len = t.description.len();
+                let schema_len = t.input_schema.to_string().len();
+                (t.name.clone(), desc_len, schema_len)
+            }).collect();
+            tool_sizes.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
+            let tool_schema_chars: usize = tool_sizes.iter().map(|(_, d, s)| d + s).sum();
+            for (name, desc_len, schema_len) in &tool_sizes {
+                info!(
+                    tool = %name,
+                    desc_chars = desc_len,
+                    schema_chars = schema_len,
+                    total_chars = desc_len + schema_len,
+                    "[telemetry] per-tool schema size"
+                );
+            }
             info!(
                 iteration,
                 static_system_chars = static_system.len(),
@@ -2143,7 +2173,11 @@ async fn run_loop(
             cancel_token: Some(cancel_token.clone()),
         };
 
+        let pre_llm_ms = t_iter_start.elapsed().as_millis() as u64;
+        info!(ms = pre_llm_ms, iteration, session_id, "[telemetry] pre-LLM overhead (msg load → request built)");
+
         // Acquire LLM permit before provider call (blocks if at capacity)
+        let t_permit_start = std::time::Instant::now();
         let _llm_permit = tokio::select! {
             _ = cancel_token.cancelled() => {
                 info!(session_id, "run cancelled waiting for LLM permit");
@@ -2151,6 +2185,10 @@ async fn run_loop(
             }
             permit = concurrency.acquire_llm_permit() => permit,
         };
+        let permit_wait_ms = t_permit_start.elapsed().as_millis() as u64;
+        if permit_wait_ms > 5 {
+            info!(ms = permit_wait_ms, iteration, session_id, "[telemetry] LLM permit wait");
+        }
 
         // Snapshot provider from lock, then release before I/O
         let provider = {
@@ -2196,6 +2234,7 @@ async fn run_loop(
             chat_req.model = String::new();
         }
 
+        let t_stream_start = std::time::Instant::now();
         let stream_result = tokio::select! {
             _ = cancel_token.cancelled() => {
                 info!(session_id, "run cancelled during provider.stream() call");
@@ -2203,10 +2242,11 @@ async fn run_loop(
             }
             result = provider.stream(&chat_req) => result,
         };
+        let stream_connect_ms = t_stream_start.elapsed().as_millis() as u64;
 
         let mut rx = match stream_result {
             Ok(rx) => {
-                info!(iteration, session_id, "provider stream started");
+                info!(iteration, session_id, connect_ms = stream_connect_ms, "[telemetry] provider stream connected");
                 rx
             }
             Err(e) => {
@@ -2292,6 +2332,7 @@ async fn run_loop(
         let mut tool_calls: Vec<ai::ToolCall> = Vec::new();
         let mut stream_error: Option<String> = None;
         let mut stop_reason: Option<String> = None;
+        let mut t_first_token: Option<std::time::Instant> = None;
         // Track the order of content blocks (text vs tool) for correct rehydration.
         // Each entry is either "text" (coalesced) or a tool index.
         let mut block_order: Vec<(&str, Option<usize>)> = Vec::new();
@@ -2325,6 +2366,20 @@ async fn run_loop(
                     None => break,
                 }
             };
+            if t_first_token.is_none() {
+                t_first_token = Some(std::time::Instant::now());
+                let ttft = t_stream_start.elapsed().as_millis() as u64;
+                let iter_elapsed = t_iter_start.elapsed().as_millis() as u64;
+                info!(
+                    ttft_ms = ttft,
+                    iter_total_ms = iter_elapsed,
+                    iteration,
+                    session_id,
+                    provider = %provider.id(),
+                    model = %chat_req.model,
+                    "[telemetry] first token received"
+                );
+            }
             match event.event_type {
                 StreamEventType::Text => {
                     // CLI incremental save: text after tool calls = new turn.
@@ -2554,13 +2609,17 @@ async fn run_loop(
             let _ = tx.send(StreamEvent::error(err_msg.clone())).await;
         }
 
+        let stream_total_ms = t_stream_start.elapsed().as_millis() as u64;
+        let iter_total_ms = t_iter_start.elapsed().as_millis() as u64;
         info!(
             session_id,
             iteration,
             content_len = assistant_content.len(),
             tool_call_count = tool_calls.len(),
             has_error = stream_error.is_some(),
-            "stream complete"
+            stream_ms = stream_total_ms,
+            iter_ms = iter_total_ms,
+            "[telemetry] stream complete"
         );
 
         // Hook: message.post_receive — let apps modify response text before saving
