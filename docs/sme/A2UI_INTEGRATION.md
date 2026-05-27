@@ -790,6 +790,7 @@ impl CatalogProvider for NeboCatalogProvider {
       },
       "components": {
         "type": "array",
+        "items": { "type": "object" },
         "description": "A2UI v0.9 component adjacency list"
       },
       "path": {

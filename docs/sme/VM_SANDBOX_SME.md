@@ -552,7 +552,7 @@ make vm-rootfs
 
 # Publish rootfs to CDN (CI step)
 make vm-rootfs-publish
-# → uploads to cdn.neboloop.com/vm/{arch}/{sha}/rootfs.img.zst
+# → uploads to cdn.neboai.com/vm/{arch}/{sha}/rootfs.img.zst
 ```
 
 ### Rootfs distribution (CDN bundle management)
@@ -569,7 +569,7 @@ Bundle directory: ~/.nebo/vm/bundles/
   .auto_reinstall_attempted ← Marker (prevents infinite reinstall loops)
 
 Download URL pattern:
-  https://cdn.neboloop.com/vm/{arch}/{sha}/rootfs.img.zst
+  https://cdn.neboai.com/vm/{arch}/{sha}/rootfs.img.zst
 
 Resolution order (priority):
   1. Local rootfs.img + origin SHA matches → use directly
@@ -684,10 +684,10 @@ around existing tools.
                 "description": "VM operation"
             },
             "command": { "type": "string", "description": "Shell command (for exec)" },
-            "args": { "type": "array", "description": "Command arguments" },
+            "args": { "type": "array", "items": { "type": "string" }, "description": "Command arguments" },
             "path": { "type": "string", "description": "File path in VM" },
             "content": { "type": "string", "description": "File content (for write)" },
-            "src_paths": { "type": "array", "description": "VM paths to copy out" },
+            "src_paths": { "type": "array", "items": { "type": "string" }, "description": "VM paths to copy out" },
             "dest_dir": { "type": "string", "description": "Host destination for copy_out" },
             "timeout": { "type": "integer", "description": "Timeout in seconds" }
         },
