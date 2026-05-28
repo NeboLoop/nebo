@@ -16,6 +16,7 @@ mod mcp_integrations;
 mod memories;
 mod notifications;
 mod pending_tasks;
+mod plugin_account_profiles;
 mod plugins;
 mod provider_models;
 mod refresh_tokens;
@@ -26,3 +27,4 @@ mod users;
 mod workflows;
 
 pub use license_keys::LicenseKeyRow;
+pub use plugin_account_profiles::PluginAccountProfile;
