@@ -82,6 +82,13 @@ The local Nebo desktop app connects to the NeboAI cloud gateway via a **binary-f
 7. Auto-join 5 bot streams: dm, installs, chat, account, voice
 ```
 
+> **Stream-subscription note (verified 2026-05-28):** the gateway accepts JOINs for *any* stream
+> name (no whitelist — `EnsureBotStreamConversation` deterministically creates a conversation per
+> `botId+stream`), so all 5 client joins succeed. Separately, on connect the server *auto-subscribes*
+> the bot to `installs`, `tasks`, `card` (`conn.go`) without a client JOIN — so the bot also receives
+> `tasks`/`card` frames (routed by the desktop's "Other" topic branch → event bus + frontend). The
+> only overlap is `installs`. Nothing is dropped; the two sets are additive.
+
 The token cache file at `<data_dir>/neboai_token.cache` is persisted immediately on AUTH_OK to survive hot-reload kills (SIGKILL) that prevent the caller from writing to DB.
 
 ### Activation (`codes.rs:1241+`)
@@ -383,7 +390,7 @@ When an agent is installed/activated, the bot registers an agent in the owner's 
 4. Gateway auto-creates agent_space conversation + subscribes bot to it
 ```
 
-Deregistration on agent removal: `DELETE /api/v1/loops/{loopId}/agents/{agentSlug}`
+Deregistration on agent removal: `DELETE /api/v1/loops/{loopId}/agents/{agentId}` — **by agent UUID, not slug.** The server route is `r.Delete("/loops/{id}/agents/{agentId}")` and parses the path param as a UUID; passing a slug 400s. The desktop client (`api.rs deregister_agent`) correctly passes the agent id.
 
 ### Reconciliation (`codes.rs:1384-1457`)
 
@@ -415,7 +422,7 @@ On every successful connection, `reconcile_agents()` syncs local ↔ remote:
 | **Publishing** | `publish_skill`, `publish_agent`, `submit_for_review` |
 | **Plugins** | `get_plugin(slug, platform)`, `download_plugin_binary(url)` |
 | **Workflows** | `list_workflows`, `uninstall_workflow` |
-| **Files** | `upload_file(filename, mime_type, data)` → `Attachment`, `download_file(file_id)` → raw bytes |
+| **Files** | `upload_file(filename, mime_type, data)` → `Attachment`, `download_file(file_id)` → raw bytes — ✅ server endpoints live (see §12b); facade over `comms_attachments` |
 | **Referral** | `get_referral_code` |
 | **Unauthenticated** | `redeem_connect_code(code)` — for initial bot activation |
 
@@ -501,6 +508,19 @@ Attachment {
 
 Upload uses a separate reqwest client with 120s timeout (vs 15s default) for large files.
 
+> ✅ **RESOLVED (2026-05-28, neboloop `main`).** Both endpoints now exist:
+> `POST /api/v1/files/upload` and `GET /api/v1/files/{id}` (`internal/api/files.go`,
+> registered in the botAuth group so bot tokens authenticate). They are a thin FACADE over
+> the existing `comms_attachments` store (the same store the web composer's `/attachments`
+> endpoints use), so an attachment id minted by either surface resolves at BOTH
+> `/files/{id}` and `/attachments/{id}/content` — shared id namespace, one storage system.
+> The upload response is exactly the `wire::Attachment` shape (`fileId, filename, mimeType,
+> size, url, width?, height?`) with `url → /api/v1/files/{id}`. The web composer was also
+> converged onto this shape so web↔desktop image exchange works end-to-end. In local dev
+> without DigitalOcean Spaces configured, both `/files` and `/attachments` return 503
+> "storage not configured" (unchanged, pre-existing local behavior); in production with
+> Spaces set, uploads/downloads work.
+
 ### Wire Protocol Integration
 
 Attachments piggyback on the existing freeform `content: Value` field in `SendPayload` and `DeliveryPayload`:
@@ -578,22 +598,16 @@ The reconnect watcher in `lib.rs:1642` uses `tokio::select!` with both `wait_dis
 ### Open: No guard against concurrent `activate_neboai()` calls
 `activate_neboai()` has a guard at the top (`if already connected, return Ok()`) but no mutex. If the function takes longer than the reconnect poll interval (30s), a second call can overlap. Both pass the guard (both see `false`), and both call `connect()`. The second `connect()` tears down the first at its top, but this creates wasted connections and confusing devlog entries.
 
-### Open: Missing agent_spaces — `AddMember` early-return skips `EnsureAgentForBot`
-**Root cause:** In the NeboAI server, `membership.go:AddMember()` returns early (line 32-38) if the bot is already a member of the loop, skipping the call to `EnsureAgentForBot()`. If membership was created before the agent system existed, or if `EnsureAgentForBot` failed on the original call, the bot has a valid loop membership but no agent, no agent_space conversation, and no default channels.
+### FIXED (verified 2026-05-28): Missing agent_spaces — both paths now self-heal
+**Was:** `membership.go:AddMember()` was believed to early-return when the bot was already a member, skipping `EnsureAgentForBot()`, leaving bots with a membership but no agent_space → zero agent_space/channel JOINs on connect.
 
-**Impact:** The gateway's `subscribeToAgentSpaces()` queries `ListAgentSpacesByBot` which returns empty. The bot connects successfully (AUTH_OK), auto-joins 5 bot_streams, but receives zero agent_space JOINs and zero channel JOINs. All owner↔agent conversations via the mobile/web app are undeliverable.
+**Now (verified against neboloop `main`):** Two independent fixes are in place:
+1. **`internal/loops/membership.go`** — `AddMember` calls `EnsureAgentForBot` even when the bot is already a member (the early-return path still ensures the agent). So new memberships always get an agent_space.
+2. **Gateway self-heal** — `subscribeToAgentSpaces(ctx)` in the comms gateway queries `ListAgentSpacesByBot`, and when it returns empty it walks the bot's loop memberships and calls `EnsureAgentForBot` for each, then re-queries. So even a bot that predates the agent system gets repaired on its next connect.
 
-**Evidence:** Diagnostic analysis of `~/.nebo/logs/neboai.log` across 684 connections showed:
-- 684 AUTH_OK (all healthy)
-- 5 bot_stream JOINs per connect (dm, installs, chat, account, voice) ✓
-- 0 agent_space JOINs across all 684 connections ✗
-- 0 channel JOINs across all 684 connections ✗
-- 0 chat/dm/agent_space messages ever received ✗
+Additionally, the neboloop server now exposes `POST /api/v1/loops/{id}/bots/{botId}/dm` (`ensureBotDM`), a get-or-create that materializes an agent + agent_space on demand — the web/mobile UI calls this so any loop member can DM any loop bot on first click, independent of reconciliation timing.
 
-**Proposed fix:** Self-healing in gateway's `subscribeToAgentSpaces()` — if `ListAgentSpacesByBot` returns empty, check loop memberships and call `EnsureAgentForBot` for each loop, then re-query. Fix proposed to NeboAI team via Discuss (discussion `4e9cdce6`).
-
-### Open: `reconcile_agents` does not cover the default bot agent
-`reconcile_agents()` (codes.rs:1384-1457) only syncs custom agents from `list_agents()`. The default bot agent (slug `bot_*`) is created by `EnsureAgentForBot` on the NeboAI side during `AddMember`. If this default agent is missing (see above), `reconcile_agents` will not detect or repair it because it only iterates locally-installed agents, not the implicit default.
+**Net:** the 684-connection "zero agent_space JOINs" symptom should no longer occur. If it recurs, capture a fresh devlog — the root cause described above is no longer the explanation.
 
 ---
 
