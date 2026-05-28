@@ -42,6 +42,31 @@ impl Store {
         Ok(out)
     }
 
+    /// List every account profile an agent has across all plugins, ordered by
+    /// plugin so callers can group rows by `plugin_slug`.
+    pub fn list_all_plugin_account_profiles_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<PluginAccountProfile>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, agent_id, plugin_slug, account_label, config_dir, is_primary
+                 FROM plugin_account_profiles
+                 WHERE agent_id = ?1
+                 ORDER BY plugin_slug ASC, is_primary DESC, account_label ASC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![agent_id], row_to_profile)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| NeboError::Database(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
     /// Resolve a specific account for an agent+plugin. When `account_label` is
     /// `None`, returns the primary (or the only) profile. Returns `None` if the
     /// agent has no profile for this plugin (caller falls back to global creds).

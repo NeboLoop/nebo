@@ -61,6 +61,15 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
             None => (false, String::new(), String::new(), Vec::new()),
         };
 
+        // A plugin is multi-account if its auth declares a profile_dir_env
+        // (the "resource" credential model — e.g. gws holding several Gmail
+        // accounts per agent). The accounts UI filters on this.
+        let multi_account = manifest
+            .as_ref()
+            .and_then(|m| m.auth.as_ref())
+            .and_then(|a| a.profile_dir_env.as_ref())
+            .is_some();
+
         let event_count = manifest
             .as_ref()
             .and_then(|m| m.events.as_ref())
@@ -96,6 +105,7 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
             "enabled": enabled,
             "signatureStatus": sig_status,
             "setup": setup,
+            "multiAccount": multi_account,
         }));
     }
 

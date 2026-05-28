@@ -13,6 +13,7 @@
   import Trash2 from 'lucide-svelte/icons/trash-2';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import type { Memory } from '$lib/api/neboComponents';
+  import type { PluginAccount } from '$lib/api/pluginAccounts';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -53,6 +54,7 @@
     { id: 'workflows', label: 'Workflows' },
     { id: 'skills', label: 'Skills' },
     { id: 'channels', label: 'Channels' },
+    { id: 'accounts', label: 'Connected Accounts' },
     { id: 'memory', label: 'Memory' },
     { id: 'permissions', label: 'Permissions' },
   ];
@@ -395,6 +397,116 @@
       helpChat = null;
     }
     helpSessionKey = null;
+  }
+
+  // --- Connected Accounts (multi-account plugins) ---
+  // Some plugins (e.g. Gmail) let one agent connect several accounts. The
+  // plugins list does not expose the multi-account flag, so we list the
+  // agent's auth-capable plugins and, for each, fetch its connected accounts.
+  // A plugin appears here when it already has >=1 account OR the user adds one.
+  type AccountPlugin = { slug: string; name: string; description: string; accounts: PluginAccount[] };
+  let accountPlugins = $state<AccountPlugin[]>([]);
+  let accountsLoading = $state(false);
+  let addAccountPlugin = $state<AccountPlugin | null>(null);
+  let addAccountLabel = $state('');
+  let addAccountConnectingSlug = $state<string | null>(null);
+  let addAccountError = $state<string | null>(null);
+
+  $effect(() => { if (section === 'accounts') loadAccounts(); });
+
+  const accountAuthUnsubs: (() => void)[] = [];
+
+  $effect(() => {
+    if (section !== 'accounts') return;
+    const ws = getWebSocketClient();
+    accountAuthUnsubs.push(
+      ws.on('plugin_auth_url', (data: Record<string, unknown>) => {
+        const url = data.url as string;
+        if (url) window.open(url, '_blank');
+      }),
+      ws.on('plugin_auth_complete', (data: Record<string, unknown>) => {
+        const slug = data.plugin as string;
+        if (slug && slug === addAccountConnectingSlug) {
+          addAccountConnectingSlug = null;
+          addAccountPlugin = null;
+          addAccountLabel = '';
+          addAccountError = null;
+        }
+        if (slug) refreshPluginAccounts(slug);
+      }),
+      ws.on('plugin_auth_error', (data: Record<string, unknown>) => {
+        const slug = data.plugin as string;
+        if (slug === addAccountConnectingSlug) {
+          addAccountConnectingSlug = null;
+          addAccountError = (data.error as string) || 'Sign-in failed. Please try again.';
+        }
+      }),
+    );
+    return () => { accountAuthUnsubs.forEach(fn => fn()); accountAuthUnsubs.length = 0; };
+  });
+
+  async function loadAccounts() {
+    accountsLoading = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      const accountsApi = await import('$lib/api/pluginAccounts');
+      const resp = await api.listPlugins() as { plugins: { slug: string; name?: string; description?: string; hasAuth?: boolean; multiAccount?: boolean }[] };
+      // Only plugins that declare profile_dir_env support multiple accounts
+      // per agent (the "resource" model, e.g. gws). Identity-model plugins
+      // (one bot per agent, e.g. Slack) are managed under Channels, not here.
+      const candidates = (resp.plugins ?? []).filter(p => p.multiAccount);
+      const loaded = await Promise.all(candidates.map(async (p) => {
+        let accounts: PluginAccount[] = [];
+        try {
+          const r = await accountsApi.listPluginAccounts(p.slug, agentId);
+          accounts = r.accounts ?? [];
+        } catch { /* plugin may not support multi-account */ }
+        return { slug: p.slug, name: p.name || p.slug, description: p.description || '', accounts };
+      }));
+      // Surface plugins that already have connected accounts first; keep the
+      // rest so the user can add a first account to a multi-account plugin.
+      accountPlugins = loaded.sort((a, b) => b.accounts.length - a.accounts.length || a.name.localeCompare(b.name));
+    } catch { accountPlugins = []; }
+    finally { accountsLoading = false; }
+  }
+
+  async function refreshPluginAccounts(slug: string) {
+    try {
+      const accountsApi = await import('$lib/api/pluginAccounts');
+      const r = await accountsApi.listPluginAccounts(slug, agentId);
+      accountPlugins = accountPlugins.map(p =>
+        p.slug === slug ? { ...p, accounts: r.accounts ?? [] } : p
+      );
+    } catch { /* silent */ }
+  }
+
+  function openAddAccount(p: AccountPlugin) {
+    addAccountPlugin = p;
+    addAccountLabel = '';
+    addAccountError = null;
+  }
+
+  function closeAddAccount() {
+    if (addAccountConnectingSlug) return;
+    addAccountPlugin = null;
+    addAccountLabel = '';
+    addAccountError = null;
+  }
+
+  async function submitAddAccount() {
+    const p = addAccountPlugin;
+    const label = addAccountLabel.trim();
+    if (!p || !label || addAccountConnectingSlug) return;
+    addAccountConnectingSlug = p.slug;
+    addAccountError = null;
+    try {
+      const accountsApi = await import('$lib/api/pluginAccounts');
+      await accountsApi.startPluginAccountLogin(p.slug, agentId, label);
+      // Login runs in the background; completion arrives via WS.
+    } catch (e) {
+      addAccountConnectingSlug = null;
+      addAccountError = (e as Error)?.message || 'Could not start sign-in for this account.';
+    }
   }
 </script>
 
@@ -767,6 +879,53 @@
         <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-2">+ Add from Marketplace &#8594;</a>
       {/if}
 
+    {:else if section === 'accounts'}
+      <div class="text-xs text-base-content/70 mb-2">Connect multiple accounts to {agent?.name} for plugins that support it &mdash; for example several Gmail inboxes. Each account signs in separately and {agent?.name} can use any of them.</div>
+      {#if accountsLoading}
+        <div class="text-xs text-base-content/50 py-6 text-center">Loading accounts...</div>
+      {:else if accountPlugins.length === 0}
+        <div class="py-8 text-center">
+          <div class="text-sm text-base-content/50 mb-2">No plugins available for multiple accounts</div>
+          <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">Browse Marketplace &#8594;</a>
+        </div>
+      {:else}
+        <div class="flex flex-col gap-3">
+          {#each accountPlugins as plugin (plugin.slug)}
+            <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
+              <div class="flex items-start gap-3 p-3.5">
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm font-medium">{plugin.name}</div>
+                  {#if plugin.description}
+                    <div class="text-xs text-base-content/70 mt-0.5">{plugin.description}</div>
+                  {/if}
+                </div>
+                <button
+                  class="btn btn-sm btn-outline btn-primary shrink-0"
+                  onclick={() => openAddAccount(plugin)}
+                >+ Add account</button>
+              </div>
+              {#if plugin.accounts.length > 0}
+                <div class="border-t border-base-content/10">
+                  {#each plugin.accounts as acct (acct.accountLabel)}
+                    <div class="flex items-center gap-2 px-3.5 py-2 border-b border-base-content/5 last:border-b-0">
+                      <Check class="w-3.5 h-3.5 text-success shrink-0" />
+                      <span class="text-sm truncate flex-1">{acct.accountLabel}</span>
+                      {#if acct.isPrimary}
+                        <span class="py-0.5 px-2 rounded bg-accent/15 text-accent text-xs font-medium shrink-0">Primary</span>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <div class="border-t border-base-content/10 px-3.5 py-2">
+                  <span class="text-xs text-base-content/50">No accounts connected yet</span>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+
     {:else if section === 'memory'}
       <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Memory Banks</div>
       <div class="text-xs text-base-content/70 mb-3">Browse and manage memories across all layers.</div>
@@ -964,4 +1123,57 @@
     onClose={() => { channelWizardOpen = false; }}
     onComplete={(envValues) => onChannelWizardComplete(channelAuthModal!.pluginSlug, envValues)}
   />
+{/if}
+
+<!-- Add Account Modal -->
+{#if addAccountPlugin}
+  {@const plugin = addAccountPlugin}
+  {@const connecting = addAccountConnectingSlug === plugin.slug}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus a11y_no_noninteractive_tabindex -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape') closeAddAccount(); }} role="dialog" aria-modal="true">
+    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl mx-4 w-full max-w-md flex flex-col overflow-hidden">
+      <div class="flex items-center justify-between p-5 border-b border-base-content/10">
+        <div class="min-w-0">
+          <div class="text-base font-semibold">Add {plugin.name} account</div>
+          <div class="text-xs text-base-content/50 mt-0.5">Label this account, then sign in to connect it.</div>
+        </div>
+        <button class="btn btn-ghost btn-sm btn-square" onclick={closeAddAccount} aria-label="Close" disabled={connecting}>
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+
+      <div class="p-5 space-y-4">
+        <label class="flex flex-col gap-1.5">
+          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Account label</span>
+          <input
+            type="text"
+            class="input input-sm input-bordered w-full text-sm font-body"
+            placeholder="work@acme.com"
+            bind:value={addAccountLabel}
+            disabled={connecting}
+            onkeydown={(e) => { if (e.key === 'Enter') submitAddAccount(); }}
+          />
+          <span class="text-xs text-base-content/50">Usually the email address or username for the account.</span>
+        </label>
+
+        {#if connecting}
+          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">A sign-in window will open. Finish signing in there &mdash; this connects automatically when it completes.</div>
+        {/if}
+
+        {#if addAccountError}
+          <div class="text-xs text-error">{addAccountError}</div>
+        {/if}
+      </div>
+
+      <div class="flex items-center gap-2 p-5 border-t border-base-content/10">
+        <div class="flex-1"></div>
+        <button class="btn btn-sm btn-ghost" onclick={closeAddAccount} disabled={connecting}>Cancel</button>
+        <button
+          class="btn btn-sm btn-primary"
+          disabled={connecting || !addAccountLabel.trim()}
+          onclick={submitAddAccount}
+        >{connecting ? 'Signing in...' : 'Sign in'}</button>
+      </div>
+    </div>
+  </div>
 {/if}

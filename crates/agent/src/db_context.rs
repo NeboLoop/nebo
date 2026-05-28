@@ -24,6 +24,9 @@ pub struct DBContext {
     pub preferences: Option<UserPreference>,
     pub personality_directive: Option<String>,
     pub tacit_memories: Vec<ScoredMemory>,
+    /// Per-agent plugin accounts (plugin_slug, account_label, is_primary).
+    /// Empty for agents that have no multi-account profiles configured.
+    pub plugin_accounts: Vec<(String, String, bool)>,
 }
 
 /// Load all database context needed for prompt assembly.
@@ -31,6 +34,7 @@ pub struct DBContext {
 pub fn load_db_context(
     store: &Store,
     user_id: &str,
+    agent_id: &str,
     inherit_scopes: &[InheritScope],
 ) -> DBContext {
     let t0 = std::time::Instant::now();
@@ -56,6 +60,21 @@ pub fn load_db_context(
     let tacit_memories = memory::load_scored_memories(store, user_id, inherit_scopes, 40);
     let t_memories = t0.elapsed();
 
+    // Per-agent plugin accounts (only present for multi-account agents).
+    let plugin_accounts = if agent_id.is_empty() {
+        Vec::new()
+    } else {
+        store
+            .list_all_plugin_account_profiles_for_agent(agent_id)
+            .map(|profiles| {
+                profiles
+                    .into_iter()
+                    .map(|p| (p.plugin_slug, p.account_label, p.is_primary))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
     info!(
         agent_ms = t_agent.as_millis() as u64,
         user_ms = (t_user - t_agent).as_millis() as u64,
@@ -74,6 +93,7 @@ pub fn load_db_context(
         preferences,
         personality_directive,
         tacit_memories,
+        plugin_accounts,
     }
 }
 
@@ -236,6 +256,35 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
                 sections.push(format!("# Tool Notes\n{}", formatted));
             }
         }
+    }
+
+    // 7b. Connected accounts (only when the agent has multi-account plugins)
+    if !ctx.plugin_accounts.is_empty() {
+        let mut by_plugin: BTreeMap<&str, Vec<&(String, String, bool)>> = BTreeMap::new();
+        for acct in &ctx.plugin_accounts {
+            by_plugin.entry(acct.0.as_str()).or_default().push(acct);
+        }
+        let mut lines = Vec::new();
+        for (slug, accts) in &by_plugin {
+            let labels = accts
+                .iter()
+                .map(|(_, label, is_primary)| {
+                    if *is_primary {
+                        format!("{} (primary)", label)
+                    } else {
+                        label.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("- {}: {}", slug, labels));
+        }
+        sections.push(format!(
+            "## Connected accounts\n\
+             This agent has multiple accounts for some plugins. Pass `--account <label>` to target one (omit to use the primary):\n\
+             {}",
+            lines.join("\n")
+        ));
     }
 
     // 8. What You Know (scored tacit memories, grouped by section tags)
@@ -493,6 +542,7 @@ mod tests {
             preferences: None,
             personality_directive: None,
             tacit_memories: vec![],
+            plugin_accounts: vec![],
         };
         let result = format_for_system_prompt(&ctx, "Nebo");
         assert!(result.contains("Memory Quick Reference"));
@@ -529,6 +579,7 @@ mod tests {
             preferences: None,
             personality_directive: None,
             tacit_memories: vec![],
+            plugin_accounts: vec![],
         };
 
         let result = format_for_system_prompt(&ctx, "TestBot");
@@ -567,6 +618,7 @@ mod tests {
             preferences: None,
             personality_directive: None,
             tacit_memories: vec![],
+            plugin_accounts: vec![],
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
@@ -584,6 +636,7 @@ mod tests {
             preferences: None,
             personality_directive: Some("Be concise and direct.".to_string()),
             tacit_memories: vec![],
+            plugin_accounts: vec![],
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
@@ -616,6 +669,7 @@ mod tests {
                 memory: mem,
                 score: 1.0,
             }],
+            plugin_accounts: vec![],
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
@@ -677,6 +731,7 @@ mod tests {
             preferences: None,
             personality_directive: None,
             tacit_memories: vec![],
+            plugin_accounts: vec![],
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
