@@ -119,7 +119,7 @@ GPG private key for signing the APT repository.
 
 ```bash
 gpg --full-generate-key
-# RSA 4096, no expiry, Real name: Nebo, Email: support@neboai.dev
+# RSA 4096, no expiry, Real name: Nebo, Email: support@neboai.com
 gpg --export-secret-keys --armor nebo | gh secret set APT_GPG_PRIVATE_KEY
 ```
 
