@@ -356,7 +356,12 @@ jobs:
           path: release-artifacts/
 
   # ─── Windows desktop build (Tauri 2 — WebView2) ──────────────────────
+  # Gated behind a repo variable while we work through cross-platform
+  # signing issues. Set `WINDOWS_BUILD_ENABLED=true` in repo Variables to
+  # turn this matrix back on; `release` already tolerates a missing
+  # Windows artifact via `fail-on-cache-miss: false`.
   build-windows:
+    if: vars.WINDOWS_BUILD_ENABLED == 'true'
     runs-on: windows-latest
     env:
       HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
@@ -434,7 +439,7 @@ jobs:
   # ─── Sign Windows binaries (Azure Trusted Signing) ───────────────────
   sign-windows:
     needs: build-windows
-    if: vars.AZURE_SIGNING_ENABLED == 'true'
+    if: vars.WINDOWS_BUILD_ENABLED == 'true' && vars.AZURE_SIGNING_ENABLED == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -481,8 +486,11 @@ jobs:
           path: signed-artifacts/
 
   # ─── Create GitHub release with all artifacts ─────────────────────────
+  # Windows jobs (build-windows, sign-windows) are intentionally NOT in
+  # `needs:` — they're gated by `WINDOWS_BUILD_ENABLED` and the release
+  # step gracefully omits Windows assets when the cache restore misses.
   release:
-    needs: [build-macos, build-linux, build-windows, sign-windows]
+    needs: [build-macos, build-linux]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
