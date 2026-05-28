@@ -10,7 +10,7 @@ pub mod files;
 pub mod integrations;
 pub mod mcp_server;
 pub mod memory;
-pub mod neboloop;
+pub mod neboai;
 pub mod notification;
 pub mod plugins;
 pub mod provider;

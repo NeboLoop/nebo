@@ -13,9 +13,9 @@
 Before running any tests:
 
 1. **Fresh build** — `cargo build` completes with zero errors
-2. **NeboLoop account** — Bot is connected (`NEBO-XXXX-XXXX` code redeemed)
+2. **NeboAI account** — Bot is connected (`NEBO-XXXX-XXXX` code redeemed)
 3. **AI provider configured** — At least one provider active (run `nebo providers list`)
-4. **Test codes** — Real NeboLoop codes for marketplace tests:
+4. **Test codes** — Real NeboAI codes for marketplace tests:
    - `SKIL-RFBM-XCYT` — Published skill
    - ~~`TOOL-XXXX-XXXX`~~ — Tools merged into Skills; no separate tool codes
    - `WORK-SW4Z-5XKN` — Published workflow
@@ -712,7 +712,7 @@ nebo chat "delete the test-integration skill using skill(action: \"delete\", nam
 | Not in catalog | Absent from subsequent catalog call | |
 | File removed | `user/skills/test-integration/` directory gone | |
 
-### S-10: Install Skill from NeboLoop (SKIL-RFBM-XCYT)
+### S-10: Install Skill from NeboAI (SKIL-RFBM-XCYT)
 
 **REST method:**
 ```
@@ -995,7 +995,7 @@ nebo chat "uninstall the test-workflow using work(action: \"uninstall\", id: \"[
 | Files cleaned | `user/workflows/test-workflow/` removed | |
 | DB row updated/removed | No longer queryable | |
 
-### W-09: Install Workflow from NeboLoop (WORK-SW4Z-5XKN)
+### W-09: Install Workflow from NeboAI (WORK-SW4Z-5XKN)
 
 **REST method:**
 ```
@@ -1344,7 +1344,7 @@ nebo chat "delete the directory user/roles/test-role-agent/"
 | Directory removed | `user/roles/test-role-agent/` gone | |
 | Not in list | Absent from `role(action: "list")` | |
 
-### R-07: Install Role from NeboLoop (ROLE-KG82-KM2G)
+### R-07: Install Role from NeboAI (ROLE-KG82-KM2G)
 
 **REST method:**
 ```
@@ -1372,7 +1372,7 @@ POST http://localhost:27895/api/v1/roles/{role-id}/install-deps
 | Check | Expected | Result |
 |-------|----------|--------|
 | Dependency check | Identifies missing skills/tools/workflows | |
-| Install triggered | Missing deps downloaded from NeboLoop | |
+| Install triggered | Missing deps downloaded from NeboAI | |
 | All resolved | Subsequent check shows no missing deps | |
 
 ### R-09: Role with Triggers

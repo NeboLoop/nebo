@@ -113,9 +113,9 @@ PROCESS START (cli/main.rs or src-tauri/main.rs)
   |     +-- serde_yaml::from_str()       Parse YAML into Config struct
   |     +-- apply_defaults()             Fill empty fields + env var overrides
   |            |
-  |            +-- NEBOLOOP_API_URL      Override neboloop.api_url
-  |            +-- NEBOLOOP_JANUS_URL    Override neboloop.janus_url
-  |            +-- NEBOLOOP_COMMS_URL    Override neboloop.comms_url
+  |            +-- NEBOAI_API_URL      Override neboai.api_url
+  |            +-- NEBOAI_JANUS_URL    Override neboai.janus_url
+  |            +-- NEBOAI_COMMS_URL    Override neboai.comms_url
   |
   |  3. load_settings()                  Load/create ~/.nebo/settings.json
   |     |
@@ -166,7 +166,7 @@ overrides earlier):
                             |
 +---------------------------v---------------------------------------+
 | Layer 4: Environment variable overrides (in apply_defaults)       |
-|   NEBOLOOP_API_URL, NEBOLOOP_JANUS_URL, NEBOLOOP_COMMS_URL       |
+|   NEBOAI_API_URL, NEBOAI_JANUS_URL, NEBOAI_COMMS_URL       |
 |   NEBO_DATA_DIR (checked in defaults::data_dir())                 |
 +---------------------------+---------------------------------------+
                             |
@@ -221,11 +221,11 @@ Auth:
 
 Database: {}                       # Uses default: ~/.nebo/data/nebo.db
 
-NeboLoop:
+NeboAI:
   Enabled: true
-  ApiURL: https://api.neboloop.com
-  JanusURL: https://janus.neboloop.com
-  CommsURL: wss://comms.neboloop.com/ws
+  ApiURL: https://api.neboai.com
+  JanusURL: https://janus.neboai.com
+  CommsURL: wss://comms.neboai.com/ws
 ```
 
 ### Fields NOT in nebo.yaml (use Defaults only)
@@ -325,7 +325,7 @@ hex-encoded to a 64-character string.
    +-- Found + parseable:
    |   +-- Merge missing cli_providers from embedded defaults
    |   +-- Merge missing "janus" provider from embedded defaults
-   |   +-- Migrate legacy janus model IDs (strip "janus/" or "neboloop/" prefix)
+   |   +-- Migrate legacy janus model IDs (strip "janus/" or "neboai/" prefix)
    |   +-- Migrate "janus" -> "nebo-1" model ID
    |   +-- Return user config
    |
@@ -436,9 +436,9 @@ ModelsConfig
 
 | Variable | Where Checked | Purpose | Default |
 |---|---|---|---|
-| `NEBOLOOP_API_URL` | `Config::apply_defaults()` | NeboLoop API server URL | `https://api.neboloop.com` |
-| `NEBOLOOP_JANUS_URL` | `Config::apply_defaults()` | Janus AI gateway URL | `https://janus.neboloop.com` |
-| `NEBOLOOP_COMMS_URL` | `Config::apply_defaults()` | NeboLoop WebSocket URL | `wss://comms.neboloop.com/ws` |
+| `NEBOAI_API_URL` | `Config::apply_defaults()` | NeboAI API server URL | `https://api.neboai.com` |
+| `NEBOAI_JANUS_URL` | `Config::apply_defaults()` | Janus AI gateway URL | `https://janus.neboai.com` |
+| `NEBOAI_COMMS_URL` | `Config::apply_defaults()` | NeboAI WebSocket URL | `wss://comms.neboai.com/ws` |
 | `NEBO_DATA_DIR` | `defaults::data_dir()` | Override data directory path | `~/.nebo/` |
 | `APP_BASE_URL` | `nebo.yaml` shell expansion | App base URL | `http://localhost:27895` |
 | `APP_DOMAIN` | `nebo.yaml` shell expansion | App domain | `localhost` |
@@ -559,7 +559,7 @@ pub struct Config {
     pub email: EmailConfig,        // SMTP settings
     pub oauth: OAuthConfig,        // Google/GitHub OAuth
     pub features: FeaturesConfig,  // Feature toggles
-    pub neboloop: NeboLoopConfig,  // NeboLoop service URLs
+    pub neboai: NeboAIConfig,  // NeboAI service URLs
     pub app_oauth: HashMap<String, AppOAuthProviderConfig>,  // Per-app OAuth
     pub log: LogConfig,            // Logging config
     pub browser_extension_id: Option<String>,  // Dev Chrome extension ID
@@ -610,14 +610,14 @@ pub struct Config {
 | `max_request_body_size` | `MaxRequestBodySize` | i64 | 10,485,760 (10 MB) |
 | `max_url_length` | `MaxURLLength` | u32 | 2,048 |
 
-### `NeboLoopConfig`
+### `NeboAIConfig`
 
 | Field | YAML Key | Type | Default | Env Override |
 |---|---|---|---|---|
 | `enabled` | `Enabled` | String | `"true"` | -- |
-| `api_url` | `ApiURL` | String | `https://api.neboloop.com` | `NEBOLOOP_API_URL` |
-| `janus_url` | `JanusURL` | String | `https://janus.neboloop.com` | `NEBOLOOP_JANUS_URL` |
-| `comms_url` | `CommsURL` | String | `wss://comms.neboloop.com/ws` | `NEBOLOOP_COMMS_URL` |
+| `api_url` | `ApiURL` | String | `https://api.neboai.com` | `NEBOAI_API_URL` |
+| `janus_url` | `JanusURL` | String | `https://janus.neboai.com` | `NEBOAI_JANUS_URL` |
+| `comms_url` | `CommsURL` | String | `wss://comms.neboai.com/ws` | `NEBOAI_COMMS_URL` |
 
 ### `EmailConfig`
 
@@ -726,7 +726,7 @@ Convenience methods on `Config` wrap this:
 | `is_github_oauth_enabled()` | `oauth.github_enabled` | false |
 | `is_notifications_enabled()` | `features.notifications_enabled` | true |
 | `is_oauth_enabled()` | `features.oauth_enabled` | false |
-| `is_neboloop_enabled()` | `neboloop.enabled` | true |
+| `is_neboai_enabled()` | `neboai.enabled` | true |
 
 ### Shell Expansion Before Parsing
 
@@ -786,10 +786,10 @@ fn apply_defaults(&mut self) {
         // Resolve from data_dir()
         self.database.sqlite_path = data_dir().join("data").join("nebo.db");
     }
-    // Env var overrides for NeboLoop URLs
-    if let Ok(v) = env::var("NEBOLOOP_API_URL")   { self.neboloop.api_url = v; }
-    if let Ok(v) = env::var("NEBOLOOP_JANUS_URL")  { self.neboloop.janus_url = v; }
-    if let Ok(v) = env::var("NEBOLOOP_COMMS_URL")  { self.neboloop.comms_url = v; }
+    // Env var overrides for NeboAI URLs
+    if let Ok(v) = env::var("NEBOAI_API_URL")   { self.neboai.api_url = v; }
+    if let Ok(v) = env::var("NEBOAI_JANUS_URL")  { self.neboai.janus_url = v; }
+    if let Ok(v) = env::var("NEBOAI_COMMS_URL")  { self.neboai.comms_url = v; }
 }
 ```
 
@@ -845,17 +845,17 @@ let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
 ### Config -> AI Providers
 
 `build_providers()` in `server/lib.rs` uses config for:
-- `cfg.neboloop.janus_url` -- Janus gateway base URL for the NeboLoop provider
+- `cfg.neboai.janus_url` -- Janus gateway base URL for the NeboAI provider
 - `ModelsConfig::load()` -- Model catalog for default model selection per provider
 - `detect_all_clis()` -- Whether CLI providers are available
 
 ### Config -> Tools
 
-The tool registry receives `config.neboloop.api_url` for NeboLoop API calls:
+The tool registry receives `config.neboai.api_url` for NeboAI API calls:
 
 ```rust
 let cfg = config::Config::default();
-cfg.neboloop.api_url  // Used in tool context
+cfg.neboai.api_url  // Used in tool context
 ```
 
 ### Config -> Browser
@@ -868,7 +868,7 @@ ID.
 
 ```rust
 pub struct WorkflowManagerImpl {
-    config: config::Config,  // For NeboLoop API URL in workflow execution
+    config: config::Config,  // For NeboAI API URL in workflow execution
 }
 ```
 
@@ -943,7 +943,7 @@ Each Nebo installation has a unique bot ID (UUID v4) stored at `~/.nebo/bot_id`.
 ```
 1. Check config::read_bot_id()
 2. If None:
-   a. Check database plugin_settings("neboloop", "bot_id") -- Go migration
+   a. Check database plugin_settings("neboai", "bot_id") -- Go migration
    b. If found in DB: write to file
    c. Else: generate new UUID, write to file
 3. Sync bot_id back to DB for backward compatibility
@@ -951,7 +951,7 @@ Each Nebo installation has a unique bot ID (UUID v4) stored at `~/.nebo/bot_id`.
 
 The bot_id is used for:
 - Janus gateway authentication (`X-Bot-ID` header)
-- NeboLoop device identification
+- NeboAI device identification
 - DB record correlation
 
 ---

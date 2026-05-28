@@ -1335,7 +1335,7 @@ Notifications are push-only — the frontend never polls for notifications. The 
 |------|---------------|---------|
 | `HEARTBEAT` | 1 | Sequential proactive ticks |
 | `MAIN` | unlimited | User input |
-| `COMM` | unlimited | NeboLoop messages |
+| `COMM` | unlimited | NeboAI messages |
 | `EVENTS` | unlimited | Event-triggered |
 
 ### Origins
@@ -1344,7 +1344,7 @@ Notifications are push-only — the frontend never polls for notifications. The 
 |--------|---------|
 | `System` | Cron scheduler, heartbeat |
 | `User` | Manual triggers, REST |
-| `Comm` | NeboLoop messages |
+| `Comm` | NeboAI messages |
 
 ---
 

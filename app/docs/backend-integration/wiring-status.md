@@ -14,7 +14,7 @@ Generated 2026-05-01. Tracks which pages load from API vs show empty state.
 
 | Page | API Call | Status |
 |------|----------|--------|
-| settings/account | `getUserProfile()`, `neboLoopAccountStatus()` | WIRED |
+| settings/account | `getUserProfile()`, `neboAIAccountStatus()` | WIRED |
 | settings/profile | `getUserProfile()`, `updateUserProfile()` | WIRED |
 | settings/providers | `listAuthProfiles()` | WIRED |
 | settings/agents | `listAgents()` | WIRED |
@@ -24,7 +24,7 @@ Generated 2026-05-01. Tracks which pages load from API vs show empty state.
 | settings/sessions | `listAgentSessions()` | WIRED |
 | settings/plugins | `listPlugins()` | WIRED |
 | settings/memories | `listMemories()` | WIRED |
-| settings/billing | `neboLoopBillingSubscription()`, `neboLoopBillingInvoices()` | WIRED |
+| settings/billing | `neboAIBillingSubscription()`, `neboAIBillingInvoices()` | WIRED |
 | settings/permissions | `getToolPermissions()` | WIRED |
 | settings/personality | `listPersonalityPresets()`, `getPersonality()` | WIRED |
 | settings/rules | `getAgentSettings()` | WIRED |
@@ -39,7 +39,7 @@ Generated 2026-05-01. Tracks which pages load from API vs show empty state.
 | events | `listEventSources()` | WIRED |
 | skills | `listTools()` | WIRED |
 | workspaces | `listAgents()` | WIRED |
-| upgrade | `neboLoopBillingPrices()`, `neboLoopBillingCheckout()` | WIRED |
+| upgrade | `neboAIBillingPrices()`, `neboAIBillingCheckout()` | WIRED |
 | chat | `getCompanionChat()` | WIRED |
 | schedule | `loadScheduleFromAPI()` → `listAgents()`, `getAgentWorkflows()`, `listAllRuns()` | WIRED |
 | onboarding | `getToolPermissions()` | WIRED |
@@ -81,7 +81,7 @@ Needs: `getAgentWorkflows()` and `getAgent()` for skills/config — verify backe
 | Component | API Call | Status |
 |-----------|----------|--------|
 | Sidebar | `listAgents()`, `listChats()`, `listChatDays()` | WIRED |
-| UserMenu | `getUserProfile()`, `neboLoopBillingSubscription()` | WIRED |
+| UserMenu | `getUserProfile()`, `neboAIBillingSubscription()` | WIRED |
 | ChatComposer | `listAgents()` | WIRED |
 | DayDetailPane | none (uses schedule store) | STATIC (store has API) |
 | NodeCatalog | `listMCPIntegrations()`, `listAgents()` | WIRED |

@@ -5,14 +5,14 @@
 # Usage:
 #   ./scripts/publish-plugins.sh build          # Build all plugins for current platform
 #   ./scripts/publish-plugins.sh build gws      # Build a single plugin
-#   ./scripts/publish-plugins.sh publish         # Publish all to NeboLoop
+#   ./scripts/publish-plugins.sh publish         # Publish all to NeboAI
 #   ./scripts/publish-plugins.sh publish gws     # Publish a single plugin
 #   ./scripts/publish-plugins.sh bundle          # Copy built binaries into bundled-napps/
 #
 # Prerequisites:
 #   - Rust toolchain with cross-compilation targets
 #   - Plugin repos at $REPOS_DIR (default: ../repos/plugins)
-#   - NeboLoop CLI or API access for publishing
+#   - NeboAI CLI or API access for publishing
 #
 set -euo pipefail
 
@@ -186,10 +186,10 @@ cmd_build() {
 cmd_publish() {
     local filter="${1:-}"
 
-    echo "Publishing plugins to NeboLoop..."
+    echo "Publishing plugins to NeboAI..."
     echo ""
-    echo "NOTE: This requires NeboLoop API access. For each plugin:"
-    echo "  1. Create/update the plugin artifact on NeboLoop"
+    echo "NOTE: This requires NeboAI API access. For each plugin:"
+    echo "  1. Create/update the plugin artifact on NeboAI"
     echo "  2. Upload the binary for each platform"
     echo "  3. Submit for review (auto-approved for first-party)"
     echo ""
@@ -235,8 +235,8 @@ print(bn)
         echo ""
     done
 
-    echo "To publish, use the NeboLoop MCP tools or the web dashboard."
-    echo "After publishing and approval, NeboLoop signs each plugin and produces .napp files."
+    echo "To publish, use the NeboAI MCP tools or the web dashboard."
+    echo "After publishing and approval, NeboAI signs each plugin and produces .napp files."
 }
 
 # ── Bundle ───────────────────────────────────────────────────────────────────
@@ -256,7 +256,7 @@ cmd_bundle() {
             continue
         fi
 
-        # Check for .napp file (signed by NeboLoop)
+        # Check for .napp file (signed by NeboAI)
         local napp_file="$src_dir/$slug.napp"
         if [ -f "$napp_file" ]; then
             cp "$napp_file" "$BUNDLED_DIR/$slug.napp"

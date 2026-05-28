@@ -214,7 +214,7 @@ impl PluginManager {
         }
     }
 
-    /// Look up the NeboLoop conversation ID for an agent by slug.
+    /// Look up the NeboAI conversation ID for an agent by slug.
     pub async fn agent_space_conv_for_slug(&self, slug: &str) -> Option<String> {
         let inner = self.inner.read().await;
         if let Some(ref active) = inner.active {

@@ -30,7 +30,7 @@ credentials:
 # Model selection defaults
 defaults:
   # Primary provider/model (used first)
-  # Nebo 1 (Janus gateway) is the default — works out of the box with NeboLoop auth.
+  # Nebo 1 (Janus gateway) is the default — works out of the box with NeboAI auth.
   # Users with their own API keys can override in Settings > Routing.
   primary: janus/nebo-1
 

@@ -111,7 +111,7 @@ All routes must work on direct navigation / browser refresh.
 - `/marketplace/installed` — Installed items
 
 ### Settings (nested under `/settings`, modal overlay via SettingsShell, no top nav)
-- `/settings/account` — NeboLoop connection
+- `/settings/account` — NeboAI connection
 - `/settings/profile` — Profile & theme picker
 - `/settings/billing` — Plan, payment, receipts
 - `/settings/usage` — Plan usage & balance

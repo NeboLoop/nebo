@@ -897,162 +897,162 @@ export function updateModel(provider: string, modelId: string, req: Record<strin
 /**
  * @description "Nebo loop account status"
  */
-export function neboLoopAccountStatus() {
-	return webapi.get<unknown>(`/api/v1/neboloop/account`)
+export function neboAIAccountStatus() {
+	return webapi.get<unknown>(`/api/v1/neboai/account`)
 }
 
 /**
  * @description "Nebo loop account disconnect"
  */
-export function neboLoopAccountDisconnect() {
-	return webapi.delete<unknown>(`/api/v1/neboloop/account`)
+export function neboAIAccountDisconnect() {
+	return webapi.delete<unknown>(`/api/v1/neboai/account`)
 }
 
 /**
  * @description "Nebo loop billing cancel"
  */
-export function neboLoopBillingCancel(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/neboloop/billing/cancel`, req)
+export function neboAIBillingCancel(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/neboai/billing/cancel`, req)
 }
 
 /**
  * @description "Nebo loop billing checkout"
  */
-export function neboLoopBillingCheckout(req: Record<string, unknown> = {}) {
-	return webapi.post<components.NeboLoopBillingCheckoutResponse>(`/api/v1/neboloop/billing/checkout`, req)
+export function neboAIBillingCheckout(req: Record<string, unknown> = {}) {
+	return webapi.post<components.NeboAIBillingCheckoutResponse>(`/api/v1/neboai/billing/checkout`, req)
 }
 
 /**
  * @description "Nebo loop billing invoices"
  */
-export function neboLoopBillingInvoices() {
-	return webapi.get<components.NeboLoopBillingInvoicesResponse>(`/api/v1/neboloop/billing/invoices`)
+export function neboAIBillingInvoices() {
+	return webapi.get<components.NeboAIBillingInvoicesResponse>(`/api/v1/neboai/billing/invoices`)
 }
 
 /**
  * @description "Nebo loop billing payment methods"
  */
-export function neboLoopBillingPaymentMethods() {
-	return webapi.get<components.NeboLoopBillingPaymentMethodsResponse>(`/api/v1/neboloop/billing/payment-methods`)
+export function neboAIBillingPaymentMethods() {
+	return webapi.get<components.NeboAIBillingPaymentMethodsResponse>(`/api/v1/neboai/billing/payment-methods`)
 }
 
 /**
  * @description "Nebo loop billing portal"
  */
-export function neboLoopBillingPortal(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/neboloop/billing/portal`, req)
+export function neboAIBillingPortal(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/neboai/billing/portal`, req)
 }
 
 /**
  * @description "Nebo loop billing prices"
  */
-export function neboLoopBillingPrices() {
-	return webapi.get<components.NeboLoopBillingPricesResponse>(`/api/v1/neboloop/billing/prices`)
+export function neboAIBillingPrices() {
+	return webapi.get<components.NeboAIBillingPricesResponse>(`/api/v1/neboai/billing/prices`)
 }
 
 /**
  * @description "Nebo loop billing setup intent"
  */
-export function neboLoopBillingSetupIntent(req: Record<string, unknown> = {}) {
-	return webapi.post<components.NeboLoopBillingSetupIntentResponse>(`/api/v1/neboloop/billing/setup-intent`, req)
+export function neboAIBillingSetupIntent(req: Record<string, unknown> = {}) {
+	return webapi.post<components.NeboAIBillingSetupIntentResponse>(`/api/v1/neboai/billing/setup-intent`, req)
 }
 
 /**
  * @description "Nebo loop billing subscribe"
  */
-export function neboLoopBillingSubscribe(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/neboloop/billing/subscribe`, req)
+export function neboAIBillingSubscribe(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/neboai/billing/subscribe`, req)
 }
 
 /**
  * @description "Nebo loop billing subscription"
  */
-export function neboLoopBillingSubscription() {
-	return webapi.get<components.NeboLoopBillingSubscriptionResponse>(`/api/v1/neboloop/billing/subscription`)
+export function neboAIBillingSubscription() {
+	return webapi.get<components.NeboAIBillingSubscriptionResponse>(`/api/v1/neboai/billing/subscription`)
 }
 
 /**
  * @description "Nebo loop connect handler"
  */
-export function neboLoopConnectHandler(req: Record<string, unknown> = {}) {
-	return webapi.post<components.NeboLoopConnectHandlerResponse>(`/api/v1/neboloop/connect`, req)
+export function neboAIConnectHandler(req: Record<string, unknown> = {}) {
+	return webapi.post<components.NeboAIConnectHandlerResponse>(`/api/v1/neboai/connect`, req)
 }
 
 /**
  * @description "Nebo loop janus usage"
  */
-export function neboLoopJanusUsage() {
-	return webapi.get<components.NeboLoopJanusUsageResponse>(`/api/v1/neboloop/janus/usage`)
+export function neboAIJanusUsage() {
+	return webapi.get<components.NeboAIJanusUsageResponse>(`/api/v1/neboai/janus/usage`)
 }
 
 /**
  * @description "Nebo loop janus usage refresh"
  */
-export function neboLoopJanusUsageRefresh(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/neboloop/janus/usage/refresh`, req)
+export function neboAIJanusUsageRefresh(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/neboai/janus/usage/refresh`, req)
 }
 
 /**
  * @description "Nebo loop marketplace list subscriptions"
  */
-export function neboLoopMarketplaceListSubscriptions() {
-	return webapi.get<unknown>(`/api/v1/neboloop/marketplace/subscriptions`)
+export function neboAIMarketplaceListSubscriptions() {
+	return webapi.get<unknown>(`/api/v1/neboai/marketplace/subscriptions`)
 }
 
 /**
  * @description "Nebo loop marketplace create subscription"
  */
-export function neboLoopMarketplaceCreateSubscription(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/neboloop/marketplace/subscriptions`, req)
+export function neboAIMarketplaceCreateSubscription(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/neboai/marketplace/subscriptions`, req)
 }
 
 /**
  * @description "Nebo loop marketplace cancel subscription"
  */
-export function neboLoopMarketplaceCancelSubscription(id: string, req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/neboloop/marketplace/subscriptions/${id}/cancel`, req)
+export function neboAIMarketplaceCancelSubscription(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/neboai/marketplace/subscriptions/${id}/cancel`, req)
 }
 
 /**
  * @description "Nebo loop oauth start"
  */
-export function neboLoopOauthStart(janus?: string) {
-	return webapi.get<unknown>(`/api/v1/neboloop/oauth/start`, { janus })
+export function neboAIOauthStart(janus?: string) {
+	return webapi.get<unknown>(`/api/v1/neboai/oauth/start`, { janus })
 }
 
 /**
  * @description "Nebo loop oauth status"
  */
-export function neboLoopOauthStatus(state?: string) {
-	return webapi.get<unknown>(`/api/v1/neboloop/oauth/status`, { state })
+export function neboAIOauthStatus(state?: string) {
+	return webapi.get<unknown>(`/api/v1/neboai/oauth/status`, { state })
 }
 
 /**
- * @description "Nebo loop open neboloop"
+ * @description "Nebo loop open neboai"
  */
-export function neboLoopOpenNeboloop() {
-	return webapi.get<components.NeboLoopOpenNeboloopResponse>(`/api/v1/neboloop/open`)
+export function neboAIOpenNeboai() {
+	return webapi.get<components.NeboAIOpenNeboaiResponse>(`/api/v1/neboai/open`)
 }
 
 /**
  * @description "Nebo loop force reconnect"
  */
-export function neboLoopForceReconnect(req: Record<string, unknown> = {}) {
-	return webapi.post<components.NeboLoopForceReconnectResponse>(`/api/v1/neboloop/reconnect`, req)
+export function neboAIForceReconnect(req: Record<string, unknown> = {}) {
+	return webapi.post<components.NeboAIForceReconnectResponse>(`/api/v1/neboai/reconnect`, req)
 }
 
 /**
  * @description "Nebo loop referral code"
  */
-export function neboLoopReferralCode() {
-	return webapi.get<unknown>(`/api/v1/neboloop/referral-code`)
+export function neboAIReferralCode() {
+	return webapi.get<unknown>(`/api/v1/neboai/referral-code`)
 }
 
 /**
  * @description "Nebo loop bot status"
  */
-export function neboLoopBotStatus() {
-	return webapi.get<components.NeboLoopBotStatusResponse>(`/api/v1/neboloop/status`)
+export function neboAIBotStatus() {
+	return webapi.get<components.NeboAIBotStatusResponse>(`/api/v1/neboai/status`)
 }
 
 /**

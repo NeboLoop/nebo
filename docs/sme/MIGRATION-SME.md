@@ -20,8 +20,8 @@ Each file below contains the **exact algorithms, data structures, constants, sta
 | 5 | [platform-tools.md](platform-tools.md) | 70+ platform tools (macOS/Linux/Windows), STRAP pattern, snapshot pipeline, desktop queue | 75KB |
 | 6 | [auth-and-app-platform.md](auth-and-app-platform.md) | Auth flows (JWT, email verify, password reset), .napp runtime, gRPC, sandbox, signing | 73KB |
 | 7 | [browser-and-relay.md](browser-and-relay.md) | Chrome/CDP management, extension relay, actions, snapshots, storage, audit | 53KB |
-| 8 | [mcp-and-comm.md](mcp-and-comm.md) | MCP server/client/bridge/OAuth, NeboLoop comm plugin (1541 LOC), A2A tasks | 71KB |
-| 9 | [plugins-store-oauth-dev.md](plugins-store-oauth-dev.md) | Plugin system, NeboLoop store, OAuth broker, app OAuth, developer routes | 51KB |
+| 8 | [mcp-and-comm.md](mcp-and-comm.md) | MCP server/client/bridge/OAuth, NeboAI comm plugin (1541 LOC), A2A tasks | 71KB |
+| 9 | [plugins-store-oauth-dev.md](plugins-store-oauth-dev.md) | Plugin system, NeboAI store, OAuth broker, app OAuth, developer routes | 51KB |
 | 10 | [infra-systems.md](infra-systems.md) | Message bus, events (pub/sub), keyring, credentials, notifications, heartbeat, real-time hub | 53KB |
 | 11 | [desktop-and-webview.md](desktop-and-webview.md) | Wails integration, webview manager, cursor simulation, fingerprint, JS injection, lock system | 49KB |
 | 12 | [agent-tools.md](agent-tools.md) | Tool registry, 20+ domain tools, safeguards, policy, process management, STRAP dispatch | 45KB |
@@ -213,10 +213,10 @@ Every Go SME document now has corresponding Rust migration coverage. The 27 Go d
   - `GET /relay/extension/token`
   - `GET /relay/json/version`, `/json`, `/json/list`, `/json/activate/{id}`, `/json/close/{id}`
 
-#### 11. NeboLoop Comm Plugin
-- **Go:** `internal/agent/comm/neboloop/` -- WebSocket gateway client, bot auth, DM handling, channel messaging, auto-reconnect
+#### 11. NeboAI Comm Plugin
+- **Go:** `internal/agent/comm/neboai/` -- WebSocket gateway client, bot auth, DM handling, channel messaging, auto-reconnect
 - **Rust:** Comm crate has loopback only
-- **Missing:** NeboLoop WS client, bot registration, DM send/receive, channel messaging, auto-reconnect, owner DM routing
+- **Missing:** NeboAI WS client, bot registration, DM send/receive, channel messaging, auto-reconnect, owner DM routing
 
 #### 12. MCP Server + OAuth
 - **Go:** `internal/mcp/` -- JSON-RPC server, protocol handler, authentication, context, OAuth, MCP-exposed tools
@@ -231,7 +231,7 @@ Every Go SME document now has corresponding Rust migration coverage. The 27 Go d
 - **Missing routes:**
   - `GET/PUT/POST /api/v1/plugins`
   - `GET/POST/DELETE /api/v1/store/apps`, store skills, reviews
-- **Missing:** Plugin registry, settings management, toggle, hot-reload, NeboLoop marketplace
+- **Missing:** Plugin registry, settings management, toggle, hot-reload, NeboAI marketplace
 
 #### 14. Developer Routes
 - **Go:** `internal/handler/dev/` -- 4 files
@@ -288,7 +288,7 @@ Every Go SME document now has corresponding Rust migration coverage. The 27 Go d
 Go tools missing from Rust tool registry:
 - `memory.go` -- memory store/recall/search/forget
 - `cron.go` + `scheduler.go` + `scheduler_manager.go` -- scheduling
-- `loop_tool.go` + `neboloop_tool.go` -- NeboLoop integration
+- `loop_tool.go` + `neboai_tool.go` -- NeboAI integration
 - `query_sessions.go` -- past session querying
 - `screenshot.go` -- screenshot capture
 - `vision.go` -- image analysis
@@ -361,8 +361,8 @@ Go tools missing from Rust tool registry:
 #### 40. ~~AFV (Audio/Video Fence)~~ — DROPPED
 - **Decision:** AFV is not being migrated to Rust. Removed from scope.
 
-#### 41. Loop/NeboLoop Tools
-- Agent tools for NeboLoop channel/loop interaction
+#### 41. Loop/NeboAI Tools
+- Agent tools for NeboAI channel/loop interaction
 
 #### 42. Web Content Sanitization
 - Go: `web_sanitize.go` with tests
@@ -579,20 +579,20 @@ Go tools missing from Rust tool registry:
 | `PUT /api/v1/notifications/read-all` | Y | Y |
 | `GET /api/v1/notifications/unread-count` | Y | Y |
 
-### NeboLoop Routes
+### NeboAI Routes
 
 | Route | Go | Rust |
 |---|---|---|
-| `GET /api/v1/neboloop/oauth/start` | Y | Y |
-| `GET /api/v1/neboloop/oauth/status` | Y | Y |
-| `POST /api/v1/neboloop/register` | Y | N |
-| `POST /api/v1/neboloop/login` | Y | N |
-| `GET /api/v1/neboloop/account` | Y | Y |
-| `DELETE /api/v1/neboloop/account` | Y | Y |
-| `GET /api/v1/neboloop/janus/usage` | Y | Y |
-| `GET /api/v1/neboloop/open` | Y | Y |
-| `POST /api/v1/neboloop/connect` | Y | N |
-| `GET /api/v1/neboloop/status` | Y | Y |
+| `GET /api/v1/neboai/oauth/start` | Y | Y |
+| `GET /api/v1/neboai/oauth/status` | Y | Y |
+| `POST /api/v1/neboai/register` | Y | N |
+| `POST /api/v1/neboai/login` | Y | N |
+| `GET /api/v1/neboai/account` | Y | Y |
+| `DELETE /api/v1/neboai/account` | Y | Y |
+| `GET /api/v1/neboai/janus/usage` | Y | Y |
+| `GET /api/v1/neboai/open` | Y | Y |
+| `POST /api/v1/neboai/connect` | Y | N |
+| `GET /api/v1/neboai/status` | Y | Y |
 
 ### OAuth Routes
 
@@ -690,7 +690,7 @@ Go tools missing from Rust tool registry:
 
 | Route | Go | Rust |
 |---|---|---|
-| `GET /auth/neboloop/callback` | Y | Y |
+| `GET /auth/neboai/callback` | Y | Y |
 | `POST /internal/webview/callback` | Y | N |
 
 ---
@@ -716,7 +716,7 @@ Go tools missing from Rust tool registry:
 | Vision | `vision.go` | -- | N |
 | TTS | `tts.go` | -- | N |
 | Desktop queue | `desktop_queue.go` | -- | N |
-| Loop/NeboLoop | `loop_tool.go` + `neboloop_tool.go` | -- | N |
+| Loop/NeboAI | `loop_tool.go` + `neboai_tool.go` | -- | N |
 | Query sessions | `query_sessions.go` | -- | N |
 | Web sanitize | `web_sanitize.go` | -- | N |
 
@@ -782,7 +782,7 @@ Go tools missing from Rust tool registry:
 9. Voice pipeline (ASR, TTS, VAD, wakeword)
 
 ### Phase 3: Ecosystem (High)
-10. NeboLoop comm plugin
+10. NeboAI comm plugin
 11. MCP server + OAuth
 12. Plugin system + store/marketplace
 13. OAuth broker

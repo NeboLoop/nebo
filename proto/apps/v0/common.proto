@@ -22,7 +22,7 @@ message SettingsMap {
 // Apps that declare "user:token" permission receive the full JWT.
 // All apps receive user_id and plan as convenience fields.
 message UserContext {
-  string token = 1;     // NeboLoop JWT — app forwards to its backend for auth
+  string token = 1;     // NeboAI JWT — app forwards to its backend for auth
   string user_id = 2;   // Convenience: user UUID (also in JWT, saves a decode)
   string plan = 3;      // Convenience: user plan tier
 }

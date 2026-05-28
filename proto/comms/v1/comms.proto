@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package comms.v1;
 
-option go_package = "github.com/neboloop/nebo/internal/neboloop/sdk/pb";
+option go_package = "github.com/neboai/nebo/internal/neboai/sdk/pb";
 
 // --- Auth ---
 

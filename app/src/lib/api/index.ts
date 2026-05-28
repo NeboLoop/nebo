@@ -124,7 +124,7 @@ export function togglePlugin(id: string, req: TogglePluginRequest): Promise<GetP
 	return webapi.put<GetPluginResponse>(`/api/v1/plugins/${id}/toggle`, req);
 }
 
-// NeboLoop Marketplace — query-param variants (generated API lacks param support)
+// NeboAI Marketplace — query-param variants (generated API lacks param support)
 
 export function listStoreProducts(params?: Record<string, string | number>): Promise<unknown> {
 	return webapi.get<unknown>('/api/v1/store/products', params);
@@ -138,18 +138,18 @@ export function getStoreProductReviews(id: string): Promise<unknown> {
 	return webapi.get<unknown>(`/api/v1/store/products/${id}/reviews`);
 }
 
-// NeboLoop OAuth with Janus opt-in
-export function neboLoopOAuthStartWithJanus(janus: boolean) {
+// NeboAI OAuth with Janus opt-in
+export function neboAIOAuthStartWithJanus(janus: boolean) {
 	return webapi.get<components.OAuthStartResponse>(
-		'/api/v1/neboloop/oauth/start',
+		'/api/v1/neboai/oauth/start',
 		janus ? { janus: 'true' } : undefined
 	);
 }
 
-// NeboLoop OAuth status polling (generated API lacks the state param)
-export function neboLoopOAuthStatus(state: string) {
+// NeboAI OAuth status polling (generated API lacks the state param)
+export function neboAIOAuthStatus(state: string) {
 	return webapi.get<components.OAuthStatusResponse>(
-		'/api/v1/neboloop/oauth/status',
+		'/api/v1/neboai/oauth/status',
 		{ state }
 	);
 }
@@ -174,19 +174,19 @@ export function createMarketplaceSubscription(params: {
 	targetType: string;
 	botCount?: number;
 }): Promise<{ checkoutUrl?: string; subscriptionId?: string }> {
-	return webapi.post('/api/v1/neboloop/marketplace/subscriptions', params);
+	return webapi.post('/api/v1/neboai/marketplace/subscriptions', params);
 }
 
 export function listMarketplaceSubscriptions(): Promise<{
 	subscriptions: MarketplaceSubscriptionInfo[];
 }> {
-	return webapi.get('/api/v1/neboloop/marketplace/subscriptions');
+	return webapi.get('/api/v1/neboai/marketplace/subscriptions');
 }
 
 export function cancelMarketplaceSubscription(
 	id: string
 ): Promise<{ success: boolean }> {
-	return webapi.post(`/api/v1/neboloop/marketplace/subscriptions/${id}/cancel`, {});
+	return webapi.post(`/api/v1/neboai/marketplace/subscriptions/${id}/cancel`, {});
 }
 
 

@@ -279,7 +279,7 @@ pub fn install_manifest(
     }
 
     let manifest = serde_json::json!({
-        "name": "dev.neboloop.nebo",
+        "name": "dev.neboai.nebo",
         "description": "Nebo Browser Automation Host",
         "path": nebo_binary_path,
         "type": "stdio",
@@ -295,7 +295,7 @@ pub fn install_manifest(
             debug!(dir = %dir, error = %e, "skipping native messaging dir");
             continue;
         }
-        let path = std::path::Path::new(dir).join("dev.neboloop.nebo.json");
+        let path = std::path::Path::new(dir).join("dev.neboai.nebo.json");
         if let Err(e) = std::fs::write(&path, &manifest_json) {
             debug!(path = %path.display(), error = %e, "failed to write manifest");
             continue;
@@ -358,7 +358,7 @@ pub fn install_manifest(
 pub fn is_manifest_installed() -> bool {
     all_native_messaging_dirs().iter().any(|dir| {
         std::path::Path::new(dir)
-            .join("dev.neboloop.nebo.json")
+            .join("dev.neboai.nebo.json")
             .exists()
     })
 }
@@ -370,7 +370,7 @@ pub fn needs_manifest_update(nebo_binary_path: &str, local_extension_id: &str) -
     let mut found_any = false;
 
     for dir in &dirs {
-        let path = std::path::Path::new(dir).join("dev.neboloop.nebo.json");
+        let path = std::path::Path::new(dir).join("dev.neboai.nebo.json");
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => continue,
@@ -517,23 +517,23 @@ fn windows_native_messaging_registry_keys() -> Vec<(String, String)> {
     if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
         let browsers = [
             (
-                "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\dev.neboloop.nebo",
+                "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\dev.neboai.nebo",
                 format!(
-                    "{}\\Google\\Chrome\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json",
+                    "{}\\Google\\Chrome\\User Data\\NativeMessagingHosts\\dev.neboai.nebo.json",
                     appdata
                 ),
             ),
             (
-                "HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\dev.neboloop.nebo",
+                "HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\dev.neboai.nebo",
                 format!(
-                    "{}\\BraveSoftware\\Brave-Browser\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json",
+                    "{}\\BraveSoftware\\Brave-Browser\\User Data\\NativeMessagingHosts\\dev.neboai.nebo.json",
                     appdata
                 ),
             ),
             (
-                "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\dev.neboloop.nebo",
+                "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\dev.neboai.nebo",
                 format!(
-                    "{}\\Microsoft\\Edge\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json",
+                    "{}\\Microsoft\\Edge\\User Data\\NativeMessagingHosts\\dev.neboai.nebo.json",
                     appdata
                 ),
             ),

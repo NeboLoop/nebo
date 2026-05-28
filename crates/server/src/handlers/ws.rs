@@ -1584,7 +1584,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         crate::entity_config::resolve_for_chat(&state.store, etype, eid)
     };
 
-    // If NeboLoop is connected, forward responses so the conversation stays in sync.
+    // If NeboAI is connected, forward responses so the conversation stays in sync.
     // Works for both custom agents (agent_space by slug) and the companion (default bot).
     let comm_reply = if state.comm_manager.is_connected().await {
         let conv_id = if !agent_id.is_empty() {
@@ -1613,7 +1613,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             }
         };
         conv_id.map(|cid| crate::chat_dispatch::CommReplyConfig {
-            provider: "neboloop".to_string(),
+            provider: "neboai".to_string(),
             topic: "agent_space".to_string(),
             conversation_id: cid,
         })
@@ -1621,7 +1621,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         None
     };
 
-    // Send the user's prompt to NeboLoop so it appears in the Loop conversation
+    // Send the user's prompt to NeboAI so it appears in the Loop conversation
     if let Some(ref reply_cfg) = comm_reply {
         let mut meta = std::collections::HashMap::new();
         meta.insert("senderName".to_string(), "You".to_string());
@@ -1645,7 +1645,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             attachments: ws_attachments.clone(),
         };
         if let Err(e) = state.comm_manager.send(user_msg).await {
-            warn!(error = %e, "failed to forward user prompt to NeboLoop");
+            warn!(error = %e, "failed to forward user prompt to NeboAI");
         }
     }
 

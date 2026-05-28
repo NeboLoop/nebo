@@ -35,10 +35,10 @@
         }
       }
 
-      // NeboLoop status
-      const neboStatus = await api.neboLoopAccountStatus().catch(() => null) as { connected?: boolean } | null;
+      // NeboAI status
+      const neboStatus = await api.neboAIAccountStatus().catch(() => null) as { connected?: boolean } | null;
       svcList.push({
-        name: 'NeboLoop',
+        name: 'NeboAI',
         status: neboStatus?.connected ? 'operational' : 'degraded',
         latency: '—',
       });

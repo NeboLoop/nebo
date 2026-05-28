@@ -1,4 +1,4 @@
-//! Code interception and dispatch for NeboLoop marketplace codes.
+//! Code interception and dispatch for NeboAI marketplace codes.
 //!
 //! Detects NEBO/SKILL/WORK/ROLE/AGNT/LOOP codes in chat prompts, handles them
 //! before the prompt reaches the agent runner, and broadcasts results to the client.
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use tracing::{debug, info, warn};
 
-use comm::api::NeboLoopApi;
+use comm::api::NeboAIApi;
 use types::NeboError;
 
 use crate::state::AppState;
@@ -88,14 +88,14 @@ struct CodeHandlerResult {
     artifact_id: Option<String>,
     artifact_type: Option<String>,
     needs_auth: bool,
-    /// Pricing tier info forwarded from NeboLoop (name, recurringPriceCents, billingInterval, pricingModel).
+    /// Pricing tier info forwarded from NeboAI (name, recurringPriceCents, billingInterval, pricingModel).
     tier: Option<serde_json::Value>,
 }
 
 /// Handle a detected code: broadcast processing event, dispatch to handler, broadcast result.
 pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, session_id: &str) {
     let (code_type_str, status_message) = match code_type {
-        CodeType::Nebo => ("nebo", "Connecting to NeboLoop..."),
+        CodeType::Nebo => ("nebo", "Connecting to NeboAI..."),
         CodeType::Skill => ("skill", "Installing skill..."),
         CodeType::Work => ("workflow", "Installing workflow..."),
         CodeType::Agent => ("agent", "Installing agent..."),
@@ -173,7 +173,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
 /// of broadcasting WebSocket events. Used by Slack, Telegram, etc.
 pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str) -> String {
     let code_type_str = match code_type {
-        CodeType::Nebo => "NeboLoop connection",
+        CodeType::Nebo => "NeboAI connection",
         CodeType::Skill => "skill",
         CodeType::Work => "workflow",
         CodeType::Agent => "agent",
@@ -235,7 +235,7 @@ pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str)
 async fn handle_nebo_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let bot_id = redeem_nebo_code(state, code).await?;
     Ok(CodeHandlerResult {
-        message: format!("Connected to NeboLoop (bot: {})", &bot_id[..8]),
+        message: format!("Connected to NeboAI (bot: {})", &bot_id[..8]),
         ..Default::default()
     })
 }
@@ -294,7 +294,7 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         }
     }
 
-    // Fetch artifact content from NeboLoop and persist to filesystem
+    // Fetch artifact content from NeboAI and persist to filesystem
     let skill_dir = match tools::persist_skill_from_api(&api, &artifact_id, &name, code).await {
         Ok(dir) => {
             info!(code, name = %name, dir = %dir.display(), "persisted skill artifact to filesystem");
@@ -399,7 +399,7 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
         }
     }
 
-    // Fetch artifact content from NeboLoop and persist to DB + filesystem
+    // Fetch artifact content from NeboAI and persist to DB + filesystem
     if let Err(e) =
         persist_workflow_artifact(&api, &artifact_id, &artifact_name, code, &state.store).await
     {
@@ -456,7 +456,7 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         artifact_name = resp.artifact.name.clone();
     } else {
         // Redemption failed (likely already redeemed) — look up by code in local DB
-        // or fetch detail from NeboLoop to get the artifact ID
+        // or fetch detail from NeboAI to get the artifact ID
         warn!(
             code,
             "redeem failed, attempting to look up artifact by code"
@@ -501,11 +501,11 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 let _ = std::fs::remove_dir_all(&dir);
             }
         }
-        // Deregister from NeboLoop so re-registration doesn't 409
+        // Deregister from NeboAI so re-registration doesn't 409
         let _ = deregister_agent_from_loop(state, &slug).await;
     }
 
-    // Fetch artifact content from NeboLoop and persist to DB + filesystem
+    // Fetch artifact content from NeboAI and persist to DB + filesystem
     let persist_result =
         match tools::persist_agent_from_api(&api, &artifact_id, &artifact_name, code, &state.store)
             .await
@@ -759,7 +759,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         }),
     );
 
-    // Fetch plugin manifest from NeboLoop (platform-specific binary info)
+    // Fetch plugin manifest from NeboAI (platform-specific binary info)
     let slug = name.to_lowercase().replace(' ', "-");
     let detail = api
         .get_plugin(&slug, &platform)
@@ -1088,18 +1088,18 @@ async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
 
 // ── API Client Helper ───────────────────────────────────────────────
 
-pub(crate) fn build_api_client(state: &AppState) -> Result<NeboLoopApi, NeboError> {
+pub(crate) fn build_api_client(state: &AppState) -> Result<NeboAIApi, NeboError> {
     let bot_id =
         config::read_bot_id().ok_or_else(|| NeboError::Internal("no bot_id configured".into()))?;
     let profiles = state
         .store
-        .list_all_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
     let profile = profiles
         .first()
-        .ok_or_else(|| NeboError::Internal("not connected to NeboLoop".into()))?;
-    let api_server = state.config.neboloop.api_url.clone();
-    Ok(NeboLoopApi::new(
+        .ok_or_else(|| NeboError::Internal("not connected to NeboAI".into()))?;
+    let api_server = state.config.neboai.api_url.clone();
+    Ok(NeboAIApi::new(
         api_server,
         bot_id,
         profile.api_key.clone(),
@@ -1108,20 +1108,20 @@ pub(crate) fn build_api_client(state: &AppState) -> Result<NeboLoopApi, NeboErro
 
 // ── Artifact Persistence ────────────────────────────────────────────
 //
-// After redeem_code() registers the install in the NeboLoop cloud DB,
+// After redeem_code() registers the install in the NeboAI cloud DB,
 // these functions fetch the actual artifact content and persist locally.
 //
 // Skills and agents: canonical implementation in tools::persist_skill_from_api
 // and tools::persist_agent_from_api. Workflows have a unique DB+filesystem
 // persist path that only exists here.
 
-/// Fetch workflow content from NeboLoop and persist to DB + filesystem.
+/// Fetch workflow content from NeboAI and persist to DB + filesystem.
 ///
 /// If the API provides a `downloadUrl`, downloads the sealed `.napp` archive
 /// and stores it at `nebo/workflows/{slug}/{version}.napp`, then extracts it.
 /// Otherwise falls back to writing loose WORKFLOW.md + workflow.json files.
 async fn persist_workflow_artifact(
-    api: &NeboLoopApi,
+    api: &NeboAIApi,
     artifact_id: &str,
     name: &str,
     code: &str,
@@ -1235,11 +1235,11 @@ async fn persist_workflow_artifact(
 
 // ── Shared Helpers ──────────────────────────────────────────────────
 
-/// Activate the NeboLoop connection using stored credentials.
+/// Activate the NeboAI connection using stored credentials.
 ///
 /// This is the canonical implementation — called by both startup auto-connect
 /// and code handlers. Builds config from stored credentials and connects.
-pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
+pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     // Guard against re-entry: if already connected, skip.
     if state.comm_manager.is_connected().await {
         return Ok(());
@@ -1248,13 +1248,13 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
     let bot_id = config::read_bot_id().ok_or_else(|| NeboError::Internal("no bot_id".into()))?;
     let profiles = state
         .store
-        .list_all_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
     let profile = profiles
         .first()
-        .ok_or_else(|| NeboError::Internal("no NeboLoop credentials".into()))?;
+        .ok_or_else(|| NeboError::Internal("no NeboAI credentials".into()))?;
     let mut token = if profile.api_key.is_empty() {
-        return Err(NeboError::Internal("empty NeboLoop token".into()));
+        return Err(NeboError::Internal("empty NeboAI token".into()));
     } else {
         profile.api_key.clone()
     };
@@ -1262,19 +1262,19 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
     // Prefer cached rotated token over DB token — the cache is written immediately
     // on AUTH_OK, so it survives hot-reload/crash where the DB persist hasn't run yet.
     if let Ok(dir) = config::data_dir() {
-        let cache_path = dir.join("neboloop_token.cache");
+        let cache_path = dir.join("neboai_token.cache");
         if let Ok(cached) = std::fs::read_to_string(&cache_path) {
             let cached = cached.trim().to_string();
             if !cached.is_empty() && cached != token {
-                info!("neboloop: using cached rotated token (differs from DB)");
+                info!("neboai: using cached rotated token (differs from DB)");
                 token = cached;
             }
         }
     }
 
     let mut config = HashMap::new();
-    config.insert("gateway".into(), state.config.neboloop.comms_url.clone());
-    config.insert("api_server".into(), state.config.neboloop.api_url.clone());
+    config.insert("gateway".into(), state.config.neboai.comms_url.clone());
+    config.insert("api_server".into(), state.config.neboai.api_url.clone());
     config.insert("bot_id".into(), bot_id);
     config.insert("token".into(), token);
     if let Ok(dir) = config::data_dir() {
@@ -1283,7 +1283,7 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
 
     state
         .comm_manager
-        .set_active("neboloop")
+        .set_active("neboai")
         .await
         .map_err(|e| NeboError::Internal(format!("set_active: {e}")))?;
 
@@ -1293,8 +1293,8 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
     if let Err(ref e) = connect_result {
         let err_msg = e.to_string();
         if err_msg.contains("stale token") || err_msg.contains("auth failed") {
-            info!("NeboLoop token stale, attempting OAuth refresh");
-            if let Some(new_token) = refresh_neboloop_token(state, profile).await {
+            info!("NeboAI token stale, attempting OAuth refresh");
+            if let Some(new_token) = refresh_neboai_token(state, profile).await {
                 // Retry connect with fresh token
                 let mut retry_config = config;
                 retry_config.insert("token".into(), new_token);
@@ -1317,7 +1317,7 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
     if let Some(new_token) = state.comm_manager.take_rotated_token().await {
         if let Ok(profs) = state
             .store
-            .list_all_active_auth_profiles_by_provider("neboloop")
+            .list_all_active_auth_profiles_by_provider("neboai")
         {
             if let Some(p) = profs.first() {
                 let _ = state.store.update_auth_profile(
@@ -1330,7 +1330,7 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
                     p.auth_type.as_deref(),
                     p.metadata.as_deref(),
                 );
-                info!("persisted rotated NeboLoop token");
+                info!("persisted rotated NeboAI token");
             }
         }
     }
@@ -1346,7 +1346,7 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
             if let Err(e) = reconcile_agents(&st).await {
                 warn!(error = %e, "agent reconciliation failed");
             }
-            // Sync bot identity (name) to NeboLoop
+            // Sync bot identity (name) to NeboAI
             sync_bot_identity(&st).await;
             // Refresh content protection license keys for sealed .napp files
             if let Err(e) = refresh_license_keys(&st).await {
@@ -1358,7 +1358,7 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
     Ok(())
 }
 
-/// Sync the bot's display name to NeboLoop from the local agent profile.
+/// Sync the bot's display name to NeboAI from the local agent profile.
 pub(crate) async fn sync_bot_identity(state: &AppState) {
     let name = state
         .store
@@ -1375,12 +1375,12 @@ pub(crate) async fn sync_bot_identity(state: &AppState) {
         Err(_) => return,
     };
     match api.update_bot_identity(&name, "").await {
-        Ok(_) => info!(name = %name, "synced bot identity to NeboLoop"),
+        Ok(_) => info!(name = %name, "synced bot identity to NeboAI"),
         Err(e) => warn!(error = %e, "failed to sync bot identity"),
     }
 }
 
-/// Reconcile agents: sync all local agents (enabled AND disabled) to NeboLoop.
+/// Reconcile agents: sync all local agents (enabled AND disabled) to NeboAI.
 /// Only deregister agents that are truly deleted locally, not just paused.
 async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     let api = build_api_client(state)?;
@@ -1457,9 +1457,9 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     Ok(())
 }
 
-/// Try to refresh the NeboLoop OAuth token using the stored refresh_token.
+/// Try to refresh the NeboAI OAuth token using the stored refresh_token.
 /// Returns the new access_token if successful, or None.
-async fn refresh_neboloop_token(
+async fn refresh_neboai_token(
     state: &AppState,
     profile: &db::models::AuthProfile,
 ) -> Option<String> {
@@ -1471,7 +1471,7 @@ async fn refresh_neboloop_token(
         .unwrap_or_default();
     let refresh_token = metadata.get("refresh_token").filter(|t| !t.is_empty())?;
 
-    let api_url = &state.config.neboloop.api_url;
+    let api_url = &state.config.neboai.api_url;
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -1529,17 +1529,17 @@ async fn refresh_neboloop_token(
         profile.auth_type.as_deref(),
         Some(&metadata_json),
     );
-    info!("NeboLoop OAuth token refreshed successfully");
+    info!("NeboAI OAuth token refreshed successfully");
 
     Some(token_resp.access_token)
 }
 
 /// Core NEBO code redemption logic. Called by both:
 /// - `handle_nebo_code()` (chat-based code interception)
-/// - `connect_handler()` (HTTP POST /neboloop/connect)
+/// - `connect_handler()` (HTTP POST /neboai/connect)
 pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, NeboError> {
     let bot_id = config::ensure_bot_id();
-    let api_server = state.config.neboloop.api_url.clone();
+    let api_server = state.config.neboai.api_url.clone();
 
     // 1. Redeem code (pre-auth, standalone)
     let resp = comm::api::redeem_code(&api_server, code, "nebo-rs", "desktop", &bot_id)
@@ -1552,7 +1552,7 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
     }
 
     // Store connection token as auth profile
-    crate::handlers::neboloop::store_neboloop_profile(
+    crate::handlers::neboai::store_neboai_profile(
         state,
         &api_server,
         &resp.id,                 // owner_id from redeem response
@@ -1565,7 +1565,7 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
     .map_err(|e| NeboError::Internal(format!("store profile: {e}")))?;
 
     // 3. Activate connection
-    activate_neboloop(state).await?;
+    activate_neboai(state).await?;
 
     Ok(bot_id)
 }
@@ -1614,7 +1614,7 @@ pub(crate) async fn deregister_agent_from_loop(
     let personal = loops
         .first()
         .ok_or_else(|| NeboError::Internal("bot not in any loop".into()))?;
-    // NeboLoop DELETE requires the agent UUID, not the slug.
+    // NeboAI DELETE requires the agent UUID, not the slug.
     // Look up the remote agent by slug to get its UUID.
     let agents = api
         .list_agents(&personal.loop_id)
@@ -1624,7 +1624,7 @@ pub(crate) async fn deregister_agent_from_loop(
         .iter()
         .find(|a| a.slug == agent_slug)
         .ok_or_else(|| {
-            NeboError::Internal(format!("agent '{}' not found on NeboLoop", agent_slug))
+            NeboError::Internal(format!("agent '{}' not found on NeboAI", agent_slug))
         })?;
     api.deregister_agent(&personal.loop_id, &remote.id)
         .await
@@ -1633,9 +1633,9 @@ pub(crate) async fn deregister_agent_from_loop(
     Ok(())
 }
 
-/// Refresh license keys for sealed .napp files from NeboLoop.
+/// Refresh license keys for sealed .napp files from NeboAI.
 ///
-/// Called after NeboLoop connection is established (in activate_neboloop).
+/// Called after NeboAI connection is established (in activate_neboai).
 /// Fetches fresh keys for all sealed artifacts, stores them in the DB cache,
 /// and triggers a skill reload so newly unlocked content becomes available.
 pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboError> {

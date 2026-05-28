@@ -587,7 +587,7 @@ fn seed_napp_files_recursive(dir: &Path, dest_base: &Path, src_base: &Path) -> u
 ///
 /// Plugins use a different directory layout than skills/agents, so we can't
 /// just copy the .napp and let Phase 3 handle it. Instead we:
-/// 1. Verify the .napp envelope with the embedded NeboLoop public key
+/// 1. Verify the .napp envelope with the embedded NeboAI public key
 /// 2. Read plugin.json from the tar.gz to get slug + version
 /// 3. Skip if nebo/plugins/<slug>/<version>/ already exists
 /// 4. Store the .napp and extract alongside

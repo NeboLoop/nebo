@@ -4,7 +4,7 @@ use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use db::Store;
 
-/// PublisherTool manages publishing skills and agents to NeboLoop marketplace.
+/// PublisherTool manages publishing skills and agents to NeboAI marketplace.
 pub struct PublisherTool {
     store: Arc<Store>,
 }
@@ -24,9 +24,9 @@ impl PublisherTool {
             return ToolResult::error("'name' is required");
         }
 
-        let api = match crate::build_neboloop_api(&self.store) {
+        let api = match crate::build_neboai_api(&self.store) {
             Ok(a) => a,
-            Err(e) => return ToolResult::error(format!("NeboLoop connection required: {}", e)),
+            Err(e) => return ToolResult::error(format!("NeboAI connection required: {}", e)),
         };
 
         match artifact_type {
@@ -38,7 +38,7 @@ impl PublisherTool {
 
     async fn publish_agent(
         &self,
-        api: &comm::api::NeboLoopApi,
+        api: &comm::api::NeboAIApi,
         name: &str,
         version: &str,
         visibility: &str,
@@ -92,7 +92,7 @@ impl PublisherTool {
 
     async fn publish_skill(
         &self,
-        api: &comm::api::NeboLoopApi,
+        api: &comm::api::NeboAIApi,
         name: &str,
         version: &str,
         visibility: &str,
@@ -164,7 +164,7 @@ impl PublisherTool {
 
     async fn maybe_submit(
         &self,
-        api: &comm::api::NeboLoopApi,
+        api: &comm::api::NeboAIApi,
         artifact_id: &str,
         version: &str,
         visibility: &str,
@@ -174,33 +174,33 @@ impl PublisherTool {
         if visibility == "public" {
             match api.submit_for_review(artifact_id, version).await {
                 Ok(_) => ToolResult::ok(format!(
-                    "Published **{}** ({}) v{} to NeboLoop and submitted for marketplace review.\nArtifact ID: {}",
+                    "Published **{}** ({}) v{} to NeboAI and submitted for marketplace review.\nArtifact ID: {}",
                     name, artifact_type, version, artifact_id
                 )),
                 Err(e) => ToolResult::ok(format!(
-                    "Published **{}** ({}) v{} to NeboLoop (artifact: {}) but review submission failed: {}",
+                    "Published **{}** ({}) v{} to NeboAI (artifact: {}) but review submission failed: {}",
                     name, artifact_type, version, artifact_id, e
                 )),
             }
         } else {
             ToolResult::ok(format!(
-                "Published **{}** ({}) v{} to NeboLoop as {}.\nArtifact ID: {}",
+                "Published **{}** ({}) v{} to NeboAI as {}.\nArtifact ID: {}",
                 name, artifact_type, version, visibility, artifact_id
             ))
         }
     }
 
     async fn handle_list(&self) -> ToolResult {
-        let api = match crate::build_neboloop_api(&self.store) {
+        let api = match crate::build_neboai_api(&self.store) {
             Ok(a) => a,
-            Err(e) => return ToolResult::error(format!("NeboLoop connection required: {}", e)),
+            Err(e) => return ToolResult::error(format!("NeboAI connection required: {}", e)),
         };
 
         let skills_resp = api.list_skills(None, None, Some(1), Some(100)).await;
         let skills = skills_resp.map(|r| r.skills).unwrap_or_default();
 
         if skills.is_empty() {
-            return ToolResult::ok("No published artifacts on NeboLoop.");
+            return ToolResult::ok("No published artifacts on NeboAI.");
         }
 
         let mut out = String::from("## Published Artifacts\n\n");
@@ -221,12 +221,12 @@ impl PublisherTool {
     async fn handle_status(&self, input: &serde_json::Value) -> ToolResult {
         let id = input["id"].as_str().unwrap_or("");
         if id.is_empty() {
-            return ToolResult::error("'id' is required (artifact ID from NeboLoop)");
+            return ToolResult::error("'id' is required (artifact ID from NeboAI)");
         }
 
-        let api = match crate::build_neboloop_api(&self.store) {
+        let api = match crate::build_neboai_api(&self.store) {
             Ok(a) => a,
-            Err(e) => return ToolResult::error(format!("NeboLoop connection required: {}", e)),
+            Err(e) => return ToolResult::error(format!("NeboAI connection required: {}", e)),
         };
 
         match api.get_skill(id).await {
@@ -249,10 +249,10 @@ impl DynTool for PublisherTool {
     }
 
     fn description(&self) -> String {
-        "Publish skills and agents to NeboLoop marketplace.\n\n\
+        "Publish skills and agents to NeboAI marketplace.\n\n\
          Actions:\n\
-         - publish: publish a local skill or agent to NeboLoop\n\
-         - list: list your published artifacts on NeboLoop\n\
+         - publish: publish a local skill or agent to NeboAI\n\
+         - list: list your published artifacts on NeboAI\n\
          - status: check review/publication status of an artifact\n\n\
          EXAMPLES:\n  \
          publisher(action: \"publish\", type: \"agent\", name: \"marketing-manager\", version: \"1.0.0\", visibility: \"private\")\n  \
@@ -292,7 +292,7 @@ impl DynTool for PublisherTool {
                 },
                 "id": {
                     "type": "string",
-                    "description": "NeboLoop artifact ID (for status)"
+                    "description": "NeboAI artifact ID (for status)"
                 }
             },
             "required": ["action"]

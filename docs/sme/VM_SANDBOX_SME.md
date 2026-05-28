@@ -754,7 +754,7 @@ Do NOT use it for:
             "pypi.org", "files.pythonhosted.org",
             "github.com",
             "crates.io", "index.crates.io", "static.crates.io",
-            "neboloop.com", "api.neboloop.com"
+            "neboai.com", "api.neboai.com"
         ],
         "deniedDomains": [],
         "allowLocalBinding": true,

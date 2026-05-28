@@ -133,7 +133,7 @@ crates/db/
       refresh_tokens.rs # JWT refresh tokens
       provider_models.rs # AI model catalog
       event_dedup.rs    # Event fingerprint deduplication
-      license_keys.rs   # License key cache (NeboLoop marketplace)
+      license_keys.rs   # License key cache (NeboAI marketplace)
   migrations/
     0001_initial_schema.sql ... 0092_agent_soul.sql   # 90+ migration files
 ```
@@ -497,7 +497,7 @@ As of the current codebase: **92 migrations** (0001 through 0092, with some gaps
 | `commander_edges`               | Visual graph edges                        | TEXT (UUID)|
 | `a2ui_surfaces`                 | Agent-to-UI surfaces                      | TEXT (UUID)|
 | `event_dedup`                   | Event fingerprint deduplication           | TEXT       |
-| `license_keys`                  | Cached license keys (NeboLoop)            | TEXT       |
+| `license_keys`                  | Cached license keys (NeboAI)            | TEXT       |
 | `oauth_connections`             | OAuth provider connections                | TEXT (UUID)|
 | `channels`                      | Communication channels                    | TEXT (UUID)|
 | `agent_profile`                 | Agent personality (singleton)             | INTEGER    |

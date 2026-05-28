@@ -540,7 +540,7 @@ impl DynTool for SkillTool {
                         // Protect marketplace (installed) skills from modification
                         if matches!(skill.source, SkillSource::Installed) {
                             return ToolResult::error(format!(
-                                "Cannot update marketplace skill '{}'. It was installed from NeboLoop and is read-only.",
+                                "Cannot update marketplace skill '{}'. It was installed from NeboAI and is read-only.",
                                 name
                             ));
                         }
@@ -579,7 +579,7 @@ impl DynTool for SkillTool {
                     if let Some(skill) = self.loader.get(name).await {
                         if matches!(skill.source, SkillSource::Installed) {
                             return ToolResult::error(format!(
-                                "Cannot delete marketplace skill '{}'. It was installed from NeboLoop and is read-only.",
+                                "Cannot delete marketplace skill '{}'. It was installed from NeboAI and is read-only.",
                                 name
                             ));
                         }
@@ -765,11 +765,11 @@ impl DynTool for SkillTool {
                         }
                     };
 
-                    let api = match crate::build_neboloop_api(store) {
+                    let api = match crate::build_neboai_api(store) {
                         Ok(a) => a,
                         Err(e) => {
                             return ToolResult::error(format!(
-                                "NeboLoop connection required: {}",
+                                "NeboAI connection required: {}",
                                 e
                             ));
                         }
@@ -815,11 +815,11 @@ impl DynTool for SkillTool {
                             );
                         }
                     };
-                    let api = match crate::build_neboloop_api(store) {
+                    let api = match crate::build_neboai_api(store) {
                         Ok(a) => a,
                         Err(e) => {
                             return ToolResult::error(format!(
-                                "NeboLoop connection required: {}",
+                                "NeboAI connection required: {}",
                                 e
                             ));
                         }
@@ -876,11 +876,11 @@ impl DynTool for SkillTool {
                             return ToolResult::error("rate not available — store not configured");
                         }
                     };
-                    let api = match crate::build_neboloop_api(store) {
+                    let api = match crate::build_neboai_api(store) {
                         Ok(a) => a,
                         Err(e) => {
                             return ToolResult::error(format!(
-                                "NeboLoop connection required: {}",
+                                "NeboAI connection required: {}",
                                 e
                             ));
                         }

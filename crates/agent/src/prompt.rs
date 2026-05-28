@@ -53,9 +53,9 @@ pub struct DynamicContext {
     pub model_name: String,
     pub active_task: String,
     pub summary: String,
-    /// Whether this message arrived via NeboLoop (comm channel).
-    pub neboloop_connected: bool,
-    /// The channel this message arrived on (e.g., "web", "neboloop", "mcp").
+    /// Whether this message arrived via NeboAI (comm channel).
+    pub neboai_connected: bool,
+    /// The channel this message arrived on (e.g., "web", "neboai", "mcp").
     pub channel: String,
     /// Work tasks for the current session (synced from pending_tasks).
     pub work_tasks: Vec<crate::steering::WorkTask>,
@@ -140,7 +140,7 @@ const SECTION_CAPABILITIES: &str = r#"# Doing tasks
  - If an approach fails, diagnose why before switching tactics — read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. Escalate to the user with agent(resource: "ask") only when you're genuinely stuck after investigation, not as a first response to friction.
  - Avoid over-engineering. Only make changes that are directly requested or clearly necessary. Keep solutions simple and focused.
  - If the user asks for help inform them of the following:
-   - For help, visit https://neboloop.com"#;
+   - For help, visit https://neboai.com"#;
 
 const SECTION_TOOLS_DECLARATION: &str = r#"## Your Tools
 
@@ -860,7 +860,7 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     // Build model identity line — for Janus gateway, use branded name
     let model_line = if dctx.provider_name == "janus" || dctx.model_name.starts_with("nebo-") {
         format!(
-            "Model: neboloop/{} — you are Nebo, NOT Claude, GPT, Gemini, or any other model. Never claim to be a specific LLM.",
+            "Model: neboai/{} — you are Nebo, NOT Claude, GPT, Gemini, or any other model. Never claim to be a specific LLM.",
             dctx.model_name
         )
     } else if dctx.provider_name.is_empty() && dctx.model_name.is_empty() {
@@ -884,7 +884,7 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     };
 
     sb.push_str(&format!(
-        "\n\n[System Context]\n{}\nDate: {}\nTime: {}\nTimezone: {}\nComputer: {}\nOS: {} ({})\nNeboLoop: {}",
+        "\n\n[System Context]\n{}\nDate: {}\nTime: {}\nTimezone: {}\nComputer: {}\nOS: {} ({})\nNeboAI: {}",
         model_line,
         full_date_str,
         time_str,
@@ -892,12 +892,12 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         hostname,
         os_name,
         std::env::consts::ARCH,
-        if dctx.neboloop_connected { "connected" } else { "not connected" },
+        if dctx.neboai_connected { "connected" } else { "not connected" },
     ));
 
-    // If this message came through NeboLoop, tell the agent
-    if dctx.channel == "neboloop" {
-        sb.push_str("\nMessage source: NeboLoop (this message was sent to you through the NeboLoop network — you ARE connected and reachable)");
+    // If this message came through NeboAI, tell the agent
+    if dctx.channel == "neboai" {
+        sb.push_str("\nMessage source: NeboAI (this message was sent to you through the NeboAI network — you ARE connected and reachable)");
     }
 
     // 2b. Model-specific execution guidance (non-Claude models need enforcement)
@@ -1109,7 +1109,7 @@ mod tests {
             model_name: "claude-sonnet-4".to_string(),
             active_task: "Build a website".to_string(),
             summary: "User asked about web development".to_string(),
-            neboloop_connected: false,
+            neboai_connected: false,
             channel: "web".to_string(),
             work_tasks: vec![],
             tool_doc_cache: vec![],

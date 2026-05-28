@@ -3,7 +3,7 @@
 Comprehensive Subject Matter Expert document covering the full chat pipeline from
 frontend WebSocket through agent runner and back, including all data structures,
 streaming events, session management, lane concurrency, DB schema, codes system,
-NeboLoop comm integration, and frontend rendering.
+NeboAI comm integration, and frontend rendering.
 
 **Status:** Current (Rust implementation) | **Last updated:** 2026-05-15
 
@@ -128,7 +128,7 @@ ClientHub.broadcast() ──> all connected WS clients
 
 ### Design Principle
 
-**ONE entry point for all chat.** WebSocket, REST, and NeboLoop comm messages all
+**ONE entry point for all chat.** WebSocket, REST, and NeboAI comm messages all
 build a `ChatConfig` and call `run_chat()`. No separate code paths.
 
 ---
@@ -250,12 +250,12 @@ pub struct ChatConfig {
     pub prompt: String,           // user message text
     pub system: String,           // custom system prompt (empty = modular default)
     pub user_id: String,          // owner for scoping
-    pub channel: String,          // "web", "neboloop", etc.
+    pub channel: String,          // "web", "neboai", etc.
     pub origin: Origin,           // Origin::User, Origin::Comm, etc.
     pub agent_id: String,         // agent isolation (empty = main agent)
     pub cancel_token: CancellationToken,
     pub lane: String,             // which lane to enqueue on
-    pub comm_reply: Option<CommReplyConfig>,  // reply-back config for NeboLoop
+    pub comm_reply: Option<CommReplyConfig>,  // reply-back config for NeboAI
     pub entity_config: Option<ResolvedEntityConfig>,  // per-entity overrides (see §15)
     pub images: Vec<ai::ImageContent>,  // base64-encoded image attachments
     pub entity_name: String,      // display name for RunRegistry
@@ -266,9 +266,9 @@ pub struct ChatConfig {
 }
 
 pub struct CommReplyConfig {
-    pub provider: String,         // "neboloop" or future: "slack"
+    pub provider: String,         // "neboai" or future: "slack"
     pub topic: String,            // "chat" or "dm"
-    pub conversation_id: String,  // NeboLoop conversation thread
+    pub conversation_id: String,  // NeboAI conversation thread
 }
 ```
 
@@ -279,7 +279,7 @@ pub struct CommReplyConfig {
 | WebSocket (companion) | companion chat UUID | `MAIN` | `User` | `None` |
 | WebSocket (agent) | `agent:<agentId>:web` | `MAIN` | `User` | `None` |
 | REST `/agents/:id/chat` | `agent:<agentId>:web` | `MAIN` | `User` | `None` |
-| NeboLoop comm | `neboloop:<type>:<convId>` | `COMM` | `Comm` | `Some(...)` |
+| NeboAI comm | `neboai:<type>:<convId>` | `COMM` | `Comm` | `Some(...)` |
 
 ### run_chat() Flow
 
@@ -314,7 +314,7 @@ pub struct CommReplyConfig {
 ### Helper Functions
 
 - `md_to_html(md: &str) -> String` — converts markdown to HTML via pulldown-cmark (tables + strikethrough)
-- `send_to_channel(provider, comm_manager, channel_providers, msg) -> Result` — routes CommMessage to correct provider (neboloop fast path, or lookup in registry)
+- `send_to_channel(provider, comm_manager, channel_providers, msg) -> Result` — routes CommMessage to correct provider (neboai fast path, or lookup in registry)
 - `generate_chat_title_if_needed()` — spawned async, non-fatal on error, calls cheapest provider with transcript snippet
 
 ---
@@ -956,7 +956,7 @@ pub struct LaneManager {
 | `subagent` | `lanes::SUBAGENT` | 0 (unlimited) | Sub-agent tasks |
 | `nested` | `lanes::NESTED` | 0 (unlimited) | Nested calls |
 | `heartbeat` | `lanes::HEARTBEAT` | 0 (unlimited) | Proactive ticks |
-| `comm` | `lanes::COMM` | 0 (unlimited) | NeboLoop messages |
+| `comm` | `lanes::COMM` | 0 (unlimited) | NeboAI messages |
 | `dev` | `lanes::DEV` | 0 (unlimited) | Developer assistant |
 | `desktop` | `lanes::DESKTOP` | 1 | One screen, one mouse |
 
@@ -1132,7 +1132,7 @@ pub struct AppState {
     pub tools: Arc<Registry>,                   // Tool registry
     pub lanes: Arc<LaneManager>,                // Per-lane task queuing
     pub run_registry: RunRegistry,              // Global run tracking
-    pub comm_manager: Arc<PluginManager>,       // NeboLoop comm plugin
+    pub comm_manager: Arc<PluginManager>,       // NeboAI comm plugin
     pub channel_providers: Arc<RwLock<HashMap<String, Arc<dyn ChannelProvider>>>>,
     pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     pub ask_channels: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
@@ -1179,10 +1179,10 @@ pub struct JanusUsage {
 
 **File:** `crates/server/src/lib.rs`
 
-### Message Flow: NeboLoop → Agent
+### Message Flow: NeboAI → Agent
 
 ```
-NeboLoop Gateway ──WS──> NeboLoopPlugin ──> PluginManager.message_handler
+NeboAI Gateway ──WS──> NeboAIPlugin ──> PluginManager.message_handler
                                                       |
                                               handle_comm_message()
                                                       |
@@ -1196,11 +1196,11 @@ NeboLoop Gateway ──WS──> NeboLoopPlugin ──> PluginManager.message_ha
 1. **Install events** (`topic == "installs"`): Route to napp registry
 2. **Chat/DM** (`topic == "chat"` or `"dm"`):
    - Extract text from content (JSON `.text` field or plain text)
-   - Build session key: `"neboloop:chat:<conversation_id>"` or `"neboloop:dm:<conversation_id>"`
+   - Build session key: `"neboai:chat:<conversation_id>"` or `"neboai:dm:<conversation_id>"`
    - Build `ChatConfig` with:
      - `origin: Origin::Comm`
      - `lane: lanes::COMM`
-     - `comm_reply: Some(CommReplyConfig { provider: "neboloop", topic, conversation_id })`
+     - `comm_reply: Some(CommReplyConfig { provider: "neboai", topic, conversation_id })`
    - Call `run_chat(&state, config)`
    - Emit into event bus for agent triggers
 3. **Other topics**: Emit into event bus + broadcast to frontend as `"comm_message"`
@@ -1264,7 +1264,7 @@ if let Some((code_type, code)) = crate::codes::detect_code(&prompt) {
 6. Always broadcast `"chat_complete"` (resets frontend loading state)
 
 Per-type handlers:
-- **NEBO**: `redeem_nebo_code()` → store bot_id + token → activate NeboLoop
+- **NEBO**: `redeem_nebo_code()` → store bot_id + token → activate NeboAI
 - **SKILL**: `install_skill()` → persist to filesystem → reload skill loader → cascade deps
 - **WORK**: `install_workflow()` → persist to DB + filesystem → cascade deps
 - **AGNT**: `install_agent()` → clean reinstall → persist → broadcast `agent_installed` → background cascade → auth sweep → workflow bindings → auto-activate
@@ -1284,7 +1284,7 @@ for Stripe checkout redirect. Frontend shows payment phase in CodeInstallModal.
 - Auth sweep: checks plugins for pending OAuth (broadcasts `agent_auth_required` if needed)
 - Workflow binding processing from typeConfig or DB frontmatter
 - Auto-activation only if no auth required (wizard completes first)
-- NeboLoop registration for owner's personal loop
+- NeboAI registration for owner's personal loop
 
 ### Frontend — CodeInstallModal
 
@@ -1602,7 +1602,7 @@ CREATE TABLE entity_config (
 1. **Frontend**: Same WS send as above
 2. **dispatch_chat()**: `detect_code("SKIL-RFBM-XCYT")` → `Some((Skill, "SKIL-RFBM-XCYT"))`
 3. **codes::handle_code()**: Broadcasts `"code_processing"`, calls `handle_skill_code()`
-4. **handle_skill_code()**: API call to NeboLoop, persists skill, reloads skill loader, cascades deps
+4. **handle_skill_code()**: API call to NeboAI, persists skill, reloads skill loader, cascades deps
 5. Broadcasts `"code_result"` with success + artifact name
 6. Broadcasts `"chat_complete"`
 7. **Frontend**: Shows code processing/result UI, resets loading state
@@ -2163,7 +2163,7 @@ in `Runner::run()`. Visible to LLM, invisible to frontend.
 |-----------|---------|--------|---------------|
 | **@Mention** | `<@id>` in user message | Named local agent | Same thread (via `originAgentId`) |
 | **Spawn/Orchestrate** | Tool call `bot(resource: "task")` | Anonymous sub-agent | Parent's tool result |
-| **Loop DM** | Tool call `loop(resource: "dm")` | Remote agent via NeboLoop | Separate conversation |
+| **Loop DM** | Tool call `loop(resource: "dm")` | Remote agent via NeboAI | Separate conversation |
 
 ---
 

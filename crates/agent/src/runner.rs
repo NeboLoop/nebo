@@ -2065,7 +2065,7 @@ async fn run_loop(
             model_name: selected_model_name.to_string(),
             active_task: active_task.clone(),
             summary: summary.clone(),
-            neboloop_connected: channel == "neboloop",
+            neboai_connected: channel == "neboai",
             channel: channel.to_string(),
             work_tasks: work_tasks.clone(),
             tool_doc_cache: tool_doc_cache.clone(),

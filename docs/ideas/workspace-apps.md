@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Status** | Exploratory Draft |
-| **Author** | NeboLoop |
+| **Author** | NeboAI |
 | **Date** | May 6, 2026 |
 | **Classification** | Internal / Confidential |
 
@@ -13,7 +13,7 @@
 
 ## 1. Overview
 
-This document explores adding a new capability to Nebo: the ability for static web applications (HTML/CSS/JS bundles) to be installed via the NeboLoop marketplace and launched as independent Tauri windows with access to a full HTTP client, WebSocket support, and the Nebo agent/tool ecosystem.
+This document explores adding a new capability to Nebo: the ability for static web applications (HTML/CSS/JS bundles) to be installed via the NeboAI marketplace and launched as independent Tauri windows with access to a full HTTP client, WebSocket support, and the Nebo agent/tool ecosystem.
 
 This is an exploratory PRD. Its purpose is to articulate the opportunity, define the architecture at a conceptual level, surface open questions, and establish a framework for deciding whether to move to a full specification.
 
@@ -27,7 +27,7 @@ This creates three gaps:
 
 - **Users leave Nebo** to interact with the outputs their agents produce. Every context switch is a leakage point.
 - **Developers are constrained** to conversational interfaces for agent interaction. Many workflows need spatial, visual, or data-dense UIs that chat can't provide.
-- **The marketplace is limited.** NeboLoop can distribute agent configurations, skills, and plugins — but not full applications. This caps the ceiling on what developers can build and sell.
+- **The marketplace is limited.** NeboAI can distribute agent configurations, skills, and plugins — but not full applications. This caps the ceiling on what developers can build and sell.
 
 Meanwhile, users are already running web-based tools alongside Nebo. Every one of those browser tabs is a distribution opportunity we're not capturing.
 
@@ -35,7 +35,7 @@ Meanwhile, users are already running web-based tools alongside Nebo. Every one o
 
 ## 3. Proposed Solution
 
-Allow static web applications to be packaged, distributed through NeboLoop, and launched as independent Tauri windows within the Nebo desktop application. Each app window runs in its own webview process with a defined IPC channel back to the Nebo core runtime.
+Allow static web applications to be packaged, distributed through NeboAI, and launched as independent Tauri windows within the Nebo desktop application. Each app window runs in its own webview process with a defined IPC channel back to the Nebo core runtime.
 
 ### 3.1 What Is an App Window?
 
@@ -60,11 +60,11 @@ Allow static web applications to be packaged, distributed through NeboLoop, and 
 
 The lifecycle of an app window follows the existing install-code primitive pattern:
 
-1. **Install.** User installs an app from NeboLoop via a structured install code (e.g., `APP-XXXX-XXXX-XXXX`). The app bundle — a ZIP archive containing static assets — is downloaded and stored locally alongside the app's permission manifest.
+1. **Install.** User installs an app from NeboAI via a structured install code (e.g., `APP-XXXX-XXXX-XXXX`). The app bundle — a ZIP archive containing static assets — is downloaded and stored locally alongside the app's permission manifest.
 2. **Launch.** User or agent triggers the app. Nebo spawns a new Tauri webview window, loads the app's `index.html`, and establishes a scoped IPC channel identified by the install code.
 3. **Run.** The app operates independently. It can call Nebo APIs (agents, tools, Janus) through the IPC bridge and make external network requests through the Rust proxy layer.
 4. **Close.** The window is destroyed. Ephemeral state is lost. Persistent state (if the app uses it) lives in a scoped local store managed by Nebo.
-5. **Update.** NeboLoop pushes a new bundle version. Nebo downloads and replaces the local copy. Next launch uses the new version.
+5. **Update.** NeboAI pushes a new bundle version. Nebo downloads and replaces the local copy. Next launch uses the new version.
 
 ### 4.2 Process Model
 
@@ -228,12 +228,12 @@ App windows are a new origin type in Nebo's existing origin wall system. The tag
 | App invokes dangerous tools | Tool access is declared in manifest. The Rust backend validates every tool call against the manifest. |
 | App escalates privileges via agent | Agent invocations are scoped by manifest. Agents themselves enforce the origin wall — they know the call came from an app, not a user. |
 | Cross-app contamination | Process isolation. No shared DOM, no shared storage, no direct app-to-app communication. |
-| Supply chain attack via app update | NeboLoop is the signing authority. Updates are signed and verified. Bundle integrity is checked at launch. |
+| Supply chain attack via app update | NeboAI is the signing authority. Updates are signed and verified. Bundle integrity is checked at launch. |
 | App persists malicious state | Storage is scoped and inspectable. Users can clear any app's storage. Uninstall removes all associated data. |
 
-### 8.3 NeboLoop Review
+### 8.3 NeboAI Review
 
-All apps distributed through NeboLoop undergo the same curation process as skills and plugins. The signing authority model already exists. Apps with Critical-level permissions (unrestricted network, system access) receive elevated review.
+All apps distributed through NeboAI undergo the same curation process as skills and plugins. The signing authority model already exists. Apps with Critical-level permissions (unrestricted network, system access) receive elevated review.
 
 ---
 
@@ -272,7 +272,7 @@ Developers run their app in a browser during development (the SDK provides a moc
 
 ### 9.4 Marketplace Monetization
 
-App developers can publish free or paid apps on NeboLoop. Nebo's existing marketplace infrastructure handles licensing, payments, and distribution. Apps that use Janus represent a recurring revenue component beyond the one-time purchase — every LLM call the app makes flows through the user's Janus balance.
+App developers can publish free or paid apps on NeboAI. Nebo's existing marketplace infrastructure handles licensing, payments, and distribution. Apps that use Janus represent a recurring revenue component beyond the one-time purchase — every LLM call the app makes flows through the user's Janus balance.
 
 ---
 
@@ -280,9 +280,9 @@ App developers can publish free or paid apps on NeboLoop. Nebo's existing market
 
 ### 10.1 What Changes
 
-NeboLoop currently distributes four artifact types: Roles (Agents), Skills, Extensions, and Integrations. App Windows add a fifth: **Applications**.
+NeboAI currently distributes four artifact types: Roles (Agents), Skills, Extensions, and Integrations. App Windows add a fifth: **Applications**.
 
-This is a qualitative shift. Skills and agents are building blocks. Applications are finished products. This moves NeboLoop from a component marketplace to an app store — while retaining the component marketplace underneath.
+This is a qualitative shift. Skills and agents are building blocks. Applications are finished products. This moves NeboAI from a component marketplace to an app store — while retaining the component marketplace underneath.
 
 ### 10.2 Vertical Packaging
 
@@ -300,7 +300,7 @@ One install code. One purchase. The user gets an agent-powered application, not 
 This positions Nebo as an **AI-native app runtime**, not just an agent platform. The competitive frame shifts:
 
 - vs. ChatGPT/other chat AI: "Nebo runs real applications, not just conversations."
-- vs. Electron/Tauri standalone apps: "Build your app once, distribute through NeboLoop, get AI superpowers and model routing for free."
+- vs. Electron/Tauri standalone apps: "Build your app once, distribute through NeboAI, get AI superpowers and model routing for free."
 - vs. browser-based SaaS: "Nebo apps have no CORS, local network access, native window presence, and an agent backbone."
 
 For the acquisition narrative, this expands Nebo's addressable surface from "AI agent platform" to "AI-native desktop operating environment" — a meaningfully larger story for potential acquirers.
@@ -356,7 +356,7 @@ If we move forward, we'd validate this capability against the following:
 
 - **Developer adoption:** At least 3 non-trivial apps built (1 internal, 2 external) within 90 days of SDK availability.
 - **User engagement:** App window sessions represent >30% of total Nebo usage time within 6 months.
-- **Marketplace impact:** Applications become the highest-revenue category in NeboLoop within 12 months.
+- **Marketplace impact:** Applications become the highest-revenue category in NeboAI within 12 months.
 - **Architectural soundness:** Zero security incidents attributable to the app window sandbox in the first year.
 
 ---

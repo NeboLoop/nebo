@@ -9,15 +9,15 @@
   import type {
     AccountStatusResponse,
     BillingPriceInfo,
-    NeboLoopBillingSubscriptionResponse,
-    NeboLoopBillingCheckoutResponse
+    NeboAIBillingSubscriptionResponse,
+    NeboAIBillingCheckoutResponse
   } from '$lib/api/neboComponents';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
   let isLoading = $state(true);
   let status = $state<AccountStatusResponse | null>(null);
   let allPrices = $state<BillingPriceInfo[]>([]);
-  let subscription = $state<NeboLoopBillingSubscriptionResponse | null>(null);
+  let subscription = $state<NeboAIBillingSubscriptionResponse | null>(null);
   let billingInterval = $state<'month' | 'year'>('month');
   let boostSelections = $state<Record<string, boolean>>({});
 
@@ -48,11 +48,11 @@
   onMount(() => {
     (async () => {
       try {
-        status = (await api.neboLoopAccountStatus()) as AccountStatusResponse;
+        status = (await api.neboAIAccountStatus()) as AccountStatusResponse;
         if (status?.connected) {
           const [pricesResp, subResp] = await Promise.allSettled([
-            api.neboLoopBillingPrices(),
-            api.neboLoopBillingSubscription()
+            api.neboAIBillingPrices(),
+            api.neboAIBillingSubscription()
           ]);
           if (pricesResp.status === 'fulfilled') allPrices = pricesResp.value?.prices || [];
           if (subResp.status === 'fulfilled') subscription = subResp.value;
@@ -101,7 +101,7 @@
       const priceIds = [price.stripePriceId ?? ''];
       if (selectedBoost) priceIds.push(selectedBoost.stripePriceId ?? '');
 
-      const data: NeboLoopBillingCheckoutResponse = await api.neboLoopBillingCheckout({ priceIds, uiMode: 'embedded' });
+      const data: NeboAIBillingCheckoutResponse = await api.neboAIBillingCheckout({ priceIds, uiMode: 'embedded' });
 
       if (!data.clientSecret) {
         throw new Error('Missing clientSecret from checkout response');
@@ -155,8 +155,8 @@
   </div>
 {:else if !status?.connected}
   <div class="text-center py-24">
-    <h1 class="text-2xl font-bold text-base-content mb-2">Connect NeboLoop</h1>
-    <p class="text-xs text-base-content/70 mb-6">Connect your NeboLoop account to view plans and upgrade.</p>
+    <h1 class="text-2xl font-bold text-base-content mb-2">Connect NeboAI</h1>
+    <p class="text-xs text-base-content/70 mb-6">Connect your NeboAI account to view plans and upgrade.</p>
     <a href="/settings/account" class="inline-flex h-9 px-4 items-center rounded-xl bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all">Go to Account</a>
   </div>
 

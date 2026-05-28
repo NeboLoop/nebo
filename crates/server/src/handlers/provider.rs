@@ -80,7 +80,7 @@ pub(crate) async fn reload_providers(state: &AppState) {
                     profile.model.clone().unwrap_or(default_model),
                 )))
             }
-            "neboloop" => {
+            "neboai" => {
                 let metadata: Option<serde_json::Value> = profile
                     .metadata
                     .as_ref()
@@ -112,7 +112,7 @@ pub(crate) async fn reload_providers(state: &AppState) {
                         info!("janus provider has no active models in catalog, skipping");
                         None
                     } else {
-                        let janus_url = &state.config.neboloop.janus_url;
+                        let janus_url = &state.config.neboai.janus_url;
                         let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
                         let bot_id = config::read_bot_id().unwrap_or_default();
                         // Janus authenticates via X-Bot-ID header; api_key (OAuth token) is optional
@@ -136,7 +136,7 @@ pub(crate) async fn reload_providers(state: &AppState) {
                     info!(
                         profile_id = %profile.id,
                         has_metadata = metadata.is_some(),
-                        "neboloop profile found but janus_provider not enabled, skipping AI provider"
+                        "neboai profile found but janus_provider not enabled, skipping AI provider"
                     );
                     None
                 }
@@ -148,7 +148,7 @@ pub(crate) async fn reload_providers(state: &AppState) {
             // providers and direct API keys take priority.  This prevents
             // Nebo credits from being consumed when the user has enabled
             // a CLI provider that uses their own subscription.
-            if profile.provider == "neboloop" {
+            if profile.provider == "neboai" {
                 gateway_providers.push(p);
             } else {
                 providers.push(p);
@@ -414,8 +414,8 @@ pub async fn test_provider(
             let provider = ai::OllamaProvider::new(base_url, model);
             test_provider_connection(&provider).await
         }
-        "neboloop" => {
-            let janus_url = &state.config.neboloop.janus_url;
+        "neboai" => {
+            let janus_url = &state.config.neboai.janus_url;
             let bot_id = config::read_bot_id().unwrap_or_default();
             let mut provider = ai::OpenAIProvider::with_base_url(
                 profile.api_key.clone(),

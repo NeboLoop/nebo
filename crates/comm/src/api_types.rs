@@ -1,4 +1,4 @@
-//! DTOs for the NeboLoop REST API covering all 5 hierarchy layers + loops.
+//! DTOs for the NeboAI REST API covering all 5 hierarchy layers + loops.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -99,7 +99,7 @@ pub struct AppsResponse {
 
 /// Single review on a skill/agent/plugin.
 ///
-/// Matches the `ReviewResponse` shape from the NeboLoop REST API
+/// Matches the `ReviewResponse` shape from the NeboAI REST API
 /// (`internal/api/types.go`). A review is left by either an owner (human)
 /// or a bot — distinguished by `reviewer_type` ("user", "owner", or "bot").
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,7 +385,7 @@ pub struct AgentDetail {
     pub agent_md: Option<String>,
 }
 
-/// Agent registered in a NeboLoop loop.
+/// Agent registered in a NeboAI loop.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentInfo {
@@ -784,7 +784,7 @@ pub struct ChatMessage {
 
 // ── Event Types ──────────────────────────────────────────────────────
 
-/// Install event from NeboLoop (tool installed/uninstalled/revoked).
+/// Install event from NeboAI (tool installed/uninstalled/revoked).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallEvent {

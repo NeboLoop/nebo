@@ -2,7 +2,7 @@
 
 Your personal AI assistant. Install skills, tools, workflows, and roles to make it smarter.
 
-Nebo lives on your computer — you name it, shape its personality, and it learns how you think. One persistent intelligence that compounds understanding the longer it stays with you. Extend it with capabilities from the [NeboLoop marketplace](https://neboloop.com) or build your own.
+Nebo lives on your computer — you name it, shape its personality, and it learns how you think. One persistent intelligence that compounds understanding the longer it stays with you. Extend it with capabilities from the [NeboAI marketplace](https://neboai.com) or build your own.
 
 ## Why Nebo
 
@@ -10,7 +10,7 @@ Nebo lives on your computer — you name it, shape its personality, and it learn
 - **It remembers.** Persistent memory across sessions — preferences, projects, people, patterns.
 - **It grows.** The longer you use it, the more useful it becomes. Install skills, tools, workflows, and roles from the marketplace to expand what it can do.
 - **It works.** Browser automation, file operations, shell commands, scheduling — one AI for your entire workflow.
-- **It's extensible.** A sandboxed app platform where developers build and distribute capabilities via [NeboLoop](https://neboloop.com).
+- **It's extensible.** A sandboxed app platform where developers build and distribute capabilities via [NeboAI](https://neboai.com).
 
 ## Install
 
@@ -18,7 +18,7 @@ Nebo lives on your computer — you name it, shape its personality, and it learn
 
 ```bash
 # Homebrew (recommended)
-brew install neboloop/tap/nebo
+brew install neboai/tap/nebo
 
 # Or download the .dmg installer from the latest release
 ```
@@ -77,7 +77,7 @@ Configure providers via the Web UI or `models.yaml` in your data directory.
 | **Web** | Fetch pages, search the web, full browser automation |
 | **Memory** | Store and recall facts, preferences, project context |
 | **Tasks** | Spawn parallel sub-agents, schedule recurring jobs |
-| **Communication** | Inter-agent messaging via NeboLoop |
+| **Communication** | Inter-agent messaging via NeboAI |
 
 Platform-specific capabilities (macOS: accessibility, calendar, contacts; Windows/Linux: desktop automation) are auto-detected.
 
@@ -143,7 +143,7 @@ Nebo has a sandboxed app platform. Developers build `.napp` packages that extend
 - **Deny-by-default permissions** — apps only access what their manifest declares
 - **Signed** — ED25519 signature verification for every app binary and manifest
 - **Compiled-only** — only native binaries accepted (Go, Rust, C, Zig). No interpreted languages.
-- **Distributed via NeboLoop** — install apps from the marketplace or deploy privately to your loop
+- **Distributed via NeboAI** — install apps from the marketplace or deploy privately to your loop
 
 See [Creating Apps](docs/CREATING_APPS.md) for the developer guide.
 
@@ -159,18 +159,18 @@ Reach your Nebo from anywhere:
 | **Discord** | Install the Discord channel app from the App Store |
 | **Slack** | Install the Slack channel app from the App Store |
 
-Channel apps are distributed through NeboLoop. All channels route to the same agent with the same memory and context.
+Channel apps are distributed through NeboAI. All channels route to the same agent with the same memory and context.
 
-## NeboLoop
+## NeboAI
 
-[NeboLoop](https://neboloop.com) is the AI assistant marketplace that powers Nebo's extensibility:
+[NeboAI](https://neboai.com) is the AI assistant marketplace that powers Nebo's extensibility:
 
 - **Marketplace** — discover and install skills, tools, workflows, roles, and apps built by the community
 - **Cloud integrations** — pre-built connectors like My Cloud (unified Google Workspace access: Gmail, Drive, Sheets, Docs, Contacts)
 - **Inter-agent communication** — your Nebo can collaborate with other Nebos in your loop
 - **Secure transport** — WebSocket-based binary protocol with JWT authentication
 
-Nebo works fully offline without NeboLoop if you have a local LLM (e.g., Ollama). The marketplace is opt-in.
+Nebo works fully offline without NeboAI if you have a local LLM (e.g., Ollama). The marketplace is opt-in.
 
 ## Security
 
@@ -217,8 +217,8 @@ cd ../../app && pnpm dev             # SvelteKit dev server (port 5173)
 
 ## Author
 
-**NeboLoop**
-- Website: [neboloop.com](https://neboloop.com)
+**NeboAI**
+- Website: [neboai.com](https://neboai.com)
 
 ## License
 

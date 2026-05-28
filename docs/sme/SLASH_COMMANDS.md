@@ -222,7 +222,7 @@ const CATEGORY_ORDER = { session: 0, model: 1, info: 2, agent: 3 };
 | `handleVerbose` | No | — |
 | `handleModelList` | Yes | `api.listModels()` |
 | `handleStatus` | Yes | `api.getSimpleAgentStatus()` + `api.getLanes()` |
-| `handleUsage` | Yes | `api.neboLoopJanusUsage()` |
+| `handleUsage` | Yes | `api.neboAIJanusUsage()` |
 | `handleExport` | No | — |
 | `handleLanes` | Yes | `api.getLanes()` |
 | `handleSearch` | Yes | `api.searchChatMessages({ query })` |
@@ -442,7 +442,7 @@ REST endpoints that slash commands query.
 | `/model` (no args) | `GET /api/v1/models` | `{ models: { [provider]: Model[] }, aliases: Alias[] }` |
 | `/status` | `GET /api/v1/agent/status` | `{ connected, agentId, uptime }` |
 | `/status` + `/lanes` | `GET /api/v1/agent/lanes` | `{ message: string }` |
-| `/usage` | `GET /api/v1/neboloop/janus/usage` | `{ session: Usage, weekly: Usage }` |
+| `/usage` | `GET /api/v1/neboai/janus/usage` | `{ session: Usage, weekly: Usage }` |
 | `/search` | `GET /api/v1/chats/search?query=...` | `{ messages: SearchResult[], total: number }` |
 | `/memory` (list) | `GET /api/v1/memories` | `{ memories: Memory[], total: number }` |
 | `/memory` (search) | `GET /api/v1/memories/search?query=...` | `{ memories: Memory[], total: number }` |

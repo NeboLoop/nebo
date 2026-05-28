@@ -223,7 +223,7 @@ onboarding          -- 5-step onboarding wizard
   onboarding.provider
   onboarding.apiKey
   onboarding.capabilities
-  onboarding.neboloop
+  onboarding.neboai
   onboarding.language
   onboarding.complete
   onboarding.capabilityNames

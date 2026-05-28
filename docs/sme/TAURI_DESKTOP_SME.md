@@ -33,7 +33,7 @@ webview window pointing at the server's HTTP port.
 |  |  - neboapp:// protocol        |  |  - SQLite (r2d2 pool)       |  |
 |  |  - Chrome native relay        |  |  - Tool registry             |  |
 |  |  - Window state persistence   |  |  - Memory system             |  |
-|  |  - Sleep/wake detection       |  |  - NeboLoop gateway          |  |
+|  |  - Sleep/wake detection       |  |  - NeboAI gateway          |  |
 |  |  - Drag-and-drop relay        |  |  - Plugin sandbox            |  |
 |  |                               |  |  - MCP bridge                |  |
 |  +-------------------------------+  +------------------------------+  |
@@ -425,8 +425,8 @@ Menu item IDs and actions:
 | `"show"` | Unminimize + show + focus the main window |
 | `"hide"` | Hide the main window |
 | `"check_update"` | Show + focus main window, then eval `window.__NEBO_CHECK_UPDATE__()` |
-| `"help"` | Open `https://neboloop.com/docs` in browser |
-| `"feedback"` | Open `https://github.com/NeboLoop/nebo/issues` in browser |
+| `"help"` | Open `https://neboai.com/docs` in browser |
+| `"feedback"` | Open `https://github.com/NeboAI/nebo/issues` in browser |
 | `"quit"` | `app.exit(0)` -- terminates the entire process |
 
 ### 5.3 Tray Icon Click
@@ -524,13 +524,13 @@ frontend's `window.__NEBO_INSERT_FILES__` global callback.
 ### 7.3 Sleep/Wake Recovery (RunEvent::Resumed)
 
 When the system wakes from sleep, Tauri fires `RunEvent::Resumed`. Nebo
-uses this to reconnect the NeboLoop WebSocket gateway:
+uses this to reconnect the NeboAI WebSocket gateway:
 
 ```rust
 .run(|_app, event| {
     if let tauri::RunEvent::Resumed { .. } = event {
         // Debounce: only reconnect if >5s since last resume
-        // Fire-and-forget POST to /api/v1/neboloop/reconnect
+        // Fire-and-forget POST to /api/v1/neboai/reconnect
     }
 });
 ```
@@ -541,7 +541,7 @@ fires if 5+ seconds have passed.
 
 **Reconnect method**: A raw TCP POST is used instead of an HTTP client to
 avoid adding extra dependencies. The request hits the local backend's
-`/api/v1/neboloop/reconnect` endpoint, which tears down the stale WS
+`/api/v1/neboai/reconnect` endpoint, which tears down the stale WS
 connection and re-establishes it.
 
 ```
@@ -552,7 +552,7 @@ Tauri RunEvent::Resumed
   +-- std::thread::spawn (fire-and-forget)
        |
        +-- TcpStream::connect("127.0.0.1:27895")
-       +-- POST /api/v1/neboloop/reconnect HTTP/1.1
+       +-- POST /api/v1/neboai/reconnect HTTP/1.1
 ```
 
 The server also has its own reconnect watcher with exponential backoff and
@@ -943,7 +943,7 @@ builds, the console remains visible for log output.
 {
   "productName": "Nebo",
   "version": "0.9.0",
-  "identifier": "dev.neboloop.nebo",
+  "identifier": "dev.neboai.nebo",
   "build": {
     "beforeDevCommand": "cd ../app && pnpm dev",
     "devUrl": "http://localhost:5173",
@@ -971,7 +971,7 @@ Key fields:
 | Field | Value | Purpose |
 |---|---|---|
 | `productName` | `"Nebo"` | Display name in OS, title bar |
-| `identifier` | `"dev.neboloop.nebo"` | Reverse-DNS bundle identifier |
+| `identifier` | `"dev.neboai.nebo"` | Reverse-DNS bundle identifier |
 | `build.beforeDevCommand` | `cd ../app && pnpm dev` | Auto-starts Vite dev server |
 | `build.devUrl` | `http://localhost:5173` | Vite dev server URL |
 | `build.frontendDist` | `../app/build` | Production SvelteKit output |

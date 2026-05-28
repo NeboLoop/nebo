@@ -1,4 +1,4 @@
-//! Human-readable NeboLoop traffic log for `tail -f`.
+//! Human-readable NeboAI traffic log for `tail -f`.
 //!
 //! Writes a single file with timestamped lines showing connects, joins,
 //! inbound deliveries, and outbound sends. File is truncated on each new
@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-/// DevLog writes human-readable NeboLoop traffic to a file for `tail -f`.
+/// DevLog writes human-readable NeboAI traffic to a file for `tail -f`.
 #[derive(Clone)]
 pub struct DevLog(Arc<Mutex<BufWriter<File>>>);
 

@@ -14,7 +14,7 @@ mod entity_config;
 mod files;
 mod integrations;
 mod memory;
-mod neboloop;
+mod neboai;
 mod notifications;
 mod plugins;
 mod provider;
@@ -54,7 +54,7 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .merge(integrations::routes())
         .merge(update::routes())
         .merge(files::routes())
-        .merge(neboloop::routes())
+        .merge(neboai::routes())
         .merge(workflows::routes())
         .merge(roles::routes())
         .merge(commander::routes())

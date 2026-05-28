@@ -52,7 +52,7 @@ event subsystem specifically.
   └──────────────┘  │
                     │
   ┌──────────────┐  │    ┌──────────┐        ┌─────────────────┐
-  │  NeboLoop    │  ├───>│ EventBus │───────> │ EventDispatcher │
+  │  NeboAI    │  ├───>│ EventBus │───────> │ EventDispatcher │
   │  comm msgs   │──┤    │ (mpsc)   │        │ (pattern match) │
   └──────────────┘  │    └──────────┘        └────────┬────────┘
                     │                                 │
@@ -81,9 +81,9 @@ against in-memory subscriptions and triggers inline workflow execution.
 
 ```rust
 pub struct Event {
-    pub source: String,              // e.g. "email.urgent", "neboloop.chat"
+    pub source: String,              // e.g. "email.urgent", "neboai.chat"
     pub payload: serde_json::Value,  // Arbitrary JSON
-    pub origin: String,              // Trace: "workflow:email-triage:run-550e" or "neboloop"
+    pub origin: String,              // Trace: "workflow:email-triage:run-550e" or "neboai"
     pub timestamp: u64,              // Unix epoch seconds
 }
 ```
@@ -92,7 +92,7 @@ pub struct Event {
 |-------|---------|--------|
 | `source` | Event type identifier, used for pattern matching | Emitter |
 | `payload` | Arbitrary data passed to triggered workflows | Emitter |
-| `origin` | Trace provenance — session key for emit tool, "neboloop" for comm, "mcp" for MCP | System |
+| `origin` | Trace provenance — session key for emit tool, "neboai" for comm, "mcp" for MCP | System |
 | `timestamp` | Unix epoch seconds when event was created | System |
 
 The `source` field is the primary routing key. The EventDispatcher matches it against
@@ -427,37 +427,37 @@ another event, which triggers another workflow, and so on. The practical limit i
 ## 11. System-Emitted Events
 
 The server emits events directly into the EventBus (not via EmitTool) for external
-messages arriving via NeboLoop:
+messages arriving via NeboAI:
 
 **File:** `crates/server/src/lib.rs`
 
-### NeboLoop Agent Space Messages (line 1172)
+### NeboAI Agent Space Messages (line 1172)
 
 ```rust
-source: format!("neboloop.agent_space.{}", agent_slug),
+source: format!("neboai.agent_space.{}", agent_slug),
 payload: { from, content, conversation_id, agent_slug },
-origin: "neboloop",
+origin: "neboai",
 ```
 
-Fired when an agent-to-agent message arrives via the NeboLoop broker.
+Fired when an agent-to-agent message arrives via the NeboAI broker.
 
-### NeboLoop Chat/DM Messages (line 1246)
+### NeboAI Chat/DM Messages (line 1246)
 
 ```rust
-source: format!("neboloop.{}", msg.topic),  // e.g. "neboloop.chat", "neboloop.dm"
+source: format!("neboai.{}", msg.topic),  // e.g. "neboai.chat", "neboai.dm"
 payload: { from, content, conversation_id },
-origin: "neboloop",
+origin: "neboai",
 ```
 
 Fired after the message has been dispatched to `run_chat()`. This allows agent
-event triggers to react to inbound NeboLoop messages.
+event triggers to react to inbound NeboAI messages.
 
-### NeboLoop Other Topic Messages (line 1263)
+### NeboAI Other Topic Messages (line 1263)
 
 ```rust
-source: format!("neboloop.{}", msg.topic),
+source: format!("neboai.{}", msg.topic),
 payload: { from, content, topic },
-origin: "neboloop",
+origin: "neboai",
 ```
 
 Catch-all for non-chat message types (e.g. webhooks, notifications).
@@ -466,15 +466,15 @@ Catch-all for non-chat message types (e.g. webhooks, notifications).
 
 | Source Pattern | When Emitted |
 |----------------|--------------|
-| `neboloop.agent_space.{slug}` | Agent-to-agent message |
-| `neboloop.chat` | Chat message from NeboLoop |
-| `neboloop.dm` | DM from NeboLoop |
-| `neboloop.{topic}` | Any other NeboLoop topic |
+| `neboai.agent_space.{slug}` | Agent-to-agent message |
+| `neboai.chat` | Chat message from NeboAI |
+| `neboai.dm` | DM from NeboAI |
+| `neboai.{topic}` | Any other NeboAI topic |
 
 Agent event triggers can subscribe to these patterns. Example:
 ```json
 {
-    "trigger": { "type": "event", "sources": ["neboloop.chat"] }
+    "trigger": { "type": "event", "sources": ["neboai.chat"] }
 }
 ```
 
@@ -656,9 +656,9 @@ in the calling code.
 | Emitter | Source Pattern | Origin | File |
 |---------|---------------|--------|------|
 | EmitTool (workflow activities) | User-defined | `ctx.session_key` | `tools/emit_tool.rs` |
-| NeboLoop agent_space messages | `neboloop.agent_space.{slug}` | `"neboloop"` | `server/lib.rs:1172` |
-| NeboLoop chat/DM messages | `neboloop.{topic}` | `"neboloop"` | `server/lib.rs:1246` |
-| NeboLoop other topics | `neboloop.{topic}` | `"neboloop"` | `server/lib.rs:1263` |
+| NeboAI agent_space messages | `neboai.agent_space.{slug}` | `"neboai"` | `server/lib.rs:1172` |
+| NeboAI chat/DM messages | `neboai.{topic}` | `"neboai"` | `server/lib.rs:1246` |
+| NeboAI other topics | `neboai.{topic}` | `"neboai"` | `server/lib.rs:1263` |
 | MCP server emit_event tool | User-defined | `"mcp"` | `handlers/mcp_server.rs:355` |
 | Plugin watch NDJSON auto-emit | `{plugin-slug}.{event-name}` (e.g. `gws.email.new`) | `"plugin:{slug}:{binding}"` | `agent/agent_worker.rs` |
 
@@ -679,8 +679,8 @@ the full NDJSON protocol, `PluginEventDef` schema, and multiplexing details.
 - `{domain}.{subdomain}.{action}` — e.g. `"api.webhook.received"`
 
 **System events:**
-- `neboloop.{topic}` — NeboLoop message events
-- `neboloop.agent_space.{slug}` — Agent-to-agent messages
+- `neboai.{topic}` — NeboAI message events
+- `neboai.agent_space.{slug}` — Agent-to-agent messages
 
 **Plugin events (via watch trigger auto-emit):**
 - `{plugin-slug}.{event-name}` — e.g. `"gws.email.new"`, `"gws.calendar.event"`
@@ -792,11 +792,11 @@ Workflow run status changes (started, completed, failed, cancelled) are broadcas
 WebSocket clients via `hub.broadcast()`. These are NOT events in the EventBus sense —
 they are UI notifications only.
 
-### Events and NeboLoop
+### Events and NeboAI
 
-NeboLoop is both a consumer and producer:
-- **Producer:** Inbound NeboLoop messages emit events into the EventBus
-- **Consumer:** Agents can subscribe to `neboloop.*` patterns to react to messages
+NeboAI is both a consumer and producer:
+- **Producer:** Inbound NeboAI messages emit events into the EventBus
+- **Consumer:** Agents can subscribe to `neboai.*` patterns to react to messages
 
 ---
 

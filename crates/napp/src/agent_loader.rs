@@ -22,7 +22,7 @@ use crate::agent::{AgentConfig, AgentDef, parse_agent, parse_agent_config};
 /// Where an agent was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentSource {
-    /// Installed from NeboLoop marketplace (sealed .napp archive).
+    /// Installed from NeboAI marketplace (sealed .napp archive).
     Installed,
     /// User-created (loose files in user/ directory).
     User,
@@ -49,7 +49,7 @@ pub struct LoadedAgent {
     pub frontmatter: String,
     /// Description from agent_def (for DB sync).
     pub description: String,
-    /// NeboLoop artifact UUID from manifest.json (marketplace agents only).
+    /// NeboAI artifact UUID from manifest.json (marketplace agents only).
     pub id: Option<String>,
     /// Theme CSS from theme.css (for A2UI workspace styling).
     pub theme_css: Option<String>,

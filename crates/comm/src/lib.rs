@@ -6,21 +6,21 @@ pub mod devlog;
 pub mod frame;
 mod loopback;
 mod manager;
-pub mod neboloop;
+pub mod neboai;
 mod types;
 pub mod ulid;
 pub mod wire;
 
 pub use loopback::LoopbackPlugin;
 pub use manager::PluginManager;
-pub use neboloop::NeboLoopPlugin;
+pub use neboai::NeboAIPlugin;
 pub use types::*;
 
 use std::collections::HashMap;
 
 /// CommPlugin defines the interface for communication transport plugins.
 /// Plugins run in-process. Implementations include loopback (testing),
-/// neboloop WebSocket, etc.
+/// neboai WebSocket, etc.
 #[async_trait::async_trait]
 pub trait CommPlugin: Send + Sync {
     /// Plugin identity.
@@ -94,8 +94,8 @@ pub trait CommPlugin: Send + Sync {
         None
     }
 
-    /// Look up the NeboLoop conversation ID for an agent by slug.
-    /// Used for forwarding local agent responses to NeboLoop.
+    /// Look up the NeboAI conversation ID for an agent by slug.
+    /// Used for forwarding local agent responses to NeboAI.
     async fn agent_space_conv_for_slug(&self, _slug: &str) -> Option<String> {
         None
     }
@@ -108,7 +108,7 @@ pub trait CommPlugin: Send + Sync {
 }
 
 /// Trait for channel providers that can receive streamed agent responses.
-/// NeboLoop implements this via CommPlugin.send(). Future channel plugins
+/// NeboAI implements this via CommPlugin.send(). Future channel plugins
 /// (Slack, Discord) implement this to receive responses from chat_dispatch.
 #[async_trait::async_trait]
 pub trait ChannelProvider: Send + Sync {

@@ -345,11 +345,11 @@ AggregateError [ECONNREFUSED]:
     at afterConnectMultiple (node:net:1715:7) (x6)
 2026-05-11T18:39:13.038526Z  INFO nebo_tools::skills::loader: loaded skills count=2559 installed_dir=/Users/almatuck/.nebo/nebo/skills user_dir=/Users/almatuck/.nebo/user/skills
 2026-05-11T18:39:13.039577Z  INFO nebo_agent::advisors::loader: loaded advisors count=5 dir=/Users/almatuck/.nebo/advisors
-2026-05-11T18:39:13.040899Z  INFO nebo_server: loaded Janus provider via NeboLoop model=nebo-1 janus_url=https://janus.neboloop.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-11T18:39:13.041264Z  INFO nebo_server: loaded AI provider provider=neboloop model=-
+2026-05-11T18:39:13.040899Z  INFO nebo_server: loaded Janus provider via NeboAI model=nebo-1 janus_url=https://janus.neboai.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-11T18:39:13.041264Z  INFO nebo_server: loaded AI provider provider=neboai model=-
 2026-05-11T18:39:13.045424Z  INFO nebo_server: sandbox runtime initialized
 2026-05-11T18:39:13.370787Z  INFO nebo_server: stored master encryption key in OS keyring
-2026-05-11T18:39:13.372503Z  INFO nebo_comm::manager: registered comm plugin plugin="neboloop" version="4.0.0"
+2026-05-11T18:39:13.372503Z  INFO nebo_comm::manager: registered comm plugin plugin="neboai" version="4.0.0"
 2026-05-11T18:39:13.372709Z  INFO nebo_comm::manager: registered comm plugin plugin="loopback" version="1.0.0"
 2026-05-11T18:39:13.373733Z  WARN nebo_napp::registry: installed tool missing extracted binary — run install again path=/Users/almatuck/.nebo/nebo/tools/13223420-93c8-4a94-b2c3-3947b76bf6f4/1.0.0.napp
 2026-05-11T18:39:13.373830Z  INFO nebo_napp::registry: tool discovery complete count=0
@@ -404,8 +404,8 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:39:13.392044Z  WARN nebo_napp::agent: skill ref is not a qualified name — cascade install may skip it skill_ref=meta-ads-creative
 2026-05-11T18:39:13.392299Z  INFO nebo_server: restored active agents from DB count=4
 2026-05-11T18:39:13.428085Z  INFO nebo_server: seeded provider_models from embedded catalog
-2026-05-11T18:39:13.720510Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=gmail +watch --project neboloop
-2026-05-11T18:39:13.722483Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=events +subscribe --target //calendar.googleapis.com/calendars/primary --event-types google.workspace.calendar.event.v1.created,google.workspace.calendar.event.v1.updated,google.workspace.calendar.event.v1.deleted --project neboloop
+2026-05-11T18:39:13.720510Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=gmail +watch --project neboai
+2026-05-11T18:39:13.722483Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=events +subscribe --target //calendar.googleapis.com/calendars/primary --event-types google.workspace.calendar.event.v1.created,google.workspace.calendar.event.v1.updated,google.workspace.calendar.event.v1.deleted --project neboai
 2026-05-11T18:39:13.750725Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="algolia" tools=50
 2026-05-11T18:39:13.752413Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="amadeus" tools=4
 2026-05-11T18:39:13.754414Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="amazon-comprehend" tools=86
@@ -488,7 +488,7 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:39:14.063466Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="reminders" tools=6
 2026-05-11T18:39:14.064067Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="replicate" tools=27
 2026-05-11T18:39:14.065940Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="resend" tools=70
-2026-05-11T18:39:14.073397Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboloop/topics/gws-calendar-event-created-updated-deleted-f139f8ee agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
+2026-05-11T18:39:14.073397Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboai/topics/gws-calendar-event-created-updated-deleted-f139f8ee agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
 2026-05-11T18:39:14.074269Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="ringcentral" tools=314
 2026-05-11T18:39:14.089591Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="salesloft" tools=120
 2026-05-11T18:39:14.096346Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="sendgrid" tools=5
@@ -528,14 +528,14 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:39:14.170762Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="xero" tools=126
 2026-05-11T18:39:14.177187Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="youtube" tools=82
 2026-05-11T18:39:14.185608Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="zoom" tools=224
-2026-05-11T18:39:14.200598Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboloop/topics/gws-gmail-watch-1416595c agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
-2026-05-11T18:39:14.540719Z  INFO nebo_comm::manager: active comm plugin set plugin="neboloop"
-2026-05-11T18:39:14.986149Z  INFO nebo_comm::neboloop: connected to neboloop gateway gateway=wss://comms.neboloop.com/ws bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-11T18:39:14.986465Z  INFO nebo_server: neboloop: connected to gateway
-2026-05-11T18:39:15.544512Z  INFO nebo_server::codes: synced bot identity to NeboLoop name=Nebo
+2026-05-11T18:39:14.200598Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboai/topics/gws-gmail-watch-1416595c agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
+2026-05-11T18:39:14.540719Z  INFO nebo_comm::manager: active comm plugin set plugin="neboai"
+2026-05-11T18:39:14.986149Z  INFO nebo_comm::neboai: connected to neboai gateway gateway=wss://comms.neboai.com/ws bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-11T18:39:14.986465Z  INFO nebo_server: neboai: connected to gateway
+2026-05-11T18:39:15.544512Z  INFO nebo_server::codes: synced bot identity to NeboAI name=Nebo
 2026-05-11T18:39:15.862178Z  WARN nebo_agent::agent_worker: watch stderr: Granting Gmail push permission on topic... agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
-2026-05-11T18:39:16.121745Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboloop/subscriptions/gws-calendar-event-created-updated-deleted-f139f8ee agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
-2026-05-11T18:39:16.225304Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboloop/subscriptions/gws-gmail-watch-1416595c agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
+2026-05-11T18:39:16.121745Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboai/subscriptions/gws-calendar-event-created-updated-deleted-f139f8ee agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
+2026-05-11T18:39:16.225304Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboai/subscriptions/gws-gmail-watch-1416595c agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
 2026-05-11T18:39:16.306918Z  INFO nebo_browser::extension_bridge: extension connected conn_id=1 browser=brave active=1
 2026-05-11T18:39:18.255668Z  WARN nebo_agent::agent_worker: watch stderr: Creating Workspace Events subscription... agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
 2026-05-11T18:39:18.388821Z  INFO http{method=GET uri=/ws}: nebo_server::handlers::ws: ws upgrade request received
@@ -682,8 +682,8 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:42:03.308845Z  INFO nebo: starting Nebo server thread
 2026-05-11T18:42:03.319849Z  INFO nebo_db::migrate: database is up to date
 2026-05-11T18:42:03.534691Z  INFO nebo_server: CLI detection complete claude=true codex=true gemini=false
-2026-05-11T18:42:03.536758Z  INFO nebo_server: loaded Janus provider via NeboLoop model=nebo-1 janus_url=https://janus.neboloop.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-11T18:42:03.541934Z  INFO nebo_server: loaded AI provider provider=neboloop model=-
+2026-05-11T18:42:03.536758Z  INFO nebo_server: loaded Janus provider via NeboAI model=nebo-1 janus_url=https://janus.neboai.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-11T18:42:03.541934Z  INFO nebo_server: loaded AI provider provider=neboai model=-
 2026-05-11T18:42:03.556734Z  INFO nebo_browser::extension_bridge: detected default browser browser=unknown
 2026-05-11T18:42:15.053943Z  WARN nebo_tools::skills::loader: skill degraded: unmet dependencies skill=dataforseo-dataforseo-labs reason=missing required plugin: dataforseo (*)
 2026-05-11T18:42:15.079688Z  WARN nebo_tools::skills::loader: skill degraded: unmet dependencies skill=stripe-invoice-payments reason=missing required plugin: stripe (*)
@@ -1112,7 +1112,7 @@ AggregateError [ECONNREFUSED]:
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7)
-12:42:20 PM [vite] http proxy error: /api/v1/neboloop/billing/subscription
+12:42:20 PM [vite] http proxy error: /api/v1/neboai/billing/subscription
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7)
@@ -1317,7 +1317,7 @@ AggregateError [ECONNREFUSED]:
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7) (x3)
-12:42:22 PM [vite] http proxy error: /api/v1/neboloop/billing/subscription
+12:42:22 PM [vite] http proxy error: /api/v1/neboai/billing/subscription
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7)
@@ -1628,11 +1628,11 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:42:25.159496Z  WARN nebo_tools::skills::loader: skill degraded: unmet dependencies skill=twilio-applications reason=missing required plugin: twilio (*)
 2026-05-11T18:42:25.166154Z  INFO nebo_tools::skills::loader: loaded skills count=2559 installed_dir=/Users/almatuck/.nebo/nebo/skills user_dir=/Users/almatuck/.nebo/user/skills
 2026-05-11T18:42:25.167091Z  INFO nebo_agent::advisors::loader: loaded advisors count=5 dir=/Users/almatuck/.nebo/advisors
-2026-05-11T18:42:25.168313Z  INFO nebo_server: loaded Janus provider via NeboLoop model=nebo-1 janus_url=https://janus.neboloop.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-11T18:42:25.168609Z  INFO nebo_server: loaded AI provider provider=neboloop model=-
+2026-05-11T18:42:25.168313Z  INFO nebo_server: loaded Janus provider via NeboAI model=nebo-1 janus_url=https://janus.neboai.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-11T18:42:25.168609Z  INFO nebo_server: loaded AI provider provider=neboai model=-
 2026-05-11T18:42:25.174221Z  INFO nebo_server: sandbox runtime initialized
 2026-05-11T18:42:25.500567Z  INFO nebo_server: stored master encryption key in OS keyring
-2026-05-11T18:42:25.502305Z  INFO nebo_comm::manager: registered comm plugin plugin="neboloop" version="4.0.0"
+2026-05-11T18:42:25.502305Z  INFO nebo_comm::manager: registered comm plugin plugin="neboai" version="4.0.0"
 2026-05-11T18:42:25.502516Z  INFO nebo_comm::manager: registered comm plugin plugin="loopback" version="1.0.0"
 2026-05-11T18:42:25.503353Z  WARN nebo_napp::registry: installed tool missing extracted binary — run install again path=/Users/almatuck/.nebo/nebo/tools/13223420-93c8-4a94-b2c3-3947b76bf6f4/1.0.0.napp
 2026-05-11T18:42:25.503470Z  INFO nebo_napp::registry: tool discovery complete count=0
@@ -1687,8 +1687,8 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:42:25.523000Z  WARN nebo_napp::agent: skill ref is not a qualified name — cascade install may skip it skill_ref=meta-ads-creative
 2026-05-11T18:42:25.523258Z  INFO nebo_server: restored active agents from DB count=4
 2026-05-11T18:42:25.558372Z  INFO nebo_server: seeded provider_models from embedded catalog
-2026-05-11T18:42:25.852815Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=gmail +watch --project neboloop
-2026-05-11T18:42:25.852975Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=events +subscribe --target //calendar.googleapis.com/calendars/primary --event-types google.workspace.calendar.event.v1.created,google.workspace.calendar.event.v1.updated,google.workspace.calendar.event.v1.deleted --project neboloop
+2026-05-11T18:42:25.852815Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=gmail +watch --project neboai
+2026-05-11T18:42:25.852975Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=events +subscribe --target //calendar.googleapis.com/calendars/primary --event-types google.workspace.calendar.event.v1.created,google.workspace.calendar.event.v1.updated,google.workspace.calendar.event.v1.deleted --project neboai
 2026-05-11T18:42:25.880343Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="algolia" tools=50
 2026-05-11T18:42:25.881991Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="amadeus" tools=4
 2026-05-11T18:42:25.883955Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="amazon-comprehend" tools=86
@@ -1787,7 +1787,7 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:42:26.240754Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="spoonacular" tools=67
 2026-05-11T18:42:26.244825Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="spotify" tools=78
 2026-05-11T18:42:26.249493Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="square" tools=157
-2026-05-11T18:42:26.250130Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboloop/topics/gws-calendar-event-created-updated-deleted-2d3f761f agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
+2026-05-11T18:42:26.250130Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboai/topics/gws-calendar-event-created-updated-deleted-2d3f761f agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
 2026-05-11T18:42:26.254477Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="stability-ai" tools=5
 2026-05-11T18:42:26.255027Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="supabase" tools=21
 2026-05-11T18:42:26.256331Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="supabase-auth" tools=26
@@ -1811,7 +1811,7 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:42:26.306750Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="xero" tools=126
 2026-05-11T18:42:26.313019Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="youtube" tools=82
 2026-05-11T18:42:26.321806Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="zoom" tools=224
-2026-05-11T18:42:26.374627Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboloop/topics/gws-gmail-watch-69005da9 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
+2026-05-11T18:42:26.374627Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboai/topics/gws-gmail-watch-69005da9 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
 12:42:26 PM [vite] ws proxy error:
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
@@ -1820,11 +1820,11 @@ AggregateError [ECONNREFUSED]:
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7) (x5)
-2026-05-11T18:42:26.688387Z  INFO nebo_comm::manager: active comm plugin set plugin="neboloop"
-2026-05-11T18:42:27.170222Z  INFO nebo_comm::neboloop: connected to neboloop gateway gateway=wss://comms.neboloop.com/ws bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-11T18:42:27.170470Z  INFO nebo_server: neboloop: connected to gateway
-2026-05-11T18:42:27.740469Z  INFO nebo_server::codes: synced bot identity to NeboLoop name=Nebo
-2026-05-11T18:42:28.111148Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboloop/subscriptions/gws-calendar-event-created-updated-deleted-2d3f761f agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
+2026-05-11T18:42:26.688387Z  INFO nebo_comm::manager: active comm plugin set plugin="neboai"
+2026-05-11T18:42:27.170222Z  INFO nebo_comm::neboai: connected to neboai gateway gateway=wss://comms.neboai.com/ws bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-11T18:42:27.170470Z  INFO nebo_server: neboai: connected to gateway
+2026-05-11T18:42:27.740469Z  INFO nebo_server::codes: synced bot identity to NeboAI name=Nebo
+2026-05-11T18:42:28.111148Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboai/subscriptions/gws-calendar-event-created-updated-deleted-2d3f761f agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
 2026-05-11T18:42:28.123467Z  INFO http{method=GET uri=/ws}: nebo_server::handlers::ws: ws upgrade request received
 2026-05-11T18:42:28.124318Z  INFO nebo_server::handlers::ws: ws client connected — starting handle_client_ws
 2026-05-11T18:42:28.124396Z  INFO nebo_server::handlers::ws: ws sending welcome: {"type":"connected","version":"0.9.0"}
@@ -1833,7 +1833,7 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:42:28.124752Z  INFO nebo_server::handlers::ws: ws received 'connect' message, sending auth_ok
 2026-05-11T18:42:28.124785Z  INFO nebo_server::handlers::ws: ws auth_ok sent successfully
 2026-05-11T18:42:28.248778Z  WARN nebo_agent::agent_worker: watch stderr: Granting Gmail push permission on topic... agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
-2026-05-11T18:42:28.662037Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboloop/subscriptions/gws-gmail-watch-69005da9 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
+2026-05-11T18:42:28.662037Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboai/subscriptions/gws-gmail-watch-69005da9 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
 2026-05-11T18:42:30.203287Z  WARN nebo_agent::agent_worker: watch stderr: Creating Workspace Events subscription... agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
 2026-05-11T18:42:30.594268Z  WARN nebo_agent::agent_worker: watch stderr: Workspace Events subscription: pending agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
 2026-05-11T18:42:30.594371Z  WARN nebo_agent::agent_worker: watch stderr: Listening for events... agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
@@ -2150,8 +2150,8 @@ warning: `nebo-server` (lib) generated 1 warning (run `cargo fix --lib -p nebo-s
 2026-05-11T18:49:08.840981Z  INFO nebo: starting Nebo server thread
 2026-05-11T18:49:08.852307Z  INFO nebo_db::migrate: database is up to date
 2026-05-11T18:49:09.019432Z  INFO nebo_server: CLI detection complete claude=true codex=true gemini=false
-2026-05-11T18:49:09.021429Z  INFO nebo_server: loaded Janus provider via NeboLoop model=nebo-1 janus_url=https://janus.neboloop.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-11T18:49:09.047986Z  INFO nebo_server: loaded AI provider provider=neboloop model=-
+2026-05-11T18:49:09.021429Z  INFO nebo_server: loaded Janus provider via NeboAI model=nebo-1 janus_url=https://janus.neboai.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-11T18:49:09.047986Z  INFO nebo_server: loaded AI provider provider=neboai model=-
 2026-05-11T18:49:09.061113Z  INFO nebo_browser::extension_bridge: detected default browser browser=unknown
 12:49:15 PM [vite] ws proxy error:
 AggregateError [ECONNREFUSED]:
@@ -2549,7 +2549,7 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:49:25.589030Z  WARN nebo_tools::skills::loader: skill degraded: unmet dependencies skill=shortcut-shortcut-search reason=missing required plugin: shortcut (*)
 2026-05-11T18:49:25.610995Z  WARN nebo_tools::skills::loader: skill degraded: unmet dependencies skill=chargebee-purchases reason=missing required plugin: chargebee (*)
 2026-05-11T18:49:25.614868Z  WARN nebo_tools::skills::loader: skill degraded: unmet dependencies skill=lob-accounts reason=missing required plugin: lob (*)
-12:49:25 PM [vite] http proxy error: /api/v1/neboloop/billing/subscription
+12:49:25 PM [vite] http proxy error: /api/v1/neboai/billing/subscription
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7)
@@ -3048,11 +3048,11 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:49:31.147480Z  WARN nebo_tools::skills::loader: skill degraded: unmet dependencies skill=gitlab-organizations reason=missing required plugin: gitlab (*)
 2026-05-11T18:49:31.157362Z  INFO nebo_tools::skills::loader: loaded skills count=2559 installed_dir=/Users/almatuck/.nebo/nebo/skills user_dir=/Users/almatuck/.nebo/user/skills
 2026-05-11T18:49:31.158268Z  INFO nebo_agent::advisors::loader: loaded advisors count=5 dir=/Users/almatuck/.nebo/advisors
-2026-05-11T18:49:31.159453Z  INFO nebo_server: loaded Janus provider via NeboLoop model=nebo-1 janus_url=https://janus.neboloop.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-11T18:49:31.159762Z  INFO nebo_server: loaded AI provider provider=neboloop model=-
+2026-05-11T18:49:31.159453Z  INFO nebo_server: loaded Janus provider via NeboAI model=nebo-1 janus_url=https://janus.neboai.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-11T18:49:31.159762Z  INFO nebo_server: loaded AI provider provider=neboai model=-
 2026-05-11T18:49:31.164851Z  INFO nebo_server: sandbox runtime initialized
 2026-05-11T18:49:31.478267Z  INFO nebo_server: stored master encryption key in OS keyring
-2026-05-11T18:49:31.479795Z  INFO nebo_comm::manager: registered comm plugin plugin="neboloop" version="4.0.0"
+2026-05-11T18:49:31.479795Z  INFO nebo_comm::manager: registered comm plugin plugin="neboai" version="4.0.0"
 2026-05-11T18:49:31.480035Z  INFO nebo_comm::manager: registered comm plugin plugin="loopback" version="1.0.0"
 2026-05-11T18:49:31.480846Z  WARN nebo_napp::registry: installed tool missing extracted binary — run install again path=/Users/almatuck/.nebo/nebo/tools/13223420-93c8-4a94-b2c3-3947b76bf6f4/1.0.0.napp
 2026-05-11T18:49:31.480967Z  INFO nebo_napp::registry: tool discovery complete count=0
@@ -3119,8 +3119,8 @@ AggregateError [ECONNREFUSED]:
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7) (x6)
-2026-05-11T18:49:31.830074Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=events +subscribe --target //calendar.googleapis.com/calendars/primary --event-types google.workspace.calendar.event.v1.created,google.workspace.calendar.event.v1.updated,google.workspace.calendar.event.v1.deleted --project neboloop
-2026-05-11T18:49:31.831826Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=gmail +watch --project neboloop
+2026-05-11T18:49:31.830074Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=events +subscribe --target //calendar.googleapis.com/calendars/primary --event-types google.workspace.calendar.event.v1.created,google.workspace.calendar.event.v1.updated,google.workspace.calendar.event.v1.deleted --project neboai
+2026-05-11T18:49:31.831826Z  INFO nebo_agent::agent_worker: spawning watch process agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher binary=/Users/almatuck/.nebo/user/plugins/gws/target/release/gws command=gmail +watch --project neboai
 2026-05-11T18:49:31.860762Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="algolia" tools=50
 2026-05-11T18:49:31.862503Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="amadeus" tools=4
 2026-05-11T18:49:31.864454Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="amazon-comprehend" tools=86
@@ -3203,7 +3203,7 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:49:32.172715Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="reminders" tools=6
 2026-05-11T18:49:32.173331Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="replicate" tools=27
 2026-05-11T18:49:32.175210Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="resend" tools=70
-2026-05-11T18:49:32.176871Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboloop/topics/gws-calendar-event-created-updated-deleted-ddd48ae4 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
+2026-05-11T18:49:32.176871Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboai/topics/gws-calendar-event-created-updated-deleted-ddd48ae4 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
 2026-05-11T18:49:32.183557Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="ringcentral" tools=314
 2026-05-11T18:49:32.198741Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="salesloft" tools=120
 2026-05-11T18:49:32.205475Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="sendgrid" tools=5
@@ -3243,15 +3243,15 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T18:49:32.279026Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="xero" tools=126
 2026-05-11T18:49:32.285677Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="youtube" tools=82
 2026-05-11T18:49:32.294525Z  INFO nebo_tools::plugin_tool: registered plugin tools plugin="zoom" tools=224
-2026-05-11T18:49:32.302067Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboloop/topics/gws-gmail-watch-891c8928 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
-2026-05-11T18:49:32.647627Z  INFO nebo_comm::manager: active comm plugin set plugin="neboloop"
+2026-05-11T18:49:32.302067Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub topic: projects/neboai/topics/gws-gmail-watch-891c8928 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
+2026-05-11T18:49:32.647627Z  INFO nebo_comm::manager: active comm plugin set plugin="neboai"
 2026-05-11T18:49:32.802294Z  INFO nebo_browser::extension_bridge: extension connected conn_id=1 browser=brave active=1
-2026-05-11T18:49:33.225060Z  INFO nebo_comm::neboloop: connected to neboloop gateway gateway=wss://comms.neboloop.com/ws bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-11T18:49:33.225387Z  INFO nebo_server: neboloop: connected to gateway
-2026-05-11T18:49:33.394912Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboloop/subscriptions/gws-calendar-event-created-updated-deleted-ddd48ae4 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
-2026-05-11T18:49:33.805642Z  INFO nebo_server::codes: synced bot identity to NeboLoop name=Nebo
+2026-05-11T18:49:33.225060Z  INFO nebo_comm::neboai: connected to neboai gateway gateway=wss://comms.neboai.com/ws bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-11T18:49:33.225387Z  INFO nebo_server: neboai: connected to gateway
+2026-05-11T18:49:33.394912Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboai/subscriptions/gws-calendar-event-created-updated-deleted-ddd48ae4 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
+2026-05-11T18:49:33.805642Z  INFO nebo_server::codes: synced bot identity to NeboAI name=Nebo
 2026-05-11T18:49:34.126057Z  WARN nebo_agent::agent_worker: watch stderr: Granting Gmail push permission on topic... agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
-2026-05-11T18:49:34.520099Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboloop/subscriptions/gws-gmail-watch-891c8928 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
+2026-05-11T18:49:34.520099Z  WARN nebo_agent::agent_worker: watch stderr: Creating Pub/Sub subscription: projects/neboai/subscriptions/gws-gmail-watch-891c8928 agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=email-watcher
 2026-05-11T18:49:35.676237Z  WARN nebo_agent::agent_worker: watch stderr: Creating Workspace Events subscription... agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
 2026-05-11T18:49:36.086631Z  WARN nebo_agent::agent_worker: watch stderr: Workspace Events subscription: pending agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
 2026-05-11T18:49:36.087324Z  WARN nebo_agent::agent_worker: watch stderr: Listening for events... agent=13223420-93c8-4a94-b2c3-3947b76bf6f4 binding=calendar-watcher
@@ -3524,8 +3524,8 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T19:09:48.082806Z  INFO nebo: starting Nebo server thread
 2026-05-11T19:09:48.109876Z  INFO nebo_db::migrate: database is up to date
 2026-05-11T19:09:57.226258Z  INFO nebo_server: CLI detection complete claude=true codex=true gemini=false
-2026-05-11T19:09:57.237237Z  INFO nebo_server: loaded Janus provider via NeboLoop model=nebo-1 janus_url=https://janus.neboloop.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-11T19:09:57.299886Z  INFO nebo_server: loaded AI provider provider=neboloop model=-
+2026-05-11T19:09:57.237237Z  INFO nebo_server: loaded Janus provider via NeboAI model=nebo-1 janus_url=https://janus.neboai.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-11T19:09:57.299886Z  INFO nebo_server: loaded AI provider provider=neboai model=-
 2026-05-11T19:10:03.271174Z  INFO nebo_browser::extension_bridge: detected default browser browser=unknown
 2026-05-11T19:10:03.473362Z  WARN nebo: Server did not become ready in 15s, launching window anyway
 1:10:04 PM [vite] ws proxy error:
@@ -3564,7 +3564,7 @@ AggregateError [ECONNREFUSED]:
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7)
-1:10:38 PM [vite] http proxy error: /api/v1/neboloop/billing/subscription
+1:10:38 PM [vite] http proxy error: /api/v1/neboai/billing/subscription
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7)

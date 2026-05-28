@@ -61,7 +61,7 @@ pub enum NappError {
     Other(String),
 }
 
-/// Install event from NeboLoop (MQTT/WebSocket).
+/// Install event from NeboAI (MQTT/WebSocket).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallEvent {
     #[serde(rename = "type")]

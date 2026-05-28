@@ -399,7 +399,7 @@ both SvelteKit prerendered pages and the adapter-static fallback.
   +-- public (no auth)
   |     GET  /auth/config
   |     ...chat, agent, memory, provider, skills, tasks,
-  |        integrations, files, neboloop, workflows, roles,
+  |        integrations, files, neboai, workflows, roles,
   |        commander, plugins, store, entity_config,
   |        notifications, voice, apps, user, codes, deps,
   |        runs/active
@@ -472,7 +472,7 @@ Additionally, several one-shot and persistent background tasks are spawned:
 |              Other Background Tasks (spawned at startup)           |
 +-------------------------------------------------------------------+
 | - Tool supervisor (15s health check for napp processes)           |
-| - NeboLoop auto-connect + reconnect watcher (exp. backoff)       |
+| - NeboAI auto-connect + reconnect watcher (exp. backoff)       |
 | - Background update checker (1h interval, release builds only)   |
 | - Skill manifest verification (one-shot at startup)              |
 | - MCP integration reconnection (one-shot at startup)             |
@@ -870,7 +870,7 @@ On update detection:
    - Stages binary in `update_pending`
    - Broadcasts `update_ready` WS event
 
-### 2.9 NeboLoop Reconnect Watcher
+### 2.9 NeboAI Reconnect Watcher
 
 **File:** `crates/server/src/lib.rs` (lines 1567-1630)
 
@@ -896,7 +896,7 @@ loop {
         reset backoff to 30s
         continue
 
-    activate_neboloop()
+    activate_neboai()
     |
     +-- OK: reset backoff to 30s, persist rotated JWT
     +-- Err: double backoff (max 600s = 10min)
@@ -920,7 +920,7 @@ Backoff progression: 30s -> 60s -> 120s -> 240s -> 480s -> 600s (capped).
 | Progress broadcaster| 5s        | immediate   |
 | Tool supervisor     | 15s       | immediate   |
 | Update checker      | 1 hour    | immediate   |
-| NeboLoop reconnect  | 30s-600s  | 60s         |
+| NeboAI reconnect  | 30s-600s  | 60s         |
 | Snapshot cleanup    | 60s*      | 10s*        |
 +----------------------------------------------+
 * Piggybacks on cron scheduler tick
@@ -1092,5 +1092,5 @@ The system uses several mechanisms to prevent duplicate or runaway execution:
 | Progress broadcast interval | 5s | `lib.rs` |
 | Tool supervisor interval | 15s | `lib.rs` |
 | Update check interval | 1 hour | `lib.rs` |
-| NeboLoop reconnect backoff | 30s-600s | `lib.rs` |
+| NeboAI reconnect backoff | 30s-600s | `lib.rs` |
 | Completed task TTL | 7 days | `scheduler.rs` (tick cleanup) |

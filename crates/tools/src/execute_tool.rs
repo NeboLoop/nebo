@@ -538,7 +538,7 @@ impl DynTool for ExecuteTool {
                  Option 1: Install {} locally (free)\n\
                  {}\n\n\
                  Option 2: Upgrade to Pro for cloud execution\n\
-                 Visit your NeboLoop dashboard to upgrade.",
+                 Visit your NeboAI dashboard to upgrade.",
                 language,
                 language,
                 match language {

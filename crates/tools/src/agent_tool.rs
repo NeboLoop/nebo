@@ -20,7 +20,7 @@ pub struct ActiveAgent {
     pub agent_md: String,
     /// Parsed agent.json config (workflows, skills, triggers).
     pub config: Option<napp::agent::AgentConfig>,
-    /// Optional bound NeboLoop channel.
+    /// Optional bound NeboAI channel.
     pub channel_id: Option<String>,
     /// If set, this agent has unmet skill dependencies and is degraded.
     /// The string describes which skill dependencies are missing.
@@ -1117,9 +1117,9 @@ impl PersonaTool {
             }
         }
 
-        let api = match crate::build_neboloop_api(&self.store) {
+        let api = match crate::build_neboai_api(&self.store) {
             Ok(a) => a,
-            Err(e) => return ToolResult::error(format!("NeboLoop connection required: {}", e)),
+            Err(e) => return ToolResult::error(format!("NeboAI connection required: {}", e)),
         };
 
         match api.install_agent(code).await {
@@ -1180,7 +1180,7 @@ impl PersonaTool {
 
         // --- Marketplace update check ---
         if (check_update || apply_update) && db_agent.kind.is_some() {
-            match crate::build_neboloop_api(&self.store) {
+            match crate::build_neboai_api(&self.store) {
                 Ok(api) => {
                     match api.get_skill(agent_id).await {
                         Ok(detail) => {
@@ -1238,7 +1238,7 @@ impl PersonaTool {
                     }
                 }
                 Err(_) => {
-                    changes.push("NeboLoop not connected — cannot check for updates".to_string())
+                    changes.push("NeboAI not connected — cannot check for updates".to_string())
                 }
             }
 
@@ -2507,11 +2507,11 @@ impl DynTool for PersonaTool {
                 },
                 "check_update": {
                     "type": "boolean",
-                    "description": "For reload: check if a newer version is available on NeboLoop (marketplace agents only)"
+                    "description": "For reload: check if a newer version is available on NeboAI (marketplace agents only)"
                 },
                 "apply_update": {
                     "type": "boolean",
-                    "description": "For reload: download and apply the latest version from NeboLoop (marketplace agents only)"
+                    "description": "For reload: download and apply the latest version from NeboAI (marketplace agents only)"
                 },
                 "id": {
                     "type": "string",

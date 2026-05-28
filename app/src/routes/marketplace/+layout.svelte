@@ -120,7 +120,7 @@
     LOOP: 'loop', PLUG: 'plugin', APPX: 'app',
   };
   const CODE_STATUS_MAP: Record<string, string> = {
-    nebo: 'Connecting to NeboLoop...', skill: 'Installing skill...',
+    nebo: 'Connecting to NeboAI...', skill: 'Installing skill...',
     workflow: 'Installing workflow...', agent: 'Installing agent...',
     loop: 'Joining loop...', plugin: 'Installing plugin...', app: 'Installing app...',
   };

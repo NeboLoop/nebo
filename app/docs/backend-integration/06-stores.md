@@ -151,7 +151,7 @@ export async function loadInstalled() {
 
 ### Backend Migration
 - Collections are org-scoped marketplace items
-- Backend endpoint TBD — likely part of store/marketplace API or NeboLoop API
+- Backend endpoint TBD — likely part of store/marketplace API or NeboAI API
 
 ---
 

@@ -71,14 +71,14 @@ pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, Na
     signed.extend_from_slice(payload);
 
     public_key.verify(&signed, &signature).map_err(|_| {
-        NappError::Extraction("signature verification failed: not signed by NeboLoop".into())
+        NappError::Extraction("signature verification failed: not signed by NeboAI".into())
     })?;
 
     info!("napp envelope verified");
     Ok(payload.to_vec())
 }
 
-/// Verify and unwrap a .napp envelope using the embedded NeboLoop public key.
+/// Verify and unwrap a .napp envelope using the embedded NeboAI public key.
 ///
 /// Convenience wrapper around `unwrap_napp` + `builtin_verifying_key()` for
 /// verifying first-party bundled `.napp` files without network access.
@@ -90,7 +90,7 @@ pub fn unwrap_napp_builtin(data: &[u8]) -> Result<Vec<u8>, NappError> {
 /// Verify envelope and unseal: unwrap .napp header → decrypt AES-256-GCM → return plain tar.gz.
 ///
 /// Full pipeline for sealed .napp files. Returns the decrypted tar.gz payload
-/// that can be parsed in memory. Uses the embedded NeboLoop public key.
+/// that can be parsed in memory. Uses the embedded NeboAI public key.
 pub fn unwrap_sealed_napp(data: &[u8], license_key: &[u8; 32]) -> Result<Vec<u8>, NappError> {
     let sealed_payload = unwrap_napp_builtin(data)?;
     crate::sealed::unseal_payload(&sealed_payload, license_key)

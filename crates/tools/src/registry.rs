@@ -728,20 +728,20 @@ impl Registry {
         self.register_deferred(Box::new(crate::vm_tool::VmTool::new()))
             .await;
 
-        // Loop tool (NeboLoop comms: dm, channel, group, topic) — requires "loop" permission + comm plugin
+        // Loop tool (NeboAI comms: dm, channel, group, topic) — requires "loop" permission + comm plugin
         if allowed("loop") {
             if let Some(ref comm) = comm_plugin {
                 self.register(Box::new(crate::loop_tool::LoopTool::new(comm.clone())))
                     .await;
             } else {
-                // Register a stub so the tool appears in /integrations/tools even before NeboLoop connects
+                // Register a stub so the tool appears in /integrations/tools even before NeboAI connects
                 self.register(Box::new(LoopStubTool)).await;
             }
         }
     }
 }
 
-/// Stub loop tool registered when NeboLoop is not yet connected.
+/// Stub loop tool registered when NeboAI is not yet connected.
 /// Ensures the tool appears in /integrations/tools (10/10) even pre-connect.
 struct LoopStubTool;
 
@@ -751,7 +751,7 @@ impl DynTool for LoopStubTool {
     }
 
     fn description(&self) -> String {
-        "NeboLoop communication — send DMs, manage channels, groups, and topics".to_string()
+        "NeboAI communication — send DMs, manage channels, groups, and topics".to_string()
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -783,7 +783,7 @@ impl DynTool for LoopStubTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
             ToolResult::error(
-                "NeboLoop is not connected. Connect to NeboLoop first to use communication features.",
+                "NeboAI is not connected. Connect to NeboAI first to use communication features.",
             )
         })
     }

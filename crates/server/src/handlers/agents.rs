@@ -807,7 +807,7 @@ pub async fn delete_agent(
         }
     }
 
-    // Deregister agent from NeboLoop (non-blocking, best-effort)
+    // Deregister agent from NeboAI (non-blocking, best-effort)
     {
         let st = state.clone();
         let agent_slug = slug.clone();
@@ -1388,7 +1388,7 @@ fn cron_to_human_readable(cron: &str) -> String {
     format!("{} {}", time_str, day_str)
 }
 
-/// POST /agents/{id}/check-update — check if a newer version is available on NeboLoop.
+/// POST /agents/{id}/check-update — check if a newer version is available on NeboAI.
 pub async fn check_agent_update(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1436,7 +1436,7 @@ pub async fn check_agent_update(
     }
 }
 
-/// POST /agents/{id}/apply-update — download and apply the latest version from NeboLoop.
+/// POST /agents/{id}/apply-update — download and apply the latest version from NeboAI.
 pub async fn apply_agent_update(
     State(state): State<AppState>,
     Path(id): Path<String>,

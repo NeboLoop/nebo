@@ -58,7 +58,7 @@ After all tests complete:
 - Fill in New Failures table
 - Write the final results file
 
-NeboLoop test codes (use POST /api/v1/codes to install):
+NeboAI test codes (use POST /api/v1/codes to install):
 - SKILL code: SKIL-RFBM-XCYT
 - WORK code: WORK-SW4Z-5XKN
 - ROLE code: ROLE-KG82-KM2G

@@ -13,12 +13,12 @@ Apple System Settings pattern:
 - No collapsible "Advanced" toggle
 
 ## Design System
-- **Single source of truth:** `app/src/app.css` — copied from neboloop's app.css with desktop-only additions appended
+- **Single source of truth:** `app/src/app.css` — copied from neboai's app.css with desktop-only additions appended
 - **Stack:** Tailwind CSS v4.1 + DaisyUI v5.5 + SvelteKit
 - **Fonts:** DM Sans (body), Satoshi (display)
 - **Palette:** Teal (#14b8a6 primary), Indigo (#6366f1 secondary), Amber (#f59e0b tertiary)
 - **Dark mode:** Automatic via `prefers-color-scheme` with OKLCH overrides for Apple-level contrast
-- **Header height:** Desktop = 64px (neboloop web = 72px)
+- **Header height:** Desktop = 64px (neboai web = 72px)
 
 ## Top Nav (Implemented)
 ```
@@ -56,7 +56,7 @@ Chat | [Store puzzle-piece icon] | [Settings gear icon]
 
 ## Current Settings Sidebar (7 groups, group headers)
 ```
-EXTEND: NeboLoop, Apps, Skills, Integrations
+EXTEND: NeboAI, Apps, Skills, Integrations
 YOU: Profile
 CHARACTER: Identity, Soul, Rules, Notes
 MIND: Routing, Providers, Memories, Advisors
@@ -71,7 +71,7 @@ DEVELOPER: Developer
 ### All Setting Routes (on disk)
 ```
 about-me, advisors, agent, apps, developer, extensions, family,
-heartbeat, identity, integrations, mcp, memories, neboloop, notes,
+heartbeat, identity, integrations, mcp, memories, neboai, notes,
 permissions, personality, plugins, profile, providers, routing,
 rules, sessions, skills, status, workflows
 ```
@@ -79,13 +79,13 @@ Note: Many routes on disk are not linked in the sidebar (about-me, agent, extens
 
 ## Planned Settings Sidebar (Apple-style) — NOT YET IMPLEMENTED
 ```
-[Profile card — avatar + name + NeboLoop status]
+[Profile card — avatar + name + NeboAI status]
 
 Personality
 Rules
 Permissions
 
-NeboLoop
+NeboAI
 Models
 
   (whitespace gap — below here is power-user territory)
@@ -123,7 +123,7 @@ Developer
 | Rules | /settings/rules | Safety guardrails + custom behavioral rules | Everyone |
 | Providers | /settings/providers | AI provider API keys, Janus models, model enable/disable | Everyone |
 | Permissions | /settings/permissions | Autonomous mode toggle, capability toggles, tool approval policy | Everyone |
-| NeboLoop | /settings/neboloop | OAuth connection to cloud, account + bot status, Janus usage | Everyone |
+| NeboAI | /settings/neboai | OAuth connection to cloud, account + bot status, Janus usage | Everyone |
 
 ### SECONDARY (power user / nice-to-have)
 | Page | Route | What It Does | Who |
@@ -166,14 +166,14 @@ Developer
 - Activity indicators: Heartbeat, Events, Desktop (pulse dots)
 
 ### Styling
-- All styles in `app/src/app.css` (unified with neboloop design system)
+- All styles in `app/src/app.css` (unified with neboai design system)
 - Nav links: `flex gap-2 px-3 py-2 rounded-lg text-sm`
 - Active: `text-primary bg-primary/10`
 - Sidebar items: same pattern
 - Section labels: `text-xs uppercase tracking-wider text-base-content/40`
 
 ## Key User Flows (Priority Order)
-1. **Onboarding** → NeboLoop OAuth (happens during setup)
+1. **Onboarding** → NeboAI OAuth (happens during setup)
 2. **Install an agent** → Store → gives bot a job
 3. **Install a skill** → Store → gives bot capability
 4. **Chat remotely** → Loop channels → shows online in sidebar

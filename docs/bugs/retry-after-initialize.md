@@ -217,8 +217,8 @@ AggregateError [ECONNREFUSED]:
 2026-05-11T19:09:48.082806Z  INFO nebo: starting Nebo server thread
 2026-05-11T19:09:48.109876Z  INFO nebo_db::migrate: database is up to date
 2026-05-11T19:09:57.226258Z  INFO nebo_server: CLI detection complete claude=true codex=true gemini=false
-2026-05-11T19:09:57.237237Z  INFO nebo_server: loaded Janus provider via NeboLoop model=nebo-1 janus_url=https://janus.neboloop.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-11T19:09:57.299886Z  INFO nebo_server: loaded AI provider provider=neboloop model=-
+2026-05-11T19:09:57.237237Z  INFO nebo_server: loaded Janus provider via NeboAI model=nebo-1 janus_url=https://janus.neboai.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-11T19:09:57.299886Z  INFO nebo_server: loaded AI provider provider=neboai model=-
 2026-05-11T19:10:03.271174Z  INFO nebo_browser::extension_bridge: detected default browser browser=unknown
 2026-05-11T19:10:03.473362Z  WARN nebo: Server did not become ready in 15s, launching window anyway
 1:10:04 PM [vite] ws proxy error:
@@ -257,7 +257,7 @@ AggregateError [ECONNREFUSED]:
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7)
-1:10:38 PM [vite] http proxy error: /api/v1/neboloop/billing/subscription
+1:10:38 PM [vite] http proxy error: /api/v1/neboai/billing/subscription
 AggregateError [ECONNREFUSED]:
     at internalConnectMultiple (node:net:1134:18)
     at afterConnectMultiple (node:net:1715:7)

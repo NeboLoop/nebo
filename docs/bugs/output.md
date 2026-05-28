@@ -3306,6 +3306,6 @@ I apologize, but I'm unable to directly open the document in this conversation. 
 However, I can help you work on the bylaws content in a few ways:
 
 I can draft the bylaws content here and then we can use the edit_document tool to add it to the file
-You can view the document in your NeboLoop workspace (it should be visible in project 41980404)
+You can view the document in your NeboAI workspace (it should be visible in project 41980404)
 I can create a new version with the full content using generate_docx
 What would you prefer? If you'd like me to start drafting the bylaws content now, I can begin with standard corporate bylaws sections. Just let me know what approach works best for you.

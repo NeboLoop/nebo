@@ -144,7 +144,7 @@ Extension-backed browser automation uses a **four-hop relay chain**. The agent n
 | `storage` | Extension settings and `chrome.storage.session` persistence for agent tab/group state |
 | `alarms` | Keep-alive alarm (every 24s) to prevent service worker suspension |
 | `scripting` | Inject content scripts and execute functions in tab context |
-| `nativeMessaging` | Connect to `dev.neboloop.nebo` native messaging host |
+| `nativeMessaging` | Connect to `dev.neboai.nebo` native messaging host |
 | `<all_urls>` (host) | Access any URL for content script injection and CDP |
 
 ### 3.2 Source Files
@@ -838,11 +838,11 @@ if browser::native_host::needs_manifest_update(&nebo_binary, local_ext_id) {
 
 ### 17.2 Manifest Content
 
-Written as `dev.neboloop.nebo.json`:
+Written as `dev.neboai.nebo.json`:
 
 ```json
 {
-  "name": "dev.neboloop.nebo",
+  "name": "dev.neboai.nebo",
   "description": "Nebo Browser Automation Host",
   "path": "/path/to/nebo",
   "type": "stdio",
@@ -881,9 +881,9 @@ Extension IDs in `allowed_origins`:
 ### 17.4 Windows Registry
 
 Windows requires registry entries for Chrome to discover the host:
-- `HKCU\Software\Google\Chrome\NativeMessagingHosts\dev.neboloop.nebo`
-- `HKCU\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\dev.neboloop.nebo`
-- `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\dev.neboloop.nebo`
+- `HKCU\Software\Google\Chrome\NativeMessagingHosts\dev.neboai.nebo`
+- `HKCU\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\dev.neboai.nebo`
+- `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\dev.neboai.nebo`
 
 Each key's default value points to the manifest JSON file path.
 
@@ -1098,7 +1098,7 @@ When the extension disconnects (stdin closes):
 2. User opens Chrome with Nebo extension
    a. Service worker loads (background.ts)
    b. Calls native.connect()
-   c. chrome.runtime.connectNative("dev.neboloop.nebo")
+   c. chrome.runtime.connectNative("dev.neboai.nebo")
    d. Chrome reads manifest, launches /path/to/nebo with chrome-extension://ID/ arg
 
 3. Relay bridge process starts (run_native_messaging)
@@ -1213,7 +1213,7 @@ Returns `Browser extension connected: true/false`
 
 ```bash
 # macOS Chrome
-cat ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/dev.neboloop.nebo.json
+cat ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/dev.neboai.nebo.json
 
 # Check if the binary path is correct
 # The "path" field should point to the actual nebo CLI binary

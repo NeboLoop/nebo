@@ -39,11 +39,11 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
             "monthly",
         ],
     ),
-    // NeboLoop communication (tool: loop)
+    // NeboAI communication (tool: loop)
     (
         "loop",
         &[
-            "neboloop",
+            "neboai",
             "channel",
             "dm",
             "direct message",

@@ -42,7 +42,7 @@ Server Startup
 ├── register_all_with_permissions()     ← 14 parameters, domain tools
 │   ├── Always: web, agent, event, skill, message, persona, loop (stub), tool_search
 │   ├── Deferred: os (keyword), execute, work, publisher, plugin
-│   └── Conditional: loop (real tool replaces stub when NeboLoop connects)
+│   └── Conditional: loop (real tool replaces stub when NeboAI connects)
 ├── register(ToolSearchTool)            ← meta-tool for deferred discovery
 ├── register(McpTool)                   ← STRAP tool for MCP servers
 ├── register_for_agent(sidecar tools)   ← per-agent sidecar endpoint tools
@@ -269,7 +269,7 @@ All tools remain registered but the schema list sent to the LLM is filtered by c
 **Keyword groups** map conversation context → STRAP sub-doc injection:
 - "workflow", "automate" → `work`
 - "run script", "python", "node" → `execute`
-- "neboloop", "channel", "dm" → `loop`
+- "neboai", "channel", "dm" → `loop`
 - "click", "mouse", "screenshot" → `desktop` (os sub-context)
 - etc.
 
@@ -277,7 +277,7 @@ All tools remain registered but the schema list sent to the LLM is filtered by c
 
 **File:** `crates/tools/src/registry.rs`
 
-Fallback tool registered when NeboLoop is not yet connected. Returns a helpful error (`"NeboLoop is not connected..."`) instead of crashing. Ensures the `loop` tool appears in the tool list (10/10) even before NeboLoop connects. Replaced by the real `LoopTool` when `comm_plugin` is available.
+Fallback tool registered when NeboAI is not yet connected. Returns a helpful error (`"NeboAI is not connected..."`) instead of crashing. Ensures the `loop` tool appears in the tool list (10/10) even before NeboAI connects. Replaced by the real `LoopTool` when `comm_plugin` is available.
 
 ---
 
@@ -344,7 +344,7 @@ Maps skill capabilities to OS-level sandbox permissions:
 ```rust
 pub enum Origin {
     User,    // Web UI, CLI
-    Comm,    // NeboLoop, loopback
+    Comm,    // NeboAI, loopback
     App,     // External app binary
     Skill,   // Matched skill template
     System,  // Heartbeat, cron, recovery
@@ -682,7 +682,7 @@ Injects full documentation for:
 
 ```
 You have additional tools available that aren't loaded by default:
-- loop: NeboLoop communication
+- loop: NeboAI communication
 - work: Workflow automation
 - ...
 Call tool_search(query: "...", max_results: 5) to find and activate them.
@@ -846,7 +846,7 @@ Other tools default to `false` (serial) unless they override `is_concurrent_safe
 | `agent_tool.rs` | `persona` | Agent registry & validation |
 | `sidecar_tool.rs` | (per-endpoint) | Sidecar HTTP endpoint → native LLM tool |
 | `system_tool.rs` | `system` | Lighter OS alternative (file + shell only) |
-| `loop_tool.rs` | `loop` | NeboLoop communication |
+| `loop_tool.rs` | `loop` | NeboAI communication |
 | `plugin_tool.rs` | `plugin` | Plugin binary execution |
 | `workflows/work_tool.rs` | `work` | Workflow lifecycle |
 | `execute_tool.rs` | `execute` | Script execution (sandboxed) |
@@ -875,7 +875,7 @@ Other tools default to `false` (serial) unless they override `is_concurrent_safe
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | Public API, artifact persistence (NeboLoop) |
+| `lib.rs` | Public API, artifact persistence (NeboAI) |
 | `registry.rs` | Tool registration, execution, corrections |
 | `domain.rs` | Domain schema generation (`DomainInput`, `build_domain_schema`) |
 | `policy.rs` | Approval, allowlists, origin deny lists |

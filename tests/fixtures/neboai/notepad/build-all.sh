@@ -5,7 +5,7 @@ APP_DIR="$(cd "$(dirname "$0")/app" && pwd)"
 OUT_DIR="$(cd "$(dirname "$0")" && pwd)/dist"
 mkdir -p "$OUT_DIR"
 
-# Map NeboLoop platform names to Rust targets
+# Map NeboAI platform names to Rust targets
 declare -A TARGETS=(
   [darwin-arm64]=aarch64-apple-darwin
   [darwin-amd64]=x86_64-apple-darwin

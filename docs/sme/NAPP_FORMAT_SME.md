@@ -2,7 +2,7 @@
 
 > Subject Matter Expert document for the `.napp` binary package format used by
 > Nebo to distribute skills, agents, plugins, tools, and workflows through the
-> NeboLoop marketplace.  Covers the wire format, cryptographic envelope,
+> NeboAI marketplace.  Covers the wire format, cryptographic envelope,
 > sealed-archive encryption, extraction pipeline, manifest schema, plugin and
 > agent packaging, runtime execution, version resolution, hook system,
 > supervision, and the end-to-end verification chain.
@@ -42,7 +42,7 @@
 ## 1. Architecture Overview
 
 ```
- NeboLoop Marketplace (server-side)
+ NeboAI Marketplace (server-side)
  +-------------------------------------------+
  |  Publish pipeline:                        |
  |    tar.gz(content)                        |
@@ -175,7 +175,7 @@ const NAPP_HEADER_SIZE: usize = 4 + 1 + 64 + 32; // 101 bytes
            3. ED25519.verify(              |
                 msg = hash || payload,     |
                 sig = signature,           |
-                key = NeboLoop pubkey      |
+                key = NeboAI pubkey      |
               )                            |
               fail -> FAIL                 |
                                            v
@@ -189,7 +189,7 @@ const NAPP_HEADER_SIZE: usize = 4 + 1 + 64 + 32; // 101 bytes
 /// Verify and unwrap a .napp envelope, returning the inner tar.gz payload.
 pub fn unwrap_napp(data: &[u8], public_key: &VerifyingKey) -> Result<Vec<u8>, NappError>
 
-/// Convenience wrapper using the embedded NeboLoop public key.
+/// Convenience wrapper using the embedded NeboAI public key.
 pub fn unwrap_napp_builtin(data: &[u8]) -> Result<Vec<u8>, NappError>
 
 /// Full pipeline for sealed .napp files: unwrap envelope -> decrypt -> tar.gz.
@@ -200,7 +200,7 @@ pub fn unwrap_sealed_napp(data: &[u8], license_key: &[u8; 32]) -> Result<Vec<u8>
 
 ## 3. Package Signing (ED25519)
 
-All `.napp` packages are signed by NeboLoop using ED25519 (via the
+All `.napp` packages are signed by NeboAI using ED25519 (via the
 `ed25519-dalek` crate). The signing scheme provides two layers of verification:
 envelope-level and content-level.
 
@@ -209,21 +209,21 @@ envelope-level and content-level.
 A 32-byte ED25519 public key is compiled into the Nebo binary at build time:
 
 ```rust
-pub const NEBOLOOP_PUBLIC_KEY: &[u8; 32] = include_bytes!("../neboloop_public_key.bin");
+pub const NEBOAI_PUBLIC_KEY: &[u8; 32] = include_bytes!("../neboai_public_key.bin");
 ```
 
-File: `crates/napp/neboloop_public_key.bin` (32 bytes, raw ED25519 public key)
+File: `crates/napp/neboai_public_key.bin` (32 bytes, raw ED25519 public key)
 
 This enables offline verification without network access -- critical for
 first-launch and air-gapped deployments.
 
 ### Remote Key Provider
 
-For online verification, `SigningKeyProvider` caches a key fetched from NeboLoop:
+For online verification, `SigningKeyProvider` caches a key fetched from NeboAI:
 
 ```rust
 pub struct SigningKeyProvider {
-    neboloop_url: String,        // e.g., "https://api.neboloop.com"
+    neboai_url: String,        // e.g., "https://api.neboai.com"
     key: RwLock<Option<CachedKey>>,
     ttl: Duration,               // 24 hours
 }
@@ -273,7 +273,7 @@ Steps:
 
 ```rust
 pub struct RevocationChecker {
-    neboloop_url: String,
+    neboai_url: String,
     cache: RwLock<Option<RevocationCache>>,
     ttl: Duration,  // 1 hour
 }
@@ -302,7 +302,7 @@ envelope signature covers the ciphertext.
         v
   HKDF-SHA256
     salt = artifact_id.as_bytes()
-    info = b"neboloop-license-v1"
+    info = b"neboai-license-v1"
         |
         v
   32-byte derived license key
@@ -661,7 +661,7 @@ plugin.napp (tar.gz)
 
 ```rust
 pub struct PluginManifest {
-    pub id: String,                                 // NeboLoop artifact ID
+    pub id: String,                                 // NeboAI artifact ID
     pub slug: String,                               // URL-safe slug (e.g., "gws")
     pub name: String,                               // Display name
     pub version: String,                            // Semver
@@ -1181,7 +1181,7 @@ The `registry.rs` module manages the full lifecycle of tool processes.
 pub struct RegistryConfig {
     pub installed_tools_dir: PathBuf,  // nebo/tools/
     pub user_tools_dir: PathBuf,       // user/tools/
-    pub neboloop_url: Option<String>,
+    pub neboai_url: Option<String>,
 }
 ```
 
@@ -1250,7 +1250,7 @@ async fn quarantine(&self, tool_id: &str, tool_dir: &Path, reason: &str)
 pub async fn handle_install_event(&self, event: InstallEvent) -> Result<(), NappError>
 ```
 
-Handles MQTT/WebSocket events from NeboLoop:
+Handles MQTT/WebSocket events from NeboAI:
 - `tool_installed` -> download and install
 - `tool_uninstalled` -> stop and remove
 - `tool_revoked` -> quarantine
@@ -1285,7 +1285,7 @@ pub struct LoadedAgent {
     pub agent_md: String,                     // Raw AGENT.md (for DB sync)
     pub frontmatter: String,                  // Raw agent.json (for DB sync)
     pub description: String,
-    pub id: Option<String>,                   // NeboLoop artifact UUID
+    pub id: Option<String>,                   // NeboAI artifact UUID
     pub is_app: bool,                         // artifact_type == "app"
     pub app_ui_path: Option<PathBuf>,         // ui/ directory
     pub app_binary_path: Option<PathBuf>,     // sidecar binary
@@ -1376,7 +1376,7 @@ pub async fn ensure<F, Fut>(
 
 1. Fast path: already installed locally -> return path
 2. Dedup concurrent downloads via `downloading` mutex
-3. Call `download_fn` to get manifest + binary bytes from NeboLoop
+3. Call `download_fn` to get manifest + binary bytes from NeboAI
 4. Validate manifest
 5. Verify SHA256 hash against manifest entry
 6. Verify ED25519 signature (if signing key available)
@@ -1471,7 +1471,7 @@ Checks:
 End-to-end verification from download to execution:
 
 ```
-  Download .napp from NeboLoop
+  Download .napp from NeboAI
   +-----------------------------------------------------+
   |                                                     |
   v                                                     |
@@ -1523,7 +1523,7 @@ End-to-end verification from download to execution:
 ### Marketplace -> Client
 
 ```
-  NeboLoop publishes .napp
+  NeboAI publishes .napp
         |
         v
   InstallEvent (via MQTT/WebSocket)
@@ -1571,7 +1571,7 @@ End-to-end verification from download to execution:
 ### Agent Install Flow
 
 ```
-  NeboLoop -> download agent .napp
+  NeboAI -> download agent .napp
         |
         v
   1. Store at nebo/agents/<name>/<version>.napp
@@ -1597,7 +1597,7 @@ pub enum NappError {
     Runtime(String),               // Process launch/socket failure
     NotFound(String),              // Entry or file not found
     PermissionDenied(String),      // Access denied
-    Revoked(String),               // Package revoked by NeboLoop
+    Revoked(String),               // Package revoked by NeboAI
     Io(std::io::Error),            // Filesystem I/O
     Http(reqwest::Error),          // Network request failure
     Json(serde_json::Error),       // JSON parse failure
@@ -1649,7 +1649,7 @@ pub enum NappError {
 ### Trust Chain
 
 ```
-  NeboLoop signing key (ED25519 private, server-side)
+  NeboAI signing key (ED25519 private, server-side)
         |
         | signs
         v
@@ -1675,7 +1675,7 @@ Sealed archives protect intellectual property (skill prose, agent personas):
 - Only executables and metadata are extracted to disk
 - Content (SKILL.md, AGENT.md, assets) read in-memory via sealed reader
 - License key derived via HKDF-SHA256 from master secret + artifact_id
-- HKDF info string: `b"neboloop-license-v1"`
+- HKDF info string: `b"neboai-license-v1"`
 - Key derivation is deterministic and license-holder agnostic
 
 ---

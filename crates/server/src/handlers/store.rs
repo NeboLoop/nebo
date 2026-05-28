@@ -1,4 +1,4 @@
-//! Store proxy handlers — forward marketplace queries to NeboLoop API.
+//! Store proxy handlers — forward marketplace queries to NeboAI API.
 
 use axum::extract::{Path, Query, State};
 use axum::response::Json;
@@ -25,7 +25,7 @@ pub struct StoreQuery {
 /// GET /store/products — unified product listing via `/api/v1/products`.
 /// Query params: type (skill|workflow|agent), category, q, page, pageSize.
 /// Returns `{ "skills": [...] }` enriched with local install state.
-/// NeboLoop returns `{ "results": [...] }` — we normalize to `{ "skills": [...] }`.
+/// NeboAI returns `{ "results": [...] }` — we normalize to `{ "skills": [...] }`.
 pub async fn list_store_products(
     State(state): State<AppState>,
     Query(params): Query<StoreQuery>,
@@ -44,7 +44,7 @@ pub async fn list_store_products(
 
     let mut out = normalize_to_skills(resp);
 
-    // Enrich with local install state — NeboLoop doesn't know what's on this machine
+    // Enrich with local install state — NeboAI doesn't know what's on this machine
     enrich_installed_state(&mut out, &state.store);
 
     Ok(Json(out))
@@ -201,9 +201,9 @@ pub async fn submit_store_product_feedback(
     Ok(Json(resp))
 }
 
-// ── NeboLoop response normalization ────────────────────────────────
+// ── NeboAI response normalization ────────────────────────────────
 //
-// NeboLoop returns `{ "results": [...], "total": N }` but our frontend
+// NeboAI returns `{ "results": [...], "total": N }` but our frontend
 // expects `{ "skills": [...] }` for product lists and `{ "apps": [...] }`
 // for featured. If the response already has the expected key, pass through.
 
@@ -304,7 +304,7 @@ fn enrich_installed_state(resp: &mut serde_json::Value, store: &db::Store) {
 
 /// POST /store/products/{id}/install — install a product by ID.
 ///
-/// Fetches the product detail from NeboLoop to get its install code, then
+/// Fetches the product detail from NeboAI to get its install code, then
 /// routes through the standard code-based install flow (persist to DB/disk,
 /// activate roles, cascade dependencies, reload skill loader).
 pub async fn install_store_product(
@@ -342,7 +342,7 @@ pub async fn install_store_product(
 
 /// DELETE /store/products/{id}/install — uninstall a product.
 ///
-/// Removes the product from NeboLoop, deletes the local DB record,
+/// Removes the product from NeboAI, deletes the local DB record,
 /// cleans up filesystem artifacts, and deactivates the role if active.
 pub async fn uninstall_store_product(
     State(state): State<AppState>,
@@ -353,10 +353,10 @@ pub async fn uninstall_store_product(
     // Get product detail before removing so we know the slug and type
     let detail = api.get_skill(&id).await.ok();
 
-    // Unregister from NeboLoop
+    // Unregister from NeboAI
     let _ = api.uninstall_product(&id).await;
 
-    // Look up local agent by NeboLoop product ID first, then by name as fallback
+    // Look up local agent by NeboAI product ID first, then by name as fallback
     let local_agent = state.store.get_agent(&id).ok().flatten().or_else(|| {
         let name = detail.as_ref().map(|d| d.item.name.as_str()).unwrap_or("");
         if !name.is_empty() {
@@ -374,7 +374,7 @@ pub async fn uninstall_store_product(
         .and_then(|d| d.item.artifact_type.as_deref())
         .unwrap_or("");
 
-    // Derive slug from role name if NeboLoop didn't provide it
+    // Derive slug from role name if NeboAI didn't provide it
     let slug = if slug.is_empty() {
         local_agent
             .as_ref()
@@ -384,7 +384,7 @@ pub async fn uninstall_store_product(
         slug
     };
 
-    // Determine artifact type from local DB kind or NeboLoop
+    // Determine artifact type from local DB kind or NeboAI
     let is_agent = artifact_type == "agent"
         || local_agent.is_some()
         || local_agent
@@ -393,7 +393,7 @@ pub async fn uninstall_store_product(
             .map(|k| k.starts_with("AGNT-"))
             .unwrap_or(false);
 
-    // Clean up local DB — use the local agent's ID (may differ from NeboLoop product ID)
+    // Clean up local DB — use the local agent's ID (may differ from NeboAI product ID)
     if let Some(ref agent_rec) = local_agent {
         let agent_id = &agent_rec.id;
         // Stop agent worker
@@ -418,7 +418,7 @@ pub async fn uninstall_store_product(
                 let _ = std::fs::remove_dir_all(&dir);
             }
         }
-        // Deregister agent from NeboLoop (non-blocking)
+        // Deregister agent from NeboAI (non-blocking)
         {
             let st = state.clone();
             let agent_slug = slug.clone();
@@ -454,7 +454,7 @@ pub async fn uninstall_store_product(
 // ── Collections ───────────────────────────────────────────────────
 //
 // Collection CRUD for org-scoped marketplace bundles.
-// Currently stubs — will proxy to NeboLoop API when collection
+// Currently stubs — will proxy to NeboAI API when collection
 // endpoints are available server-side.
 
 /// GET /store/collections — list all collections.

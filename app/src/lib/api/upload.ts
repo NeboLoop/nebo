@@ -1,7 +1,7 @@
 import type { UploadedAttachment } from '$lib/types/attachment';
 
 /**
- * Upload a file to NeboLoop via the local server proxy.
+ * Upload a file to NeboAI via the local server proxy.
  * Uses XMLHttpRequest for upload progress tracking (fetch API doesn't support it).
  */
 export function uploadFile(

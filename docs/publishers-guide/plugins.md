@@ -141,7 +141,7 @@ Hook circuit breaker: 3 consecutive failures disables the hook, auto-recovery af
 
 ## How It Works
 
-1. Publisher uploads a native binary to NeboLoop for each platform
+1. Publisher uploads a native binary to NeboAI for each platform
 2. Publisher creates a skill with `plugins:` in SKILL.md frontmatter (or another plugin with `dependencies:` in plugin.json)
 3. User installs the skill or plugin (via marketplace or install code)
 4. Nebo detects the plugin dependency and downloads the binary silently
@@ -177,7 +177,7 @@ plugins:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | string | required | Plugin slug (must match the plugin's registered slug in NeboLoop) |
+| `name` | string | required | Plugin slug (must match the plugin's registered slug in NeboAI) |
 | `version` | string | `"*"` | Semver version range |
 | `optional` | bool | `false` | If true, the skill loads even if this plugin isn't installed |
 
@@ -297,7 +297,7 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
   "name": "Google Workspace CLI",
   "version": "1.2.3",
   "description": "Google Workspace integration for email, calendar, and drive",
-  "author": "NeboLoop Inc.",
+  "author": "NeboAI Inc.",
   "platforms": {
     "darwin-arm64": {
       "binaryName": "gws",
@@ -327,7 +327,7 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | string | **Yes** | Unique identifier — use the plugin's slug (e.g., `"gws"`). For published plugins, NeboLoop may assign its own artifact ID. **Deserialization fails without this field** — the plugin will not be resolvable. |
+| `id` | string | **Yes** | Unique identifier — use the plugin's slug (e.g., `"gws"`). For published plugins, NeboAI may assign its own artifact ID. **Deserialization fails without this field** — the plugin will not be resolvable. |
 | `slug` | string | Yes | URL-safe slug. Must match what skills reference in `plugins[].name` |
 | `name` | string | Yes | Human-readable display name |
 | `version` | string | Yes | Semver version string |
@@ -977,7 +977,7 @@ These environment variables are always stripped for security:
 
 ### Prerequisites
 
-- A NeboLoop developer account
+- A NeboAI developer account
 - Your binary compiled for at least one target platform
 - Binary must be a single executable file (no runtime dependencies)
 
@@ -1051,7 +1051,7 @@ Publish for as many platforms as you support. At minimum, target `darwin-arm64` 
 
 ### Install Codes
 
-After your plugin is approved, NeboLoop assigns a `PLUG-XXXX-XXXX` install code. Users can paste this code into Nebo's chat to install the plugin directly. However, plugins are typically installed as dependencies of skills — users rarely install plugins standalone.
+After your plugin is approved, NeboAI assigns a `PLUG-XXXX-XXXX` install code. Users can paste this code into Nebo's chat to install the plugin directly. However, plugins are typically installed as dependencies of skills — users rarely install plugins standalone.
 
 ---
 
@@ -1115,7 +1115,7 @@ Multiple versions can coexist. Each skill resolves to the highest installed vers
 ## Security
 
 - **SHA256 verification:** Every binary is hashed on upload. On download, the hash is verified before the binary is written to disk. Any mismatch = download rejected.
-- **ED25519 signatures:** Binaries are signed with NeboLoop's ED25519 key. Signatures are verified on download when the signing key is available.
+- **ED25519 signatures:** Binaries are signed with NeboAI's ED25519 key. Signatures are verified on download when the signing key is available.
 - **Quarantine:** If a plugin is revoked (security issue, policy violation), Nebo deletes the binary and writes a `.quarantined` marker. The plugin becomes unresolvable, and any skills depending on it are dropped from the loaded set.
 - **No network required after install:** Once downloaded, `resolve()` is fully local. Works offline.
 
@@ -1144,7 +1144,7 @@ cp ./build/my-plugin ~/Library/Application\ Support/nebo/plugins/my-plugin/0.1.0
 chmod 755 ~/Library/Application\ Support/nebo/plugins/my-plugin/0.1.0/my-plugin
 ```
 
-Then create a skill with `plugins: [{name: "my-plugin", version: "*"}]` in your `user/skills/` directory. The loader will resolve the plugin locally without contacting NeboLoop.
+Then create a skill with `plugins: [{name: "my-plugin", version: "*"}]` in your `user/skills/` directory. The loader will resolve the plugin locally without contacting NeboAI.
 
 ### Testing Authentication
 
@@ -1233,7 +1233,7 @@ plugins:
     optional: <bool>      # Optional, default false
 ```
 
-### NeboLoop Qualified Name
+### NeboAI Qualified Name
 
 ```
 @org/plugins/name@version
@@ -1250,7 +1250,7 @@ Same scoping and version resolution rules as skills. See [Packaging](packaging.m
   "name": "Google Workspace CLI",
   "version": "1.2.3",
   "description": "Google Workspace integration for email, calendar, and drive",
-  "author": "NeboLoop Inc.",
+  "author": "NeboAI Inc.",
   "platforms": {
     "darwin-arm64": {
       "binaryName": "gws",

@@ -61,7 +61,7 @@ Every component in `src/lib/components/`, its props, mock data imports, callback
 | Import | Replace With |
 |--------|-------------|
 | `USER` | `GET /api/v1/user/me` + profile |
-| `PLANS` | `GET /api/v1/neboloop/billing/subscription` |
+| `PLANS` | `GET /api/v1/neboai/billing/subscription` |
 
 ---
 

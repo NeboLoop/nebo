@@ -6,7 +6,7 @@
 
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { authLogin, neboLoopBillingPaymentMethods } from '$lib/api/nebo';
+  import { authLogin, neboAIBillingPaymentMethods } from '$lib/api/nebo';
   import { createMarketplaceSubscription } from '$lib/api/index';
   import type { PaymentMethodInfo } from '$lib/api/neboComponents';
 
@@ -214,7 +214,7 @@
     paymentMethodLoading = true;
     phase = 'confirm';
     try {
-      const resp = await neboLoopBillingPaymentMethods();
+      const resp = await neboAIBillingPaymentMethods();
       const methods = (resp as any)?.methods as PaymentMethodInfo[] | undefined;
       paymentMethod = methods?.find((m: PaymentMethodInfo) => m.isDefault) || methods?.[0] || null;
     } catch {
@@ -227,7 +227,7 @@
   async function confirmPurchase() {
     confirmLoading = true;
     try {
-      // Create marketplace subscription — NeboLoop returns a checkout URL
+      // Create marketplace subscription — NeboAI returns a checkout URL
       const resp = await createMarketplaceSubscription({
         targetId: artifactId,
         targetType: artifactType || codeType,

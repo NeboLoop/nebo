@@ -13,7 +13,7 @@ use crate::parser::{WorkflowDef, parse_workflow};
 /// Where a workflow was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowSource {
-    /// Installed from NeboLoop marketplace (sealed .napp archive).
+    /// Installed from NeboAI marketplace (sealed .napp archive).
     Installed,
     /// User-created (loose files in user/ directory).
     User,

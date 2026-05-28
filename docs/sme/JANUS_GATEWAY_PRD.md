@@ -1,6 +1,6 @@
 # Janus Gateway — Product Requirements Document
 
-> Janus is the NeboLoop AI gateway. It sits between Nebo desktop clients and
+> Janus is the NeboAI AI gateway. It sits between Nebo desktop clients and
 > upstream AI providers, handling authentication, usage metering, rate limiting,
 > model routing, and credit billing. Named after the Roman god of gates and
 > transitions.
@@ -57,7 +57,7 @@ worry about per-provider billing.
 | **Nebo Pro user** | Generous credits, all models, cloud voice (TTS + STT), compute sandbox |
 | **Nebo Team admin** | Team-wide usage dashboards, per-seat budgets, audit logs |
 | **Nebo agent developer** | Predictable API, model fallback, tool stickiness routing |
-| **NeboLoop platform** | Revenue from credit consumption, provider cost optimization |
+| **NeboAI platform** | Revenue from credit consumption, provider cost optimization |
 
 ---
 
@@ -73,7 +73,7 @@ worry about per-provider billing.
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                      Janus Gateway                           │
-│                   janus.neboloop.com                          │
+│                   janus.neboai.com                          │
 │                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐  │
 │  │ Auth &   │  │ Router   │  │ Metering │  │ Rate       │  │
@@ -279,7 +279,7 @@ Voice request
   │   └─ No ──┐
   │            │
   └─ Janus gateway (Nebo credits)
-      └─ POST janus.neboloop.com/v1/audio/speech
+      └─ POST janus.neboai.com/v1/audio/speech
 ```
 
 **Fallback order matches the existing provider priority:**
@@ -548,7 +548,7 @@ The Nebo client reports usage via `GET /v1/usage` (cached in
 
 ### 11.4 Admin Dashboard
 
-NeboLoop admin panel at `admin.neboloop.com/janus`:
+NeboAI admin panel at `admin.neboai.com/janus`:
 - Real-time request throughput
 - Per-provider error rates and latency
 - Credit consumption heatmaps
@@ -561,10 +561,10 @@ NeboLoop admin panel at `admin.neboloop.com/janus`:
 
 ### 12.1 Authentication
 
-- **JWT tokens** issued during NeboLoop OAuth flow
+- **JWT tokens** issued during NeboAI OAuth flow
 - Tokens contain: `bot_id`, `plan_tier`, `org_id`, `exp`
 - Token rotation on every AUTH_OK (comms connection)
-- Cached at `<data_dir>/neboloop_token.cache` for resilience
+- Cached at `<data_dir>/neboai_token.cache` for resilience
 
 ### 12.2 API Key Management
 
@@ -593,8 +593,8 @@ NeboLoop admin panel at `admin.neboloop.com/janus`:
 ### 13.1 Base URL
 
 ```
-Production: https://janus.neboloop.com
-Staging:    https://janus-staging.neboloop.com
+Production: https://janus.neboai.com
+Staging:    https://janus-staging.neboai.com
 ```
 
 ### 13.2 Endpoints Summary
@@ -680,7 +680,7 @@ All errors follow the OpenAI error format:
 ### 14.3 Janus Provider in Rust
 
 The existing `OpenAIProvider` is reused with:
-- `base_url` → `config.neboloop.janus_url + "/v1"`
+- `base_url` → `config.neboai.janus_url + "/v1"`
 - `provider_id` → `"janus"`
 - `bot_id` → set via `set_bot_id()`
 - `lane` → set dynamically per request
@@ -754,7 +754,7 @@ pub async fn synthesize_janus(
 - [ ] Firecracker microVM infrastructure
 - [ ] `GET /v1/providers` — Provider status endpoint
 - [ ] `GET /v1/limits` — Real-time limit status
-- [ ] Admin dashboard at admin.neboloop.com/janus
+- [ ] Admin dashboard at admin.neboai.com/janus
 - [ ] Plugin provider type `"speech"` wiring (marketplace TTS plugins)
 
 ### Phase 4 — Enterprise

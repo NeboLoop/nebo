@@ -9,7 +9,7 @@
   import { listMarketplaceSubscriptions, cancelMarketplaceSubscription, type MarketplaceSubscriptionInfo } from '$lib/api/index';
   import type {
     AccountStatusResponse,
-    NeboLoopBillingSubscriptionResponse,
+    NeboAIBillingSubscriptionResponse,
     PaymentMethodInfo,
     InvoiceInfo
   } from '$lib/api/neboComponents';
@@ -18,7 +18,7 @@
 
   let isLoading = $state(true);
   let status = $state<AccountStatusResponse | null>(null);
-  let subscription = $state<NeboLoopBillingSubscriptionResponse | null>(null);
+  let subscription = $state<NeboAIBillingSubscriptionResponse | null>(null);
   let paymentMethods = $state<PaymentMethodInfo[]>([]);
   let invoices = $state<InvoiceInfo[]>([]);
   let marketplaceSubs = $state<MarketplaceSubscriptionInfo[]>([]);
@@ -38,12 +38,12 @@
   onMount(() => {
     (async () => {
       try {
-        status = (await api.neboLoopAccountStatus()) as AccountStatusResponse;
+        status = (await api.neboAIAccountStatus()) as AccountStatusResponse;
         if (status?.connected) {
           const [subResp, pmResp, invResp, mktResp] = await Promise.allSettled([
-            api.neboLoopBillingSubscription(),
-            api.neboLoopBillingPaymentMethods(),
-            api.neboLoopBillingInvoices(),
+            api.neboAIBillingSubscription(),
+            api.neboAIBillingPaymentMethods(),
+            api.neboAIBillingInvoices(),
             listMarketplaceSubscriptions()
           ]);
           if (subResp.status === 'fulfilled') subscription = subResp.value;
@@ -92,7 +92,7 @@
     actionLoading = 'portal';
     actionError = '';
     try {
-      await api.neboLoopBillingPortal();
+      await api.neboAIBillingPortal();
     } catch (e: any) {
       actionError = e?.message || 'Failed to open billing portal';
     } finally {
@@ -104,9 +104,9 @@
     actionLoading = 'cancel';
     actionError = '';
     try {
-      await api.neboLoopBillingCancel({ subscriptionId });
+      await api.neboAIBillingCancel({ subscriptionId });
       try {
-        subscription = await api.neboLoopBillingSubscription();
+        subscription = await api.neboAIBillingSubscription();
       } catch { /* ignore */ }
       showCancelConfirm = false;
     } catch (e: any) {
@@ -134,7 +134,7 @@
     stripeSuccess = false;
 
     try {
-      const { clientSecret, publishableKey } = await api.neboLoopBillingSetupIntent();
+      const { clientSecret, publishableKey } = await api.neboAIBillingSetupIntent();
 
       const Stripe = await loadStripe();
       stripeInstance = Stripe(publishableKey);
@@ -185,7 +185,7 @@
         stripeSuccess = true;
         setTimeout(async () => {
           try {
-            const pmResp = await api.neboLoopBillingPaymentMethods();
+            const pmResp = await api.neboAIBillingPaymentMethods();
             paymentMethods = pmResp?.methods || [];
           } catch { /* ignore */ }
           showPaymentModal = false;
@@ -219,7 +219,7 @@
   </div>
 {:else if !status?.connected}
   <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-    <p class="text-xs text-base-content/70">Connect your NeboLoop account to manage billing.</p>
+    <p class="text-xs text-base-content/70">Connect your NeboAI account to manage billing.</p>
     <a href="/settings/account" class="inline-block mt-3 text-sm font-medium text-primary hover:brightness-110 transition-all">
       Go to Account
     </a>

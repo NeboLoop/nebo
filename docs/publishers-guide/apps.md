@@ -1219,7 +1219,7 @@ Navigate to the Apps tab in Nebo and click your app. The sidecar launches on fir
 
 ---
 
-## Publishing to NeboLoop
+## Publishing to NeboAI
 
 ### Via MCP Server
 

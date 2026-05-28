@@ -1,6 +1,6 @@
 # Publishing via MCP
 
-This guide covers how to publish skills, plugins, and agents to NeboLoop using the MCP tools. All publishing operations go through the NeboLoop MCP server.
+This guide covers how to publish skills, plugins, and agents to NeboAI using the MCP tools. All publishing operations go through the NeboAI MCP server.
 
 ---
 
@@ -66,7 +66,7 @@ Skills that bundle scripts or executables need binary uploads per platform.
 
 3. **Upload binary + SKILL.md:**
    ```bash
-   curl --http1.1 -X POST https://neboloop.com/api/v1/developer/apps/<SKILL_ID>/binaries \
+   curl --http1.1 -X POST https://neboai.com/api/v1/developer/apps/<SKILL_ID>/binaries \
      -H "Authorization: Bearer <TOKEN>" \
      -F "file=@/path/to/binary" \
      -F "platform=darwin-arm64" \
@@ -118,7 +118,7 @@ Plugins are native binaries with a PLUGIN.md manifest. They require a developer 
 
 4. **Upload first platform with config and skills:**
    ```bash
-   curl --http1.1 -X POST https://neboloop.com/api/v1/developer/apps/<PLUGIN_ID>/binaries \
+   curl --http1.1 -X POST https://neboai.com/api/v1/developer/apps/<PLUGIN_ID>/binaries \
      -H "Authorization: Bearer <TOKEN>" \
      -F "file=@dist/darwin-arm64/my-plugin" \
      -F "platform=darwin-arm64" \
@@ -137,7 +137,7 @@ Plugins are native binaries with a PLUGIN.md manifest. They require a developer 
 
 5. **Upload remaining platforms** (binary + platform + skill only):
    ```bash
-   curl --http1.1 -X POST https://neboloop.com/api/v1/developer/apps/<PLUGIN_ID>/binaries \
+   curl --http1.1 -X POST https://neboai.com/api/v1/developer/apps/<PLUGIN_ID>/binaries \
      -H "Authorization: Bearer <TOKEN>" \
      -F "file=@dist/linux-amd64/my-plugin" \
      -F "platform=linux-amd64" \
@@ -201,7 +201,7 @@ Agents have two files that get uploaded: `AGENT.md` (persona/manifest) and `agen
    ```
 
    ```bash
-   curl --http1.1 -X POST https://neboloop.com/api/v1/developer/apps/<AGENT_ID>/binaries \
+   curl --http1.1 -X POST https://neboai.com/api/v1/developer/apps/<AGENT_ID>/binaries \
      -H "Authorization: Bearer <TOKEN>" \
      -F "config=@/path/to/agent.json"
    ```
@@ -222,7 +222,7 @@ Agents have two files that get uploaded: `AGENT.md` (persona/manifest) and `agen
 After uploading, verify the agent.json was stored correctly:
 
 ```bash
-curl -s "https://neboloop.com/api/v1/agents/<SLUG>" | python3 -c "
+curl -s "https://neboai.com/api/v1/agents/<SLUG>" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 tc = d.get('typeConfig', {})

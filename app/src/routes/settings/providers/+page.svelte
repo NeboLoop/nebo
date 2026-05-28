@@ -95,7 +95,7 @@
   async function loadJanusStatus() {
     try {
       const api = await import('$lib/api/nebo');
-      janusStatus = await api.neboLoopAccountStatus();
+      janusStatus = await api.neboAIAccountStatus();
     } catch { janusStatus = null; }
   }
 
@@ -256,13 +256,13 @@
       <Alert type="error">{error}</Alert>
     {/if}
 
-    <!-- NeboLoop AI (Janus) -->
+    <!-- NeboAI AI (Janus) -->
     <section>
       <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Nebo AI</div>
       <div class="rounded-lg border border-base-content/5 bg-base-100 p-4">
         {#if janusStatus?.connected}
           <div class="flex items-center justify-between mb-3">
-            <span class="text-sm font-medium">NeboLoop AI</span>
+            <span class="text-sm font-medium">NeboAI AI</span>
             <a href="/settings/usage" class="text-xs text-primary hover:brightness-110 transition-all">View Usage</a>
           </div>
           {#if janusModels().length > 0}
@@ -282,7 +282,7 @@
           <div class="flex items-center justify-between">
             <div>
               <span class="text-sm font-medium">Not connected</span>
-              <p class="text-xs text-base-content/50 mt-0.5">Connect to NeboLoop for managed AI models.</p>
+              <p class="text-xs text-base-content/50 mt-0.5">Connect to NeboAI for managed AI models.</p>
             </div>
             <a href="/settings/account" class="text-xs font-medium text-primary hover:brightness-110 transition-all">Connect</a>
           </div>

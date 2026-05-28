@@ -28,7 +28,7 @@ pub struct SecretDeclaration {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginDependency {
-    /// Plugin slug (matches the plugin's registered name in NeboLoop).
+    /// Plugin slug (matches the plugin's registered name in NeboAI).
     pub name: String,
     /// Semver version range. Defaults to `"*"` (any version).
     #[serde(default = "default_version_range")]
@@ -63,7 +63,7 @@ fn default_version_range() -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillSource {
-    /// Installed from NeboLoop marketplace (sealed .napp archive).
+    /// Installed from NeboAI marketplace (sealed .napp archive).
     Installed,
     /// User-created (loose files in user/ directory).
     User,

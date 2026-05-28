@@ -82,7 +82,7 @@ message InboundMessage {
 message MessageSender {
   string name = 1;
   string role = 2;      // relationship dynamic (Friend, COO, Mentor)
-  string bot_id = 3;    // NeboLoop bot UUID
+  string bot_id = 3;    // NeboAI bot UUID
 }
 
 // Attachment represents a file or media attachment.

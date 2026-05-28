@@ -453,7 +453,7 @@ info: installing component 'rustfmt'
    Compiling bit-vec v0.8.0
    Compiling tauri-runtime-wry v2.10.0
    Compiling dispatch v0.2.0
-   Compiling sandbox-runtime v0.1.0 (https://github.com/NeboLoop/sandbox-runtime.git?branch=master#defb0f25)
+   Compiling sandbox-runtime v0.1.0 (https://github.com/NeboAI/sandbox-runtime.git?branch=master#defb0f25)
    Compiling rayon-core v1.13.0
    Compiling borrow-or-share v0.2.4
    Compiling tao v0.34.5
@@ -574,15 +574,15 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:36.804337Z  INFO nebo_db::migrate: database is up to date
 2026-05-02T01:07:36.820571Z  INFO nebo_server: cancelled orphaned workflow runs from previous session count=4
 2026-05-02T01:07:37.143125Z  INFO nebo_server: CLI detection complete claude=true codex=true gemini=false
-2026-05-02T01:07:37.145197Z  INFO nebo_server: loaded Janus provider via NeboLoop model=nebo-1 janus_url=https://janus.neboloop.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-02T01:07:37.202391Z  INFO nebo_server: loaded AI provider provider=neboloop model=-
+2026-05-02T01:07:37.145197Z  INFO nebo_server: loaded Janus provider via NeboAI model=nebo-1 janus_url=https://janus.neboai.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-02T01:07:37.202391Z  INFO nebo_server: loaded AI provider provider=neboai model=-
 2026-05-02T01:07:37.249349Z  INFO nebo_tools::skills::loader: loaded skills count=8 installed_dir=/Users/almatuck/.nebo/nebo/skills user_dir=/Users/almatuck/.nebo/user/skills
 2026-05-02T01:07:37.259852Z  INFO nebo_agent::advisors::loader: loaded advisors count=5 dir=/Users/almatuck/.nebo/advisors
-2026-05-02T01:07:37.263766Z  INFO nebo_server: loaded Janus provider via NeboLoop model=nebo-1 janus_url=https://janus.neboloop.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-02T01:07:37.286044Z  INFO nebo_server: loaded AI provider provider=neboloop model=-
+2026-05-02T01:07:37.263766Z  INFO nebo_server: loaded Janus provider via NeboAI model=nebo-1 janus_url=https://janus.neboai.com bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-02T01:07:37.286044Z  INFO nebo_server: loaded AI provider provider=neboai model=-
 2026-05-02T01:07:37.301781Z  INFO nebo_server: sandbox runtime initialized
 2026-05-02T01:07:37.312913Z  INFO nebo_server: stored master encryption key in OS keyring
-2026-05-02T01:07:37.326299Z  INFO nebo_comm::manager: registered comm plugin plugin="neboloop" version="4.0.0"
+2026-05-02T01:07:37.326299Z  INFO nebo_comm::manager: registered comm plugin plugin="neboai" version="4.0.0"
 2026-05-02T01:07:37.326593Z  INFO nebo_comm::manager: registered comm plugin plugin="loopback" version="1.0.0"
 2026-05-02T01:07:37.326874Z  INFO nebo_napp::registry: tool discovery complete count=0
 2026-05-02T01:07:37.328162Z  INFO nebo_server: loaded models catalog providers=5 models=15
@@ -619,18 +619,18 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:37.373760Z  INFO nebo_agent::agent_worker: started heartbeat trigger agent=warm-market-coach binding=follow-up-check interval=14400s window=Some((08:00:00, 20:00:00))
 2026-05-02T01:07:37.374146Z  INFO nebo_agent::agent_worker: started watch trigger agent=warm-market-coach binding=trigger-watcher plugin=warm-market
 2026-05-02T01:07:37.374158Z  INFO nebo_agent::agent_worker: agent worker started agent=warm-market-coach name=warm-market-coach bindings=7
-2026-05-02T01:07:37.374880Z  INFO nebo_workflow::triggers: registered agent schedule trigger agent="@neboloop/agents/chief-of-staff" binding=evening-wrap cron=0 0 18 * * 1-5 *
-2026-05-02T01:07:37.375044Z  INFO nebo_workflow::triggers: registered agent schedule trigger agent="@neboloop/agents/chief-of-staff" binding=morning-briefing cron=0 0 7 * * 1-5 *
+2026-05-02T01:07:37.374880Z  INFO nebo_workflow::triggers: registered agent schedule trigger agent="@neboai/agents/chief-of-staff" binding=evening-wrap cron=0 0 18 * * 1-5 *
+2026-05-02T01:07:37.375044Z  INFO nebo_workflow::triggers: registered agent schedule trigger agent="@neboai/agents/chief-of-staff" binding=morning-briefing cron=0 0 7 * * 1-5 *
 2026-05-02T01:07:37.375101Z  INFO nebo_agent::agent_worker: spawning watch process agent=warm-market-coach binding=trigger-watcher binary=/Users/almatuck/.nebo/nebo/plugins/warm-market/0.1.0/warm-market command=social watch
-2026-05-02T01:07:37.375334Z  INFO nebo_agent::agent_worker: started watch trigger agent=@neboloop/agents/chief-of-staff binding=calendar-watcher plugin=gws
-2026-05-02T01:07:37.375481Z  INFO nebo_agent::agent_worker: started heartbeat trigger agent=@neboloop/agents/chief-of-staff binding=day-monitor interval=1800s window=Some((07:00:00, 22:00:00))
-2026-05-02T01:07:37.376585Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboloop/agents/chief-of-staff binding=calendar-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=calendar +watch --format ndjson
-2026-05-02T01:07:37.376828Z  INFO nebo_agent::agent_worker: started watch trigger agent=@neboloop/agents/chief-of-staff binding=email-watcher plugin=gws
-2026-05-02T01:07:37.377023Z  INFO nebo_agent::agent_worker: agent worker started agent=@neboloop/agents/chief-of-staff name=@neboloop/agents/chief-of-staff bindings=9
+2026-05-02T01:07:37.375334Z  INFO nebo_agent::agent_worker: started watch trigger agent=@neboai/agents/chief-of-staff binding=calendar-watcher plugin=gws
+2026-05-02T01:07:37.375481Z  INFO nebo_agent::agent_worker: started heartbeat trigger agent=@neboai/agents/chief-of-staff binding=day-monitor interval=1800s window=Some((07:00:00, 22:00:00))
+2026-05-02T01:07:37.376585Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboai/agents/chief-of-staff binding=calendar-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=calendar +watch --format ndjson
+2026-05-02T01:07:37.376828Z  INFO nebo_agent::agent_worker: started watch trigger agent=@neboai/agents/chief-of-staff binding=email-watcher plugin=gws
+2026-05-02T01:07:37.377023Z  INFO nebo_agent::agent_worker: agent worker started agent=@neboai/agents/chief-of-staff name=@neboai/agents/chief-of-staff bindings=9
 2026-05-02T01:07:37.377508Z  INFO nebo_workflow::triggers: registered agent schedule trigger agent="content-strategist" binding=content-calendar cron=0 0 9 * * 1 *
 2026-05-02T01:07:37.377575Z  INFO nebo_workflow::triggers: registered agent schedule trigger agent="content-strategist" binding=performance-review cron=0 0 9 1 * * *
 2026-05-02T01:07:37.377638Z  INFO nebo_agent::agent_worker: agent worker started agent=content-strategist name=Content Strategist bindings=4
-2026-05-02T01:07:37.378131Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboloop/agents/chief-of-staff binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
+2026-05-02T01:07:37.378131Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboai/agents/chief-of-staff binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
 2026-05-02T01:07:37.378208Z  INFO nebo_workflow::triggers: registered agent schedule trigger agent="Search Visibility Monitor" binding=weekly-visibility-report cron=0 0 9 * * 1 *
 2026-05-02T01:07:37.378265Z  INFO nebo_workflow::triggers: registered agent schedule trigger agent="Search Visibility Monitor" binding=competitor-visibility cron=0 0 10 1 * * *
 2026-05-02T01:07:37.378723Z  INFO nebo_agent::agent_worker: started heartbeat trigger agent=Search Visibility Monitor binding=ai-citation-check interval=43200s window=Some((07:00:00, 22:00:00))
@@ -668,31 +668,31 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:37.395041Z  WARN nebo_agent::agent_worker: watch stderr: Usage: warm-market social watch --contact-list <CONTACT_LIST> agent=warm-market-coach binding=trigger-watcher
 2026-05-02T01:07:37.395052Z  WARN nebo_agent::agent_worker: watch stderr:  agent=warm-market-coach binding=trigger-watcher
 2026-05-02T01:07:37.395059Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=warm-market-coach binding=trigger-watcher
-2026-05-02T01:07:37.398715Z  INFO nebo_agent::agent_worker: started heartbeat trigger agent=@neboloop/agents/private-investigator binding=watchlist-monitor interval=43200s window=None
-2026-05-02T01:07:37.398740Z  INFO nebo_agent::agent_worker: agent worker started agent=@neboloop/agents/private-investigator name=@neboloop/agents/private-investigator bindings=4
+2026-05-02T01:07:37.398715Z  INFO nebo_agent::agent_worker: started heartbeat trigger agent=@neboai/agents/private-investigator binding=watchlist-monitor interval=43200s window=None
+2026-05-02T01:07:37.398740Z  INFO nebo_agent::agent_worker: agent worker started agent=@neboai/agents/private-investigator name=@neboai/agents/private-investigator bindings=4
 2026-05-02T01:07:37.399388Z  INFO nebo_agent::agent_worker: agent worker started agent=quality-guard name=Quality Guard bindings=4
 2026-05-02T01:07:37.399430Z  INFO nebo_server: started agent workers for enabled agents count=19
-2026-05-02T01:07:37.406235Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=@neboloop/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:37.406235Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=@neboai/agents/chief-of-staff binding=email-watcher
 2026-05-02T01:07:37.408014Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=outreach-coach binding=email-watcher
-2026-05-02T01:07:37.408095Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: error: unrecognized subcommand '+watch' agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:37.408106Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:37.408113Z  WARN nebo_agent::agent_worker: watch stderr: Usage: gws [OPTIONS] <COMMAND> agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:37.408120Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:37.408911Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:37.408921Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:37.408554Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:37.409025Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboloop/agents/chief-of-staff binding=calendar-watcher backoff_secs=5
+2026-05-02T01:07:37.408095Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: error: unrecognized subcommand '+watch' agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:37.408106Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:37.408113Z  WARN nebo_agent::agent_worker: watch stderr: Usage: gws [OPTIONS] <COMMAND> agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:37.408120Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:37.408911Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:37.408921Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:37.408554Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:37.409025Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboai/agents/chief-of-staff binding=calendar-watcher backoff_secs=5
 2026-05-02T01:07:37.477214Z  INFO nebo_server: restored active agents from DB count=19
 2026-05-02T01:07:37.477420Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=Marketing Manager agent_id=marketing-manager reason=missing skills: @nebo/skills/page-cro@^1.0.0, @nebo/skills/signup-flow-cro@^1.0.0, @nebo/skills/onboarding-cro@^1.0.0, @nebo/skills/form-cro@^1.0.0, @nebo/skills/popup-cro@^1.0.0, @nebo/skills/paywall-upgrade-cro@^1.0.0, @nebo/skills/email-sequence@^1.0.0, @nebo/skills/seo-audit@^1.0.0, @nebo/skills/ai-seo@^1.0.0, @nebo/skills/programmatic-seo@^1.0.0, @nebo/skills/site-architecture@^1.0.0, @nebo/skills/competitor-alternatives@^1.0.0, @nebo/skills/schema-markup@^1.0.0, @nebo/skills/paid-ads@^1.0.0, @nebo/skills/ad-creative@^1.0.0, @nebo/skills/analytics-tracking@^1.0.0, @nebo/skills/ab-test-setup@^1.0.0, @nebo/skills/churn-prevention@^1.0.0, @nebo/skills/free-tool-strategy@^1.0.0, @nebo/skills/referral-program@^1.0.0, @nebo/skills/marketing-ideas@^1.0.0, @nebo/skills/marketing-psychology@^1.0.0, @nebo/skills/launch-strategy@^1.0.0, @nebo/skills/pricing-strategy@^1.0.0, @nebo/skills/revops@^1.0.0, @nebo/skills/sales-enablement@^1.0.0, @nebo/skills/product-marketing-context@^1.0.0, @nebo/skills/lead-magnets@^1.0.0, @nebo/skills/seo-content@^1.0.0
-2026-05-02T01:07:37.486181Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=warm-market-coach agent_id=warm-market-coach reason=missing skills: @neboloop/skills/web-scraper@^1.0.0
-2026-05-02T01:07:37.486236Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=outreach-coach agent_id=outreach-coach reason=missing skills: @neboloop/skills/web-scraper@^1.0.0
+2026-05-02T01:07:37.486181Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=warm-market-coach agent_id=warm-market-coach reason=missing skills: @neboai/skills/web-scraper@^1.0.0
+2026-05-02T01:07:37.486236Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=outreach-coach agent_id=outreach-coach reason=missing skills: @neboai/skills/web-scraper@^1.0.0
 2026-05-02T01:07:37.486266Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=Competitive Intel agent_id=competitive-intel reason=missing skills: @nebo/skills/competitor-alternatives@^1.0.0, @nebo/skills/web-scraper@^1.0.0
 2026-05-02T01:07:37.486297Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=Content Strategist agent_id=content-strategist reason=missing skills: @nebo/skills/seo-content@^1.0.0, @nebo/skills/seo-geo@^1.0.0, @nebo/skills/product-marketing-context@^1.0.0
 2026-05-02T01:07:37.486331Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=Social Media Manager agent_id=Social Media Manager reason=missing skills: @nebo/skills/product-marketing-context@^1.0.0, @nebo/skills/web-scraper@^1.0.0, @nebo/skills/ad-creative@^1.0.0
-2026-05-02T01:07:37.486352Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=nuskin agent_id=nuskin reason=missing skills: @neboloop/skills/web-scraper@^1.0.0
+2026-05-02T01:07:37.486352Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=nuskin agent_id=nuskin reason=missing skills: @neboai/skills/web-scraper@^1.0.0
 2026-05-02T01:07:37.486389Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=SEO Auditor agent_id=seo-auditor reason=missing skills: @nebo/skills/seo-audit@^1.0.0, @nebo/skills/seo-technical@^1.0.0, @nebo/skills/seo-content@^1.0.0, @nebo/skills/seo-schema@^1.0.0, @nebo/skills/seo-images@^1.0.0, @nebo/skills/seo-sitemap@^1.0.0, @nebo/skills/seo-geo@^1.0.0, @nebo/skills/seo-plan@^1.0.0, @nebo/skills/seo-programmatic@^1.0.0, @nebo/skills/seo-hreflang@^1.0.0, @nebo/skills/seo-competitor-pages@^1.0.0
 2026-05-02T01:07:37.488401Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=Research Analyst agent_id=research-analyst reason=missing skills: @nebo/skills/web-scraper@^1.0.0
-2026-05-02T01:07:37.488427Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=@neboloop/agents/private-investigator agent_id=@neboloop/agents/private-investigator reason=missing skills: @nebo/skills/web-scraper@^1.0.0
+2026-05-02T01:07:37.488427Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=@neboai/agents/private-investigator agent_id=@neboai/agents/private-investigator reason=missing skills: @nebo/skills/web-scraper@^1.0.0
 2026-05-02T01:07:37.490977Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=Product Builder agent_id=product-builder reason=missing skills: @nebo/skills/spec-writing@^1.0.0, @nebo/skills/plan-writing@^1.0.0
 2026-05-02T01:07:37.490999Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=Quality Guard agent_id=quality-guard reason=missing skills: @nebo/skills/tdd@^1.0.0, @nebo/skills/verification@^1.0.0, @nebo/skills/systematic-debugging@^1.0.0
 2026-05-02T01:07:37.491016Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=Search Visibility Monitor agent_id=Search Visibility Monitor reason=missing skills: @nebo/skills/seo-audit@^1.0.0, @nebo/skills/seo-technical@^1.0.0, @nebo/skills/seo-geo@^1.0.0, @nebo/skills/ai-seo@^1.0.0, @nebo/skills/seo-crawler@^1.0.0, @nebo/skills/web-scraper@^1.0.0, @nebo/skills/competitor-alternatives@^1.0.0
@@ -700,46 +700,46 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:37.491089Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=AI Coach agent_id=ai-coach reason=missing skills: @nebo/skills/context-fundamentals@^1.0.0, @nebo/skills/memory-best-practices@^1.0.0, @nebo/skills/multi-agent-patterns@^1.0.0
 2026-05-02T01:07:37.491103Z  WARN nebo_tools::agent_tool: agent degraded: unmet skill dependencies agent=Inbox Manager agent_id=Inbox Manager reason=missing skills: @nebo/skills/google-workspace@^1.0.0, @nebo/skills/product-marketing-context@^1.0.0, @nebo/skills/email-sequence@^1.0.0, @nebo/skills/daily-briefing@^1.0.0
 2026-05-02T01:07:37.492777Z  INFO nebo_server: seeded provider_models from embedded catalog
-2026-05-02T01:07:37.494194Z  INFO nebo_comm::manager: active comm plugin set plugin="neboloop"
+2026-05-02T01:07:37.494194Z  INFO nebo_comm::manager: active comm plugin set plugin="neboai"
 2026-05-02T01:07:37.546898Z  INFO nebo: Server is ready
-2026-05-02T01:07:37.785752Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=@neboloop/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:37.785752Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=@neboai/agents/chief-of-staff binding=email-watcher
 2026-05-02T01:07:37.786135Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=outreach-coach binding=email-watcher
 2026-05-02T01:07:37.800850Z  INFO nebo_browser::extension_bridge: extension connected conn_id=1 browser=brave active=1
-2026-05-02T01:07:38.192479Z  INFO nebo_comm::neboloop: connected to neboloop gateway gateway=wss://comms.neboloop.com/ws bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
-2026-05-02T01:07:38.192932Z  INFO nebo_server: neboloop: connected to gateway
-2026-05-02T01:07:38.869821Z  INFO nebo_server::codes: synced bot identity to NeboLoop name=Nebo
-2026-05-02T01:07:39.231822Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=@neboloop/agents/chief-of-staff binding=email-watcher
-2026-05-02T01:07:39.238599Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=organize-emails run_id=bc938621-2cee-4b26-b80d-8439781ce68d event_source=gws.email.new
-2026-05-02T01:07:39.239136Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=handle-meeting-requests run_id=338c73d1-5822-4f1b-9f8d-6c9fe73c343c event_source=gws.email.new
-2026-05-02T01:07:39.240007Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=auto-reply run_id=86bb0349-a460-43d5-9260-5fdda9181f7f event_source=gws.email.new
-2026-05-02T01:07:39.258132Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboloop/agents/chief-of-staff binding=email-watcher
-2026-05-02T01:07:39.258172Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboloop/agents/chief-of-staff binding=email-watcher backoff_secs=5
-2026-05-02T01:07:39.259349Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=338c73d1-5822-4f1b-9f8d-6c9fe73c343c trigger=event tools=15
-2026-05-02T01:07:39.259747Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=86bb0349-a460-43d5-9260-5fdda9181f7f trigger=event tools=15
+2026-05-02T01:07:38.192479Z  INFO nebo_comm::neboai: connected to neboai gateway gateway=wss://comms.neboai.com/ws bot_id=3279b7f5-039e-4d21-8824-d0ed567d7091
+2026-05-02T01:07:38.192932Z  INFO nebo_server: neboai: connected to gateway
+2026-05-02T01:07:38.869821Z  INFO nebo_server::codes: synced bot identity to NeboAI name=Nebo
+2026-05-02T01:07:39.231822Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=@neboai/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:39.238599Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=organize-emails run_id=bc938621-2cee-4b26-b80d-8439781ce68d event_source=gws.email.new
+2026-05-02T01:07:39.239136Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=handle-meeting-requests run_id=338c73d1-5822-4f1b-9f8d-6c9fe73c343c event_source=gws.email.new
+2026-05-02T01:07:39.240007Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=auto-reply run_id=86bb0349-a460-43d5-9260-5fdda9181f7f event_source=gws.email.new
+2026-05-02T01:07:39.258132Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboai/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:39.258172Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboai/agents/chief-of-staff binding=email-watcher backoff_secs=5
+2026-05-02T01:07:39.259349Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=338c73d1-5822-4f1b-9f8d-6c9fe73c343c trigger=event tools=15
+2026-05-02T01:07:39.259747Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=86bb0349-a460-43d5-9260-5fdda9181f7f trigger=event tools=15
 2026-05-02T01:07:39.260203Z  INFO nebo_workflow::engine: executing activity workflow="auto-reply" activity="analyze-email"
 2026-05-02T01:07:39.260785Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
-2026-05-02T01:07:39.261028Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=bc938621-2cee-4b26-b80d-8439781ce68d trigger=event tools=15
+2026-05-02T01:07:39.261028Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=bc938621-2cee-4b26-b80d-8439781ce68d trigger=event tools=15
 2026-05-02T01:07:39.261297Z  INFO nebo_workflow::engine: executing activity workflow="organize-emails" activity="categorize"
 2026-05-02T01:07:39.263336Z  INFO nebo_workflow::engine: executing activity workflow="handle-meeting-requests" activity="detect-meeting"
 2026-05-02T01:07:39.264974Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:39.265377Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:39.331213Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=outreach-coach binding=email-watcher
 2026-05-02T01:07:39.331689Z  INFO nebo_agent::agent_worker: watch triggered inline workflow agent=outreach-coach binding=email-watcher run_id=a007de1c-6f39-4ee8-bffa-fba8f5d9afc2
-2026-05-02T01:07:39.333193Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=organize-emails run_id=ea3a94ff-118d-40e9-8c9e-67a7cca5eb8c event_source=gws.email.new
-2026-05-02T01:07:39.333741Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=handle-meeting-requests run_id=5fe978d2-741b-441e-bfdd-6af002585997 event_source=gws.email.new
-2026-05-02T01:07:39.334225Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=auto-reply run_id=7c339e9a-ce4a-40a6-9710-414bd049d9f7 event_source=gws.email.new
+2026-05-02T01:07:39.333193Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=organize-emails run_id=ea3a94ff-118d-40e9-8c9e-67a7cca5eb8c event_source=gws.email.new
+2026-05-02T01:07:39.333741Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=handle-meeting-requests run_id=5fe978d2-741b-441e-bfdd-6af002585997 event_source=gws.email.new
+2026-05-02T01:07:39.334225Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=auto-reply run_id=7c339e9a-ce4a-40a6-9710-414bd049d9f7 event_source=gws.email.new
 2026-05-02T01:07:39.335657Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=outreach-coach binding=email-watcher
 2026-05-02T01:07:39.335680Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=outreach-coach binding=email-watcher backoff_secs=5
 2026-05-02T01:07:39.335745Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=outreach-coach run_id=a007de1c-6f39-4ee8-bffa-fba8f5d9afc2 trigger=watch tools=15
 2026-05-02T01:07:39.336050Z  INFO nebo_workflow::engine: executing activity workflow="email-watcher" activity="detect-email-signals"
-2026-05-02T01:07:39.336675Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=ea3a94ff-118d-40e9-8c9e-67a7cca5eb8c trigger=event tools=15
+2026-05-02T01:07:39.336675Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=ea3a94ff-118d-40e9-8c9e-67a7cca5eb8c trigger=event tools=15
 2026-05-02T01:07:39.336664Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=2 tools=17
-2026-05-02T01:07:39.337204Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=7c339e9a-ce4a-40a6-9710-414bd049d9f7 trigger=event tools=15
+2026-05-02T01:07:39.337204Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=7c339e9a-ce4a-40a6-9710-414bd049d9f7 trigger=event tools=15
 2026-05-02T01:07:39.338360Z  INFO nebo_workflow::engine: executing activity workflow="organize-emails" activity="categorize"
 2026-05-02T01:07:39.340428Z  INFO nebo_workflow::engine: executing activity workflow="auto-reply" activity="analyze-email"
 2026-05-02T01:07:39.340899Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:39.341255Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
-2026-05-02T01:07:39.347021Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=5fe978d2-741b-441e-bfdd-6af002585997 trigger=event tools=15
+2026-05-02T01:07:39.347021Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=5fe978d2-741b-441e-bfdd-6af002585997 trigger=event tools=15
 2026-05-02T01:07:39.347367Z  INFO nebo_workflow::engine: executing activity workflow="handle-meeting-requests" activity="detect-meeting"
 2026-05-02T01:07:39.347818Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:40.977383Z  INFO http{method=GET uri=/ws}: nebo_server::handlers::ws: ws upgrade request received
@@ -768,15 +768,15 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:42.404744Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=warm-market-coach binding=trigger-watcher
 2026-05-02T01:07:42.404784Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=warm-market-coach binding=trigger-watcher
 2026-05-02T01:07:42.404804Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=warm-market-coach binding=trigger-watcher backoff_secs=10
-2026-05-02T01:07:42.412682Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboloop/agents/chief-of-staff binding=calendar-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=calendar +watch --format ndjson
-2026-05-02T01:07:42.421281Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: error: unrecognized subcommand '+watch' agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:42.421310Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:42.421319Z  WARN nebo_agent::agent_worker: watch stderr: Usage: gws [OPTIONS] <COMMAND> agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:42.421327Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:42.421334Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:42.421342Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:42.421620Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:42.421646Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboloop/agents/chief-of-staff binding=calendar-watcher backoff_secs=10
+2026-05-02T01:07:42.412682Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboai/agents/chief-of-staff binding=calendar-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=calendar +watch --format ndjson
+2026-05-02T01:07:42.421281Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: error: unrecognized subcommand '+watch' agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:42.421310Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:42.421319Z  WARN nebo_agent::agent_worker: watch stderr: Usage: gws [OPTIONS] <COMMAND> agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:42.421327Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:42.421334Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:42.421342Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:42.421620Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:42.421646Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboai/agents/chief-of-staff binding=calendar-watcher backoff_secs=10
 2026-05-02T01:07:42.591132Z  WARN nebo_tools::bot_tool: memory not found at all — not in DB namespace="tacit/general" key="_event_payload" user_id=
 2026-05-02T01:07:42.592275Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=4 tools=17
 2026-05-02T01:07:43.448774Z  WARN nebo_tools::bot_tool: memory not found at all — not in DB namespace="tacit/general" key="_event_payload" user_id=
@@ -785,44 +785,44 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:43.649898Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
 2026-05-02T01:07:43.918458Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
 2026-05-02T01:07:44.025894Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=6 tools=17
-2026-05-02T01:07:44.263022Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboloop/agents/chief-of-staff binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
-2026-05-02T01:07:44.282432Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=@neboloop/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:44.263022Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboai/agents/chief-of-staff binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
+2026-05-02T01:07:44.282432Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=@neboai/agents/chief-of-staff binding=email-watcher
 2026-05-02T01:07:44.340211Z  INFO nebo_agent::agent_worker: spawning watch process agent=outreach-coach binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
 2026-05-02T01:07:44.348000Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=outreach-coach binding=email-watcher
-2026-05-02T01:07:44.478914Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=@neboloop/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:44.478914Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=@neboai/agents/chief-of-staff binding=email-watcher
 2026-05-02T01:07:44.536822Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=outreach-coach binding=email-watcher
-2026-05-02T01:07:44.892370Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=@neboloop/agents/chief-of-staff binding=email-watcher
-2026-05-02T01:07:44.892811Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=organize-emails run_id=9e8c00e5-3bfc-4dff-a795-774a16f1d7c8 event_source=gws.email.new
-2026-05-02T01:07:44.893002Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=handle-meeting-requests run_id=9ca3a732-6580-48c0-aeba-ff613c80b1db event_source=gws.email.new
-2026-05-02T01:07:44.893165Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=auto-reply run_id=b5cee513-0337-4d08-9d84-4de54ed54212 event_source=gws.email.new
-2026-05-02T01:07:44.894495Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboloop/agents/chief-of-staff binding=email-watcher
-2026-05-02T01:07:44.894515Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboloop/agents/chief-of-staff binding=email-watcher backoff_secs=10
-2026-05-02T01:07:44.897153Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=9e8c00e5-3bfc-4dff-a795-774a16f1d7c8 trigger=event tools=15
+2026-05-02T01:07:44.892370Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=@neboai/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:44.892811Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=organize-emails run_id=9e8c00e5-3bfc-4dff-a795-774a16f1d7c8 event_source=gws.email.new
+2026-05-02T01:07:44.893002Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=handle-meeting-requests run_id=9ca3a732-6580-48c0-aeba-ff613c80b1db event_source=gws.email.new
+2026-05-02T01:07:44.893165Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=auto-reply run_id=b5cee513-0337-4d08-9d84-4de54ed54212 event_source=gws.email.new
+2026-05-02T01:07:44.894495Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboai/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:44.894515Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboai/agents/chief-of-staff binding=email-watcher backoff_secs=10
+2026-05-02T01:07:44.897153Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=9e8c00e5-3bfc-4dff-a795-774a16f1d7c8 trigger=event tools=15
 2026-05-02T01:07:44.897493Z  INFO nebo_workflow::engine: executing activity workflow="organize-emails" activity="categorize"
-2026-05-02T01:07:44.897759Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=b5cee513-0337-4d08-9d84-4de54ed54212 trigger=event tools=15
+2026-05-02T01:07:44.897759Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=b5cee513-0337-4d08-9d84-4de54ed54212 trigger=event tools=15
 2026-05-02T01:07:44.898015Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:44.898385Z  INFO nebo_workflow::engine: executing activity workflow="auto-reply" activity="analyze-email"
 2026-05-02T01:07:44.899485Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
-2026-05-02T01:07:44.902157Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=9ca3a732-6580-48c0-aeba-ff613c80b1db trigger=event tools=15
+2026-05-02T01:07:44.902157Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=9ca3a732-6580-48c0-aeba-ff613c80b1db trigger=event tools=15
 2026-05-02T01:07:44.902442Z  INFO nebo_workflow::engine: executing activity workflow="handle-meeting-requests" activity="detect-meeting"
 2026-05-02T01:07:44.902884Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:44.940359Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=outreach-coach binding=email-watcher
 2026-05-02T01:07:44.941176Z  INFO nebo_agent::agent_worker: watch triggered inline workflow agent=outreach-coach binding=email-watcher run_id=6eb57262-81d9-4dbf-b026-0ba115a03d9c
-2026-05-02T01:07:44.941670Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=organize-emails run_id=5f00531d-7203-4f3a-86b7-149da1b12460 event_source=gws.email.new
+2026-05-02T01:07:44.941670Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=organize-emails run_id=5f00531d-7203-4f3a-86b7-149da1b12460 event_source=gws.email.new
 2026-05-02T01:07:44.941742Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=outreach-coach binding=email-watcher
 2026-05-02T01:07:44.941786Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=outreach-coach binding=email-watcher backoff_secs=10
-2026-05-02T01:07:44.941911Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=handle-meeting-requests run_id=5dd3d330-59a0-4d16-9cba-2d03b5fc22a4 event_source=gws.email.new
-2026-05-02T01:07:44.942101Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=auto-reply run_id=53dce059-14f5-4652-98e6-c38f3689241e event_source=gws.email.new
+2026-05-02T01:07:44.941911Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=handle-meeting-requests run_id=5dd3d330-59a0-4d16-9cba-2d03b5fc22a4 event_source=gws.email.new
+2026-05-02T01:07:44.942101Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=auto-reply run_id=53dce059-14f5-4652-98e6-c38f3689241e event_source=gws.email.new
 2026-05-02T01:07:44.944885Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=outreach-coach run_id=6eb57262-81d9-4dbf-b026-0ba115a03d9c trigger=watch tools=15
-2026-05-02T01:07:44.945062Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=53dce059-14f5-4652-98e6-c38f3689241e trigger=event tools=15
-2026-05-02T01:07:44.945062Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=5f00531d-7203-4f3a-86b7-149da1b12460 trigger=event tools=15
+2026-05-02T01:07:44.945062Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=53dce059-14f5-4652-98e6-c38f3689241e trigger=event tools=15
+2026-05-02T01:07:44.945062Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=5f00531d-7203-4f3a-86b7-149da1b12460 trigger=event tools=15
 2026-05-02T01:07:44.945382Z  INFO nebo_workflow::engine: executing activity workflow="auto-reply" activity="analyze-email"
 2026-05-02T01:07:44.945832Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:44.946753Z  INFO nebo_workflow::engine: executing activity workflow="organize-emails" activity="categorize"
 2026-05-02T01:07:44.947077Z  INFO nebo_workflow::engine: executing activity workflow="email-watcher" activity="detect-email-signals"
 2026-05-02T01:07:44.947317Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:44.947657Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=2 tools=17
-2026-05-02T01:07:44.949596Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=5dd3d330-59a0-4d16-9cba-2d03b5fc22a4 trigger=event tools=15
+2026-05-02T01:07:44.949596Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=5dd3d330-59a0-4d16-9cba-2d03b5fc22a4 trigger=event tools=15
 2026-05-02T01:07:44.950269Z  INFO nebo_workflow::engine: executing activity workflow="handle-meeting-requests" activity="detect-meeting"
 2026-05-02T01:07:44.951713Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:45.169086Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=9 tools=17
@@ -871,7 +871,7 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:50.061032Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
 2026-05-02T01:07:50.571043Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=14 tools=17
 2026-05-02T01:07:50.633459Z  INFO nebo_workflow::engine: workflow completed workflow="handle-meeting-requests" run_id="338c73d1-5822-4f1b-9f8d-6c9fe73c343c" total_tokens=0
-2026-05-02T01:07:50.633915Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboloop/agents/chief-of-staff run_id=338c73d1-5822-4f1b-9f8d-6c9fe73c343c
+2026-05-02T01:07:50.633915Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboai/agents/chief-of-staff run_id=338c73d1-5822-4f1b-9f8d-6c9fe73c343c
 2026-05-02T01:07:50.634756Z  INFO nebo_workflow::engine: executing activity workflow="handle-meeting-requests" activity="create-event"
 2026-05-02T01:07:50.635316Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:50.727265Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=14 tools=17
@@ -898,18 +898,18 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:52.416970Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=warm-market-coach binding=trigger-watcher
 2026-05-02T01:07:52.417113Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=warm-market-coach binding=trigger-watcher
 2026-05-02T01:07:52.417160Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=warm-market-coach binding=trigger-watcher backoff_secs=20
-2026-05-02T01:07:52.425233Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboloop/agents/chief-of-staff binding=calendar-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=calendar +watch --format ndjson
+2026-05-02T01:07:52.425233Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboai/agents/chief-of-staff binding=calendar-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=calendar +watch --format ndjson
 2026-05-02T01:07:52.428667Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=16 tools=17
-2026-05-02T01:07:52.434666Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: error: unrecognized subcommand '+watch' agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:52.434684Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:52.434692Z  WARN nebo_agent::agent_worker: watch stderr: Usage: gws [OPTIONS] <COMMAND> agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:52.434699Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:52.434705Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:52.434730Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:52.434705Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:07:52.434762Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboloop/agents/chief-of-staff binding=calendar-watcher backoff_secs=20
+2026-05-02T01:07:52.434666Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: error: unrecognized subcommand '+watch' agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:52.434684Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:52.434692Z  WARN nebo_agent::agent_worker: watch stderr: Usage: gws [OPTIONS] <COMMAND> agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:52.434699Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:52.434705Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:52.434730Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:52.434705Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:07:52.434762Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboai/agents/chief-of-staff binding=calendar-watcher backoff_secs=20
 2026-05-02T01:07:52.445505Z  INFO nebo_workflow::engine: workflow completed workflow="handle-meeting-requests" run_id="5fe978d2-741b-441e-bfdd-6af002585997" total_tokens=0
-2026-05-02T01:07:52.446116Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboloop/agents/chief-of-staff run_id=5fe978d2-741b-441e-bfdd-6af002585997
+2026-05-02T01:07:52.446116Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboai/agents/chief-of-staff run_id=5fe978d2-741b-441e-bfdd-6af002585997
 2026-05-02T01:07:52.500678Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=11 tools=17
 2026-05-02T01:07:52.516002Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=11 tools=17
 2026-05-02T01:07:52.579312Z  WARN nebo_tools::bot_tool: memory not found at all — not in DB namespace="tacit/general" key="meeting-request" user_id=
@@ -928,47 +928,47 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:54.112915Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=13 tools=17
 2026-05-02T01:07:54.676856Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
 2026-05-02T01:07:54.777093Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
-2026-05-02T01:07:54.899044Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboloop/agents/chief-of-staff binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
-2026-05-02T01:07:54.908048Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=@neboloop/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:54.899044Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboai/agents/chief-of-staff binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
+2026-05-02T01:07:54.908048Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=@neboai/agents/chief-of-staff binding=email-watcher
 2026-05-02T01:07:54.946008Z  INFO nebo_agent::agent_worker: spawning watch process agent=outreach-coach binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
 2026-05-02T01:07:54.954367Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=outreach-coach binding=email-watcher
 2026-05-02T01:07:55.087309Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=16 tools=17
-2026-05-02T01:07:55.121513Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=@neboloop/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:55.121513Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=@neboai/agents/chief-of-staff binding=email-watcher
 2026-05-02T01:07:55.196472Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=outreach-coach binding=email-watcher
 2026-05-02T01:07:55.422513Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=22 tools=17
 2026-05-02T01:07:55.542301Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=16 tools=17
-2026-05-02T01:07:55.634826Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=@neboloop/agents/chief-of-staff binding=email-watcher
-2026-05-02T01:07:55.635259Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=organize-emails run_id=9ef5509f-58d5-49b4-8978-3098746c3b12 event_source=gws.email.new
-2026-05-02T01:07:55.635790Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=handle-meeting-requests run_id=7d19fc87-c99c-4f15-9bf1-3e5561f40dfe event_source=gws.email.new
-2026-05-02T01:07:55.636121Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=auto-reply run_id=fccf1cf5-b2ef-4be0-8922-fa111134a9bb event_source=gws.email.new
-2026-05-02T01:07:55.636924Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboloop/agents/chief-of-staff binding=email-watcher
-2026-05-02T01:07:55.636982Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboloop/agents/chief-of-staff binding=email-watcher backoff_secs=20
-2026-05-02T01:07:55.639404Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=fccf1cf5-b2ef-4be0-8922-fa111134a9bb trigger=event tools=15
-2026-05-02T01:07:55.639479Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=9ef5509f-58d5-49b4-8978-3098746c3b12 trigger=event tools=15
+2026-05-02T01:07:55.634826Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=@neboai/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:55.635259Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=organize-emails run_id=9ef5509f-58d5-49b4-8978-3098746c3b12 event_source=gws.email.new
+2026-05-02T01:07:55.635790Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=handle-meeting-requests run_id=7d19fc87-c99c-4f15-9bf1-3e5561f40dfe event_source=gws.email.new
+2026-05-02T01:07:55.636121Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=auto-reply run_id=fccf1cf5-b2ef-4be0-8922-fa111134a9bb event_source=gws.email.new
+2026-05-02T01:07:55.636924Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboai/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:07:55.636982Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboai/agents/chief-of-staff binding=email-watcher backoff_secs=20
+2026-05-02T01:07:55.639404Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=fccf1cf5-b2ef-4be0-8922-fa111134a9bb trigger=event tools=15
+2026-05-02T01:07:55.639479Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=9ef5509f-58d5-49b4-8978-3098746c3b12 trigger=event tools=15
 2026-05-02T01:07:55.639730Z  INFO nebo_workflow::engine: executing activity workflow="auto-reply" activity="analyze-email"
 2026-05-02T01:07:55.640241Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
-2026-05-02T01:07:55.640413Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=7d19fc87-c99c-4f15-9bf1-3e5561f40dfe trigger=event tools=15
+2026-05-02T01:07:55.640413Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=7d19fc87-c99c-4f15-9bf1-3e5561f40dfe trigger=event tools=15
 2026-05-02T01:07:55.640668Z  INFO nebo_workflow::engine: executing activity workflow="handle-meeting-requests" activity="detect-meeting"
 2026-05-02T01:07:55.641870Z  INFO nebo_workflow::engine: executing activity workflow="organize-emails" activity="categorize"
 2026-05-02T01:07:55.643448Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:55.644227Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:55.673684Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=outreach-coach binding=email-watcher
 2026-05-02T01:07:55.674132Z  INFO nebo_agent::agent_worker: watch triggered inline workflow agent=outreach-coach binding=email-watcher run_id=71a3a737-7065-4cbf-96f0-3c6bbe57a0a7
-2026-05-02T01:07:55.675305Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=organize-emails run_id=c8ad0942-c08d-40c7-a033-ec4e391b8b71 event_source=gws.email.new
-2026-05-02T01:07:55.675609Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=handle-meeting-requests run_id=79275304-1ed4-4e89-9bb6-0adaeccc70a8 event_source=gws.email.new
+2026-05-02T01:07:55.675305Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=organize-emails run_id=c8ad0942-c08d-40c7-a033-ec4e391b8b71 event_source=gws.email.new
+2026-05-02T01:07:55.675609Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=handle-meeting-requests run_id=79275304-1ed4-4e89-9bb6-0adaeccc70a8 event_source=gws.email.new
 2026-05-02T01:07:55.675902Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=outreach-coach binding=email-watcher
 2026-05-02T01:07:55.675927Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=outreach-coach binding=email-watcher backoff_secs=20
-2026-05-02T01:07:55.676470Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=auto-reply run_id=62c62292-dcd8-4040-b564-36a2d2717951 event_source=gws.email.new
-2026-05-02T01:07:55.680229Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=62c62292-dcd8-4040-b564-36a2d2717951 trigger=event tools=15
+2026-05-02T01:07:55.676470Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=auto-reply run_id=62c62292-dcd8-4040-b564-36a2d2717951 event_source=gws.email.new
+2026-05-02T01:07:55.680229Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=62c62292-dcd8-4040-b564-36a2d2717951 trigger=event tools=15
 2026-05-02T01:07:55.681967Z  INFO nebo_workflow::engine: executing activity workflow="auto-reply" activity="analyze-email"
 2026-05-02T01:07:55.682434Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=outreach-coach run_id=71a3a737-7065-4cbf-96f0-3c6bbe57a0a7 trigger=watch tools=15
-2026-05-02T01:07:55.682519Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=c8ad0942-c08d-40c7-a033-ec4e391b8b71 trigger=event tools=15
+2026-05-02T01:07:55.682519Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=c8ad0942-c08d-40c7-a033-ec4e391b8b71 trigger=event tools=15
 2026-05-02T01:07:55.682689Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:55.683719Z  INFO nebo_workflow::engine: executing activity workflow="email-watcher" activity="detect-email-signals"
 2026-05-02T01:07:55.684926Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=2 tools=17
 2026-05-02T01:07:55.685139Z  INFO nebo_workflow::engine: executing activity workflow="organize-emails" activity="categorize"
 2026-05-02T01:07:55.685670Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
-2026-05-02T01:07:55.685785Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=79275304-1ed4-4e89-9bb6-0adaeccc70a8 trigger=event tools=15
+2026-05-02T01:07:55.685785Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=79275304-1ed4-4e89-9bb6-0adaeccc70a8 trigger=event tools=15
 2026-05-02T01:07:55.686023Z  INFO nebo_workflow::engine: executing activity workflow="handle-meeting-requests" activity="detect-meeting"
 2026-05-02T01:07:55.686444Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:07:55.698800Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
@@ -1009,7 +1009,7 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:58.442207Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=25 tools=17
 2026-05-02T01:07:58.721196Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=12 tools=17
 2026-05-02T01:07:58.754427Z  INFO nebo_workflow::engine: workflow completed workflow="auto-reply" run_id="b5cee513-0337-4d08-9d84-4de54ed54212" total_tokens=0
-2026-05-02T01:07:58.755005Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboloop/agents/chief-of-staff run_id=b5cee513-0337-4d08-9d84-4de54ed54212
+2026-05-02T01:07:58.755005Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboai/agents/chief-of-staff run_id=b5cee513-0337-4d08-9d84-4de54ed54212
 2026-05-02T01:07:58.815230Z  WARN nebo_tools::bot_tool: memory not found at all — not in DB namespace="tacit/general" key="event_payload" user_id=
 2026-05-02T01:07:58.815910Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=9 tools=17
 2026-05-02T01:07:58.830703Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
@@ -1020,7 +1020,7 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:07:59.078487Z  INFO nebo_server::handlers::ws: ws client message: {"type":"presence","data":{"status":"unfocused"},"message_id":"261d119c-8156-4f99-bfc8-fe57a2dd2655","timestamp":"2026-05-02T01:07:59.078Z"}
 2026-05-02T01:07:59.254267Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=23 tools=17
 2026-05-02T01:07:59.354548Z  INFO nebo_workflow::engine: workflow completed workflow="auto-reply" run_id="7c339e9a-ce4a-40a6-9710-414bd049d9f7" total_tokens=0
-2026-05-02T01:07:59.355024Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboloop/agents/chief-of-staff run_id=7c339e9a-ce4a-40a6-9710-414bd049d9f7
+2026-05-02T01:07:59.355024Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboai/agents/chief-of-staff run_id=7c339e9a-ce4a-40a6-9710-414bd049d9f7
 2026-05-02T01:07:59.684994Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=6 tools=17
 2026-05-02T01:07:59.693773Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=24 tools=17
 2026-05-02T01:07:59.736661Z  WARN nebo_tools::bot_tool: memory not found at all — not in DB namespace="tacit/general" key="_event_payload" user_id=
@@ -1105,17 +1105,17 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:08:07.870131Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=38 tools=17
 2026-05-02T01:08:07.908393Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=20 tools=17
 2026-05-02T01:08:07.927105Z  INFO nebo_workflow::engine: workflow completed workflow="organize-emails" run_id="9ef5509f-58d5-49b4-8978-3098746c3b12" total_tokens=0
-2026-05-02T01:08:07.927585Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboloop/agents/chief-of-staff run_id=9ef5509f-58d5-49b4-8978-3098746c3b12
+2026-05-02T01:08:07.927585Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboai/agents/chief-of-staff run_id=9ef5509f-58d5-49b4-8978-3098746c3b12
 2026-05-02T01:08:08.071359Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=21 tools=17
 2026-05-02T01:08:08.110560Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=38 tools=17
 2026-05-02T01:08:08.149063Z  INFO nebo_workflow::engine: workflow completed workflow="handle-meeting-requests" run_id="79275304-1ed4-4e89-9bb6-0adaeccc70a8" total_tokens=0
-2026-05-02T01:08:08.149340Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboloop/agents/chief-of-staff run_id=79275304-1ed4-4e89-9bb6-0adaeccc70a8
+2026-05-02T01:08:08.149340Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboai/agents/chief-of-staff run_id=79275304-1ed4-4e89-9bb6-0adaeccc70a8
 2026-05-02T01:08:08.282199Z  INFO nebo_workflow::engine: executing activity workflow="organize-emails" activity="apply-labels"
 2026-05-02T01:08:08.283011Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:08:08.328138Z  INFO nebo_browser::executor: executing browser action tool="read_page" backend="extension"
 2026-05-02T01:08:08.486004Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=27 tools=17
 2026-05-02T01:08:08.502345Z  INFO nebo_workflow::engine: workflow completed workflow="handle-meeting-requests" run_id="7d19fc87-c99c-4f15-9bf1-3e5561f40dfe" total_tokens=0
-2026-05-02T01:08:08.503042Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboloop/agents/chief-of-staff run_id=7d19fc87-c99c-4f15-9bf1-3e5561f40dfe
+2026-05-02T01:08:08.503042Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboai/agents/chief-of-staff run_id=7d19fc87-c99c-4f15-9bf1-3e5561f40dfe
 2026-05-02T01:08:08.666164Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
 2026-05-02T01:08:08.928139Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=29 tools=17
 2026-05-02T01:08:09.007852Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=32 tools=17
@@ -1155,15 +1155,15 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:08:12.427213Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=warm-market-coach binding=trigger-watcher
 2026-05-02T01:08:12.428273Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=warm-market-coach binding=trigger-watcher
 2026-05-02T01:08:12.428320Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=warm-market-coach binding=trigger-watcher backoff_secs=40
-2026-05-02T01:08:12.439160Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboloop/agents/chief-of-staff binding=calendar-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=calendar +watch --format ndjson
-2026-05-02T01:08:12.457852Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: error: unrecognized subcommand '+watch' agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:08:12.457883Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:08:12.457892Z  WARN nebo_agent::agent_worker: watch stderr: Usage: gws [OPTIONS] <COMMAND> agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:08:12.457900Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:08:12.457907Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:08:12.458065Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:08:12.458531Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboloop/agents/chief-of-staff binding=calendar-watcher
-2026-05-02T01:08:12.458558Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboloop/agents/chief-of-staff binding=calendar-watcher backoff_secs=40
+2026-05-02T01:08:12.439160Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboai/agents/chief-of-staff binding=calendar-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=calendar +watch --format ndjson
+2026-05-02T01:08:12.457852Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: error: unrecognized subcommand '+watch' agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:08:12.457883Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:08:12.457892Z  WARN nebo_agent::agent_worker: watch stderr: Usage: gws [OPTIONS] <COMMAND> agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:08:12.457900Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:08:12.457907Z  WARN nebo_agent::agent_worker: watch stderr: For more information, try '--help'. agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:08:12.458065Z  WARN nebo_agent::agent_worker: watch stderr:  agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:08:12.458531Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboai/agents/chief-of-staff binding=calendar-watcher
+2026-05-02T01:08:12.458558Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboai/agents/chief-of-staff binding=calendar-watcher backoff_secs=40
 2026-05-02T01:08:12.467550Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=29 tools=17
 2026-05-02T01:08:12.482125Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=30 tools=17
 2026-05-02T01:08:12.510161Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
@@ -1176,7 +1176,7 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:08:12.954374Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
 2026-05-02T01:08:13.240724Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=25 tools=17
 2026-05-02T01:08:14.024904Z  INFO nebo_workflow::engine: workflow completed workflow="auto-reply" run_id="62c62292-dcd8-4040-b564-36a2d2717951" total_tokens=0
-2026-05-02T01:08:14.025207Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboloop/agents/chief-of-staff run_id=62c62292-dcd8-4040-b564-36a2d2717951
+2026-05-02T01:08:14.025207Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboai/agents/chief-of-staff run_id=62c62292-dcd8-4040-b564-36a2d2717951
 2026-05-02T01:08:14.220367Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=33 tools=17
 2026-05-02T01:08:15.060870Z  INFO nebo_server::handlers::ws: ws client message: {"type":"presence","data":{"status":"focused"},"message_id":"9d6170a6-8735-4fa0-bcfa-d3c951e51cb6","timestamp":"2026-05-02T01:08:15.060Z"}
 2026-05-02T01:08:15.267951Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=47 tools=17
@@ -1187,48 +1187,48 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:08:15.341549Z  INFO nebo_workflow::engine: executing activity workflow="auto-reply" activity="send-auto-reply"
 2026-05-02T01:08:15.342165Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:08:15.529172Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=36 tools=17
-2026-05-02T01:08:15.639835Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboloop/agents/chief-of-staff binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
-2026-05-02T01:08:15.649427Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=@neboloop/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:08:15.639835Z  INFO nebo_agent::agent_worker: spawning watch process agent=@neboai/agents/chief-of-staff binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
+2026-05-02T01:08:15.649427Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=@neboai/agents/chief-of-staff binding=email-watcher
 2026-05-02T01:08:15.679271Z  INFO nebo_agent::agent_worker: spawning watch process agent=outreach-coach binding=email-watcher binary=/Users/almatuck/.nebo/nebo/plugins/gws/0.22.5/gws command=gmail +watch --format ndjson
 2026-05-02T01:08:15.698345Z  WARN nebo_agent::agent_worker: watch stderr: warning: unknown output format 'ndjson'; falling back to json (valid options: json, table, yaml, csv) agent=outreach-coach binding=email-watcher
 2026-05-02T01:08:15.839675Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=39 tools=17
-2026-05-02T01:08:15.850826Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=@neboloop/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:08:15.850826Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=@neboai/agents/chief-of-staff binding=email-watcher
 2026-05-02T01:08:15.925357Z  WARN nebo_agent::agent_worker: watch stderr: Using keyring backend: keyring agent=outreach-coach binding=email-watcher
 2026-05-02T01:08:15.983518Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=32 tools=17
 2026-05-02T01:08:16.003571Z  INFO nebo_browser::executor: executing browser action tool="click" backend="extension"
 2026-05-02T01:08:16.012479Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=24 tools=17
 2026-05-02T01:08:16.326050Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=37 tools=17
-2026-05-02T01:08:16.358130Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=@neboloop/agents/chief-of-staff binding=email-watcher
-2026-05-02T01:08:16.358739Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=organize-emails run_id=008e704a-9e86-4c79-b79c-edec2d3cb988 event_source=gws.email.new
-2026-05-02T01:08:16.358945Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=handle-meeting-requests run_id=a75f19c3-18f4-45d2-9316-17d3ceb7f657 event_source=gws.email.new
-2026-05-02T01:08:16.359111Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=auto-reply run_id=ebfc31d9-1c33-470a-a38c-833066e6ecfb event_source=gws.email.new
-2026-05-02T01:08:16.359605Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboloop/agents/chief-of-staff binding=email-watcher
-2026-05-02T01:08:16.359632Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboloop/agents/chief-of-staff binding=email-watcher backoff_secs=40
-2026-05-02T01:08:16.361864Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=ebfc31d9-1c33-470a-a38c-833066e6ecfb trigger=event tools=15
+2026-05-02T01:08:16.358130Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=@neboai/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:08:16.358739Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=organize-emails run_id=008e704a-9e86-4c79-b79c-edec2d3cb988 event_source=gws.email.new
+2026-05-02T01:08:16.358945Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=handle-meeting-requests run_id=a75f19c3-18f4-45d2-9316-17d3ceb7f657 event_source=gws.email.new
+2026-05-02T01:08:16.359111Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=auto-reply run_id=ebfc31d9-1c33-470a-a38c-833066e6ecfb event_source=gws.email.new
+2026-05-02T01:08:16.359605Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=@neboai/agents/chief-of-staff binding=email-watcher
+2026-05-02T01:08:16.359632Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=@neboai/agents/chief-of-staff binding=email-watcher backoff_secs=40
+2026-05-02T01:08:16.361864Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=ebfc31d9-1c33-470a-a38c-833066e6ecfb trigger=event tools=15
 2026-05-02T01:08:16.362181Z  INFO nebo_workflow::engine: executing activity workflow="auto-reply" activity="analyze-email"
 2026-05-02T01:08:16.362571Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
-2026-05-02T01:08:16.364749Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=008e704a-9e86-4c79-b79c-edec2d3cb988 trigger=event tools=15
+2026-05-02T01:08:16.364749Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=008e704a-9e86-4c79-b79c-edec2d3cb988 trigger=event tools=15
 2026-05-02T01:08:16.365027Z  INFO nebo_workflow::engine: executing activity workflow="organize-emails" activity="categorize"
 2026-05-02T01:08:16.365423Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
-2026-05-02T01:08:16.373651Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=a75f19c3-18f4-45d2-9316-17d3ceb7f657 trigger=event tools=15
+2026-05-02T01:08:16.373651Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=a75f19c3-18f4-45d2-9316-17d3ceb7f657 trigger=event tools=15
 2026-05-02T01:08:16.374286Z  INFO nebo_workflow::engine: executing activity workflow="handle-meeting-requests" activity="detect-meeting"
 2026-05-02T01:08:16.375188Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:08:16.432575Z  INFO nebo_agent::agent_worker: watch triggered inline workflow agent=outreach-coach binding=email-watcher run_id=f0e3da49-9e15-4837-8d60-81d4d6d18bf6
 2026-05-02T01:08:16.433116Z  WARN nebo_agent::agent_worker: watch stderr: error[validation]: --project is required when not using --subscription (or set GOOGLE_WORKSPACE_PROJECT_ID) agent=outreach-coach binding=email-watcher
-2026-05-02T01:08:16.433343Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=organize-emails run_id=a29576bc-ef74-478f-af82-410d408643e4 event_source=gws.email.new
-2026-05-02T01:08:16.433994Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=handle-meeting-requests run_id=7ea63fcd-7a38-4f24-af9f-95079e21ac6e event_source=gws.email.new
-2026-05-02T01:08:16.434401Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboloop/agents/chief-of-staff binding=auto-reply run_id=96800e34-a2d1-41ef-8d06-1c8097ac7ac4 event_source=gws.email.new
+2026-05-02T01:08:16.433343Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=organize-emails run_id=a29576bc-ef74-478f-af82-410d408643e4 event_source=gws.email.new
+2026-05-02T01:08:16.433994Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=handle-meeting-requests run_id=7ea63fcd-7a38-4f24-af9f-95079e21ac6e event_source=gws.email.new
+2026-05-02T01:08:16.434401Z  INFO nebo_workflow::events: event triggered inline workflow run agent=@neboai/agents/chief-of-staff binding=auto-reply run_id=96800e34-a2d1-41ef-8d06-1c8097ac7ac4 event_source=gws.email.new
 2026-05-02T01:08:16.434496Z  INFO nebo_agent::agent_worker: watch process stdout closed agent=outreach-coach binding=email-watcher
 2026-05-02T01:08:16.434524Z  INFO nebo_agent::agent_worker: watch process exited, restarting agent=outreach-coach binding=email-watcher backoff_secs=40
-2026-05-02T01:08:16.437207Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=7ea63fcd-7a38-4f24-af9f-95079e21ac6e trigger=event tools=15
+2026-05-02T01:08:16.437207Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=7ea63fcd-7a38-4f24-af9f-95079e21ac6e trigger=event tools=15
 2026-05-02T01:08:16.437203Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=outreach-coach run_id=f0e3da49-9e15-4837-8d60-81d4d6d18bf6 trigger=watch tools=15
 2026-05-02T01:08:16.438460Z  INFO nebo_workflow::engine: executing activity workflow="handle-meeting-requests" activity="detect-meeting"
 2026-05-02T01:08:16.439813Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:08:16.440641Z  INFO nebo_workflow::engine: executing activity workflow="email-watcher" activity="detect-email-signals"
 2026-05-02T01:08:16.441116Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=2 tools=17
-2026-05-02T01:08:16.441359Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=a29576bc-ef74-478f-af82-410d408643e4 trigger=event tools=15
+2026-05-02T01:08:16.441359Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=a29576bc-ef74-478f-af82-410d408643e4 trigger=event tools=15
 2026-05-02T01:08:16.442005Z  INFO nebo_workflow::engine: executing activity workflow="organize-emails" activity="categorize"
-2026-05-02T01:08:16.442624Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboloop/agents/chief-of-staff run_id=96800e34-a2d1-41ef-8d06-1c8097ac7ac4 trigger=event tools=15
+2026-05-02T01:08:16.442624Z  INFO nebo_server::workflow_manager: executing inline workflow in background role=@neboai/agents/chief-of-staff run_id=96800e34-a2d1-41ef-8d06-1c8097ac7ac4 trigger=event tools=15
 2026-05-02T01:08:16.442998Z  INFO nebo_workflow::engine: executing activity workflow="auto-reply" activity="analyze-email"
 2026-05-02T01:08:16.443146Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
 2026-05-02T01:08:16.443511Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=2 tools=17
@@ -1247,7 +1247,7 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:08:17.910066Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=4 tools=17
 2026-05-02T01:08:17.946194Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=53 tools=17
 2026-05-02T01:08:18.039993Z  INFO nebo_workflow::engine: workflow completed workflow="auto-reply" run_id="fccf1cf5-b2ef-4be0-8922-fa111134a9bb" total_tokens=0
-2026-05-02T01:08:18.041071Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboloop/agents/chief-of-staff run_id=fccf1cf5-b2ef-4be0-8922-fa111134a9bb
+2026-05-02T01:08:18.041071Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboai/agents/chief-of-staff run_id=fccf1cf5-b2ef-4be0-8922-fa111134a9bb
 2026-05-02T01:08:18.367415Z  INFO nebo_browser::executor: executing browser action tool="read_page" backend="extension"
 2026-05-02T01:08:18.469310Z  INFO nebo_browser::executor: executing browser action tool="read_page" backend="extension"
 2026-05-02T01:08:18.560493Z  INFO nebo_browser::executor: executing browser action tool="read_page" backend="extension"
@@ -1261,7 +1261,7 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:08:18.743860Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=6 tools=17
 2026-05-02T01:08:18.863299Z  INFO nebo_ai::providers::openai: sending OpenAI request model="haiku" messages=42 tools=17
 2026-05-02T01:08:18.906652Z  INFO nebo_workflow::engine: workflow completed workflow="auto-reply" run_id="53dce059-14f5-4652-98e6-c38f3689241e" total_tokens=0
-2026-05-02T01:08:18.906939Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboloop/agents/chief-of-staff run_id=53dce059-14f5-4652-98e6-c38f3689241e
+2026-05-02T01:08:18.906939Z  INFO nebo_server::workflow_manager: inline workflow completed role=@neboai/agents/chief-of-staff run_id=53dce059-14f5-4652-98e6-c38f3689241e
 2026-05-02T01:08:19.069018Z  WARN nebo_tools::bot_tool: memory not found at all — not in DB namespace="tacit/general" key="_event_payload" user_id=
 2026-05-02T01:08:19.069574Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=4 tools=17
 2026-05-02T01:08:19.300342Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=56 tools=17
@@ -1343,8 +1343,8 @@ warning: `nebo-comm` (lib) generated 1 warning (run `cargo fix --lib -p nebo-com
 2026-05-02T01:08:27.787655Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=71 tools=17
 ^C2026-05-02T01:08:27.830807Z  INFO nebo_server: received Ctrl+C
 2026-05-02T01:08:27.830835Z  INFO nebo_server: shutdown signal received, disconnecting comm plugins...
-2026-05-02T01:08:27.830910Z  INFO nebo_comm::neboloop: neboloop disconnected
-2026-05-02T01:08:27.830991Z  INFO nebo_comm::neboloop: neboloop read loop exited
+2026-05-02T01:08:27.830910Z  INFO nebo_comm::neboai: neboai disconnected
+2026-05-02T01:08:27.830991Z  INFO nebo_comm::neboai: neboai read loop exited
 
 ➜  nebo git:(feat/prompt-rewrite) ✗ 2026-05-02T01:08:27.908886Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=8 tools=17
 2026-05-02T01:08:27.911420Z  INFO nebo_ai::providers::openai: sending OpenAI request model="nebo-1" messages=27 tools=17

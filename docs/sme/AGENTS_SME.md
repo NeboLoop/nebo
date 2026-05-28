@@ -259,7 +259,7 @@ pub struct AgentActivity {
 pub struct AgentInputField {
     pub key: String,              // Unique key for workflows
     pub label: String,            // Display label
-    pub name: Option<String>,     // NeboLoop alias for key
+    pub name: Option<String>,     // NeboAI alias for key
     pub description: Option<String>,
     pub field_type: String,       // text, textarea, number, select, checkbox, radio
     pub required: bool,
@@ -333,7 +333,7 @@ pub struct LoadedAgent {
     pub agent_md: String,                // Raw AGENT.md content
     pub frontmatter: String,             // Raw agent.json content as JSON string
     pub description: String,             // Extracted description
-    pub id: Option<String>,              // NeboLoop UUID (marketplace agents)
+    pub id: Option<String>,              // NeboAI UUID (marketplace agents)
     // views.json and theme.css removed — apps own their UI via @neboai/app-sdk
 }
 ```
@@ -631,8 +631,8 @@ entity_config ── standalone per (entity_type, entity_id) pair
 | POST | `/agents/{id}/deactivate` | `deactivate_agent` | Deactivate + remove from registry + stop worker |
 | POST | `/agents/{id}/duplicate` | `duplicate_agent` | Deep copy with "(Copy)" suffix, auto-activate |
 | POST | `/agents/{id}/install-deps` | `install_deps` | Force-resolve skill dependencies |
-| POST | `/agents/{id}/check-update` | `check_agent_update` | Check NeboLoop for newer version |
-| POST | `/agents/{id}/apply-update` | `apply_agent_update` | Download and apply latest from NeboLoop |
+| POST | `/agents/{id}/check-update` | `check_agent_update` | Check NeboAI for newer version |
+| POST | `/agents/{id}/apply-update` | `apply_agent_update` | Download and apply latest from NeboAI |
 | POST | `/agents/{id}/reload` | `reload_agent` | Re-read AGENT.md + agent.json from filesystem |
 | POST | `/agents/{id}/setup` | `trigger_agent_setup` | Broadcast setup event for frontend wizard |
 | PUT | `/agents/{id}/inputs` | `update_agent_inputs` | Store user-supplied input values |
@@ -699,7 +699,7 @@ entity_config ── standalone per (entity_type, entity_id) pair
 2. Parse AgentConfig from frontmatter
 3. Build `ActiveAgent` struct and insert into `AgentRegistry` (in-memory `RwLock<HashMap>`)
 4. Start `AgentWorker` (registers all triggers)
-5. Register agent in NeboLoop personal loop (async, best-effort)
+5. Register agent in NeboAI personal loop (async, best-effort)
 6. Broadcast `agent_activated` WebSocket event
 
 ### Deactivate (`deactivate_agent`)
@@ -707,7 +707,7 @@ entity_config ── standalone per (entity_type, entity_id) pair
 1. Set `is_enabled = false` in DB
 2. Stop `AgentWorker` (cancels all triggers, running workflows)
 3. Remove from `AgentRegistry`
-4. Deregister agent from NeboLoop (async, best-effort)
+4. Deregister agent from NeboAI (async, best-effort)
 5. Broadcast `agent_deactivated` WebSocket event
 
 ### Delete (`delete_agent`)
@@ -727,7 +727,7 @@ entity_config ── standalone per (entity_type, entity_id) pair
    - Messages, memory_chunks, and activity_results cascade-delete via FK
    - Order matters: chats before sessions (chats reference session names)
 8. Clean up filesystem (napp_path, nebo/agents/, user/agents/)
-9. Deregister from NeboLoop (async)
+9. Deregister from NeboAI (async)
 
 **Frontend delete flow** (`[agentId]/+layout.svelte`):
 - Right-click agent in sidebar → context menu → "Delete"
@@ -1390,7 +1390,7 @@ The complete install flow when a user submits an `AGNT-XXXX-XXXX` code.
 
 **Phase 2 — Redeem & Download**
 
-5. Builds NeboLoop API client with auth tokens
+5. Builds NeboAI API client with auth tokens
 6. Redeems install code: `api.install_agent(code)` → gets `artifact_id`, `artifact_name`
    - If already redeemed: falls back to `api.list_products()` lookup by code
    - If `payment_required`: returns checkout URL to user, stop
@@ -1398,9 +1398,9 @@ The complete install flow when a user submits an `AGNT-XXXX-XXXX` code.
    - Stops agent worker, removes from registry
    - Unregisters triggers, unsubscribes events
    - Deletes DB rows (`agent_workflows`, `agents`) + filesystem
-   - Deregisters from NeboLoop
+   - Deregisters from NeboAI
 8. `persist_agent_from_api()`:
-   a. Fetches metadata from NeboLoop (`content_md`, `type_config`, `download_url`)
+   a. Fetches metadata from NeboAI (`content_md`, `type_config`, `download_url`)
    b. Creates/updates `agents` DB row (AGENT.md, frontmatter, description)
    c. Downloads `.napp` → saves to `<nebo_dir>/agents/<slug>/<version>/<version>.napp`
    d. `extract_napp_alongside()` removes existing dir if present, extracts tar.gz
@@ -1415,7 +1415,7 @@ The complete install flow when a user submits an `AGNT-XXXX-XXXX` code.
     - Inline activity skill references → `DepType::Skill`
 11. `resolve_cascade()` for each dep (with visited-set dedup):
     a. Check if already installed (filesystem for skills/plugins, DB for workflows)
-    b. **Plugins:** `plugin_store.ensure()` → download from NeboLoop → SHA256 + ED25519 verify → store at `<data_dir>/nebo/plugins/<slug>/<version>/`
+    b. **Plugins:** `plugin_store.ensure()` → download from NeboAI → SHA256 + ED25519 verify → store at `<data_dir>/nebo/plugins/<slug>/<version>/`
     c. **Skills:** redeem code → `persist_skill_from_api()` → reload skill loader → extract child deps (including skill's own `plugins:` frontmatter) and recurse
     d. Broadcasts `"dep_installed"` per dep
 12. Broadcasts `"dep_cascade_complete"` with install/skip/fail counts
@@ -1442,7 +1442,7 @@ The complete install flow when a user submits an `AGNT-XXXX-XXXX` code.
        - **Watch:** spawns plugin process, parses NDJSON output, auto-emits to EventBus
     c. Inserts worker into registry
 
-**Phase 6 — NeboLoop Registration (async, non-blocking)**
+**Phase 6 — NeboAI Registration (async, non-blocking)**
 
 19. `tokio::spawn` registers agent in user's personal loop
     - Deregisters first (prevents 409 on reinstall)
@@ -1738,7 +1738,7 @@ messages are scanned for keyword matches.
 |---------|-------------|-----------------|
 | `web` | web tool | browse, website, url, http, google, search |
 | `event` | event tool | schedule, remind, cron, tomorrow, daily |
-| `loop` | loop tool | neboloop, channel, dm, group chat |
+| `loop` | loop tool | neboai, channel, dm, group chat |
 | `work` | work tool | workflow, automate, automation |
 | `desktop` | os sub-doc | click, mouse, screenshot, gui, tts |
 | `app` | os sub-doc | launch, open app, quit app, frontmost |
@@ -1903,7 +1903,7 @@ provider (which may be Janus) only when no other option exists.
 - Memory extraction and compaction
 - Summarization
 
-**Rationale:** Janus is the NeboLoop gateway that costs credits per token. When a
+**Rationale:** Janus is the NeboAI gateway that costs credits per token. When a
 local provider (CLI key, Ollama, etc.) is available, background tasks should use
 it to preserve Janus credits for user-facing interactions.
 

@@ -1,6 +1,6 @@
 //! Unified chat dispatch — ONE way to run any chat (primary, role, channel, comm).
 //!
-//! Every chat entry point (WebSocket, REST, NeboLoop, cron, heartbeat) builds a
+//! Every chat entry point (WebSocket, REST, NeboAI, cron, heartbeat) builds a
 //! [`ChatConfig`] with the appropriate decorators and calls [`run_chat`]. The
 //! underlying lane infrastructure, event streaming, and response handling are
 //! identical for all chat types.
@@ -77,7 +77,7 @@ pub struct ChatConfig {
 /// Configuration for sending a reply back through a communication channel.
 #[derive(Clone)]
 pub struct CommReplyConfig {
-    pub provider: String, // "neboloop", or future: "slack", "discord"
+    pub provider: String, // "neboai", or future: "slack", "discord"
     pub topic: String,
     pub conversation_id: String,
 }
@@ -254,7 +254,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 let mut last_flush = tokio::time::Instant::now();
                 const COALESCE_MS: u64 = 50;
 
-                // Comm streaming: send chunks to NeboLoop as they arrive.
+                // Comm streaming: send chunks to NeboAI as they arrive.
                 // Timer starts on first token, not loop init (LLM latency would
                 // cause the first token to flush immediately otherwise).
                 let mut comm_buffer = String::new();
@@ -868,7 +868,7 @@ pub async fn run_chat_events(
 }
 
 /// Send a comm message through the appropriate channel provider.
-/// Fast path for "neboloop" uses the comm_manager directly.
+/// Fast path for "neboai" uses the comm_manager directly.
 /// Other providers are looked up in the channel_providers registry.
 async fn send_to_channel(
     provider: &str,
@@ -878,7 +878,7 @@ async fn send_to_channel(
     >,
     msg: comm::CommMessage,
 ) -> Result<(), comm::CommError> {
-    if provider == "neboloop" {
+    if provider == "neboai" {
         if let Some(ref mgr) = *comm_manager {
             return mgr.send(msg).await;
         }

@@ -5,7 +5,7 @@
 **Platform:** ___ (e.g., macOS 15.4 arm64 / Windows 11 x64)
 **Nebo Version:** ___ (git commit hash)
 **Tester:** ___
-**NeboLoop Codes Available:** SKILL: SKIL-RFBM-XCYT / WORK: WORK-SW4Z-5XKN / AGNT: AGNT-KG82-KM2G
+**NeboAI Codes Available:** SKILL: SKIL-RFBM-XCYT / WORK: WORK-SW4Z-5XKN / AGNT: AGNT-KG82-KM2G
 
 ---
 
@@ -332,7 +332,7 @@
 | Not in catalog | Absent | | |
 | File removed | Directory gone | | |
 
-### S-10: Install Skill from NeboLoop (`SKIL-RFBM-XCYT`)
+### S-10: Install Skill from NeboAI (`SKIL-RFBM-XCYT`)
 
 **Method:** `POST /api/v1/codes {"code": "SKIL-RFBM-XCYT"}`
 
@@ -471,7 +471,7 @@
 | Not in list | Absent | | |
 | Files cleaned | Directory removed | | |
 
-### W-09: Install Workflow from NeboLoop (`WORK-SW4Z-5XKN`)
+### W-09: Install Workflow from NeboAI (`WORK-SW4Z-5XKN`)
 
 **Method:** `POST /api/v1/codes {"code": "WORK-SW4Z-5XKN"}`
 
@@ -585,7 +585,7 @@
 | Directory removed | `user/agents/test-agent-tool/` gone | | |
 | Not in list | Absent | | |
 
-### A-07: Install Agent from NeboLoop (`AGNT-KG82-KM2G`)
+### A-07: Install Agent from NeboAI (`AGNT-KG82-KM2G`)
 
 **Method:** `POST /api/v1/codes {"code": "AGNT-KG82-KM2G"}`
 

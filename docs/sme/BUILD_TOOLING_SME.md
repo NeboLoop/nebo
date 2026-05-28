@@ -108,7 +108,7 @@ The updater checks for new versions by fetching a JSON manifest from the CDN.
 ```json
 {
   "version": "v0.5.0",
-  "release_url": "https://github.com/NeboLoop/nebo/releases/tag/v0.5.0",
+  "release_url": "https://github.com/NeboAI/nebo/releases/tag/v0.5.0",
   "published_at": "2026-05-15T00:00:00Z"
 }
 ```
@@ -441,7 +441,7 @@ The `rustTypeToTS()` function handles recursive type conversion:
 **Naming conventions:**
 - Rust `snake_case` -> TS `camelCase` (for fields with `rename_all = "camelCase"`)
 - Handler `handlers::module::func_name` -> TS `funcName` (via `snakeToCamel`)
-- Prefixed modules: `handlers::neboloop::account_status` -> `neboLoopAccountStatus`
+- Prefixed modules: `handlers::neboai::account_status` -> `neboAIAccountStatus`
 - Response types: `funcName` -> `FuncNameResponse`
 
 **Custom serializer mapping** (`resolveSerializeWith`):
@@ -660,7 +660,7 @@ export function createChat(id: string, req: Record<string, unknown> = {}) {
 
 ```
 +-------------------+     +-------------------+     +-------------------+
-| Plugin Source Repo |     | publish-plugins.sh|     | NeboLoop API      |
+| Plugin Source Repo |     | publish-plugins.sh|     | NeboAI API      |
 |                    |     |                   |     |                   |
 | repos/plugins/gws/ |     | build             |     | Sign & Package    |
 |   Cargo.toml       +---->| (cargo build      +---->| ED25519 sign      |
@@ -770,7 +770,7 @@ The `.napp` file format is a custom binary envelope wrapping a tar.gz archive:
  |      |    |          (integrity check)
  |      |    |
  |      |    ED25519 signature of (hash + payload)
- |      |    (proves NeboLoop signed it)
+ |      |    (proves NeboAI signed it)
  |      |
  |      Version byte (0x01)
  |
@@ -783,7 +783,7 @@ The `.napp` file format is a custom binary envelope wrapping a tar.gz archive:
 1. Check magic bytes (`NAPP`).
 2. Check version byte (must be `0x01`).
 3. Verify SHA256 hash of payload (cheap integrity check).
-4. Verify ED25519 signature of `(hash || payload)` using NeboLoop's public key.
+4. Verify ED25519 signature of `(hash || payload)` using NeboAI's public key.
 
 ### Signing and Verification
 
@@ -791,9 +791,9 @@ The `.napp` file format is a custom binary envelope wrapping a tar.gz archive:
 
 | Key | Location | Purpose |
 |---|---|---|
-| NeboLoop private key | Server-side only | Signs .napp envelopes |
-| NeboLoop public key | `crates/napp/neboloop_public_key.bin` (compile-time embedded) | Offline verification |
-| NeboLoop public key | `GET /api/v1/apps/signing-key` (runtime fetch) | Online verification with key rotation |
+| NeboAI private key | Server-side only | Signs .napp envelopes |
+| NeboAI public key | `crates/napp/neboai_public_key.bin` (compile-time embedded) | Offline verification |
+| NeboAI public key | `GET /api/v1/apps/signing-key` (runtime fetch) | Online verification with key rotation |
 
 The embedded public key enables offline verification at first launch (no network needed). The `SigningKeyProvider` caches the runtime key for 24 hours.
 
@@ -837,7 +837,7 @@ Paid plugins use an additional encryption layer (AES-256-GCM) on top of the .nap
 HKDF-SHA256(
   master_secret = license_key,
   salt = artifact_id,
-  info = "neboloop-license-v1"
+  info = "neboai-license-v1"
 ) -> 32-byte AES key
 ```
 
@@ -887,10 +887,10 @@ Checks magic bytes to ensure the binary is a compiled native executable:
 The publish command is informational -- it prints what WOULD be published:
 1. Reads `plugin.json` for version.
 2. Lists available binaries per platform.
-3. Directs user to NeboLoop MCP tools or web dashboard for actual publishing.
+3. Directs user to NeboAI MCP tools or web dashboard for actual publishing.
 
-After upload, NeboLoop's server-side pipeline:
-1. Signs the manifest and binary with the NeboLoop ED25519 private key.
+After upload, NeboAI's server-side pipeline:
+1. Signs the manifest and binary with the NeboAI ED25519 private key.
 2. Creates `signatures.json`.
 3. Packages everything into a tar.gz archive.
 4. Wraps in the .napp envelope (magic + version + signature + hash + payload).
@@ -1002,7 +1002,7 @@ Push a git tag matching `v*` (e.g., `git tag v0.5.0 && git push --tags`).
 +-------------------+ +-------------------+
 | update-homebrew   | | update-apt        |
 | Cross-repo PR to  | | Cross-repo push   |
-| neboloop/         | | to neboloop/apt   |
+| neboai/         | | to neboai/apt   |
 | homebrew-tap      | |                   |
 |                   | | dpkg-scanpackages |
 | envsubst          | | GPG sign Release  |
@@ -1031,7 +1031,7 @@ The macOS build performs inside-out code signing:
 1. **Import certificate:** Decode base64 P12, create temp keychain, import cert.
 2. **Build:** `cargo tauri build --target $target`.
 3. **Sign frameworks/dylibs:** `codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime` on each framework.
-4. **Sign main executable:** With `--identifier dev.neboloop.nebo --entitlements nebo.entitlements`.
+4. **Sign main executable:** With `--identifier dev.neboai.nebo --entitlements nebo.entitlements`.
 5. **Sign .app bundle:** Same identity and entitlements.
 6. **Verify:** `codesign --verify --deep --strict`.
 7. **Create DMG:** Using `create-dmg` with drag-to-Applications layout.
@@ -1042,8 +1042,8 @@ The macOS build performs inside-out code signing:
 Release assets are uploaded to DigitalOcean Spaces (S3-compatible):
 
 ```
-s3://neboloop/releases/version.json          <- latest version pointer
-s3://neboloop/releases/v0.5.0/
+s3://neboai/releases/version.json          <- latest version pointer
+s3://neboai/releases/v0.5.0/
     nebo-darwin-arm64
     nebo-darwin-amd64
     nebo-linux-amd64
@@ -1067,22 +1067,22 @@ Template (`scripts/nebo.rb.tmpl`):
 cask "nebo" do
   version "${PKG_VERSION}"
   on_arm do
-    url "https://github.com/NeboLoop/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-arm64.dmg"
+    url "https://github.com/NeboAI/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-arm64.dmg"
     sha256 "${SHA_DARWIN_ARM64}"
   end
   on_intel do
-    url "https://github.com/NeboLoop/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-amd64.dmg"
+    url "https://github.com/NeboAI/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-amd64.dmg"
     sha256 "${SHA_DARWIN_AMD64}"
   end
   name "Nebo"
   desc "AI agent with web UI - your personal AI companion"
-  homepage "https://neboloop.com"
+  homepage "https://neboai.com"
   app "Nebo.app"
   binary "#{appdir}/Nebo.app/Contents/MacOS/Nebo"
 end
 ```
 
-`envsubst` replaces `${PKG_VERSION}`, `${VERSION}`, `${SHA_DARWIN_ARM64}`, `${SHA_DARWIN_AMD64}` with computed values, then pushes to `neboloop/homebrew-tap`.
+`envsubst` replaces `${PKG_VERSION}`, `${VERSION}`, `${SHA_DARWIN_ARM64}`, `${SHA_DARWIN_AMD64}` with computed values, then pushes to `neboai/homebrew-tap`.
 
 ### APT Repository Update
 
@@ -1090,7 +1090,7 @@ end
 2. Generate `Packages` index with `dpkg-scanpackages`.
 3. Generate `Release` file with `apt-ftparchive release`.
 4. GPG-sign: `Release.gpg` (detached) and `InRelease` (clearsign).
-5. Push to `neboloop/apt` repo.
+5. Push to `neboai/apt` repo.
 
 ---
 
@@ -1181,7 +1181,7 @@ It reads `plugin.json` to determine the version and platform-specific binary nam
 | Max metadata size | 1 MB | `napp/src/napp.rs` |
 | Signing key cache TTL | 24 hours | `napp/src/signing.rs` |
 | Revocation cache TTL | 1 hour | `napp/src/signing.rs` |
-| HKDF info string | `neboloop-license-v1` | `napp/src/sealed.rs` |
+| HKDF info string | `neboai-license-v1` | `napp/src/sealed.rs` |
 | AES nonce size | 12 bytes | `napp/src/sealed.rs` |
 | AES key size | 32 bytes | `napp/src/sealed.rs` |
 | Rust version (CI) | 1.88 | `.github/workflows/release.yml` |

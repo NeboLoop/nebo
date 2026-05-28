@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { neboLoopOAuthStartWithJanus, neboLoopOAuthStatus } from '$lib/api/index';
+  import { neboAIOAuthStartWithJanus, neboAIOAuthStatus } from '$lib/api/index';
 
   let user = $state({ name: '', email: '', displayName: '' });
   let connected = $state(true);
@@ -17,7 +17,7 @@
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const status = await api.neboLoopAccountStatus() as Record<string, unknown> | null;
+      const status = await api.neboAIAccountStatus() as Record<string, unknown> | null;
       if (status) {
         connected = !!status.connected;
         if (status.email) user.email = String(status.email);
@@ -33,7 +33,7 @@
     reconnecting = true;
     reconnectError = '';
     try {
-      const result = await neboLoopOAuthStartWithJanus(false);
+      const result = await neboAIOAuthStartWithJanus(false);
       const pendingState = result.state;
 
       oauthTimeout = setTimeout(() => {
@@ -44,7 +44,7 @@
 
       oauthPollInterval = setInterval(async () => {
         try {
-          const status = await neboLoopOAuthStatus(pendingState);
+          const status = await neboAIOAuthStatus(pendingState);
           if (status?.status === 'complete') {
             if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
             if (oauthTimeout) { clearTimeout(oauthTimeout); oauthTimeout = null; }
@@ -76,7 +76,7 @@
   async function disconnect() {
     try {
       const api = await import('$lib/api/nebo');
-      await api.neboLoopAccountDisconnect();
+      await api.neboAIAccountDisconnect();
       connected = false;
     } catch { /* ignore */ }
   }
@@ -91,8 +91,8 @@
 </script>
 
 <div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">NeboLoop Account</h2>
-  <p class="text-xs text-base-content/70">Manage your NeboLoop connection and account settings.</p>
+  <h2 class="text-lg font-bold mb-1">NeboAI Account</h2>
+  <p class="text-xs text-base-content/70">Manage your NeboAI connection and account settings.</p>
 </div>
 
 <!-- Connection status -->
@@ -119,7 +119,7 @@
       onclick={reconnect}
       disabled={reconnecting}
     >
-      {reconnecting ? 'Connecting...' : 'Reconnect to NeboLoop'}
+      {reconnecting ? 'Connecting...' : 'Reconnect to NeboAI'}
     </button>
   {/if}
 </div>

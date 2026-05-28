@@ -55,7 +55,7 @@ Issues that affect security, data integrity, or correctness.
 - **Files:** `crates/auth/src/service.rs`
 - **Description:** The `/auth/verify` and `/auth/resend` handler endpoints exist in the route table but their implementations are incomplete stubs. Email verification is not enforced during registration.
 - **Impact:** No email verification means accounts can be created with arbitrary email addresses. In a future multi-user or cloud deployment, this would be a significant auth gap.
-- **Suggested fix:** Implement verification token generation, email sending (or delegation to NeboLoop), and enforcement on login.
+- **Suggested fix:** Implement verification token generation, email sending (or delegation to NeboAI), and enforcement on login.
 
 ### GAP-005: Notification user preference not enforced
 
@@ -229,7 +229,7 @@ Hardcoded values, missing scheduled tasks, dead code paths.
 - **Files:** `crates/config/src/lib.rs`
 - **Description:** All config structs use `#[serde(default)]` on every field. If a required configuration key is missing from `nebo.yaml`, the system silently falls back to the struct default with no warning or validation.
 - **Impact:** Misconfigured deployments may silently run with unintended defaults. Hard to diagnose configuration issues.
-- **Suggested fix:** Add a `validate()` method on the root config struct that warns on critical missing values (e.g., missing JWT secret, missing NeboLoop URLs).
+- **Suggested fix:** Add a `validate()` method on the root config struct that warns on critical missing values (e.g., missing JWT secret, missing NeboAI URLs).
 
 ### GAP-022: Linux platform tool backends missing
 
@@ -240,14 +240,14 @@ Hardcoded values, missing scheduled tasks, dead code paths.
 - **Impact:** Linux users have limited platform tool functionality compared to macOS.
 - **Suggested fix:** Document minimum requirements. Consider a "setup assistant" that helps Linux users install required backends.
 
-### GAP-023: Comm framework — only NeboLoop plugin implemented
+### GAP-023: Comm framework — only NeboAI plugin implemented
 
 - **System:** Communication Plugin Framework
 - **SME Doc:** `COMM_FRAMEWORK_SME.md`
 - **Files:** `crates/comm/src/manager.rs`
-- **Description:** The `PluginManager` supports a single active communication plugin. The architecture is designed for multiple plugins (Slack, Discord, etc.) but only the NeboLoop plugin is implemented. The manager routes all operations through the current plugin.
-- **Impact:** No direct Slack/Discord/Teams integration. All external messaging goes through the NeboLoop gateway.
-- **Suggested fix:** This is by design (NeboLoop gateway handles external services). Document the architecture decision.
+- **Description:** The `PluginManager` supports a single active communication plugin. The architecture is designed for multiple plugins (Slack, Discord, etc.) but only the NeboAI plugin is implemented. The manager routes all operations through the current plugin.
+- **Impact:** No direct Slack/Discord/Teams integration. All external messaging goes through the NeboAI gateway.
+- **Suggested fix:** This is by design (NeboAI gateway handles external services). Document the architecture decision.
 
 ---
 

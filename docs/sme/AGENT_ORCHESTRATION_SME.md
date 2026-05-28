@@ -398,8 +398,8 @@ Migration `0070` + `0071` handled the DB layer. All file renames, identifier ren
 | `crates/tools/src/role_tool.rs` | `crates/tools/src/agent_tool.rs` |
 | `docs/publishers-guide/roles.md` | `docs/publishers-guide/agents.md` |
 | `docs/sme/ROLES_SME.md` | `docs/sme/AGENTS_SME.md` |
-| `tests/fixtures/neboloop/researcher/ROLE.md` | `tests/fixtures/neboloop/researcher/AGENT.md` |
-| `tests/fixtures/neboloop/researcher/role.json` | `tests/fixtures/neboloop/researcher/agent.json` |
+| `tests/fixtures/neboai/researcher/ROLE.md` | `tests/fixtures/neboai/researcher/AGENT.md` |
+| `tests/fixtures/neboai/researcher/role.json` | `tests/fixtures/neboai/researcher/agent.json` |
 
 ### Key Identifier Renames (Rust)
 

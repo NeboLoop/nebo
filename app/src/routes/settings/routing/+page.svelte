@@ -108,7 +108,7 @@
       const [modelsRes, profilesRes, janusRes] = await Promise.all([
         api.listModels(),
         api.listProviders(),
-        api.neboLoopAccountStatus().catch(() => null),
+        api.neboAIAccountStatus().catch(() => null),
       ]);
 
       models = (modelsRes.models as Record<string, any[]>) || {};
@@ -178,7 +178,7 @@
       const active = models['janus'].filter((m: any) => m.isActive);
       if (active.length > 0) {
         groups.push({
-          provider: 'janus', label: 'Janus (NeboLoop)',
+          provider: 'janus', label: 'Janus (NeboAI)',
           models: active.map((m: any) => ({ value: `janus/${m.id}`, label: m.displayName })),
         });
       }

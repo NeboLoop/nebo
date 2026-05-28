@@ -145,7 +145,7 @@ vm-rootfs-publish: vm-rootfs
 	@echo "Publishing rootfs to CDN..."
 	@ARCH=$$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/'); \
 	SHA=$$(cat vm/build/rootfs.sha256); \
-	echo "Target: cdn.neboloop.com/vm/$$ARCH/$$SHA/rootfs.img.zst"; \
+	echo "Target: cdn.neboai.com/vm/$$ARCH/$$SHA/rootfs.img.zst"; \
 	echo "TODO: upload vm/build/rootfs.img.zst to CDN at /vm/$$ARCH/$$SHA/rootfs.img.zst"; \
 	echo "Then update ROOTFS_SHA in crates/tools/src/vm_tool.rs to: $$SHA"
 
@@ -202,10 +202,10 @@ plugin-status:
 
 BUNDLED_NAPPS_DIR = src-tauri/bundled-napps
 
-# Download signed .napp files from NeboLoop CDN into the Tauri bundle.
+# Download signed .napp files from NeboAI CDN into the Tauri bundle.
 # Skills and agents are platform-agnostic. Plugins are per-platform.
-# Override NEBOLOOP_CDN_URL if using a staging environment.
-NEBOLOOP_CDN_URL ?= https://cdn.neboloop.com
+# Override NEBOAI_CDN_URL if using a staging environment.
+NEBOAI_CDN_URL ?= https://cdn.neboai.com
 
 bundle-napps:
 	@echo "Preparing bundled .napp directory..."
@@ -262,7 +262,7 @@ app-bundle: build-desktop
 	@mkdir -p dist
 	@cp -R "$(TAURI_BUNDLE)/macos/Nebo.app" dist/Nebo.app
 	codesign --force --sign "$(SIGN_IDENTITY)" \
-		--identifier dev.neboloop.nebo \
+		--identifier dev.neboai.nebo \
 		--entitlements assets/macos/nebo.entitlements \
 		--options runtime \
 		dist/Nebo.app
@@ -311,4 +311,4 @@ install: notarize
 github-release:
 	@if [ -z "$(TAG)" ]; then echo "Usage: make github-release TAG=v0.1.0"; exit 1; fi
 	@echo "Creating GitHub release $(TAG)..."
-	gh release create $(TAG) dist/* --title "Nebo $(TAG)" --generate-notes --repo NeboLoop/nebo
+	gh release create $(TAG) dist/* --title "Nebo $(TAG)" --generate-notes --repo NeboAI/nebo

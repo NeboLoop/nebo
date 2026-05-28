@@ -201,7 +201,7 @@ Nebo is an AI agent platform. The agent has file system access. If an app's sour
 
 ### Enforcement
 
-**NeboLoop (distribution-time):** Magic byte verification, hidden interpreter detection, dynamic link analysis, Go build info verification, dropper pattern detection, ED25519 signing.
+**NeboAI (distribution-time):** Magic byte verification, hidden interpreter detection, dynamic link analysis, Go build info verification, dropper pattern detection, ED25519 signing.
 
 **Nebo (install/launch-time):** Magic byte check, shebang rejection, ED25519 signature verify, file permission check.
 

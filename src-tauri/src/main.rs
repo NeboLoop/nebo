@@ -545,10 +545,10 @@ fn main() {
                         }
                     }
                     "help" => {
-                        open_external("https://neboloop.com/docs");
+                        open_external("https://neboai.com/docs");
                     }
                     "feedback" => {
-                        open_external("https://github.com/NeboLoop/nebo/issues");
+                        open_external("https://github.com/NeboAI/nebo/issues");
                     }
                     "quit" => {
                         app.exit(0);
@@ -666,14 +666,14 @@ fn main() {
                     }
                 };
                 if should_reconnect {
-                    tracing::info!("system resumed from sleep, triggering NeboLoop reconnect");
+                    tracing::info!("system resumed from sleep, triggering NeboAI reconnect");
                     // Fire-and-forget POST to the local backend — raw TCP to avoid extra deps.
                     std::thread::spawn(|| {
                         use std::io::Write;
                         if let Ok(mut stream) = std::net::TcpStream::connect("127.0.0.1:27895") {
                             let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
                             let _ = stream.write_all(
-                                b"POST /api/v1/neboloop/reconnect HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+                                b"POST /api/v1/neboai/reconnect HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
                             );
                         }
                     });

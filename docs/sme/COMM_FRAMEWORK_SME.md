@@ -1,7 +1,7 @@
 # Communication Plugin Framework — SME Reference
 
 Comprehensive Subject Matter Expert document covering the Nebo communication
-plugin framework: plugin architecture, wire protocol, NeboLoop gateway integration,
+plugin framework: plugin architecture, wire protocol, NeboAI gateway integration,
 message routing, conversation management, and cross-system interactions.
 
 **Status:** Current (Rust implementation) | **Last updated:** 2026-05-15
@@ -20,7 +20,7 @@ message routing, conversation management, and cross-system interactions.
 8. [Compression](#8-compression)
 9. [ULID Generation](#9-ulid-generation)
 10. [Message Deduplication](#10-message-deduplication)
-11. [NeboLoop Plugin](#11-neboloop-plugin)
+11. [NeboAI Plugin](#11-neboai-plugin)
 12. [Connection Lifecycle](#12-connection-lifecycle)
 13. [Conversation Management](#13-conversation-management)
 14. [Read Loop](#14-read-loop)
@@ -28,7 +28,7 @@ message routing, conversation management, and cross-system interactions.
 16. [Message Routing — Inbound](#16-message-routing--inbound)
 17. [Message Routing — Outbound](#17-message-routing--outbound)
 18. [Agent Spaces](#18-agent-spaces)
-19. [NeboLoop REST API Client](#19-neboloop-rest-api-client)
+19. [NeboAI REST API Client](#19-neboai-rest-api-client)
 20. [API Type System](#20-api-type-system)
 21. [Loopback Plugin](#21-loopback-plugin)
 22. [Server Integration](#22-server-integration)
@@ -46,7 +46,7 @@ message routing, conversation management, and cross-system interactions.
 ## 1. Architecture Overview
 
 The comm framework provides a plugin-based communication layer that connects Nebo
-desktop instances to the NeboLoop cloud network. It handles real-time messaging
+desktop instances to the NeboAI cloud network. It handles real-time messaging
 between bots, channels, agent spaces, and human users.
 
 ```
@@ -57,12 +57,12 @@ between bots, channels, agent spaces, and human users.
 |  | Server (Axum)    |     | Agent Runner                  |       |
 |  |                  |     |                               |       |
 |  | handlers/        |     | orchestrator.rs               |       |
-|  |   neboloop.rs    |     | runner.rs                     |       |
+|  |   neboai.rs    |     | runner.rs                     |       |
 |  |   agents.rs      |     +--------+----------------------+       |
 |  |   chat.rs        |              |                              |
 |  +-------+----------+              |                              |
 |          |                         | CommMessage                  |
-|          | activate_neboloop()     | (via handler callback)       |
+|          | activate_neboai()     | (via handler callback)       |
 |          v                         v                              |
 |  +-------+--------------------------------------------+           |
 |  | PluginManager                                      |           |
@@ -76,7 +76,7 @@ between bots, channels, agent spaces, and human users.
 |          | delegates to active plugin                             |
 |          v                                                        |
 |  +-------+---------------------+  +-------------------+           |
-|  | NeboLoopPlugin (active)     |  | LoopbackPlugin    |           |
+|  | NeboAIPlugin (active)     |  | LoopbackPlugin    |           |
 |  |                             |  | (testing only)    |           |
 |  |  WebSocket + Binary Framing |  +-------------------+           |
 |  |  Read Loop  (tokio::spawn)  |                                  |
@@ -88,7 +88,7 @@ between bots, channels, agent spaces, and human users.
            | tokio-tungstenite WebSocket (wss://)
            v
 +----------+---------------------+
-| NeboLoop Comms Gateway         |
+| NeboAI Comms Gateway         |
 |                                |
 |  Binary framing (47-byte hdr)  |
 |  JWT auth (bot credentials)    |
@@ -125,7 +125,7 @@ crates/comm/
     lib.rs           — Module declarations, CommPlugin + ChannelProvider traits, re-exports
     types.rs         — CommMessage, CommError, AgentCard, MessageHandler, ManagerStatus
     manager.rs       — PluginManager: registry, activation, routing, shutdown
-    neboloop.rs      — NeboLoopPlugin: WebSocket connection, read/write loops, join processor
+    neboai.rs      — NeboAIPlugin: WebSocket connection, read/write loops, join processor
     loopback.rs      — LoopbackPlugin: in-memory test plugin
     frame.rs         — 47-byte binary header codec (encode/decode)
     wire.rs          — JSON payload types (ConnectPayload, DeliveryPayload, JoinPayload, etc.)
@@ -133,7 +133,7 @@ crates/comm/
     ulid.rs          — Monotonic ULID generator (16-byte IDs)
     dedup.rs         — Sliding-window message deduplication (1000 IDs / 5 min)
     devlog.rs        — Human-readable traffic log for `tail -f` debugging
-    api.rs           — NeboLoopApi: REST client for marketplace, loops, channels, billing
+    api.rs           — NeboAIApi: REST client for marketplace, loops, channels, billing
     api_types.rs     — DTOs for REST API responses (apps, skills, workflows, loops, billing)
 ```
 
@@ -209,7 +209,7 @@ pub trait CommPlugin: Send + Sync {
 **Key design notes:**
 
 - `set_message_handler` is deliberately synchronous (`fn`, not `async fn`) because
-  it must work with `std::sync::RwLock` in the NeboLoop plugin — the handler is set
+  it must work with `std::sync::RwLock` in the NeboAI plugin — the handler is set
   from the PluginManager which may already hold a tokio lock.
 - Default implementations return `Err(CommError::Other("not supported"))` for
   optional query methods, allowing plugins to selectively implement capabilities.
@@ -221,7 +221,7 @@ pub trait CommPlugin: Send + Sync {
 ## 4. ChannelProvider Trait
 
 A secondary trait for routing agent responses back through communication channels.
-Currently the NeboLoop plugin implements this via `CommPlugin::send()`. Future
+Currently the NeboAI plugin implements this via `CommPlugin::send()`. Future
 channel plugins (Slack, Discord) would implement this independently.
 
 ```rust
@@ -302,7 +302,7 @@ pub async fn connect_active(&self, config: HashMap<String, String>) -> Result<()
 
 **File:** `crates/comm/src/wire.rs`
 
-JSON payload types for the NeboLoop comms binary protocol. Both the gateway and
+JSON payload types for the NeboAI comms binary protocol. Both the gateway and
 Rust SDK use these as the single source of truth. All payloads use `camelCase`
 serialization.
 
@@ -493,18 +493,18 @@ reconnects with replay, or gateway retransmissions.
 
 ---
 
-## 11. NeboLoop Plugin
+## 11. NeboAI Plugin
 
-**File:** `crates/comm/src/neboloop.rs`
+**File:** `crates/comm/src/neboai.rs`
 
-The production `CommPlugin` implementation. Connects to the NeboLoop comms gateway
+The production `CommPlugin` implementation. Connects to the NeboAI comms gateway
 via `tokio-tungstenite`, authenticates with binary framing, and dispatches typed
 messages.
 
 ### Internal State
 
 ```rust
-pub struct NeboLoopPlugin {
+pub struct NeboAIPlugin {
     inner: RwLock<Inner>,                          // send_tx, cancel token, API client
     handler: std::sync::RwLock<Option<MessageHandler>>,  // Sync lock (trait is sync)
     bot_id: RwLock<String>,
@@ -519,14 +519,14 @@ pub struct NeboLoopPlugin {
 struct Inner {
     send_tx: Option<mpsc::Sender<Vec<u8>>>,        // Write loop channel
     cancel: Option<CancellationToken>,             // Graceful shutdown
-    api: Option<Arc<NeboLoopApi>>,                 // REST API client
+    api: Option<Arc<NeboAIApi>>,                 // REST API client
 }
 ```
 
 ### Background Tasks (3 spawned tasks per connection)
 
 ```
-NeboLoopPlugin::connect()
+NeboAIPlugin::connect()
    |
    +-- tokio::spawn(read_loop)        -- reads WS frames, decodes, dispatches
    |
@@ -575,7 +575,7 @@ Client                              Gateway
 
 On connect, the plugin automatically joins these 5 streams:
 - `dm` — direct messages from other bots or human users
-- `installs` — install/uninstall events from NeboLoop marketplace
+- `installs` — install/uninstall events from NeboAI marketplace
 - `chat` — owner chat messages (web UI or mobile app)
 - `account` — plan changes, token refreshes, account events
 - `voice` — voice pipeline events (reserved)
@@ -587,7 +587,7 @@ On connect, the plugin automatically joins these 5 streams:
 2. On unexpected disconnect (read loop exits without cancel), the read loop
    sets `connected = false` and signals `disconnect_notify`.
 3. The server's reconnect loop awaits `comm_manager.wait_disconnect()` and
-   triggers `activate_neboloop()` after a backoff delay.
+   triggers `activate_neboai()` after a backoff delay.
 
 ### Ghost Connection Prevention
 
@@ -766,15 +766,15 @@ allowing the gateway to clean up the connection state.
 
 ## 16. Message Routing — Inbound
 
-Inbound messages flow from the NeboLoop gateway through the comm framework
+Inbound messages flow from the NeboAI gateway through the comm framework
 into the Nebo agent system.
 
 ```
-NeboLoop Gateway
+NeboAI Gateway
   |
   | TYPE_MESSAGE_DELIVERY frame
   v
-NeboLoopPlugin read_loop
+NeboAIPlugin read_loop
   |
   | CommMessage (via MessageHandler callback)
   v
@@ -805,14 +805,14 @@ When a message arrives on an `agent_space` stream, `handle_comm_message()`:
 1. Extracts `agent_slug` from metadata (set by the read loop from `DeliveryPayload`)
 2. Looks up the local agent by slug in the `agent_registry`
 3. Resolves entity config (permissions, model override) for the agent
-4. Builds a `ChatConfig` with `comm_reply` set to route responses back via NeboLoop
+4. Builds a `ChatConfig` with `comm_reply` set to route responses back via NeboAI
 5. Dispatches through `chat_dispatch::run_chat()`
 
 ### Session Key Construction
 
 For non-agent-space messages, a session key is built:
 ```
-neboloop:{topic}:{conversation_id}
+neboai:{topic}:{conversation_id}
 ```
 
 This maps to a persistent session in the agent runner, allowing context
@@ -823,7 +823,7 @@ continuity across reconnects.
 ## 17. Message Routing — Outbound
 
 Outbound messages flow from the agent runner back through the comm framework
-to the NeboLoop gateway.
+to the NeboAI gateway.
 
 ```
 Agent Runner (chat_dispatch)
@@ -836,14 +836,14 @@ chat_dispatch stream handler
   v
 send_comm_response() [server/src/chat_dispatch.rs]
   |
-  +-- Check channel_providers (e.g., "neboloop")
+  +-- Check channel_providers (e.g., "neboai")
   |     |
   |     +-- Found? --> provider.send_response(msg)
   |     |
   |     +-- Not found? --> comm_manager.send(msg)
   |
   v
-NeboLoopPlugin::send()
+NeboAIPlugin::send()
   |
   +-- Resolve conversation_id from conv_maps
   +-- Build SendPayload { conversation_id, stream, content }
@@ -855,7 +855,7 @@ write_loop
   |
   | Binary WebSocket frame
   v
-NeboLoop Gateway
+NeboAI Gateway
 ```
 
 ### CommReplyConfig
@@ -865,7 +865,7 @@ When chat_dispatch processes a comm-originated message, it receives a
 
 ```rust
 pub struct CommReplyConfig {
-    pub provider: String,        // "neboloop"
+    pub provider: String,        // "neboai"
     pub topic: String,           // stream name (e.g., "agent_space", "dm")
     pub conversation_id: String, // target conversation
     pub from: String,            // bot_id
@@ -885,13 +885,13 @@ messages, with `metadata.stream = "true"` to indicate partial responses.
 
 ## 18. Agent Spaces
 
-Agent spaces are a NeboLoop feature that gives each registered agent its own
+Agent spaces are a NeboAI feature that gives each registered agent its own
 conversation endpoint within a loop. Users can @mention agents or interact
 with them directly.
 
 ### Registration Flow
 
-1. Server calls `NeboLoopApi::register_agent(loop_id, name, slug, description)`
+1. Server calls `NeboAIApi::register_agent(loop_id, name, slug, description)`
 2. Gateway auto-creates an agent space conversation
 3. Gateway sends JOIN_RESULT with `agentId` and `agentSlug` fields
 4. Join processor stores in `agent_space_convs`, `agent_space_by_slug`, `agent_space_by_id`
@@ -922,18 +922,18 @@ channel context.
 
 ---
 
-## 19. NeboLoop REST API Client
+## 19. NeboAI REST API Client
 
 **File:** `crates/comm/src/api.rs`
 
-`NeboLoopApi` is a comprehensive REST client for the NeboLoop platform. It uses
+`NeboAIApi` is a comprehensive REST client for the NeboAI platform. It uses
 the owner's OAuth JWT for authentication and covers all 5 hierarchy layers plus
 loops, billing, and content protection.
 
 ### Construction
 
 ```rust
-pub struct NeboLoopApi {
+pub struct NeboAIApi {
     api_server: String,
     bot_id: String,
     token: RwLock<String>,   // std::sync::RwLock — token can be refreshed
@@ -977,7 +977,7 @@ credentials.
 
 **File:** `crates/comm/src/api_types.rs`
 
-Comprehensive DTOs for all NeboLoop REST API responses. All types use
+Comprehensive DTOs for all NeboAI REST API responses. All types use
 `#[serde(rename_all = "camelCase")]` for JSON compatibility.
 
 ### Key Type Categories
@@ -1030,7 +1030,7 @@ impl LoopbackPlugin {
 ```
 
 Uses `std::sync::RwLock` (not tokio) since all operations are synchronous.
-Registered alongside NeboLoopPlugin during server startup but never activated
+Registered alongside NeboAIPlugin during server startup but never activated
 in production.
 
 ---
@@ -1042,12 +1042,12 @@ in production.
 ### Startup Sequence
 
 1. Create `PluginManager::new()`
-2. Register `NeboLoopPlugin` and `LoopbackPlugin`
+2. Register `NeboAIPlugin` and `LoopbackPlugin`
 3. Set initial message handler (broadcasts to WebSocket hub)
 4. Store in `AppState::comm_manager`
 5. After full state initialization, replace message handler with full version
    that routes chat/DM to agent runner
-6. If NeboLoop is enabled, call `activate_neboloop()` for auto-connect
+6. If NeboAI is enabled, call `activate_neboai()` for auto-connect
 7. Spawn reconnect loop that monitors `wait_disconnect()`
 
 ### AppState Fields
@@ -1100,16 +1100,16 @@ When a comm message triggers a chat run, a `ChatConfig` is built with:
 
 ```rust
 ChatConfig {
-    channel: "neboloop".to_string(),
+    channel: "neboai".to_string(),
     lane: lanes::COMM,
     comm_reply: Some(CommReplyConfig {
-        provider: "neboloop".to_string(),
+        provider: "neboai".to_string(),
         topic: msg.topic,
         conversation_id: msg.conversation_id,
         from: bot_id,
     }),
-    source: format!("neboloop.{}", msg.topic),
-    origin: "neboloop".to_string(),
+    source: format!("neboai.{}", msg.topic),
+    origin: "neboai".to_string(),
     // ... other fields
 }
 ```
@@ -1149,7 +1149,7 @@ async fn send_comm_response(provider, comm_manager, channel_providers, msg) {
 
 **File:** `crates/tools/src/loop_tool.rs`
 
-The `loop` STRAP domain tool exposes NeboLoop communication capabilities to the
+The `loop` STRAP domain tool exposes NeboAI communication capabilities to the
 agent. It takes an `Arc<dyn CommPlugin>` and provides sub-commands for:
 
 | Category  | Actions                                              |
@@ -1164,7 +1164,7 @@ agent. It takes an `Arc<dyn CommPlugin>` and provides sub-commands for:
 The tool guards against disconnected state:
 ```rust
 if !self.comm.is_connected() {
-    return "Not connected to NeboLoop. The comm plugin is not active.";
+    return "Not connected to NeboAI. The comm plugin is not active.";
 }
 ```
 
@@ -1174,18 +1174,18 @@ if !self.comm.is_connected() {
 
 ### Automatic Reconnect Loop
 
-The server spawns a persistent reconnect task after initial NeboLoop activation:
+The server spawns a persistent reconnect task after initial NeboAI activation:
 
 ```rust
 loop {
     tokio::select! {
         _ = reconnect_state.comm_manager.wait_disconnect() => {
-            info!("neboloop: disconnect notification received, will reconnect");
+            info!("neboai: disconnect notification received, will reconnect");
         }
         // Also handles system sleep detection
     }
     // Backoff, then:
-    match codes::activate_neboloop(&reconnect_state).await {
+    match codes::activate_neboai(&reconnect_state).await {
         Ok(()) => { /* persist rotated token */ }
         Err(e) => { /* log, retry on next iteration */ }
     }
@@ -1202,19 +1202,19 @@ that forces a reconnect.
 ### Stale Token Recovery
 
 If `connect()` fails with "stale token" or "auth failed":
-1. Attempt OAuth token refresh via `refresh_neboloop_token()`
+1. Attempt OAuth token refresh via `refresh_neboai_token()`
 2. If successful, retry connect with the fresh token
 3. Persist the new token to the auth profile
 
 ### Token Cache File
 
 The rotated token from AUTH_OK is persisted to a cache file
-(`~/.nebo/data/neboloop_token.cache`) immediately. This survives hot-reload
+(`~/.nebo/data/neboai_token.cache`) immediately. This survives hot-reload
 or process crashes where the DB persist may not have completed:
 
 ```rust
 if let Ok(dir) = config::data_dir() {
-    let cache_path = dir.join("neboloop_token.cache");
+    let cache_path = dir.join("neboai_token.cache");
     std::fs::write(&cache_path, &auth_result.token);
 }
 ```
@@ -1228,15 +1228,15 @@ is newer.
 
 ### JWT-Based Authentication
 
-NeboLoop uses bot JWTs for authentication. Each bot has a unique `bot_id` and
+NeboAI uses bot JWTs for authentication. Each bot has a unique `bot_id` and
 receives a JWT during onboarding (code redemption).
 
 ### Token Rotation
 
 The gateway may issue a rotated JWT in the AUTH_OK response. When present:
 
-1. The NeboLoopPlugin stores it in `rotated_token` (in-memory)
-2. Writes it to `neboloop_token.cache` (disk, immediate)
+1. The NeboAIPlugin stores it in `rotated_token` (in-memory)
+2. Writes it to `neboai_token.cache` (disk, immediate)
 3. The server's reconnect loop persists it to the auth profile DB
 
 The next connect attempt uses the rotated token.
@@ -1252,16 +1252,16 @@ redeem_code() [unauthenticated]
   +-- POST /api/v1/bots/connect/redeem
   |    Returns: { connection_token, owner_email, ... }
   v
-Store as auth_profile (provider="neboloop")
+Store as auth_profile (provider="neboai")
   |
   v
-activate_neboloop()
+activate_neboai()
   |
   +-- Build config: { gateway, api_server, bot_id, token }
-  +-- comm_manager.set_active("neboloop")
+  +-- comm_manager.set_active("neboai")
   +-- comm_manager.connect_active(config)
   |     |
-  |     +-- NeboLoopPlugin::connect()
+  |     +-- NeboAIPlugin::connect()
   |     |     +-- WebSocket dial
   |     |     +-- CONNECT frame { bot_id, token }
   |     |     +-- Wait AUTH_OK
@@ -1274,9 +1274,9 @@ activate_neboloop()
 
 ### OAuth Integration
 
-For web-based login (NeboLoop OAuth), the server implements PKCE flow:
+For web-based login (NeboAI OAuth), the server implements PKCE flow:
 - `oauth_start()` generates a code verifier, challenge, and state
-- Redirects to NeboLoop authorization endpoint
+- Redirects to NeboAI authorization endpoint
 - `oauth_callback()` exchanges the authorization code for tokens
 - Stores tokens as auth_profile with `refresh_token` in metadata
 
@@ -1286,7 +1286,7 @@ For web-based login (NeboLoop OAuth), the server implements PKCE flow:
 
 **File:** `crates/comm/src/devlog.rs`
 
-Human-readable traffic log written to `~/.nebo/data/logs/neboloop.log`.
+Human-readable traffic log written to `~/.nebo/data/logs/neboai.log`.
 Designed for `tail -f` during development.
 
 ### Log Format
@@ -1340,7 +1340,7 @@ pub enum FrameError {
 
 ### Error Propagation
 
-- Network errors in `NeboLoopPlugin::connect()` bubble up as `CommError::Other`
+- Network errors in `NeboAIPlugin::connect()` bubble up as `CommError::Other`
 - Frame decode errors in the read loop are logged and the frame is skipped (not fatal)
 - Send channel errors indicate the write loop has exited (connection dead)
 - REST API errors include HTTP status code and response body in the error message
@@ -1349,22 +1349,22 @@ pub enum FrameError {
 
 ## 29. Configuration
 
-### NeboLoop Config (from `etc/nebo.yaml`)
+### NeboAI Config (from `etc/nebo.yaml`)
 
 ```yaml
-neboloop:
-  api_url: "https://api.neboloop.com"
-  comms_url: "wss://comms.neboloop.com/ws"
-  janus_url: "https://janus.neboloop.com"
+neboai:
+  api_url: "https://api.neboai.com"
+  comms_url: "wss://comms.neboai.com/ws"
+  janus_url: "https://janus.neboai.com"
 ```
 
 ### Environment Variable Overrides
 
 | Variable              | Overrides                |
 |-----------------------|--------------------------|
-| `NEBOLOOP_API_URL`    | `neboloop.api_url`       |
-| `NEBOLOOP_COMMS_URL`  | `neboloop.comms_url`     |
-| `NEBOLOOP_JANUS_URL`  | `neboloop.janus_url`     |
+| `NEBOAI_API_URL`    | `neboai.api_url`       |
+| `NEBOAI_COMMS_URL`  | `neboai.comms_url`     |
+| `NEBOAI_JANUS_URL`  | `neboai.janus_url`     |
 
 ### Plugin Connect Config Map
 
@@ -1372,7 +1372,7 @@ The `connect()` method receives a `HashMap<String, String>`:
 
 | Key           | Description                              | Required |
 |---------------|------------------------------------------|----------|
-| `gateway`     | WebSocket URL (wss://comms.neboloop.com) | Yes      |
+| `gateway`     | WebSocket URL (wss://comms.neboai.com) | Yes      |
 | `bot_id`      | Bot identifier                           | Yes      |
 | `token`       | JWT authentication token                 | Yes      |
 | `api_server`  | REST API base URL                        | No (derived from gateway) |
@@ -1395,7 +1395,7 @@ The REST client uses:
 | `crates/comm/src/lib.rs`   | ~118  | Module decl, CommPlugin + ChannelProvider traits  |
 | `crates/comm/src/types.rs` | ~190  | CommMessage, CommError, AgentCard, TaskStatus     |
 | `crates/comm/src/manager.rs` | ~261 | PluginManager: registry, routing, shutdown       |
-| `crates/comm/src/neboloop.rs` | ~700+ | NeboLoopPlugin: WS connection, loops, framing  |
+| `crates/comm/src/neboai.rs` | ~700+ | NeboAIPlugin: WS connection, loops, framing  |
 | `crates/comm/src/loopback.rs` | ~196 | LoopbackPlugin: in-memory test plugin           |
 | `crates/comm/src/frame.rs` | ~289  | 47-byte binary header codec + tests              |
 | `crates/comm/src/wire.rs`  | ~224  | JSON payload types for binary protocol           |
@@ -1403,7 +1403,7 @@ The REST client uses:
 | `crates/comm/src/ulid.rs`  | ~113  | Monotonic ULID generator                         |
 | `crates/comm/src/dedup.rs` | ~108  | Sliding-window deduplication (1000/5min)         |
 | `crates/comm/src/devlog.rs`| ~128  | Traffic log for `tail -f`                        |
-| `crates/comm/src/api.rs`   | ~1049 | NeboLoop REST API client                         |
+| `crates/comm/src/api.rs`   | ~1049 | NeboAI REST API client                         |
 | `crates/comm/src/api_types.rs` | ~846 | DTOs for REST API responses                   |
 
 ### Cross-Crate Integration Points
@@ -1413,10 +1413,10 @@ The REST client uses:
 | `crates/server/src/state.rs`             | `comm_manager`, `channel_providers`     |
 | `crates/server/src/lib.rs`               | Plugin registration, handler wiring, reconnect loop, `handle_comm_message()` |
 | `crates/server/src/chat_dispatch.rs`     | `CommReplyConfig`, `send_comm_response()` |
-| `crates/server/src/codes.rs`             | `activate_neboloop()`, `redeem_nebo_code()` |
-| `crates/server/src/handlers/neboloop.rs` | OAuth flow, profile storage             |
+| `crates/server/src/codes.rs`             | `activate_neboai()`, `redeem_nebo_code()` |
+| `crates/server/src/handlers/neboai.rs` | OAuth flow, profile storage             |
 | `crates/server/src/handlers/agents.rs`   | Agent registration in loops             |
-| `crates/tools/src/loop_tool.rs`          | Agent-facing NeboLoop tool              |
+| `crates/tools/src/loop_tool.rs`          | Agent-facing NeboAI tool              |
 
 ---
 
@@ -1428,7 +1428,7 @@ pub struct CommMessage {
     pub from: String,                            // Sender ID
     pub to: String,                              // Recipient ID
     pub topic: String,                           // Stream name (dm, chat, agent_space, etc.)
-    pub conversation_id: String,                 // NeboLoop conversation UUID
+    pub conversation_id: String,                 // NeboAI conversation UUID
     pub msg_type: CommMessageType,               // Message, Stream, Mention, etc.
     pub content: String,                         // JSON or plain text content
     pub metadata: HashMap<String, String>,       // agent_id, agent_slug, senderName, etc.

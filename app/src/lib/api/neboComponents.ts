@@ -1282,58 +1282,58 @@ export interface MarkReadResponse {
 	success: boolean
 }
 
-export interface NeboLoopBillingCheckoutResponse {
+export interface NeboAIBillingCheckoutResponse {
 	clientSecret: string
 	publishableKey: string
 	checkoutUrl: string
 }
 
-export interface NeboLoopBillingInvoicesResponse {
+export interface NeboAIBillingInvoicesResponse {
 	invoices: InvoiceInfo[]
 }
 
-export interface NeboLoopBillingPaymentMethodsResponse {
+export interface NeboAIBillingPaymentMethodsResponse {
 	methods: PaymentMethodInfo[]
 }
 
-export interface NeboLoopBillingPricesResponse {
+export interface NeboAIBillingPricesResponse {
 	prices: BillingPriceInfo[]
 }
 
-export interface NeboLoopBillingSetupIntentResponse {
+export interface NeboAIBillingSetupIntentResponse {
 	clientSecret: string
 	publishableKey: string
 }
 
-export interface NeboLoopBillingSubscriptionResponse {
+export interface NeboAIBillingSubscriptionResponse {
 	plan: string
 	subscriptions: BillingSubscription[]
 }
 
-export interface NeboLoopBotStatusResponse {
+export interface NeboAIBotStatusResponse {
 	connected: boolean
 	authenticated: boolean
 	botId: string
 	apiServer: string
 }
 
-export interface NeboLoopConnectHandlerResponse {
+export interface NeboAIConnectHandlerResponse {
 	connected: boolean
 	botId: string
 }
 
-export interface NeboLoopForceReconnectResponse {
+export interface NeboAIForceReconnectResponse {
 	reconnected: boolean
 	error: string
 }
 
-export interface NeboLoopJanusUsageResponse {
+export interface NeboAIJanusUsageResponse {
 	session: unknown
 	weekly: unknown
 	budget: unknown
 }
 
-export interface NeboLoopOpenNeboloopResponse {
+export interface NeboAIOpenNeboaiResponse {
 	ok: boolean
 }
 

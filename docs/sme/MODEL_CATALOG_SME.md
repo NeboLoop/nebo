@@ -230,7 +230,7 @@ The `OpenAIProvider` serves multiple backends via its OpenAI-compatible API:
 
 1. **Direct OpenAI** — `api.openai.com/v1`
 2. **DeepSeek** — `api.deepseek.com/v1` (via `set_provider_id("deepseek")`)
-3. **Janus Gateway** — NeboLoop's AI gateway (via `set_provider_id("janus")` + `set_bot_id()`)
+3. **Janus Gateway** — NeboAI's AI gateway (via `set_provider_id("janus")` + `set_bot_id()`)
 
 Janus-specific features:
 - `X-Bot-ID` header for per-bot billing
@@ -393,7 +393,7 @@ pub fn build_providers(store, cfg, cli_statuses) -> Vec<Arc<dyn Provider>>
      ├── deepseek  → OpenAIProvider::with_base_url(...) + set_provider_id("deepseek")
      ├── google    → GeminiProvider::new(api_key, model)
      ├── ollama    → OllamaProvider::new(base_url, model)
-     └── neboloop  → OpenAIProvider::with_base_url(janus_url) + set_provider_id("janus")
+     └── neboai  → OpenAIProvider::with_base_url(janus_url) + set_provider_id("janus")
                       └── Only if metadata.janus_provider="true"
                       └── Only if has active chat models in catalog
                       └── Deferred to END of list (gateway = last resort)
@@ -705,7 +705,7 @@ uses `--effort high`.
 pub struct LaneRouting {
     pub heartbeat: String,   // Proactive tick model
     pub events: String,      // Event-triggered workflow model
-    pub comm: String,        // NeboLoop message model
+    pub comm: String,        // NeboAI message model
     pub subagent: String,    // Sub-agent spawn model
 }
 ```
@@ -879,7 +879,7 @@ impl ModelsConfig {
 | `OPENAI_API_KEY`      | OpenAI API key                       |
 | `GOOGLE_API_KEY`      | Google/Gemini API key                |
 | `DEEPSEEK_API_KEY`    | DeepSeek API key                     |
-| `NEBOLOOP_JANUS_URL`  | Override Janus gateway URL           |
+| `NEBOAI_JANUS_URL`  | Override Janus gateway URL           |
 
 ### UI Configuration (Settings > Providers)
 

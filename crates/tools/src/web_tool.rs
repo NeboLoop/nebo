@@ -1688,7 +1688,7 @@ fn parse_brave_results(html: &str) -> Vec<SearchResult> {
             continue;
         }
 
-        // Extract URL from the cite tag content (e.g., "neboloop.com › blog")
+        // Extract URL from the cite tag content (e.g., "neboai.com › blog")
         // But we need the actual href — look for href in the nearby anchor.
         // The cite contains display URL; the actual link is in the title's parent <a>.
         let display_url = extract_between(chunk, ">", "<")

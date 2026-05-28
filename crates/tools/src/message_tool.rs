@@ -32,7 +32,7 @@ impl DynTool for MessageTool {
 
     fn description(&self) -> String {
         "Outbound delivery — send notifications, alerts, and SMS to the owner.\n\
-         USE THIS when: user wants to send a text, notification, or alert to someone outside NeboLoop.\n\n\
+         USE THIS when: user wants to send a text, notification, or alert to someone outside NeboAI.\n\n\
          - message(resource: \"owner\", action: \"notify\", text: \"Task complete!\") — Notify the owner via companion chat\n\
          - message(resource: \"sms\", action: \"send\", to: \"+15551234567\", body: \"Hello!\") — Send SMS (macOS)\n\
          - message(resource: \"sms\", action: \"conversations\") — List SMS conversations\n\
@@ -42,7 +42,7 @@ impl DynTool for MessageTool {
          - message(resource: \"notify\", action: \"alert\", title: \"Warning\", text: \"...\") — Show alert dialog\n\
          - message(resource: \"notify\", action: \"dnd_status\") — Check Do Not Disturb status\n\n\
          For text-to-speech: use os(resource: \"tts\", action: \"speak\", text: \"Hello\")\n\
-         Use message for outbound delivery to humans outside NeboLoop."
+         Use message for outbound delivery to humans outside NeboAI."
             .to_string()
     }
 

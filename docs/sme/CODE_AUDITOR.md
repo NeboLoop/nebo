@@ -46,11 +46,11 @@ crates/server/src/handlers/
 ├── chat.rs             ← Chat CRUD, messaging, search, history
 ├── commander.rs        ← Commander org chart, hierarchy
 ├── entity_config.rs    ← Per-entity config (persona, rules, routing)
-├── files.rs            ← File upload proxy (NeboLoop attachments)
+├── files.rs            ← File upload proxy (NeboAI attachments)
 ├── integrations.rs     ← MCP integrations CRUD, test
 ├── mcp_server.rs       ← MCP server management (remote servers, OAuth)
 ├── memory.rs           ← Memory search, layers, CRUD
-├── neboloop.rs         ← NeboLoop connection, OAuth, loop management
+├── neboai.rs         ← NeboAI connection, OAuth, loop management
 ├── notification.rs     ← Notification CRUD, read/unread
 ├── plugins.rs          ← Plugin settings, store apps/skills
 ├── provider.rs         ← Auth profiles (API keys), models, task routing
@@ -936,7 +936,7 @@ Middleware ordering in Axum: **last applied = first executed**. Security headers
 | `mcp` | Bridge, MCP client, encryption | `types`, `tools` |
 | `browser` | Chrome management, CDP, automation | `types` |
 | `voice` | Speech synthesis/recognition | `types` |
-| `comm` | Communications, NeboLoop integration | `types` |
+| `comm` | Communications, NeboAI integration | `types` |
 | `notify` | Notification system | `types` |
 | `updater` | Background version checker | `types`, `config` |
 | `cli` | CLI tool detection | `types`, `config` |
@@ -1342,6 +1342,6 @@ Use this before committing or when reviewing code.
 - **AUTOMATION_SME.md** — Workflow execution, activity model, token budgets
 - **SKILLS_SME.md** — Skills platform, taxonomy, tool/workflow/role artifacts
 - **BROWSER_AUTOMATION.md** — Chrome/CDP, extension relay
-- **MCP_SYSTEM.md** — MCP server/client/bridge, NeboLoop comm
+- **MCP_SYSTEM.md** — MCP server/client/bridge, NeboAI comm
 - **PERMISSIONS_SME.md** — Security middleware, tool policy, approval flows
 - **PROVIDER_SYSTEM.md** — AI providers, model selection, Janus gateway

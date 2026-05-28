@@ -35,7 +35,7 @@ pub enum CommMessageType {
     LoopChannel,
 }
 
-/// Lifecycle state of an A2A task (per NeboLoop A2A spec).
+/// Lifecycle state of an A2A task (per NeboAI A2A spec).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskStatus {

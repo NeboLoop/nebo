@@ -109,7 +109,7 @@ See [Platform Capabilities](platform-capabilities.md) for the full list of avail
 
 Skills do NOT use manifest.json. The SKILL.md frontmatter is the source of truth for identity, configuration, and runtime behavior.
 
-When a skill is submitted to NeboLoop for marketplace distribution, Nebo auto-generates internal registry metadata from the frontmatter at install time. Publishers never write a manifest for skills.
+When a skill is submitted to NeboAI for marketplace distribution, Nebo auto-generates internal registry metadata from the frontmatter at install time. Publishers never write a manifest for skills.
 
 This is what makes skills portable across platforms. A skill written for Claude Code, OpenAI Codex, or any Agent Skills-compatible platform drops into Nebo unchanged.
 
@@ -308,7 +308,7 @@ The required fields (`name`, `description`) are universal. Nebo-specific fields 
 
 ## Sealed .napp Archives
 
-Skills can be distributed as sealed `.napp` archives — encrypted, signed packages from the NeboLoop marketplace. Sealed skills are read in memory only (never extracted to disk) and require a license key to decrypt.
+Skills can be distributed as sealed `.napp` archives — encrypted, signed packages from the NeboAI marketplace. Sealed skills are read in memory only (never extracted to disk) and require a license key to decrypt.
 
 - `persist_skill_from_api()` downloads and extracts skill content from the marketplace during install
 - License keys are cached locally and re-injected at runtime for template loading
@@ -404,7 +404,7 @@ In addition to the actions documented above (`catalog`, `discover`, `help`, `bro
 | Action | Description |
 |--------|-------------|
 | `secrets` | Shows configured vs missing secrets for a skill. Lists each declared secret with its status (configured, MISSING, or not set). |
-| `reviews` | Marketplace reviews for a skill (synced from NeboLoop; placeholder). |
+| `reviews` | Marketplace reviews for a skill (synced from NeboAI; placeholder). |
 
 ---
 

@@ -7,7 +7,7 @@
 //!     version: ">=1.2.0"
 //! ```
 //!
-//! Plugins are downloaded from NeboLoop, verified (SHA256 + ED25519), and stored at
+//! Plugins are downloaded from NeboAI, verified (SHA256 + ED25519), and stored at
 //! `<data_dir>/nebo/plugins/<slug>/<version>/`. User-provided plugins live at
 //! `<data_dir>/user/plugins/<slug>/<version>/` and override installed versions.
 //! Multiple skills can share the same plugin binary. Scripts access the binary via
@@ -30,7 +30,7 @@ use crate::signing::SigningKeyProvider;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginManifest {
-    /// NeboLoop artifact ID.
+    /// NeboAI artifact ID.
     pub id: String,
     /// URL-safe slug — matches skill's `plugins[].name`.
     pub slug: String,
@@ -949,10 +949,10 @@ impl PluginStore {
         best.map(|(_, path)| path)
     }
 
-    /// Ensure a plugin is installed, downloading from NeboLoop if missing.
+    /// Ensure a plugin is installed, downloading from NeboAI if missing.
     ///
     /// Deduplicates concurrent downloads via the `downloading` mutex.
-    /// The `download_fn` callback queries NeboLoop for the manifest and binary bytes.
+    /// The `download_fn` callback queries NeboAI for the manifest and binary bytes.
     pub async fn ensure<F, Fut>(
         &self,
         slug: &str,
@@ -2072,7 +2072,7 @@ pub enum PluginFsEvent {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Detect the current platform key matching NeboLoop conventions.
+/// Detect the current platform key matching NeboAI conventions.
 ///
 /// Returns e.g., "darwin-arm64", "linux-amd64", "windows-amd64".
 pub fn current_platform_key() -> String {
@@ -2306,7 +2306,7 @@ mod tests {
         let user_plugins_dir = tmp.path().join("user_plugins");
         std::fs::create_dir_all(&user_plugins_dir).unwrap();
         let store = PluginStore::new(plugins_dir.to_path_buf(), user_plugins_dir, None);
-        store.quarantine("bad-plugin", "1.0.0", "revoked by NeboLoop");
+        store.quarantine("bad-plugin", "1.0.0", "revoked by NeboAI");
 
         // Binary should be removed, marker should exist
         assert!(!binary_path.exists());
@@ -2333,7 +2333,7 @@ mod tests {
             name: "Google Workspace CLI".into(),
             version: "1.2.0".into(),
             description: "CLI for Google Workspace".into(),
-            author: "neboloop".into(),
+            author: "neboai".into(),
             platforms: {
                 let mut m = HashMap::new();
                 m.insert(
@@ -2494,7 +2494,7 @@ mod tests {
             name: "Google Workspace".into(),
             version: "1.2.0".into(),
             description: "CLI for Google Workspace".into(),
-            author: "neboloop".into(),
+            author: "neboai".into(),
             platforms: {
                 let mut m = HashMap::new();
                 m.insert(

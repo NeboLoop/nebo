@@ -8,7 +8,7 @@ use crate::NappError;
 
 const NONCE_SIZE: usize = 12;
 const KEY_SIZE: usize = 32;
-const HKDF_INFO: &[u8] = b"neboloop-license-v1";
+const HKDF_INFO: &[u8] = b"neboai-license-v1";
 
 /// Gzip magic bytes — plain (unsealed) tar.gz payloads start with these.
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];

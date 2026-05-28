@@ -5,7 +5,7 @@
 
 CREATE TABLE IF NOT EXISTS plugin_registry (
     id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,               -- Internal name (e.g., "neboloop", "discord")
+    name TEXT UNIQUE NOT NULL,               -- Internal name (e.g., "neboai", "discord")
     plugin_type TEXT NOT NULL DEFAULT 'comm', -- comm, channel, tool, integration
     display_name TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
@@ -41,7 +41,7 @@ CREATE INDEX idx_plugin_settings_plugin ON plugin_settings(plugin_id);
 
 -- Pre-populate known plugins (built-in comm plugins)
 INSERT INTO plugin_registry (id, name, plugin_type, display_name, description, icon, is_installed) VALUES
-('builtin-neboloop', 'neboloop', 'comm', 'NeboLoop', 'Connect to NeboLoop network for bot-to-bot communication via MQTT', '🔗', 1),
+('builtin-neboai', 'neboai', 'comm', 'NeboAI', 'Connect to NeboAI network for bot-to-bot communication via MQTT', '🔗', 1),
 ('builtin-loopback', 'loopback', 'comm', 'Loopback', 'Local testing - messages echo back to sender', '🔄', 1);
 
 -- Pre-populate known channel plugins (migrate from channel_registry concept)

@@ -167,7 +167,7 @@ pub struct Skill {
 }
 
 pub enum SkillSource {
-    Installed,    // Bundled skills + NeboLoop marketplace (sealed .napp)
+    Installed,    // Bundled skills + NeboAI marketplace (sealed .napp)
     User,         // User-created (loose files)
 }
 ```
@@ -405,7 +405,7 @@ Tool name: `"skill"`
 | `create` | `name`, `content` | Create new skill as `{name}/SKILL.md`. Wraps with minimal frontmatter if content lacks `---` |
 | `update` | `name`, `content` | Update existing skill. Rejects installed (marketplace) skills as read-only |
 | `delete` | `name` | Delete user skill (directory). Rejects installed skills |
-| `install` | `code` | Install from marketplace (must start with `SKIL-`). Calls NeboLoop API, `persist_skill_from_api()`, reloads |
+| `install` | `code` | Install from marketplace (must start with `SKIL-`). Calls NeboAI API, `persist_skill_from_api()`, reloads |
 | `configure` | `name`, `key`, `value` | Set a secret/API key for a skill (encrypted at rest). Validates key against declared secrets |
 | `secrets` | `name` | Show declared secrets with configuration status: "configured", "MISSING (required)", or "not set (optional)" |
 | `featured` | — | List enabled skills with non-empty capabilities (top 10) |
@@ -1014,7 +1014,7 @@ User enters: "SKIL-RFBM-XCYT"
   ↓
 1. detect_code() → (CodeType::Skill, "SKIL-RFBM-XCYT")
 2. Broadcast "code_processing" event
-3. build_api_client() → NeboLoopApi (requires NeboLoop connection)
+3. build_api_client() → NeboAIApi (requires NeboAI connection)
 4. api.install_skill(code) → CodeRedeemResponse
    ├─ status: "payment_required" → return checkout_url
    └─ status: "installed" → continue
@@ -1035,7 +1035,7 @@ Skills can be installed via:
 2. **SkillTool** — agent calls `skill(action: "install", code: "SKIL-XXXX-XXXX")` (`skill_tool.rs`)
 3. **REST API** — `POST /api/v1/codes` with `{ "code": "SKIL-XXXX-XXXX" }` (`submit_code()` in `codes.rs`)
 
-All three converge on the same NeboLoop API call and persistence logic.
+All three converge on the same NeboAI API call and persistence logic.
 
 ---
 
@@ -1045,7 +1045,7 @@ All three converge on the same NeboLoop API call and persistence logic.
 
 ```rust
 pub async fn persist_skill_from_api(
-    api: &NeboLoopApi,
+    api: &NeboAIApi,
     artifact_id: &str,
     name: &str,
     code: &str,
@@ -1114,7 +1114,7 @@ resolve_cascade(state, deps, visited):
        ├─ Starts with @ or SKIL-/WORK-/AGNT- → yes
        └─ Simple name (no prefix) → Unresolvable (built-in)
     4. If autonomous mode:
-       ├─ install_dep() → call NeboLoop API
+       ├─ install_dep() → call NeboAI API
        ├─ Broadcast "dep_installed"
        └─ Recurse into child deps
     5. If non-autonomous:
@@ -1360,7 +1360,7 @@ When `ExecuteTool` runs a script, ALL resources are extracted to a temp director
 - Matched skills provide context/instructions for the agent
 - `tool_filter.rs` ensures `"skill"` tool is always available (core tool)
 
-### With NeboLoop Marketplace
+### With NeboAI Marketplace
 
 - Skills distributed as sealed `.napp` archives
 - Install codes: `SKIL-XXXX-XXXX` (Crockford Base32)
@@ -1441,7 +1441,7 @@ const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 | Persistence | `crates/tools/src/lib.rs` (`persist_skill_from_api`) |
 | Dependency cascade | `crates/server/src/deps.rs` |
 | .napp reader | `crates/napp/src/reader.rs` |
-| NeboLoop API client | `crates/comm/src/api.rs` |
+| NeboAI API client | `crates/comm/src/api.rs` |
 
 **Canonical specification:**
 - [platform-taxonomy.md](../.archive/platform-taxonomy.md) — Authoritative AGENT/WORK/SKILL hierarchy definition

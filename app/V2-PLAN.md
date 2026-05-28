@@ -101,7 +101,7 @@ V2 is a **fully functional UI prototype** with real navigation, state management
 - ~~Marketplace Collections: renamed from "Private", flat nav item in sidebar, collections overview page with create modal (name + desc + item picker with search), personal collections with delete, shared org collections, collection detail pages~~
 - ~~Rich marketplace mock data: features arrays, pricing tiers (Starter/Team/Enterprise), rating distributions, developer info (website/support/launch date), screenshots as objects, reviews with role + duration, worksWith integrations~~
 - ~~Marketplace category emojis removed from sidebar and featured page (cleaner professional look)~~
-- ~~NeboLabs → NeboLoop branding fix across all mock data (author, developer, website, support email)~~
+- ~~NeboLabs → NeboAI branding fix across all mock data (author, developer, website, support email)~~
 - ~~Output panel renamed to Creations panel (all labels, variables, comments, docs)~~
 - ~~Idiomatic SvelteKit file-based routing: decomposed 979-line monolith into nested routes with layouts, setContext for agent data, URL-driven tab/section state, deep links for threads/runs/settings~~
 
@@ -205,8 +205,8 @@ Deleted `/e`, `/f`, `/g` — redundant. `/schedule` handles day/week/month views
 ### 15. Workspace apps
 Build out at least one functional workspace view (CRM or Analytics).
 
-### 16. Real NeboLoop integration
-Replace mock data with live API calls to NeboLoop MCP server.
+### 16. Real NeboAI integration
+Replace mock data with live API calls to NeboAI MCP server.
 
 ### 17. Keyboard shortcuts
 `Cmd+N` (new thread), `Cmd+,` (settings), `Cmd+1-8` (switch agent).
@@ -254,7 +254,7 @@ Related items section on detail pages.
 /marketplace/skills             Skill catalog (functional)
 /marketplace/skills/[id]        Skill detail — two-column layout (functional)
 /schedule                       Calendar shell
-/settings/account               NeboLoop connection (display)
+/settings/account               NeboAI connection (display)
 /settings/profile               Theme picker + profile fields (theme works)
 /settings/billing               Plan + payment + receipts (functional, Stripe-ready)
 /settings/usage                 Plan usage + balance (display)

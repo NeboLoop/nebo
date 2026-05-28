@@ -90,7 +90,7 @@ Format: `PREFIX-XXXX-XXXX` — Crockford Base32 (`0123456789ABCDEFGHJKMNPQRSTVWX
 
 | Prefix | Artifact | Example |
 |--------|----------|---------|
-| `NEBO` | Link bot to NeboLoop account | `NEBO-A1B2-C3D4` |
+| `NEBO` | Link bot to NeboAI account | `NEBO-A1B2-C3D4` |
 | `SKIL` | Install a skill | `SKIL-R7KP-2M9V` |
 | `WORK` | Install a workflow | `WORK-5TG2-XBJK` |
 | `AGNT` | Install an agent | `AGNT-9DCE-4MPA` |
@@ -121,7 +121,7 @@ skill-name/
 
 Skills from Anthropic, OpenAI, OpenClaw, and other Agent Skills-compatible platforms can be installed directly with no modification. See [Skills](skills.md) for the full format spec.
 
-**Marketplace distribution:** When a skill is submitted to NeboLoop, it is packaged as a signed `.napp` archive for integrity verification. At install time, Nebo reads the SKILL.md frontmatter and auto-generates internal registry metadata. The publisher never writes a manifest.json for skills.
+**Marketplace distribution:** When a skill is submitted to NeboAI, it is packaged as a signed `.napp` archive for integrity verification. At install time, Nebo reads the SKILL.md frontmatter and auto-generates internal registry metadata. The publisher never writes a manifest.json for skills.
 
 **User/development path:** During development, place a skill directory directly in `user/skills/` and iterate. Hot-reload picks up changes with a 1-second debounce.
 
@@ -200,9 +200,9 @@ Every `.napp` file wraps the inner tar.gz in a binary envelope that is verified 
 
 Verification order:
 1. **SHA256** — cheap integrity check of the payload bytes.
-2. **ED25519** — proves the archive was signed by NeboLoop. The signature covers `hash || payload`.
+2. **ED25519** — proves the archive was signed by NeboAI. The signature covers `hash || payload`.
 
-The NeboLoop public key is embedded at compile time (`neboloop_public_key.bin`) so verification works offline (first launch, air-gapped installs). A `SigningKeyProvider` also fetches the key from `GET /api/v1/apps/signing-key` with a 24-hour cache for key rotation.
+The NeboAI public key is embedded at compile time (`neboai_public_key.bin`) so verification works offline (first launch, air-gapped installs). A `SigningKeyProvider` also fetches the key from `GET /api/v1/apps/signing-key` with a 24-hour cache for key rotation.
 
 ### Sealed Archives
 
@@ -223,20 +223,20 @@ Paid marketplace artifacts use an additional encryption layer on top of the `.na
 .napp envelope  →  unwrap (verify ED25519 + SHA256)  →  sealed payload  →  unseal (AES-256-GCM)  →  plain tar.gz
 ```
 
-**Key derivation:** `derive_license_key(master_secret, artifact_id)` uses HKDF-SHA256 with the artifact ID as salt and `neboloop-license-v1` as info. The same key works regardless of who holds the license — authorization is server-side, so `.napp` files never need re-download on license transfer.
+**Key derivation:** `derive_license_key(master_secret, artifact_id)` uses HKDF-SHA256 with the artifact ID as salt and `neboai-license-v1` as info. The same key works regardless of who holds the license — authorization is server-side, so `.napp` files never need re-download on license transfer.
 
 **Detection:** Plain `.napp` payloads start with gzip magic bytes (`0x1f 0x8b`). Sealed payloads start with a 12-byte random nonce, which won't match. `is_sealed()` checks this.
 
 **Partial extraction:** For sealed skill archives, only executables (`scripts/`, `bin/`, `binary`) and metadata (`manifest.json`, `plugin.json`, `signatures.json`) are extracted to disk. IP-sensitive files (SKILL.md, references, assets) stay inside the sealed `.napp` and are read in memory at runtime — plaintext never touches disk.
 
-**Runtime:** The skill loader holds license keys in memory via `set_license_keys(HashMap<artifact_id, [u8; 32]>)`. Keys are cached from NeboLoop at startup and used transparently when reading sealed entries.
+**Runtime:** The skill loader holds license keys in memory via `set_license_keys(HashMap<artifact_id, [u8; 32]>)`. Keys are cached from NeboAI at startup and used transparently when reading sealed entries.
 
 ### Versioned Storage
 
 Artifacts are stored by qualified name and version:
 
 ```
-nebo/                                    # From NeboLoop marketplace
+nebo/                                    # From NeboAI marketplace
   skills/
     @acme/skills/sales-qualification/
       1.0.0.napp
@@ -308,7 +308,7 @@ When a qualified name with a version range is referenced (e.g., `@acme/skills/sa
 
 1. Scan installed versions under that qualified name
 2. Pick the highest version satisfying the semver range
-3. If nothing matches, fetch from NeboLoop marketplace
+3. If nothing matches, fetch from NeboAI marketplace
 4. If fetch fails and nothing is installed, error
 
 This resolution applies everywhere a versioned qualified name appears — workflow `dependencies`, activity `skills` arrays, agent `workflows` refs, and agent-level `skills` arrays.
@@ -361,7 +361,7 @@ The `name` field is the canonical identifier. The org, type, and artifact name a
 | `permissions` | string[] | Required capabilities (`storage:readwrite`, `network:outbound`, etc.) |
 | `window` | object | Default window config (`title`, `width`, `height`, `resizable`) |
 
-> **Install codes** are not part of the package. They are assigned by NeboLoop when the manifest is submitted and are stored server-side as an alias that resolves to the qualified name. The publisher never sets the code — they submit their package and NeboLoop assigns one.
+> **Install codes** are not part of the package. They are assigned by NeboAI when the manifest is submitted and are stored server-side as an alias that resolves to the qualified name. The publisher never sets the code — they submit their package and NeboAI assigns one.
 
 ### Manifest Examples
 

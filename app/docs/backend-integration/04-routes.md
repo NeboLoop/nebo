@@ -31,7 +31,7 @@ Every route in the app, what data it consumes, what user actions it supports, an
   /collections, /collections/[id] → Collections + org detail
   /installed                    → Installed items
 /settings/*                     → Settings modal overlay
-  /account                      → NeboLoop connection
+  /account                      → NeboAI connection
   /profile                      → Profile + theme picker
   /billing                      → Plan, payment, invoices
   /usage                        → Usage stats + balance
@@ -230,10 +230,10 @@ All render inside `SettingsShell` modal overlay.
 
 | Route | Mock Data | Backend Read | Backend Write |
 |-------|-----------|-------------|---------------|
-| `/settings/account` | `USER` | `GET /api/v1/neboloop/account` | `DELETE /api/v1/neboloop/account` |
+| `/settings/account` | `USER` | `GET /api/v1/neboai/account` | `DELETE /api/v1/neboai/account` |
 | `/settings/profile` | `USER` | `GET /api/v1/user/me/profile` + `GET /api/v1/user/me/preferences` | `PUT /api/v1/user/me/profile`, `PUT /api/v1/user/me/preferences` |
-| `/settings/billing` | `BILLING` | `GET /api/v1/neboloop/billing/subscription` + invoices + payment methods | `POST /api/v1/neboloop/billing/cancel`, `POST /api/v1/neboloop/billing/portal` |
-| `/settings/usage` | Usage stats | `GET /api/v1/neboloop/janus/usage` | `POST /api/v1/neboloop/janus/usage/refresh` |
+| `/settings/billing` | `BILLING` | `GET /api/v1/neboai/billing/subscription` + invoices + payment methods | `POST /api/v1/neboai/billing/cancel`, `POST /api/v1/neboai/billing/portal` |
+| `/settings/usage` | Usage stats | `GET /api/v1/neboai/janus/usage` | `POST /api/v1/neboai/janus/usage/refresh` |
 | `/settings/identity` | None | `GET /api/v1/agent/profile` | `PUT /api/v1/agent/profile` |
 | `/settings/personality` | `PERSONALITY_PRESETS` | `GET /api/v1/agent/profile` + `GET /api/v1/agent/personality-presets` | `PUT /api/v1/agent/profile` |
 | `/settings/rules` | `RULES` | `GET /api/v1/agent/settings` | `PUT /api/v1/agent/settings` |
@@ -263,10 +263,10 @@ All render inside `SettingsShell` modal overlay.
 |------|--------------|
 | 0 — Welcome + T&C | `POST /api/v1/user/me/accept-terms` |
 | 1 — Language | `PUT /api/v1/user/me/preferences` |
-| 2 — Connect NeboLoop | `GET /api/v1/neboloop/oauth/start` |
+| 2 — Connect NeboAI | `GET /api/v1/neboai/oauth/start` |
 | 3 — Permissions | `PUT /api/v1/user/me/permissions` |
 | 4 — Done | `POST /api/v1/setup/complete` |
 
 ### `/upgrade/+page.svelte`
-**Reads:** `PLANS` → `GET /api/v1/neboloop/billing/prices`
-**Writes:** Subscribe → `POST /api/v1/neboloop/billing/checkout` or `POST /api/v1/neboloop/billing/subscribe`
+**Reads:** `PLANS` → `GET /api/v1/neboai/billing/prices`
+**Writes:** Subscribe → `POST /api/v1/neboai/billing/checkout` or `POST /api/v1/neboai/billing/subscribe`

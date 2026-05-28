@@ -75,7 +75,7 @@ Provider ordering in the `providers` vec (used by runner fallback logic):
 ```
 1. Direct API providers (Anthropic, OpenAI, Gemini, DeepSeek, Ollama via API keys)
 2. CLI providers (claude, codex, gemini binaries -- use user's own subscription)
-3. Janus gateway (NeboLoop -- consumes Nebo credits, always LAST)
+3. Janus gateway (NeboAI -- consumes Nebo credits, always LAST)
 4. Local models (GGUF -- always-available fallback, feature-gated)
 ```
 
@@ -974,7 +974,7 @@ Bot ID: `<data_dir>/bot_id` -- immutable UUID generated on first startup, used f
 CREATE TABLE auth_profiles (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    provider TEXT NOT NULL,           -- "anthropic", "openai", "google", "deepseek", "ollama", "neboloop"
+    provider TEXT NOT NULL,           -- "anthropic", "openai", "google", "deepseek", "ollama", "neboai"
     api_key TEXT NOT NULL,            -- Encrypted
     model TEXT,                       -- Model override for this profile
     base_url TEXT,                    -- Custom API base URL (Ollama, Deepseek)
@@ -1068,7 +1068,7 @@ CREATE TABLE provider_models (
    - deepseek  → OpenAIProvider(base_url=deepseek, provider_id="deepseek")
    - google    → GeminiProvider
    - ollama    → OllamaProvider
-   - neboloop + metadata.janus_provider="true"
+   - neboai + metadata.janus_provider="true"
               → OpenAIProvider(base_url=janus, provider_id="janus", bot_id)
 5. Live-detect CLI providers (PATH scan for claude, codex, gemini)
 6. Order: [direct API providers] + [CLI providers] + [Janus gateway]
@@ -1089,7 +1089,7 @@ match profile.provider.as_str() {
     },
     "google"    => GeminiProvider::new(api_key, model),
     "ollama"    => OllamaProvider::new(base_url, model),
-    "neboloop"  => {
+    "neboai"  => {
         // Only if metadata contains janus_provider: "true"
         // Skip if no active chat-capable Janus models in catalog
         let api_key = if profile.api_key.is_empty() { bot_id.clone() } else { profile.api_key };

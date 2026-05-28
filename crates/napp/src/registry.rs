@@ -12,7 +12,7 @@ use crate::{InstallEvent, NappError, QuarantineEvent};
 /// Where a tool was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSource {
-    /// Installed from NeboLoop marketplace (sealed .napp + extracted binary).
+    /// Installed from NeboAI marketplace (sealed .napp + extracted binary).
     Installed,
     /// User-created/sideloaded (loose files in user/tools/).
     User,
@@ -26,7 +26,7 @@ pub struct RegistryConfig {
     /// User/sideloaded tools — loose files for development.
     /// Directory: <data_dir>/user/tools/
     pub user_tools_dir: PathBuf,
-    pub neboloop_url: Option<String>,
+    pub neboai_url: Option<String>,
 }
 
 /// Registered tool info (internal).
@@ -55,11 +55,11 @@ pub struct Registry {
 impl Registry {
     pub fn new(config: RegistryConfig, api_port: u16) -> Self {
         let signing = config
-            .neboloop_url
+            .neboai_url
             .as_ref()
             .map(|url| SigningKeyProvider::new(url));
         let revocation = config
-            .neboloop_url
+            .neboai_url
             .as_ref()
             .map(|url| RevocationChecker::new(url));
 
@@ -258,7 +258,7 @@ impl Registry {
         // Revocation check
         if let Some(ref checker) = self.revocation {
             if checker.is_revoked(manifest.id()).await? {
-                self.quarantine(manifest.id(), tool_dir, "tool revoked by NeboLoop")
+                self.quarantine(manifest.id(), tool_dir, "tool revoked by NeboAI")
                     .await;
                 return Err(NappError::Revoked(manifest.id().to_string()));
             }
@@ -591,7 +591,7 @@ impl Registry {
         Ok(tool_id)
     }
 
-    /// Handle an install event from NeboLoop.
+    /// Handle an install event from NeboAI.
     pub async fn handle_install_event(&self, event: InstallEvent) -> Result<(), NappError> {
         match event.event_type.as_str() {
             "tool_installed" => {
@@ -616,7 +616,7 @@ impl Registry {
                     tools.get(&event.tool_id).map(|t| t.tool_dir.clone())
                 };
                 if let Some(dir) = tool_dir {
-                    self.quarantine(&event.tool_id, &dir, "revoked by NeboLoop")
+                    self.quarantine(&event.tool_id, &dir, "revoked by NeboAI")
                         .await;
                 }
             }

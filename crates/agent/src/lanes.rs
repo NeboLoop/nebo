@@ -2,7 +2,7 @@
 //!
 //! The lane system isolates different types of work into independent FIFO queues,
 //! each with its own concurrency cap. This prevents one workload from starving
-//! another — e.g., a flood of NeboLoop messages won't block the user's interactive
+//! another — e.g., a flood of NeboAI messages won't block the user's interactive
 //! chat, and heartbeat ticks won't pile up.
 //!
 //! ## Architecture
@@ -36,7 +36,7 @@
 //! | Lane        | Max Concurrent | Purpose                                  |
 //! |-------------|---------------|------------------------------------------|
 //! | `main`      | unlimited*    | User chat from frontend WebSocket         |
-//! | `comm`      | unlimited*    | Inbound NeboLoop chat/DM messages         |
+//! | `comm`      | unlimited*    | Inbound NeboAI chat/DM messages         |
 //! | `events`    | unlimited*    | Event-triggered workflow runs              |
 //! | `subagent`  | unlimited*    | Sub-agent spawns                          |
 //! | `nested`    | unlimited*    | Nested tool calls                         |

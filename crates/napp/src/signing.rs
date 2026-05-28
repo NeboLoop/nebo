@@ -7,21 +7,21 @@ use tracing::{info, warn};
 
 use crate::NappError;
 
-/// NeboLoop's ED25519 public key, embedded at compile time for offline verification.
+/// NeboAI's ED25519 public key, embedded at compile time for offline verification.
 ///
 /// Used to verify `.napp` envelopes from bundled resources when the network
 /// may not be available (first launch, air-gapped installs).
-pub const NEBOLOOP_PUBLIC_KEY: &[u8; 32] = include_bytes!("../neboloop_public_key.bin");
+pub const NEBOAI_PUBLIC_KEY: &[u8; 32] = include_bytes!("../neboai_public_key.bin");
 
-/// Build a `VerifyingKey` from the embedded NeboLoop public key.
+/// Build a `VerifyingKey` from the embedded NeboAI public key.
 pub fn builtin_verifying_key() -> Result<VerifyingKey, NappError> {
-    VerifyingKey::from_bytes(NEBOLOOP_PUBLIC_KEY)
+    VerifyingKey::from_bytes(NEBOAI_PUBLIC_KEY)
         .map_err(|e| NappError::Signing(format!("invalid embedded public key: {}", e)))
 }
 
-/// Cached ED25519 public key from NeboLoop.
+/// Cached ED25519 public key from NeboAI.
 pub struct SigningKeyProvider {
-    neboloop_url: String,
+    neboai_url: String,
     key: RwLock<Option<CachedKey>>,
     ttl: Duration,
 }
@@ -38,9 +38,9 @@ struct SigningKeyResponse {
 }
 
 impl SigningKeyProvider {
-    pub fn new(neboloop_url: &str) -> Self {
+    pub fn new(neboai_url: &str) -> Self {
         Self {
-            neboloop_url: neboloop_url.to_string(),
+            neboai_url: neboai_url.to_string(),
             key: RwLock::new(None),
             ttl: Duration::from_secs(86400), // 24 hours
         }
@@ -63,7 +63,7 @@ impl SigningKeyProvider {
 
     /// Force refresh the signing key.
     pub async fn refresh(&self) -> Result<VerifyingKey, NappError> {
-        let url = format!("{}/api/v1/apps/signing-key", self.neboloop_url);
+        let url = format!("{}/api/v1/apps/signing-key", self.neboai_url);
         let resp: SigningKeyResponse = reqwest::get(&url)
             .await
             .map_err(|e| NappError::Signing(format!("fetch signing key: {}", e)))?
@@ -187,9 +187,9 @@ fn find_binary(app_dir: &std::path::Path) -> Result<std::path::PathBuf, NappErro
     ))
 }
 
-/// Checks NeboLoop's revocation list with caching.
+/// Checks NeboAI's revocation list with caching.
 pub struct RevocationChecker {
-    neboloop_url: String,
+    neboai_url: String,
     cache: RwLock<Option<RevocationCache>>,
     ttl: Duration,
 }
@@ -200,9 +200,9 @@ struct RevocationCache {
 }
 
 impl RevocationChecker {
-    pub fn new(neboloop_url: &str) -> Self {
+    pub fn new(neboai_url: &str) -> Self {
         Self {
-            neboloop_url: neboloop_url.to_string(),
+            neboai_url: neboai_url.to_string(),
             cache: RwLock::new(None),
             ttl: Duration::from_secs(3600), // 1 hour
         }
@@ -221,7 +221,7 @@ impl RevocationChecker {
         }
 
         // Fetch fresh
-        let url = format!("{}/api/v1/apps/revocations", self.neboloop_url);
+        let url = format!("{}/api/v1/apps/revocations", self.neboai_url);
         let resp = reqwest::get(&url).await;
 
         match resp {

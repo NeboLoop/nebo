@@ -32,8 +32,8 @@ pub struct Config {
     pub oauth: OAuthConfig,
     #[serde(rename = "Features")]
     pub features: FeaturesConfig,
-    #[serde(rename = "NeboLoop")]
-    pub neboloop: NeboLoopConfig,
+    #[serde(rename = "NeboAI")]
+    pub neboai: NeboAIConfig,
     #[serde(rename = "AppOAuth")]
     pub app_oauth: HashMap<String, AppOAuthProviderConfig>,
     #[serde(rename = "Log")]
@@ -164,7 +164,7 @@ pub struct FeaturesConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct NeboLoopConfig {
+pub struct NeboAIConfig {
     #[serde(rename = "Enabled")]
     pub enabled: String,
     #[serde(rename = "ApiURL")]
@@ -216,7 +216,7 @@ impl Default for Config {
             email: EmailConfig::default(),
             oauth: OAuthConfig::default(),
             features: FeaturesConfig::default(),
-            neboloop: NeboLoopConfig::default(),
+            neboai: NeboAIConfig::default(),
             app_oauth: HashMap::new(),
             log: LogConfig::default(),
             browser_extension_id: None,
@@ -306,13 +306,13 @@ impl Default for FeaturesConfig {
     }
 }
 
-impl Default for NeboLoopConfig {
+impl Default for NeboAIConfig {
     fn default() -> Self {
         Self {
             enabled: "true".into(),
-            api_url: "https://api.neboloop.com".into(),
-            janus_url: "https://janus.neboloop.com".into(),
-            comms_url: "wss://comms.neboloop.com/ws".into(),
+            api_url: "https://api.neboai.com".into(),
+            janus_url: "https://janus.neboai.com".into(),
+            comms_url: "wss://comms.neboai.com/ws".into(),
         }
     }
 }
@@ -372,15 +372,15 @@ impl Config {
                 .to_string_lossy()
                 .into_owned();
         }
-        // Apply NeboLoop env var overrides
-        if let Ok(v) = env::var("NEBOLOOP_API_URL") {
-            self.neboloop.api_url = v;
+        // Apply NeboAI env var overrides
+        if let Ok(v) = env::var("NEBOAI_API_URL") {
+            self.neboai.api_url = v;
         }
-        if let Ok(v) = env::var("NEBOLOOP_JANUS_URL") {
-            self.neboloop.janus_url = v;
+        if let Ok(v) = env::var("NEBOAI_JANUS_URL") {
+            self.neboai.janus_url = v;
         }
-        if let Ok(v) = env::var("NEBOLOOP_COMMS_URL") {
-            self.neboloop.comms_url = v;
+        if let Ok(v) = env::var("NEBOAI_COMMS_URL") {
+            self.neboai.comms_url = v;
         }
     }
 
@@ -411,8 +411,8 @@ impl Config {
     pub fn is_oauth_enabled(&self) -> bool {
         parse_bool(&self.features.oauth_enabled, false)
     }
-    pub fn is_neboloop_enabled(&self) -> bool {
-        parse_bool(&self.neboloop.enabled, true)
+    pub fn is_neboai_enabled(&self) -> bool {
+        parse_bool(&self.neboai.enabled, true)
     }
 }
 

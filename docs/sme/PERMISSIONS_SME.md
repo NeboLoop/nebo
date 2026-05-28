@@ -70,7 +70,7 @@ The `settings` table is a singleton row (id=1) with global toggles:
 | `auto_approve_write` | INTEGER (bool) | 0 | Auto-approve file write operations |
 | `auto_approve_bash` | INTEGER (bool) | 0 | Auto-approve shell command execution |
 | `heartbeat_interval_minutes` | INTEGER | 30 | Default heartbeat interval |
-| `comm_enabled` | INTEGER (bool) | 0 | NeboLoop communication toggle |
+| `comm_enabled` | INTEGER (bool) | 0 | NeboAI communication toggle |
 | `comm_plugin` | TEXT | '' | Active comm plugin name |
 | `developer_mode` | INTEGER (bool) | 0 | Developer mode toggle |
 | `auto_update` | INTEGER (bool) | 1 | Auto-update toggle |
@@ -227,7 +227,7 @@ Every request carries an `Origin` that identifies its source:
 ```rust
 pub enum Origin {
     User,    // Direct user interaction (web UI, CLI)
-    Comm,    // Inter-agent communication (NeboLoop, loopback)
+    Comm,    // Inter-agent communication (NeboAI, loopback)
     App,     // External app binary
     Skill,   // Matched skill template
     System,  // Internal system tasks (heartbeat, cron, recovery)
@@ -402,7 +402,7 @@ fn tool_category(name: &str) -> &str {
         "agent" => "memory",     // Tasks, memory, sessions, advisors
         "skill" => "filesystem", // Skill management
         "work"  => "filesystem", // Workflow management
-        "loop"  => "web",        // NeboLoop communications
+        "loop"  => "web",        // NeboAI communications
         _       => "other",      // Catch-all
     }
 }

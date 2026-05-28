@@ -280,7 +280,7 @@ impl ModelsConfig {
                             if let Some(stripped) = model.id.strip_prefix("janus/") {
                                 model.id = stripped.to_string();
                             }
-                            if let Some(stripped) = model.id.strip_prefix("neboloop/") {
+                            if let Some(stripped) = model.id.strip_prefix("neboai/") {
                                 model.id = stripped.to_string();
                             }
                             // Migrate old "janus" model ID to "nebo-1"

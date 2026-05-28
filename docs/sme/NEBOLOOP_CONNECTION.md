@@ -1,15 +1,15 @@
-# NeboLoop Connection & Hub Chat — SME Reference
+# NeboAI Connection & Hub Chat — SME Reference
 
-This is a research/knowledge task, not an implementation plan. The output is a comprehensive SME reference for how the NeboLoop connection works and how chat flows through the hub.
+This is a research/knowledge task, not an implementation plan. The output is a comprehensive SME reference for how the NeboAI connection works and how chat flows through the hub.
 
 ---
 
 ## 1. Architecture Overview
 
-The local Nebo desktop app connects to the NeboLoop cloud gateway via a **binary-framed WebSocket** protocol. The connection is managed by a plugin system (`CommPlugin` trait) with the `NeboLoopPlugin` as the production implementation. All inbound messages flow through a **single unified chat pipeline** (`chat_dispatch::run_chat()`), the same one used for local WebSocket chat.
+The local Nebo desktop app connects to the NeboAI cloud gateway via a **binary-framed WebSocket** protocol. The connection is managed by a plugin system (`CommPlugin` trait) with the `NeboAIPlugin` as the production implementation. All inbound messages flow through a **single unified chat pipeline** (`chat_dispatch::run_chat()`), the same one used for local WebSocket chat.
 
 **Key crates:**
-- `crates/comm/` — Plugin trait, NeboLoop WebSocket client, REST API, wire protocol
+- `crates/comm/` — Plugin trait, NeboAI WebSocket client, REST API, wire protocol
 - `crates/server/src/chat_dispatch.rs` — Unified chat dispatch pipeline
 - `crates/server/src/lib.rs` — Message handler registration, routing logic
 - `crates/server/src/codes.rs` — Connection activation, agent registration, reconciliation
@@ -64,16 +64,16 @@ The local Nebo desktop app connects to the NeboLoop cloud gateway via a **binary
 
 ## 3. Connection Lifecycle
 
-### Initial Connection (`neboloop.rs:288-500`)
+### Initial Connection (`neboai.rs:288-500`)
 
 ```
 0. Tear down existing connection (cancel old tasks, clear stale state)
    - If is_connected → disconnect()
    - Else → cancel any stale token, clear send_tx
-1. WebSocket dial → gateway URL (e.g. wss://comms.neboloop.com/ws)
+1. WebSocket dial → gateway URL (e.g. wss://comms.neboai.com/ws)
 2. Send CONNECT frame {bot_id, token}
 3. Wait for AUTH_OK/AUTH_FAIL (10s timeout)
-4. Extract rotated JWT from AUTH_OK → store in memory + persist to <data_dir>/neboloop_token.cache
+4. Extract rotated JWT from AUTH_OK → store in memory + persist to <data_dir>/neboai_token.cache
 5. Reset ConvMaps (fresh for new connection)
 6. Spawn 3 background tasks:
    - Read loop: decode frames → dedup → dispatch to handler (120s read timeout)
@@ -82,19 +82,19 @@ The local Nebo desktop app connects to the NeboLoop cloud gateway via a **binary
 7. Auto-join 5 bot streams: dm, installs, chat, account, voice
 ```
 
-The token cache file at `<data_dir>/neboloop_token.cache` is persisted immediately on AUTH_OK to survive hot-reload kills (SIGKILL) that prevent the caller from writing to DB.
+The token cache file at `<data_dir>/neboai_token.cache` is persisted immediately on AUTH_OK to survive hot-reload kills (SIGKILL) that prevent the caller from writing to DB.
 
 ### Activation (`codes.rs:1241+`)
 
-`activate_neboloop()` is the canonical connection function:
+`activate_neboai()` is the canonical connection function:
 1. Guard: if already connected, return `Ok(())`
 2. Read `bot_id` from config
-3. Read NeboLoop auth profile from DB (provider="neboloop")
-4. Get JWT token: check cached file first (`<data_dir>/neboloop_token.cache`), fall back to DB token
+3. Read NeboAI auth profile from DB (provider="neboai")
+4. Get JWT token: check cached file first (`<data_dir>/neboai_token.cache`), fall back to DB token
 5. Build config map: `{gateway, api_server, bot_id, token, data_dir}`
-6. Set "neboloop" as active plugin → `comm_manager.set_active("neboloop")`
+6. Set "neboai" as active plugin → `comm_manager.set_active("neboai")`
 7. Connect → `comm_manager.connect_active(config)`
-8. On stale token error → OAuth refresh (`refresh_neboloop_token`) → retry connect
+8. On stale token error → OAuth refresh (`refresh_neboai_token`) → retry connect
 9. Persist rotated JWT from AUTH_OK to DB auth_profiles
 10. Broadcast `settings_updated` to frontend
 11. Spawn background reconciliation: `reconcile_agents()` + `sync_bot_identity()`
@@ -111,7 +111,7 @@ Ping/pong frames are logged to devlog (dev builds only) for connection health vi
 
 ### Auto-connect & Reconnect (`lib.rs:1626-1700`)
 
-- **Startup**: If NeboLoop enabled + credentials exist → `activate_neboloop()` in background task
+- **Startup**: If NeboAI enabled + credentials exist → `activate_neboai()` in background task
 - **Reconnect watcher**: Polls every `backoff_secs` (starts 30s, initial 60s delay)
   - If connected → reset backoff to 30s
   - If disconnected → attempt reconnect, on failure double backoff (max 600s)
@@ -126,7 +126,7 @@ Ping/pong frames are logged to devlog (dev builds only) for connection health vi
 
 ---
 
-## 4. Conversation Maps (`neboloop.rs:815-826`)
+## 4. Conversation Maps (`neboai.rs:815-826`)
 
 In-memory maps rebuilt on each connection. Managed by the join processor task.
 
@@ -145,7 +145,7 @@ ConvMaps {
 }
 ```
 
-**Join Result Classification** (read loop, `neboloop.rs:1085-1131`):
+**Join Result Classification** (read loop, `neboai.rs:1085-1131`):
 - If `agent_id` set → `JoinUpdate::AgentSpace`
 - Else if `peer_id` set → `JoinUpdate::Dm` (legacy)
 - Else if `channel_id` set → `JoinUpdate::Channel`
@@ -155,7 +155,7 @@ ConvMaps {
 
 ## 5. Inbound Message Flow
 
-### Read Loop (`neboloop.rs:874+`)
+### Read Loop (`neboai.rs:874+`)
 
 1. Receive WS binary message
 2. Decode 47-byte header + payload
@@ -179,9 +179,9 @@ Single handler registration at startup — message handler is set once during `s
 |-------|-------|---------|
 | `"account"` | Token/plan update | Parse tokenRefresh → persist JWT to DB, update plan_tier, broadcast `plan_changed` |
 | `"installs"` | `napp_registry.handle_install_event()` | Parse as InstallEvent, broadcast tool_event/tool_error, return immediately |
-| `"agent_space"` | Unified chat pipeline | Resolve agent from agent_slug, session key = `neboloop:agent_space:{slug}:{conv_id}` |
-| `"chat"` or `"dm"` | Unified chat pipeline | Agent-space reroute check → optional @mention routing, session key = `neboloop:{topic}:{conv_id}` |
-| Other | Event bus + broadcast | Emit as `neboloop.{topic}`, broadcast raw to frontend |
+| `"agent_space"` | Unified chat pipeline | Resolve agent from agent_slug, session key = `neboai:agent_space:{slug}:{conv_id}` |
+| `"chat"` or `"dm"` | Unified chat pipeline | Agent-space reroute check → optional @mention routing, session key = `neboai:{topic}:{conv_id}` |
+| Other | Event bus + broadcast | Emit as `neboai.{topic}`, broadcast raw to frontend |
 
 ### Account Messages (`lib.rs:2282-2318`)
 
@@ -200,7 +200,7 @@ Single handler registration at startup — message handler is set once during `s
 1. Extract text from JSON content (msg.content.text or msg.content.content or raw)
 2. Get agent_slug from msg.metadata["agent_slug"]
 3. Resolve agent_id from slug (scan agent_registry for matching name)
-4. Build session_key: "neboloop:agent_space:{slug}:{conversation_id}"
+4. Build session_key: "neboai:agent_space:{slug}:{conversation_id}"
 5. Pre-create chat record with "Agent: {agent_name}" title
 6. Send desktop notification
 7. Resolve entity config for ("channel", "agent_space")
@@ -209,7 +209,7 @@ Single handler registration at startup — message handler is set once during `s
    - Non-image attachments → append "[Attached: filename (size)]" to prompt text
 9. Build ChatConfig {origin: Comm, lane: COMM, agent_id, images, comm_reply: {topic: "agent_space", conv_id}}
 10. Dispatch to run_chat()
-11. Emit event: "neboloop.agent_space.{slug}" → triggers agent event subscriptions
+11. Emit event: "neboai.agent_space.{slug}" → triggers agent event subscriptions
 ```
 
 ### Chat/DM Messages (`lib.rs:2523+`)
@@ -221,14 +221,14 @@ Single handler registration at startup — message handler is set once during `s
      Same flow as agent_space above, but reply goes back on original topic
 2. Extract text
 3. Send desktop notification
-4. Build session_key: "neboloop:{topic}:{conversation_id}"
+4. Build session_key: "neboai:{topic}:{conversation_id}"
 5. Resolve entity config for ("channel", topic)
 6. Check @mention: if agent_slug in metadata → resolve agent_id
 7. If @mentioned: pre-create chat with "@{slug} (channel)" title
 8. Process attachments via process_comm_attachments() (same as agent_space path)
 9. Build ChatConfig {origin: Comm, lane: COMM, agent_id (empty if no @mention), images, comm_reply}
 10. Dispatch to run_chat()
-11. Emit event: "neboloop.{topic}" → triggers agent event subscriptions
+11. Emit event: "neboai.{topic}" → triggers agent event subscriptions
 ```
 
 ---
@@ -245,11 +245,11 @@ ChatConfig {
     prompt:        String,           // User message text (may include "[Attached: ...]" for non-image files)
     system:        String,           // System prompt override
     user_id:       String,           // User identity
-    channel:       String,           // "neboloop" for comm messages
+    channel:       String,           // "neboai" for comm messages
     origin:        Origin::Comm,     // Identifies source (Comm vs Ws vs Heartbeat)
     agent_id:      String,           // Route to specific agent (empty = main agent)
     cancel_token:  CancellationToken,
-    lane:          String,           // "comm" for NeboLoop (not "main")
+    lane:          String,           // "comm" for NeboAI (not "main")
     comm_reply:    Option<CommReplyConfig>, // Where to send response back
     entity_config: Option<ResolvedEntityConfig>, // Permissions, model, personality
     images:        Vec<ImageContent>, // Populated from comm attachment downloads (image/* types)
@@ -266,7 +266,7 @@ ChatConfig {
 4. Lane task spawns agent runner.run(RunRequest)
 5. Stream events from runner:
    - Text → coalesce 50ms, broadcast "chat_stream" to frontend
-          → if comm_reply set: coalesce 500ms, send Stream chunks to NeboLoop
+          → if comm_reply set: coalesce 500ms, send Stream chunks to NeboAI
    - Thinking → broadcast "thinking"
    - ToolCall → broadcast "tool_start"
    - ToolResult → broadcast "tool_result"
@@ -277,16 +277,16 @@ ChatConfig {
    - SubagentComplete → broadcast "subagent_complete"
    - Done → exit loop
 6. Flush remaining text buffer to frontend
-7. Flush remaining comm_buffer to NeboLoop (Stream type)
+7. Flush remaining comm_buffer to NeboAI (Stream type)
 8. If no stream chunks were sent (short response) → send full_response as single Message
 9. Broadcast "chat_complete"
 ```
 
 ### Comm Response Streaming
 
-Responses to NeboLoop are **streamed in real-time** (not batched). Two coalescing windows operate in parallel:
+Responses to NeboAI are **streamed in real-time** (not batched). Two coalescing windows operate in parallel:
 - **Frontend**: 50ms coalesce → `chat_stream` WebSocket event
-- **NeboLoop comm**: 500ms coalesce → `CommMessageType::Stream` chunks via `comm_manager.send()`
+- **NeboAI comm**: 500ms coalesce → `CommMessageType::Stream` chunks via `comm_manager.send()`
 
 After the agent completes:
 - Remaining `comm_buffer` is flushed as a final Stream chunk
@@ -297,9 +297,9 @@ After the agent completes:
 
 ```rust
 CommReplyConfig {
-    provider: String,        // "neboloop", or future: "slack", "discord"
+    provider: String,        // "neboai", or future: "slack", "discord"
     topic: String,           // "agent_space", "chat", or "dm"
-    conversation_id: String, // NeboLoop conversation ID
+    conversation_id: String, // NeboAI conversation ID
 }
 ```
 
@@ -329,7 +329,7 @@ After completion (only if no chunks were streamed):
   } → comm_manager.send()
 ```
 
-### NeboLoopPlugin.send() (`neboloop.rs:553-625`)
+### NeboAIPlugin.send() (`neboai.rs:553-625`)
 
 ```
 1. Check connected flag → return NotConnected if false
@@ -360,7 +360,7 @@ Agents can also send messages proactively using the "loop" tool:
 | Lane | Purpose | Concurrency |
 |------|---------|-------------|
 | `main` | User chat from local WebSocket | Unlimited |
-| **`comm`** | **Inbound NeboLoop messages** | **Unlimited** |
+| **`comm`** | **Inbound NeboAI messages** | **Unlimited** |
 | `events` | Event-triggered workflows | Unlimited |
 | `heartbeat` | Agent proactive ticks | Unlimited |
 | `subagent` | Subagent execution | Unlimited |
@@ -368,7 +368,7 @@ Agents can also send messages proactively using the "loop" tool:
 | `dev` | Developer/debug lane | Unlimited |
 | `desktop` | Screen/mouse automation | **1 (serialized)** |
 
-COMM lane prevents NeboLoop message flood from blocking local user chat on MAIN lane. DESKTOP is the only serialized lane — all others have unlimited concurrency.
+COMM lane prevents NeboAI message flood from blocking local user chat on MAIN lane. DESKTOP is the only serialized lane — all others have unlimited concurrency.
 
 ---
 
@@ -388,7 +388,7 @@ Deregistration on agent removal: `DELETE /api/v1/loops/{loopId}/agents/{agentSlu
 ### Reconciliation (`codes.rs:1384-1457`)
 
 On every successful connection, `reconcile_agents()` syncs local ↔ remote:
-- Fetches remote agents from NeboLoop
+- Fetches remote agents from NeboAI
 - Deregisters agents that are truly **deleted** locally (not just disabled)
 - Registers local agents missing from remote
 - **Disabled** agents are synced with status `"paused"` — they are NOT deregistered
@@ -397,7 +397,7 @@ On every successful connection, `reconcile_agents()` syncs local ↔ remote:
 
 ## 10. REST API Client (`crates/comm/src/api.rs`)
 
-`NeboLoopApi` provides authenticated REST endpoints alongside the WebSocket connection:
+`NeboAIApi` provides authenticated REST endpoints alongside the WebSocket connection:
 
 | Category | Key Endpoints |
 |----------|--------------|
@@ -419,22 +419,22 @@ On every successful connection, `reconcile_agents()` syncs local ↔ remote:
 | **Referral** | `get_referral_code` |
 | **Unauthenticated** | `redeem_connect_code(code)` — for initial bot activation |
 
-API server URL comes from config (`state.config.neboloop.api_url`), defaulting to `https://api.neboloop.com`.
+API server URL comes from config (`state.config.neboai.api_url`), defaulting to `https://api.neboai.com`.
 
 ---
 
 ## 11. Event Bus Integration
 
-Every incoming NeboLoop message emits an event for agent triggers:
+Every incoming NeboAI message emits an event for agent triggers:
 
 | Message Topic | Event Source | Payload |
 |---------------|-------------|---------|
-| agent_space | `neboloop.agent_space.{slug}` | from, content, conversation_id, agent_slug |
-| chat | `neboloop.chat` | from, content, conversation_id |
-| dm | `neboloop.dm` | from, content, conversation_id |
-| other | `neboloop.{topic}` | from, content, topic |
+| agent_space | `neboai.agent_space.{slug}` | from, content, conversation_id, agent_slug |
+| chat | `neboai.chat` | from, content, conversation_id |
+| dm | `neboai.dm` | from, content, conversation_id |
+| other | `neboai.{topic}` | from, content, topic |
 
-All events include `origin: "neboloop"` and a UNIX timestamp.
+All events include `origin: "neboai"` and a UNIX timestamp.
 
 Agents subscribe to these event sources in their configuration, triggering automated responses.
 
@@ -505,8 +505,8 @@ Upload uses a separate reqwest client with 120s timeout (vs 15s default) for lar
 
 Attachments piggyback on the existing freeform `content: Value` field in `SendPayload` and `DeliveryPayload`:
 
-- **Outbound** (`neboloop.rs:send()`): If `msg.attachments` is non-empty, `content["attachments"]` is set to the serialized attachment metadata array alongside `content["text"]`.
-- **Inbound** (`neboloop.rs:read_loop`): `delivery.content.get("attachments")` is parsed into `Vec<wire::Attachment>` and stored on `CommMessage.attachments`.
+- **Outbound** (`neboai.rs:send()`): If `msg.attachments` is non-empty, `content["attachments"]` is set to the serialized attachment metadata array alongside `content["text"]`.
+- **Inbound** (`neboai.rs:read_loop`): `delivery.content.get("attachments")` is parsed into `Vec<wire::Attachment>` and stored on `CommMessage.attachments`.
 
 No wire protocol header, frame type, or version changes — fully backward compatible.
 
@@ -514,13 +514,13 @@ No wire protocol header, frame type, or version changes — fully backward compa
 
 When a comm message with attachments reaches `handle_comm_message()`:
 
-1. **Image attachments** (`mime_type.starts_with("image/")`) are downloaded via `NeboLoopApi.download_file()`, base64-encoded, and added to `ChatConfig.images` as `ai::ImageContent`. The AI provider receives these as vision input.
+1. **Image attachments** (`mime_type.starts_with("image/")`) are downloaded via `NeboAIApi.download_file()`, base64-encoded, and added to `ChatConfig.images` as `ai::ImageContent`. The AI provider receives these as vision input.
 2. **Non-image attachments** (PDF, video, etc.) are appended to the prompt as text descriptions: `[Attached: report.pdf (245 KB)]`.
 3. Errors (download failure, missing API client) are logged and skipped — the message is still processed with whatever attachments succeeded.
 
 ### Local Server Upload Proxy (`crates/server/src/handlers/files.rs`)
 
-The frontend uploads through the local server (`POST /api/v1/files/upload`) which proxies to NeboLoop. This avoids CORS issues and keeps the NeboLoop token off the browser.
+The frontend uploads through the local server (`POST /api/v1/files/upload`) which proxies to NeboAI. This avoids CORS issues and keeps the NeboAI token off the browser.
 
 ### Frontend Flow
 
@@ -537,7 +537,7 @@ The frontend uploads through the local server (`POST /api/v1/files/upload`) whic
 2. **Pending joins FIFO**: Bot stream JoinResult doesn't include stream name. Read loop sends empty key; join processor pops from `pending_joins` queue (FIFO order matches join order).
 3. **Dedup per connection**: Fresh `DedupWindow` (1000 entries, 5min TTL) created each connect.
 4. **Compression**: Zstd for payloads > 1KB, flagged in header byte.
-5. **Session isolation**: Each NeboLoop conversation gets unique `session_key` → separate chat history.
+5. **Session isolation**: Each NeboAI conversation gets unique `session_key` → separate chat history.
 6. **Response streaming**: Responses are streamed in real-time at 500ms intervals via `CommMessageType::Stream`. Short responses (< 500ms total) are sent as a single `CommMessageType::Message`. No duplicate final message when streaming has started.
 7. **ConvMaps thread safety**: `Arc<RwLock<ConvMaps>>` shared across read loop, join processor, and public query methods.
 8. **Graceful shutdown**: Single `CancellationToken` coordinates all 3 background tasks (read, write, join processor). Note: process kill (SIGKILL / cargo watch) bypasses this — spawned tasks are dropped without running cleanup.
@@ -545,21 +545,21 @@ The frontend uploads through the local server (`POST /api/v1/files/upload`) whic
 10. **@mention routing**: `agent_slug` in DeliveryPayload metadata → resolve to local agent_id → route to that agent's persona.
 11. **Handler field**: Message handler is stored in a separate `std::sync::RwLock` (not inside the async `Inner` RwLock) so `set_message_handler()` always succeeds synchronously. The handler is cloned at connect time and passed to the read loop as a local variable.
 12. **DM→agent_space reroute**: Gateway sometimes sends `stream=dm` for agent space conversations. `handle_comm_message()` checks `agent_slug_for_conv()` and reroutes to the agent space path if the conversation belongs to an agent.
-13. **Token cache file**: `<data_dir>/neboloop_token.cache` survives hot-reload kills. `activate_neboloop()` reads this first, falling back to DB token.
+13. **Token cache file**: `<data_dir>/neboai_token.cache` survives hot-reload kills. `activate_neboai()` reads this first, falling back to DB token.
 14. **RunRegistry**: All chat runs auto-register in the global RunRegistry for visibility, progress tracking, and external cancellation.
-15. **Dev-only devlog**: DevLog initialization is gated behind `#[cfg(debug_assertions)]` — no traffic logging in release builds. Writes to `<data_dir>/logs/neboloop.log`. Includes all frame I/O, ping/pong, JOINs, errors, and session separators.
+15. **Dev-only devlog**: DevLog initialization is gated behind `#[cfg(debug_assertions)]` — no traffic logging in release builds. Writes to `<data_dir>/logs/neboai.log`. Includes all frame I/O, ping/pong, JOINs, errors, and session separators.
 16. **Sleep drift detection**: After each ping, elapsed time since last ping is checked. If > 60s (2× the 30s interval), the connection is assumed stale (e.g., laptop lid close/open) and force-reconnected.
-17. **Attachment upload-then-reference**: Files are uploaded via REST (`POST /api/v1/files/upload` multipart), returning an `Attachment` metadata struct. Only the metadata (~200 bytes/attachment) is embedded in `content.attachments[]` inside the WebSocket payload — file bytes never travel over the 32KB-limited wire protocol. The local server proxies uploads through `POST /api/v1/files/upload` (handlers/files.rs) to the NeboLoop API.
-18. **Image vision from attachments**: `process_comm_attachments()` in `lib.rs` downloads image attachments (`mime_type.starts_with("image/")`) via `NeboLoopApi.download_file()`, base64-encodes them, and populates `ChatConfig.images` for the AI provider's vision pipeline. Non-image attachments (PDF, video, etc.) are appended as text descriptions to the prompt.
+17. **Attachment upload-then-reference**: Files are uploaded via REST (`POST /api/v1/files/upload` multipart), returning an `Attachment` metadata struct. Only the metadata (~200 bytes/attachment) is embedded in `content.attachments[]` inside the WebSocket payload — file bytes never travel over the 32KB-limited wire protocol. The local server proxies uploads through `POST /api/v1/files/upload` (handlers/files.rs) to the NeboAI API.
+18. **Image vision from attachments**: `process_comm_attachments()` in `lib.rs` downloads image attachments (`mime_type.starts_with("image/")`) via `NeboAIApi.download_file()`, base64-encodes them, and populates `ChatConfig.images` for the AI provider's vision pipeline. Non-image attachments (PDF, video, etc.) are appended as text descriptions to the prompt.
 19. **Attachment backward compatibility**: `CommMessage.attachments` uses `#[serde(default, skip_serializing_if = "Vec::is_empty")]` — old clients that don't understand attachments still see the `text` field, and old messages without attachments deserialize with an empty vec.
 
 ---
 
 ## 13b. Known Issues & Fixes Applied
 
-### Fixed: `try_write()` race in `set_message_handler` (neboloop.rs)
+### Fixed: `try_write()` race in `set_message_handler` (neboai.rs)
 **Was:** Handler stored inside `Inner` (tokio async RwLock). `set_message_handler()` used `try_write()` which silently failed if the lock was contended, causing the handler to remain `None`. All delivered messages would then be silently dropped at `read_loop` line ~925.
-**Fix:** Moved handler to its own `std::sync::RwLock<Option<MessageHandler>>` field on `NeboLoopPlugin`. `set_message_handler()` now uses `.write().unwrap()` which always succeeds.
+**Fix:** Moved handler to its own `std::sync::RwLock<Option<MessageHandler>>` field on `NeboAIPlugin`. `set_message_handler()` now uses `.write().unwrap()` which always succeeds.
 
 ### Fixed: Silent message drop when handler is None
 **Was:** When `handler` was `None` in the read loop, messages were silently swallowed with zero logging.
@@ -567,7 +567,7 @@ The frontend uploads through the local server (`POST /api/v1/files/upload`) whic
 
 ### Fixed: Token loss on hot-reload (partially)
 **Was:** Process kill (cargo watch) prevented persisting the rotated JWT to DB. Next startup used the old DB token, which was already revoked by the gateway rotation → "stale token" connection failure.
-**Fix:** `connect()` now writes the rotated token to `<data_dir>/neboloop_token.cache` immediately on AUTH_OK. `activate_neboloop()` reads this file before falling back to DB. Additionally, OAuth refresh is attempted on stale token errors.
+**Fix:** `connect()` now writes the rotated token to `<data_dir>/neboai_token.cache` immediately on AUTH_OK. `activate_neboai()` reads this file before falling back to DB. Additionally, OAuth refresh is attempted on stale token errors.
 
 ### Open: Ghost connections from hot-reload (dev mode)
 `cargo watch` sends SIGTERM/SIGKILL to the process. Spawned tokio tasks (read/write loops) are dropped immediately without running cleanup, so no WebSocket close frame is sent. The gateway keeps the old connection alive until its own keepalive timeout. A new process connects, creating a second connection for the same bot_id. The gateway may route inbound messages to the old (dead) connection, causing message loss. **Evidence:** devlog shows 46 connections with zero disconnect/error/cancel entries; only 1 inbound message received across all connections. **Mitigation:** Gateway should replace old connection when same bot_id reconnects. Client should implement SIGTERM handler for graceful disconnect.
@@ -575,35 +575,35 @@ The frontend uploads through the local server (`POST /api/v1/files/upload`) whic
 ### Fixed: Reconnect watcher now uses `wait_disconnect()`
 The reconnect watcher in `lib.rs:1642` uses `tokio::select!` with both `wait_disconnect()` (instant notification when read loop exits) and a backoff sleep (periodic fallback). Whichever fires first triggers reconnect. This replaced the earlier polling-only approach.
 
-### Open: No guard against concurrent `activate_neboloop()` calls
-`activate_neboloop()` has a guard at the top (`if already connected, return Ok()`) but no mutex. If the function takes longer than the reconnect poll interval (30s), a second call can overlap. Both pass the guard (both see `false`), and both call `connect()`. The second `connect()` tears down the first at its top, but this creates wasted connections and confusing devlog entries.
+### Open: No guard against concurrent `activate_neboai()` calls
+`activate_neboai()` has a guard at the top (`if already connected, return Ok()`) but no mutex. If the function takes longer than the reconnect poll interval (30s), a second call can overlap. Both pass the guard (both see `false`), and both call `connect()`. The second `connect()` tears down the first at its top, but this creates wasted connections and confusing devlog entries.
 
 ### Open: Missing agent_spaces — `AddMember` early-return skips `EnsureAgentForBot`
-**Root cause:** In the NeboLoop server, `membership.go:AddMember()` returns early (line 32-38) if the bot is already a member of the loop, skipping the call to `EnsureAgentForBot()`. If membership was created before the agent system existed, or if `EnsureAgentForBot` failed on the original call, the bot has a valid loop membership but no agent, no agent_space conversation, and no default channels.
+**Root cause:** In the NeboAI server, `membership.go:AddMember()` returns early (line 32-38) if the bot is already a member of the loop, skipping the call to `EnsureAgentForBot()`. If membership was created before the agent system existed, or if `EnsureAgentForBot` failed on the original call, the bot has a valid loop membership but no agent, no agent_space conversation, and no default channels.
 
 **Impact:** The gateway's `subscribeToAgentSpaces()` queries `ListAgentSpacesByBot` which returns empty. The bot connects successfully (AUTH_OK), auto-joins 5 bot_streams, but receives zero agent_space JOINs and zero channel JOINs. All owner↔agent conversations via the mobile/web app are undeliverable.
 
-**Evidence:** Diagnostic analysis of `~/.nebo/logs/neboloop.log` across 684 connections showed:
+**Evidence:** Diagnostic analysis of `~/.nebo/logs/neboai.log` across 684 connections showed:
 - 684 AUTH_OK (all healthy)
 - 5 bot_stream JOINs per connect (dm, installs, chat, account, voice) ✓
 - 0 agent_space JOINs across all 684 connections ✗
 - 0 channel JOINs across all 684 connections ✗
 - 0 chat/dm/agent_space messages ever received ✗
 
-**Proposed fix:** Self-healing in gateway's `subscribeToAgentSpaces()` — if `ListAgentSpacesByBot` returns empty, check loop memberships and call `EnsureAgentForBot` for each loop, then re-query. Fix proposed to NeboLoop team via Discuss (discussion `4e9cdce6`).
+**Proposed fix:** Self-healing in gateway's `subscribeToAgentSpaces()` — if `ListAgentSpacesByBot` returns empty, check loop memberships and call `EnsureAgentForBot` for each loop, then re-query. Fix proposed to NeboAI team via Discuss (discussion `4e9cdce6`).
 
 ### Open: `reconcile_agents` does not cover the default bot agent
-`reconcile_agents()` (codes.rs:1384-1457) only syncs custom agents from `list_agents()`. The default bot agent (slug `bot_*`) is created by `EnsureAgentForBot` on the NeboLoop side during `AddMember`. If this default agent is missing (see above), `reconcile_agents` will not detect or repair it because it only iterates locally-installed agents, not the implicit default.
+`reconcile_agents()` (codes.rs:1384-1457) only syncs custom agents from `list_agents()`. The default bot agent (slug `bot_*`) is created by `EnsureAgentForBot` on the NeboAI side during `AddMember`. If this default agent is missing (see above), `reconcile_agents` will not detect or repair it because it only iterates locally-installed agents, not the implicit default.
 
 ---
 
 ## 14. Complete End-to-End Sequence
 
 ```
-Human types in NeboLoop app (web/mobile), optionally attaches files/images/video
+Human types in NeboAI app (web/mobile), optionally attaches files/images/video
   │
   ▼
-NeboLoop Gateway receives message
+NeboAI Gateway receives message
   │ Resolves @mention → wraps with agentId/agentSlug/sourceChannelId
   │ Attachments metadata embedded in content.attachments[] (file bytes stored in object storage)
   │
@@ -611,7 +611,7 @@ NeboLoop Gateway receives message
 TYPE_MESSAGE_DELIVERY frame → WebSocket → Nebo desktop app
   │
   ▼
-Read loop (neboloop.rs:874+)
+Read loop (neboai.rs:874+)
   ├─ Decode 47-byte header + JSON payload
   ├─ Decompress if zstd flag set
   ├─ Dedup check (skip if duplicate msg_id)
@@ -641,7 +641,7 @@ Lane task executes
   ├─ runner.run(RunRequest{origin: Comm, agent_id, images: [base64 vision data], ...})
   ├─ Agent processes (tools, thinking, text generation — can "see" attached images via vision)
   ├─ Stream events → broadcast to frontend (chat_stream 50ms, tool_start, etc.)
-  ├─ Stream text → NeboLoop comm channel (Stream chunks, 500ms coalesce)
+  ├─ Stream text → NeboAI comm channel (Stream chunks, 500ms coalesce)
   │
   ▼
 Agent completes
@@ -649,12 +649,12 @@ Agent completes
   ├─ If no streaming happened → send full_response as single Message
   │
   ▼
-NeboLoopPlugin.send (neboloop.rs:553)
+NeboAIPlugin.send (neboai.rs:553)
   ├─ Resolve conversation_id (from CommReplyConfig)
   ├─ Build SendPayload{conversation_id, topic, content: {"text": response, "attachments": [...]}}
   ├─ Encode frame (TYPE_SEND_MESSAGE)
   └─ Queue to write loop
   │
   ▼
-Write loop sends frame → WebSocket → NeboLoop Gateway → recipient sees response
+Write loop sends frame → WebSocket → NeboAI Gateway → recipient sees response
 ```

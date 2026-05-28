@@ -1,4 +1,4 @@
-//! 47-byte binary header codec for the NeboLoop comms protocol.
+//! 47-byte binary header codec for the NeboAI comms protocol.
 //!
 //! Header layout (47 bytes, big-endian):
 //!

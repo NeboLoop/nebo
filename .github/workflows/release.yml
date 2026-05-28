@@ -61,7 +61,7 @@ jobs:
     env:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
       HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
-      HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
+      HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
       # NOTE: CMAKE_OSX_ARCHITECTURES, CFLAGS, CXXFLAGS for cross-build are
       # set ONLY on the "Build Tauri desktop app" step below — not at job
@@ -112,7 +112,7 @@ jobs:
       - name: Prepare bundled .napp files
         if: ${{ env.HAS_CDN_URL == 'true' }}
         env:
-          NEBOLOOP_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL }}
+          NEBOAI_CDN_URL: ${{ secrets.NEBOAI_CDN_URL }}
         run: |
           mkdir -p src-tauri/bundled-napps/{skills,agents,plugins}
           # Download platform-specific plugin .napp files
@@ -129,7 +129,7 @@ jobs:
           # Plugins are platform-specific
           if [ -f "src-tauri/bundled-napps/plugins/.manifest" ]; then
             while read -r slug; do
-              url="${NEBOLOOP_CDN_URL}/plugins/${slug}/${PLATFORM}.napp"
+              url="${NEBOAI_CDN_URL}/plugins/${slug}/${PLATFORM}.napp"
               curl -sSfL -o "src-tauri/bundled-napps/plugins/${slug}.napp" "$url" || echo "  SKIP $slug (not available for $PLATFORM)"
             done < "src-tauri/bundled-napps/plugins/.manifest"
           fi
@@ -162,7 +162,7 @@ jobs:
 
           # Sign the main executable explicitly
           codesign --force --sign "$SIGN_IDENTITY" \
-            --identifier dev.neboloop.nebo \
+            --identifier dev.neboai.nebo \
             --entitlements assets/macos/nebo.entitlements \
             --timestamp \
             --options runtime \
@@ -170,7 +170,7 @@ jobs:
 
           # Sign the .app bundle
           codesign --force --sign "$SIGN_IDENTITY" \
-            --identifier dev.neboloop.nebo \
+            --identifier dev.neboai.nebo \
             --entitlements assets/macos/nebo.entitlements \
             --timestamp \
             --options runtime \
@@ -268,7 +268,7 @@ jobs:
             arch: arm64
     runs-on: ${{ matrix.runner }}
     env:
-      HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
+      HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
@@ -315,14 +315,14 @@ jobs:
       - name: Prepare bundled .napp files
         if: ${{ env.HAS_CDN_URL == 'true' }}
         env:
-          NEBOLOOP_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL }}
+          NEBOAI_CDN_URL: ${{ secrets.NEBOAI_CDN_URL }}
         run: |
           mkdir -p src-tauri/bundled-napps/{skills,agents,plugins}
           PLATFORM="linux-${{ matrix.arch }}"
           echo "Downloading bundled .napp files for $PLATFORM..."
           if [ -f "src-tauri/bundled-napps/plugins/.manifest" ]; then
             while read -r slug; do
-              url="${NEBOLOOP_CDN_URL}/plugins/${slug}/${PLATFORM}.napp"
+              url="${NEBOAI_CDN_URL}/plugins/${slug}/${PLATFORM}.napp"
               curl -sSfL -o "src-tauri/bundled-napps/plugins/${slug}.napp" "$url" || echo "  SKIP $slug"
             done < "src-tauri/bundled-napps/plugins/.manifest"
           fi
@@ -359,7 +359,7 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
-      HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
+      HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
@@ -392,14 +392,14 @@ jobs:
         if: ${{ env.HAS_CDN_URL == 'true' }}
         shell: bash
         env:
-          NEBOLOOP_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL }}
+          NEBOAI_CDN_URL: ${{ secrets.NEBOAI_CDN_URL }}
         run: |
           mkdir -p src-tauri/bundled-napps/{skills,agents,plugins}
           PLATFORM="windows-amd64"
           echo "Downloading bundled .napp files for $PLATFORM..."
           if [ -f "src-tauri/bundled-napps/plugins/.manifest" ]; then
             while read -r slug; do
-              url="${NEBOLOOP_CDN_URL}/plugins/${slug}/${PLATFORM}.napp"
+              url="${NEBOAI_CDN_URL}/plugins/${slug}/${PLATFORM}.napp"
               curl -sSfL -o "src-tauri/bundled-napps/plugins/${slug}.napp" "$url" || echo "  SKIP $slug"
             done < "src-tauri/bundled-napps/plugins/.manifest"
           fi
@@ -589,14 +589,14 @@ jobs:
           cat > version.json << EOFJ
           {
             "version": "${TAG}",
-            "release_url": "https://github.com/NeboLoop/nebo/releases/tag/${TAG}",
+            "release_url": "https://github.com/NeboAI/nebo/releases/tag/${TAG}",
             "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOFJ
           sed -i 's/^          //' version.json
 
           # Upload latest version pointer
-          aws s3 cp version.json s3://neboloop/releases/version.json \
+          aws s3 cp version.json s3://neboai/releases/version.json \
             --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
 
           # Upload all release assets under releases/{tag}/
@@ -604,12 +604,12 @@ jobs:
             [ -f "$f" ] || continue
             name=$(basename "$f")
             case "$name" in *-signed*) continue ;; esac
-            aws s3 cp "$f" "s3://neboloop/releases/${TAG}/${name}" \
+            aws s3 cp "$f" "s3://neboai/releases/${TAG}/${name}" \
               --endpoint-url "$S3_ENDPOINT" --acl public-read
           done
 
           # Upload per-tag version.json
-          aws s3 cp version.json "s3://neboloop/releases/${TAG}/version.json" \
+          aws s3 cp version.json "s3://neboai/releases/${TAG}/version.json" \
             --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
           echo "Uploaded release assets to CDN: releases/${TAG}/"
 
@@ -657,7 +657,7 @@ jobs:
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
         with:
-          repository: neboloop/homebrew-tap
+          repository: neboai/homebrew-tap
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: homebrew-tap
 
@@ -713,7 +713,7 @@ jobs:
       - name: Checkout apt repo
         uses: actions/checkout@v4
         with:
-          repository: neboloop/apt
+          repository: neboai/apt
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: apt-repo
 

@@ -1,8 +1,8 @@
 //! Background marketplace artifact update checker.
 //!
-//! Periodically polls NeboLoop for version updates to installed agents, skills, and plugins.
+//! Periodically polls NeboAI for version updates to installed agents, skills, and plugins.
 //! Respects per-type and per-artifact auto-update preferences. Staggers between API calls
-//! to avoid overwhelming the NeboLoop API.
+//! to avoid overwhelming the NeboAI API.
 
 use std::time::Duration;
 
@@ -54,7 +54,7 @@ pub async fn check_all(state: &AppState) -> Result<(), String> {
     let api = match build_api_client(state) {
         Ok(api) => api,
         Err(e) => {
-            debug!("artifact updates: not connected to NeboLoop ({e}), skipping");
+            debug!("artifact updates: not connected to NeboAI ({e}), skipping");
             return Ok(());
         }
     };
@@ -115,7 +115,7 @@ pub async fn check_all(state: &AppState) -> Result<(), String> {
 
 async fn check_agent(
     state: &AppState,
-    api: &comm::api::NeboLoopApi,
+    api: &comm::api::NeboAIApi,
     agent: &db::models::Agent,
 ) -> Option<serde_json::Value> {
     let local_version = agent
@@ -165,7 +165,7 @@ async fn check_agent(
 
 async fn check_plugin(
     state: &AppState,
-    api: &comm::api::NeboLoopApi,
+    api: &comm::api::NeboAIApi,
     plugin: &db::models::PluginRegistry,
 ) -> Option<serde_json::Value> {
     let local_version = &plugin.version;
@@ -212,7 +212,7 @@ fn has_newer_version(local: &str, remote: &str) -> bool {
 }
 
 /// Auto-apply updates for artifacts configured for auto-update.
-async fn auto_apply(state: &AppState, api: &comm::api::NeboLoopApi) {
+async fn auto_apply(state: &AppState, api: &comm::api::NeboAIApi) {
     let pending = state.store.list_artifacts_with_updates().unwrap_or_default();
     for artifact in &pending {
         if artifact.auto_update == 0 {
@@ -283,7 +283,7 @@ async fn auto_apply(state: &AppState, api: &comm::api::NeboLoopApi) {
 
 pub(crate) async fn apply_agent_update_pub(
     state: &AppState,
-    api: &comm::api::NeboLoopApi,
+    api: &comm::api::NeboAIApi,
     agent_id: &str,
 ) -> Result<(), String> {
     let agent = state
@@ -304,7 +304,7 @@ pub(crate) async fn apply_agent_update_pub(
 
 pub(crate) async fn apply_plugin_update_pub(
     state: &AppState,
-    api: &comm::api::NeboLoopApi,
+    api: &comm::api::NeboAIApi,
     slug: &str,
 ) -> Result<(), String> {
     let platform = current_platform();

@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import * as api from '$lib/api/nebo';
-  import type { AccountStatusResponse, NeboLoopBillingSubscriptionResponse } from '$lib/api/neboComponents';
+  import type { AccountStatusResponse, NeboAIBillingSubscriptionResponse } from '$lib/api/neboComponents';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
   interface UsagePool {
@@ -36,7 +36,7 @@
   let refreshing = $state(false);
   let usage = $state<TypedJanusUsage | null>(null);
   let accountStatus = $state<AccountStatusResponse | null>(null);
-  let subscription = $state<(Omit<NeboLoopBillingSubscriptionResponse, 'subscriptions'> & { subscriptions: BillingSub[] }) | null>(null);
+  let subscription = $state<(Omit<NeboAIBillingSubscriptionResponse, 'subscriptions'> & { subscriptions: BillingSub[] }) | null>(null);
   let connected = $state(false);
 
   const currentPlan = $derived((subscription?.plan || accountStatus?.plan || 'free').toLowerCase());
@@ -48,12 +48,12 @@
 
   onMount(async () => {
     try {
-      accountStatus = (await api.neboLoopAccountStatus()) as AccountStatusResponse;
+      accountStatus = (await api.neboAIAccountStatus()) as AccountStatusResponse;
       connected = accountStatus?.connected || false;
       if (connected) {
         const [usageResp, subResp] = await Promise.allSettled([
-          api.neboLoopJanusUsage(),
-          api.neboLoopBillingSubscription()
+          api.neboAIJanusUsage(),
+          api.neboAIBillingSubscription()
         ]);
         if (usageResp.status === 'fulfilled') {
           const raw = usageResp.value;
@@ -75,7 +75,7 @@
     refreshing = true;
     const min = new Promise(r => setTimeout(r, 800));
     try {
-      const [raw] = await Promise.all([api.neboLoopJanusUsageRefresh() as Promise<TypedJanusUsage>, min]);
+      const [raw] = await Promise.all([api.neboAIJanusUsageRefresh() as Promise<TypedJanusUsage>, min]);
       usage = raw;
     } catch { /* ignore */ }
     refreshing = false;
@@ -124,7 +124,7 @@
   </div>
 {:else if !connected}
   <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-    <p class="text-xs text-base-content/70">Connect your NeboLoop account to view usage.</p>
+    <p class="text-xs text-base-content/70">Connect your NeboAI account to view usage.</p>
     <a href="/settings/account" class="inline-block mt-3 text-sm font-medium text-primary hover:brightness-110 transition-all">
       Go to Account
     </a>

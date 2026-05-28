@@ -1,4 +1,4 @@
-//! NeboLoop REST API client covering all 5 hierarchy layers + loops.
+//! NeboAI REST API client covering all 5 hierarchy layers + loops.
 //!
 //! Independent of the WebSocket client — uses the owner's OAuth JWT directly.
 
@@ -12,8 +12,8 @@ use tracing::debug;
 use crate::CommError;
 use crate::api_types::*;
 
-/// NeboLoop REST API client.
-pub struct NeboLoopApi {
+/// NeboAI REST API client.
+pub struct NeboAIApi {
     api_server: String,
     bot_id: String,
     token: RwLock<String>,
@@ -21,9 +21,9 @@ pub struct NeboLoopApi {
 }
 
 /// Default production API server.
-pub const DEFAULT_API_SERVER: &str = "https://api.neboloop.com";
+pub const DEFAULT_API_SERVER: &str = "https://api.neboai.com";
 
-impl NeboLoopApi {
+impl NeboAIApi {
     /// Create a new API client.
     pub fn new(api_server: String, bot_id: String, token: String) -> Self {
         Self {
@@ -83,7 +83,7 @@ impl NeboLoopApi {
         body: Option<&impl Serialize>,
     ) -> Result<T, CommError> {
         let url = format!("{}{}", self.api_server, path);
-        debug!(method = %method, url = %url, "neboloop api");
+        debug!(method = %method, url = %url, "neboai api");
 
         let mut req = self.client.request(method, &url).bearer_auth(self.token());
 
@@ -99,7 +99,7 @@ impl NeboLoopApi {
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(CommError::Other(format!(
-                "NeboLoop returned {}: {}",
+                "NeboAI returned {}: {}",
                 status, body
             )));
         }
@@ -130,7 +130,7 @@ impl NeboLoopApi {
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(CommError::Other(format!(
-                "NeboLoop returned {}: {}",
+                "NeboAI returned {}: {}",
                 status, body
             )));
         }
@@ -139,7 +139,7 @@ impl NeboLoopApi {
 
     // ── Products (unified) ─────────────────────────────────────────
 
-    /// List products from NeboLoop catalog (agents, skills, workflows).
+    /// List products from NeboAI catalog (agents, skills, workflows).
     /// Returns `{ "skills": [...] }` regardless of type.
     pub async fn list_products(
         &self,
@@ -160,7 +160,7 @@ impl NeboLoopApi {
 
     // ── Apps / Tools ────────────────────────────────────────────────
 
-    /// List apps from NeboLoop catalog.
+    /// List apps from NeboAI catalog.
     pub async fn list_apps(
         &self,
         query: Option<&str>,
@@ -224,7 +224,7 @@ impl NeboLoopApi {
 
     // ── Skills ──────────────────────────────────────────────────────
 
-    /// List skills from NeboLoop catalog.
+    /// List skills from NeboAI catalog.
     pub async fn list_skills(
         &self,
         query: Option<&str>,
@@ -397,7 +397,7 @@ impl NeboLoopApi {
     }
 
     /// Install a product (skill/agent/workflow) for this bot by product ID.
-    /// NeboLoop may return JSON or an empty body on success.
+    /// NeboAI may return JSON or an empty body on success.
     pub async fn install_product(&self, id: &str) -> Result<serde_json::Value, CommError> {
         let body = serde_json::json!({ "botId": self.bot_id });
         let url = format!("{}/api/v1/products/{}/install", self.api_server, id);
@@ -414,7 +414,7 @@ impl NeboLoopApi {
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(CommError::Other(format!(
-                "NeboLoop returned {}: {}",
+                "NeboAI returned {}: {}",
                 status, text
             )));
         }
@@ -480,7 +480,7 @@ impl NeboLoopApi {
         .await
     }
 
-    /// List workflows from NeboLoop catalog.
+    /// List workflows from NeboAI catalog.
     pub async fn list_workflows(
         &self,
         query: Option<&str>,
@@ -502,7 +502,7 @@ impl NeboLoopApi {
         self.redeem_code(code).await
     }
 
-    /// Get agent detail from NeboLoop (persona, workflows, download URL).
+    /// Get agent detail from NeboAI (persona, workflows, download URL).
     pub async fn get_agent(&self, slug: &str) -> Result<AgentDetailResponse, CommError> {
         let path = format!("/api/v1/agents/{}", urlencoding::encode(slug));
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
@@ -520,7 +520,7 @@ impl NeboLoopApi {
 
     // ── Publishing ────────────────────────────────────────────────
 
-    /// Create or update a skill artifact on NeboLoop.
+    /// Create or update a skill artifact on NeboAI.
     pub async fn publish_skill(
         &self,
         name: &str,
@@ -541,7 +541,7 @@ impl NeboLoopApi {
             .await
     }
 
-    /// Create or update an agent artifact on NeboLoop.
+    /// Create or update an agent artifact on NeboAI.
     pub async fn publish_agent(
         &self,
         name: &str,
@@ -583,7 +583,7 @@ impl NeboLoopApi {
 
     // ── Bot Identity ────────────────────────────────────────────────
 
-    /// Push bot name and agent info to NeboLoop.
+    /// Push bot name and agent info to NeboAI.
     pub async fn update_bot_identity(&self, name: &str, role: &str) -> Result<(), CommError> {
         let body = UpdateBotIdentityRequest {
             name: name.into(),
@@ -921,7 +921,7 @@ impl NeboLoopApi {
 
     // ── Plugins ─────────────────────────────────────────────────────
 
-    /// Get plugin manifest from NeboLoop for a specific platform.
+    /// Get plugin manifest from NeboAI for a specific platform.
     ///
     /// Returns the full `PluginManifest` which includes per-platform binary entries.
     pub async fn get_plugin(
@@ -951,7 +951,7 @@ impl NeboLoopApi {
 
     // ── Content Protection ─────────────────────────────────────────
 
-    /// Register this bot with NeboLoop for content protection.
+    /// Register this bot with NeboAI for content protection.
     ///
     /// Called on startup after authentication. Idempotent — re-registering
     /// the same bot_id updates last_seen and platform info.
@@ -987,7 +987,7 @@ impl NeboLoopApi {
 
     // ── File Upload / Download ────────────────────────────────────────
 
-    /// Upload a file to NeboLoop for attachment to a message.
+    /// Upload a file to NeboAI for attachment to a message.
     /// Returns attachment metadata including the file_id and download URL.
     pub async fn upload_file(
         &self,
@@ -1056,7 +1056,7 @@ impl NeboLoopApi {
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(CommError::Other(format!(
-                "NeboLoop returned {}: {}",
+                "NeboAI returned {}: {}",
                 status, body
             )));
         }
@@ -1099,7 +1099,7 @@ pub async fn redeem_code(
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
         return Err(CommError::Other(format!(
-            "NeboLoop returned {}: {}",
+            "NeboAI returned {}: {}",
             status, body
         )));
     }

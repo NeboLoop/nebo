@@ -6,7 +6,7 @@
 ## What Is It
 
 Nebo's MCP (Model Context Protocol) system has two roles:
-1. **MCP Client** — Nebo connects TO external MCP servers (monument.sh, neboloop, etc.) and exposes their tools to the agent via a unified `mcp()` STRAP domain tool.
+1. **MCP Client** — Nebo connects TO external MCP servers (monument.sh, neboai, etc.) and exposes their tools to the agent via a unified `mcp()` STRAP domain tool.
 2. **MCP Server** — External clients (Claude Desktop, Cursor, Claude Code) connect TO Nebo via JSON-RPC 2.0 and get access to all Nebo tools + a special `nebo` service tool for chat/sessions/events.
 
 ## Architecture Overview
@@ -14,7 +14,7 @@ Nebo's MCP (Model Context Protocol) system has two roles:
 ```
                     +-------------------------------------------------+
                     |            External MCP Servers                  |
-                    |  (monument.sh, neboloop.com/mcp, etc.)          |
+                    |  (monument.sh, neboai.com/mcp, etc.)          |
                     +----------------------+--------------------------+
                                            | JSON-RPC 2.0 over HTTP
                     +----------------------v--------------------------+

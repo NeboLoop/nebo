@@ -65,7 +65,7 @@ pub struct AppState {
     pub snapshot_store: Arc<browser::SnapshotStore>,
     /// Extension bridge for Chrome extension communication
     pub extension_bridge: Arc<browser::ExtensionBridge>,
-    /// Communications plugin manager (NeboLoop WebSocket, Loopback)
+    /// Communications plugin manager (NeboAI WebSocket, Loopback)
     pub comm_manager: Arc<PluginManager>,
     /// Pending tool approval requests: tool_call_id -> sender
     pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
@@ -81,7 +81,7 @@ pub struct AppState {
     pub event_bus: tools::EventBus,
     /// Event dispatcher that matches events to role subscriptions
     pub event_dispatcher: Arc<workflow::events::EventDispatcher>,
-    /// NeboLoop plan tier (free, pro, team, enterprise) — updated by AUTH_OK handler
+    /// NeboAI plan tier (free, pro, team, enterprise) — updated by AUTH_OK handler
     pub plan_tier: Arc<tokio::sync::RwLock<String>>,
     /// Skill loader for hot-reload after marketplace installs
     pub skill_loader: Arc<tools::skills::Loader>,
@@ -101,9 +101,9 @@ pub struct AppState {
     pub proactive_inbox: Arc<agent::ProactiveInbox>,
     /// Global registry of all active agent runs — single source of truth
     pub run_registry: RunRegistry,
-    /// Owner's personal loop ID — used to unify agent sessions across local + NeboLoop
+    /// Owner's personal loop ID — used to unify agent sessions across local + NeboAI
     pub personal_loop_id: Arc<tokio::sync::RwLock<Option<String>>>,
-    /// Channel providers for routing agent responses (NeboLoop, future: Slack, Discord)
+    /// Channel providers for routing agent responses (NeboAI, future: Slack, Discord)
     pub channel_providers: Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn ChannelProvider>>>>,
     /// Registered channel-plugin bridges, keyed by `{agent_id}:{plugin_slug}`.
     /// Each entry is a handle to the long-running bridge sidecar's stdin — agents

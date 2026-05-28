@@ -4,7 +4,7 @@
 pub enum Origin {
     /// Direct user interaction (web UI, CLI).
     User,
-    /// Inter-agent communication (NeboLoop, loopback).
+    /// Inter-agent communication (NeboAI, loopback).
     Comm,
     /// External app binary.
     App,

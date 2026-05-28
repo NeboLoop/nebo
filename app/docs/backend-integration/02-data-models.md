@@ -29,7 +29,7 @@ Every data shape used by the frontend, mapped to the real Rust backend tables an
 | name, email | `GET /api/v1/user/me` | `users` |
 | displayName, occupation, location, timezone, interests, goals, context | `GET /api/v1/user/me/profile` | `user_profiles` |
 | commStyle, theme, language | `GET /api/v1/user/me/preferences` | `user_preferences` |
-| plan | `GET /api/v1/neboloop/billing/subscription` | NeboLoop API |
+| plan | `GET /api/v1/neboai/billing/subscription` | NeboAI API |
 
 ### Migration
 ```ts
@@ -269,7 +269,7 @@ const prefs = await fetch('/api/v1/user/me/preferences').then(r => r.json());
 
 ### Backend Mapping
 - **Endpoint:** `GET /api/v1/store/products` (unified) or `GET /api/v1/store/featured`, `GET /api/v1/store/categories`
-- **Source:** NeboLoop marketplace API (proxied through backend)
+- **Source:** NeboAI marketplace API (proxied through backend)
 
 ### Frontend Mock: Detail records (`MARKETPLACE_AGENT_DETAILS`, `MARKETPLACE_SKILL_DETAILS`, etc.)
 ```ts
@@ -442,8 +442,8 @@ const prefs = await fetch('/api/v1/user/me/preferences').then(r => r.json());
 ```
 
 ### Backend Mapping
-- **Endpoint:** `GET /api/v1/neboloop/billing/prices`
-- **Source:** NeboLoop billing API (Stripe-backed)
+- **Endpoint:** `GET /api/v1/neboai/billing/prices`
+- **Source:** NeboAI billing API (Stripe-backed)
 
 ### Frontend Mock: `BILLING`
 ```ts
@@ -457,11 +457,11 @@ const prefs = await fetch('/api/v1/user/me/preferences').then(r => r.json());
 ```
 
 ### Backend Mapping
-- **Subscription:** `GET /api/v1/neboloop/billing/subscription`
-- **Invoices:** `GET /api/v1/neboloop/billing/invoices`
-- **Payment methods:** `GET /api/v1/neboloop/billing/payment-methods`
-- **Portal:** `POST /api/v1/neboloop/billing/portal` → Stripe portal URL
-- **Cancel:** `POST /api/v1/neboloop/billing/cancel`
+- **Subscription:** `GET /api/v1/neboai/billing/subscription`
+- **Invoices:** `GET /api/v1/neboai/billing/invoices`
+- **Payment methods:** `GET /api/v1/neboai/billing/payment-methods`
+- **Portal:** `POST /api/v1/neboai/billing/portal` → Stripe portal URL
+- **Cancel:** `POST /api/v1/neboai/billing/cancel`
 
 ---
 

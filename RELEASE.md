@@ -46,8 +46,8 @@ Tag push (v*)
     |               |
     |               +-> release         Create GitHub Release with all artifacts
     |                       |
-    |                       +-> update-homebrew   Push cask to neboloop/homebrew-tap
-    |                       +-> update-apt        Push .deb to neboloop/apt
+    |                       +-> update-homebrew   Push cask to neboai/homebrew-tap
+    |                       +-> update-apt        Push .deb to neboai/apt
     |
     Done
 ```
@@ -69,20 +69,20 @@ Tag push (v*)
 ### Homebrew (macOS)
 
 ```bash
-brew install --cask neboloop/tap/nebo
+brew install --cask neboai/tap/nebo
 ```
 
 - Installs `Nebo.app` to `/Applications` (Spotlight-indexable, proper icon)
-- Cask lives in [neboloop/homebrew-tap](https://github.com/neboloop/homebrew-tap)
+- Cask lives in [neboai/homebrew-tap](https://github.com/neboai/homebrew-tap)
 
 ### APT (Debian / Ubuntu)
 
 ```bash
 # Add GPG key
-curl -fsSL https://neboloop.github.io/apt/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/nebo.gpg
+curl -fsSL https://neboai.github.io/apt/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/nebo.gpg
 
 # Add repository
-echo "deb [signed-by=/usr/share/keyrings/nebo.gpg] https://neboloop.github.io/apt stable main" \
+echo "deb [signed-by=/usr/share/keyrings/nebo.gpg] https://neboai.github.io/apt stable main" \
   | sudo tee /etc/apt/sources.list.d/nebo.list
 
 # Install
@@ -108,7 +108,7 @@ A fine-grained Personal Access Token with write access to the cross-repo distrib
 
 1. Go to https://github.com/settings/tokens?type=beta
 2. **Name:** `nebo-release-bot`
-3. **Resource owner:** `neboloop`
+3. **Resource owner:** `neboai`
 4. **Repository access:** Select `homebrew-tap` and `apt`
 5. **Permissions > Repository permissions > Contents:** Read and write
 6. Add to the nebo repo: `gh secret set TAP_GITHUB_TOKEN`
@@ -119,7 +119,7 @@ GPG private key for signing the APT repository.
 
 ```bash
 gpg --full-generate-key
-# RSA 4096, no expiry, Real name: Nebo, Email: support@neboloop.dev
+# RSA 4096, no expiry, Real name: Nebo, Email: support@neboai.dev
 gpg --export-secret-keys --armor nebo | gh secret set APT_GPG_PRIVATE_KEY
 ```
 
@@ -195,8 +195,8 @@ gh release upload v0.2.0 src-tauri/target/release/bundle/*
 | Repo | Purpose |
 |------|---------|
 | [AltMagick/nebo](https://github.com/AltMagick/nebo) | Main source code (Rust) + CI pipeline |
-| [neboloop/homebrew-tap](https://github.com/neboloop/homebrew-tap) | Homebrew cask (`brew install neboloop/tap/nebo`) |
-| [neboloop/apt](https://github.com/neboloop/apt) | APT repository for Debian/Ubuntu |
+| [neboai/homebrew-tap](https://github.com/neboai/homebrew-tap) | Homebrew cask (`brew install neboai/tap/nebo`) |
+| [neboai/apt](https://github.com/neboai/apt) | APT repository for Debian/Ubuntu |
 
 ---
 

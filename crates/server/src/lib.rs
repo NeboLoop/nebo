@@ -204,7 +204,7 @@ fn build_embedding_provider(
 }
 
 /// Build AI providers from auth_profiles in the database.
-/// Config is needed for NeboLoop's Janus URL (not stored in auth_profile).
+/// Config is needed for NeboAI's Janus URL (not stored in auth_profile).
 pub fn build_providers(
     store: &db::Store,
     cfg: &Config,
@@ -281,7 +281,7 @@ pub fn build_providers(
                     profile.model.clone().unwrap_or(default_model),
                 )))
             }
-            "neboloop" => {
+            "neboai" => {
                 // Only create Janus provider if metadata has janus_provider=true
                 let metadata: Option<serde_json::Value> = profile
                     .metadata
@@ -313,8 +313,8 @@ pub fn build_providers(
                         info!("janus provider has no active models in catalog, skipping");
                         None
                     } else {
-                        // Janus URL comes from config (NeboLoop.JanusURL), NOT auth_profile base_url
-                        let janus_url = &cfg.neboloop.janus_url;
+                        // Janus URL comes from config (NeboAI.JanusURL), NOT auth_profile base_url
+                        let janus_url = &cfg.neboai.janus_url;
                         let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
                         let bot_id = config::read_bot_id().unwrap_or_default();
                         // Janus authenticates via X-Bot-ID header; api_key (OAuth token) is optional
@@ -327,7 +327,7 @@ pub fn build_providers(
                             model = %model,
                             janus_url = %janus_url,
                             bot_id = %bot_id,
-                            "loaded Janus provider via NeboLoop"
+                            "loaded Janus provider via NeboAI"
                         );
                         let mut p = ai::OpenAIProvider::with_base_url(
                             api_key,
@@ -344,7 +344,7 @@ pub fn build_providers(
                     info!(
                         profile_id = %profile.id,
                         has_metadata = metadata.is_some(),
-                        "neboloop profile found but janus_provider not enabled, skipping AI provider"
+                        "neboai profile found but janus_provider not enabled, skipping AI provider"
                     );
                     None
                 }
@@ -362,7 +362,7 @@ pub fn build_providers(
             );
             // Defer gateway providers (Janus) to end of the list so CLI
             // providers and direct API keys take priority.
-            if profile.provider == "neboloop" {
+            if profile.provider == "neboai" {
                 gateway_providers.push(p);
             } else {
                 providers.push(p);
@@ -478,7 +478,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     if config::read_bot_id().is_none() {
         // Check DB for bot_id set by the Go version (plugin_settings table)
         let from_db = store
-            .get_plugin_setting("neboloop", "bot_id")
+            .get_plugin_setting("neboai", "bot_id")
             .unwrap_or(None)
             .filter(|id| id.len() == 36);
 
@@ -493,7 +493,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     }
     // Sync bot_id to DB for backward compatibility
     if let Some(bot_id) = config::read_bot_id() {
-        let _ = store.set_plugin_setting("neboloop", "bot_id", &bot_id);
+        let _ = store.set_plugin_setting("neboai", "bot_id", &bot_id);
     }
 
     // Auto-mark setup complete: DB initialized + bot_id exists = setup is done
@@ -648,7 +648,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     );
 
     // Load cached license keys from DB for sealed .napp decryption.
-    // Keys were fetched from NeboLoop on a previous startup and cached with TTL.
+    // Keys were fetched from NeboAI on a previous startup and cached with TTL.
     {
         use base64::Engine;
         let cached_keys = store.list_license_key_artifact_ids().unwrap_or_default();
@@ -729,11 +729,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let napp_config = napp::RegistryConfig {
         installed_tools_dir: data_dir.join("nebo").join("tools"),
         user_tools_dir: data_dir.join("user").join("tools"),
-        neboloop_url: Some(cfg.neboloop.api_url.clone()),
+        neboai_url: Some(cfg.neboai.api_url.clone()),
     };
     let napp_registry = Arc::new(napp::Registry::new(napp_config, port));
 
-    // Plan tier — updated by NeboLoop AUTH_OK handler, read by ExecuteTool
+    // Plan tier — updated by NeboAI AUTH_OK handler, read by ExecuteTool
     let plan_tier = Arc::new(tokio::sync::RwLock::new("free".to_string()));
 
     // Initialize OS-level sandbox for script execution (macOS Seatbelt / Linux bubblewrap)
@@ -789,7 +789,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             None,
             Some(plan_tier.clone()),
             sandbox_manager,
-            None, // comm_plugin — set later when NeboLoop connects
+            None, // comm_plugin — set later when NeboAI connects
             Some(active_role_state.clone()),
             Some(broadcaster),
             Some(run_querier_handle.clone()),
@@ -990,9 +990,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Create comm plugin manager
     let comm_manager = Arc::new(comm::PluginManager::new());
     {
-        let neboloop_plugin = Arc::new(comm::NeboLoopPlugin::new());
+        let neboai_plugin = Arc::new(comm::NeboAIPlugin::new());
         let loopback_plugin = Arc::new(comm::LoopbackPlugin::new());
-        comm_manager.register(neboloop_plugin).await;
+        comm_manager.register(neboai_plugin).await;
         comm_manager.register(loopback_plugin).await;
 
         // Wire incoming messages to ClientHub broadcast + install event routing
@@ -1042,8 +1042,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             .await;
     }
 
-    // NeboLoop auto-connect and reconnect watcher are spawned after AppState construction
-    // (see below) so they can use codes::activate_neboloop(&state).
+    // NeboAI auto-connect and reconnect watcher are spawned after AppState construction
+    // (see below) so they can use codes::activate_neboai(&state).
 
     // Create lane manager and start pumps
     let lanes = Arc::new(agent::LaneManager::new());
@@ -1623,13 +1623,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
-    // Auto-connect NeboLoop if enabled and credentials exist
-    if cfg.is_neboloop_enabled() {
+    // Auto-connect NeboAI if enabled and credentials exist
+    if cfg.is_neboai_enabled() {
         let auto_state = state.clone();
         tokio::spawn(async move {
-            match codes::activate_neboloop(&auto_state).await {
-                Ok(()) => info!("neboloop: connected to gateway"),
-                Err(e) => info!("neboloop: auto-connect skipped: {}", e),
+            match codes::activate_neboai(&auto_state).await {
+                Ok(()) => info!("neboai: connected to gateway"),
+                Err(e) => info!("neboai: auto-connect skipped: {}", e),
             }
         });
     }
@@ -1637,7 +1637,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Reconnect watcher with exponential backoff + wall-clock drift detection.
     // Uses dual select: periodic poll OR instant notification from wait_disconnect().
     // Wall-clock drift detects system sleep/wake (tokio timers freeze during sleep).
-    if cfg.is_neboloop_enabled() {
+    if cfg.is_neboai_enabled() {
         let reconnect_state = state.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -1650,7 +1650,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
                     // Branch 2: instant notification when read loop exits unexpectedly
                     _ = reconnect_state.comm_manager.wait_disconnect() => {
-                        info!("neboloop: disconnect notification received, will reconnect");
+                        info!("neboai: disconnect notification received, will reconnect");
                     }
                 }
 
@@ -1665,7 +1665,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 if was_asleep {
                     info!(
                         drift_secs = drift.as_secs(),
-                        "neboloop: detected system sleep, forcing reconnect"
+                        "neboai: detected system sleep, forcing reconnect"
                     );
                     // Tear down stale connection (read/write loops may still be blocked)
                     reconnect_state.comm_manager.shutdown().await;
@@ -1675,18 +1675,18 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     continue;
                 }
 
-                match codes::activate_neboloop(&reconnect_state).await {
+                match codes::activate_neboai(&reconnect_state).await {
                     Ok(()) => {
-                        info!("neboloop: reconnected to gateway");
+                        info!("neboai: reconnected to gateway");
                         // Persist rotated JWT so next reconnect uses the fresh token
                         if let Some(new_token) =
                             reconnect_state.comm_manager.take_rotated_token().await
                         {
                             if let Err(e) = reconnect_state
                                 .store
-                                .update_auth_profile_token_by_provider("neboloop", &new_token)
+                                .update_auth_profile_token_by_provider("neboai", &new_token)
                             {
-                                warn!("neboloop: failed to persist rotated token: {}", e);
+                                warn!("neboai: failed to persist rotated token: {}", e);
                             }
                         }
                         backoff_secs = 30;
@@ -1843,10 +1843,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             axum::routing::post(handlers::mcp_server::agent_mcp_handler)
                 .layer(axum::middleware::from_fn(middleware::mcp_api_key_auth)),
         )
-        // NeboLoop OAuth callback — top-level because the browser navigates here directly
+        // NeboAI OAuth callback — top-level because the browser navigates here directly
         .route(
-            "/auth/neboloop/callback",
-            axum::routing::get(handlers::neboloop::oauth_callback),
+            "/auth/neboai/callback",
+            axum::routing::get(handlers::neboai::oauth_callback),
         )
         .nest(
             "/api/v1",
@@ -1878,7 +1878,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )
         .with_state(state.clone());
 
-    // Clone comm_manager for the shutdown handler — needs to disconnect NeboLoop
+    // Clone comm_manager for the shutdown handler — needs to disconnect NeboAI
     // before the process exits so the gateway sees a clean WebSocket Close frame.
     let shutdown_comm = state.comm_manager.clone();
     let shutdown_lifecycles = state.app_lifecycles.clone();
@@ -1909,7 +1909,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Preconnect to AI provider to warm TCP+TLS (saves ~200ms on first call)
     {
-        let api_url = cfg.neboloop.janus_url.clone();
+        let api_url = cfg.neboai.janus_url.clone();
         if !api_url.is_empty() {
             tokio::spawn(async move {
                 let client = reqwest::Client::new();
@@ -2278,7 +2278,7 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
     }
 }
 
-/// Handle an incoming NeboLoop message with full access to runner/lanes/comm.
+/// Handle an incoming NeboAI message with full access to runner/lanes/comm.
 async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     tracing::info!(
         topic = %msg.topic,
@@ -2299,7 +2299,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     // Persist fresh JWT to SQLite auth_profiles — next Janus request uses it
                     if let Ok(profiles) = state
                         .store
-                        .list_all_active_auth_profiles_by_provider("neboloop")
+                        .list_all_active_auth_profiles_by_provider("neboai")
                     {
                         if let Some(profile) = profiles.first() {
                             let _ = state.store.update_auth_profile(
@@ -2344,7 +2344,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
     }
 
-    // Skip echoed messages: when we forward a local user prompt to NeboLoop
+    // Skip echoed messages: when we forward a local user prompt to NeboAI
     // (human_injected=true), the gateway may echo it back — don't re-process.
     if msg.human_injected {
         tracing::debug!(
@@ -2355,9 +2355,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         return;
     }
 
-    // Skip self-echo: NeboLoop deliveries always set human_injected=false,
+    // Skip self-echo: NeboAI deliveries always set human_injected=false,
     // but the sender_id (msg.from) matches our bot_id when we sent the message.
-    // Without this, a local user prompt forwarded to NeboLoop comes back as a
+    // Without this, a local user prompt forwarded to NeboAI comes back as a
     // new delivery and triggers a duplicate agent run on the same session.
     if !msg.from.is_empty() {
         if let Some(bot_id) = config::read_bot_id() {
@@ -2431,7 +2431,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         } else {
             // External loop: separate session
             agent::keyparser::build_session_key(
-                "neboloop",
+                "neboai",
                 "agent_space",
                 &format!("{}:{}", agent_slug, msg.conversation_id),
             )
@@ -2468,7 +2468,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     "session_id": session_key,
                     "content": text,
                     "agentId": agent_id,
-                    "source": "neboloop",
+                    "source": "neboai",
                 }),
             );
         }
@@ -2491,13 +2491,13 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             prompt,
             system: String::new(),
             user_id: String::new(),
-            channel: "neboloop".to_string(),
+            channel: "neboai".to_string(),
             origin: tools::Origin::Comm,
             agent_id,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
-                provider: "neboloop".to_string(),
+                provider: "neboai".to_string(),
                 topic: "agent_space".to_string(),
                 conversation_id: msg.conversation_id.clone(),
             }),
@@ -2513,14 +2513,14 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         chat_dispatch::run_chat(&state, config).await;
 
         state.event_bus.emit(tools::events::Event {
-            source: format!("neboloop.agent_space.{}", agent_slug),
+            source: format!("neboai.agent_space.{}", agent_slug),
             payload: serde_json::json!({
                 "from": msg.from,
                 "content": msg.content,
                 "conversation_id": msg.conversation_id,
                 "agent_slug": agent_slug,
             }),
-            origin: "neboloop".to_string(),
+            origin: "neboai".to_string(),
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -2586,7 +2586,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 agent::keyparser::build_agent_session_key(&agent_id, "web")
             } else {
                 agent::keyparser::build_session_key(
-                    "neboloop",
+                    "neboai",
                     "agent_space",
                     &format!("{}:{}", agent_slug, msg.conversation_id),
                 )
@@ -2622,7 +2622,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                         "session_id": session_key,
                         "content": text,
                         "agentId": agent_id,
-                        "source": "neboloop",
+                        "source": "neboai",
                     }),
                 );
             }
@@ -2644,13 +2644,13 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 prompt,
                 system: String::new(),
                 user_id: String::new(),
-                channel: "neboloop".to_string(),
+                channel: "neboai".to_string(),
                 origin: tools::Origin::Comm,
                 agent_id,
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
                 comm_reply: Some(chat_dispatch::CommReplyConfig {
-                    provider: "neboloop".to_string(),
+                    provider: "neboai".to_string(),
                     topic: msg.topic.clone(),
                     conversation_id: msg.conversation_id.clone(),
                 }),
@@ -2666,14 +2666,14 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             chat_dispatch::run_chat(&state, config).await;
 
             state.event_bus.emit(tools::events::Event {
-                source: format!("neboloop.agent_space.{}", agent_slug),
+                source: format!("neboai.agent_space.{}", agent_slug),
                 payload: serde_json::json!({
                     "from": msg.from,
                     "content": msg.content,
                     "conversation_id": msg.conversation_id,
                     "agent_slug": agent_slug,
                 }),
-                origin: "neboloop".to_string(),
+                origin: "neboai".to_string(),
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -2696,7 +2696,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         notify_crate::send(&format!("Message from {}", msg.from), &preview);
 
         let session_key =
-            agent::keyparser::build_session_key("neboloop", &msg.topic, &msg.conversation_id);
+            agent::keyparser::build_session_key("neboai", &msg.topic, &msg.conversation_id);
 
         // Resolve entity config for the channel
         let entity_config = entity_config::resolve_for_chat(&state.store, "channel", &msg.topic);
@@ -2723,13 +2723,13 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             prompt,
             system: String::new(),
             user_id: String::new(),
-            channel: "neboloop".to_string(),
+            channel: "neboai".to_string(),
             origin: tools::Origin::Comm,
             agent_id,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
-                provider: "neboloop".to_string(),
+                provider: "neboai".to_string(),
                 topic: msg.topic.clone(),
                 conversation_id: msg.conversation_id.clone(),
             }),
@@ -2746,13 +2746,13 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
         // Also emit into event bus so role event triggers can fire
         state.event_bus.emit(tools::events::Event {
-            source: format!("neboloop.{}", msg.topic),
+            source: format!("neboai.{}", msg.topic),
             payload: serde_json::json!({
                 "from": msg.from,
                 "content": msg.content,
                 "conversation_id": msg.conversation_id,
             }),
-            origin: "neboloop".to_string(),
+            origin: "neboai".to_string(),
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -2763,13 +2763,13 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
     // Emit other message types into event bus for role triggers
     state.event_bus.emit(tools::events::Event {
-        source: format!("neboloop.{}", msg.topic),
+        source: format!("neboai.{}", msg.topic),
         payload: serde_json::json!({
             "from": msg.from,
             "content": msg.content,
             "topic": msg.topic,
         }),
-        origin: "neboloop".to_string(),
+        origin: "neboai".to_string(),
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -2796,7 +2796,7 @@ fn resolve_companion_session_key(state: &AppState) -> String {
     match state.store.get_companion_chat_by_user("companion-default") {
         Ok(Some(chat)) => {
             let key = chat.session_name.unwrap_or(chat.id);
-            tracing::debug!(session_key = %key, "resolved companion session key for NeboLoop unification");
+            tracing::debug!(session_key = %key, "resolved companion session key for NeboAI unification");
             key
         }
         _ => "web".to_string(),

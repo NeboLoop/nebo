@@ -10,7 +10,7 @@ use axum::extract::State;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
-use comm::api::NeboLoopApi;
+use comm::api::NeboAIApi;
 
 use crate::handlers::HandlerResult;
 use crate::state::AppState;
@@ -353,10 +353,10 @@ async fn install_dep(state: &AppState, dep: &DepRef) -> Result<Vec<DepRef>, Stri
 
 async fn install_skill(
     state: &AppState,
-    api: &NeboLoopApi,
+    api: &NeboAIApi,
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
-    // Redeem the code with NeboLoop to register the install
+    // Redeem the code with NeboAI to register the install
     let resp = api
         .install_skill(reference)
         .await
@@ -407,7 +407,7 @@ async fn install_skill(
 
 async fn install_workflow(
     state: &AppState,
-    api: &NeboLoopApi,
+    api: &NeboAIApi,
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
     let resp = api
@@ -427,7 +427,7 @@ async fn install_workflow(
 
 async fn install_plugin(
     state: &AppState,
-    api: &NeboLoopApi,
+    api: &NeboAIApi,
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
     // Redeem the install code (plugins use the same redeem endpoint)
@@ -656,7 +656,7 @@ pub fn extract_skill_deps(skill: &tools::skills::Skill) -> Vec<DepRef> {
 
 // ── API Client Helper ───────────────────────────────────────────────
 
-pub(crate) fn build_api_client(state: &AppState) -> Result<NeboLoopApi, types::NeboError> {
+pub(crate) fn build_api_client(state: &AppState) -> Result<NeboAIApi, types::NeboError> {
     crate::codes::build_api_client(state)
 }
 

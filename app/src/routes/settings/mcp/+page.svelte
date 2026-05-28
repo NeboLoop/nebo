@@ -85,7 +85,7 @@
 
   function selectServer(reg: MCPRegistryEntry) {
     selectedRegistry = reg;
-    newServerUrl = `https://mcp.neboloop.com/${reg.name.toLowerCase().replace(/\s+/g, '-')}`;
+    newServerUrl = `https://mcp.neboai.com/${reg.name.toLowerCase().replace(/\s+/g, '-')}`;
     newServerName = reg.name;
     newAuthType = reg.authType as 'oauth' | 'api_key' | 'none';
     addStep = 'configure';

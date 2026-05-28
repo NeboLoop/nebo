@@ -899,7 +899,7 @@ The route composition in `routes/mod.rs` creates three tiers:
 |  +---------------------------------------------------------+      |
 |  | /auth/config, /setup/*, /chat/*, /agent/*, /memory/*,   |      |
 |  | /provider/*, /skills/*, /tasks/*, /integrations/*,      |      |
-|  | /files/*, /neboloop/*, /workflows/*, /roles/*,          |      |
+|  | /files/*, /neboai/*, /workflows/*, /roles/*,          |      |
 |  | /commander/*, /plugins/*, /store/*, /entity-config/*,   |      |
 |  | /notifications/*, /voice/*, /apps/*, /user/me/profile,  |      |
 |  | /user/me/preferences, /user/me/permissions, /codes,     |      |
@@ -1070,7 +1070,7 @@ expired.
 ## 17. Auth Profiles -- AI Provider Credentials
 
 Auth profiles store API keys and connection details for AI providers
-(Anthropic, OpenAI, Google, Ollama, DeepSeek, NeboLoop/Janus).
+(Anthropic, OpenAI, Google, Ollama, DeepSeek, NeboAI/Janus).
 
 ### AuthProfile Model
 
@@ -1122,7 +1122,7 @@ auth_profiles table
   Google Profile       -->  GeminiProvider::new(api_key, model)
   Ollama Profile       -->  OllamaProvider::new(base_url, model)
   DeepSeek Profile     -->  OpenAIProvider::with_base_url(...)
-  NeboLoop Profile     -->  OpenAIProvider (Janus gateway)
+  NeboAI Profile     -->  OpenAIProvider (Janus gateway)
 ```
 
 ---

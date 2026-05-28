@@ -3,7 +3,7 @@
 > Definitive reference for the Nebo plugin primitive. Covers the plugin
 > manifest format, PluginStore lifecycle (resolve, ensure, verify, GC,
 > quarantine), SKILL.md integration, dependency cascade, code system,
-> env var injection, NeboLoop API, concurrency model, and storage layout.
+> env var injection, NeboAI API, concurrency model, and storage layout.
 > Capability boundaries and comparison with OpenClaw/Hermes documented in §23.
 >
 > For OpenClaw capability parity analysis and roadmap, see
@@ -24,7 +24,7 @@
 9. [ExecuteTool Integration](#9-executetool-integration)
 10. [Code System (PLUG-XXXX-XXXX)](#10-code-system-plug-xxxx-xxxx)
 11. [Dependency Cascade](#11-dependency-cascade)
-12. [NeboLoop API](#12-neboloop-api)
+12. [NeboAI API](#12-neboai-api)
 13. [AppState Wiring](#13-appstate-wiring)
 14. [Sandbox Policy](#14-sandbox-policy)
 15. [Storage Layout](#15-storage-layout)
@@ -34,7 +34,7 @@
 19. [WebSocket Events](#19-websocket-events)
 20. [Edge Cases](#20-edge-cases)
 21. [Key Files](#21-key-files)
-22. [NeboLoop MCP Server — Plugin Tool](#22-neboloop-mcp-server--plugin-tool)
+22. [NeboAI MCP Server — Plugin Tool](#22-neboai-mcp-server--plugin-tool)
 23. [Capability Boundaries](#23-capability-boundaries)
 
 ---
@@ -129,7 +129,7 @@ Plugin lifecycle belongs in **`crates/napp/`** — not `crates/tools/`. The napp
 | `DepType::Plugin` cascade | server | `deps.rs` | Dependency resolution (incl. plugin→plugin) |
 | `plugin_store` on AppState | server | `state.rs` | Shared state |
 | Plugin init + loader wiring | server | `lib.rs` | Startup |
-| `get_plugin()`, `download_plugin_binary()` | comm | `api.rs` | NeboLoop REST API |
+| `get_plugin()`, `download_plugin_binary()` | comm | `api.rs` | NeboAI REST API |
 
 ---
 
@@ -143,7 +143,7 @@ Stored locally at `<data_dir>/nebo/plugins/<slug>/<version>/plugin.json`. All fi
 
 ```rust
 pub struct PluginManifest {
-    pub id: String,                                  // NeboLoop artifact ID
+    pub id: String,                                  // NeboAI artifact ID
     pub slug: String,                                // URL-safe slug, matches skill's plugins[].name
     pub name: String,                                // Human-readable display name
     pub version: String,                             // Semver version string
@@ -659,7 +659,7 @@ plugins:
 ---
 ```
 
-- `name` matches the plugin's `slug` in NeboLoop
+- `name` matches the plugin's `slug` in NeboAI
 - `version` is a semver range string (default `"*"`)
 - `optional: true` means the skill loads even if this plugin isn't installed
 
@@ -753,7 +753,7 @@ Plugins have their own install code prefix, following the same Crockford Base32 
 
 | Prefix | Artifact |
 |--------|----------|
-| `NEBO` | Link bot to NeboLoop account |
+| `NEBO` | Link bot to NeboAI account |
 | `SKIL` | Install a skill |
 | `WORK` | Install a workflow |
 | `AGNT` | Install an agent |
@@ -763,7 +763,7 @@ Plugins have their own install code prefix, following the same Crockford Base32 
 `detect_code()` checks for the `PLUG-` prefix and returns `CodeType::Plugin`.
 
 `handle_plugin_code()` flow:
-1. Build NeboLoop API client
+1. Build NeboAI API client
 2. Redeem code via `api.install_skill(code)` (plugins use the same install endpoint)
 3. Detect platform via `napp::plugin::current_platform_key()`
 4. Broadcast `plugin_installing` WebSocket event
@@ -841,7 +841,7 @@ For plugins: `state.plugin_store.resolve(&dep.reference, "*").is_some()`
 
 For plugins: calls `install_plugin()` which:
 1. Extracts the simple slug name from the reference
-2. Builds a NeboLoop API client
+2. Builds a NeboAI API client
 3. Calls `plugin_store.ensure()` with a download callback
 4. Reads the installed manifest's `dependencies[]` field
 5. Returns non-optional deps as child `DepRef` entries for recursive resolution
@@ -849,11 +849,11 @@ For plugins: calls `install_plugin()` which:
 
 ---
 
-## 12. NeboLoop API
+## 12. NeboAI API
 
 **Source:** `crates/comm/src/api.rs`
 
-Two new methods on `NeboLoopApi`:
+Two new methods on `NeboAIApi`:
 
 ### get_plugin(slug, platform)
 
@@ -892,7 +892,7 @@ let skill_loader = Loader::new(bundled_dir, installed_dir, user_dir)
     .with_plugin_store(plugin_store.clone());
 ```
 
-**Note:** `signing_key` is currently `None`. When NeboLoop's ED25519 public key infrastructure is fully deployed, this will be wired to `Arc<SigningKeyProvider>`.
+**Note:** `signing_key` is currently `None`. When NeboAI's ED25519 public key infrastructure is fully deployed, this will be wired to `Arc<SigningKeyProvider>`.
 
 ---
 
@@ -998,7 +998,7 @@ pub fn current_platform_key() -> String {
 }
 ```
 
-Valid platform keys (matching NeboLoop conventions):
+Valid platform keys (matching NeboAI conventions):
 - `darwin-arm64` (Apple Silicon)
 - `darwin-amd64` (Intel Mac)
 - `linux-arm64`
@@ -1090,9 +1090,9 @@ Future events (not yet implemented):
 
 ---
 
-## 22. NeboLoop MCP Server — Plugin Tool
+## 22. NeboAI MCP Server — Plugin Tool
 
-Plugins are a **first-class artifact type** on NeboLoop, alongside skills and agents. Each has its own dedicated MCP tool — plugins are never created through the skill tool.
+Plugins are a **first-class artifact type** on NeboAI, alongside skills and agents. Each has its own dedicated MCP tool — plugins are never created through the skill tool.
 
 ### Three Artifact Types
 
@@ -1104,7 +1104,7 @@ Plugins are a **first-class artifact type** on NeboLoop, alongside skills and ag
 
 ### Plugin Tool Actions
 
-**Source:** `neboloop/internal/mcp/tools/plugin.go`
+**Source:** `neboai/internal/mcp/tools/plugin.go`
 
 | Action | Description |
 |--------|-------------|
@@ -1131,7 +1131,7 @@ Plugins are a **first-class artifact type** on NeboLoop, alongside skills and ag
    plugin(action: binary-token, id: "<PLUGIN_ID>")
 
 4. Upload binary per platform (via curl from step 3):
-   curl -X POST https://neboloop.com/api/v1/developer/apps/<PLUGIN_ID>/binaries \
+   curl -X POST https://neboai.com/api/v1/developer/apps/<PLUGIN_ID>/binaries \
      -H "Authorization: Bearer <token>" \
      -F "file=@./target/release/gws" \
      -F "platform=darwin-arm64" \
@@ -1147,11 +1147,11 @@ Plugins are a **first-class artifact type** on NeboLoop, alongside skills and ag
 
 | File | What |
 |------|------|
-| `neboloop/internal/mcp/tools/plugin.go` | Plugin MCP tool — all 9 actions |
-| `neboloop/internal/mcp/server.go` | `RegisterPluginTool()` registration |
-| `neboloop/internal/mcp/tools/registry.go` | `registerPluginToolToRegistry()` |
-| `neboloop/internal/marketplace/service.go` | `CodePrefix("plugin")` → `"PLUG"` |
-| `neboloop/internal/db/queries/marketplace_categories.sql` | `plugin_count` in category counts |
+| `neboai/internal/mcp/tools/plugin.go` | Plugin MCP tool — all 9 actions |
+| `neboai/internal/mcp/server.go` | `RegisterPluginTool()` registration |
+| `neboai/internal/mcp/tools/registry.go` | `registerPluginToolToRegistry()` |
+| `neboai/internal/marketplace/service.go` | `CodePrefix("plugin")` → `"PLUG"` |
+| `neboai/internal/db/queries/marketplace_categories.sql` | `plugin_count` in category counts |
 
 ### Code Prefix Generation
 
@@ -1192,7 +1192,7 @@ This section documents what plugins can and cannot do. Updated to reflect Phase 
 
 ### What Plugins Are
 
-Nebo plugins are **managed native binaries** distributed via signed `.napp` archives, installed from the NeboLoop marketplace, and invoked as subprocesses by skills. The plugin system is the primary extensibility mechanism for Nebo — every capability is delivered out-of-process via CLI.
+Nebo plugins are **managed native binaries** distributed via signed `.napp` archives, installed from the NeboAI marketplace, and invoked as subprocesses by skills. The plugin system is the primary extensibility mechanism for Nebo — every capability is delivered out-of-process via CLI.
 
 | Capability | How It Works | Runtime |
 |---|---|---|
@@ -1221,7 +1221,7 @@ Nebo plugins are **managed native binaries** distributed via signed `.napp` arch
 
 | Capability | Status | Detail |
 |---|---|---|
-| Register channel adapters | Not possible | Communication locked to NeboLoop SDK in `crates/comm/` |
+| Register channel adapters | Not possible | Communication locked to NeboAI SDK in `crates/comm/` |
 | Expose reusable services | Not possible | No service registration model |
 | Contribute to memory/context | Not possible | Memory/prompt assembly has no plugin surface |
 

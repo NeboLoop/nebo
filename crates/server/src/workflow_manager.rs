@@ -118,23 +118,23 @@ impl WorkflowManagerImpl {
         }
     }
 
-    fn build_api_client(&self) -> Result<comm::api::NeboLoopApi, String> {
+    fn build_api_client(&self) -> Result<comm::api::NeboAIApi, String> {
         let bot_id = config::read_bot_id().ok_or_else(|| "no bot_id configured".to_string())?;
         let profiles = match self
             .store
-            .list_all_active_auth_profiles_by_provider("neboloop")
+            .list_all_active_auth_profiles_by_provider("neboai")
         {
             Ok(p) => p,
             Err(e) => {
-                warn!(error = %e, "failed to list auth profiles for neboloop");
+                warn!(error = %e, "failed to list auth profiles for neboai");
                 return Err("failed to query auth profiles".to_string());
             }
         };
         let profile = profiles
             .first()
-            .ok_or_else(|| "not connected to NeboLoop".to_string())?;
-        let api_server = self.config.neboloop.api_url.clone();
-        Ok(comm::api::NeboLoopApi::new(
+            .ok_or_else(|| "not connected to NeboAI".to_string())?;
+        let api_server = self.config.neboai.api_url.clone();
+        Ok(comm::api::NeboAIApi::new(
             api_server,
             bot_id,
             profile.api_key.clone(),
@@ -232,7 +232,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 .await
                 .map_err(|e| format!("install_workflow: {}", e))?;
 
-            // The response artifact.id is the workflow ID from NeboLoop
+            // The response artifact.id is the workflow ID from NeboAI
             // Look up the workflow in DB (handle_work_code in codes.rs already stored it)
             // If not found, the install may have been handled via the codes path
             match self.store.get_workflow(&resp.artifact.id) {

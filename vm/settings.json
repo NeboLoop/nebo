@@ -13,8 +13,8 @@
       "crates.io",
       "index.crates.io",
       "static.crates.io",
-      "neboloop.com",
-      "api.neboloop.com"
+      "neboai.com",
+      "api.neboai.com"
     ],
     "deniedDomains": [],
     "allowLocalBinding": true,

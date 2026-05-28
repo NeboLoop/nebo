@@ -13,8 +13,8 @@
     try {
       const api = await import('$lib/api/nebo');
       const [accountResp, subsResp] = await Promise.all([
-        api.neboLoopAccountStatus().catch(() => null),
-        api.neboLoopBillingSubscription().catch(() => null)
+        api.neboAIAccountStatus().catch(() => null),
+        api.neboAIBillingSubscription().catch(() => null)
       ]);
       const account = accountResp as Record<string, unknown> | null;
       if (account?.displayName) {

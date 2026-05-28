@@ -598,7 +598,7 @@ All of these are currently no-ops but document the intended trigger points:
 | scheduler.rs (cron success)       | "Nebo" / "{job.name} completed"             |
 | scheduler.rs (cron failure)       | "Nebo" / "{job.name} failed: {err}"         |
 | lib.rs (agent space inbound msg)  | "Agent space: {name}" / "{preview}"         |
-| lib.rs (NeboLoop inbound msg)     | "Message from {from}" / "{preview}"         |
+| lib.rs (NeboAI inbound msg)     | "Message from {from}" / "{preview}"         |
 | agent_worker.rs (heartbeat fire)  | "Nebo" / "Heartbeat: {binding_name}"        |
 | agent_worker.rs (heartbeat fail)  | "Nebo" / "{binding_name} failed: {err}"     |
 | agent_worker.rs (watch fail)      | "Nebo" / "{binding_name} failed: {err}"     |

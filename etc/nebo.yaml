@@ -25,11 +25,11 @@ Auth:
 # Database uses ~/.nebo/data/nebo.db by default (shared with agent)
 Database: {}
 
-# NeboLoop integration (managed services)
+# NeboAI integration (managed services)
 # Enables: Loops (social trust circles), Marketplace, Gateway plugins
-# Override any URL via env var: NEBOLOOP_API_URL, NEBOLOOP_JANUS_URL, NEBOLOOP_COMMS_URL
-NeboLoop:
+# Override any URL via env var: NEBOAI_API_URL, NEBOAI_JANUS_URL, NEBOAI_COMMS_URL
+NeboAI:
   Enabled: true
-  ApiURL: https://api.neboloop.com
-  JanusURL: https://janus.neboloop.com
-  CommsURL: wss://comms.neboloop.com/ws
+  ApiURL: https://api.neboai.com
+  JanusURL: https://janus.neboai.com
+  CommsURL: wss://comms.neboai.com/ws

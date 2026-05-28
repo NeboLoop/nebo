@@ -96,7 +96,7 @@ crates/napp/src/manifest.rs           — Manifest parsing + validation
 crates/napp/src/sandbox.rs            — Environment sanitization + binary validation
 crates/napp/src/supervisor.rs         — Restart policy + backoff
 crates/proto/                         — gRPC proto definitions (UIService, etc.)
-@neboai/app-sdk (npm)                 — TypeScript SDK for app frontends (source: NeboLoop/app-sdk)
+@neboai/app-sdk (npm)                 — TypeScript SDK for app frontends (source: NeboAI/app-sdk)
 ```
 
 ---
@@ -779,7 +779,7 @@ nebo.chat.unmount();
 
 ## 18. App SDK (TypeScript)
 
-**Package:** `@neboai/app-sdk` (npm) — source repo: `NeboLoop/app-sdk`
+**Package:** `@neboai/app-sdk` (npm) — source repo: `NeboAI/app-sdk`
 
 The SDK provides a singleton `nebo` object with typed APIs for all app capabilities.
 

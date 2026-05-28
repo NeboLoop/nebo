@@ -905,7 +905,7 @@ pub struct DynamicContext {
     pub model_name: String,
     pub active_task: String,
     pub summary: String,
-    pub neboloop_connected: bool,
+    pub neboai_connected: bool,
     pub channel: String,
     pub work_tasks: Vec<WorkTask>,
     pub tool_doc_cache: Vec<(String, String)>,  // Survives sliding window eviction (max 8k chars)
@@ -1012,7 +1012,7 @@ Computer: AlmasMac
 OS: macOS (arm64)
 ```
 
-Also includes NeboLoop connection status and message source.
+Also includes NeboAI connection status and message source.
 
 ### 3. Conversation Summary
 If messages were evicted by the sliding window:

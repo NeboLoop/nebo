@@ -136,14 +136,14 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInputField {
     /// Unique key used to reference this value in workflows.
-    /// Falls back to `name` if not provided (NeboLoop uses `name`).
+    /// Falls back to `name` if not provided (NeboAI uses `name`).
     #[serde(default)]
     pub key: String,
     /// Display label shown to the user.
     /// Falls back to empty (populated from `name` in post-processing).
     #[serde(default)]
     pub label: String,
-    /// NeboLoop uses `name` instead of `key` — accepted as alias.
+    /// NeboAI uses `name` instead of `key` — accepted as alias.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Optional help text shown below the field.
@@ -526,7 +526,7 @@ pub fn parse_agent_config(json_str: &str) -> Result<AgentConfig, NappError> {
         }
     };
 
-    // Normalize input fields: NeboLoop uses `name` instead of `key`/`label`
+    // Normalize input fields: NeboAI uses `name` instead of `key`/`label`
     for field in &mut config.inputs {
         if field.key.is_empty() {
             if let Some(ref name) = field.name {
@@ -552,8 +552,8 @@ pub fn parse_agent_config(json_str: &str) -> Result<AgentConfig, NappError> {
         }
     }
 
-    // Normalize options: NeboLoop may send plain strings instead of {value, label} objects
-    // Options normalization: NeboLoop may send plain strings instead of {value, label} objects.
+    // Normalize options: NeboAI may send plain strings instead of {value, label} objects
+    // Options normalization: NeboAI may send plain strings instead of {value, label} objects.
     // AgentInputOption serde already handles this — plain strings fail serde and are handled by the caller.
 
     validate_agent_config(&config)?;
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn test_requires_plugins_with_full_typeconfig() {
-        // Simulates the full typeConfig returned by the NeboLoop API for chief-of-staff.
+        // Simulates the full typeConfig returned by the NeboAI API for chief-of-staff.
         // This is the exact shape that goes through serde_json::to_string(type_config)
         // then into extract_agent_deps_from_frontmatter.
         let json = r#"{

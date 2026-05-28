@@ -21,7 +21,7 @@
 
   onMount(async () => {
     try {
-      const resp = await api.neboLoopReferralCode() as ReferralResponse;
+      const resp = await api.neboAIReferralCode() as ReferralResponse;
       referralCode = resp.referral_code;
       referralLink = resp.referral_link;
     } catch { /* not connected */ }
@@ -100,7 +100,7 @@
         </div>
       </div>
     {:else if loaded}
-      <p class="text-xs text-base-content/50 ml-8">Connect your NeboLoop account to get your gift link.</p>
+      <p class="text-xs text-base-content/50 ml-8">Connect your NeboAI account to get your gift link.</p>
     {:else}
       <div class="flex items-center gap-2 ml-8">
         <Spinner size={14} />
@@ -173,7 +173,7 @@
         </div>
 
         <p class="text-xs text-base-content/50">
-          The more people you bring along, the more tokens you earn. Each milestone unlocks additional perks on your NeboLoop profile. All bonus tokens expire 90 days after they're granted.
+          The more people you bring along, the more tokens you earn. Each milestone unlocks additional perks on your NeboAI profile. All bonus tokens expire 90 days after they're granted.
           <a href="https://getnebo.com/legal/gifting-terms" target="_blank" rel="noopener noreferrer" class="text-primary hover:brightness-110 transition-all">Gifting Terms</a>
         </p>
       </div>

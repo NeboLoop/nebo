@@ -590,106 +590,106 @@
 		"pathParams": [{ "name": "id" }],
 		"responseType": "MessageResponse"
 	},
-	"GET /neboloop/oauth/start": {
-		"fn": "neboLoopOAuthStart",
-		"desc": "NeboLoop OAuth start",
-		"responseType": "NeboLoopOAuthStartResponse"
+	"GET /neboai/oauth/start": {
+		"fn": "neboAIOAuthStart",
+		"desc": "NeboAI OAuth start",
+		"responseType": "NeboAIOAuthStartResponse"
 	},
-	"GET /neboloop/oauth/status": {
-		"fn": "neboLoopOAuthStatus",
-		"desc": "NeboLoop OAuth status",
-		"queryType": "NeboLoopOAuthStatusRequestParams",
-		"responseType": "NeboLoopOAuthStatusResponse"
+	"GET /neboai/oauth/status": {
+		"fn": "neboAIOAuthStatus",
+		"desc": "NeboAI OAuth status",
+		"queryType": "NeboAIOAuthStatusRequestParams",
+		"responseType": "NeboAIOAuthStatusResponse"
 	},
-	"GET /neboloop/account": {
-		"fn": "neboLoopAccountStatus",
-		"desc": "NeboLoop account status",
-		"responseType": "NeboLoopAccountStatusResponse"
+	"GET /neboai/account": {
+		"fn": "neboAIAccountStatus",
+		"desc": "NeboAI account status",
+		"responseType": "NeboAIAccountStatusResponse"
 	},
-	"DELETE /neboloop/account": {
-		"fn": "neboLoopDisconnect",
-		"desc": "NeboLoop disconnect",
-		"responseType": "NeboLoopDisconnectResponse"
+	"DELETE /neboai/account": {
+		"fn": "neboAIDisconnect",
+		"desc": "NeboAI disconnect",
+		"responseType": "NeboAIDisconnectResponse"
 	},
-	"GET /neboloop/status": {
-		"fn": "neboLoopStatus",
-		"desc": "NeboLoop status",
-		"responseType": "NeboLoopStatusResponse"
+	"GET /neboai/status": {
+		"fn": "neboAIStatus",
+		"desc": "NeboAI status",
+		"responseType": "NeboAIStatusResponse"
 	},
-	"GET /neboloop/janus/usage": {
-		"fn": "neboLoopJanusUsage",
-		"desc": "NeboLoop Janus usage",
-		"responseType": "NeboLoopJanusUsageResponse"
+	"GET /neboai/janus/usage": {
+		"fn": "neboAIJanusUsage",
+		"desc": "NeboAI Janus usage",
+		"responseType": "NeboAIJanusUsageResponse"
 	},
-	"POST /neboloop/janus/usage/refresh": {
-		"fn": "neboLoopJanusUsageRefresh",
+	"POST /neboai/janus/usage/refresh": {
+		"fn": "neboAIJanusUsageRefresh",
 		"desc": "Force-refresh Janus usage from Janus gateway",
-		"responseType": "NeboLoopJanusUsageResponse"
+		"responseType": "NeboAIJanusUsageResponse"
 	},
-	"GET /neboloop/open": {
-		"fn": "neboLoopOpen",
-		"desc": "NeboLoop open",
+	"GET /neboai/open": {
+		"fn": "neboAIOpen",
+		"desc": "NeboAI open",
 		"responseType": "MessageResponse"
 	},
-	"POST /neboloop/connect": {
-		"fn": "neboLoopConnect",
-		"desc": "NeboLoop connect",
-		"requestType": "NeboLoopConnectRequest",
-		"responseType": "NeboLoopConnectResponse"
+	"POST /neboai/connect": {
+		"fn": "neboAIConnect",
+		"desc": "NeboAI connect",
+		"requestType": "NeboAIConnectRequest",
+		"responseType": "NeboAIConnectResponse"
 	},
-	"GET /neboloop/billing/prices": {
-		"fn": "neboLoopBillingPrices",
+	"GET /neboai/billing/prices": {
+		"fn": "neboAIBillingPrices",
 		"desc": "Get billing prices/plans",
 		"responseType": "BillingPricesResponse"
 	},
-	"GET /neboloop/billing/subscription": {
-		"fn": "neboLoopBillingSubscription",
+	"GET /neboai/billing/subscription": {
+		"fn": "neboAIBillingSubscription",
 		"desc": "Get current subscription",
 		"responseType": "BillingSubscriptionResponse"
 	},
-	"POST /neboloop/billing/checkout": {
-		"fn": "neboLoopBillingCheckout",
+	"POST /neboai/billing/checkout": {
+		"fn": "neboAIBillingCheckout",
 		"desc": "Create Stripe checkout session (hosted or embedded)",
-		"customBody": "/**\n * @description \"Create Stripe checkout session (hosted or embedded)\"\n */\nexport function neboLoopBillingCheckout(priceIds: string[], uiMode?: 'hosted' | 'embedded') {\n\treturn webapi.post<components.BillingCheckoutResponse>(`/api/v1/neboloop/billing/checkout`, { priceIds, uiMode })\n}"
+		"customBody": "/**\n * @description \"Create Stripe checkout session (hosted or embedded)\"\n */\nexport function neboAIBillingCheckout(priceIds: string[], uiMode?: 'hosted' | 'embedded') {\n\treturn webapi.post<components.BillingCheckoutResponse>(`/api/v1/neboai/billing/checkout`, { priceIds, uiMode })\n}"
 	},
-	"POST /neboloop/billing/subscribe": {
-		"fn": "neboLoopBillingSubscribe",
+	"POST /neboai/billing/subscribe": {
+		"fn": "neboAIBillingSubscribe",
 		"desc": "Subscribe to a plan",
 		"responseType": "MessageResponse"
 	},
-	"POST /neboloop/billing/portal": {
-		"fn": "neboLoopBillingPortal",
+	"POST /neboai/billing/portal": {
+		"fn": "neboAIBillingPortal",
 		"desc": "Open Stripe customer portal",
 		"responseType": "BillingPortalResponse"
 	},
-	"POST /neboloop/billing/setup-intent": {
-		"fn": "neboLoopBillingSetupIntent",
+	"POST /neboai/billing/setup-intent": {
+		"fn": "neboAIBillingSetupIntent",
 		"desc": "Create Stripe SetupIntent for in-app payment method collection",
-		"customBody": "/**\n * @description \"Create Stripe SetupIntent for in-app payment method collection\"\n */\nexport function neboLoopBillingSetupIntent() {\n\treturn webapi.post<{ clientSecret: string; publishableKey: string }>(`/api/v1/neboloop/billing/setup-intent`)\n}"
+		"customBody": "/**\n * @description \"Create Stripe SetupIntent for in-app payment method collection\"\n */\nexport function neboAIBillingSetupIntent() {\n\treturn webapi.post<{ clientSecret: string; publishableKey: string }>(`/api/v1/neboai/billing/setup-intent`)\n}"
 	},
-	"POST /neboloop/billing/cancel": {
-		"fn": "neboLoopBillingCancel",
+	"POST /neboai/billing/cancel": {
+		"fn": "neboAIBillingCancel",
 		"desc": "Cancel subscription",
-		"customBody": "/**\n * @description \"Cancel subscription\"\n */\nexport function neboLoopBillingCancel(subscriptionId: string) {\n\treturn webapi.post<components.BillingCancelResponse>(`/api/v1/neboloop/billing/cancel`, { subscriptionId })\n}"
+		"customBody": "/**\n * @description \"Cancel subscription\"\n */\nexport function neboAIBillingCancel(subscriptionId: string) {\n\treturn webapi.post<components.BillingCancelResponse>(`/api/v1/neboai/billing/cancel`, { subscriptionId })\n}"
 	},
-	"GET /neboloop/billing/invoices": {
-		"fn": "neboLoopBillingInvoices",
+	"GET /neboai/billing/invoices": {
+		"fn": "neboAIBillingInvoices",
 		"desc": "List invoices",
 		"responseType": "BillingInvoicesResponse"
 	},
-	"GET /neboloop/billing/payment-methods": {
-		"fn": "neboLoopBillingPaymentMethods",
+	"GET /neboai/billing/payment-methods": {
+		"fn": "neboAIBillingPaymentMethods",
 		"desc": "List payment methods",
 		"responseType": "BillingPaymentMethodsResponse"
 	},
-	"GET /neboloop/referral-code": {
-		"fn": "neboLoopReferralCode",
+	"GET /neboai/referral-code": {
+		"fn": "neboAIReferralCode",
 		"desc": "Get or create the user's referral/invite code",
-		"responseType": "NeboLoopReferralCodeResponse"
+		"responseType": "NeboAIReferralCodeResponse"
 	},
-	"POST /neboloop/reconnect": {
-		"fn": "neboLoopForceReconnect",
-		"desc": "Force reconnect to NeboLoop",
+	"POST /neboai/reconnect": {
+		"fn": "neboAIForceReconnect",
+		"desc": "Force reconnect to NeboAI",
 		"responseType": "MessageResponse"
 	},
 	"GET /notifications": {

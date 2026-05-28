@@ -334,7 +334,7 @@ agents/chief-of-staff/
 ```
 
 A2UI layout files (`.a2ui.json`) live in the `ui/` subdirectory alongside the
-agent's AGENT.md and views.json. When agents are installed from the NeboLoop
+agent's AGENT.md and views.json. When agents are installed from the NeboAI
 marketplace, these files are included in the agent's archive (the `ui/`
 directory is allowed in extraction with a 5MB per-file limit).
 
@@ -592,7 +592,7 @@ CREATE INDEX IF NOT EXISTS idx_a2ui_surfaces_open ON a2ui_surfaces(is_open) WHER
 
 ### 7.1 Catalog Definition
 
-Catalog ID: `https://neboloop.com/a2ui/nebo_catalog/v1`
+Catalog ID: `https://neboai.com/a2ui/nebo_catalog/v1`
 
 Extends the basic catalog with 6 Nebo-specific components:
 
@@ -669,7 +669,7 @@ import { Catalog } from "@a2ui/web_core/v0_9";
 import { basicCatalog } from "@a2ui/lit/v0_9";
 
 export const neboCatalog = new Catalog(
-    "https://neboloop.com/a2ui/nebo_catalog/v1",
+    "https://neboai.com/a2ui/nebo_catalog/v1",
     [NeboMetricTile, NeboKanbanBoard, ...],
     [],
 );
@@ -693,7 +693,7 @@ impl CatalogProvider for NeboCatalogProvider {
                 description: Some("A2UI Basic Catalog v0.9".into()),
             },
             CatalogInfo {
-                catalog_id: CatalogId::new("https://neboloop.com/a2ui/nebo_catalog/v1"),
+                catalog_id: CatalogId::new("https://neboai.com/a2ui/nebo_catalog/v1"),
                 description: Some("Nebo Extended Catalog".into()),
             },
         ]
@@ -702,7 +702,7 @@ impl CatalogProvider for NeboCatalogProvider {
     fn get_catalog(&self, id: &CatalogId) -> Option<Catalog> {
         match id.as_str() {
             "https://a2ui.org/specification/v0_9/basic_catalog.json" => Some(self.basic_catalog.clone()),
-            "https://neboloop.com/a2ui/nebo_catalog/v1" => Some(self.nebo_catalog.clone()),
+            "https://neboai.com/a2ui/nebo_catalog/v1" => Some(self.nebo_catalog.clone()),
             _ => None,
         }
     }
@@ -710,7 +710,7 @@ impl CatalogProvider for NeboCatalogProvider {
     fn get_catalog_schema(&self, id: &CatalogId) -> Option<serde_json::Value> {
         match id.as_str() {
             "https://a2ui.org/specification/v0_9/basic_catalog.json" => Some(self.basic_schema.clone()),
-            "https://neboloop.com/a2ui/nebo_catalog/v1" => Some(self.nebo_schema.clone()),
+            "https://neboai.com/a2ui/nebo_catalog/v1" => Some(self.nebo_schema.clone()),
             _ => None,
         }
     }
@@ -1109,7 +1109,7 @@ Originally planned separately, but delivered as part of Phase 1:
 1. Submit PR to google/A2UI adding Nebo to ecosystem renderers table
 2. Post in A2UI GitHub Discussions
 3. Publish blog post
-4. Add A2UI agent examples to NeboLoop marketplace
+4. Add A2UI agent examples to NeboAI marketplace
 
 ---
 

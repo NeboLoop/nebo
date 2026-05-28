@@ -182,8 +182,8 @@ Non-active tabs use `text-base-content/90 hover:bg-base-200`.
 
 **File:** `app/src/routes/settings/account/+page.svelte`
 
-**Purpose:** Manage the NeboLoop cloud connection — the link between the local Nebo
-desktop app and the NeboLoop backend (marketplace, billing, Janus AI gateway).
+**Purpose:** Manage the NeboAI cloud connection — the link between the local Nebo
+desktop app and the NeboAI backend (marketplace, billing, Janus AI gateway).
 
 **State:**
 ```typescript
@@ -196,20 +196,20 @@ let reconnectError = $state('');
 **Data loaded on mount:**
 1. `api.getProfile()` — populates display name
 2. `api.userGetCurrentUser()` — populates email and name
-3. `api.neboLoopAccountStatus()` — determines connection status and email
+3. `api.neboAIAccountStatus()` — determines connection status and email
 
 **Actions:**
-- **Reconnect** — calls `neboLoopOAuthStartWithJanus(false)` from `$lib/api/index`,
-  opens browser for OAuth, then polls `neboLoopOAuthStatus(state)` every 2 seconds
+- **Reconnect** — calls `neboAIOAuthStartWithJanus(false)` from `$lib/api/index`,
+  opens browser for OAuth, then polls `neboAIOAuthStatus(state)` every 2 seconds
   for up to 3 minutes. On success: updates connected state and user info.
-- **Disconnect** — calls `api.neboLoopAccountDisconnect()`, sets `connected = false`.
+- **Disconnect** — calls `api.neboAIAccountDisconnect()`, sets `connected = false`.
 - **Delete Account** — confirmation prompt, then `api.userDeleteAccount()`.
 
 **OAuth polling pattern** (shared with Onboarding step 2):
 ```
-neboLoopOAuthStartWithJanus() --> returns { state }
+neboAIOAuthStartWithJanus() --> returns { state }
   |
-  +-- setInterval(2000ms): neboLoopOAuthStatus(state)
+  +-- setInterval(2000ms): neboAIOAuthStatus(state)
   |     status === 'complete' --> stop polling, update state
   |     status === 'error'    --> stop polling, show error
   |     status === 'expired'  --> stop polling, show expired message
@@ -289,30 +289,30 @@ Available themes: nebo, light, dark, cupcake, nord, sunset, autumn, lemonade, ni
 **State:**
 ```typescript
 let status = $state<AccountStatusResponse | null>(null);
-let subscription = $state<NeboLoopBillingSubscriptionResponse | null>(null);
+let subscription = $state<NeboAIBillingSubscriptionResponse | null>(null);
 let paymentMethods = $state<PaymentMethodInfo[]>([]);
 let invoices = $state<InvoiceInfo[]>([]);
 ```
 
 **Data loaded on mount:**
-1. `api.neboLoopAccountStatus()` — checks if NeboLoop is connected
+1. `api.neboAIAccountStatus()` — checks if NeboAI is connected
 2. If connected, parallel loads:
-   - `api.neboLoopBillingSubscription()` — current plan and subscription details
-   - `api.neboLoopBillingPaymentMethods()` — credit cards on file
-   - `api.neboLoopBillingInvoices()` — receipt history
+   - `api.neboAIBillingSubscription()` — current plan and subscription details
+   - `api.neboAIBillingPaymentMethods()` — credit cards on file
+   - `api.neboAIBillingInvoices()` — receipt history
 
 **Actions:**
 - **Adjust Plan** — navigates to `/upgrade`
 - **Update Payment** — opens modal with Stripe Elements (Payment Element)
-  - Calls `api.neboLoopBillingSetupIntent()` to get `clientSecret` + `publishableKey`
+  - Calls `api.neboAIBillingSetupIntent()` to get `clientSecret` + `publishableKey`
   - Loads Stripe.js dynamically, creates Elements, mounts Payment Element
   - `confirmSetup()` on save, then refreshes payment methods
 - **View Invoices** — expands inline invoice list
-- **Open Billing Portal** — `api.neboLoopBillingPortal()` opens Stripe portal
-- **Cancel Subscription** — two-step confirm, calls `api.neboLoopBillingCancel({ subscriptionId })`
+- **Open Billing Portal** — `api.neboAIBillingPortal()` opens Stripe portal
+- **Cancel Subscription** — two-step confirm, calls `api.neboAIBillingCancel({ subscriptionId })`
 
 **Conditional rendering:**
-- If not connected to NeboLoop: shows "Connect your NeboLoop account" with link to Account settings
+- If not connected to NeboAI: shows "Connect your NeboAI account" with link to Account settings
 - Listens to `nebo:plan_changed` window event to update plan display in real-time
 
 ---
@@ -332,14 +332,14 @@ let subscription = $state<...>(null);
 ```
 
 **Data loaded on mount:**
-1. `api.neboLoopAccountStatus()` — connection check
-2. If connected: `api.neboLoopJanusUsage()` and `api.neboLoopBillingSubscription()`
+1. `api.neboAIAccountStatus()` — connection check
+2. If connected: `api.neboAIJanusUsage()` and `api.neboAIBillingSubscription()`
 
 **UI sections:**
 - **Plan card** — current plan name + price, link to `/upgrade`
 - **Plan Limits** — session and weekly usage bars with percentage, reset countdown
 - **Balance** — free pool, gift pool, and credits (in microdollars and cents)
-- **Refresh** button — calls `api.neboLoopJanusUsageRefresh()`
+- **Refresh** button — calls `api.neboAIJanusUsageRefresh()`
 
 ---
 
@@ -720,7 +720,7 @@ Toggle ON clicked
 **Data loaded on mount:**
 1. `api.getStatus()` — agent runtime status + tool count
 2. `api.getLanes()` — each lane becomes a service entry
-3. `api.neboLoopAccountStatus()` — NeboLoop connection status
+3. `api.neboAIAccountStatus()` — NeboAI connection status
 
 **UI:**
 - Overall status banner (all operational / partial degradation)
@@ -760,12 +760,12 @@ Toggle ON clicked
 **Resource links:**
 | Label | URL |
 |-------|-----|
-| Documentation | https://docs.neboloop.com |
-| Release Notes | https://neboloop.com/changelog |
-| Community Discord | https://discord.gg/neboloop |
-| Report an Issue | https://github.com/NeboLoop/nebo/issues |
-| Privacy Policy | https://neboloop.com/privacy |
-| Terms of Service | https://neboloop.com/terms |
+| Documentation | https://docs.neboai.com |
+| Release Notes | https://neboai.com/changelog |
+| Community Discord | https://discord.gg/neboai |
+| Report an Issue | https://github.com/NeboAI/nebo/issues |
+| Privacy Policy | https://neboai.com/privacy |
+| Terms of Service | https://neboai.com/terms |
 
 ---
 
@@ -851,27 +851,27 @@ noted. Functions in `app/src/lib/api/index.ts` are marked with `(index)`.
 | `getSettings()` | GET | `/api/v1/settings` | Permissions |
 | `updateSettings(req)` | PUT | `/api/v1/settings` | Permissions |
 
-### NeboLoop
+### NeboAI
 
 | Function | Method | Endpoint | Used By |
 |----------|--------|----------|---------|
-| `neboLoopAccountStatus()` | GET | `/api/v1/neboloop/status` | Account, Billing, Usage, Status |
-| `neboLoopAccountDisconnect()` | POST | `/api/v1/neboloop/disconnect` | Account |
-| `neboLoopOAuthStartWithJanus(janus)` (index) | GET | `/api/v1/neboloop/oauth/start` | Account, Onboarding |
-| `neboLoopOAuthStatus(state)` (index) | GET | `/api/v1/neboloop/oauth/status` | Account, Onboarding |
+| `neboAIAccountStatus()` | GET | `/api/v1/neboai/status` | Account, Billing, Usage, Status |
+| `neboAIAccountDisconnect()` | POST | `/api/v1/neboai/disconnect` | Account |
+| `neboAIOAuthStartWithJanus(janus)` (index) | GET | `/api/v1/neboai/oauth/start` | Account, Onboarding |
+| `neboAIOAuthStatus(state)` (index) | GET | `/api/v1/neboai/oauth/status` | Account, Onboarding |
 
 ### Billing
 
 | Function | Method | Endpoint | Used By |
 |----------|--------|----------|---------|
-| `neboLoopBillingSubscription()` | GET | `/api/v1/neboloop/billing/subscription` | Billing, Usage |
-| `neboLoopBillingPaymentMethods()` | GET | `/api/v1/neboloop/billing/payment-methods` | Billing |
-| `neboLoopBillingInvoices()` | GET | `/api/v1/neboloop/billing/invoices` | Billing |
-| `neboLoopBillingSetupIntent()` | POST | `/api/v1/neboloop/billing/setup-intent` | Billing |
-| `neboLoopBillingPortal()` | POST | `/api/v1/neboloop/billing/portal` | Billing |
-| `neboLoopBillingCancel(req)` | POST | `/api/v1/neboloop/billing/cancel` | Billing |
-| `neboLoopJanusUsage()` | GET | `/api/v1/neboloop/janus/usage` | Usage |
-| `neboLoopJanusUsageRefresh()` | POST | `/api/v1/neboloop/janus/usage/refresh` | Usage |
+| `neboAIBillingSubscription()` | GET | `/api/v1/neboai/billing/subscription` | Billing, Usage |
+| `neboAIBillingPaymentMethods()` | GET | `/api/v1/neboai/billing/payment-methods` | Billing |
+| `neboAIBillingInvoices()` | GET | `/api/v1/neboai/billing/invoices` | Billing |
+| `neboAIBillingSetupIntent()` | POST | `/api/v1/neboai/billing/setup-intent` | Billing |
+| `neboAIBillingPortal()` | POST | `/api/v1/neboai/billing/portal` | Billing |
+| `neboAIBillingCancel(req)` | POST | `/api/v1/neboai/billing/cancel` | Billing |
+| `neboAIJanusUsage()` | GET | `/api/v1/neboai/janus/usage` | Usage |
+| `neboAIJanusUsageRefresh()` | POST | `/api/v1/neboai/janus/usage/refresh` | Usage |
 
 ### Agents & Extensions
 
@@ -1027,20 +1027,20 @@ Step 1: LANGUAGE SELECTION
     |  saveLocale() --> localStorage + api.userUpdatePreferences({ language })
     v
 
-Step 2: CONNECT NEBOLOOP
+Step 2: CONNECT NEBOAI
 +---------------------------------------------------+
 |              [Link icon]                           |
-|         Connect NeboLoop                           |
+|         Connect NeboAI                           |
 |   Access marketplace, billing, Janus gateway       |
 |                                                    |
-|   State A: [Connect with NeboLoop] button          |
+|   State A: [Connect with NeboAI] button          |
 |   State B: [Spinner] Waiting for authorization...  |
 |   State C: [Check] Connected as user@email.com     |
 |                                                    |
 |         [<- Back]  [Continue ->] or [Skip for now] |
 +---------------------------------------------------+
-    |  connectNeboLoop() --> neboLoopOAuthStartWithJanus(true)
-    |  Poll neboLoopOAuthStatus() every 2s for up to 3min
+    |  connectNeboAI() --> neboAIOAuthStartWithJanus(true)
+    |  Poll neboAIOAuthStatus() every 2s for up to 3min
     v
 
 Step 3: PERMISSIONS / CAPABILITIES
@@ -1198,7 +1198,7 @@ The **Permissions** settings page and **Onboarding step 3** share:
 - The same capability toggle UI pattern
 
 The **Account** settings page and **Onboarding step 2** share:
-- The same OAuth polling pattern (`neboLoopOAuthStartWithJanus` + `neboLoopOAuthStatus`)
+- The same OAuth polling pattern (`neboAIOAuthStartWithJanus` + `neboAIOAuthStatus`)
 - The same 3-minute timeout
 - The same status handling (complete/error/expired/pending)
 

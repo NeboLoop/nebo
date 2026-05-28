@@ -88,7 +88,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Nebo
 
-Nebo is a **Personal Desktop AI Companion** — a locally-running AI agent with persistent memory, extensible via skills/apps/workflows from the NeboLoop marketplace. It targets non-technical professionals (realtors, lawyers, consultants). Never call it an "assistant" — use "companion." Platform-agnostic: macOS, Windows, Linux.
+Nebo is a **Personal Desktop AI Companion** — a locally-running AI agent with persistent memory, extensible via skills/apps/workflows from the NeboAI marketplace. It targets non-technical professionals (realtors, lawyers, consultants). Never call it an "assistant" — use "companion." Platform-agnostic: macOS, Windows, Linux.
 
 ## Tech Stack
 
@@ -189,9 +189,9 @@ Format: `agent:<id>:<channel>`, `subagent:<parent>:<child>`, `acp:<id>`, `<ch>:g
 - `app/src/lib/i18n/` — internationalization
 
 ### Configuration
-- `etc/nebo.yaml` — embedded config (server host/port, NeboLoop URLs, auth placeholders)
+- `etc/nebo.yaml` — embedded config (server host/port, NeboAI URLs, auth placeholders)
 - `~/.nebo/settings.json` — user auth, API keys (runtime)
-- Env var overrides: `NEBOLOOP_API_URL`, `NEBOLOOP_JANUS_URL`, `NEBOLOOP_COMMS_URL`
+- Env var overrides: `NEBOAI_API_URL`, `NEBOAI_JANUS_URL`, `NEBOAI_COMMS_URL`
 
 ## Code Rules
 

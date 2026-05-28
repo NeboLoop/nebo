@@ -1,4 +1,4 @@
-//! JSON payload types for the NeboLoop comms binary protocol.
+//! JSON payload types for the NeboAI comms binary protocol.
 //! Both the gateway and Rust SDK use these — single source of truth.
 
 use serde::{Deserialize, Serialize};

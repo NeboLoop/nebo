@@ -93,19 +93,19 @@ pub use tool_search::ToolSearchTool;
 pub use web_tool::WebTool;
 pub use workflows::{WorkTool, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 
-/// Build a NeboLoop API client from a Store (for tool install actions).
-pub(crate) fn build_neboloop_api(store: &db::Store) -> Result<comm::api::NeboLoopApi, String> {
+/// Build a NeboAI API client from a Store (for tool install actions).
+pub(crate) fn build_neboai_api(store: &db::Store) -> Result<comm::api::NeboAIApi, String> {
     let bot_id = config::read_bot_id()
-        .ok_or_else(|| "no bot_id configured — connect to NeboLoop first".to_string())?;
+        .ok_or_else(|| "no bot_id configured — connect to NeboAI first".to_string())?;
     let profiles = store
-        .list_active_auth_profiles_by_provider("neboloop")
+        .list_active_auth_profiles_by_provider("neboai")
         .map_err(|e| format!("failed to query auth profiles: {}", e))?;
     let profile = profiles
         .first()
-        .ok_or_else(|| "not connected to NeboLoop — redeem a NEBO code first".to_string())?;
+        .ok_or_else(|| "not connected to NeboAI — redeem a NEBO code first".to_string())?;
     let cfg = config::Config::default();
-    Ok(comm::api::NeboLoopApi::new(
-        cfg.neboloop.api_url,
+    Ok(comm::api::NeboAIApi::new(
+        cfg.neboai.api_url,
         bot_id,
         profile.api_key.clone(),
     ))
@@ -113,7 +113,7 @@ pub(crate) fn build_neboloop_api(store: &db::Store) -> Result<comm::api::NeboLoo
 
 // ── Post-Install Artifact Persistence ──────────────────────────────
 //
-// After redeem_code() registers the install in NeboLoop, these fetch
+// After redeem_code() registers the install in NeboAI, these fetch
 // the actual content and write it to the local filesystem.
 
 /// Extract the manifest text (SKILL.md/WORKFLOW.md/AGENT.md) from a SkillDetail.
@@ -139,7 +139,7 @@ pub fn extract_manifest_text(detail: &comm::api_types::SkillDetail) -> Option<St
         .cloned()
 }
 
-/// Fetch skill content from NeboLoop and persist to nebo/ namespace.
+/// Fetch skill content from NeboAI and persist to nebo/ namespace.
 ///
 /// If the API provides a `downloadUrl`, downloads the sealed `.napp` archive
 /// and stores it at `nebo/skills/{slug}/{version}.napp`, then extracts it.
@@ -147,7 +147,7 @@ pub fn extract_manifest_text(detail: &comm::api_types::SkillDetail) -> Option<St
 ///
 /// Returns the skill directory path on success (for cascade dependency resolution).
 pub async fn persist_skill_from_api(
-    api: &comm::api::NeboLoopApi,
+    api: &comm::api::NeboAIApi,
     artifact_id: &str,
     name: &str,
     code: &str,
@@ -261,7 +261,7 @@ fn generate_minimal_skill_md(name: &str, description: &str) -> String {
     )
 }
 
-/// Fetch agent content from NeboLoop and persist to DB + nebo/ namespace.
+/// Fetch agent content from NeboAI and persist to DB + nebo/ namespace.
 ///
 /// If the API provides a `downloadUrl`, downloads the sealed `.napp` archive
 /// and stores it at `nebo/agents/{slug}/{version}.napp`, then extracts it.
@@ -269,19 +269,19 @@ fn generate_minimal_skill_md(name: &str, description: &str) -> String {
 /// Result of persisting an agent from the API, including type_config for
 /// downstream workflow binding processing.
 pub struct PersistAgentResult {
-    /// The typeConfig JSON from NeboLoop (contains workflow bindings, triggers, etc.)
+    /// The typeConfig JSON from NeboAI (contains workflow bindings, triggers, etc.)
     pub type_config: Option<serde_json::Value>,
 }
 
 pub async fn persist_agent_from_api(
-    api: &comm::api::NeboLoopApi,
+    api: &comm::api::NeboAIApi,
     artifact_id: &str,
     name: &str,
     code: &str,
     store: &db::Store,
 ) -> Result<PersistAgentResult, String> {
     // Try agent-specific endpoint first (GET /api/v1/agents/{slug}),
-    // fall back to skill endpoint (GET /api/v1/skills/{id}) for older NeboLoop versions.
+    // fall back to skill endpoint (GET /api/v1/skills/{id}) for older NeboAI versions.
     let derived_slug = name.to_lowercase().replace(' ', "-");
 
     let (

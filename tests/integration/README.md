@@ -26,7 +26,7 @@ tests/integration/
    - Execute the command exactly as written
    - Record `PASS`, `FAIL`, or `SKIP` in the Result column
    - If `FAIL`: write the error/unexpected behavior in Notes — **do not attempt to fix**
-   - If `SKIP`: write the reason (e.g., "no NeboLoop code available")
+   - If `SKIP`: write the reason (e.g., "no NeboAI code available")
 
 4. After completing all sections, fill in the Summary table.
 

@@ -96,7 +96,7 @@ pub async fn pick_folder() -> HandlerResult<serde_json::Value> {
     Ok(Json(serde_json::json!({ "path": path })))
 }
 
-/// POST /api/v1/files/upload — Proxy file upload to NeboLoop API
+/// POST /api/v1/files/upload — Proxy file upload to NeboAI API
 pub async fn upload_file(
     State(state): State<AppState>,
     mut multipart: Multipart,

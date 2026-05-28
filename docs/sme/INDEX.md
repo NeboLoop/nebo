@@ -93,7 +93,7 @@
 
 | # | System | Crate/Module | SME Doc | Status |
 |---|--------|-------------|---------|--------|
-| 36 | NeboLoop Connection (API, Comms, Janus) | `comm/neboloop.rs`, `comm/api.rs` | `NEBOLOOP_CONNECTION.md` | Current |
+| 36 | NeboAI Connection (API, Comms, Janus) | `comm/neboai.rs`, `comm/api.rs` | `NEBOAI_CONNECTION.md` | Current |
 | 37 | Comm Plugin Framework | `comm/manager.rs`, `comm/types.rs`, wire protocol | `COMM_FRAMEWORK_SME.md` | Current |
 | 38 | Notification System | `notify/`, `server/handlers/notification.rs` | `NOTIFICATION_SYSTEM_SME.md` | Current |
 
@@ -115,7 +115,7 @@
 | 45 | App Lifecycle & Sidecar Management | `server/app_lifecycle.rs` | `APPS.md` | Current |
 | 46 | A2UI Protocol | `a2ui/` (3 sub-crates), `server/a2ui.rs` | `A2UI_PROTOCOL.md` | Current |
 | 47 | A2UI Integration (frontend) | Removed — apps own their UI via `@neboai/app-sdk` | `A2UI_INTEGRATION.md` | Legacy |
-| 48 | App SDK (`@neboai/app-sdk`) | Published on npm; source at `NeboLoop/app-sdk` | `APPS.md` | Current |
+| 48 | App SDK (`@neboai/app-sdk`) | Published on npm; source at `NeboAI/app-sdk` | `APPS.md` | Current |
 | 49 | Napp Package Format | `napp/` (napp.rs, sealed.rs, reader.rs, signing.rs) | `NAPP_FORMAT_SME.md` | Current |
 
 ## 10. Frontend Systems
@@ -149,7 +149,7 @@ These docs exist but are reference/planning documents rather than system SME doc
 | Doc | Type | Notes |
 |-----|------|-------|
 | `NEBO_VISION.md` | Vision | Product philosophy & roadmap |
-| `JANUS_GATEWAY_PRD.md` | PRD | External service (NeboLoop Janus gateway) |
+| `JANUS_GATEWAY_PRD.md` | PRD | External service (NeboAI Janus gateway) |
 | `CODE_AUDITOR.md` | Feature | Code quality automation |
 | `OPENCLAW_PLUGIN_PARITY.md` | Comparison | Plugin ecosystem competitive analysis |
 | `ORGCHART_COMPONENT.md` | Component | Single UI component spec |
@@ -168,7 +168,7 @@ All 17 new SME documents created:
 | 2 | `CONFIG_SYSTEM_SME.md` | YAML, env vars, settings.json, models.yaml | ~500 |
 | 3 | `NAPP_FORMAT_SME.md` | .napp envelope, signing, sealing, runtime | ~1803 |
 | 4 | `DATABASE_LAYER_SME.md` | Pool, store, queries, migrations, schema | ~700 |
-| 5 | `COMM_FRAMEWORK_SME.md` | Wire protocol, plugin manager, NeboLoop | ~650 |
+| 5 | `COMM_FRAMEWORK_SME.md` | Wire protocol, plugin manager, NeboAI | ~650 |
 | 6 | `EMBEDDING_SYSTEM_SME.md` | Vector storage, hybrid search, providers | ~400 |
 | 7 | `MODEL_CATALOG_SME.md` | Model selection, fuzzy matching, fallback | ~990 |
 | 8 | `PLATFORM_TOOLS_SME.md` | Organizer, music, spotlight, keychain | ~1051 |
@@ -199,7 +199,7 @@ cli / src-tauri (entry points)
     -> db (SQLite, migrations, connection pool)
     -> config (YAML loading from etc/nebo.yaml)
     -> types (error enum, constants)
-    -> comm (NeboLoop, wire protocol, plugins)
+    -> comm (NeboAI, wire protocol, plugins)
     -> mcp (Model Context Protocol bridge)
     -> napp (package format, signing, runtime)
     -> browser (CDP automation)

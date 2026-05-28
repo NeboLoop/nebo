@@ -21,9 +21,9 @@ Raise the bar against casual copying. Not perfect DRM — at some point the cont
 
 ## Architecture: Bot-Bound Encrypted .napp, Never Extracted
 
-1. **On install**, NeboLoop wraps the .napp payload with a second encryption layer — AES-256-GCM keyed to the buyer's bot_id or owner_id (depending on license scope)
+1. **On install**, NeboAI wraps the .napp payload with a second encryption layer — AES-256-GCM keyed to the buyer's bot_id or owner_id (depending on license scope)
 2. **On disk**, only the encrypted .napp exists — no sibling extracted directory for paid content
-3. **At runtime**, Nebo decrypts in memory using a key derived from bot_id/owner_id + a per-artifact secret (fetched once from NeboLoop, stored in keyring)
+3. **At runtime**, Nebo decrypts in memory using a key derived from bot_id/owner_id + a per-artifact secret (fetched once from NeboAI, stored in keyring)
 4. **Copying the .napp** to another machine = useless ciphertext (wrong bot_id or wrong account)
 
 ### The .napp Envelope Becomes Two Layers
@@ -48,14 +48,14 @@ per-user:  HKDF(master_secret, owner_id + artifact_id)
 per-bot:   HKDF(master_secret, bot_id + artifact_id)
 ```
 
-## Bot Registry (NeboLoop Side)
+## Bot Registry (NeboAI Side)
 
-Bots are currently ephemeral — they show up via CONNECT frame and API headers, but NeboLoop doesn't formally own a registry. That needs to change.
+Bots are currently ephemeral — they show up via CONNECT frame and API headers, but NeboAI doesn't formally own a registry. That needs to change.
 
 ```sql
 bots
   id              UUID        -- the bot_id (generated locally, registered on first connect)
-  owner_id        UUID        -- NeboLoop user account
+  owner_id        UUID        -- NeboAI user account
   name            TEXT        -- user-assigned ("Work Mac", "Home Desktop", "Sales Bot")
   platform        TEXT        -- "darwin-arm64", "linux-amd64"
   app_version     TEXT        -- "0.9.0"
@@ -79,9 +79,9 @@ licenses
 ## Key Distribution Flow
 
 ```
-Bot starts up -> authenticates to NeboLoop (JWT with owner_id)
+Bot starts up -> authenticates to NeboAI (JWT with owner_id)
   -> requests decryption keys for installed artifacts
-  -> NeboLoop checks:
+  -> NeboAI checks:
       per-user scope: does owner have active license? -> return key
       per-bot scope:  does THIS bot_id match the licensed bot? -> return key
   -> keys cached in local keyring with TTL
@@ -96,9 +96,9 @@ Bot starts up -> authenticates to NeboLoop (JWT with owner_id)
 
 **Per-bot licenses** — explicit reassignment:
 
-1. User opens NeboLoop dashboard -> Licenses
+1. User opens NeboAI dashboard -> Licenses
 2. Selects license -> picks destination bot from their bot registry
-3. NeboLoop revokes old key, issues new key bound to new bot_id
+3. NeboAI revokes old key, issues new key bound to new bot_id
 4. Old bot: next key refresh fails -> content locks
 5. New bot: requests key -> gets fresh key -> content unlocks
 
@@ -160,11 +160,11 @@ License scope:
 | bot_id persistence | Done | `crates/config/src/defaults.rs` |
 | .napp envelope (ED25519 + SHA256) | Done | `crates/napp/src/napp.rs` |
 | Skill loader reads SKILL.md into memory | Done | `crates/tools/src/skills/loader.rs` — lazy template loading |
-| NEBOLOOP_PUBLIC_KEY embedded | Done | `crates/napp/src/signing.rs` |
+| NEBOAI_PUBLIC_KEY embedded | Done | `crates/napp/src/signing.rs` |
 
 ## What Would Need to Change
 
-### NeboLoop Side
+### NeboAI Side
 
 - Bot registry API (register, list, deactivate, transfer)
 - License management (create on purchase, check on key request, revoke on lapse)
@@ -175,7 +175,7 @@ License scope:
 ### Nebo Client Side
 
 1. **Sealed .napp reader** — `unwrap_sealed_napp(data, license_key)` in `napp.rs`: AES-256-GCM decrypt -> then `unwrap_napp()` for signature verify
-2. **Bot registration** — on first connect (or account link), register bot_id with NeboLoop
+2. **Bot registration** — on first connect (or account link), register bot_id with NeboAI
 3. **Key cache** — store decryption keys in keyring with TTL, refresh on startup
 4. **Skill/agent loaders** — read from sealed .napp directly (no extract-alongside for paid content)
 5. **Phase 3 extraction** — skip sealed .napp files (they stay sealed)

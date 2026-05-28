@@ -6,7 +6,7 @@ use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use comm::CommPlugin;
 
-/// LoopTool provides NeboLoop communication capabilities.
+/// LoopTool provides NeboAI communication capabilities.
 /// Resources: dm, channel, group, topic.
 pub struct LoopTool {
     comm: Arc<dyn CommPlugin>,
@@ -239,8 +239,8 @@ impl DynTool for LoopTool {
     }
 
     fn description(&self) -> String {
-        "NeboLoop communication — direct messages, channels, groups, and topics.\n\
-         USE THIS when: user wants to message another bot, post to a channel, or interact with NeboLoop infrastructure.\n\n\
+        "NeboAI communication — direct messages, channels, groups, and topics.\n\
+         USE THIS when: user wants to message another bot, post to a channel, or interact with NeboAI infrastructure.\n\n\
          - loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\") — Send a DM to another bot\n\
          - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\") — Send to a loop channel\n\
          - loop(resource: \"channel\", action: \"list\") — List available channels\n\
@@ -248,7 +248,7 @@ impl DynTool for LoopTool {
          - loop(resource: \"channel\", action: \"members\", channel_id: \"...\") — List channel members\n\
          - loop(resource: \"group\", action: \"list\") / get / members — Manage loops\n\
          - loop(resource: \"topic\", action: \"subscribe\", topic: \"news\") / unsubscribe / list / status\n\n\
-         Use loop for bot-to-bot communication and NeboLoop infrastructure."
+         Use loop for bot-to-bot communication and NeboAI infrastructure."
             .to_string()
     }
 
@@ -314,7 +314,7 @@ impl DynTool for LoopTool {
 
             if !self.comm.is_connected() {
                 return ToolResult::error(
-                    "Not connected to NeboLoop. The comm plugin is not active.",
+                    "Not connected to NeboAI. The comm plugin is not active.",
                 );
             }
 

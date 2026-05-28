@@ -23,7 +23,7 @@ Complete mapping from every mock data import in the frontend to the real Rust ba
 | `USER.name`, `USER.email` | `/user/me` | GET | JWT |
 | `USER.displayName`, `.occupation`, `.location`, `.timezone`, `.interests`, `.goals`, `.context` | `/user/me/profile` | GET/PUT | Public |
 | `USER.commStyle`, `.theme`, `.language` | `/user/me/preferences` | GET/PUT | Public |
-| `USER.plan` | `/neboloop/billing/subscription` | GET | JWT |
+| `USER.plan` | `/neboai/billing/subscription` | GET | JWT |
 | Accept T&C | `/user/me/accept-terms` | POST | Public |
 | Change password | `/user/me/change-password` | POST | JWT |
 | Delete account | `/user/me` | DELETE | JWT |
@@ -117,7 +117,7 @@ Complete mapping from every mock data import in the frontend to the real Rust ba
 | Install item | `/store/products/{id}/install` | POST |
 | Uninstall item | `/store/products/{id}/install` | DELETE |
 | Redeem code | `/codes` | POST |
-| `PRIVATE_ORGS` | TBD (NeboLoop API) | GET |
+| `PRIVATE_ORGS` | TBD (NeboAI API) | GET |
 | `MARKETPLACE_PRIVATE_ITEMS` | TBD (org-scoped store products) | GET |
 | `MARKETPLACE_COLLECTIONS` | TBD (org-scoped) | GET |
 
@@ -211,15 +211,15 @@ Complete mapping from every mock data import in the frontend to the real Rust ba
 
 | Frontend Mock | Backend Endpoint | Method |
 |---------------|-----------------|--------|
-| `PLANS` | `/neboloop/billing/prices` | GET |
-| `BILLING` subscription | `/neboloop/billing/subscription` | GET |
-| `BILLING.invoices` | `/neboloop/billing/invoices` | GET |
-| `BILLING.paymentMethod` | `/neboloop/billing/payment-methods` | GET |
-| Subscribe | `/neboloop/billing/subscribe` | POST |
-| Checkout session | `/neboloop/billing/checkout` | POST |
-| Stripe portal | `/neboloop/billing/portal` | POST |
-| Cancel subscription | `/neboloop/billing/cancel` | POST |
-| Setup intent | `/neboloop/billing/setup-intent` | POST |
+| `PLANS` | `/neboai/billing/prices` | GET |
+| `BILLING` subscription | `/neboai/billing/subscription` | GET |
+| `BILLING.invoices` | `/neboai/billing/invoices` | GET |
+| `BILLING.paymentMethod` | `/neboai/billing/payment-methods` | GET |
+| Subscribe | `/neboai/billing/subscribe` | POST |
+| Checkout session | `/neboai/billing/checkout` | POST |
+| Stripe portal | `/neboai/billing/portal` | POST |
+| Cancel subscription | `/neboai/billing/cancel` | POST |
+| Setup intent | `/neboai/billing/setup-intent` | POST |
 
 ### Notifications
 
@@ -238,17 +238,17 @@ Complete mapping from every mock data import in the frontend to the real Rust ba
 | `EVENTS` | WebSocket `/ws` events | Stream |
 | Error logs | (in `error_logs` table) | — |
 
-### NeboLoop Account
+### NeboAI Account
 
 | Frontend Mock | Backend Endpoint | Method |
 |---------------|-----------------|--------|
-| Start OAuth | `/neboloop/oauth/start` | GET |
-| OAuth status | `/neboloop/oauth/status` | GET |
-| Account info | `/neboloop/account` | GET |
-| Disconnect | `/neboloop/account` | DELETE |
-| Usage/Janus | `/neboloop/janus/usage` | GET |
-| Refresh usage | `/neboloop/janus/usage/refresh` | POST |
-| Referral code | `/neboloop/referral-code` | GET |
+| Start OAuth | `/neboai/oauth/start` | GET |
+| OAuth status | `/neboai/oauth/status` | GET |
+| Account info | `/neboai/account` | GET |
+| Disconnect | `/neboai/account` | DELETE |
+| Usage/Janus | `/neboai/janus/usage` | GET |
+| Refresh usage | `/neboai/janus/usage/refresh` | POST |
+| Referral code | `/neboai/referral-code` | GET |
 
 ### Scheduled Tasks
 

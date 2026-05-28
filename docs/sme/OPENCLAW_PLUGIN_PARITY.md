@@ -45,7 +45,7 @@ This is stronger than OpenClaw (in-process TypeScript) and Hermes (in-process Py
 
 | Capability | Why |
 |------------|-----|
-| Channel plugins | Communication locked to NeboLoop SDK in `crates/comm/` |
+| Channel plugins | Communication locked to NeboAI SDK in `crates/comm/` |
 | Dashboard/UI plugins | Requires frontend plugin loader, CSP, bridge API — separate project |
 | In-process plugin loading | Violates out-of-process trust boundary |
 | Memory/context plugins | Memory/prompt assembly has no plugin surface |
@@ -62,7 +62,7 @@ How Nebo compares to OpenClaw and Hermes after Phase 0+1 work:
 | Tool registration | Generic tool + manifest-declared typed tools | Per-plugin typed tools with schemas | Per-plugin tools in global registry |
 | Hook system | 12 hooks (manifest ready, bridge pending) | 29 hooks (all plugin-accessible) | 13 hooks (all plugin-accessible) |
 | Provider registration | Manifest ready, impl pending | 10+ types (LLM, TTS, voice, image, etc.) | None |
-| Channel registration | Not possible (NeboLoop SDK) | 20+ adapters | None |
+| Channel registration | Not possible (NeboAI SDK) | 20+ adapters | None |
 | Config schemas | Planned (Phase 3) | Zod + UI hints + JSON Schema | plugin.yaml + config.yaml |
 | CLI commands | Manifest ready, dispatch pending | Top-level with lazy descriptors | Slash + CLI commands |
 | Plugin-to-plugin deps | Implemented | None (npm handles deps) | None |

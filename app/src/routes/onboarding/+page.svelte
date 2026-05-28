@@ -4,7 +4,7 @@
   import { completeOnboarding } from '$lib/stores/onboarding';
   import { logger } from '$lib/monitoring';
   import * as api from '$lib/api/nebo';
-  import { neboLoopOAuthStartWithJanus, neboLoopOAuthStatus } from '$lib/api/index';
+  import { neboAIOAuthStartWithJanus, neboAIOAuthStatus } from '$lib/api/index';
   import Check from 'lucide-svelte/icons/check';
   import ArrowRight from 'lucide-svelte/icons/arrow-right';
   import ArrowLeft from 'lucide-svelte/icons/arrow-left';
@@ -29,14 +29,14 @@
   // Language picker hidden for v0.10.0. Set SHOW_LANGUAGE_STEP=true to re-enable.
   const SHOW_LANGUAGE_STEP = false;
 
-  // NeboLoop OAuth state
-  let neboLoopLoading = $state(false);
-  let neboLoopConnected = $state(false);
-  let neboLoopEmail = $state('');
-  let neboLoopError = $state('');
-  let neboLoopPendingState = $state('');
-  let neboLoopPollInterval: ReturnType<typeof setInterval> | null = null;
-  let neboLoopTimeout: ReturnType<typeof setTimeout> | null = null;
+  // NeboAI OAuth state
+  let neboAILoading = $state(false);
+  let neboAIConnected = $state(false);
+  let neboAIEmail = $state('');
+  let neboAIError = $state('');
+  let neboAIPendingState = $state('');
+  let neboAIPollInterval: ReturnType<typeof setInterval> | null = null;
+  let neboAITimeout: ReturnType<typeof setTimeout> | null = null;
 
   const CAPABILITY_LABELS: Record<string, { label: string; desc: string }> = {
     chat: { label: 'Chat', desc: 'Respond to messages and conversations' },
@@ -103,52 +103,52 @@
     step = 2;
   }
 
-  // NeboLoop OAuth flow
-  function cleanupNeboLoopOAuth() {
-    if (neboLoopPollInterval) {
-      clearInterval(neboLoopPollInterval);
-      neboLoopPollInterval = null;
+  // NeboAI OAuth flow
+  function cleanupNeboAIOAuth() {
+    if (neboAIPollInterval) {
+      clearInterval(neboAIPollInterval);
+      neboAIPollInterval = null;
     }
-    if (neboLoopTimeout) {
-      clearTimeout(neboLoopTimeout);
-      neboLoopTimeout = null;
+    if (neboAITimeout) {
+      clearTimeout(neboAITimeout);
+      neboAITimeout = null;
     }
   }
 
-  async function connectNeboLoop() {
-    neboLoopLoading = true;
-    neboLoopError = '';
+  async function connectNeboAI() {
+    neboAILoading = true;
+    neboAIError = '';
 
     try {
       // Start OAuth — backend opens browser with OAuth URL
-      const result = await neboLoopOAuthStartWithJanus(true);
-      neboLoopPendingState = result.state;
+      const result = await neboAIOAuthStartWithJanus(true);
+      neboAIPendingState = result.state;
 
       // Set 3-minute timeout
-      neboLoopTimeout = setTimeout(() => {
-        cleanupNeboLoopOAuth();
-        neboLoopLoading = false;
-        neboLoopError = 'Connection timed out. Please try again.';
+      neboAITimeout = setTimeout(() => {
+        cleanupNeboAIOAuth();
+        neboAILoading = false;
+        neboAIError = 'Connection timed out. Please try again.';
       }, 180_000);
 
       // Poll every 2 seconds for completion
-      neboLoopPollInterval = setInterval(async () => {
+      neboAIPollInterval = setInterval(async () => {
         try {
-          const status = await neboLoopOAuthStatus(neboLoopPendingState);
+          const status = await neboAIOAuthStatus(neboAIPendingState);
           if (status?.status === 'complete') {
-            cleanupNeboLoopOAuth();
-            neboLoopConnected = true;
-            neboLoopEmail = status.email ?? '';
-            neboLoopLoading = false;
-            logger.info('NeboLoop OAuth completed');
+            cleanupNeboAIOAuth();
+            neboAIConnected = true;
+            neboAIEmail = status.email ?? '';
+            neboAILoading = false;
+            logger.info('NeboAI OAuth completed');
           } else if (status?.status === 'error') {
-            cleanupNeboLoopOAuth();
-            neboLoopLoading = false;
-            neboLoopError = status.error || 'OAuth failed. Please try again.';
+            cleanupNeboAIOAuth();
+            neboAILoading = false;
+            neboAIError = status.error || 'OAuth failed. Please try again.';
           } else if (status?.status === 'expired') {
-            cleanupNeboLoopOAuth();
-            neboLoopLoading = false;
-            neboLoopError = 'OAuth session expired. Please try again.';
+            cleanupNeboAIOAuth();
+            neboAILoading = false;
+            neboAIError = 'OAuth session expired. Please try again.';
           }
           // 'pending' — keep polling
         } catch {
@@ -156,9 +156,9 @@
         }
       }, 2000);
     } catch (err) {
-      neboLoopLoading = false;
-      neboLoopError = err instanceof Error ? err.message : 'Failed to start OAuth flow';
-      logger.error('NeboLoop OAuth start failed', err);
+      neboAILoading = false;
+      neboAIError = err instanceof Error ? err.message : 'Failed to start OAuth flow';
+      logger.error('NeboAI OAuth start failed', err);
     }
   }
 
@@ -306,23 +306,23 @@
   </div>
 
 {:else if step === 2}
-  <!-- Connect NeboLoop -->
+  <!-- Connect NeboAI -->
   <div class="text-center">
     <div class="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-5">
       <Link class="w-7 h-7 text-primary" />
     </div>
-    <h2 class="text-2xl font-bold mb-2">Connect NeboLoop</h2>
-    <p class="text-xs text-base-content/50 mb-6">Connect your NeboLoop account to access the marketplace, billing, and the Janus AI gateway.</p>
+    <h2 class="text-2xl font-bold mb-2">Connect NeboAI</h2>
+    <p class="text-xs text-base-content/50 mb-6">Connect your NeboAI account to access the marketplace, billing, and the Janus AI gateway.</p>
 
     <div class="mb-8">
-      {#if neboLoopConnected}
+      {#if neboAIConnected}
         <div class="p-4 rounded-xl border border-success/30 bg-success/5 max-w-sm mx-auto">
           <div class="flex items-center justify-center gap-2">
             <Check class="w-5 h-5 text-success" />
-            <span class="text-sm font-semibold text-success">Connected{neboLoopEmail ? ` as ${neboLoopEmail}` : ''}</span>
+            <span class="text-sm font-semibold text-success">Connected{neboAIEmail ? ` as ${neboAIEmail}` : ''}</span>
           </div>
         </div>
-      {:else if neboLoopLoading}
+      {:else if neboAILoading}
         <div class="max-w-sm mx-auto">
           <button
             disabled
@@ -335,13 +335,13 @@
       {:else}
         <div class="max-w-sm mx-auto">
           <button
-            onclick={connectNeboLoop}
+            onclick={connectNeboAI}
             class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
           >
-            Connect with NeboLoop
+            Connect with NeboAI
           </button>
-          {#if neboLoopError}
-            <p class="text-xs text-error mt-3">{neboLoopError}</p>
+          {#if neboAIError}
+            <p class="text-xs text-error mt-3">{neboAIError}</p>
           {/if}
         </div>
       {/if}
@@ -349,12 +349,12 @@
 
     <div class="flex items-center justify-center gap-3">
       <button
-        onclick={() => { cleanupNeboLoopOAuth(); step = SHOW_LANGUAGE_STEP ? 1 : 0; }}
+        onclick={() => { cleanupNeboAIOAuth(); step = SHOW_LANGUAGE_STEP ? 1 : 0; }}
         class="inline-flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-base-content/60 cursor-pointer hover:text-base-content transition-colors border-none bg-transparent"
       >
         <ArrowLeft class="w-4 h-4" /> Back
       </button>
-      {#if neboLoopConnected}
+      {#if neboAIConnected}
         <button
           onclick={() => (step = 3)}
           class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
@@ -363,7 +363,7 @@
         </button>
       {:else}
         <button
-          onclick={() => { cleanupNeboLoopOAuth(); step = 3; }}
+          onclick={() => { cleanupNeboAIOAuth(); step = 3; }}
           class="inline-flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-base-content/60 cursor-pointer hover:text-base-content transition-colors border-none bg-transparent"
         >
           Skip for now <ArrowRight class="w-4 h-4" />

@@ -63,7 +63,7 @@ whether it exists, and what shape the response must have.
     "description": "string",
     "longDesc": "string",
     "category": "string",
-    "author": { "id": "", "name": "NeboLoop", "verified": true },
+    "author": { "id": "", "name": "NeboAI", "verified": true },
     "rating": 4.8,
     "installCount": 0,
     "price": "Get",
@@ -78,9 +78,9 @@ whether it exists, and what shape the response must have.
     "hasAuth": true,
     "ratingDistribution": { "5": 100, "4": 50, "3": 20, "2": 5, "1": 2 },
     "developer": {
-      "name": "NeboLoop",
-      "website": "neboloop.com",
-      "support": "support@neboloop.com",
+      "name": "NeboAI",
+      "website": "neboai.com",
+      "support": "support@neboai.com",
       "launched": "Jan 2026"
     },
     "pricing": [

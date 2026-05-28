@@ -34,10 +34,10 @@
   }
 
   const resources = [
-    { label: 'Documentation', url: 'https://docs.neboloop.com' },
-    { label: 'Report an Issue', url: 'https://github.com/NeboLoop/nebo/issues' },
-    { label: 'Privacy Policy', url: 'https://neboloop.com/privacy' },
-    { label: 'Terms of Service', url: 'https://neboloop.com/terms' },
+    { label: 'Documentation', url: 'https://docs.neboai.com' },
+    { label: 'Report an Issue', url: 'https://github.com/NeboAI/nebo/issues' },
+    { label: 'Privacy Policy', url: 'https://neboai.com/privacy' },
+    { label: 'Terms of Service', url: 'https://neboai.com/terms' },
   ];
 </script>
 

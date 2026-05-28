@@ -17,7 +17,7 @@ use config;
 use types::NeboError;
 use types::api::ErrorResponse;
 
-const NEBOLOOP_OAUTH_CLIENT_ID: &str = "nbl_nebo_desktop";
+const NEBOAI_OAUTH_CLIENT_ID: &str = "nbl_nebo_desktop";
 const OAUTH_FLOW_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 // --- In-memory pending OAuth flows ---
@@ -61,8 +61,8 @@ fn generate_state() -> String {
 }
 
 /// Derive frontend URL from API URL.
-/// e.g. "https://api.neboloop.com" → "https://neboloop.com"
-fn neboloop_frontend_url(api_url: &str) -> String {
+/// e.g. "https://api.neboai.com" → "https://neboai.com"
+fn neboai_frontend_url(api_url: &str) -> String {
     match url::Url::parse(api_url) {
         Ok(mut u) => {
             let needs_rewrite = u.host_str().map_or(false, |h| h.starts_with("api."));
@@ -99,11 +99,11 @@ pub async fn oauth_start(
     State(state): State<AppState>,
     Query(params): Query<OAuthStartParams>,
 ) -> HandlerResult<OAuthStartResponse> {
-    if !state.config.is_neboloop_enabled() {
+    if !state.config.is_neboai_enabled() {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "NeboLoop integration is disabled".into(),
+                error: "NeboAI integration is disabled".into(),
             }),
         ));
     }
@@ -114,13 +114,13 @@ pub async fn oauth_start(
     let janus_provider = params.janus.as_deref() == Some("true");
 
     let redirect_uri = format!(
-        "http://localhost:{}/auth/neboloop/callback",
+        "http://localhost:{}/auth/neboai/callback",
         state.config.port
     );
 
     let authorize_params = [
         ("response_type", "code"),
-        ("client_id", NEBOLOOP_OAUTH_CLIENT_ID),
+        ("client_id", NEBOAI_OAUTH_CLIENT_ID),
         ("redirect_uri", &redirect_uri),
         ("scope", "openid profile email"),
         ("state", &flow_state),
@@ -134,7 +134,7 @@ pub async fn oauth_start(
         .collect::<Vec<_>>()
         .join("&");
 
-    let frontend_url = neboloop_frontend_url(&state.config.neboloop.api_url);
+    let frontend_url = neboai_frontend_url(&state.config.neboai.api_url);
     let authorize_url = format!("{}/oauth/authorize?{}", frontend_url, query_string);
 
     // Store pending flow
@@ -157,7 +157,7 @@ pub async fn oauth_start(
     }
 
     // Open browser (server-side, same pattern as Go implementation)
-    info!("Opening NeboLoop OAuth URL in system browser");
+    info!("Opening NeboAI OAuth URL in system browser");
     if let Err(e) = open::that(&authorize_url) {
         warn!("Failed to open browser: {e}");
     }
@@ -206,9 +206,9 @@ pub async fn oauth_callback(
         return callback_html("", "Missing authorization code");
     }
 
-    let api_url = app_state.config.neboloop.api_url.clone();
+    let api_url = app_state.config.neboai.api_url.clone();
     let redirect_uri = format!(
-        "http://localhost:{}/auth/neboloop/callback",
+        "http://localhost:{}/auth/neboai/callback",
         app_state.config.port
     );
     let code_verifier = flow.code_verifier.clone();
@@ -235,8 +235,8 @@ pub async fn oauth_callback(
         }
     };
 
-    // Store NeboLoop profile in auth_profiles
-    if let Err(e) = store_neboloop_profile(
+    // Store NeboAI profile in auth_profiles
+    if let Err(e) = store_neboai_profile(
         &app_state,
         &api_url,
         &user_info.id,
@@ -246,7 +246,7 @@ pub async fn oauth_callback(
         &token_resp.refresh_token,
         janus_provider,
     ) {
-        warn!("Failed to store NeboLoop profile: {e}");
+        warn!("Failed to store NeboAI profile: {e}");
     }
 
     // Reload AI providers so Janus is available immediately
@@ -356,7 +356,7 @@ pub struct AccountStatusResponse {
 pub async fn account_status(State(state): State<AppState>) -> HandlerResult<AccountStatusResponse> {
     let profiles = state
         .store
-        .list_all_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
 
     if profiles.is_empty() {
@@ -404,13 +404,13 @@ pub async fn account_status(State(state): State<AppState>) -> HandlerResult<Acco
     }))
 }
 
-// --- Bot connection status (NeboLoop MQTT) ---
+// --- Bot connection status (NeboAI MQTT) ---
 
-/// GET /api/v1/neboloop/status — bot/WebSocket connection status.
+/// GET /api/v1/neboai/status — bot/WebSocket connection status.
 pub async fn bot_status(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let profiles = state
         .store
-        .list_all_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
 
     let ws_connected = state.comm_manager.is_connected().await;
@@ -420,7 +420,7 @@ pub async fn bot_status(State(state): State<AppState>) -> HandlerResult<serde_js
         "connected": ws_connected,
         "authenticated": !profiles.is_empty(),
         "botId": bot_id,
-        "apiServer": state.config.neboloop.api_url,
+        "apiServer": state.config.neboai.api_url,
     })))
 }
 
@@ -428,10 +428,10 @@ pub async fn bot_status(State(state): State<AppState>) -> HandlerResult<serde_js
 
 /// Fetch usage directly from Janus GET /v1/usage and update the in-memory cache.
 async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage, NeboError> {
-    let janus_url = &state.config.neboloop.janus_url;
+    let janus_url = &state.config.neboai.janus_url;
     let profiles = state
         .store
-        .list_all_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
     let token = profiles
         .first()
@@ -439,7 +439,7 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
         .unwrap_or_default();
     if token.is_empty() {
         return Err(NeboError::Internal(
-            "no neboloop token for janus usage".into(),
+            "no neboai token for janus usage".into(),
         ));
     }
     let bot_id = config::read_bot_id().unwrap_or_default();
@@ -554,7 +554,7 @@ fn janus_usage_response(u: &crate::state::JanusUsage) -> serde_json::Value {
     })
 }
 
-/// GET /api/v1/neboloop/janus/usage — Janus usage stats.
+/// GET /api/v1/neboai/janus/usage — Janus usage stats.
 /// Returns cached data if available, otherwise fetches directly from Janus.
 pub async fn janus_usage(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     // Try in-memory cache first
@@ -578,7 +578,7 @@ pub async fn janus_usage(State(state): State<AppState>) -> HandlerResult<serde_j
     }
 }
 
-/// POST /api/v1/neboloop/janus/usage/refresh — Force-refresh usage from Janus.
+/// POST /api/v1/neboai/janus/usage/refresh — Force-refresh usage from Janus.
 pub async fn janus_usage_refresh(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
@@ -586,11 +586,11 @@ pub async fn janus_usage_refresh(
     Ok(Json(janus_usage_response(&u)))
 }
 
-// --- Open NeboLoop in browser ---
+// --- Open NeboAI in browser ---
 
-/// GET /api/v1/neboloop/open — Open NeboLoop dashboard in system browser.
-pub async fn open_neboloop(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    let frontend_url = neboloop_frontend_url(&state.config.neboloop.api_url);
+/// GET /api/v1/neboai/open — Open NeboAI dashboard in system browser.
+pub async fn open_neboai(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let frontend_url = neboai_frontend_url(&state.config.neboai.api_url);
     // Best-effort: open browser, may fail in headless environments
     let _ = open::that(&frontend_url);
     Ok(Json(serde_json::json!({"ok": true})))
@@ -608,17 +608,17 @@ pub async fn account_disconnect(
 ) -> HandlerResult<DisconnectResponse> {
     let profiles = state
         .store
-        .list_all_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
 
     for profile in &profiles {
         if let Err(e) = state.store.delete_auth_profile(&profile.id) {
-            warn!("Failed to delete NeboLoop profile {}: {e}", profile.id);
+            warn!("Failed to delete NeboAI profile {}: {e}", profile.id);
         }
     }
 
     Ok(Json(DisconnectResponse {
-        message: "Disconnected from NeboLoop".into(),
+        message: "Disconnected from NeboAI".into(),
     }))
 }
 
@@ -710,7 +710,7 @@ pub struct InvoiceInfo {
 
 // --- Billing proxy handlers ---
 
-/// GET /api/v1/neboloop/billing/prices — list billing plans/prices.
+/// GET /api/v1/neboai/billing/prices — list billing plans/prices.
 pub async fn billing_prices(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
     let resp = api
@@ -727,7 +727,7 @@ pub async fn billing_prices(State(state): State<AppState>) -> HandlerResult<serd
     })))
 }
 
-/// GET /api/v1/neboloop/billing/subscription — current subscription.
+/// GET /api/v1/neboai/billing/subscription — current subscription.
 pub async fn billing_subscription(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
@@ -762,7 +762,7 @@ pub struct CheckoutRequest {
     pub ui_mode: Option<String>,
 }
 
-/// POST /api/v1/neboloop/billing/checkout — create Stripe checkout session.
+/// POST /api/v1/neboai/billing/checkout — create Stripe checkout session.
 pub async fn billing_checkout(
     State(state): State<AppState>,
     Json(body): Json<CheckoutRequest>,
@@ -806,7 +806,7 @@ pub async fn billing_checkout(
     })))
 }
 
-/// POST /api/v1/neboloop/billing/subscribe — create inline subscription (returns clientSecret for PaymentElement).
+/// POST /api/v1/neboai/billing/subscribe — create inline subscription (returns clientSecret for PaymentElement).
 pub async fn billing_subscribe(
     State(state): State<AppState>,
     Json(body): Json<CheckoutRequest>,
@@ -824,7 +824,7 @@ pub async fn billing_subscribe(
     Ok(Json(resp))
 }
 
-/// POST /api/v1/neboloop/billing/portal — open Stripe customer portal.
+/// POST /api/v1/neboai/billing/portal — open Stripe customer portal.
 pub async fn billing_portal(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
     let resp = api
@@ -838,7 +838,7 @@ pub async fn billing_portal(State(state): State<AppState>) -> HandlerResult<serd
     Ok(Json(resp))
 }
 
-/// POST /api/v1/neboloop/billing/setup-intent — create Stripe SetupIntent for in-app Elements.
+/// POST /api/v1/neboai/billing/setup-intent — create Stripe SetupIntent for in-app Elements.
 pub async fn billing_setup_intent(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
@@ -860,7 +860,7 @@ pub struct CancelRequest {
     pub subscription_id: String,
 }
 
-/// POST /api/v1/neboloop/billing/cancel — cancel subscription.
+/// POST /api/v1/neboai/billing/cancel — cancel subscription.
 pub async fn billing_cancel(
     State(state): State<AppState>,
     Json(body): Json<CancelRequest>,
@@ -873,7 +873,7 @@ pub async fn billing_cancel(
     Ok(Json(resp))
 }
 
-/// GET /api/v1/neboloop/billing/invoices — list invoices.
+/// GET /api/v1/neboai/billing/invoices — list invoices.
 pub async fn billing_invoices(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
     let resp = api
@@ -890,7 +890,7 @@ pub async fn billing_invoices(State(state): State<AppState>) -> HandlerResult<se
     })))
 }
 
-/// GET /api/v1/neboloop/billing/payment-methods — list payment methods.
+/// GET /api/v1/neboai/billing/payment-methods — list payment methods.
 pub async fn billing_payment_methods(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
@@ -908,7 +908,7 @@ pub async fn billing_payment_methods(
     })))
 }
 
-/// GET /api/v1/neboloop/referral-code — fetch or create the user's referral/invite code via NeboLoop.
+/// GET /api/v1/neboai/referral-code — fetch or create the user's referral/invite code via NeboAI.
 pub async fn referral_code(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
     let resp: serde_json::Value = api
@@ -934,7 +934,7 @@ fn default_bot_count() -> i32 {
     1
 }
 
-/// POST /api/v1/neboloop/marketplace/subscriptions — create marketplace subscription (Stripe Checkout).
+/// POST /api/v1/neboai/marketplace/subscriptions — create marketplace subscription (Stripe Checkout).
 pub async fn marketplace_create_subscription(
     State(state): State<AppState>,
     Json(body): Json<MarketplaceSubscriptionRequest>,
@@ -951,7 +951,7 @@ pub async fn marketplace_create_subscription(
     Ok(Json(resp))
 }
 
-/// GET /api/v1/neboloop/marketplace/subscriptions — list active marketplace subscriptions.
+/// GET /api/v1/neboai/marketplace/subscriptions — list active marketplace subscriptions.
 pub async fn marketplace_list_subscriptions(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
@@ -964,7 +964,7 @@ pub async fn marketplace_list_subscriptions(
     Ok(Json(resp))
 }
 
-/// POST /api/v1/neboloop/marketplace/subscriptions/:id/cancel — cancel a marketplace subscription.
+/// POST /api/v1/neboai/marketplace/subscriptions/:id/cancel — cancel a marketplace subscription.
 pub async fn marketplace_cancel_subscription(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1014,7 +1014,7 @@ async fn exchange_oauth_code(
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": redirect_uri,
-        "client_id": NEBOLOOP_OAUTH_CLIENT_ID,
+        "client_id": NEBOAI_OAUTH_CLIENT_ID,
         "code_verifier": code_verifier,
     });
 
@@ -1055,7 +1055,7 @@ async fn fetch_user_info(api_url: &str, access_token: &str) -> Result<OAuthUserI
         .map_err(|e| format!("decode userinfo response: {e}"))
 }
 
-pub(crate) fn store_neboloop_profile(
+pub(crate) fn store_neboai_profile(
     app_state: &AppState,
     api_url: &str,
     owner_id: &str,
@@ -1067,10 +1067,10 @@ pub(crate) fn store_neboloop_profile(
 ) -> Result<(), String> {
     let profiles = app_state
         .store
-        .list_all_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
 
-    // Default to janus enabled — it's the primary reason users connect to NeboLoop.
+    // Default to janus enabled — it's the primary reason users connect to NeboAI.
     // Only disable if an existing profile explicitly has janus_provider="false".
     let janus = if janus_provider {
         true
@@ -1127,7 +1127,7 @@ pub(crate) fn store_neboloop_profile(
             .create_auth_profile(
                 &id,
                 email,
-                "neboloop",
+                "neboai",
                 token,
                 None,
                 Some(api_url),
@@ -1149,7 +1149,7 @@ pub struct ConnectRequest {
     pub code: String,
 }
 
-/// POST /neboloop/connect — Redeem a NEBO code to connect this bot to NeboLoop.
+/// POST /neboai/connect — Redeem a NEBO code to connect this bot to NeboAI.
 pub async fn connect_handler(
     State(state): State<AppState>,
     Json(body): Json<ConnectRequest>,
@@ -1173,7 +1173,7 @@ fn callback_html(_email: &str, err_msg: &str) -> Html<String> {
 
     Html(format!(
         r#"<!DOCTYPE html>
-<html><head><title>NeboLoop</title>
+<html><head><title>NeboAI</title>
 <style>
 body {{ font-family: -apple-system, sans-serif; display: flex; align-items: center;
   justify-content: center; min-height: 100vh; margin: 0; background: #f5f5f5; }}
@@ -1192,25 +1192,25 @@ setTimeout(function() {{ window.close(); }}, 1500);
 
 // ── Force reconnect (sleep/wake recovery) ─────────────────────────────
 
-/// POST /api/v1/neboloop/reconnect — tear down stale connection and reconnect.
+/// POST /api/v1/neboai/reconnect — tear down stale connection and reconnect.
 /// Called by Tauri on system resume or manually for diagnostics.
 pub async fn force_reconnect(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    info!("neboloop: force reconnect requested (sleep/wake)");
+    info!("neboai: force reconnect requested (sleep/wake)");
 
     state.comm_manager.shutdown().await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    match crate::codes::activate_neboloop(&state).await {
+    match crate::codes::activate_neboai(&state).await {
         Ok(()) => {
             if let Some(new_token) = state.comm_manager.take_rotated_token().await {
                 let _ = state
                     .store
-                    .update_auth_profile_token_by_provider("neboloop", &new_token);
+                    .update_auth_profile_token_by_provider("neboai", &new_token);
             }
             Ok(Json(serde_json::json!({"reconnected": true})))
         }
         Err(e) => {
-            warn!(error = %e, "neboloop: force reconnect failed");
+            warn!(error = %e, "neboai: force reconnect failed");
             Ok(Json(
                 serde_json::json!({"reconnected": false, "error": e.to_string()}),
             ))

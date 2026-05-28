@@ -1,4 +1,4 @@
-//! NeboLoop WebSocket plugin — implements `CommPlugin` for the NeboLoop comms
+//! NeboAI WebSocket plugin — implements `CommPlugin` for the NeboAI comms
 //! gateway. Connects via tokio-tungstenite, authenticates with binary framing,
 //! and dispatches typed messages (installs, chat, DMs, loop channels, voice).
 
@@ -13,7 +13,7 @@ use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, info, warn};
 
-use crate::api::NeboLoopApi;
+use crate::api::NeboAIApi;
 use crate::compress;
 use crate::dedup::DedupWindow;
 use crate::devlog::DevLog;
@@ -54,11 +54,11 @@ pub(crate) struct AgentSpaceMeta {
 struct Inner {
     send_tx: Option<mpsc::Sender<Vec<u8>>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
-    api: Option<Arc<NeboLoopApi>>,
+    api: Option<Arc<NeboAIApi>>,
 }
 
-/// NeboLoop WebSocket CommPlugin.
-pub struct NeboLoopPlugin {
+/// NeboAI WebSocket CommPlugin.
+pub struct NeboAIPlugin {
     inner: RwLock<Inner>,
     /// Message handler — separate sync lock so `set_message_handler()` never fails.
     /// Using `std::sync::RwLock` (not tokio) because the trait method is sync.
@@ -78,7 +78,7 @@ pub struct NeboLoopPlugin {
     disconnect_notify: Arc<Notify>,
 }
 
-impl NeboLoopPlugin {
+impl NeboAIPlugin {
     pub fn new() -> Self {
         Self {
             inner: RwLock::new(Inner {
@@ -104,7 +104,7 @@ impl NeboLoopPlugin {
     }
 
     /// Get the API client (available after connect).
-    pub async fn api(&self) -> Option<Arc<NeboLoopApi>> {
+    pub async fn api(&self) -> Option<Arc<NeboAIApi>> {
         self.inner.read().await.api.clone()
     }
 
@@ -269,16 +269,16 @@ impl NeboLoopPlugin {
     }
 }
 
-impl Default for NeboLoopPlugin {
+impl Default for NeboAIPlugin {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait::async_trait]
-impl CommPlugin for NeboLoopPlugin {
+impl CommPlugin for NeboAIPlugin {
     fn name(&self) -> &str {
-        "neboloop"
+        "neboai"
     }
 
     fn version(&self) -> &str {
@@ -329,7 +329,7 @@ impl CommPlugin for NeboLoopPlugin {
         if let Some(dir) = config.get("data_dir") {
             let log_path = std::path::PathBuf::from(dir)
                 .join("logs")
-                .join("neboloop.log");
+                .join("neboai.log");
             if let Some(dl) = DevLog::open(&log_path) {
                 dl.event("────────────────────────────────────────");
                 dl.event(&format!("CONNECT {} bot={}", gateway, &bot_id));
@@ -338,7 +338,7 @@ impl CommPlugin for NeboLoopPlugin {
         }
 
         // Create API client
-        let api = Arc::new(NeboLoopApi::new(api_server, bot_id.clone(), token.clone()));
+        let api = Arc::new(NeboAIApi::new(api_server, bot_id.clone(), token.clone()));
 
         // WebSocket connect
         let (ws_stream, _) = tokio_tungstenite::connect_async(&gateway)
@@ -418,7 +418,7 @@ impl CommPlugin for NeboLoopPlugin {
                 // is killed (e.g. hot reload) before the caller can persist to DB,
                 // the next startup reads this file and avoids "stale token" failure.
                 if let Some(dir) = config.get("data_dir") {
-                    let cache_path = std::path::PathBuf::from(dir).join("neboloop_token.cache");
+                    let cache_path = std::path::PathBuf::from(dir).join("neboai_token.cache");
                     if let Err(e) = std::fs::write(&cache_path, &auth_result.token) {
                         warn!(error = %e, "failed to cache rotated token");
                     }
@@ -430,7 +430,7 @@ impl CommPlugin for NeboLoopPlugin {
             dl.event("AUTH_OK");
         }
 
-        info!(gateway = %gateway, bot_id = %bot_id, "connected to neboloop gateway");
+        info!(gateway = %gateway, bot_id = %bot_id, "connected to neboai gateway");
 
         // Set up send channel + cancellation
         let (send_tx, send_rx) = mpsc::channel::<Vec<u8>>(256);
@@ -542,7 +542,7 @@ impl CommPlugin for NeboLoopPlugin {
             cancel.cancel();
         }
         inner.send_tx = None;
-        info!("neboloop disconnected");
+        info!("neboai disconnected");
         Ok(())
     }
 
@@ -625,19 +625,19 @@ impl CommPlugin for NeboLoopPlugin {
     }
 
     async fn subscribe(&self, topic: &str) -> Result<(), CommError> {
-        // NeboLoop uses JoinBotStream instead of topic subscriptions.
+        // NeboAI uses JoinBotStream instead of topic subscriptions.
         // If topic matches a stream name, join it.
         let bot_id = self.bot_id.read().await.clone();
         self.join_bot_stream(&bot_id, topic).await
     }
 
     async fn unsubscribe(&self, _topic: &str) -> Result<(), CommError> {
-        // NeboLoop doesn't have explicit unsubscribe for bot streams
+        // NeboAI doesn't have explicit unsubscribe for bot streams
         Ok(())
     }
 
     async fn register(&self, _agent_id: &str, _card: &AgentCard) -> Result<(), CommError> {
-        // NeboLoop doesn't use agent card registration — identity is via bot_id/JWT
+        // NeboAI doesn't use agent card registration — identity is via bot_id/JWT
         Ok(())
     }
 
@@ -894,7 +894,7 @@ async fn read_loop(
                 let msg = match result {
                     Ok(Some(Ok(m))) => m,
                     Ok(Some(Err(e))) => {
-                        warn!(error = %e, "neboloop read error");
+                        warn!(error = %e, "neboai read error");
                         if let Some(ref dl) = devlog {
                             dl.error(&format!("read error: {}", e));
                         }
@@ -909,7 +909,7 @@ async fn read_loop(
                     Err(_) => {
                         // No data received in 120s (4x the 30s ping interval).
                         // Connection is likely dead (e.g. after system sleep/wake).
-                        warn!("neboloop read timeout (120s), treating as disconnect");
+                        warn!("neboai read timeout (120s), treating as disconnect");
                         if let Some(ref dl) = devlog {
                             dl.event("READ_TIMEOUT (120s) — treating as disconnect");
                         }
@@ -1169,7 +1169,7 @@ async fn read_loop(
     if !was_cancelled {
         disconnect_notify.notify_one();
     }
-    info!("neboloop read loop exited");
+    info!("neboai read loop exited");
 }
 
 /// Write loop — sends queued frames and periodic pings.
@@ -1192,14 +1192,14 @@ async fn write_loop(
                             dl.event(&format!("→ SEND frame={}b", data.len()));
                         }
                         if let Err(e) = write.send(WsMessage::Binary(data.into())).await {
-                            warn!(error = %e, "neboloop write error");
+                            warn!(error = %e, "neboai write error");
                             break;
                         }
                     }
                     None => {
                         // Send channel closed (disconnect or replaced by new connect).
                         // Exit cleanly so we don't keep pinging a ghost connection.
-                        debug!("neboloop send channel closed, exiting write loop");
+                        debug!("neboai send channel closed, exiting write loop");
                         break;
                     }
                 }
@@ -1214,7 +1214,7 @@ async fn write_loop(
                 if elapsed > std::time::Duration::from_secs(60) {
                     warn!(
                         elapsed_secs = elapsed.as_secs(),
-                        "neboloop write loop detected sleep drift, exiting"
+                        "neboai write loop detected sleep drift, exiting"
                     );
                     if let Some(ref dl) = devlog {
                         dl.event(&format!("SLEEP_DRIFT detected ({}s), exiting write loop", elapsed.as_secs()));
@@ -1226,7 +1226,7 @@ async fn write_loop(
                     dl.event("→ PING");
                 }
                 if let Err(e) = write.send(WsMessage::Ping(vec![].into())).await {
-                    debug!(error = %e, "neboloop ping error");
+                    debug!(error = %e, "neboai ping error");
                     break;
                 }
             }
@@ -1251,7 +1251,7 @@ async fn write_loop(
     if let Some(ref dl) = devlog {
         dl.event("WRITE_LOOP exited");
     }
-    debug!("neboloop write loop exited");
+    debug!("neboai write loop exited");
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -1280,7 +1280,7 @@ fn uuid_from_bytes(b: &[u8; 16]) -> String {
 }
 
 /// Derive REST API URL from a WebSocket gateway URL.
-/// e.g. "wss://comms.neboloop.com/ws" → "https://api.neboloop.com"
+/// e.g. "wss://comms.neboai.com/ws" → "https://api.neboai.com"
 fn derive_api_url(gateway: &str) -> String {
     if gateway.contains("localhost") || gateway.contains("127.0.0.1") {
         return "http://localhost:8888".to_string();

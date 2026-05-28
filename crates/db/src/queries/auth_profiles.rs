@@ -198,7 +198,7 @@ impl Store {
     }
 
     /// Update only the api_key (token) for auth profiles matching a provider.
-    /// Used for NeboLoop JWT rotation — gateway rotates the token on each AUTH_OK.
+    /// Used for NeboAI JWT rotation — gateway rotates the token on each AUTH_OK.
     pub fn update_auth_profile_token_by_provider(
         &self,
         provider: &str,
