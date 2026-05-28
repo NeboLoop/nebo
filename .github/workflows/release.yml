@@ -138,17 +138,14 @@ jobs:
 
       - name: Build Tauri desktop app
         env:
-          # Force every CMake/autoconf-driven native dep (whisper-rs,
-          # espeak-rs, mp3lame, libsqlite3, ring, zstd, etc.) to build
-          # for the matrix target arch rather than the runner's host
-          # arch. Required for cross-build from macos-latest (arm64) to
-          # x86_64-apple-darwin. Scoped to this step ONLY — applying
-          # these at job scope breaks `cargo install tauri-cli` which
-          # links against the host's arm64 stdlib.
-          CMAKE_OSX_ARCHITECTURES: ${{ matrix.osx_arch }}
+          # We rely on cc-rs and cmake-rs to derive `-arch` and
+          # `CMAKE_OSX_ARCHITECTURES` from the cargo target (set per
+          # `--target` below). Don't set global CFLAGS / CXXFLAGS /
+          # CMAKE_OSX_ARCHITECTURES — those propagate into BOTH host
+          # builds (build scripts, proc macros) and target builds,
+          # producing x86_64 objects in a host rlib that the arm64
+          # build-script link then rejects.
           MACOSX_DEPLOYMENT_TARGET: "11.0"
-          CFLAGS: "-arch ${{ matrix.osx_arch }}"
-          CXXFLAGS: "-arch ${{ matrix.osx_arch }}"
         run: cargo tauri build --target ${{ matrix.target }}
 
       - name: Re-sign .app with Developer ID
