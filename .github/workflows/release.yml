@@ -63,15 +63,10 @@ jobs:
       HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
       HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
-      # Force every CMake/autoconf-driven native dep (whisper-rs, espeak-rs,
-      # mp3lame, libsqlite3, ring, zstd, etc.) to build for the requested
-      # target architecture instead of the host. Without these, cross-build
-      # to x86_64 from an arm64 runner silently produces arm64 object files
-      # and the final link fails with arch mismatches.
-      CMAKE_OSX_ARCHITECTURES: ${{ matrix.osx_arch }}
-      MACOSX_DEPLOYMENT_TARGET: "11.0"
-      CFLAGS: "-arch ${{ matrix.osx_arch }}"
-      CXXFLAGS: "-arch ${{ matrix.osx_arch }}"
+      # NOTE: CMAKE_OSX_ARCHITECTURES, CFLAGS, CXXFLAGS for cross-build are
+      # set ONLY on the "Build Tauri desktop app" step below — not at job
+      # scope — so host-arch tools like `cargo install tauri-cli` link
+      # for arm64 (the host) rather than the matrix's target arch.
     steps:
       - uses: actions/checkout@v4
 
@@ -142,6 +137,18 @@ jobs:
           find src-tauri/bundled-napps -name "*.napp" -type f | sort
 
       - name: Build Tauri desktop app
+        env:
+          # Force every CMake/autoconf-driven native dep (whisper-rs,
+          # espeak-rs, mp3lame, libsqlite3, ring, zstd, etc.) to build
+          # for the matrix target arch rather than the runner's host
+          # arch. Required for cross-build from macos-latest (arm64) to
+          # x86_64-apple-darwin. Scoped to this step ONLY — applying
+          # these at job scope breaks `cargo install tauri-cli` which
+          # links against the host's arm64 stdlib.
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.osx_arch }}
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          CFLAGS: "-arch ${{ matrix.osx_arch }}"
+          CXXFLAGS: "-arch ${{ matrix.osx_arch }}"
         run: cargo tauri build --target ${{ matrix.target }}
 
       - name: Re-sign .app with Developer ID
