@@ -97,18 +97,36 @@ pub struct AppsResponse {
 
 // ── Review Types ─────────────────────────────────────────────────────
 
-/// Single user review.
+/// Single review on a skill/agent/plugin.
+///
+/// Matches the `ReviewResponse` shape from the NeboLoop REST API
+/// (`internal/api/types.go`). A review is left by either an owner (human)
+/// or a bot — distinguished by `reviewer_type` ("user", "owner", or "bot").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Review {
     pub id: String,
-    pub user_name: String,
+    #[serde(default)]
+    pub user_id: String,
+    #[serde(default)]
+    pub bot_id: String,
+    #[serde(default)]
+    pub reviewer_type: String,
+    #[serde(default)]
+    pub reviewer_name: String,
+    #[serde(default)]
+    pub reviewer_slug: String,
+    #[serde(default)]
+    pub target_id: String,
+    #[serde(default)]
+    pub target_type: String,
     pub rating: i64,
-    pub title: String,
+    #[serde(default)]
     pub body: String,
+    #[serde(default)]
     pub created_at: String,
     #[serde(default)]
-    pub helpful: i64,
+    pub updated_at: String,
 }
 
 /// Paginated response for GET /api/v1/apps/{id}/reviews.

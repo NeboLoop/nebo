@@ -91,7 +91,8 @@ impl DynTool for SkillTool {
          - skill(action: \"install\", code: \"SKIL-XXXX-XXXX\") — Install from marketplace\n\
          - skill(action: \"configure\", name: \"brave-search\", key: \"BRAVE_API_KEY\", value: \"...\") — Set a secret\n\
          - skill(action: \"discover\", query: \"email management\") — Search for skills matching a description\n\
-         - skill(action: \"featured\") / skill(action: \"popular\") / skill(action: \"reviews\", name: \"...\")\n\n\
+         - skill(action: \"featured\") / skill(action: \"popular\") / skill(action: \"reviews\", name: \"...\")\n\
+         - skill(action: \"rate\", name: \"...\", rating: 5, review: \"It saved me a ton of time\") — Leave a 1–5 ★ review on a marketplace skill\n\n\
          If you're about to do something and aren't sure if a skill exists for it, call skill(action: \"discover\", query: \"what you're trying to do\") to check.\n\
          If a skill returns an auth error, guide the user to Settings → Apps to reconnect.\n\n\
          GUARDRAILS: Only invoke skills that appear in the catalog or discover results. Do not guess skill names."
@@ -105,7 +106,7 @@ impl DynTool for SkillTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["catalog", "discover", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "featured", "popular", "reviews"]
+                    "enum": ["catalog", "discover", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "featured", "popular", "reviews", "rate"]
                 },
                 "name": {
                     "type": "string",
@@ -134,6 +135,16 @@ impl DynTool for SkillTool {
                 "query": {
                     "type": "string",
                     "description": "Search query for discover action (describe what you're trying to do)"
+                },
+                "rating": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5,
+                    "description": "Star rating 1–5 (for rate action)"
+                },
+                "review": {
+                    "type": "string",
+                    "description": "Free-text review body (for rate action). Keep it honest and useful — what worked, what didn't."
                 }
             },
             "required": ["action"]
@@ -147,6 +158,7 @@ impl DynTool for SkillTool {
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         matches!(action, "catalog" | "discover" | "help" | "browse" | "read_resource" | "featured" | "popular" | "reviews" | "secrets")
+        // `rate` is intentionally excluded — it mutates marketplace state.
     }
 
     fn execute_dyn<'a>(
@@ -795,14 +807,95 @@ impl DynTool for SkillTool {
                     if name.is_empty() {
                         return ToolResult::error("name is required for reviews");
                     }
-                    // Reviews would come from the marketplace API; for now return placeholder
-                    ToolResult::ok(format!(
-                        "No reviews available for skill '{}'. Reviews are synced from the NeboLoop marketplace.",
-                        name
-                    ))
+                    let store = match &self.store {
+                        Some(s) => s,
+                        None => {
+                            return ToolResult::error(
+                                "reviews not available — store not configured",
+                            );
+                        }
+                    };
+                    let api = match crate::build_neboloop_api(store) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            return ToolResult::error(format!(
+                                "NeboLoop connection required: {}",
+                                e
+                            ));
+                        }
+                    };
+                    match api.get_skill_reviews(name, None, None).await {
+                        Ok(resp) => {
+                            if resp.reviews.is_empty() {
+                                return ToolResult::ok(format!(
+                                    "No reviews yet for skill '{}'.",
+                                    name
+                                ));
+                            }
+                            let lines: Vec<String> = resp
+                                .reviews
+                                .iter()
+                                .map(|r| {
+                                    let who = if r.reviewer_type == "bot" {
+                                        // Bot slugs are already stored prefixed with `@`
+                                        // (e.g. `@bot_xyz`). `/` is reserved for slash
+                                        // commands — never use it for identities.
+                                        format!("🤖 {}", if r.reviewer_name.is_empty() { r.reviewer_slug.clone() } else { r.reviewer_name.clone() })
+                                    } else if !r.reviewer_name.is_empty() {
+                                        r.reviewer_name.clone()
+                                    } else {
+                                        "Anonymous".to_string()
+                                    };
+                                    let stars = "★".repeat(r.rating as usize);
+                                    format!("- {} {} — {}", who, stars, r.body)
+                                })
+                                .collect();
+                            ToolResult::ok(format!(
+                                "Reviews for skill '{}':\n{}",
+                                name,
+                                lines.join("\n")
+                            ))
+                        }
+                        Err(e) => ToolResult::error(format!("failed to fetch reviews: {}", e)),
+                    }
+                }
+                "rate" => {
+                    let name = input["name"].as_str().unwrap_or("");
+                    let rating = input["rating"].as_i64().unwrap_or(0);
+                    let review_body =
+                        input["review"].as_str().or_else(|| input["body"].as_str()).unwrap_or("");
+                    if name.is_empty() {
+                        return ToolResult::error("name is required for rate");
+                    }
+                    if !(1..=5).contains(&rating) {
+                        return ToolResult::error("rating must be between 1 and 5");
+                    }
+                    let store = match &self.store {
+                        Some(s) => s,
+                        None => {
+                            return ToolResult::error("rate not available — store not configured");
+                        }
+                    };
+                    let api = match crate::build_neboloop_api(store) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            return ToolResult::error(format!(
+                                "NeboLoop connection required: {}",
+                                e
+                            ));
+                        }
+                    };
+                    let body = serde_json::json!({ "rating": rating, "review": review_body });
+                    match api.submit_skill_review(name, &body).await {
+                        Ok(_) => ToolResult::ok(format!(
+                            "Posted {}★ review on skill '{}'.",
+                            rating, name
+                        )),
+                        Err(e) => ToolResult::error(format!("failed to post review: {}", e)),
+                    }
                 }
                 other => ToolResult::error(format!(
-                    "Unknown action: {}. Available: catalog, help, browse, read_resource, load, unload, create, update, delete, install, featured, popular, reviews",
+                    "Unknown action: {}. Available: catalog, help, browse, read_resource, load, unload, create, update, delete, install, featured, popular, reviews, rate",
                     other
                 )),
             }
