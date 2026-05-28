@@ -40,24 +40,38 @@ jobs:
           path: app/build/
 
   # ─── macOS desktop builds (Tauri 2) ───────────────────────────────────
+  # Both archs build on `macos-latest` (arm64 host). The x86_64 build is
+  # cross-compiled via `--target=x86_64-apple-darwin` plus the per-arch
+  # env block below. We used to run amd64 on `macos-13` but that runner
+  # pool is severely starved (3+ hour queues) since Apple Silicon
+  # migration, so we switched to cross-build.
   build-macos:
     needs: frontend
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-latest
-            target: aarch64-apple-darwin
+          - target: aarch64-apple-darwin
             arch: arm64
-          - runner: macos-13
-            target: x86_64-apple-darwin
+            osx_arch: arm64
+          - target: x86_64-apple-darwin
             arch: amd64
-    runs-on: ${{ matrix.runner }}
+            osx_arch: x86_64
+    runs-on: macos-latest
     env:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
       HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
       HAS_CDN_URL: ${{ secrets.NEBOLOOP_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
+      # Force every CMake/autoconf-driven native dep (whisper-rs, espeak-rs,
+      # mp3lame, libsqlite3, ring, zstd, etc.) to build for the requested
+      # target architecture instead of the host. Without these, cross-build
+      # to x86_64 from an arm64 runner silently produces arm64 object files
+      # and the final link fails with arch mismatches.
+      CMAKE_OSX_ARCHITECTURES: ${{ matrix.osx_arch }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      CFLAGS: "-arch ${{ matrix.osx_arch }}"
+      CXXFLAGS: "-arch ${{ matrix.osx_arch }}"
     steps:
       - uses: actions/checkout@v4
 
