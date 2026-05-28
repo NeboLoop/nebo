@@ -8,6 +8,7 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import { createChatController } from '$lib/chat/controller.svelte';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
+  import SetupWizard from '$lib/components/SetupWizard.svelte';
   import Check from 'lucide-svelte/icons/check';
   import Trash2 from 'lucide-svelte/icons/trash-2';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
@@ -235,7 +236,7 @@
 
   // --- Channels ---
   type AuthHelp = { url?: string; urlLabel?: string; text?: string };
-  type ChannelInfo = { pluginSlug: string; name: string; description: string; enabled: boolean; authenticated: boolean; needsAuth: boolean; authLabel: string; authEnvKeys: string[]; authHelp?: AuthHelp | null };
+  type ChannelInfo = { pluginSlug: string; name: string; description: string; enabled: boolean; authenticated: boolean; needsAuth: boolean; authLabel: string; authEnvKeys: string[]; authHelp?: AuthHelp | null; setup?: unknown | null; savedValues?: Record<string, string> | null };
   let channelList = $state<ChannelInfo[]>([]);
   let channelsLoading = $state(false);
   let channelTogglingSlug = $state<string | null>(null);
@@ -244,6 +245,7 @@
   let channelAuthInputs = $state<Record<string, string>>({});
   let channelAuthSaving = $state(false);
   let channelAuthError = $state<string | null>(null);
+  let channelWizardOpen = $state(false);
   let helpChatOpen = $state(false);
   let helpChatLoading = $state(false);
   let helpChat = $state<ReturnType<typeof createChatController> | null>(null);
@@ -323,6 +325,20 @@
       channelAuthError = 'Failed to save credentials.';
     }
     finally { channelAuthSaving = false; }
+  }
+
+  // Setup-wizard completion: persist the credentials it collected to this
+  // agent's channel binding (same per-agent path as the manual form), then
+  // close everything and refresh.
+  async function onChannelWizardComplete(slug: string, envValues: Record<string, string>) {
+    const api = await import('$lib/api/nebo');
+    await api.setAgentChannelConfig(agentId, slug, envValues);
+    channelList = channelList.map(ch =>
+      ch.pluginSlug === slug ? { ...ch, authenticated: true } : ch
+    );
+    channelWizardOpen = false;
+    channelAuthModal = null;
+    await loadChannels();
   }
 
   async function toggleChannel(slug: string, currentlyEnabled: boolean) {
@@ -850,6 +866,17 @@
         </div>
 
         <div class="p-5 space-y-4 overflow-y-auto flex-1">
+          {#if ch.setup}
+            <div class="rounded-lg bg-primary/5 border border-primary/30 p-3">
+              <div class="text-sm font-medium mb-1">Guided setup</div>
+              <div class="text-xs text-base-content/70 mb-2.5">Generate a ready-to-paste app manifest, install it, and connect — step by step.</div>
+              <button class="btn btn-sm btn-primary" onclick={() => { channelWizardOpen = true; }} disabled={busy}>
+                Start setup wizard
+              </button>
+              <div class="text-xs text-base-content/50 mt-2">Or paste tokens manually below.</div>
+            </div>
+          {/if}
+
           {#if ch.authHelp?.text}
             <div class="rounded-lg bg-base-200/50 border border-base-300 p-3">
               <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Setup Guide</div>
@@ -926,4 +953,15 @@
       {/if}
     </div>
   </div>
+{/if}
+
+{#if channelWizardOpen && channelAuthModal?.setup}
+  <SetupWizard
+    slug={channelAuthModal.pluginSlug}
+    setup={channelAuthModal.setup as any}
+    initialValues={channelAuthModal.savedValues ?? {}}
+    alreadySetKeys={channelAuthModal.authenticated ? channelAuthModal.authEnvKeys : []}
+    onClose={() => { channelWizardOpen = false; }}
+    onComplete={(envValues) => onChannelWizardComplete(channelAuthModal!.pluginSlug, envValues)}
+  />
 {/if}

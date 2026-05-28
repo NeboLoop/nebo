@@ -188,12 +188,19 @@ pub struct ArtifactSetup {
 /// One step in an artifact setup wizard. The `kind` field discriminates
 /// which UI the frontend renders. Serialized as an internally-tagged
 /// JSON enum (`{"kind": "form", ...}`).
+///
+/// NOTE: `rename_all = "camelCase"` MUST be repeated on each struct
+/// variant. The enum-level `rename_all` only renames variant identifiers,
+/// not the fields inside struct variants — so without per-variant
+/// `rename_all`, fields like `url_label` would be expected as snake_case
+/// and a camelCase manifest would fail to deserialize, silently dropping
+/// the whole plugin from the list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(tag = "kind")]
 pub enum ArtifactSetupStep {
     /// Form step — fields the user fills in. Values are available
     /// for `{{key}}` substitution in later `Generate` steps.
-    #[serde(rename = "form")]
+    #[serde(rename = "form", rename_all = "camelCase")]
     Form {
         /// Step title (e.g., "Bot Identity").
         title: String,
@@ -205,7 +212,7 @@ pub enum ArtifactSetupStep {
     },
     /// Generate step — runs the artifact binary with a subcommand,
     /// shows stdout as a copy-pasteable code block.
-    #[serde(rename = "generate")]
+    #[serde(rename = "generate", rename_all = "camelCase")]
     Generate {
         title: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -228,7 +235,7 @@ pub enum ArtifactSetupStep {
     /// External step — instructions plus a button that opens an
     /// external URL. No automation; the user takes manual action
     /// (e.g., paste a manifest into Slack admin).
-    #[serde(rename = "external")]
+    #[serde(rename = "external", rename_all = "camelCase")]
     External {
         title: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -244,7 +251,7 @@ pub enum ArtifactSetupStep {
     /// Credentials step — collects inputs and persists them as the
     /// artifact's env vars (same shape as `PluginAuth.env`). Each
     /// field's `key` is the env var name.
-    #[serde(rename = "credentials")]
+    #[serde(rename = "credentials", rename_all = "camelCase")]
     Credentials {
         title: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -2490,6 +2497,8 @@ mod tests {
             permissions: None,
             category: String::new(),
             triggers: vec![],
+            channel: None,
+            setup: None,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
@@ -2650,6 +2659,8 @@ mod tests {
             permissions: None,
             category: String::new(),
             triggers: vec![],
+            channel: None,
+            setup: None,
         }
     }
 
@@ -2742,6 +2753,7 @@ mod tests {
             },
             label: String::new(),
             description: String::new(),
+            help: None,
         });
         assert!(m.validate().is_err());
     }
@@ -2977,5 +2989,69 @@ mod tests {
         assert!(parsed.hooks.is_empty());
         assert!(parsed.routes.is_empty());
         assert!(parsed.providers.is_empty());
+    }
+
+    #[test]
+    fn test_artifact_setup_camelcase_struct_variant_fields() {
+        // Regression: enum-level rename_all does NOT cascade to struct
+        // variant fields, so each variant needs its own rename_all. A
+        // camelCase manifest (urlLabel / outputFormat / verifyCommand /
+        // maxLength / inputType) must deserialize, else the whole plugin
+        // is silently dropped from the list. Mirrors slack/plugin.json.
+        let json = r#"{
+          "title": "Connect Slack",
+          "description": "wizard",
+          "steps": [
+            {"kind":"form","title":"Name","fields":[
+              {"key":"name","label":"App name","maxLength":35,"inputType":"text","required":true}
+            ]},
+            {"kind":"generate","title":"Manifest","command":"manifest",
+             "args":["--name","{{name}}"],"outputFormat":"yaml","buttonLabel":"Generate"},
+            {"kind":"external","title":"Create","url":"https://api.slack.com/apps?new_app=1",
+             "urlLabel":"Open Slack admin","instructions":["step one","step two"]},
+            {"kind":"credentials","title":"Tokens","fields":[
+              {"key":"SLACK_BOT_TOKEN","label":"Bot Token","inputType":"password","required":true}
+            ],"verifyCommand":"auth status"}
+          ]
+        }"#;
+        let setup: ArtifactSetup = serde_json::from_str(json).expect("setup must parse");
+        assert_eq!(setup.steps.len(), 4);
+        match &setup.steps[2] {
+            ArtifactSetupStep::External { url_label, instructions, .. } => {
+                assert_eq!(url_label, "Open Slack admin");
+                assert_eq!(instructions.len(), 2);
+            }
+            _ => panic!("step 2 should be External"),
+        }
+        match &setup.steps[1] {
+            ArtifactSetupStep::Generate { output_format, button_label, .. } => {
+                assert_eq!(output_format, "yaml");
+                assert_eq!(button_label, "Generate");
+            }
+            _ => panic!("step 1 should be Generate"),
+        }
+        match &setup.steps[3] {
+            ArtifactSetupStep::Credentials { verify_command, .. } => {
+                assert_eq!(verify_command.as_deref(), Some("auth status"));
+            }
+            _ => panic!("step 3 should be Credentials"),
+        }
+    }
+
+    #[test]
+    fn test_plugin_with_setup_deserializes() {
+        // A plugin.json carrying a camelCase `setup` block must still
+        // deserialize into Plugin — the slack regression that hid the
+        // plugin from the list.
+        let json = r#"{
+          "id":"slack","slug":"slack","name":"Slack","version":"0.2.0",
+          "description":"d","author":"NeboAI","platforms":{},
+          "setup":{"title":"t","steps":[
+            {"kind":"external","title":"x","url":"https://e.com","urlLabel":"Open"}
+          ]}
+        }"#;
+        let plugin: PluginManifest = serde_json::from_str(json).expect("plugin with setup must parse");
+        assert!(plugin.setup.is_some());
+        assert_eq!(plugin.setup.unwrap().steps.len(), 1);
     }
 }

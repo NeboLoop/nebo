@@ -56,6 +56,7 @@ fn test_manifest(slug: &str, binary_name: &str) -> PluginManifest {
         category: String::new(),
         triggers: Vec::new(),
         channel: None,
+        setup: None,
     }
 }
 

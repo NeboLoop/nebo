@@ -2986,6 +2986,26 @@ pub async fn list_agent_channels(
                 ),
                 None => (String::new(), Vec::new(), None),
             };
+            // Surface the plugin's setup wizard (if declared) so the channel
+            // connect modal can render the guided flow instead of the bare
+            // token form. Same ArtifactSetup the Settings → Plugins page uses.
+            let setup = state
+                .plugin_store
+                .get_manifest(slug)
+                .and_then(|m| m.setup)
+                .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null));
+            // Non-secret saved values (e.g. bot name/description from a prior
+            // wizard run) so the wizard can pre-fill. Exclude the auth env
+            // keys — those are secrets we never return to the client.
+            let saved_values: std::collections::HashMap<String, String> = binding
+                .map(|b| {
+                    b.config
+                        .iter()
+                        .filter(|(k, _)| !auth_env_keys.contains(k))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
             channels.push(serde_json::json!({
                 "pluginSlug": slug,
                 "name": if ch.name.is_empty() { slug.clone() } else { ch.name },
@@ -2997,6 +3017,8 @@ pub async fn list_agent_channels(
                 "authEnvKeys": auth_env_keys,
                 "authHelp": auth_help,
                 "hasAgentConfig": has_agent_config,
+                "setup": setup,
+                "savedValues": saved_values,
             }));
         }
     }

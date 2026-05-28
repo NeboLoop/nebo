@@ -60,14 +60,24 @@
 		setup: ArtifactSetup;
 		onClose: () => void;
 		onComplete: (envValues: Record<string, string>) => void | Promise<void>;
+		// Previously-saved non-secret values (e.g. bot name) to pre-fill so a
+		// re-run remembers what was set. Takes priority over field defaults.
+		initialValues?: Record<string, string>;
+		// Keys already stored server-side (e.g. secret tokens we can't show).
+		// Fields with these keys render as "already set — leave blank to keep"
+		// and don't block the step when empty.
+		alreadySetKeys?: string[];
 	};
 
-	let { slug, setup, onClose, onComplete }: Props = $props();
+	let { slug, setup, onClose, onComplete, initialValues = {}, alreadySetKeys = [] }: Props = $props();
 
 	let stepIndex = $state(0);
 	// Form values across the whole wizard — used both for {{key}} substitution
-	// in generate steps and as env vars in the credentials step.
-	let values: Record<string, string> = $state({});
+	// in generate steps and as env vars in the credentials step. Seeded from
+	// any previously-saved values so a re-run remembers them.
+	let values: Record<string, string> = $state({ ...initialValues });
+
+	const alreadySet = (key: string) => alreadySetKeys.includes(key);
 	let generatedOutputs: Record<number, string> = $state({});
 	let generatedFormats: Record<number, string> = $state({});
 	let runningGenerate = $state(false);
@@ -97,7 +107,10 @@
 		if (!currentStep) return false;
 		if (currentStep.kind === 'form' || currentStep.kind === 'credentials') {
 			return currentStep.fields.every(
-				(f) => !f.required || (values[f.key] ?? '').trim().length > 0
+				(f) =>
+					!f.required ||
+					(values[f.key] ?? '').trim().length > 0 ||
+					alreadySet(f.key) // already stored server-side; blank = keep existing
 			);
 		}
 		if (currentStep.kind === 'generate') {
@@ -153,9 +166,18 @@
 		savingCredentials = true;
 		credentialsError = null;
 		try {
+			// Persist ALL collected values (form fields like name/description
+			// from earlier steps + this step's credentials) so a re-run
+			// remembers them. Blank fields already stored server-side are left
+			// untouched — don't wipe an existing token with an empty string.
 			const envValues: Record<string, string> = {};
-			for (const f of currentStep.fields) {
-				envValues[f.key] = values[f.key] ?? '';
+			for (const [key, raw] of Object.entries(values)) {
+				const v = (raw ?? '').trim();
+				if (v.length > 0) {
+					envValues[key] = v;
+				} else if (!alreadySet(key)) {
+					envValues[key] = '';
+				}
 			}
 			await onComplete(envValues);
 		} catch (err) {
@@ -239,7 +261,9 @@
 									class="input input-bordered w-full text-sm {field.inputType === 'password'
 										? 'font-mono'
 										: ''}"
-									placeholder={field.placeholder ?? ''}
+									placeholder={alreadySet(field.key) && !(values[field.key] ?? '').length
+										? '•••••••• already set — leave blank to keep'
+										: (field.placeholder ?? '')}
 									maxlength={field.maxLength ?? undefined}
 									bind:value={values[field.key]}
 								/>
