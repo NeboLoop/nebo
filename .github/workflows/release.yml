@@ -277,7 +277,12 @@ jobs:
         run: |
           MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
           echo "PKG_CONFIG_PATH=/usr/lib/${MULTIARCH}/pkgconfig" >> $GITHUB_ENV
-          echo "RUSTFLAGS=-C link-arg=-L/usr/lib/${MULTIARCH}" >> $GITHUB_ENV
+          # `-l openblas` is REQUIRED — turbovec's `cblas_sgemm` reference
+          # otherwise goes unresolved at link time. `--no-as-needed` forces
+          # the lib to stay in the link line regardless of placement; we
+          # flip back to `--as-needed` afterward so unrelated libs still
+          # get pruned. Tested on arm64 + amd64.
+          echo "RUSTFLAGS=-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" >> $GITHUB_ENV
 
       - name: Download frontend build
         uses: actions/cache/restore@v4
