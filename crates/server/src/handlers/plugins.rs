@@ -73,6 +73,13 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
             .map(|r| r.signature_status.as_str())
             .unwrap_or("unverified");
 
+        // Inline the setup wizard config when the plugin declares one,
+        // so the frontend doesn't have to fetch the manifest separately.
+        let setup = manifest
+            .as_ref()
+            .and_then(|m| m.setup.as_ref())
+            .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null));
+
         plugins.push(serde_json::json!({
             "slug": slug,
             "version": version.to_string(),
@@ -88,6 +95,7 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
             "source": source,
             "enabled": enabled,
             "signatureStatus": sig_status,
+            "setup": setup,
         }));
     }
 
@@ -1072,4 +1080,135 @@ pub async fn start_help_chat(
         "sessionKey": session_key,
         "agentId": agent_id,
     })))
+}
+
+/// POST /plugins/{slug}/setup
+///
+/// Execute a `Generate` step from an artifact's setup wizard. Reads the
+/// plugin's `setup.steps[stepIndex]` (must be a `Generate` step), runs
+/// its command with `{{key}}` placeholders in args substituted from the
+/// `values` map, and returns the resulting stdout. Stderr is captured
+/// and returned only if the command fails.
+///
+/// Request body:
+///   { "stepIndex": <number>, "values": { "<key>": "<value>", ... } }
+///
+/// Response (success):
+///   { "ok": true, "output": "<stdout>", "outputFormat": "<yaml|json|...>" }
+///
+/// Response (failure):
+///   { "ok": false, "error": "<message>", "stderr": "<stderr>", "exitCode": <n> }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupRunRequest {
+    pub step_index: usize,
+    #[serde(default)]
+    pub values: HashMap<String, String>,
+}
+
+pub async fn plugin_setup_run(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Json(req): Json<SetupRunRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let binary_path = state
+        .plugin_store
+        .resolve(&slug, "*")
+        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+
+    let manifest = state
+        .plugin_store
+        .get_manifest(&slug)
+        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+
+    let setup = manifest.setup.as_ref().ok_or_else(|| {
+        to_error_response(NeboError::Internal(format!(
+            "plugin '{slug}' has no setup wizard declared"
+        )))
+    })?;
+
+    let step = setup.steps.get(req.step_index).ok_or_else(|| {
+        to_error_response(NeboError::Internal(format!(
+            "step index {} out of range (have {} steps)",
+            req.step_index,
+            setup.steps.len()
+        )))
+    })?;
+
+    let (command, args, output_format) = match step {
+        napp::plugin::ArtifactSetupStep::Generate {
+            command,
+            args,
+            output_format,
+            ..
+        } => (command.clone(), args.clone(), output_format.clone()),
+        _ => {
+            return Err(to_error_response(NeboError::Internal(format!(
+                "step {} is not a Generate step",
+                req.step_index
+            ))));
+        }
+    };
+
+    // Substitute {{key}} placeholders in args from the values map.
+    // Missing keys leave the placeholder intact — the binary's own
+    // validation surfaces the error, which is more informative than
+    // a generic "missing key" here.
+    let substituted_args: Vec<String> = args
+        .into_iter()
+        .map(|arg| substitute_placeholders(&arg, &req.values))
+        .collect();
+
+    info!(
+        plugin = %slug,
+        command = %command,
+        "running plugin setup-generate"
+    );
+
+    // Run the command. Capture stdout + stderr. Setup commands are
+    // synchronous render operations — no need for the URL-extraction
+    // dance auth_login does.
+    let runtime = napp::PluginRuntime::new(&slug, binary_path, state.plugin_store.clone());
+    let mut cmd = runtime.command(&command);
+    for a in &substituted_args {
+        cmd.arg(a);
+    }
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output = cmd.output().await.map_err(|e| {
+        to_error_response(NeboError::Internal(format!(
+            "failed to spawn setup command: {e}"
+        )))
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Ok(Json(serde_json::json!({
+            "ok": false,
+            "error": "command exited non-zero",
+            "stderr": stderr,
+            "exitCode": output.status.code().unwrap_or(-1),
+        })));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "output": stdout,
+        "outputFormat": output_format,
+    })))
+}
+
+/// Replace `{{key}}` placeholders in `template` with values from `vars`.
+/// Keys with no matching value are left in place — the called binary
+/// surfaces the error, which is more informative than a generic miss here.
+fn substitute_placeholders(template: &str, vars: &HashMap<String, String>) -> String {
+    let mut out = template.to_string();
+    for (key, value) in vars {
+        let needle = format!("{{{{{}}}}}", key);
+        out = out.replace(&needle, value);
+    }
+    out
 }

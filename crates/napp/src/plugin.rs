@@ -78,6 +78,12 @@ pub struct PluginManifest {
     /// The user enables it per-agent in Settings → Plugins → Channel Routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<PluginChannel>,
+    /// Optional setup wizard — multi-step flow rendered by the frontend
+    /// to walk the user through config that has to happen before the
+    /// plugin can be used (e.g., generate a Slack app manifest, register
+    /// a Discord bot). See `ArtifactSetup`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<ArtifactSetup>,
 }
 
 /// Channel bridge declaration in plugin.json.
@@ -154,6 +160,132 @@ pub struct ArtifactHelp {
     /// Inline help text (markdown). Shown directly in the modal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+/// Multi-step setup wizard declared by an artifact (plugin, app, skill,
+/// agent, MCP integration). Each step has a `kind` discriminator that
+/// tells Nebo's frontend which UI to render. The wizard lives in the
+/// frontend; the schema is shared across every artifact type so the
+/// same component drives them all.
+///
+/// Values entered in `Form` steps are available to substitute into
+/// later `Generate` step args via `{{key}}` templating. Field values
+/// in `Credentials` steps are persisted as the artifact's env vars.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactSetup {
+    /// Wizard title (e.g., "Connect Slack"). Shown at the top.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// One-line description shown beneath the title.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Ordered steps. The frontend renders them one at a time with
+    /// Back/Next navigation.
+    pub steps: Vec<ArtifactSetupStep>,
+}
+
+/// One step in an artifact setup wizard. The `kind` field discriminates
+/// which UI the frontend renders. Serialized as an internally-tagged
+/// JSON enum (`{"kind": "form", ...}`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ArtifactSetupStep {
+    /// Form step — fields the user fills in. Values are available
+    /// for `{{key}}` substitution in later `Generate` steps.
+    #[serde(rename = "form")]
+    Form {
+        /// Step title (e.g., "Bot Identity").
+        title: String,
+        /// Optional description shown above the form.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
+        /// Form fields.
+        fields: Vec<ArtifactSetupField>,
+    },
+    /// Generate step — runs the artifact binary with a subcommand,
+    /// shows stdout as a copy-pasteable code block.
+    #[serde(rename = "generate")]
+    Generate {
+        title: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
+        /// Subcommand to run (e.g., "manifest"). Appended to the
+        /// artifact's binary path.
+        command: String,
+        /// Args to pass. `{{key}}` placeholders are substituted from
+        /// prior `Form` steps' field values.
+        #[serde(default)]
+        args: Vec<String>,
+        /// Output language for syntax highlighting in the code block
+        /// ("yaml", "json", "toml", "text"). Default "text".
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        output_format: String,
+        /// Label for the "Generate" button. Defaults to "Generate".
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        button_label: String,
+    },
+    /// External step — instructions plus a button that opens an
+    /// external URL. No automation; the user takes manual action
+    /// (e.g., paste a manifest into Slack admin).
+    #[serde(rename = "external")]
+    External {
+        title: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
+        /// URL to open.
+        url: String,
+        /// Label for the link button (e.g., "Open Slack admin").
+        url_label: String,
+        /// Optional numbered instructions shown below the link.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        instructions: Vec<String>,
+    },
+    /// Credentials step — collects inputs and persists them as the
+    /// artifact's env vars (same shape as `PluginAuth.env`). Each
+    /// field's `key` is the env var name.
+    #[serde(rename = "credentials")]
+    Credentials {
+        title: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
+        /// Form fields. Each field's `key` is the env var name.
+        fields: Vec<ArtifactSetupField>,
+        /// Optional verify subcommand to run after save (e.g., "auth status").
+        /// Success completes the wizard; failure keeps user on this step.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verify_command: Option<String>,
+    },
+}
+
+/// A single field within an `ArtifactSetupStep::Form` or `Credentials` step.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactSetupField {
+    /// Used for `{{key}}` substitution in `Generate` args, or as the
+    /// env var name in `Credentials` steps.
+    pub key: String,
+    /// Label shown above the input.
+    pub label: String,
+    /// Pre-filled value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Placeholder text shown when the input is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// Maximum length; frontend enforces and shows a counter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    /// Helper text shown below the input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
+    /// Input type ("text", "textarea", "password"). Default "text".
+    /// Use "password" for secrets to mask the input.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub input_type: String,
+    /// If true, must be non-empty before the step can advance.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
 }
 
 /// CLI commands for plugin authentication lifecycle.

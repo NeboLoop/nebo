@@ -98,6 +98,11 @@ pub struct Manifest {
     /// Window configuration for app-type agents.
     #[serde(default)]
     pub window: Option<AppWindowConfig>,
+    /// Optional setup wizard declared by the artifact. The frontend
+    /// renders this as a multi-step flow with Form / Generate /
+    /// External / Credentials steps. See `crate::plugin::ArtifactSetup`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<crate::plugin::ArtifactSetup>,
 }
 
 fn default_runtime() -> String {
@@ -430,6 +435,7 @@ impl Default for Manifest {
             oauth: vec![],
             implements: vec![],
             window: None,
+            setup: None,
         }
     }
 }

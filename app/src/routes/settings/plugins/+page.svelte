@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { setPluginConfig } from '$lib/api/index';
   import { getWebSocketClient } from '$lib/websocket/client';
+  import SetupWizard from '$lib/components/SetupWizard.svelte';
 
   interface Plugin {
     id: string;
@@ -17,6 +18,10 @@
     eventCount: number;
     enabled: boolean;
     updateAvailable: string | null;
+    /// When present, this plugin declares a multi-step setup wizard.
+    /// The frontend renders SetupWizard.svelte from this config instead
+    /// of (or in addition to) the bare token form.
+    setup: unknown | null;
   }
 
   interface Dependent {
@@ -34,6 +39,7 @@
   let apiKeyInputs = $state<Record<string, string>>({});
   let apiKeySaving = $state(false);
   let apiKeySaveResult = $state<'saved' | 'error' | null>(null);
+  let wizardOpen = $state(false);
   let authChecking = $state(false);
 
   let unsubscribers: Array<() => void> = [];
@@ -76,6 +82,7 @@
           eventCount: Number(p.eventCount ?? 0),
           enabled: p.enabled !== false,
           updateAvailable: p.updateAvailable ?? p.update_available ?? null,
+          setup: p.setup ?? null,
         }));
 
         // Fetch actual auth status for each plugin that has auth
@@ -213,6 +220,24 @@
   }
 
   const canUninstall = $derived(selectedPlugin !== null && modalDependents.length === 0 && !modalLoading);
+
+  // Wizard completes by saving the env vars it collected and then running
+  // the verify command (declared on the Credentials step). We reuse the
+  // same set-config + auth-status path the manual form uses.
+  async function onWizardComplete(envValues: Record<string, string>) {
+    if (!selectedPlugin) return;
+    await setPluginConfig(selectedPlugin.id, envValues);
+    selectedPlugin.authKeysSet = true;
+    apiKeySaveResult = 'saved';
+    try {
+      const api = await import('$lib/api/nebo');
+      const status = await api.authStatus(selectedPlugin.id);
+      authStatuses[selectedPlugin.id] = status?.authenticated ? 'connected' : 'disconnected';
+    } catch {
+      authStatuses[selectedPlugin.id] = 'disconnected';
+    }
+    wizardOpen = false;
+  }
 </script>
 
 <div class="mb-5">
@@ -362,6 +387,19 @@
           </div>
         </div>
 
+        <!-- Setup wizard launcher (only when the plugin declares one) -->
+        {#if selectedPlugin.setup}
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Guided Setup</div>
+            <button class="btn btn-sm btn-primary" onclick={() => { wizardOpen = true; }}>
+              {selectedPlugin.authKeysSet ? 'Reconfigure' : 'Run setup wizard'}
+            </button>
+            <p class="text-xs text-base-content/70 mt-2">
+              Walks through manifest generation, app install, and credentials in one flow.
+            </p>
+          </div>
+        {/if}
+
         <!-- API Keys / Credentials -->
         {#if selectedPlugin.hasAuth && selectedPlugin.authEnvVars.length > 0}
           {@const hasInput = Object.values(apiKeyInputs).some(v => v.trim())}
@@ -452,4 +490,13 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if wizardOpen && selectedPlugin?.setup}
+  <SetupWizard
+    slug={selectedPlugin.id}
+    setup={selectedPlugin.setup as any}
+    onClose={() => { wizardOpen = false; }}
+    onComplete={onWizardComplete}
+  />
 {/if}

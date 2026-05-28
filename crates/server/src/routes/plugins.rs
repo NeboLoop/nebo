@@ -51,6 +51,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::plugins::get_diagnostics),
         )
         .route(
+            "/plugins/{slug}/setup",
+            axum::routing::post(handlers::plugins::plugin_setup_run),
+        )
+        .route(
             "/plugins/{slug}/help",
             axum::routing::get(handlers::plugins::get_plugin_help),
         )
