@@ -1,3 +1,3 @@
-module github.com/neboai/nebo/scripts/genapi
+module github.com/NeboLoop/nebo/scripts/genapi
 
 go 1.26

@@ -444,7 +444,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 [[package]]
 name = "nebo-sdk"
 version = "0.1.0"
-source = "git+https://github.com/NeboAI/nebo-sdk-rust?branch=main#022c85bd21813ee2bdc280f701ac5e983497c001"
+source = "git+https://github.com/NeboLoop/nebo-sdk-rust?branch=main#022c85bd21813ee2bdc280f701ac5e983497c001"
 dependencies = [
  "async-trait",
  "prost",

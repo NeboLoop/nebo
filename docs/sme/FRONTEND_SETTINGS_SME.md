@@ -763,7 +763,7 @@ Toggle ON clicked
 | Documentation | https://docs.neboai.com |
 | Release Notes | https://neboai.com/changelog |
 | Community Discord | https://discord.gg/neboai |
-| Report an Issue | https://github.com/NeboAI/nebo/issues |
+| Report an Issue | https://github.com/NeboLoop/nebo/issues |
 | Privacy Policy | https://neboai.com/privacy |
 | Terms of Service | https://neboai.com/terms |
 

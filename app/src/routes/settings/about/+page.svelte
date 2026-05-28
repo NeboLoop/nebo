@@ -35,7 +35,7 @@
 
   const resources = [
     { label: 'Documentation', url: 'https://docs.neboai.com' },
-    { label: 'Report an Issue', url: 'https://github.com/NeboAI/nebo/issues' },
+    { label: 'Report an Issue', url: 'https://github.com/NeboLoop/nebo/issues' },
     { label: 'Privacy Policy', url: 'https://neboai.com/privacy' },
     { label: 'Terms of Service', url: 'https://neboai.com/terms' },
   ];

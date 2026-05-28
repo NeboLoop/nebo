@@ -108,7 +108,7 @@ The updater checks for new versions by fetching a JSON manifest from the CDN.
 ```json
 {
   "version": "v0.5.0",
-  "release_url": "https://github.com/NeboAI/nebo/releases/tag/v0.5.0",
+  "release_url": "https://github.com/NeboLoop/nebo/releases/tag/v0.5.0",
   "published_at": "2026-05-15T00:00:00Z"
 }
 ```
@@ -1002,7 +1002,7 @@ Push a git tag matching `v*` (e.g., `git tag v0.5.0 && git push --tags`).
 +-------------------+ +-------------------+
 | update-homebrew   | | update-apt        |
 | Cross-repo PR to  | | Cross-repo push   |
-| neboai/         | | to neboai/apt   |
+| neboai/         | | to neboloop/apt   |
 | homebrew-tap      | |                   |
 |                   | | dpkg-scanpackages |
 | envsubst          | | GPG sign Release  |
@@ -1067,11 +1067,11 @@ Template (`scripts/nebo.rb.tmpl`):
 cask "nebo" do
   version "${PKG_VERSION}"
   on_arm do
-    url "https://github.com/NeboAI/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-arm64.dmg"
+    url "https://github.com/NeboLoop/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-arm64.dmg"
     sha256 "${SHA_DARWIN_ARM64}"
   end
   on_intel do
-    url "https://github.com/NeboAI/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-amd64.dmg"
+    url "https://github.com/NeboLoop/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-amd64.dmg"
     sha256 "${SHA_DARWIN_AMD64}"
   end
   name "Nebo"
@@ -1082,7 +1082,7 @@ cask "nebo" do
 end
 ```
 
-`envsubst` replaces `${PKG_VERSION}`, `${VERSION}`, `${SHA_DARWIN_ARM64}`, `${SHA_DARWIN_AMD64}` with computed values, then pushes to `neboai/homebrew-tap`.
+`envsubst` replaces `${PKG_VERSION}`, `${VERSION}`, `${SHA_DARWIN_ARM64}`, `${SHA_DARWIN_AMD64}` with computed values, then pushes to `neboloop/homebrew-tap`.
 
 ### APT Repository Update
 
@@ -1090,7 +1090,7 @@ end
 2. Generate `Packages` index with `dpkg-scanpackages`.
 3. Generate `Release` file with `apt-ftparchive release`.
 4. GPG-sign: `Release.gpg` (detached) and `InRelease` (clearsign).
-5. Push to `neboai/apt` repo.
+5. Push to `neboloop/apt` repo.
 
 ---
 

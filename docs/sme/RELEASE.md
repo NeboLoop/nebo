@@ -89,8 +89,8 @@ frontend ─────────┬─→ build-macos (arm64 + amd64)  ─�
 | build-windows | windows-latest | ~27m | `Nebo-X.Y.Z-setup.exe` + `.msi` |
 | sign-windows | windows-latest | ~6m | Signed `.exe` + `.msi` |
 | release | ubuntu-latest | ~1m | GitHub Release + CDN upload |
-| update-homebrew | ubuntu-latest | ~30s | `neboai/homebrew-tap` push |
-| update-apt | ubuntu-latest | ~40s | `neboai/apt` push |
+| update-homebrew | ubuntu-latest | ~30s | `neboloop/homebrew-tap` push |
+| update-apt | ubuntu-latest | ~40s | `neboloop/apt` push |
 
 **Total pipeline time: ~37 minutes**
 
@@ -140,7 +140,7 @@ releases/
 ```json
 {
   "version": "vX.Y.Z",
-  "release_url": "https://github.com/NeboAI/nebo/releases/tag/vX.Y.Z",
+  "release_url": "https://github.com/NeboLoop/nebo/releases/tag/vX.Y.Z",
   "published_at": "2026-03-25T12:34:56Z"
 }
 ```

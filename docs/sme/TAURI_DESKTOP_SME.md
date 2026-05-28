@@ -426,7 +426,7 @@ Menu item IDs and actions:
 | `"hide"` | Hide the main window |
 | `"check_update"` | Show + focus main window, then eval `window.__NEBO_CHECK_UPDATE__()` |
 | `"help"` | Open `https://neboai.com/docs` in browser |
-| `"feedback"` | Open `https://github.com/NeboAI/nebo/issues` in browser |
+| `"feedback"` | Open `https://github.com/NeboLoop/nebo/issues` in browser |
 | `"quit"` | `app.exit(0)` -- terminates the entire process |
 
 ### 5.3 Tray Icon Click

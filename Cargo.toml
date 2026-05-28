@@ -31,7 +31,7 @@ members = [
 version = "0.10.0"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/NeboAI/nebo"
+repository = "https://github.com/NeboLoop/nebo"
 
 [workspace.dependencies]
 # Async runtime
@@ -123,7 +123,7 @@ comm = { path = "crates/comm", package = "nebo-comm" }
 notify_crate = { path = "crates/notify", package = "nebo-notify" }
 updater = { path = "crates/updater", package = "nebo-updater" }
 cli = { path = "crates/cli", package = "nebo-cli" }
-sandbox-runtime = { git = "https://github.com/NeboAI/sandbox-runtime.git", branch = "master" }
+sandbox-runtime = { git = "https://github.com/NeboLoop/sandbox-runtime.git", branch = "master" }
 vm = { path = "crates/vm", package = "nebo-vm" }
 
 # A2UI protocol

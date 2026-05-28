@@ -453,7 +453,7 @@ info: installing component 'rustfmt'
    Compiling bit-vec v0.8.0
    Compiling tauri-runtime-wry v2.10.0
    Compiling dispatch v0.2.0
-   Compiling sandbox-runtime v0.1.0 (https://github.com/NeboAI/sandbox-runtime.git?branch=master#defb0f25)
+   Compiling sandbox-runtime v0.1.0 (https://github.com/NeboLoop/sandbox-runtime.git?branch=master#defb0f25)
    Compiling rayon-core v1.13.0
    Compiling borrow-or-share v0.2.4
    Compiling tao v0.34.5

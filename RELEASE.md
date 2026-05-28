@@ -46,8 +46,8 @@ Tag push (v*)
     |               |
     |               +-> release         Create GitHub Release with all artifacts
     |                       |
-    |                       +-> update-homebrew   Push cask to neboai/homebrew-tap
-    |                       +-> update-apt        Push .deb to neboai/apt
+    |                       +-> update-homebrew   Push cask to neboloop/homebrew-tap
+    |                       +-> update-apt        Push .deb to neboloop/apt
     |
     Done
 ```
@@ -73,7 +73,7 @@ brew install --cask neboai/tap/nebo
 ```
 
 - Installs `Nebo.app` to `/Applications` (Spotlight-indexable, proper icon)
-- Cask lives in [neboai/homebrew-tap](https://github.com/neboai/homebrew-tap)
+- Cask lives in [neboloop/homebrew-tap](https://github.com/neboloop/homebrew-tap)
 
 ### APT (Debian / Ubuntu)
 
@@ -195,8 +195,8 @@ gh release upload v0.2.0 src-tauri/target/release/bundle/*
 | Repo | Purpose |
 |------|---------|
 | [AltMagick/nebo](https://github.com/AltMagick/nebo) | Main source code (Rust) + CI pipeline |
-| [neboai/homebrew-tap](https://github.com/neboai/homebrew-tap) | Homebrew cask (`brew install neboai/tap/nebo`) |
-| [neboai/apt](https://github.com/neboai/apt) | APT repository for Debian/Ubuntu |
+| [neboloop/homebrew-tap](https://github.com/neboloop/homebrew-tap) | Homebrew cask (`brew install neboai/tap/nebo`) |
+| [neboloop/apt](https://github.com/neboloop/apt) | APT repository for Debian/Ubuntu |
 
 ---
 

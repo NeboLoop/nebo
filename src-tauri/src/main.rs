@@ -548,7 +548,7 @@ fn main() {
                         open_external("https://neboai.com/docs");
                     }
                     "feedback" => {
-                        open_external("https://github.com/NeboAI/nebo/issues");
+                        open_external("https://github.com/NeboLoop/nebo/issues");
                     }
                     "quit" => {
                         app.exit(0);

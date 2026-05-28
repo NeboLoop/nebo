@@ -589,7 +589,7 @@ jobs:
           cat > version.json << EOFJ
           {
             "version": "${TAG}",
-            "release_url": "https://github.com/NeboAI/nebo/releases/tag/${TAG}",
+            "release_url": "https://github.com/NeboLoop/nebo/releases/tag/${TAG}",
             "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOFJ
@@ -657,7 +657,7 @@ jobs:
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
         with:
-          repository: neboai/homebrew-tap
+          repository: neboloop/homebrew-tap
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: homebrew-tap
 
@@ -713,7 +713,7 @@ jobs:
       - name: Checkout apt repo
         uses: actions/checkout@v4
         with:
-          repository: neboai/apt
+          repository: neboloop/apt
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: apt-repo
 
