@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use tokio::io::AsyncReadExt;
 use tracing::{info, warn};
@@ -168,32 +168,136 @@ pub async fn auth_login(
         .plugin_store
         .get_auth_info(&slug)
         .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+    spawn_plugin_login(
+        state,
+        slug,
+        auth.commands.login.clone(),
+        binary_path,
+        auth.label.clone(),
+        None,
+    );
+    Ok(Json(serde_json::json!({ "started": true })))
+}
 
+/// One account's login context for a multi-account ("resource") plugin.
+/// When passed to `spawn_plugin_login`, the login runs with the plugin's
+/// `profile_dir_env` pointed at `config_dir`, and on success the
+/// (agent, plugin, account) → config_dir mapping is recorded.
+struct LoginProfile {
+    agent_id: String,
+    account_label: String,
+    /// The plugin's profile_dir_env name (e.g. GOOGLE_WORKSPACE_CLI_CONFIG_DIR).
+    env_name: String,
+    config_dir: String,
+}
+
+/// POST /plugins/{slug}/accounts/login
+///
+/// Per-account login for multi-account plugins. Body:
+///   { "agentId": "...", "accountLabel": "work@acme.com" }
+/// Allocates an isolated config dir for this (agent, account), runs the
+/// plugin's login pointed at it, and records the profile on success.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountLoginRequest {
+    pub agent_id: String,
+    pub account_label: String,
+}
+
+pub async fn auth_login_account(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Json(req): Json<AccountLoginRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let (binary_path, auth) = state
+        .plugin_store
+        .get_auth_info(&slug)
+        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+
+    let env_name = auth.profile_dir_env.clone().ok_or_else(|| {
+        to_error_response(NeboError::Internal(format!(
+            "plugin '{slug}' does not support multiple accounts (no profile_dir_env declared)"
+        )))
+    })?;
+
+    // Allocate an isolated, sanitized config dir for this (agent, account).
+    let config_dir = plugin_profile_dir(&req.agent_id, &slug, &req.account_label);
+    if let Err(e) = std::fs::create_dir_all(&config_dir) {
+        return Err(to_error_response(NeboError::Internal(format!(
+            "failed to create profile dir: {e}"
+        ))));
+    }
+
+    spawn_plugin_login(
+        state,
+        slug,
+        auth.commands.login.clone(),
+        binary_path,
+        auth.label.clone(),
+        Some(LoginProfile {
+            agent_id: req.agent_id,
+            account_label: req.account_label,
+            env_name,
+            config_dir: config_dir.to_string_lossy().into_owned(),
+        }),
+    );
+    Ok(Json(serde_json::json!({ "started": true })))
+}
+
+/// Per-(agent, plugin, account) credential directory. Lives under the Nebo
+/// data dir so it's isolated from the global `~/.config/<plugin>` default.
+fn plugin_profile_dir(agent_id: &str, slug: &str, account_label: &str) -> std::path::PathBuf {
+    let sanitize = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+            .collect()
+    };
+    let base = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    base.join("nebo")
+        .join("plugin-profiles")
+        .join(sanitize(agent_id))
+        .join(sanitize(slug))
+        .join(sanitize(account_label))
+}
+
+/// Shared background login flow used by both global and per-account login.
+/// `profile = Some(..)` injects that account's config dir into the plugin's
+/// profile_dir_env and records the profile mapping on success.
+fn spawn_plugin_login(
+    state: AppState,
+    slug: String,
+    login_command: String,
+    binary_path: std::path::PathBuf,
+    label: String,
+    profile: Option<LoginProfile>,
+) {
     let hub = state.hub.clone();
     let slug_owned = slug.clone();
     let store_for_restart = state.store.clone();
     let workers_for_restart = state.agent_workers.clone();
     let plugin_store_for_auth = state.plugin_store.clone();
     let tools_for_refresh = state.tools.clone();
+    let profile_store = state.store.clone();
 
-    info!(plugin = %slug, "starting plugin auth login");
+    info!(plugin = %slug, account = ?profile.as_ref().map(|p| &p.account_label), "starting plugin auth login");
 
     hub.broadcast(
         "plugin_auth_started",
-        serde_json::json!({
-            "plugin": &slug,
-            "label": &auth.label,
-        }),
+        serde_json::json!({ "plugin": &slug, "label": &label }),
     );
 
     // Spawn background task — auth login may take minutes (user authorizes in browser).
     // gws writes the OAuth URL to stderr, so we read both streams and open the URL
     // with open::that(), mirroring how onboarding opens the browser.
-    let login_command = auth.commands.login.clone();
     let plugin_store_clone = state.plugin_store.clone();
     tokio::spawn(async move {
         let runtime = napp::PluginRuntime::new(&slug_owned, binary_path, plugin_store_clone);
         let mut cmd = runtime.command(&login_command);
+        // Per-account: point the plugin at this account's isolated config dir
+        // so its login/token/refresh all land there, not the global default.
+        if let Some(ref p) = profile {
+            cmd.env(&p.env_name, &p.config_dir);
+        }
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -340,9 +444,28 @@ pub async fn auth_login(
         match child.wait().await {
             Ok(status) if status.success() => {
                 info!(plugin = %slug_owned, "plugin auth login succeeded");
+
+                // Per-account: record the (agent, plugin, account) → config_dir
+                // mapping now that the account's tokens exist in that dir.
+                if let Some(ref p) = profile {
+                    let id = format!("{}:{}:{}", p.agent_id, slug_owned, p.account_label);
+                    if let Err(e) = profile_store.upsert_plugin_account_profile(
+                        &id,
+                        &p.agent_id,
+                        &slug_owned,
+                        &p.account_label,
+                        &p.config_dir,
+                    ) {
+                        warn!(plugin = %slug_owned, error = %e, "failed to record account profile");
+                    }
+                }
+
                 hub.broadcast(
                     "plugin_auth_complete",
-                    serde_json::json!({ "plugin": &slug_owned }),
+                    serde_json::json!({
+                        "plugin": &slug_owned,
+                        "account": profile.as_ref().map(|p| p.account_label.clone()),
+                    }),
                 );
 
                 // Update in-memory auth cache so getAgent reflects the change instantly
@@ -406,8 +529,36 @@ pub async fn auth_login(
             }
         }
     });
+}
 
-    Ok(Json(serde_json::json!({ "started": true })))
+/// GET /plugins/{slug}/accounts?agentId=<id>
+///
+/// List the accounts an agent has connected for a multi-account plugin.
+/// Used by the UI ("add another account") and surfaced to the agent so it
+/// knows valid `--account` values. Returns account labels + which is primary
+/// (never the credentials themselves — those live in the plugin's config dir).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAccountsQuery {
+    pub agent_id: String,
+}
+
+pub async fn list_plugin_accounts(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Query(q): Query<ListAccountsQuery>,
+) -> HandlerResult<serde_json::Value> {
+    let profiles = state
+        .store
+        .list_plugin_account_profiles(&q.agent_id, &slug)
+        .map_err(to_error_response)?;
+    let accounts: Vec<serde_json::Value> = profiles
+        .iter()
+        .map(|p| {
+            serde_json::json!({ "accountLabel": p.account_label, "isPrimary": p.is_primary })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "accounts": accounts })))
 }
 
 /// POST /plugins/{slug}/auth/logout

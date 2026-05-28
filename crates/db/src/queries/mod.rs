@@ -27,4 +27,3 @@ mod users;
 mod workflows;
 
 pub use license_keys::LicenseKeyRow;
-pub use plugin_account_profiles::PluginAccountProfile;
