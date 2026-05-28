@@ -2956,22 +2956,27 @@ pub async fn list_agent_channels(
                 .map(|b| !b.config.is_empty())
                 .unwrap_or(false);
 
-            // Per-agent auth: if the binding has its own config with all required
-            // env keys populated, consider it authenticated independently.
             let auth_info = state.plugin_store.get_auth_info(slug);
             let needs_auth = auth_info.is_some();
-            let authenticated = if has_agent_config {
-                // Check if all auth env keys are present in per-agent config
-                match &auth_info {
-                    Some((_, a)) => a.env.keys().all(|k| {
-                        binding
-                            .map(|b| b.config.get(k).is_some_and(|v| !v.is_empty()))
-                            .unwrap_or(false)
-                    }),
-                    None => true,
+            // Auth status is computed PER AGENT. For env-type channel auth
+            // (e.g. Slack bot tokens), each agent runs its own bot identity
+            // with its own credentials — so an agent is authenticated only if
+            // ITS binding holds every required token. No global fallback:
+            // sharing a sibling agent's auth status is what made a tokenless
+            // binding look "connected" and let the wizard skip the tokens.
+            // Only non-env auth (machine-global OAuth like gws) falls back to
+            // the plugin-level status check.
+            let authenticated = match &auth_info {
+                Some((_, a)) if a.auth_type == "env" => {
+                    !a.env.is_empty()
+                        && a.env.keys().all(|k| {
+                            binding
+                                .map(|b| b.config.get(k).is_some_and(|v| !v.is_empty()))
+                                .unwrap_or(false)
+                        })
                 }
-            } else {
-                state.plugin_store.check_auth_lazy(slug).await
+                Some(_) => state.plugin_store.check_auth_lazy(slug).await,
+                None => true,
             };
 
             let (auth_label, auth_env_keys, auth_help) = match &auth_info {
