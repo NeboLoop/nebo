@@ -14,4 +14,12 @@ bytes = "1"
 thiserror = "2"
 dirs = "6"
 whisper-rs = "0.16"
-kokorox = { git = "https://github.com/byteowlz/kokorox", branch = "main" }
+# Kokoro neural TTS. Pulls in ONNX Runtime (ort), which has no prebuilt
+# x86_64-apple-darwin binary, so it's optional and currently disabled on all
+# platforms. When off, synthesize() returns VoiceError::TtsUnavailable and TTS
+# falls back to the system voice.
+kokorox = { git = "https://github.com/byteowlz/kokorox", branch = "main", optional = true }
+
+[features]
+default = []
+kokoro-tts = ["dep:kokorox"]

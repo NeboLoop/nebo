@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
+#[cfg(feature = "kokoro-tts")]
 use kokorox::tts::koko::{ModelVariant, TTSKoko};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -36,6 +37,9 @@ pub enum VoiceError {
 
     #[error("whisper error: {0}")]
     Whisper(String),
+
+    #[error("text-to-speech is not available in this build")]
+    TtsUnavailable,
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +239,7 @@ pub struct VoicePipeline {
     /// Lazily-loaded whisper context (loaded on first transcribe call).
     whisper_ctx: tokio::sync::OnceCell<Arc<WhisperContext>>,
     /// Lazily-loaded Kokoro TTS instance (loaded on first synthesize call).
+    #[cfg(feature = "kokoro-tts")]
     kokoro: tokio::sync::OnceCell<Arc<TTSKoko>>,
 }
 
@@ -243,6 +248,7 @@ impl VoicePipeline {
         Self {
             config,
             whisper_ctx: tokio::sync::OnceCell::new(),
+            #[cfg(feature = "kokoro-tts")]
             kokoro: tokio::sync::OnceCell::new(),
         }
     }
@@ -257,6 +263,7 @@ impl VoicePipeline {
 
     /// Load or return the cached Kokoro TTS instance. The model auto-downloads
     /// from HuggingFace on first call and is reused for all subsequent requests.
+    #[cfg(feature = "kokoro-tts")]
     async fn kokoro_instance(&self) -> Result<Arc<TTSKoko>, VoiceError> {
         self.kokoro
             .get_or_try_init(|| async {
@@ -327,6 +334,17 @@ impl VoicePipeline {
 
     /// Synthesize speech using Kokoro TTS (87M parameter neural model).
     /// Returns WAV bytes (44-byte header + PCM Int16 mono at 24kHz).
+    ///
+    /// When the `kokoro-tts` feature is disabled, returns
+    /// [`VoiceError::TtsUnavailable`] so callers can fall back to system TTS.
+    #[cfg(not(feature = "kokoro-tts"))]
+    pub async fn synthesize(&self, _req: TtsRequest) -> Result<Vec<u8>, VoiceError> {
+        Err(VoiceError::TtsUnavailable)
+    }
+
+    /// Synthesize speech using Kokoro TTS (87M parameter neural model).
+    /// Returns WAV bytes (44-byte header + PCM Int16 mono at 24kHz).
+    #[cfg(feature = "kokoro-tts")]
     pub async fn synthesize(&self, req: TtsRequest) -> Result<Vec<u8>, VoiceError> {
         let kokoro = self.kokoro_instance().await?;
         let text = req.text.clone();
@@ -447,9 +465,13 @@ impl VoicePipeline {
     /// Check which local voice engines are available.
     pub fn status(&self) -> VoiceStatus {
         let whisper_model_exists = self.whisper_model_path().exists();
+        #[cfg(feature = "kokoro-tts")]
+        let (tts_engine, tts_loaded) = ("kokoro".to_string(), self.kokoro.initialized());
+        #[cfg(not(feature = "kokoro-tts"))]
+        let (tts_engine, tts_loaded) = ("system".to_string(), false);
         VoiceStatus {
-            tts_engine: "kokoro".into(),
-            tts_loaded: self.kokoro.initialized(),
+            tts_engine,
+            tts_loaded,
             tts_voice: self.config.tts_voice.clone(),
             whisper_available: whisper_model_exists,
             whisper_loaded: self.whisper_ctx.initialized(),
