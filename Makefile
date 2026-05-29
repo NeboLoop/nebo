@@ -5,8 +5,8 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 SIGN_IDENTITY ?= Developer ID Application: Alma Tuck (7Y2D3KQ2UM)
 NOTARIZE_PROFILE ?= nebo-notarize
 
-# Tauri output directories
-TAURI_TARGET = src-tauri/target
+# Tauri output directories (workspace shares a root target dir, not src-tauri/target)
+TAURI_TARGET = target
 TAURI_RELEASE = $(TAURI_TARGET)/release
 TAURI_BUNDLE = $(TAURI_RELEASE)/bundle
 
