@@ -34,6 +34,44 @@ Optional but recommended for archiver-style plugins:
 
 The `bridge --listen` process is how messages flow in real time. Nebo spawns one bridge per `(agent_id, plugin_slug)` pair — each agent that has the plugin enabled gets its own bridge process with its own credentials. Nebo supervises the process for its lifetime; the bridge exits when the channel is toggled off, the parent Nebo exits, or `cancel` is signalled.
 
+### Process lifecycle — exit on stdin EOF (REQUIRED)
+
+Any long-running process a plugin spawns — the bridge itself, and any watcher/poller/subscriber it forks that holds an upstream connection — MUST terminate itself when its stdin reaches EOF.
+
+**Why:** Nebo spawns the bridge with a piped stdin and holds the write end open for the bridge's entire life. When Nebo goes away by *any* means — graceful shutdown, panic, crash, or `kill -9` (SIGKILL, which no signal handler can intercept) — the operating system closes that pipe, and the bridge's `read()` on stdin returns EOF. **This is the only parent-death signal that survives SIGKILL.** A bridge that ignores EOF and keeps its Socket Mode WebSocket (or Discord gateway, or IMAP IDLE) open becomes an orphan: it holds the upstream connection, may keep posting, and silently competes with the new bridge Nebo spawns on its next launch.
+
+**The contract:** the bridge's stdin reader loop MUST, when it observes EOF (a read returning zero bytes / `Ok(None)` / a closed-stream error), log one line to stderr and exit the *whole process* — not merely end the reader task.
+
+```rust
+// Slack reference: slack-cli/src/commands/bridge.rs::read_stdin
+while let Ok(Some(line)) = lines.next_line().await {
+    // …dispatch ops…
+}
+// stdin closed → Nebo is gone. Exit so we don't orphan the upstream connection.
+eprintln!("bridge: stdin closed (Nebo exited), shutting down");
+std::process::exit(0);
+```
+
+If a long-running mode does **not** otherwise read stdin (e.g. a one-way event watcher that only writes to stdout), spawn a dedicated parent-death watchdog task whose sole job is to drain stdin to EOF and then `exit(0)`:
+
+```rust
+tokio::spawn(async {
+    use tokio::io::AsyncReadExt;
+    let mut stdin = tokio::io::stdin();
+    let mut buf = [0u8; 256];
+    loop {
+        match stdin.read(&mut buf).await {
+            Ok(0) | Err(_) => break,   // EOF or error → parent gone
+            Ok(_) => continue,          // bytes ignored; stdin is used only as a death pipe
+        }
+    }
+    eprintln!("<plugin>: stdin closed (Nebo exited), shutting down");
+    std::process::exit(0);
+});
+```
+
+This complements — it does not replace — Nebo's `kill_on_drop` + signal-handler cleanup, which cover the *graceful* exit path. EOF self-exit is what closes the SIGKILL window those can't. Short-lived one-shot subcommands (`auth`, `init`, `doctor`) need none of this — they exit on their own and cannot orphan.
+
 ### stdout — inbound (plugin → Nebo)
 
 NDJSON, one event per line, flushed after each write. Inbound events represent something that happened on the upstream platform (a user sent a message, a file was shared, etc.).

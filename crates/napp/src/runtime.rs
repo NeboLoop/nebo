@@ -162,6 +162,14 @@ impl Runtime {
         // hot-reload restart, panic unwind, task cancellation). Without this,
         // sidecars stay alive after nebo dies, holding sockets and ports.
         cmd.kill_on_drop(true);
+        // Pipe stdin and hold the write end open for the sidecar's whole life
+        // (it lives inside the retained `Process.child`). When nebo dies by ANY
+        // means — including SIGKILL, which no signal handler can catch — the OS
+        // closes this pipe and the sidecar's stdin reaches EOF. App sidecars
+        // watch stdin and self-exit on EOF, which is the only parent-death
+        // signal that survives SIGKILL. kill_on_drop covers the graceful path;
+        // this covers the kill -9 window kill_on_drop can't.
+        cmd.stdin(std::process::Stdio::piped());
 
         // Redirect stdout/stderr to dedicated log file in the data directory
         let log_path = data_dir.join("sidecar.log");
