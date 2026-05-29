@@ -101,6 +101,7 @@
   let editRole = $state('');
   let editHandle = $state('');
   let editColor = $state('');
+  let editLoopExposed = $state(false);
 
   // Initialize edit fields only when switching to a different agent — NOT on every
   // re-emit of `agent` (saving broadcasts agent_updated → agent re-emits, which would
@@ -115,8 +116,17 @@
       // `<chosen>` part while the `bot_` prefix is shown as a fixed affordance.
       editHandle = (agent.handle ?? '').replace(/^bot_/, '');
       editColor = agent.color;
+      editLoopExposed = agent.loopExposed ?? false;
     }
   });
+
+  async function saveLoopExposed() {
+    if (!agentId) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent(agentId, { loopExposed: editLoopExposed });
+    } catch { /* silent */ }
+  }
 
   function debounceIdentitySave() {
     if (identitySaveTimer) clearTimeout(identitySaveTimer);
@@ -747,6 +757,20 @@
       <a href="/marketplace/skills" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-1">+ Add from Marketplace &#8594;</a>
 
     {:else if section === 'channels'}
+      <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg border border-base-300 bg-base-100 mb-3">
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium">Expose to Loop</div>
+          <div class="text-xs text-base-content/70 mt-0.5">When off, this agent won't appear in your loop.</div>
+        </div>
+        <input
+          type="checkbox"
+          class="toggle toggle-sm toggle-primary shrink-0"
+          bind:checked={editLoopExposed}
+          role="switch"
+          aria-checked={editLoopExposed}
+          onchange={saveLoopExposed}
+        />
+      </div>
       <div class="text-xs text-base-content/70 mb-2">Connect {agent?.name} to external messaging platforms. Install channel plugins from the Marketplace, then enable them here.</div>
       {#if channelsLoading}
         <div class="text-xs text-base-content/50 py-6 text-center">Loading channels...</div>

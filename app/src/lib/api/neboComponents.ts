@@ -60,6 +60,7 @@ export interface Agent {
 	rules?: string
 	handle?: string
 	color?: string
+	loopExposed: boolean
 }
 
 export interface AgentProfile {

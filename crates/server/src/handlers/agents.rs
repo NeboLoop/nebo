@@ -708,6 +708,9 @@ pub async fn update_agent(
     let rules = body["rules"].as_str();
     let handle = body["handle"].as_str();
     let color = body["color"].as_str();
+    let loop_exposed = body["loopExposed"].as_bool();
+    let exposure_changed =
+        loop_exposed.is_some_and(|exposed| exposed != (existing.loop_exposed != 0));
 
     state
         .store
@@ -723,6 +726,7 @@ pub async fn update_agent(
             rules,
             handle,
             color,
+            loop_exposed,
         )
         .map_err(to_error_response)?;
 
@@ -747,6 +751,24 @@ pub async fn update_agent(
         "agent_updated",
         serde_json::json!({ "agentId": id, "name": updated.name, "description": updated.description }),
     );
+
+    // When loop exposure changed, sync this agent's loop presence live.
+    if exposure_changed {
+        let st = state.clone();
+        let agent_name = updated.name.clone();
+        let slug = updated.name.to_lowercase().replace(' ', "-");
+        let now_exposed = updated.loop_exposed != 0;
+        tokio::spawn(async move {
+            let result = if now_exposed {
+                crate::codes::register_agent_in_loop(&st, &agent_name, &slug).await
+            } else {
+                crate::codes::deregister_agent_from_loop(&st, &slug).await
+            };
+            if let Err(e) = result {
+                warn!(slug = %slug, exposed = now_exposed, error = %e, "failed to sync agent loop exposure");
+            }
+        });
+    }
 
     Ok(Json(serde_json::json!({ "agent": updated })))
 }
@@ -1576,6 +1598,7 @@ pub async fn reload_agent(
             None,
             None,
             None,
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -2381,6 +2404,7 @@ pub async fn create_agent_workflow(
             None,
             None,
             None,
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -2511,6 +2535,7 @@ pub async fn update_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
             None,
             None,
             None,
@@ -2676,6 +2701,7 @@ pub async fn delete_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
             None,
             None,
             None,

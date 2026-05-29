@@ -105,6 +105,8 @@ export interface AgentDisplay {
 	handle?: string
 	editable?: boolean
 	isApp?: boolean
+	/** Whether this agent is exposed on the user's personal loop. */
+	loopExposed?: boolean
 }
 
 /** The agentPage context shape provided by [agentId]/+layout.svelte. */

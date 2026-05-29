@@ -67,6 +67,7 @@
           handle: a.handle,
           editable: !a.nappPath,
           isApp: a.isApp ?? false,
+          loopExposed: a.loopExposed ?? false,
         }));
         agentStatuses = Object.fromEntries(allAgents.map(a => [a.id, a.status]));
       }

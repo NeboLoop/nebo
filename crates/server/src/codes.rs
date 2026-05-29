@@ -1443,40 +1443,42 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         .await
         .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
 
-    // Build map of ALL local roles (enabled + disabled) by slug
-    let local_agents: std::collections::HashMap<String, bool> =
+    // Build set of local slugs the user has chosen to EXPOSE on the loop
+    // (enabled + disabled both count — exposure is independent of pause state).
+    let exposed_slugs: std::collections::HashSet<String> =
         if let Ok(roles) = state.store.list_agents(1000, 0) {
             roles
                 .iter()
-                .map(|r| {
-                    let slug = r.name.to_lowercase().replace(' ', "-");
-                    let enabled = r.is_enabled != 0;
-                    (slug, enabled)
-                })
+                .filter(|r| r.loop_exposed != 0)
+                .map(|r| r.name.to_lowercase().replace(' ', "-"))
                 .collect()
         } else {
-            std::collections::HashMap::new()
+            std::collections::HashSet::new()
         };
 
-    // Deregister remote agents that are truly deleted locally (not in DB at all)
+    // Deregister remote agents that are no longer exposed locally
+    // (truly deleted, or exposure toggled off).
     for agent in &remote_agents {
         // Skip the default bot agent (slug starts with "bot_")
         if agent.slug.starts_with("bot_") {
             continue;
         }
-        if !local_agents.contains_key(&agent.slug) {
-            info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering deleted agent");
+        if !exposed_slugs.contains(&agent.slug) {
+            info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering unexposed agent");
             if let Err(e) = api.deregister_agent(&personal.loop_id, &agent.id).await {
                 warn!(agent_slug = %agent.slug, agent_id = %agent.id, error = %e, "reconcile: failed to deregister");
             }
         }
     }
 
-    // Register local roles missing from remote (both enabled and disabled)
+    // Register exposed local agents missing from remote (both enabled and disabled)
     let remote_slugs: std::collections::HashSet<String> =
         remote_agents.iter().map(|a| a.slug.clone()).collect();
     if let Ok(agents) = state.store.list_agents(1000, 0) {
         for agent in &agents {
+            if agent.loop_exposed == 0 {
+                continue;
+            }
             let slug = agent.name.to_lowercase().replace(' ', "-");
             if !remote_slugs.contains(&slug) {
                 let status = if agent.is_enabled != 0 {
@@ -1484,7 +1486,7 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
                 } else {
                     "paused"
                 };
-                info!(agent = %agent.name, slug = %slug, status = %status, "reconcile: registering missing agent");
+                info!(agent = %agent.name, slug = %slug, status = %status, "reconcile: registering missing exposed agent");
                 if let Err(e) = api
                     .register_agent(&personal.loop_id, &agent.name, &slug, None)
                     .await

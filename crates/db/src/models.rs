@@ -655,6 +655,9 @@ pub struct Agent {
     pub handle: Option<String>,
     /// User-selected agent color (e.g. "violet", "teal").
     pub color: Option<String>,
+    /// Whether this agent is exposed on the user's personal NeboAI loop.
+    #[serde(serialize_with = "i64_as_bool")]
+    pub loop_exposed: i64,
 }
 
 fn default_input_values() -> String {

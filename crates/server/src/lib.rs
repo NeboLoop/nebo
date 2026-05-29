@@ -1192,6 +1192,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     None,
                     None,
                     None,
+                    None,
                 );
                 agent_id_for_bindings = db_agent.id.clone();
                 synced += 1;
@@ -2004,6 +2005,7 @@ async fn handle_agent_fs_events(
                         None,
                         None,
                         None,
+                        None,
                     );
                     existing.id.clone()
                 } else {
@@ -2118,6 +2120,7 @@ async fn handle_agent_fs_events(
                     &loaded.description,
                     &loaded.agent_md,
                     &loaded.frontmatter,
+                    None,
                     None,
                     None,
                     None,
