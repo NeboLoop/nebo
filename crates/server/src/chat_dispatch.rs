@@ -260,6 +260,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 let mut comm_buffer = String::new();
                 let mut last_comm_flush: Option<tokio::time::Instant> = None;
                 let mut comm_streamed = false;
+                // File artifacts produced by tools during this run, collected from
+                // ToolResult events. Only populated for comm replies; attached to the
+                // final loop/DM reply so generated files (images, reports) reach the
+                // channel Slack-style. Deduped by source URL/path.
+                let mut comm_file_artifacts: Vec<String> = Vec::new();
                 const COMM_COALESCE_MS: u64 = 500;
                 // Stable ID across all stream chunks so the gateway coalesces them
                 let comm_stream_id = uuid::Uuid::new_v4().to_string();
@@ -404,6 +409,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "is_error": event.error.is_some(),
                                 ),
                             );
+                            // Collect run-produced file artifacts for comm replies.
+                            // Skip inline base64 (`data:`) — those are vision
+                            // screenshots, not deliverables to attach.
+                            if comm_reply.is_some() && event.error.is_none() {
+                                if let Some(url) = &event.image_url {
+                                    if !url.starts_with("data:")
+                                        && !comm_file_artifacts.iter().any(|u| u == url)
+                                    {
+                                        comm_file_artifacts.push(url.clone());
+                                    }
+                                }
+                            }
                         }
                         StreamEventType::Error => {
                             hub.broadcast(
@@ -588,6 +605,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             reply_meta.insert("senderName".to_string(), agent_display_name.clone());
                         }
 
+                        // Resolve run-produced file artifacts to uploaded attachments
+                        // (best-effort: a failed upload is logged and skipped, never
+                        // blocks the text reply). Only the neboai provider supports
+                        // uploads today.
+                        let reply_attachments = if reply_config.provider == "neboai" {
+                            resolve_comm_attachments(&comm_manager, &comm_file_artifacts).await
+                        } else {
+                            Vec::new()
+                        };
+
                         // Flush any remaining streamed text
                         if !comm_buffer.is_empty() {
                             let chunk = comm::CommMessage {
@@ -630,6 +657,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 topic = %reply_config.topic,
                                 conv_id = %reply_config.conversation_id,
                                 response_len = full_response.len(),
+                                attachment_count = reply_attachments.len(),
                                 "sending comm reply (complete, no stream)"
                             );
                             let reply = comm::CommMessage {
@@ -649,7 +677,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 task_status: None,
                                 artifacts: vec![],
                                 error: None,
-                                attachments: vec![],
+                                attachments: reply_attachments,
                             };
                             if let Err(e) = send_to_channel(
                                 &reply_config.provider,
@@ -661,13 +689,104 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             {
                                 warn!(error = %e, "failed to send comm reply");
                             }
+                        } else if !reply_attachments.is_empty() {
+                            // Text was already streamed as chunks; send a trailing
+                            // attachments-only Message so generated files still reach
+                            // the channel without duplicating the text body.
+                            info!(
+                                topic = %reply_config.topic,
+                                conv_id = %reply_config.conversation_id,
+                                attachment_count = reply_attachments.len(),
+                                "sending comm attachments (trailing, after stream)"
+                            );
+                            let attach_msg = comm::CommMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                from: String::new(),
+                                to: String::new(),
+                                topic: reply_config.topic.clone(),
+                                conversation_id: reply_config.conversation_id.clone(),
+                                msg_type: comm::CommMessageType::Message,
+                                content: String::new(),
+                                metadata: reply_meta,
+                                timestamp: 0,
+                                human_injected: false,
+                                human_id: None,
+                                task_id: None,
+                                correlation_id: None,
+                                task_status: None,
+                                artifacts: vec![],
+                                error: None,
+                                attachments: reply_attachments,
+                            };
+                            if let Err(e) = send_to_channel(
+                                &reply_config.provider,
+                                &comm_manager,
+                                &channel_providers,
+                                attach_msg,
+                            )
+                            .await
+                            {
+                                warn!(error = %e, "failed to send comm attachments");
+                            }
                         }
                     } else {
-                        warn!(
-                            topic = %reply_config.topic,
-                            conv_id = %reply_config.conversation_id,
-                            "comm reply skipped: empty response from agent"
-                        );
+                        // No text response. Still deliver any run-produced files as
+                        // an attachments-only message so the channel gets the artifact.
+                        let reply_attachments = if reply_config.provider == "neboai" {
+                            resolve_comm_attachments(&comm_manager, &comm_file_artifacts).await
+                        } else {
+                            Vec::new()
+                        };
+                        if reply_attachments.is_empty() {
+                            warn!(
+                                topic = %reply_config.topic,
+                                conv_id = %reply_config.conversation_id,
+                                "comm reply skipped: empty response from agent"
+                            );
+                        } else {
+                            let mut reply_meta = std::collections::HashMap::new();
+                            if !agent_display_name.is_empty() {
+                                reply_meta.insert(
+                                    "senderName".to_string(),
+                                    agent_display_name.clone(),
+                                );
+                            }
+                            info!(
+                                topic = %reply_config.topic,
+                                conv_id = %reply_config.conversation_id,
+                                attachment_count = reply_attachments.len(),
+                                "sending comm attachments (no text response)"
+                            );
+                            let attach_msg = comm::CommMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                from: String::new(),
+                                to: String::new(),
+                                topic: reply_config.topic.clone(),
+                                conversation_id: reply_config.conversation_id.clone(),
+                                msg_type: comm::CommMessageType::Message,
+                                content: String::new(),
+                                metadata: reply_meta,
+                                timestamp: 0,
+                                human_injected: false,
+                                human_id: None,
+                                task_id: None,
+                                correlation_id: None,
+                                task_status: None,
+                                artifacts: vec![],
+                                error: None,
+                                attachments: reply_attachments,
+                            };
+                            if let Err(e) = send_to_channel(
+                                &reply_config.provider,
+                                &comm_manager,
+                                &channel_providers,
+                                attach_msg,
+                            )
+                            .await
+                            {
+                                warn!(error = %e, "failed to send comm attachments");
+                            }
+                        }
                     }
                 }
 
@@ -851,6 +970,7 @@ pub async fn run_chat_events(
                         widgets: None,
                         provider_metadata: None,
                         stop_reason: None,
+                        image_url: None,
                     })
                     .await;
             }
@@ -865,6 +985,97 @@ pub async fn run_chat_events(
 
     state.lanes.enqueue_async(&lane, lane_task);
     Ok(rx)
+}
+
+/// Resolve run-produced file artifacts (local `/api/v1/files/<name>` URLs or
+/// `<data_dir>/files/...` paths) to uploaded comm attachments.
+///
+/// Best-effort: each artifact that can't be read or uploaded is logged and
+/// skipped so the text reply is never blocked. Returns the successfully
+/// uploaded attachments in input order.
+async fn resolve_comm_attachments(
+    comm_manager: &Option<Arc<comm::PluginManager>>,
+    artifacts: &[String],
+) -> Vec<comm::wire::Attachment> {
+    let mut out = Vec::new();
+    if artifacts.is_empty() {
+        return out;
+    }
+    let Some(mgr) = comm_manager.as_ref() else {
+        return out;
+    };
+
+    // Files are served from <data_dir>/files/ (see handlers::files::serve_file).
+    let files_dir = match config::data_dir() {
+        Ok(d) => d.join("files"),
+        Err(e) => {
+            warn!(error = %e, "cannot resolve data dir for comm attachments");
+            return out;
+        }
+    };
+
+    for artifact in artifacts {
+        // Map the artifact reference to a local path under <data_dir>/files/.
+        let path = if let Some(rel) = artifact.strip_prefix("/api/v1/files/") {
+            files_dir.join(rel)
+        } else if artifact.starts_with("http://") || artifact.starts_with("https://") {
+            // Remote URL we didn't produce locally — skip (can't read bytes).
+            warn!(url = %artifact, "skipping remote artifact for comm attachment");
+            continue;
+        } else {
+            std::path::PathBuf::from(artifact)
+        };
+
+        let data = match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "failed to read run artifact for attachment");
+                continue;
+            }
+        };
+
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+        let mime = mime_from_extension(&path);
+
+        match mgr.upload_file(&filename, &mime, data).await {
+            Ok(att) => out.push(att),
+            Err(e) => {
+                warn!(filename = %filename, error = %e, "failed to upload run artifact attachment");
+            }
+        }
+    }
+    out
+}
+
+/// Infer a MIME type from a file extension for outbound comm attachments.
+fn mime_from_extension(path: &std::path::Path) -> String {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "txt" | "log" => "text/plain",
+        "md" => "text/markdown",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "html" => "text/html",
+        "docx" => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _ => "application/octet-stream",
+    }
+    .to_string()
 }
 
 /// Send a comm message through the appropriate channel provider.

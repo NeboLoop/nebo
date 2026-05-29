@@ -605,6 +605,7 @@ impl Orchestrator {
                     })),
                     provider_metadata: None,
                     stop_reason: None,
+                    image_url: None,
                 })
                 .await;
 
@@ -688,6 +689,7 @@ impl Orchestrator {
                             })),
                             provider_metadata: None,
                             stop_reason: None,
+                            image_url: None,
                         }).await;
                     }
                 }
@@ -712,6 +714,7 @@ impl Orchestrator {
                                 })),
                                 provider_metadata: None,
                                 stop_reason: None,
+                                image_url: None,
                             }).await;
                             results.push((tid, desc, result));
                         }

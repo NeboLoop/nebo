@@ -210,6 +210,7 @@ impl LocalProvider {
                 widgets: None,
                 provider_metadata: None,
                 stop_reason: None,
+                image_url: None,
             });
 
             let _ = tx_clone.blocking_send(StreamEvent::done());

@@ -1953,6 +1953,7 @@ async fn run_loop(
                 widgets: None,
                 provider_metadata: None,
                 stop_reason: None,
+                image_url: None,
             }).await;
             break;
         }
@@ -2496,6 +2497,7 @@ async fn run_loop(
                                         widgets: None,
                                         provider_metadata: None,
                                         stop_reason: None,
+                                        image_url: None,
                                     })
                                     .await;
                             }
@@ -2970,6 +2972,7 @@ async fn run_loop(
                         widgets: None,
                         provider_metadata: None,
                         stop_reason: None,
+                        image_url: result.image_url.clone(),
                     })
                     .await;
                 results[idx] = Some((tc, result));
@@ -3020,6 +3023,7 @@ async fn run_loop(
                         widgets: None,
                         provider_metadata: None,
                         stop_reason: None,
+                        image_url: result.image_url.clone(),
                     })
                     .await;
                 results[idx] = Some((tc, result));
@@ -3043,6 +3047,7 @@ async fn run_loop(
                             widgets: None,
                             provider_metadata: None,
                             stop_reason: None,
+                            image_url: None,
                         })
                         .await;
                     results[idx] = Some((tc, result));

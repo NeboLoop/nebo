@@ -99,6 +99,21 @@ impl PluginManager {
         active.send(msg).await
     }
 
+    /// Upload a file through the active plugin and return its attachment metadata.
+    pub async fn upload_file(
+        &self,
+        filename: &str,
+        mime_type: &str,
+        data: Vec<u8>,
+    ) -> Result<crate::wire::Attachment, CommError> {
+        let inner = self.inner.read().await;
+        let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
+        if !active.is_connected() {
+            return Err(CommError::NotConnected);
+        }
+        active.upload_file(filename, mime_type, data).await
+    }
+
     /// Subscribe to a topic on the active plugin.
     pub async fn subscribe(&self, topic: &str) -> Result<(), CommError> {
         let mut inner = self.inner.write().await;

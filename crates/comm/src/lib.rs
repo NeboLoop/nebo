@@ -37,6 +37,18 @@ pub trait CommPlugin: Send + Sync {
     async fn subscribe(&self, topic: &str) -> Result<(), CommError>;
     async fn unsubscribe(&self, topic: &str) -> Result<(), CommError>;
 
+    /// Upload a file and return populated attachment metadata (file_id, url, etc.)
+    /// so it can be referenced in an outbound message's `attachments`.
+    /// Default returns an error for plugins that don't support uploads.
+    async fn upload_file(
+        &self,
+        _filename: &str,
+        _mime_type: &str,
+        _data: Vec<u8>,
+    ) -> Result<crate::wire::Attachment, CommError> {
+        Err(CommError::Other("upload not supported".into()))
+    }
+
     /// Registration with the comm network.
     async fn register(&self, agent_id: &str, card: &AgentCard) -> Result<(), CommError>;
     async fn deregister(&self) -> Result<(), CommError>;

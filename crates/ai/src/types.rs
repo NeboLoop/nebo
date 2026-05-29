@@ -82,6 +82,11 @@ pub struct StreamEvent {
     pub provider_metadata: Option<HashMap<String, String>>,
     /// Stop reason from the provider: "end_turn", "max_tokens", "length", "tool_use", etc.
     pub stop_reason: Option<String>,
+    /// File/image artifact produced by a tool (ToolResult events only).
+    /// Either a `data:` URI (inline base64), a `/api/v1/files/<name>` local URL,
+    /// or a local filesystem path under `<data_dir>/files/`. Used by chat_dispatch
+    /// to auto-attach run-produced files to outbound comm replies.
+    pub image_url: Option<String>,
 }
 
 impl StreamEvent {
@@ -96,6 +101,7 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -110,6 +116,7 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -124,6 +131,7 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -138,6 +146,7 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -152,6 +161,7 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -166,6 +176,7 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: Some(reason.into()),
+            image_url: None,
         }
     }
 
@@ -180,6 +191,7 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -194,6 +206,7 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -208,6 +221,7 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -222,6 +236,7 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -240,6 +255,7 @@ impl StreamEvent {
             widgets,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -259,6 +275,7 @@ impl StreamEvent {
             widgets: Some(serde_json::json!(tools)),
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 
@@ -273,6 +290,7 @@ impl StreamEvent {
             widgets: Some(serde_json::json!(suggestions)),
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
         }
     }
 }

@@ -562,6 +562,19 @@ impl CommPlugin for NeboAIPlugin {
         self.connected.load(Ordering::SeqCst)
     }
 
+    async fn upload_file(
+        &self,
+        filename: &str,
+        mime_type: &str,
+        data: Vec<u8>,
+    ) -> Result<crate::wire::Attachment, CommError> {
+        let api = self
+            .api()
+            .await
+            .ok_or(CommError::NotConnected)?;
+        api.upload_file(filename, mime_type, data).await
+    }
+
     async fn send(&self, msg: CommMessage) -> Result<(), CommError> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(CommError::NotConnected);
