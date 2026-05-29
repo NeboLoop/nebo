@@ -99,6 +99,21 @@ impl PluginManager {
         active.send(msg).await
     }
 
+    /// Send an ephemeral "typing" signal on a conversation through the active
+    /// plugin so remote participants see a typing indicator while the agent works.
+    pub async fn send_typing(
+        &self,
+        conversation_id: &str,
+        is_typing: bool,
+    ) -> Result<(), CommError> {
+        let inner = self.inner.read().await;
+        let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
+        if !active.is_connected() {
+            return Err(CommError::NotConnected);
+        }
+        active.send_typing(conversation_id, is_typing).await
+    }
+
     /// Upload a file through the active plugin and return its attachment metadata.
     pub async fn upload_file(
         &self,

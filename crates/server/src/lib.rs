@@ -2499,7 +2499,17 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             channel_ctx: None,
         };
 
+        // Show a "typing" indicator on the remote conversation while the agent
+        // works (best-effort, ephemeral). Cleared after run_chat completes.
+        let _ = state
+            .comm_manager
+            .send_typing(&msg.conversation_id, true)
+            .await;
         chat_dispatch::run_chat(&state, config).await;
+        let _ = state
+            .comm_manager
+            .send_typing(&msg.conversation_id, false)
+            .await;
 
         state.event_bus.emit(tools::events::Event {
             source: format!("neboai.agent_space.{}", agent_slug),
@@ -2639,7 +2649,15 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 channel_ctx: None,
             };
 
+            let _ = state
+                .comm_manager
+                .send_typing(&msg.conversation_id, true)
+                .await;
             chat_dispatch::run_chat(&state, config).await;
+            let _ = state
+                .comm_manager
+                .send_typing(&msg.conversation_id, false)
+                .await;
 
             state.event_bus.emit(tools::events::Event {
                 source: format!("neboai.agent_space.{}", agent_slug),
@@ -2718,7 +2736,15 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             channel_ctx: None,
         };
 
+        let _ = state
+            .comm_manager
+            .send_typing(&msg.conversation_id, true)
+            .await;
         chat_dispatch::run_chat(&state, config).await;
+        let _ = state
+            .comm_manager
+            .send_typing(&msg.conversation_id, false)
+            .await;
 
         // Also emit into event bus so role event triggers can fire
         state.event_bus.emit(tools::events::Event {

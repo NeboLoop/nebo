@@ -202,12 +202,15 @@ impl NeboAIPlugin {
         self.queue_send(encoded).await
     }
 
-    /// Send a message on a conversation.
+    /// Send a message on a conversation. When `ephemeral` is true the SEND
+    /// frame carries `FLAG_EPHEMERAL`, so the gateway fans it out without
+    /// persisting or deduping it (used for transient signals like typing).
     pub async fn send_on_conversation(
         &self,
         conversation_id: &str,
         stream: &str,
         content: serde_json::Value,
+        ephemeral: bool,
     ) -> Result<(), CommError> {
         let payload = serde_json::to_vec(&wire::SendPayload {
             conversation_id: conversation_id.to_string(),
@@ -216,9 +219,11 @@ impl NeboAIPlugin {
         })
         .map_err(|e| CommError::Other(e.to_string()))?;
 
+        let flags = if ephemeral { frame::FLAG_EPHEMERAL } else { 0 };
         let encoded = frame::encode(
             Header {
                 frame_type: frame::TYPE_SEND_MESSAGE,
+                flags,
                 msg_id: self.ulid_gen.next(),
                 ..Default::default()
             },
@@ -252,7 +257,7 @@ impl NeboAIPlugin {
     /// Send a DM on a conversation.
     pub async fn send_dm(&self, conversation_id: &str, text: &str) -> Result<(), CommError> {
         let content = serde_json::json!({ "text": text });
-        self.send_on_conversation(conversation_id, "dm", content)
+        self.send_on_conversation(conversation_id, "dm", content, false)
             .await
     }
 
@@ -265,7 +270,8 @@ impl NeboAIPlugin {
             .await
             .ok_or_else(|| CommError::Other("chat conversation not joined".into()))?;
         let content = serde_json::json!({ "type": "text", "text": text });
-        self.send_on_conversation(&conv_id, "chat", content).await
+        self.send_on_conversation(&conv_id, "chat", content, false)
+            .await
     }
 }
 
@@ -819,6 +825,19 @@ impl CommPlugin for NeboAIPlugin {
 
     async fn wait_disconnect(&self) {
         self.disconnect_notify.notified().await;
+    }
+
+    async fn send_typing(
+        &self,
+        conversation_id: &str,
+        is_typing: bool,
+    ) -> Result<(), CommError> {
+        if !self.connected.load(Ordering::SeqCst) {
+            return Err(CommError::NotConnected);
+        }
+        let content = serde_json::json!({ "typing": is_typing });
+        self.send_on_conversation(conversation_id, "typing", content, true)
+            .await
     }
 }
 

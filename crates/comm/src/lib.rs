@@ -117,6 +117,19 @@ pub trait CommPlugin: Send + Sync {
     async fn wait_disconnect(&self) {
         std::future::pending::<()>().await;
     }
+
+    /// Send a transient "typing" signal on a conversation. The signal is sent
+    /// on the `typing` stream as an ephemeral frame (never persisted) and is
+    /// delivered to other participants so their UI can show a "{bot} is typing…"
+    /// indicator while the agent works. Default is a no-op for plugins that
+    /// don't support typing signals.
+    async fn send_typing(
+        &self,
+        _conversation_id: &str,
+        _is_typing: bool,
+    ) -> Result<(), CommError> {
+        Ok(())
+    }
 }
 
 /// Trait for channel providers that can receive streamed agent responses.
