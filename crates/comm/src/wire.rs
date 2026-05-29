@@ -11,6 +11,17 @@ pub struct ConnectPayload {
     pub bot_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Display name from the bot's Identity settings (AGENT NAME).
+    /// Serializes as `agentName` (struct is camelCase, matching botId/token).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    /// Chosen handle WITHOUT the `bot_` prefix (backend adds `bot_`).
+    /// Empty/None ⇒ backend uses bot_<id>. Serializes as `agentHandle`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_handle: Option<String>,
+    /// Color token from the bot's Identity settings. Serializes as `agentColor`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_color: Option<String>,
 }
 
 /// AUTH_OK / AUTH_FAIL frame payload (server -> client).
@@ -154,10 +165,18 @@ mod tests {
         let p = ConnectPayload {
             bot_id: Some("bot-123".into()),
             token: Some("jwt-token".into()),
+            agent_name: Some("Atlas".into()),
+            agent_handle: Some("atlas".into()),
+            agent_color: Some("violet".into()),
         };
         let json = serde_json::to_string(&p).unwrap();
+        // Identity fields use snake_case keys per the shared wire contract.
+        assert!(json.contains("\"agentName\":\"Atlas\""));
+        assert!(json.contains("\"agentHandle\":\"atlas\""));
+        assert!(json.contains("\"agentColor\":\"violet\""));
         let p2: ConnectPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(p2.bot_id.as_deref(), Some("bot-123"));
+        assert_eq!(p2.agent_name.as_deref(), Some("Atlas"));
     }
 
     #[test]

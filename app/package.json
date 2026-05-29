@@ -8,8 +8,7 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"preview": "vite preview",
-		"prepare": "svelte-kit sync || echo ''",
-		"gen:api": "npx tsx scripts/genapi.ts"
+		"prepare": "svelte-kit sync || echo ''"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.1",

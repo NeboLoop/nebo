@@ -1017,6 +1017,8 @@ impl PersonaTool {
             None,
             None,
             None,
+            None,
+            None,
         ) {
             return ToolResult::error(format!("Failed to update agent in DB: {}", e));
         }
@@ -1329,6 +1331,8 @@ impl PersonaTool {
             db_agent.pricing_cost,
             None,
             None,
+            None,
+            None,
         ) {
             return ToolResult::error(format!("Failed to update DB: {}", e));
         }
@@ -1459,6 +1463,8 @@ impl PersonaTool {
                                 &new_fm,
                                 agent.pricing_model.as_deref(),
                                 agent.pricing_cost,
+                                None,
+                                None,
                                 None,
                                 None,
                             );

@@ -55,9 +55,9 @@ pub const DENY_READ: &[&str] = &[
     "~/Library/Messages",
     "~/Library/Mail",
     "~/Library/Accounts",
-    // Nebo internals
-    "~/.nebo/settings.json",
-    "~/.nebo/data/nebo.db",
+    // Note: Nebo internals (settings.json, data/nebo.db) are appended at
+    // runtime in build_sandbox_config() from config::data_dir(), since the
+    // data directory location is platform-dependent.
 ];
 
 /// Default package registry domains allowed when `network` capability is present.
@@ -76,6 +76,21 @@ pub fn build_sandbox_config(skill: &Skill, work_dir: &Path) -> SandboxRuntimeCon
 
     // Always deny sensitive paths
     config.filesystem.deny_read = DENY_READ.iter().map(|s| s.to_string()).collect();
+
+    // Deny Nebo internals (settings + database) from the platform-native data dir.
+    if let Ok(data_dir) = config::data_dir() {
+        config
+            .filesystem
+            .deny_read
+            .push(data_dir.join("settings.json").to_string_lossy().to_string());
+        config.filesystem.deny_read.push(
+            data_dir
+                .join("data")
+                .join("nebo.db")
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
 
     // Always allow writing to the work dir, stdout/stderr, and nebo temp
     let work_str = work_dir.to_string_lossy().to_string();
@@ -213,7 +228,12 @@ mod tests {
         assert!(config.filesystem.deny_read.contains(&"~/.ssh".to_string()));
         assert!(config.filesystem.deny_read.contains(&"~/.gnupg".to_string()));
         assert!(config.filesystem.deny_read.contains(&"~/Library/Keychains".to_string()));
-        assert!(config.filesystem.deny_read.contains(&"~/.nebo/settings.json".to_string()));
+        let settings = config::data_dir()
+            .unwrap()
+            .join("settings.json")
+            .to_string_lossy()
+            .to_string();
+        assert!(config.filesystem.deny_read.contains(&settings));
         assert!(config.filesystem.deny_read.contains(&"~/Library/Application Support/Google/Chrome".to_string()));
     }
 

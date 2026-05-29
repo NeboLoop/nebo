@@ -706,6 +706,8 @@ pub async fn update_agent(
     let pricing_cost = fm.pricing.as_ref().map(|p| p.cost);
     let soul = body["soul"].as_str();
     let rules = body["rules"].as_str();
+    let handle = body["handle"].as_str();
+    let color = body["color"].as_str();
 
     state
         .store
@@ -719,6 +721,8 @@ pub async fn update_agent(
             pricing_cost,
             soul,
             rules,
+            handle,
+            color,
         )
         .map_err(to_error_response)?;
 
@@ -1570,6 +1574,8 @@ pub async fn reload_agent(
             agent.pricing_cost,
             None,
             None,
+            None,
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -2373,6 +2379,8 @@ pub async fn create_agent_workflow(
             agent.pricing_cost,
             None,
             None,
+            None,
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -2503,6 +2511,8 @@ pub async fn update_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
+            None,
             None,
             None,
         )
@@ -2666,6 +2676,8 @@ pub async fn delete_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
+            None,
             None,
             None,
         )

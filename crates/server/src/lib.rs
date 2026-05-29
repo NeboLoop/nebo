@@ -496,16 +496,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let _ = store.set_plugin_setting("neboai", "bot_id", &bot_id);
     }
 
-    // Auto-mark setup complete: DB initialized + bot_id exists = setup is done
-    if !config::is_setup_complete().unwrap_or(false) {
-        if config::read_bot_id().is_some() {
-            if let Err(e) = config::mark_setup_complete() {
-                warn!("failed to mark setup complete: {}", e);
-            } else {
-                info!("setup marked complete (DB ready + bot_id exists)");
-            }
-        }
-    }
+    // NOTE: setup/onboarding completion is driven ONLY by the user finishing
+    // the onboarding flow (POST /api/v1/setup/complete -> mark_setup_complete()).
+    // We must NOT auto-mark it here just because a bot_id exists: bot_id is
+    // generated automatically on first boot (above), so auto-marking would fire
+    // on a brand-new install before the user ever sees onboarding, causing the
+    // app to skip straight into the main view.
 
     // Initialize auth service
     let auth_service = Arc::new(auth::AuthService::new(store.clone(), cfg.clone()));
@@ -529,7 +525,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let mut policy = tools::Policy::new();
     policy.level = tools::PolicyLevel::Full;
     policy.ask_mode = tools::AskMode::Off;
-    // Migrate data directory from old platform-specific paths to ~/.nebo/ (one-time)
+    // No-op: Nebo uses the platform-native data directory (see config::data_dir).
     migration::migrate_data_dir();
 
     let data_dir = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -1190,6 +1186,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     &loaded.description,
                     &loaded.agent_md,
                     &loaded.frontmatter,
+                    None,
+                    None,
                     None,
                     None,
                     None,
@@ -2004,6 +2002,8 @@ async fn handle_agent_fs_events(
                         None,
                         None,
                         None,
+                        None,
+                        None,
                     );
                     existing.id.clone()
                 } else {
@@ -2118,6 +2118,8 @@ async fn handle_agent_fs_events(
                     &loaded.description,
                     &loaded.agent_md,
                     &loaded.frontmatter,
+                    None,
+                    None,
                     None,
                     None,
                     None,
@@ -2382,23 +2384,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
 
         let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
-        // bot_* slugs are the default bot — not a custom agent, route to main
-        let is_default_bot = agent_slug.starts_with("bot_");
-        let agent_id = if is_default_bot {
-            String::new() // main bot
-        } else {
-            let id = resolve_agent_id_from_slug(&state, &agent_slug).await;
-            // Guard: skip messages for custom agents that no longer exist locally
-            if id.is_empty() {
-                tracing::warn!(
-                    agent_slug = %agent_slug,
-                    conv_id = %msg.conversation_id,
-                    "agent_space: agent not found locally, dropping message (may need gateway deregister)"
-                );
-                return;
-            }
-            id
-        };
+        // Resolve to a stable local agent id. Never drops: bot_* handles and
+        // unresolved slugs both fall back to the primary bot.
+        let (agent_id, is_default_bot) =
+            resolve_inbound_agent(&state, &agent_slug, &msg.metadata).await;
 
         // Check if this is the owner's personal loop → unify session with local agent chat
         let space_loop_id = state
@@ -2541,23 +2530,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             if text.is_empty() {
                 return;
             }
-            // bot_* slugs are the default bot — not a custom agent, route to main
-            let is_default_bot = agent_slug.starts_with("bot_");
-            let agent_id = if is_default_bot {
-                String::new() // main bot
-            } else {
-                let id = resolve_agent_id_from_slug(&state, &agent_slug).await;
-                // Guard: skip messages for custom agents that no longer exist locally
-                if id.is_empty() {
-                    tracing::warn!(
-                        agent_slug = %agent_slug,
-                        conv_id = %msg.conversation_id,
-                        "dm→agent_space reroute: agent not found locally, dropping message"
-                    );
-                    return;
-                }
-                id
-            };
+            // Resolve to a stable local agent id. Never drops: bot_* handles and
+            // unresolved slugs both fall back to the primary bot.
+            let (agent_id, is_default_bot) =
+                resolve_inbound_agent(&state, &agent_slug, &msg.metadata).await;
 
             // Check if this is the owner's personal loop → unify session with local agent chat
             let space_loop_id = state
@@ -2814,6 +2790,52 @@ async fn resolve_agent_id_from_slug(state: &AppState, slug: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Resolve an inbound agent_space/dm delivery to a STABLE local agent id.
+///
+/// Returns `(local_agent_id, is_default_bot)`. `local_agent_id` is empty for
+/// the default/primary bot. This never drops a message: any handle starting
+/// with `bot_` (`bot_<id>` or `bot_<chosen>`) routes to the primary bot, and a
+/// custom-agent slug that no longer resolves locally also falls back to the
+/// primary bot rather than being silently dropped.
+///
+/// Resolution order (most stable first):
+/// 1. `bot_` handle  → primary bot (the handle is stable across renames).
+/// 2. local agent id carried in delivery metadata (`agent_id`) that matches a
+///    registered agent  → that agent (immune to rename / handle suffixing).
+/// 3. slug → local agent name match (legacy fallback for older deliveries).
+/// 4. unresolved        → primary bot (never drop).
+async fn resolve_inbound_agent(
+    state: &AppState,
+    agent_slug: &str,
+    metadata: &std::collections::HashMap<String, String>,
+) -> (String, bool) {
+    if agent_slug.starts_with("bot_") {
+        return (String::new(), true);
+    }
+
+    // Prefer a stable id carried in the delivery: if the gateway agent_id
+    // happens to be a locally-registered agent id, use it directly.
+    if let Some(id) = metadata.get("agent_id").filter(|v| !v.is_empty()) {
+        let registry = state.agent_registry.read().await;
+        if registry.contains_key(id) {
+            return (id.clone(), false);
+        }
+    }
+
+    // Legacy fallback: match the slug against the agent's name-derived slug.
+    let id = resolve_agent_id_from_slug(state, agent_slug).await;
+    if !id.is_empty() {
+        return (id, false);
+    }
+
+    // Unresolved: route to the primary bot instead of dropping the message.
+    tracing::warn!(
+        agent_slug = %agent_slug,
+        "inbound: agent slug did not resolve locally, routing to primary bot"
+    );
+    (String::new(), true)
 }
 
 /// Extract text from a comm message content (JSON or plain text).

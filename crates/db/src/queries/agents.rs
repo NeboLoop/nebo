@@ -12,7 +12,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color
                  FROM agents ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
             .db_err("list_agents prepare")?;
@@ -34,7 +34,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color
              FROM agents WHERE id = ?1",
             params![id],
             row_to_agent,
@@ -61,7 +61,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              RETURNING id, kind, name, description, agent_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules",
+                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color",
             params![id, kind, name, description, agent_md, frontmatter, pricing_model, pricing_cost],
             row_to_agent,
         )
@@ -79,6 +79,8 @@ impl Store {
         pricing_cost: Option<f64>,
         soul: Option<&str>,
         rules: Option<&str>,
+        handle: Option<&str>,
+        color: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -86,8 +88,10 @@ impl Store {
                     frontmatter = ?4, pricing_model = ?5, pricing_cost = ?6,
                     soul = COALESCE(?7, soul),
                     rules = COALESCE(?8, rules),
+                    handle = COALESCE(?9, handle),
+                    color = COALESCE(?10, color),
                     updated_at = unixepoch()
-             WHERE id = ?9",
+             WHERE id = ?11",
             params![
                 name,
                 description,
@@ -97,6 +101,8 @@ impl Store {
                 pricing_cost,
                 soul,
                 rules,
+                handle,
+                color,
                 id
             ],
         )
@@ -110,7 +116,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color
              FROM agents WHERE LOWER(name) = LOWER(?1)",
             params![name],
             row_to_agent,
@@ -483,5 +489,7 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         app_window_config: row.get(16)?,
         soul: row.get(17)?,
         rules: row.get(18)?,
+        handle: row.get(19)?,
+        color: row.get(20)?,
     })
 }

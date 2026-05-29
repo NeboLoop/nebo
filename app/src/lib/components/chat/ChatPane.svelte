@@ -48,7 +48,7 @@
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
     | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[] };
 
-  type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string };
+  type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
   let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], followupSuggestions = [], activityStatus = '', tokenUsage = null, quotaWarning = '', onsend, onstop, onedit, onredo, onasksubmit, onfollowupselect, ondismissfollowups, ondismisswarning, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false }: {
     messages?: Message[];

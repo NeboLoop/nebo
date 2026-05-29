@@ -58,6 +58,8 @@ export interface Agent {
 	appWindowConfig?: string
 	soul?: string
 	rules?: string
+	handle?: string
+	color?: string
 }
 
 export interface AgentProfile {
@@ -265,6 +267,8 @@ export interface CronJob {
 	lastError?: string
 	createdAt?: string
 	instructions?: string
+	agentId?: string
+	channelCtxJson?: string
 }
 
 export interface DisconnectResponse {
@@ -1345,6 +1349,12 @@ export interface PickFolderResponse {
 	path: string
 }
 
+export interface PluginSetupRunResponse {
+	ok: boolean
+	output: unknown
+	outputFormat: unknown
+}
+
 export interface ProxyPluginRouteResponse {
 	output: unknown
 }
@@ -1449,6 +1459,11 @@ export interface ToggleAgentResponse {
 export interface ToggleAgentWorkflowResponse {
 	bindingName: string
 	isActive: boolean
+}
+
+export interface TogglePluginResponse {
+	slug: string
+	enabled: boolean
 }
 
 export interface ToggleSkillResponse {

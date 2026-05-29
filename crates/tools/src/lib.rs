@@ -379,6 +379,8 @@ pub async fn persist_agent_from_api(
             None,
             None,
             None,
+            None,
+            None,
         );
     } else {
         let _ = store

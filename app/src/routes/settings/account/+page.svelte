@@ -95,37 +95,37 @@
   <p class="text-xs text-base-content/70">Manage your NeboAI connection and account settings.</p>
 </div>
 
-<!-- Connection status -->
-<div class="p-4 rounded-xl border border-base-content/10 bg-base-100 mb-4">
+<!-- Connection status + inline connect/disconnect action -->
+<div class="p-4 rounded-xl border border-base-content/10 bg-base-100 mb-2">
   <div class="flex items-center gap-3">
     <div class="w-10 h-10 rounded-lg bg-primary/20 text-primary grid place-items-center font-mono text-sm font-semibold">{user.name.charAt(0)}</div>
-    <div class="flex-1">
-      <div class="text-sm font-semibold">{user.displayName}</div>
-      <div class="text-sm">{user.email}</div>
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2">
+        <span class="text-sm font-medium truncate">{user.displayName}</span>
+        <span class="px-2 py-0.5 rounded text-xs font-semibold {connected ? 'bg-success/10 text-success' : 'bg-base-200 text-base-content/70'}">
+          {connected ? 'Connected' : 'Disconnected'}
+        </span>
+      </div>
+      <div class="text-xs text-base-content/70 truncate">{user.email}</div>
     </div>
-    <span class="px-2 py-0.5 rounded text-sm font-semibold {connected ? 'bg-success/10 text-success' : 'bg-base-200'}">
-      {connected ? 'Connected' : 'Disconnected'}
-    </span>
+    {#if connected}
+      <button class="shrink-0 px-3 py-1.5 rounded-lg border border-error/20 text-sm font-medium text-error hover:bg-error/5 transition-colors cursor-pointer" onclick={disconnect}>Disconnect</button>
+    {:else}
+      <button
+        class="shrink-0 px-3 py-1.5 rounded-lg border border-primary/30 text-sm font-medium text-primary hover:bg-primary/5 transition-colors cursor-pointer disabled:opacity-50"
+        onclick={reconnect}
+        disabled={reconnecting}
+      >{reconnecting ? 'Connecting…' : 'Connect'}</button>
+    {/if}
   </div>
-</div>
-
-<div class="flex gap-2 mb-8">
-  <a href="/settings/usage" class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium hover:bg-base-200 transition-colors">View Usage →</a>
-  {#if connected}
-    <button class="px-4 py-2 rounded-lg border border-error/20 text-sm font-medium text-error hover:bg-error/5 transition-colors cursor-pointer" onclick={disconnect}>Disconnect Account</button>
-  {:else}
-    <button
-      class="px-4 py-2 rounded-lg border border-primary/30 text-sm font-medium text-primary hover:bg-primary/5 transition-colors cursor-pointer disabled:opacity-50"
-      onclick={reconnect}
-      disabled={reconnecting}
-    >
-      {reconnecting ? 'Connecting...' : 'Reconnect to NeboAI'}
-    </button>
+  {#if reconnectError}
+    <div class="text-xs text-error mt-2">{reconnectError}</div>
   {/if}
 </div>
-{#if reconnectError}
-  <div class="text-xs text-error mb-4">{reconnectError}</div>
-{/if}
+
+<div class="mb-8">
+  <a href="/settings/usage" class="text-sm font-medium text-primary hover:underline">View Usage →</a>
+</div>
 
 <!-- Danger zone -->
 <div class="mb-7">

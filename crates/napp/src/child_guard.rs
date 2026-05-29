@@ -291,7 +291,7 @@ pub fn install_signal_handler() {
 /// from a prior crashed Nebo and kill them.
 ///
 /// Heuristic: any process whose argv starts with a path under
-/// `~/.nebo/user/plugins/` or `~/.nebo/user/agents/` AND has PPID == 1
+/// `<data_dir>/user/plugins/` or `<data_dir>/user/agents/` AND has PPID == 1
 /// (reparented to init) is an orphan from a previous Nebo run. Kill it.
 ///
 /// Returns the number of orphans cleaned up.
@@ -312,9 +312,11 @@ pub fn cleanup_orphans_at_startup() -> usize {
             }
         };
         let text = String::from_utf8_lossy(&out.stdout);
-        let home = std::env::var("HOME").unwrap_or_default();
-        let plugins_prefix = format!("{}/.nebo/user/plugins/", home);
-        let agents_prefix = format!("{}/.nebo/user/agents/", home);
+        let data_dir = config::data_dir()
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let plugins_prefix = format!("{}/user/plugins/", data_dir);
+        let agents_prefix = format!("{}/user/agents/", data_dir);
 
         let mut killed = 0usize;
         for line in text.lines() {

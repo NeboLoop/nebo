@@ -98,6 +98,13 @@
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
+    // Electron/Claude-Desktop-style reload: ⌘R (mac) / Ctrl-R (win/linux).
+    // Tauri release builds strip dev reload shortcuts, so wire it explicitly.
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'r' || e.key === 'R')) {
+      e.preventDefault();
+      window.location.reload();
+      return;
+    }
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
       e.preventDefault();
       showCommandPalette = !showCommandPalette;
@@ -161,6 +168,14 @@
   </div>
 {:else if $page.url.pathname.startsWith('/onboarding')}
   {@render children()}
+{:else if !$onboardingComplete}
+  <!-- Check finished, onboarding not complete, and we're not on /onboarding yet:
+       the redirect in the $effect above is in flight. Show the splash instead of
+       letting the main app paint for a frame (otherwise the UI flashes the app and
+       then jumps to onboarding). -->
+  <div class="h-dvh flex items-center justify-center bg-base-100">
+    <span class="loading loading-spinner loading-lg"></span>
+  </div>
 {:else}
   <div class="flex flex-col h-screen">
     {#if !isMinimalChrome}

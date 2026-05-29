@@ -288,18 +288,18 @@ The hook is stored in a global `Mutex<Option<Box<dyn Fn() + Send>>>`.
 | `scripts/genapi/typemap.go` | Rust-to-TypeScript type mapping, naming conventions |
 | `scripts/genapi/overrides.go` | Manual type overrides for complex response shapes |
 | `scripts/genapi/go.mod` | Go module definition |
-| `app/scripts/genapi.ts` | TypeScript-based generator (catalog-driven, newer) |
-| `app/scripts/api-catalog.json` | Route-to-function mapping with explicit types |
 
-### Dual Generator System
+### Single Generator (canonical)
 
-Nebo has two code generators that produce overlapping output:
+Nebo has exactly one API code generator: the **Go tool** at `scripts/genapi/`. It is itself written in Go, but it produces **only TypeScript** — it parses the Rust backend (structs, routes, handlers, WS events) and emits `neboComponents.ts` (interfaces) and `nebo.ts` (API functions). This guarantees a source-of-truth contract between the Rust backend and the SvelteKit frontend, since the types are inferred directly from Rust rather than hand-maintained.
 
-1. **Go-based generator** (`scripts/genapi/`): Fully automatic -- infers types from Rust source code via regex parsing. Produces both `neboComponents.ts` (interfaces) and `nebo.ts` (API functions).
+Run it with:
 
-2. **TypeScript-based generator** (`app/scripts/genapi.ts`): Catalog-driven -- reads routes from Rust but uses a manually maintained `api-catalog.json` for function names and types. Produces only `nebo.ts`.
+```
+make gen        # == cd scripts/genapi && go run .
+```
 
-The `make gen` command runs the TypeScript generator (`cd app && pnpm run gen:api`).
+A second, catalog-driven TypeScript generator (`app/scripts/genapi.ts` + `app/scripts/api-catalog.json`, npm script `gen:api`) used to exist but was **removed** — it required a hand-maintained catalog that drifted from the real Rust routes, so it could not guarantee the contract. Do not reintroduce a competing generator: the Go tool is the only supported path.
 
 ### Architecture Overview (Go Generator)
 
@@ -475,56 +475,9 @@ var extraInterfaces = map[string]string{
 }
 ```
 
-### Architecture Overview (TypeScript Generator)
-
-```
-+---------------------+     +---------------------+     +---------------------+
-| Rust Route Files     |     | TS Route Parser     |     | TS Code Generator   |
-|                      |     | (genapi.ts)         |     | (genapi.ts)         |
-| crates/server/src/   |     |                     |     |                     |
-|   routes/*.rs        +---->| parseRouteFiles()   |     |                     |
-|                      |     |   - .route() regex   |     |                     |
-+---------------------+     |   - chained methods  |     |                     |
-                             +----------+----------+     |                     |
-                                        |                |                     |
-+---------------------+                v                |                     |
-| api-catalog.json     |     +---------------------+     |                     |
-|                      |     | Route + Catalog      |     |                     |
-| "GET /agents": {     +---->| Merge & Validate     +---->| generateNeboTs()   |
-|   "fn": "listAgents" |     |                     |     |   nebo.ts           |
-|   "responseType":..  |     | Report unmapped      |     |                     |
-| }                    |     | Report orphaned      |     |                     |
-+---------------------+     +---------------------+     +---------------------+
-```
-
-The TypeScript generator is simpler but more explicit:
-
-1. **Route scanning:** Same regex approach as the Go generator -- reads `.route()` calls from Rust files.
-2. **Catalog lookup:** Each route key (`"GET /agents"`) maps to a `CatalogEntry` with the function name, path params, query type, request type, and response type.
-3. **Code generation:** Produces `nebo.ts` with typed functions.
-4. **Unmapped route report:** Routes found in Rust but not in the catalog are printed with suggested entries.
-5. **Orphan detection:** Catalog entries with no matching Rust route are flagged.
-
-**Catalog entry format:**
-```json
-{
-  "GET /agents": {
-    "fn": "listAgents",
-    "desc": "List agents",
-    "responseType": "ListAgentsResponse"
-  },
-  "POST /agents/{id}/chats": {
-    "fn": "createChat",
-    "pathParams": [{ "name": "id" }],
-    "requestType": "CreateChatRequest",
-    "responseType": "CreateChatResponse"
-  }
-}
-```
-
 ### Input/Output File Mapping
 
-**Go generator inputs:**
+**Inputs (parsed from Rust):**
 ```
 crates/db/src/*.rs                    -> struct definitions
 crates/types/src/*.rs                 -> struct definitions
@@ -533,40 +486,20 @@ crates/server/src/routes/*.rs         -> route definitions
 crates/db/src/queries/*.rs            -> store method return types
 ```
 
-**Go generator outputs:**
+**Outputs (TypeScript):**
 ```
 app/src/lib/api/neboComponents.ts     -> TypeScript interfaces + response types + WS events
-app/src/lib/api/nebo.ts               -> Typed API functions
-```
-
-**TypeScript generator inputs:**
-```
-crates/server/src/routes/*.rs         -> route definitions
-app/scripts/api-catalog.json          -> function names + types
-```
-
-**TypeScript generator output:**
-```
 app/src/lib/api/nebo.ts               -> Typed API functions
 ```
 
 ### How to Run
 
 ```bash
-# Via Makefile (recommended) -- runs the TypeScript generator
+# Via Makefile (recommended) -- runs the Go generator (parses Rust, emits TypeScript)
 make gen
 
-# Directly -- TypeScript generator
-cd app && pnpm run gen:api
-
-# TypeScript generator: scan-only mode (no generation)
-cd app && pnpm run gen:api -- --scan
-
-# TypeScript generator: initialize catalog from current routes
-cd app && pnpm run gen:api -- --init
-
-# Directly -- Go generator (produces both files)
-go run ./scripts/genapi
+# Directly (equivalent)
+cd scripts/genapi && go run .
 ```
 
 ### Generated Code Structure
@@ -612,7 +545,7 @@ export type WSClientMessageType =
     // ...
 ```
 
-**nebo.ts** (generated by either tool):
+**nebo.ts** (generated by scripts/genapi):
 ```typescript
 // Code generated by scripts/genapi. DO NOT EDIT.
 import webapi from "./gocliRequest"
@@ -1106,7 +1039,7 @@ end
 
 | Target | Command | Description |
 |---|---|---|
-| `gen` | `cd app && pnpm run gen:api` | Generate TS API client from Rust routes |
+| `gen` | `cd scripts/genapi && go run .` | Generate TS API client from Rust routes |
 | `dev` | `cargo tauri dev` | Hot reload desktop (Tauri + Vite HMR) |
 | `run` | `cargo tauri dev --no-watch` | Desktop without Rust file watching |
 | `build` | `cargo build --release -p nebo-cli` | Build headless CLI binary |

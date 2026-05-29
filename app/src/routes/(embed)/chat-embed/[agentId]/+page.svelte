@@ -93,7 +93,8 @@
           role: a.description || '',
           initial: a.name.charAt(0).toUpperCase(),
           status: a.isEnabled ? 'online' : 'paused',
-          color: 'teal',
+          color: a.color || 'teal',
+          isApp: a.isApp ?? false,
         })));
       }
     } catch (e) {

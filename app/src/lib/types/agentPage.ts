@@ -101,6 +101,8 @@ export interface AgentDisplay {
 	initial: string
 	status: string
 	color: string
+	/** User-editable handle, stored as `bot_<chosen>`. */
+	handle?: string
 	editable?: boolean
 	isApp?: boolean
 }

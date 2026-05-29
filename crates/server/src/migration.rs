@@ -392,85 +392,20 @@ fn rename_role_files_recursive(dir: &Path) -> usize {
     count
 }
 
-// ── Phase 5: Migrate data directory to ~/.nebo/ ──────────────────────
+// ── Phase 5: Data directory location ─────────────────────────────────
 
-const DATA_DIR_MARKER: &str = ".migrated-v5";
-
-/// Migrate data from the old platform-specific directory to `~/.nebo/`.
+/// No-op. Previously migrated data into `~/.nebo/`.
 ///
-/// - macOS:   ~/Library/Application Support/Nebo/ → ~/.nebo/
-/// - Windows: %AppData%\Nebo\ → ~/.nebo/
-/// - Linux:   ~/.config/nebo/ → ~/.nebo/
+/// Nebo now uses the platform-native data directory again (see
+/// `config::data_dir()`):
+///   - macOS:   ~/Library/Application Support/Nebo
+///   - Windows: %APPDATA%\Nebo
+///   - Linux:   ~/.local/share/nebo
 ///
-/// Must run BEFORE `ensure_data_dir()`. Idempotent via marker file.
-pub fn migrate_data_dir() {
-    let new_dir = match config::data_dir() {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-
-    // If new dir already has the marker, migration already ran
-    if new_dir.join(DATA_DIR_MARKER).exists() {
-        return;
-    }
-
-    let old_dir = match config::legacy_data_dir() {
-        Some(d) => d,
-        None => {
-            // No legacy path known — fresh install, just write marker
-            let _ = std::fs::create_dir_all(&new_dir);
-            let _ = std::fs::write(new_dir.join(DATA_DIR_MARKER), "fresh");
-            return;
-        }
-    };
-
-    // Same path (shouldn't happen but guard against it)
-    if old_dir == new_dir {
-        let _ = std::fs::write(new_dir.join(DATA_DIR_MARKER), "same");
-        return;
-    }
-
-    // Old dir doesn't exist — fresh install
-    if !old_dir.exists() {
-        let _ = std::fs::create_dir_all(&new_dir);
-        let _ = std::fs::write(new_dir.join(DATA_DIR_MARKER), "fresh");
-        return;
-    }
-
-    // Both exist — don't interfere, user may have set up manually
-    if new_dir.exists()
-        && std::fs::read_dir(&new_dir)
-            .map(|mut d| d.next().is_some())
-            .unwrap_or(false)
-    {
-        info!("both old and new data dirs exist, skipping migration");
-        let _ = std::fs::write(new_dir.join(DATA_DIR_MARKER), "skipped");
-        return;
-    }
-
-    info!(
-        old = %old_dir.display(),
-        new = %new_dir.display(),
-        "migrating data directory to ~/.nebo/"
-    );
-
-    // Move (rename) the old directory to the new location
-    if let Err(_rename_err) = std::fs::rename(&old_dir, &new_dir) {
-        // Cross-device or permission issue — fall back to recursive copy
-        if let Err(e) = copy_dir_recursive(&old_dir, &new_dir) {
-            warn!(error = %e, "failed to copy data directory during migration");
-            return;
-        }
-        // Don't delete old dir — leave it as a backup
-        info!("data directory copied (old directory preserved as backup)");
-    } else {
-        info!("data directory moved successfully");
-    }
-
-    if let Err(e) = std::fs::write(new_dir.join(DATA_DIR_MARKER), "migrated") {
-        warn!(error = %e, "failed to write data dir migration marker");
-    }
-}
+/// The old migration moved data *into* `~/.nebo/`, which now fights the
+/// platform-native location. All beta installs are fresh, so no data
+/// migration is needed. This is kept as a no-op so the call site compiles.
+pub fn migrate_data_dir() {}
 
 // ── Phase 6: Seed bundled .napp files from app resources ──────────
 

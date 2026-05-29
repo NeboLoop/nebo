@@ -1281,6 +1281,48 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
         config.insert("data_dir".into(), dir.to_string_lossy().to_string());
     }
 
+    // Carry the bot's configured Identity on CONNECT so the loop agent reflects
+    // it. The primary agent is the bundled default companion (id == "assistant"):
+    // the comms layer routes any `bot_` handle to this primary bot. Source its
+    // display name, handle, and color from the agents row. An empty handle tells
+    // the gateway to fall back to bot_<id>; the backend re-adds the `bot_` prefix,
+    // so strip it here.
+    let primary = state.store.get_agent("assistant").ok().flatten();
+
+    // Display name: primary agent name, falling back to the agent profile name.
+    let agent_name = primary
+        .as_ref()
+        .map(|a| a.name.clone())
+        .filter(|n| !n.is_empty())
+        .or_else(|| {
+            state
+                .store
+                .get_agent_profile()
+                .ok()
+                .flatten()
+                .map(|p| p.name)
+                .filter(|n| !n.is_empty())
+        });
+    if let Some(name) = agent_name {
+        config.insert("agent_name".into(), name);
+    }
+
+    if let Some(agent) = primary.as_ref() {
+        // Handle is stored as `bot_<chosen>`; strip the `bot_` prefix since the
+        // backend re-adds it. Skip empty/None handles.
+        if let Some(chosen) = agent
+            .handle
+            .as_deref()
+            .map(|h| h.strip_prefix("bot_").unwrap_or(h).trim())
+            .filter(|h| !h.is_empty())
+        {
+            config.insert("agent_handle".into(), chosen.to_string());
+        }
+        if let Some(color) = agent.color.as_deref().filter(|c| !c.is_empty()) {
+            config.insert("agent_color".into(), color.to_string());
+        }
+    }
+
     state
         .comm_manager
         .set_active("neboai")

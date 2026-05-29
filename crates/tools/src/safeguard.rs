@@ -426,7 +426,7 @@ fn is_protected_user_path(abs_path: &str) -> Option<String> {
 
     // Protect Nebo's own data directory (database, config, etc.)
     // Nebo must never delete or overwrite its own database — this is catastrophic self-harm.
-    for (path, reason) in nebo_data_dirs(&home_str) {
+    for (path, reason) in nebo_data_dirs() {
         if abs_path == path || abs_path.starts_with(&format!("{}/", path)) {
             return Some(reason);
         }
@@ -452,40 +452,25 @@ fn is_protected_user_path(abs_path: &str) -> Option<String> {
 }
 
 /// Returns the Nebo data directory paths that must be protected from writes/deletes.
-fn nebo_data_dirs(home: &str) -> Vec<(String, String)> {
-    let reason = "Nebo database directory — deleting this would destroy all agent data".to_string();
+///
+/// Derived from `config::data_dir()` so this stays consistent with the actual
+/// data location on every platform (and honors `NEBO_DATA_DIR`).
+fn nebo_data_dirs() -> Vec<(String, String)> {
+    let data_reason =
+        "Nebo database directory — deleting this would destroy all agent data".to_string();
+    let appdata_reason = "Nebo appdata directory — deleting this would destroy all artifact data (plugin databases, skill files, etc.)".to_string();
 
-    // Check NEBO_DATA_DIR override first
-    if let Ok(env_dir) = std::env::var("NEBO_DATA_DIR") {
-        let appdata_reason = "Nebo appdata directory — deleting this would destroy all artifact data (plugin databases, skill files, etc.)".to_string();
-        return vec![
-            (format!("{}/data", env_dir), reason),
-            (format!("{}/appdata", env_dir), appdata_reason),
-        ];
-    }
+    let Ok(base) = config::data_dir() else {
+        return vec![];
+    };
 
-    // Platform-standard data directories
-    #[cfg(target_os = "macos")]
-    {
-        vec![(
-            format!("{}/Library/Application Support/Nebo/data", home),
-            reason,
-        )]
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            vec![(format!("{}\\Nebo\\data", appdata), reason)]
-        } else {
-            vec![]
-        }
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        vec![(format!("{}/.config/nebo/data", home), reason)]
-    }
+    vec![
+        (base.join("data").to_string_lossy().into_owned(), data_reason),
+        (
+            base.join("appdata").to_string_lossy().into_owned(),
+            appdata_reason,
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -510,18 +495,14 @@ mod tests {
 
     #[test]
     fn test_nebo_data_dir_protected() {
-        let home = dirs::home_dir().unwrap();
-        let home_str = home.to_string_lossy();
-
-        #[cfg(target_os = "macos")]
-        let nebo_data = format!("{}/Library/Application Support/Nebo/data/nebo.db", home_str);
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let nebo_data = format!("{}/.config/nebo/data/nebo.db", home_str);
-        #[cfg(target_os = "windows")]
-        let nebo_data = {
-            let appdata = std::env::var("APPDATA").unwrap_or_default();
-            format!("{}\\Nebo\\data\\nebo.db", appdata)
-        };
+        // The protected path is derived from config::data_dir() — build the
+        // expected DB path the same way so this stays correct on every platform.
+        let nebo_data = config::data_dir()
+            .unwrap()
+            .join("data")
+            .join("nebo.db")
+            .to_string_lossy()
+            .into_owned();
 
         let input = serde_json::json!({
             "action": "write",

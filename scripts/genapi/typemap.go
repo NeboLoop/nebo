@@ -132,10 +132,12 @@ func snakeToPascal(s string) string {
 }
 
 // Modules whose name is prepended to the function name to avoid collisions.
+// The value is a LITERAL camelCase prefix (so acronyms like "AI" keep their
+// casing); the rest of the handler name is PascalCased and appended.
 // e.g. handlers::neboai::account_status → neboAIAccountStatus
 var prefixedModules = map[string]string{
-	"neboai": "nebo_loop",
-	"user":     "user",
+	"neboai": "neboAI",
+	"user":   "user",
 }
 
 // handlerToFuncName converts a Rust handler function name to a TS function name.
@@ -147,7 +149,7 @@ func handlerToFuncName(handler string) string {
 	if len(parts) >= 2 {
 		module := parts[len(parts)-2]
 		if prefix, ok := prefixedModules[module]; ok {
-			name = prefix + "_" + name
+			return prefix + snakeToPascal(name)
 		}
 	}
 	return snakeToCamel(name)

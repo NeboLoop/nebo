@@ -895,161 +895,161 @@ export function updateModel(provider: string, modelId: string, req: Record<strin
 }
 
 /**
- * @description "Nebo loop account status"
+ * @description "Nebo a i account status"
  */
 export function neboAIAccountStatus() {
 	return webapi.get<unknown>(`/api/v1/neboai/account`)
 }
 
 /**
- * @description "Nebo loop account disconnect"
+ * @description "Nebo a i account disconnect"
  */
 export function neboAIAccountDisconnect() {
 	return webapi.delete<unknown>(`/api/v1/neboai/account`)
 }
 
 /**
- * @description "Nebo loop billing cancel"
+ * @description "Nebo a i billing cancel"
  */
 export function neboAIBillingCancel(req: Record<string, unknown> = {}) {
 	return webapi.post<unknown>(`/api/v1/neboai/billing/cancel`, req)
 }
 
 /**
- * @description "Nebo loop billing checkout"
+ * @description "Nebo a i billing checkout"
  */
 export function neboAIBillingCheckout(req: Record<string, unknown> = {}) {
 	return webapi.post<components.NeboAIBillingCheckoutResponse>(`/api/v1/neboai/billing/checkout`, req)
 }
 
 /**
- * @description "Nebo loop billing invoices"
+ * @description "Nebo a i billing invoices"
  */
 export function neboAIBillingInvoices() {
 	return webapi.get<components.NeboAIBillingInvoicesResponse>(`/api/v1/neboai/billing/invoices`)
 }
 
 /**
- * @description "Nebo loop billing payment methods"
+ * @description "Nebo a i billing payment methods"
  */
 export function neboAIBillingPaymentMethods() {
 	return webapi.get<components.NeboAIBillingPaymentMethodsResponse>(`/api/v1/neboai/billing/payment-methods`)
 }
 
 /**
- * @description "Nebo loop billing portal"
+ * @description "Nebo a i billing portal"
  */
 export function neboAIBillingPortal(req: Record<string, unknown> = {}) {
 	return webapi.post<unknown>(`/api/v1/neboai/billing/portal`, req)
 }
 
 /**
- * @description "Nebo loop billing prices"
+ * @description "Nebo a i billing prices"
  */
 export function neboAIBillingPrices() {
 	return webapi.get<components.NeboAIBillingPricesResponse>(`/api/v1/neboai/billing/prices`)
 }
 
 /**
- * @description "Nebo loop billing setup intent"
+ * @description "Nebo a i billing setup intent"
  */
 export function neboAIBillingSetupIntent(req: Record<string, unknown> = {}) {
 	return webapi.post<components.NeboAIBillingSetupIntentResponse>(`/api/v1/neboai/billing/setup-intent`, req)
 }
 
 /**
- * @description "Nebo loop billing subscribe"
+ * @description "Nebo a i billing subscribe"
  */
 export function neboAIBillingSubscribe(req: Record<string, unknown> = {}) {
 	return webapi.post<unknown>(`/api/v1/neboai/billing/subscribe`, req)
 }
 
 /**
- * @description "Nebo loop billing subscription"
+ * @description "Nebo a i billing subscription"
  */
 export function neboAIBillingSubscription() {
 	return webapi.get<components.NeboAIBillingSubscriptionResponse>(`/api/v1/neboai/billing/subscription`)
 }
 
 /**
- * @description "Nebo loop connect handler"
+ * @description "Nebo a i connect handler"
  */
 export function neboAIConnectHandler(req: Record<string, unknown> = {}) {
 	return webapi.post<components.NeboAIConnectHandlerResponse>(`/api/v1/neboai/connect`, req)
 }
 
 /**
- * @description "Nebo loop janus usage"
+ * @description "Nebo a i janus usage"
  */
 export function neboAIJanusUsage() {
 	return webapi.get<components.NeboAIJanusUsageResponse>(`/api/v1/neboai/janus/usage`)
 }
 
 /**
- * @description "Nebo loop janus usage refresh"
+ * @description "Nebo a i janus usage refresh"
  */
 export function neboAIJanusUsageRefresh(req: Record<string, unknown> = {}) {
 	return webapi.post<unknown>(`/api/v1/neboai/janus/usage/refresh`, req)
 }
 
 /**
- * @description "Nebo loop marketplace list subscriptions"
+ * @description "Nebo a i marketplace list subscriptions"
  */
 export function neboAIMarketplaceListSubscriptions() {
 	return webapi.get<unknown>(`/api/v1/neboai/marketplace/subscriptions`)
 }
 
 /**
- * @description "Nebo loop marketplace create subscription"
+ * @description "Nebo a i marketplace create subscription"
  */
 export function neboAIMarketplaceCreateSubscription(req: Record<string, unknown> = {}) {
 	return webapi.post<unknown>(`/api/v1/neboai/marketplace/subscriptions`, req)
 }
 
 /**
- * @description "Nebo loop marketplace cancel subscription"
+ * @description "Nebo a i marketplace cancel subscription"
  */
 export function neboAIMarketplaceCancelSubscription(id: string, req: Record<string, unknown> = {}) {
 	return webapi.post<unknown>(`/api/v1/neboai/marketplace/subscriptions/${id}/cancel`, req)
 }
 
 /**
- * @description "Nebo loop oauth start"
+ * @description "Nebo a i oauth start"
  */
 export function neboAIOauthStart(janus?: string) {
 	return webapi.get<unknown>(`/api/v1/neboai/oauth/start`, { janus })
 }
 
 /**
- * @description "Nebo loop oauth status"
+ * @description "Nebo a i oauth status"
  */
 export function neboAIOauthStatus(state?: string) {
 	return webapi.get<unknown>(`/api/v1/neboai/oauth/status`, { state })
 }
 
 /**
- * @description "Nebo loop open neboai"
+ * @description "Nebo a i open neboai"
  */
 export function neboAIOpenNeboai() {
 	return webapi.get<components.NeboAIOpenNeboaiResponse>(`/api/v1/neboai/open`)
 }
 
 /**
- * @description "Nebo loop force reconnect"
+ * @description "Nebo a i force reconnect"
  */
 export function neboAIForceReconnect(req: Record<string, unknown> = {}) {
 	return webapi.post<components.NeboAIForceReconnectResponse>(`/api/v1/neboai/reconnect`, req)
 }
 
 /**
- * @description "Nebo loop referral code"
+ * @description "Nebo a i referral code"
  */
 export function neboAIReferralCode() {
 	return webapi.get<unknown>(`/api/v1/neboai/referral-code`)
 }
 
 /**
- * @description "Nebo loop bot status"
+ * @description "Nebo a i bot status"
  */
 export function neboAIBotStatus() {
 	return webapi.get<components.NeboAIBotStatusResponse>(`/api/v1/neboai/status`)
@@ -1179,6 +1179,20 @@ export function getPluginHelp(slug: string) {
  */
 export function startHelpChat(slug: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.StartHelpChatResponse>(`/api/v1/plugins/${slug}/help/chat`, req)
+}
+
+/**
+ * @description "Plugin setup run"
+ */
+export function pluginSetupRun(slug: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.PluginSetupRunResponse>(`/api/v1/plugins/${slug}/setup`, req)
+}
+
+/**
+ * @description "Toggle plugin"
+ */
+export function togglePlugin(slug: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.TogglePluginResponse>(`/api/v1/plugins/${slug}/toggle`, req)
 }
 
 /**

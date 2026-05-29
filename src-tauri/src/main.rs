@@ -266,7 +266,7 @@ fn main() {
         || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let stdout_layer = fmt::layer().with_filter(env_filter());
 
-    // File layer (append to ~/.nebo/logs/nebo.log)
+    // File layer (append to <data_dir>/logs/nebo.log)
     let file_layer = config::data_dir().ok().and_then(|dir| {
         let log_dir = dir.join("logs");
         std::fs::create_dir_all(&log_dir).ok()?;

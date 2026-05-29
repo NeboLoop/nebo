@@ -28,6 +28,7 @@ export interface AgentInfo {
   initial: string;
   status: string;
   color: string;
+  isApp?: boolean;
 }
 
 export type ChatMessage =

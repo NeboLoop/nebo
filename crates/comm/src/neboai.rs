@@ -347,10 +347,22 @@ impl CommPlugin for NeboAIPlugin {
 
         let (mut write, mut read) = ws_stream.split();
 
-        // Send CONNECT frame
+        // Send CONNECT frame — carries the bot's configured identity so the
+        // loop agent reflects the local Identity settings. Identity fields are
+        // plumbed in via the same config map as bot_id/token (see
+        // codes::activate_neboai). Empty values are dropped (None).
         let connect_payload = serde_json::to_vec(&wire::ConnectPayload {
             bot_id: Some(bot_id.clone()),
             token: Some(token),
+            agent_name: config.get("agent_name").filter(|v| !v.is_empty()).cloned(),
+            agent_handle: config
+                .get("agent_handle")
+                .filter(|v| !v.is_empty())
+                .cloned(),
+            agent_color: config
+                .get("agent_color")
+                .filter(|v| !v.is_empty())
+                .cloned(),
         })
         .map_err(|e| CommError::Other(e.to_string()))?;
         let connect_frame = frame::encode(

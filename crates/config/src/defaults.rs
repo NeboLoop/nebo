@@ -4,21 +4,28 @@ use std::path::PathBuf;
 use types::NeboError;
 use types::constants::files;
 
-/// Returns the data directory: `~/.nebo/`.
+/// Returns the platform-native data directory:
 ///
-/// Unified across all platforms. Set `NEBO_DATA_DIR` to override.
+/// - macOS:   `~/Library/Application Support/Nebo`
+/// - Windows: `%APPDATA%\Nebo`
+/// - Linux:   `~/.local/share/nebo`
 ///
-/// Previous platform-specific paths are migrated automatically on startup
-/// (see `migration.rs` v5).
+/// Set `NEBO_DATA_DIR` to override.
 pub fn data_dir() -> Result<PathBuf, NeboError> {
     if let Ok(dir) = std::env::var("NEBO_DATA_DIR") {
         return Ok(PathBuf::from(dir));
     }
 
-    let home = dirs::home_dir()
-        .ok_or_else(|| NeboError::DataDir("cannot determine home directory".into()))?;
+    let base = dirs::data_dir()
+        .ok_or_else(|| NeboError::DataDir("cannot determine data directory".into()))?;
 
-    Ok(home.join(".nebo"))
+    let name = if cfg!(target_os = "linux") {
+        "nebo"
+    } else {
+        "Nebo"
+    };
+
+    Ok(base.join(name))
 }
 
 /// Returns the old platform-specific data directory path (pre-v5).

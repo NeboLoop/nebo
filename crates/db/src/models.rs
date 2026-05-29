@@ -651,6 +651,10 @@ pub struct Agent {
     pub soul: Option<String>,
     /// Per-agent rules: behavior constraints and guardrails.
     pub rules: Option<String>,
+    /// User-editable loop handle, stored as `bot_<chosen>`.
+    pub handle: Option<String>,
+    /// User-selected agent color (e.g. "violet", "teal").
+    pub color: Option<String>,
 }
 
 fn default_input_values() -> String {

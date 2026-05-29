@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { auth } from '$lib/stores/auth.js';
   import UpdateBanner from '$lib/components/UpdateBanner.svelte';
 
   let displayName = $state('');
@@ -29,11 +28,6 @@
     }
   });
 
-  function handleLogout() {
-    auth.logout();
-    open = false;
-  }
-
   const menuItems = [
     { href: '/settings/profile', label: 'Settings', icon: '⚙' },
     { href: '/settings/account', label: 'Account', icon: '👤' },
@@ -41,7 +35,6 @@
     { href: '/upgrade', label: 'Upgrade', icon: '↑' },
     null,
     { href: '/settings/about', label: 'About Nebo', icon: 'ℹ' },
-    { href: '#logout', label: 'Log out', icon: '↪' },
   ];
 </script>
 
@@ -53,14 +46,6 @@
       {#each menuItems as item}
         {#if item === null}
           <div class="h-px bg-base-300 mx-2 my-1"></div>
-        {:else if item.href === '#logout'}
-          <button
-            class="flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-base-200 transition-colors w-full text-left cursor-pointer border-none bg-transparent"
-            onclick={handleLogout}
-          >
-            <span class="w-4 text-center text-sm">{item.icon}</span>
-            {item.label}
-          </button>
         {:else}
           <a
             href={item.href}

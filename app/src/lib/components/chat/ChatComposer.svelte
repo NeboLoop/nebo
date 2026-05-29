@@ -12,6 +12,7 @@
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   // [VOICE DISABLED] import { dictationStore, combinedTranscript } from '$lib/stores/dictation';
   import { getWebSocketClient } from '$lib/websocket/client';
+  import Bot from 'lucide-svelte/icons/bot';
   // [VOICE DISABLED] import AudioLines from 'lucide-svelte/icons/audio-lines';
 
   interface AttachedFile {
@@ -26,7 +27,7 @@
     name: string;
   }
 
-  type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string };
+  type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string; isApp?: boolean };
 
   let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '' }: {
     agentName?: string;
@@ -764,6 +765,11 @@
             <div class="w-6 h-6 rounded-md flex items-center justify-center font-mono text-xs font-semibold shrink-0 {c.bgClass} {c.inkClass}">{agent.initial}</div>
             <div class="flex-1 min-w-0">
               <span class="text-sm font-medium">{agent.name}</span>
+              {#if !agent.isApp}
+                <span class="inline-flex items-center gap-0.5 align-middle ml-1.5 px-1 py-0.5 rounded bg-base-200 text-xs font-medium text-base-content/70" title="Companion bot">
+                  <Bot class="w-3 h-3" />bot
+                </span>
+              {/if}
               <span class="text-xs text-base-content/70 ml-1.5">{agent.role}</span>
             </div>
           </button>

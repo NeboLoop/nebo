@@ -63,7 +63,8 @@
           role: a.description || '',
           initial: a.name.charAt(0).toUpperCase(),
           status: activeIds.has(a.id) ? 'online' : 'paused',
-          color: 'teal',
+          color: a.color || 'teal',
+          handle: a.handle,
           editable: !a.nappPath,
           isApp: a.isApp ?? false,
         }));
@@ -193,7 +194,28 @@
     });
     onWsEvent('nebo:agent_installed', () => loadAgentRoster());
     onWsEvent('nebo:agent_uninstalled', () => loadAgentRoster());
-    onWsEvent('nebo:agent_updated', () => loadAgentRoster());
+    onWsEvent('nebo:agent_updated', (data) => {
+      // Patch the roster in place from the broadcast payload so the sidebar row
+      // and agent header reflect a rename immediately (name + avatar initial +
+      // role), without waiting on a refetch round-trip. Reassign the array to
+      // trigger the `sortedAgents`/`agent` derived recompute.
+      if (data?.agentId) {
+        const idx = allAgents.findIndex(a => a.id === data.agentId);
+        if (idx !== -1) {
+          const next = [...allAgents];
+          const updated = { ...next[idx] };
+          if (typeof data.name === 'string' && data.name) {
+            updated.name = data.name;
+            updated.initial = data.name.charAt(0).toUpperCase();
+          }
+          if (typeof data.description === 'string') updated.role = data.description;
+          next[idx] = updated;
+          allAgents = next;
+        }
+      }
+      // Refetch to pick up any fields not carried in the payload (color, handle).
+      loadAgentRoster();
+    });
 
     // Chat lifecycle → refresh thread list for current agent
     onWsEvent('nebo:chat_complete', () => refreshThreads());
