@@ -54,9 +54,6 @@ jobs:
           - target: aarch64-apple-darwin
             arch: arm64
             osx_arch: arm64
-          - target: x86_64-apple-darwin
-            arch: amd64
-            osx_arch: x86_64
     runs-on: macos-latest
     env:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
@@ -510,21 +507,7 @@ jobs:
 
       - uses: actions/cache/restore@v4
         with:
-          key: release-${{ github.run_id }}-nebo-darwin-amd64-binary
-          path: nebo-darwin-amd64
-          fail-on-cache-miss: false
-      - run: cp nebo-darwin-amd64 artifacts/ 2>/dev/null || true
-
-      - uses: actions/cache/restore@v4
-        with:
           key: release-${{ github.run_id }}-nebo-darwin-arm64-dmg
-          path: dist/
-          fail-on-cache-miss: false
-      - run: cp dist/Nebo-*.dmg artifacts/ 2>/dev/null || true; rm -rf dist
-
-      - uses: actions/cache/restore@v4
-        with:
-          key: release-${{ github.run_id }}-nebo-darwin-amd64-dmg
           path: dist/
           fail-on-cache-miss: false
       - run: cp dist/Nebo-*.dmg artifacts/ 2>/dev/null || true; rm -rf dist
@@ -577,7 +560,7 @@ jobs:
         run: |
           cd artifacts
           sha256sum \
-            nebo-darwin-arm64 nebo-darwin-amd64 \
+            nebo-darwin-arm64 \
             nebo-linux-amd64 nebo-linux-arm64 \
             nebo-linux-amd64-headless nebo-linux-arm64-headless \
             nebo-windows-amd64.exe Nebo-*-setup.exe \
@@ -604,7 +587,7 @@ jobs:
           sed -i 's/^          //' version.json
 
           # Upload latest version pointer
-          aws s3 cp version.json s3://neboai/releases/version.json \
+          aws s3 cp version.json s3://neboloop/releases/version.json \
             --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
 
           # Upload all release assets under releases/{tag}/
@@ -612,12 +595,12 @@ jobs:
             [ -f "$f" ] || continue
             name=$(basename "$f")
             case "$name" in *-signed*) continue ;; esac
-            aws s3 cp "$f" "s3://neboai/releases/${TAG}/${name}" \
+            aws s3 cp "$f" "s3://neboloop/releases/${TAG}/${name}" \
               --endpoint-url "$S3_ENDPOINT" --acl public-read
           done
 
           # Upload per-tag version.json
-          aws s3 cp version.json "s3://neboai/releases/${TAG}/version.json" \
+          aws s3 cp version.json "s3://neboloop/releases/${TAG}/version.json" \
             --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
           echo "Uploaded release assets to CDN: releases/${TAG}/"
 
@@ -649,18 +632,10 @@ jobs:
           fail-on-cache-miss: true
       - run: cp dist/Nebo-*.dmg artifacts/ 2>/dev/null || true; rm -rf dist
 
-      - uses: actions/cache/restore@v4
-        with:
-          key: release-${{ github.run_id }}-nebo-darwin-amd64-dmg
-          path: dist/
-          fail-on-cache-miss: true
-      - run: cp dist/Nebo-*.dmg artifacts/ 2>/dev/null || true; rm -rf dist
-
       - name: Compute SHA256 checksums
         id: checksums
         run: |
           echo "darwin_arm64=$(sha256sum artifacts/Nebo-*-arm64.dmg | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "darwin_amd64=$(sha256sum artifacts/Nebo-*-amd64.dmg | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -678,7 +653,6 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
           SHA_DARWIN_ARM64: ${{ steps.checksums.outputs.darwin_arm64 }}
-          SHA_DARWIN_AMD64: ${{ steps.checksums.outputs.darwin_amd64 }}
         run: |
           export PKG_VERSION="${VERSION#v}"
           mkdir -p homebrew-tap/Casks
