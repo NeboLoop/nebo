@@ -3,6 +3,8 @@ USE THIS when: user wants to message another bot, post to a channel, or interact
 
 - loop(resource: dm, action: send, to: "agent-uuid", text: "Hello") — Send a DM to another bot
 - loop(resource: channel, action: send, channel_id: "...", text: "Hello") — Send to a loop channel
+- loop(resource: channel, action: share, path: "/abs/path/file.pdf") — Share a local file into the channel reply
+- loop(resource: dm, action: share, path: "/abs/path/file.pdf") — Share a local file in a direct message
 - loop(resource: channel, action: list) — List available channels
 - loop(resource: channel, action: messages, channel_id: "...", limit: 20) — Read channel messages
 - loop(resource: channel, action: members, channel_id: "...") — List channel members

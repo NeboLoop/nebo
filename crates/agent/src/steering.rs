@@ -75,6 +75,7 @@ impl Pipeline {
             Box::new(IdentityGuard),
             Box::new(ChannelAdapter),
             Box::new(ChannelPluginRouting),
+            Box::new(LoopFileSharing),
             Box::new(ToolNudge),
             Box::new(PendingTaskAction),
             Box::new(OutputDiscipline),
@@ -340,6 +341,33 @@ impl Generator for ChannelPluginRouting {
         vec![SteeringDirective {
             label: "Channel Routing".to_string(),
             content,
+            priority: 2,
+        }]
+    }
+}
+
+// 2c. Loop File Sharing — the NeboAI loop ("neboai" channel) is an internal
+// surface, so ChannelPluginRouting early-returns for it. But loop replies DO
+// support file attachments (chat_dispatch collects tool `image_url` paths and
+// staples them onto the reply). Tell the bot how to use the loop tool's
+// `share` action so it doesn't decline file requests.
+struct LoopFileSharing;
+impl Generator for LoopFileSharing {
+    fn name(&self) -> &str {
+        "loop_file_sharing"
+    }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        if ctx.channel != "neboai" {
+            return vec![];
+        }
+        vec![SteeringDirective {
+            label: "Loop File Sharing".to_string(),
+            content: "You're in a shared NeboAI loop. When the user references a local file \
+                      or asks you to share/send/upload one, share it by calling \
+                      `loop(resource: \"channel\", action: \"share\", path: \"<abs_path>\")` \
+                      (or `resource: \"dm\"` for a direct message) — it attaches to your reply \
+                      automatically. You do NOT need a plugin for this."
+                .to_string(),
             priority: 2,
         }]
     }

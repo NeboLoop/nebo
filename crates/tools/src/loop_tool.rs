@@ -26,6 +26,48 @@ impl LoopTool {
         }
     }
 
+    /// Validate a local file path and return a ToolResult carrying it as
+    /// `image_url`. The chat dispatcher collects every non-`data:` `image_url`
+    /// produced during a run and staples it onto the loop reply as an uploaded
+    /// attachment (see resolve_comm_attachments) — so sharing a file is just a
+    /// matter of nominating its absolute path here. `target` is a human label
+    /// (e.g. "the channel" / "the conversation") for the success message.
+    fn share_file(&self, path: &str, target: &str) -> ToolResult {
+        if path.is_empty() {
+            return ToolResult::error("path is required for share");
+        }
+
+        let p = std::path::Path::new(path);
+        if !p.is_absolute() {
+            return ToolResult::error(format!(
+                "path must be absolute, got: {}",
+                path
+            ));
+        }
+
+        let meta = match std::fs::metadata(p) {
+            Ok(m) => m,
+            Err(e) => {
+                return ToolResult::error(format!(
+                    "Cannot access file at {}: {}",
+                    path, e
+                ));
+            }
+        };
+        if !meta.is_file() {
+            return ToolResult::error(format!("Not a file: {}", path));
+        }
+
+        let filename = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+
+        let mut result = ToolResult::ok(format!("Shared {} to {}.", filename, target));
+        result.image_url = Some(path.to_string());
+        result
+    }
+
     async fn handle_dm(&self, input: &serde_json::Value) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("");
 
@@ -66,7 +108,14 @@ impl LoopTool {
                     Err(e) => ToolResult::error(format!("Failed to send DM: {}", e)),
                 }
             }
-            _ => ToolResult::error(format!("Unknown dm action: {}. Available: send", action)),
+            "share" => {
+                let path = input["path"].as_str().unwrap_or("");
+                self.share_file(path, "the conversation")
+            }
+            _ => ToolResult::error(format!(
+                "Unknown dm action: {}. Available: send, share",
+                action
+            )),
         }
     }
 
@@ -141,8 +190,12 @@ impl LoopTool {
                 }
                 Err(e) => ToolResult::error(format!("Failed to list channels: {}", e)),
             },
+            "share" => {
+                let path = input["path"].as_str().unwrap_or("");
+                self.share_file(path, "the channel")
+            }
             _ => ToolResult::error(format!(
-                "Unknown channel action: {}. Available: send, messages, members, list",
+                "Unknown channel action: {}. Available: send, messages, members, list, share",
                 action
             )),
         }
@@ -243,6 +296,8 @@ impl DynTool for LoopTool {
          USE THIS when: user wants to message another bot, post to a channel, or interact with NeboAI infrastructure.\n\n\
          - loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\") — Send a DM to another bot\n\
          - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\") — Send to a loop channel\n\
+         - loop(resource: \"channel\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file into the channel reply\n\
+         - loop(resource: \"dm\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file in a direct message\n\
          - loop(resource: \"channel\", action: \"list\") — List available channels\n\
          - loop(resource: \"channel\", action: \"messages\", channel_id: \"...\", limit: 20) — Read channel messages\n\
          - loop(resource: \"channel\", action: \"members\", channel_id: \"...\") — List channel members\n\
@@ -264,9 +319,10 @@ impl DynTool for LoopTool {
                 "action": {
                     "type": "string",
                     "description": "The operation to perform on the selected resource. Never put a resource name here.",
-                    "enum": ["send", "messages", "members", "list", "get", "subscribe", "unsubscribe", "status"]
+                    "enum": ["send", "share", "messages", "members", "list", "get", "subscribe", "unsubscribe", "status"]
                 },
                 "text": { "type": "string", "description": "Message text" },
+                "path": { "type": "string", "description": "Absolute path of a local file to share (for channel/dm share)" },
                 "to": { "type": "string", "description": "Recipient agent ID (for dm)" },
                 "channel_id": { "type": "string", "description": "Channel ID" },
                 "topic": { "type": "string", "description": "Topic name for pub/sub" },
