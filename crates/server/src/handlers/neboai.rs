@@ -416,10 +416,23 @@ pub async fn bot_status(State(state): State<AppState>) -> HandlerResult<serde_js
     let ws_connected = state.comm_manager.is_connected().await;
     let bot_id = config::read_bot_id().unwrap_or_default();
 
+    // The default id-based handle, matching neboloop's `defaultHandle`:
+    // "bot_" + the first 8 chars of the bot UUID with dashes removed. This is
+    // the routing identity used when the user hasn't chosen a custom handle.
+    let default_handle = if bot_id.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "bot_{}",
+            bot_id.chars().filter(|c| *c != '-').take(8).collect::<String>()
+        )
+    };
+
     Ok(Json(serde_json::json!({
         "connected": ws_connected,
         "authenticated": !profiles.is_empty(),
         "botId": bot_id,
+        "defaultHandle": default_handle,
         "apiServer": state.config.neboai.api_url,
     })))
 }

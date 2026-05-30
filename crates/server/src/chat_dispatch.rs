@@ -265,7 +265,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // final loop/DM reply so generated files (images, reports) reach the
                 // channel Slack-style. Deduped by source URL/path.
                 let mut comm_file_artifacts: Vec<String> = Vec::new();
-                const COMM_COALESCE_MS: u64 = 500;
+                // Match the local-chat streaming cadence (COALESCE_MS) so loop
+                // replies stream token-smooth like ChatGPT/Claude instead of
+                // arriving in half-second chunks. The chunks are ephemeral
+                // fanout frames, so a tight window is cheap.
+                const COMM_COALESCE_MS: u64 = COALESCE_MS;
                 // Stable ID across all stream chunks so the gateway coalesces them
                 let comm_stream_id = uuid::Uuid::new_v4().to_string();
 
@@ -308,12 +312,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // Stream chunks to comm channel via provider
                             if comm_reply.is_some() {
                                 comm_buffer.push_str(&event.text);
-                                let flush_elapsed = last_comm_flush
-                                    .get_or_insert_with(tokio::time::Instant::now)
-                                    .elapsed()
-                                    .as_millis()
-                                    as u64;
-                                if flush_elapsed >= COMM_COALESCE_MS {
+                                // Flush the FIRST chunk immediately so the loop
+                                // paints the opening text the instant the model
+                                // produces it (matches the local-chat feel);
+                                // coalesce subsequent chunks at COMM_COALESCE_MS.
+                                let should_flush = match last_comm_flush {
+                                    None => true,
+                                    Some(t) => t.elapsed().as_millis() as u64 >= COMM_COALESCE_MS,
+                                };
+                                if should_flush {
                                     if let Some(cfg) = &comm_reply {
                                         let mut chunk_meta = std::collections::HashMap::new();
                                         if !agent_display_name.is_empty() {
@@ -649,85 +656,48 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             comm_streamed = true;
                         }
 
-                        // If we streamed any chunks (during loop or final flush), don't
-                        // send the full response again — it would duplicate on the Loop.
-                        // Only send a complete Message if nothing was streamed at all.
-                        if !comm_streamed {
-                            info!(
-                                topic = %reply_config.topic,
-                                conv_id = %reply_config.conversation_id,
-                                response_len = full_response.len(),
-                                attachment_count = reply_attachments.len(),
-                                "sending comm reply (complete, no stream)"
-                            );
-                            let reply = comm::CommMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                from: String::new(),
-                                to: String::new(),
-                                topic: reply_config.topic.clone(),
-                                conversation_id: reply_config.conversation_id.clone(),
-                                msg_type: comm::CommMessageType::Message,
-                                content: full_response,
-                                metadata: reply_meta,
-                                timestamp: 0,
-                                human_injected: false,
-                                human_id: None,
-                                task_id: None,
-                                correlation_id: None,
-                                task_status: None,
-                                artifacts: vec![],
-                                error: None,
-                                attachments: reply_attachments,
-                            };
-                            if let Err(e) = send_to_channel(
-                                &reply_config.provider,
-                                &comm_manager,
-                                &channel_providers,
-                                reply,
-                            )
-                            .await
-                            {
-                                warn!(error = %e, "failed to send comm reply");
-                            }
-                        } else if !reply_attachments.is_empty() {
-                            // Text was already streamed as chunks; send a trailing
-                            // attachments-only Message so generated files still reach
-                            // the channel without duplicating the text body.
-                            info!(
-                                topic = %reply_config.topic,
-                                conv_id = %reply_config.conversation_id,
-                                attachment_count = reply_attachments.len(),
-                                "sending comm attachments (trailing, after stream)"
-                            );
-                            let attach_msg = comm::CommMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                from: String::new(),
-                                to: String::new(),
-                                topic: reply_config.topic.clone(),
-                                conversation_id: reply_config.conversation_id.clone(),
-                                msg_type: comm::CommMessageType::Message,
-                                content: String::new(),
-                                metadata: reply_meta,
-                                timestamp: 0,
-                                human_injected: false,
-                                human_id: None,
-                                task_id: None,
-                                correlation_id: None,
-                                task_status: None,
-                                artifacts: vec![],
-                                error: None,
-                                attachments: reply_attachments,
-                            };
-                            if let Err(e) = send_to_channel(
-                                &reply_config.provider,
-                                &comm_manager,
-                                &channel_providers,
-                                attach_msg,
-                            )
-                            .await
-                            {
-                                warn!(error = %e, "failed to send comm attachments");
-                            }
+                        // Always send a final complete Message. When chunks were
+                        // streamed, the web replaces the accumulated streaming
+                        // bubble with this full text (no duplication, and any
+                        // mid-word chunk artifacts are repaired); when nothing
+                        // streamed, this is the sole reply. Carries any
+                        // run-produced file attachments alongside the text.
+                        info!(
+                            topic = %reply_config.topic,
+                            conv_id = %reply_config.conversation_id,
+                            response_len = full_response.len(),
+                            attachment_count = reply_attachments.len(),
+                            streamed = comm_streamed,
+                            "sending comm reply (final complete message)"
+                        );
+                        let reply = comm::CommMessage {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            from: String::new(),
+                            to: String::new(),
+                            topic: reply_config.topic.clone(),
+                            conversation_id: reply_config.conversation_id.clone(),
+                            msg_type: comm::CommMessageType::Message,
+                            content: full_response,
+                            metadata: reply_meta,
+                            timestamp: 0,
+                            human_injected: false,
+                            human_id: None,
+                            task_id: None,
+                            correlation_id: None,
+                            task_status: None,
+                            artifacts: vec![],
+                            error: None,
+                            attachments: reply_attachments,
+                        };
+                        if let Err(e) = send_to_channel(
+                            &reply_config.provider,
+                            &comm_manager,
+                            &channel_providers,
+                            reply,
+                        )
+                        .await
+                        {
+                            warn!(error = %e, "failed to send comm reply");
                         }
                     } else {
                         // No text response. Still deliver any run-produced files as

@@ -616,7 +616,16 @@ impl CommPlugin for NeboAIPlugin {
         } else {
             &msg.topic
         };
+        let is_stream = matches!(msg.msg_type, CommMessageType::Stream);
         let mut content = serde_json::json!({ "text": msg.content });
+        // Tag streaming chunks so the web accumulates the deltas into ONE
+        // message bubble (it keys on `content.type === "stream"`) instead of
+        // rendering each coalesced chunk as a separate finalized message. The
+        // closing CommMessageType::Message carries no type, which finalizes
+        // (replaces) the accumulated bubble with the full text.
+        if is_stream {
+            content["type"] = serde_json::Value::String("stream".to_string());
+        }
         // Include metadata fields (e.g. senderName) in the content JSON
         if let serde_json::Value::Object(ref mut map) = content {
             for (k, v) in &msg.metadata {
@@ -640,9 +649,15 @@ impl CommPlugin for NeboAIPlugin {
         })
         .map_err(|e| CommError::Other(e.to_string()))?;
 
+        // Stream chunks are ephemeral (fanout-only, not persisted): only the
+        // final Message is durable, so history replay shows one clean message
+        // rather than the intermediate fragments.
+        let flags = if is_stream { frame::FLAG_EPHEMERAL } else { 0 };
         let encoded = frame::encode(
             Header {
                 frame_type: frame::TYPE_SEND_MESSAGE,
+                flags,
+                msg_id: self.ulid_gen.next(),
                 ..Default::default()
             },
             &payload,

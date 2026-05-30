@@ -323,6 +323,10 @@ export interface ErrorLog {
 	resolved: number
 }
 
+export interface HandleAvailableResponse {
+	available: boolean
+}
+
 export interface HealthResponse {
 	status: string
 	version: string
@@ -1319,6 +1323,7 @@ export interface NeboAIBotStatusResponse {
 	connected: boolean
 	authenticated: boolean
 	botId: string
+	defaultHandle: unknown
 	apiServer: string
 }
 

@@ -113,6 +113,26 @@ impl Store {
         Ok(())
     }
 
+    /// Sync filesystem-owned CONTENT columns only (agent_md, frontmatter).
+    /// User-mutable IDENTITY fields (name, description, color, handle, soul, rules)
+    /// are NEVER touched here — the DB row is the source of truth for identity, and
+    /// content syncs must not clobber user edits.
+    pub fn sync_agent_content(
+        &self,
+        id: &str,
+        agent_md: &str,
+        frontmatter: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agents SET agent_md = ?1, frontmatter = ?2, updated_at = unixepoch()
+             WHERE id = ?3",
+            params![agent_md, frontmatter, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// Get an agent by name (case-insensitive).
     pub fn get_agent_by_name(&self, name: &str) -> Result<Option<Agent>, NeboError> {
         let conn = self.conn()?;

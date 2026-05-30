@@ -1445,11 +1445,16 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
 
     // Build set of local slugs the user has chosen to EXPOSE on the loop
     // (enabled + disabled both count — exposure is independent of pause state).
+    // The primary/default agent ("assistant") is EXCLUDED: its loop identity is
+    // the immutable `bot_<id>` agent managed solely by the CONNECT frame
+    // (EnsureAgentForBot). Reconciling it here by name-slug would derive the
+    // handle from the display name (rename "Johnny" → `bot_johnny`) and re-key
+    // the bot — orphaning @mentions. Reconcile only manages CUSTOM agents.
     let exposed_slugs: std::collections::HashSet<String> =
         if let Ok(roles) = state.store.list_agents(1000, 0) {
             roles
                 .iter()
-                .filter(|r| r.loop_exposed != 0)
+                .filter(|r| r.loop_exposed != 0 && r.id != "assistant")
                 .map(|r| r.name.to_lowercase().replace(' ', "-"))
                 .collect()
         } else {
@@ -1476,7 +1481,9 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         remote_agents.iter().map(|a| a.slug.clone()).collect();
     if let Ok(agents) = state.store.list_agents(1000, 0) {
         for agent in &agents {
-            if agent.loop_exposed == 0 {
+            // Primary agent is managed via the CONNECT frame (bot_<id>), never
+            // by name-slug here — see the exposed_slugs comment above.
+            if agent.loop_exposed == 0 || agent.id == "assistant" {
                 continue;
             }
             let slug = agent.name.to_lowercase().replace(' ', "-");

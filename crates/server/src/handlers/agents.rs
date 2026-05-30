@@ -173,6 +173,22 @@ pub async fn list_agents(
             .map(|r| r.id.clone())
             .unwrap_or(fs_id);
 
+        // Identity (name, description, color, handle) is DB-owned for user edits.
+        // Fall back to the filesystem/embedded loader only when the DB has no row
+        // or the DB value is empty (e.g. freshly seeded).
+        let name = db_row
+            .map(|r| r.name.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&loaded.agent_def.name)
+            .to_string();
+        let description = db_row
+            .map(|r| r.description.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&loaded.description)
+            .to_string();
+        let color = db_row.and_then(|r| r.color.clone());
+        let handle = db_row.and_then(|r| r.handle.clone());
+
         // Compute a display name: window title > first # heading from body > name
         let display_name = loaded
             .app_window_config
@@ -187,13 +203,15 @@ pub async fn list_agents(
                         .filter(|h| !h.is_empty())
                 })
             })
-            .unwrap_or_else(|| loaded.agent_def.name.clone());
+            .unwrap_or_else(|| name.clone());
 
         let mut entry = serde_json::json!({
             "id": agent_id,
-            "name": loaded.agent_def.name,
+            "name": name,
             "displayName": display_name,
-            "description": loaded.description,
+            "description": description,
+            "color": color,
+            "handle": handle,
             "source": source,
             "version": loaded.version,
             "isApp": loaded.is_app,
@@ -1583,23 +1601,10 @@ pub async fn reload_agent(
         ));
     }
 
-    // Persist
+    // Persist filesystem-owned content only; identity stays DB-owned.
     state
         .store
-        .update_agent(
-            &id,
-            &agent.name,
-            &agent.description,
-            &current_md,
-            &current_fm,
-            agent.pricing_model.as_deref(),
-            agent.pricing_cost,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        .sync_agent_content(&id, &current_md, &current_fm)
         .map_err(to_error_response)?;
 
     // Re-register triggers if agent.json changed
@@ -3296,4 +3301,32 @@ pub async fn start_workflow_chat(
         "sessionKey": session_key,
         "agentId": id,
     })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HandleAvailableQuery {
+    pub handle: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct HandleAvailableResponse {
+    pub available: bool,
+}
+
+/// GET /api/v1/agent/handle-available?handle=bot_xxx
+///
+/// Proxies the global handle-availability check to NeboAI. The handle is the
+/// routing identity (`bot_<chosen>`) and is independent of any display name.
+/// This bot is excluded server-side so its own current handle is never reported
+/// as taken.
+pub async fn handle_available(
+    State(state): State<AppState>,
+    Query(q): Query<HandleAvailableQuery>,
+) -> HandlerResult<HandleAvailableResponse> {
+    let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
+    let available = api
+        .handle_available(&q.handle)
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+    Ok(Json(HandleAvailableResponse { available }))
 }

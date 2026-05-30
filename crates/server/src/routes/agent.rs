@@ -39,6 +39,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::agent::get_status),
         )
         .route(
+            "/agent/handle-available",
+            axum::routing::get(handlers::agents::handle_available),
+        )
+        .route(
             "/agent/system-info",
             axum::routing::get(handlers::agent::get_system_info),
         )

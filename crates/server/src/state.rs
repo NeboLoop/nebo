@@ -19,6 +19,23 @@ use crate::handlers::ws::ClientHub;
 use crate::run_registry::RunRegistry;
 use crate::workflow_manager::WorkflowManagerImpl;
 
+/// A single un-answered channel message held in the rolling context buffer.
+/// `at` is an in-memory timestamp used only for age-based trimming.
+#[derive(Clone)]
+pub struct ChannelMsg {
+    pub sender: String,
+    pub text: String,
+    pub at: std::time::Instant,
+}
+
+/// An active follow-up window for a channel: after the bot replies to a user,
+/// that user can keep talking (without re-mentioning) until `expires`.
+#[derive(Clone)]
+pub struct Engagement {
+    pub user: String,
+    pub expires: std::time::Instant,
+}
+
 /// Janus AI usage stats stored in memory, updated from rate limit headers or direct API call.
 /// Credit values are in microdollars (µ$); divide by 1,000,000 for dollars.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -116,4 +133,12 @@ pub struct AppState {
     pub app_lifecycles: Arc<tokio::sync::RwLock<HashMap<String, AppLifecycle>>>,
     /// Local voice pipeline (Piper TTS, whisper.cpp STT) — initialized at startup
     pub voice: Arc<voice::VoicePipeline>,
+    /// Rolling un-answered context buffer per loop channel, keyed by conversation_id.
+    /// Every channel message is ingested here (mentioned or not); the buffer is
+    /// drained when the bot replies, so it only ever holds messages since the
+    /// last reply. Capped to the most recent entries and trimmed by age on push.
+    pub channel_context: Arc<Mutex<HashMap<String, std::collections::VecDeque<ChannelMsg>>>>,
+    /// Active follow-up windows per loop channel, keyed by conversation_id.
+    /// Lets the engaged user keep talking without re-mentioning the bot.
+    pub channel_engagement: Arc<Mutex<HashMap<String, Engagement>>>,
 }

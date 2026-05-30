@@ -99,7 +99,6 @@
   let identitySaveTimer: ReturnType<typeof setTimeout> | null = null;
   let editName = $state('');
   let editRole = $state('');
-  let editHandle = $state('');
   let editColor = $state('');
   let editLoopExposed = $state(false);
 
@@ -112,9 +111,6 @@
       loadedIdentityFor = agentId;
       editName = agent.name;
       editRole = agent.role;
-      // The handle's stored form is `bot_<chosen>`; the input edits only the
-      // `<chosen>` part while the `bot_` prefix is shown as a fixed affordance.
-      editHandle = (agent.handle ?? '').replace(/^bot_/, '');
       editColor = agent.color;
       editLoopExposed = agent.loopExposed ?? false;
     }
@@ -146,7 +142,6 @@
       await api.updateAgent(agentId, {
         name: editName,
         description: editRole,
-        handle: `bot_${editHandle}`,
         color: editColor,
       });
       identitySaved = true;
@@ -526,14 +521,6 @@
       <label class="block">
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">Agent Name</span>
         <input type="text" bind:value={editName} oninput={debounceIdentitySave} disabled={!agent?.editable} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
-      </label>
-      <label class="block">
-        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">Handle</span>
-        <div class="flex items-stretch rounded-md border border-base-300 bg-base-100 overflow-hidden focus-within:border-base-content/40 transition-colors {!agent?.editable ? 'opacity-60' : ''}">
-          <span class="flex items-center px-2.5 text-sm font-mono text-base-content/50 bg-base-200 border-r border-base-300 select-none">@bot_</span>
-          <input type="text" bind:value={editHandle} oninput={debounceIdentitySave} disabled={!agent?.editable} placeholder="handle" class="flex-1 py-[7px] px-2.5 text-sm bg-base-100 outline-none font-mono disabled:cursor-not-allowed" />
-        </div>
-        <span class="block text-xs text-base-content/50 mt-1">Unique per loop. The <span class="font-mono">bot_</span> prefix marks it as a companion.</span>
       </label>
       <label class="block">
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">Role</span>

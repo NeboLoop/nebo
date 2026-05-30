@@ -55,6 +55,13 @@ export function sendChannelMessage(channelId: string, req: Record<string, unknow
 }
 
 /**
+ * @description "Handle available"
+ */
+export function handleAvailable(handle: string) {
+	return webapi.get<unknown>(`/api/v1/agent/handle-available`, { handle })
+}
+
+/**
  * @description "Get heartbeat"
  */
 export function getHeartbeat() {

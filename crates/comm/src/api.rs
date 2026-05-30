@@ -690,6 +690,25 @@ impl NeboAIApi {
         Ok(mine)
     }
 
+    /// Check whether a handle (the `bot_<chosen>` routing identity) is globally
+    /// available across all agents. This bot is excluded so its own current
+    /// handle is never reported as taken. Returns `true` when available.
+    pub async fn handle_available(&self, handle: &str) -> Result<bool, CommError> {
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            available: bool,
+        }
+        let path = format!(
+            "/api/v1/agents/handle-available?handle={}&botId={}",
+            urlencoding::encode(handle),
+            urlencoding::encode(&self.bot_id),
+        );
+        let resp: Resp = self
+            .do_json(reqwest::Method::GET, &path, None::<&()>)
+            .await?;
+        Ok(resp.available)
+    }
+
     /// Deregister an agent from a loop.
     pub async fn deregister_agent(
         &self,

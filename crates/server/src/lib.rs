@@ -1179,20 +1179,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
             let agent_id_for_bindings;
             if let Some(db_agent) = db_agent {
-                // Update existing DB record with fresh filesystem content
-                let _ = store.update_agent(
+                // Refresh filesystem-owned content only; never clobber user-edited identity.
+                let _ = store.sync_agent_content(
                     &db_agent.id,
-                    &loaded.agent_def.name,
-                    &loaded.description,
                     &loaded.agent_md,
                     &loaded.frontmatter,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
                 );
                 agent_id_for_bindings = db_agent.id.clone();
                 synced += 1;
@@ -1445,6 +1436,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         voice: Arc::new(voice::VoicePipeline::new(
             voice::VoicePipelineConfig::default(),
         )),
+        channel_context: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     // Wire RunRegistry into the tool-layer run querier (late binding via OnceLock)
@@ -2113,20 +2106,11 @@ async fn handle_agent_fs_events(
                     continue;
                 };
 
-                // Update DB content
-                let _ = state.store.update_agent(
+                // Refresh filesystem-owned content only; never clobber user-edited identity.
+                let _ = state.store.sync_agent_content(
                     &db_agent.id,
-                    &loaded.agent_def.name,
-                    &loaded.description,
                     &loaded.agent_md,
                     &loaded.frontmatter,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
                 );
 
                 // Re-sync workflow bindings
@@ -2134,11 +2118,10 @@ async fn handle_agent_fs_events(
                     sync_agent_workflows(&state.store, &db_agent.id, config);
                 }
 
-                // Patch in-memory registry if active
+                // Patch in-memory registry content only; identity stays DB-owned.
                 {
                     let mut registry = state.agent_registry.write().await;
                     if let Some(active) = registry.get_mut(&db_agent.id) {
-                        active.name = loaded.agent_def.name.clone();
                         active.agent_md = loaded.agent_md.clone();
                         active.config = loaded.config.clone();
                     }
@@ -2149,17 +2132,17 @@ async fn handle_agent_fs_events(
                     state.agent_workers.stop_agent(&db_agent.id).await;
                     state
                         .agent_workers
-                        .start_agent(&db_agent.id, &loaded.agent_def.name, None)
+                        .start_agent(&db_agent.id, &db_agent.name, None)
                         .await;
                 }
 
-                info!(name = %loaded.agent_def.name, id = %db_agent.id, "fs watcher: agent content updated");
+                info!(name = %db_agent.name, id = %db_agent.id, "fs watcher: agent content updated");
                 state.hub.broadcast(
                     "agent_updated",
                     serde_json::json!({
                         "agentId": db_agent.id,
-                        "name": loaded.agent_def.name,
-                        "description": loaded.description,
+                        "name": db_agent.name,
+                        "description": db_agent.description,
                     }),
                 );
             }
@@ -2752,6 +2735,253 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // Also emit into event bus so role event triggers can fire
         state.event_bus.emit(tools::events::Event {
             source: format!("neboai.{}", msg.topic),
+            payload: serde_json::json!({
+                "from": msg.from,
+                "content": msg.content,
+                "conversation_id": msg.conversation_id,
+            }),
+            origin: "neboai".to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        });
+        return;
+    }
+
+    // Route loop CHANNEL messages. Unlike DMs/agent_spaces (which respond to
+    // every message), in a channel the bot only answers when explicitly
+    // @mentioned: the web embeds an `<@{bot_id}>` token for a real mention
+    // chip, so plain text containing the bot's name does NOT trigger a reply.
+    if msg.topic == "channel" {
+        // Follow-up window: after the bot replies to a user in a channel, that
+        // same user may keep talking (without re-mentioning) for this long.
+        const CHANNEL_FOLLOWUP_WINDOW_SECS: u64 = 180;
+        // Rolling un-answered context buffer limits.
+        const CHANNEL_CONTEXT_CAP: usize = 40;
+        const CHANNEL_CONTEXT_MAX_AGE_SECS: u64 = 30 * 60;
+
+        let text = extract_message_text(&msg.content);
+        if text.is_empty() {
+            return;
+        }
+
+        // Sender label: prefer the senderName carried in the content JSON
+        // (the web sender embeds it), else a short prefix of the sender id.
+        let sender_label = serde_json::from_str::<serde_json::Value>(&msg.content)
+            .ok()
+            .and_then(|v| v["senderName"].as_str().map(|s| s.to_string()))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                if msg.from.is_empty() {
+                    "Someone".to_string()
+                } else {
+                    truncate_str(&msg.from, 8).to_string()
+                }
+            });
+
+        // INGEST: every channel message accrues into the rolling buffer,
+        // whether or not the bot ends up responding. Trim by cap + age.
+        let now = std::time::Instant::now();
+        let max_age = std::time::Duration::from_secs(CHANNEL_CONTEXT_MAX_AGE_SECS);
+        {
+            let mut ctx = state.channel_context.lock().await;
+            let deque = ctx.entry(msg.conversation_id.clone()).or_default();
+            deque.push_back(state::ChannelMsg {
+                sender: sender_label.clone(),
+                text: text.clone(),
+                at: now,
+            });
+            while deque
+                .front()
+                .map(|m| now.duration_since(m.at) > max_age)
+                .unwrap_or(false)
+            {
+                deque.pop_front();
+            }
+            while deque.len() > CHANNEL_CONTEXT_CAP {
+                deque.pop_front();
+            }
+        }
+
+        // DECIDE: respond on an explicit @mention of THIS bot, or while an
+        // active follow-up window for THIS sender is still open.
+        let bot_id = config::read_bot_id().unwrap_or_default();
+        let mention_token = format!("<@{}>", bot_id);
+        let mentioned = !bot_id.is_empty() && text.contains(&mention_token);
+
+        let should_respond = if mentioned {
+            // Open / refresh the follow-up window for this speaker.
+            let mut eng = state.channel_engagement.lock().await;
+            eng.insert(
+                msg.conversation_id.clone(),
+                state::Engagement {
+                    user: msg.from.clone(),
+                    expires: now
+                        + std::time::Duration::from_secs(CHANNEL_FOLLOWUP_WINDOW_SECS),
+                },
+            );
+            true
+        } else {
+            let mut eng = state.channel_engagement.lock().await;
+            match eng.get(&msg.conversation_id) {
+                Some(entry) if entry.user == msg.from && now < entry.expires => {
+                    // Same engaged speaker, window still open → extend it.
+                    eng.insert(
+                        msg.conversation_id.clone(),
+                        state::Engagement {
+                            user: msg.from.clone(),
+                            expires: now
+                                + std::time::Duration::from_secs(
+                                    CHANNEL_FOLLOWUP_WINDOW_SECS,
+                                ),
+                        },
+                    );
+                    true
+                }
+                Some(entry) => {
+                    // A different speaker (or an expired window) closes it so a
+                    // stale follow-up can't later trigger a reply.
+                    if entry.user != msg.from {
+                        eng.remove(&msg.conversation_id);
+                    }
+                    false
+                }
+                None => false,
+            }
+        };
+
+        tracing::info!(
+            conv_id = %msg.conversation_id,
+            from = %msg.from,
+            mentioned = mentioned,
+            should_respond = should_respond,
+            "channel message"
+        );
+
+        if !should_respond {
+            // Not addressed: message is already buffered for future context.
+            // Surface to the event bus for triggers, but don't run the agent.
+            state.event_bus.emit(tools::events::Event {
+                source: "neboai.channel".to_string(),
+                payload: serde_json::json!({
+                    "from": msg.from,
+                    "content": msg.content,
+                    "conversation_id": msg.conversation_id,
+                }),
+                origin: "neboai".to_string(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            });
+            return;
+        }
+
+        // Respond → route to the bot's primary/default agent.
+        let (agent_id, _is_default_bot) =
+            resolve_inbound_agent(&state, "", &msg.metadata).await;
+        let agent_name = {
+            let registry = state.agent_registry.read().await;
+            registry
+                .get("assistant")
+                .map(|r| r.name.clone())
+                .unwrap_or_else(|| "Nebo".to_string())
+        };
+
+        // DRAIN the un-answered buffer for this channel under the lock, then
+        // release it. The drained entries are the conversation since the last
+        // reply (including the current message, pushed above) — draining on
+        // reply prevents re-sending them next turn.
+        let buffered: Vec<state::ChannelMsg> = {
+            let mut ctx = state.channel_context.lock().await;
+            match ctx.get_mut(&msg.conversation_id) {
+                Some(deque) => std::mem::take(deque).into_iter().collect(),
+                None => Vec::new(),
+            }
+        };
+
+        // Build an attributed transcript as a single user turn. Replace the
+        // bot's own mention token with @{agent_name} so it reads naturally.
+        let mention_replacement = format!("@{}", agent_name);
+        let prompt_text = if buffered.len() <= 1 {
+            // Single line → no transcript header needed.
+            let line = buffered
+                .first()
+                .map(|m| m.text.clone())
+                .unwrap_or_else(|| text.clone());
+            line.replace(&mention_token, &mention_replacement)
+        } else {
+            let mut t = String::from("[Recent activity in this channel]\n");
+            for m in &buffered {
+                let line = m.text.replace(&mention_token, &mention_replacement);
+                t.push_str(&format!("{}: {}\n", m.sender, line));
+            }
+            t
+        };
+
+        // Per-channel session so each channel keeps its own context, separate
+        // from DMs and other channels.
+        let session_key =
+            agent::keyparser::build_session_key("neboai", "channel", &msg.conversation_id);
+        let _ = state
+            .store
+            .create_chat(&session_key, &format!("Loop channel ({})", agent_name));
+
+        let preview = if prompt_text.len() > 80 {
+            format!("{}...", truncate_str(&prompt_text, 80))
+        } else {
+            prompt_text.clone()
+        };
+        notify_crate::send(&format!("Loop channel: {}", agent_name), &preview);
+
+        // Use the agent's config (custom agent) or the bot's main persona.
+        let entity_config = if !agent_id.is_empty() {
+            entity_config::resolve_for_chat(&state.store, "agent", &agent_id)
+        } else {
+            entity_config::resolve_for_chat(&state.store, "main", "main")
+        };
+
+        let mut prompt = prompt_text;
+        let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
+
+        let config = chat_dispatch::ChatConfig {
+            session_key,
+            prompt,
+            system: String::new(),
+            user_id: String::new(),
+            channel: "neboai".to_string(),
+            origin: tools::Origin::Comm,
+            agent_id,
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            lane: types::constants::lanes::COMM.to_string(),
+            comm_reply: Some(chat_dispatch::CommReplyConfig {
+                provider: "neboai".to_string(),
+                topic: "channel".to_string(),
+                conversation_id: msg.conversation_id.clone(),
+            }),
+            entity_config,
+            images,
+            entity_name: agent_name,
+            origin_agent_id: None,
+            mention_context: None,
+            tool_scope: None,
+            plan_mode: false,
+            channel_ctx: None,
+        };
+
+        let _ = state
+            .comm_manager
+            .send_typing(&msg.conversation_id, true)
+            .await;
+        chat_dispatch::run_chat(&state, config).await;
+        let _ = state
+            .comm_manager
+            .send_typing(&msg.conversation_id, false)
+            .await;
+
+        state.event_bus.emit(tools::events::Event {
+            source: "neboai.channel".to_string(),
             payload: serde_json::json!({
                 "from": msg.from,
                 "content": msg.content,
