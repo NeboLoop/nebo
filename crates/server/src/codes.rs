@@ -1473,6 +1473,18 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
             if let Err(e) = api.deregister_agent(&personal.loop_id, &agent.id).await {
                 warn!(agent_slug = %agent.slug, agent_id = %agent.id, error = %e, "reconcile: failed to deregister");
             }
+            // Clear loop_agent_id on any local agent that mapped to this remote
+            // agent so a removed agent can no longer be addressed by its token.
+            if let Some(local) = state
+                .store
+                .get_agent_by_loop_agent_id(&agent.id)
+                .ok()
+                .flatten()
+            {
+                if let Err(e) = state.store.set_agent_loop_agent_id(&local.id, None) {
+                    warn!(agent_id = %local.id, error = %e, "reconcile: failed to clear loop_agent_id");
+                }
+            }
         }
     }
 
@@ -1494,11 +1506,36 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
                     "paused"
                 };
                 info!(agent = %agent.name, slug = %slug, status = %status, "reconcile: registering missing exposed agent");
-                if let Err(e) = api
+                match api
                     .register_agent(&personal.loop_id, &agent.name, &slug, None)
                     .await
                 {
-                    warn!(slug = %slug, error = %e, "reconcile: failed to register");
+                    Ok(value) => {
+                        // Capture the remote agent UUID so `<@{id}>` mention
+                        // tokens from the web composer resolve to THIS agent.
+                        if let Some(loop_id) = value["id"].as_str().filter(|s| !s.is_empty()) {
+                            if let Err(e) =
+                                state.store.set_agent_loop_agent_id(&agent.id, Some(loop_id))
+                            {
+                                warn!(agent_id = %agent.id, error = %e, "reconcile: failed to store loop_agent_id");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(slug = %slug, error = %e, "reconcile: failed to register");
+                    }
+                }
+            } else if agent.loop_agent_id.is_none() {
+                // Already registered remotely but missing locally → backfill from
+                // the matching remote entry so existing installs become
+                // addressable without re-registering.
+                if let Some(remote) = remote_agents.iter().find(|a| a.slug == slug) {
+                    if let Err(e) = state
+                        .store
+                        .set_agent_loop_agent_id(&agent.id, Some(&remote.id))
+                    {
+                        warn!(agent_id = %agent.id, error = %e, "reconcile: failed to backfill loop_agent_id");
+                    }
                 }
             }
         }
@@ -1645,10 +1682,27 @@ pub(crate) async fn register_agent_in_loop(
     // Deregister first to make this idempotent (avoids 409 on reinstall)
     let _ = api.deregister_agent(&personal.loop_id, slug).await;
 
-    api.register_agent(&personal.loop_id, name, slug, None)
+    let value = api
+        .register_agent(&personal.loop_id, name, slug, None)
         .await
         .map_err(|e| NeboError::Internal(format!("register agent: {e}")))?;
     info!(agent = %name, loop_id = %personal.loop_id, "registered agent in loop");
+
+    // Capture the remote agent UUID so `<@{id}>` mention tokens from the web
+    // composer resolve to this local agent in the channel branch. The local
+    // agent is found by its name-derived slug.
+    if let Some(loop_id) = value["id"].as_str().filter(|s| !s.is_empty()) {
+        if let Ok(agents) = state.store.list_agents(1000, 0) {
+            if let Some(local) = agents
+                .iter()
+                .find(|a| a.name.to_lowercase().replace(' ', "-") == slug)
+            {
+                if let Err(e) = state.store.set_agent_loop_agent_id(&local.id, Some(loop_id)) {
+                    warn!(agent_id = %local.id, error = %e, "failed to store loop_agent_id");
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1681,6 +1735,19 @@ pub(crate) async fn deregister_agent_from_loop(
         .await
         .map_err(|e| NeboError::Internal(format!("deregister agent: {e}")))?;
     info!(agent = %agent_slug, remote_id = %remote.id, loop_id = %personal.loop_id, "deregistered agent from loop");
+
+    // Clear the local agent's loop_agent_id so a deregistered agent can no
+    // longer be addressed by its `<@{id}>` mention token.
+    if let Some(local) = state
+        .store
+        .get_agent_by_loop_agent_id(&remote.id)
+        .ok()
+        .flatten()
+    {
+        if let Err(e) = state.store.set_agent_loop_agent_id(&local.id, None) {
+            warn!(agent_id = %local.id, error = %e, "failed to clear loop_agent_id on deregister");
+        }
+    }
     Ok(())
 }
 

@@ -658,6 +658,10 @@ pub struct Agent {
     /// Whether this agent is exposed on the user's personal NeboAI loop.
     #[serde(serialize_with = "i64_as_bool")]
     pub loop_exposed: i64,
+    /// NeboAI loop agent UUID captured at registration. The web composer emits
+    /// `<@{loop_agent_id}>` mention tokens; the channel branch maps that token
+    /// back to this local agent. NULL when the agent isn't registered remotely.
+    pub loop_agent_id: Option<String>,
 }
 
 fn default_input_values() -> String {

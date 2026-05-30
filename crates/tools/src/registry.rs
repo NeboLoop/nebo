@@ -728,64 +728,16 @@ impl Registry {
         self.register_deferred(Box::new(crate::vm_tool::VmTool::new()))
             .await;
 
-        // Loop tool (NeboAI comms: dm, channel, group, topic) — requires "loop" permission + comm plugin
+        // Loop tool (NeboAI comms: dm, channel, group, topic) — requires "loop" permission.
+        // The comm handle exists from startup; the real LoopTool's per-action
+        // `is_connected()` check reflects the live connection state, so it is always
+        // registered when the handle is available (even before NeboAI connects).
         if allowed("loop") {
             if let Some(ref comm) = comm_plugin {
                 self.register(Box::new(crate::loop_tool::LoopTool::new(comm.clone())))
                     .await;
-            } else {
-                // Register a stub so the tool appears in /integrations/tools even before NeboAI connects
-                self.register(Box::new(LoopStubTool)).await;
             }
         }
-    }
-}
-
-/// Stub loop tool registered when NeboAI is not yet connected.
-/// Ensures the tool appears in /integrations/tools (10/10) even pre-connect.
-struct LoopStubTool;
-
-impl DynTool for LoopStubTool {
-    fn name(&self) -> &str {
-        "loop"
-    }
-
-    fn description(&self) -> String {
-        "NeboAI communication — send DMs, manage channels, groups, and topics".to_string()
-    }
-
-    fn schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "resource": {
-                    "type": "string",
-                    "enum": ["dm", "channel", "group", "topic"],
-                    "description": "REQUIRED. The communication resource category — determines which actions are available."
-                },
-                "action": {
-                    "type": "string",
-                    "description": "The operation to perform on the selected resource. Never put a resource name here."
-                }
-            },
-            "required": ["resource", "action"]
-        })
-    }
-
-    fn requires_approval(&self) -> bool {
-        false
-    }
-
-    fn execute_dyn<'a>(
-        &'a self,
-        _ctx: &'a ToolContext,
-        _input: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
-        Box::pin(async move {
-            ToolResult::error(
-                "NeboAI is not connected. Connect to NeboAI first to use communication features.",
-            )
-        })
     }
 }
 

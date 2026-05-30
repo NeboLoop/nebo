@@ -34,6 +34,9 @@ pub struct ChannelMsg {
 pub struct Engagement {
     pub user: String,
     pub expires: std::time::Instant,
+    /// Local agent id the mention resolved to (empty = primary bot). A follow-up
+    /// (no new mention) continues with the SAME agent rather than the primary.
+    pub agent_id: String,
 }
 
 /// Janus AI usage stats stored in memory, updated from rate limit headers or direct API call.

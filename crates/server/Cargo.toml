@@ -55,6 +55,7 @@ a2ui-types = { workspace = true }
 a2ui-core = { workspace = true }
 pulldown-cmark = { workspace = true }
 voice = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

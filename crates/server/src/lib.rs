@@ -56,6 +56,12 @@ pub use state::AppState as ServerState;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Matches a web-composer mention chip `<@id>` where id is a bot_id or a loop
+/// agent UUID. Captures the inner id. Used by the loop channel branch to route
+/// a mention to the specific exposed agent it addresses.
+static MENTION_TOKEN_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"<@([0-9a-fA-F._-]+)>").unwrap());
+
 /// Seed the provider_models table from the embedded models.yaml catalog.
 /// - New models are inserted with is_active=1
 /// - Existing models get metadata updated (pricing, capabilities, context_window)
@@ -772,6 +778,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // The OnceLock is set after AppState is constructed (which owns the RunRegistry).
     let run_querier_handle = tools::run_querier::new_handle();
 
+    // The NeboAI comm plugin handle exists from startup; its `is_connected()`
+    // reflects live state. The loop tool holds this same handle, so it becomes
+    // functional the moment the connection comes up — no registry rebuild needed.
+    // (Also registered with the comm manager below.)
+    let neboai_plugin: Arc<dyn comm::CommPlugin> = Arc::new(comm::NeboAIPlugin::new());
+
     tool_registry.set_plugin_store(plugin_store.clone());
     tool_registry
         .register_all_with_permissions(
@@ -785,7 +797,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             None,
             Some(plan_tier.clone()),
             sandbox_manager,
-            None, // comm_plugin — set later when NeboAI connects
+            Some(neboai_plugin.clone()),
             Some(active_role_state.clone()),
             Some(broadcaster),
             Some(run_querier_handle.clone()),
@@ -986,9 +998,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Create comm plugin manager
     let comm_manager = Arc::new(comm::PluginManager::new());
     {
-        let neboai_plugin = Arc::new(comm::NeboAIPlugin::new());
         let loopback_plugin = Arc::new(comm::LoopbackPlugin::new());
-        comm_manager.register(neboai_plugin).await;
+        comm_manager.register(neboai_plugin.clone()).await;
         comm_manager.register(loopback_plugin).await;
 
         // Wire incoming messages to ClientHub broadcast + install event routing
@@ -2804,14 +2815,45 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             }
         }
 
-        // DECIDE: respond on an explicit @mention of THIS bot, or while an
-        // active follow-up window for THIS sender is still open.
+        // DECIDE: respond on an explicit @mention that resolves to THIS bot or
+        // one of its exposed agents, or while an active follow-up window for
+        // THIS sender is still open.
+        //
+        // The web composer embeds `<@{bot_id}>` for the primary bot and
+        // `<@{loop_agent_id}>` for a custom exposed agent. Scan every token and
+        // resolve the FIRST one that matches a known target. First match wins
+        // if multiple agents are mentioned — no fan-out in v1.
         let bot_id = config::read_bot_id().unwrap_or_default();
-        let mention_token = format!("<@{}>", bot_id);
-        let mentioned = !bot_id.is_empty() && text.contains(&mention_token);
 
-        let should_respond = if mentioned {
-            // Open / refresh the follow-up window for this speaker.
+        // Collect all `<@id>` mention tokens in order of appearance, with the
+        // local agent id each resolves to (empty = primary bot) and the raw
+        // token text so it can be replaced in the transcript later.
+        let mut resolved_tokens: Vec<(String, String)> = Vec::new(); // (raw_token, agent_id)
+        let mut resolved_agent_id: Option<String> = None;
+        for cap in MENTION_TOKEN_RE.captures_iter(&text) {
+            let raw = cap.get(0).map(|m| m.as_str().to_string()).unwrap_or_default();
+            let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+            let local_id = if !bot_id.is_empty() && id == bot_id {
+                Some(String::new()) // primary bot
+            } else {
+                match state.store.get_agent_by_loop_agent_id(id) {
+                    Ok(Some(a)) if a.loop_exposed != 0 => Some(a.id),
+                    _ => None,
+                }
+            };
+            if let Some(aid) = local_id {
+                if resolved_agent_id.is_none() {
+                    resolved_agent_id = Some(aid.clone());
+                }
+                resolved_tokens.push((raw, aid));
+            }
+        }
+
+        let mentioned = resolved_agent_id.is_some();
+
+        let should_respond = if let Some(aid) = resolved_agent_id.clone() {
+            // Open / refresh the follow-up window for this speaker, bound to the
+            // resolved agent so follow-ups continue with the SAME agent.
             let mut eng = state.channel_engagement.lock().await;
             eng.insert(
                 msg.conversation_id.clone(),
@@ -2819,6 +2861,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     user: msg.from.clone(),
                     expires: now
                         + std::time::Duration::from_secs(CHANNEL_FOLLOWUP_WINDOW_SECS),
+                    agent_id: aid,
                 },
             );
             true
@@ -2826,7 +2869,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             let mut eng = state.channel_engagement.lock().await;
             match eng.get(&msg.conversation_id) {
                 Some(entry) if entry.user == msg.from && now < entry.expires => {
-                    // Same engaged speaker, window still open → extend it.
+                    // Same engaged speaker, window still open → extend it and
+                    // continue with the agent the window is bound to.
+                    let aid = entry.agent_id.clone();
+                    resolved_agent_id = Some(aid.clone());
                     eng.insert(
                         msg.conversation_id.clone(),
                         state::Engagement {
@@ -2835,6 +2881,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                                 + std::time::Duration::from_secs(
                                     CHANNEL_FOLLOWUP_WINDOW_SECS,
                                 ),
+                            agent_id: aid,
                         },
                     );
                     true
@@ -2878,15 +2925,21 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             return;
         }
 
-        // Respond → route to the bot's primary/default agent.
-        let (agent_id, _is_default_bot) =
-            resolve_inbound_agent(&state, "", &msg.metadata).await;
+        // Respond → route to the resolved agent (primary bot when empty/None).
+        let agent_id = resolved_agent_id.clone().unwrap_or_default();
         let agent_name = {
             let registry = state.agent_registry.read().await;
-            registry
-                .get("assistant")
-                .map(|r| r.name.clone())
-                .unwrap_or_else(|| "Nebo".to_string())
+            if !agent_id.is_empty() {
+                registry
+                    .get(&agent_id)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| "Nebo".to_string())
+            } else {
+                registry
+                    .get("assistant")
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| "Nebo".to_string())
+            }
         };
 
         // DRAIN the un-answered buffer for this channel under the lock, then
@@ -2901,20 +2954,60 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             }
         };
 
-        // Build an attributed transcript as a single user turn. Replace the
-        // bot's own mention token with @{agent_name} so it reads naturally.
-        let mention_replacement = format!("@{}", agent_name);
+        // Build a name lookup for every `<@id>` token resolvable to a known
+        // bot/agent, so the transcript reads naturally (`@Name`). Covers tokens
+        // across all buffered lines, not just the current message. Unknown
+        // tokens are left as-is.
+        let mut mention_names: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        {
+            let registry = state.agent_registry.read().await;
+            for line in std::iter::once(&text).chain(buffered.iter().map(|m| &m.text)) {
+                for cap in MENTION_TOKEN_RE.captures_iter(line) {
+                    let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+                    if id.is_empty() || mention_names.contains_key(id) {
+                        continue;
+                    }
+                    if !bot_id.is_empty() && id == bot_id {
+                        let name = registry
+                            .get("assistant")
+                            .map(|r| r.name.clone())
+                            .unwrap_or_else(|| "Nebo".to_string());
+                        mention_names.insert(id.to_string(), name);
+                    } else if let Ok(Some(a)) = state.store.get_agent_by_loop_agent_id(id) {
+                        let name = registry
+                            .get(&a.id)
+                            .map(|r| r.name.clone())
+                            .unwrap_or(a.name);
+                        mention_names.insert(id.to_string(), name);
+                    }
+                }
+            }
+        }
+        let replace_mentions = |line: &str| -> String {
+            MENTION_TOKEN_RE
+                .replace_all(line, |cap: &regex::Captures| {
+                    let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+                    match mention_names.get(id) {
+                        Some(name) => format!("@{}", name),
+                        None => cap.get(0).map(|m| m.as_str()).unwrap_or("").to_string(),
+                    }
+                })
+                .into_owned()
+        };
+
+        // Build an attributed transcript as a single user turn.
         let prompt_text = if buffered.len() <= 1 {
             // Single line → no transcript header needed.
             let line = buffered
                 .first()
                 .map(|m| m.text.clone())
                 .unwrap_or_else(|| text.clone());
-            line.replace(&mention_token, &mention_replacement)
+            replace_mentions(&line)
         } else {
             let mut t = String::from("[Recent activity in this channel]\n");
             for m in &buffered {
-                let line = m.text.replace(&mention_token, &mention_replacement);
+                let line = replace_mentions(&m.text);
                 t.push_str(&format!("{}: {}\n", m.sender, line));
             }
             t

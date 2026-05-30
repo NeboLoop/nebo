@@ -12,7 +12,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id
                  FROM agents ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
             .db_err("list_agents prepare")?;
@@ -34,7 +34,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id
              FROM agents WHERE id = ?1",
             params![id],
             row_to_agent,
@@ -61,7 +61,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              RETURNING id, kind, name, description, agent_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed",
+                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id",
             params![id, kind, name, description, agent_md, frontmatter, pricing_model, pricing_cost],
             row_to_agent,
         )
@@ -139,7 +139,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id
              FROM agents WHERE LOWER(name) = LOWER(?1)",
             params![name],
             row_to_agent,
@@ -231,6 +231,42 @@ impl Store {
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Set (or clear, with None) the NeboAI loop agent UUID for an agent.
+    /// Kept separate from `update_agent` so reconcile can capture/backfill/clear
+    /// this field without clobbering user-edited identity columns.
+    pub fn set_agent_loop_agent_id(
+        &self,
+        id: &str,
+        loop_agent_id: Option<&str>,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agents SET loop_agent_id = ?1 WHERE id = ?2",
+            params![loop_agent_id, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Look up a local agent by its NeboAI loop agent UUID. Used by the channel
+    /// branch to resolve an `<@{loop_agent_id}>` mention token to a local agent.
+    pub fn get_agent_by_loop_agent_id(
+        &self,
+        loop_agent_id: &str,
+    ) -> Result<Option<Agent>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT id, kind, name, description, agent_md, frontmatter,
+                    pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id
+             FROM agents WHERE loop_agent_id = ?1",
+            params![loop_agent_id],
+            row_to_agent,
+        )
+        .optional()
+        .db_err("get_agent_by_loop_agent_id")
     }
 
     // ── Agent Workflow Bindings ──
@@ -515,5 +551,6 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         handle: row.get(19)?,
         color: row.get(20)?,
         loop_exposed: row.get(21)?,
+        loop_agent_id: row.get(22)?,
     })
 }

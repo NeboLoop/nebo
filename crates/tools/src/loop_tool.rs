@@ -368,7 +368,12 @@ impl DynTool for LoopTool {
                 );
             }
 
-            if !self.comm.is_connected() {
+            // `share` only nominates a local file path (the actual upload is deferred
+            // to the chat dispatcher's resolve_comm_attachments at reply time), so it
+            // does not need a live connection here. Every other action talks to NeboAI
+            // directly and requires the plugin to be connected.
+            let action = input["action"].as_str().unwrap_or("");
+            if action != "share" && !self.comm.is_connected() {
                 return ToolResult::error(
                     "Not connected to NeboAI. The comm plugin is not active.",
                 );
