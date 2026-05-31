@@ -582,6 +582,31 @@ impl PluginTool {
             args.push(value.clone());
         }
 
+        // `--account <label>` is a Nebo-level selector for multi-account
+        // plugins (the "resource" credential model). It picks which of the
+        // agent's accounts to use; it is NOT forwarded to the plugin (the
+        // plugin only sees its profile_dir_env). Extract + strip it here.
+        let selected_account = extract_and_strip_flag(&mut args, "account");
+
+        // Resolve the per-account credential directory to inject, if this
+        // plugin declares a profile_dir_env and the calling agent has a
+        // profile for the chosen account. Falls back to global creds when
+        // there's no profile (back-compat).
+        let profile_dir_injection: Option<(String, String)> = (|| {
+            let env_name = self
+                .plugin_store
+                .get_manifest(&pi.resource)?
+                .auth?
+                .profile_dir_env?;
+            let agent_id = agent_id_from_session_key(&ctx.session_key)?;
+            let profile = self
+                .db_store
+                .resolve_plugin_account_profile(&agent_id, &pi.resource, selected_account.as_deref())
+                .ok()
+                .flatten()?;
+            Some((env_name, profile.config_dir))
+        })();
+
         let runtime = napp::PluginRuntime::new(
             &pi.resource,
             binary_path.clone(),
@@ -607,6 +632,12 @@ impl PluginTool {
             if let Some(ts) = &ch.thread_ts {
                 cmd.env("NEBO_THREAD_TS", ts);
             }
+        }
+
+        // Per-account credential isolation: point the plugin at this agent's
+        // chosen account directory (set last so it wins over any global value).
+        if let Some((env_name, config_dir)) = &profile_dir_injection {
+            cmd.env(env_name, config_dir);
         }
 
         process::hide_window(&mut cmd);
@@ -1031,6 +1062,33 @@ pub fn is_auth_error(output: &str) -> bool {
         "401",
     ];
     PATTERNS.iter().any(|p| lower.contains(p))
+}
+
+/// Extract the agent id from a session key. Handles both
+/// `agent:<id>:...` and `subagent:<parentId>:...` (a subagent runs under its
+/// parent agent's credentials). Returns `None` for non-agent sessions.
+fn agent_id_from_session_key(key: &str) -> Option<String> {
+    let mut parts = key.splitn(3, ':');
+    match parts.next()? {
+        "agent" | "subagent" => parts.next().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// Find `--<name> <value>` in an arg vector, remove both tokens, and return
+/// the value. Used to consume Nebo-level selectors (e.g. `--account`) that
+/// must not be forwarded to the plugin binary.
+fn extract_and_strip_flag(args: &mut Vec<String>, name: &str) -> Option<String> {
+    let flag = format!("--{}", name);
+    let idx = args.iter().position(|a| a == &flag)?;
+    // Need a value token following the flag.
+    if idx + 1 >= args.len() {
+        args.remove(idx);
+        return None;
+    }
+    let value = args.remove(idx + 1);
+    args.remove(idx);
+    Some(value)
 }
 
 // ── URL extraction (duplicated from handlers/plugins.rs) ────────────

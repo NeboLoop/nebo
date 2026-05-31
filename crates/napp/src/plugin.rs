@@ -142,6 +142,15 @@ pub struct PluginAuth {
     /// Optional help info shown in configuration modals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub help: Option<ArtifactHelp>,
+    /// Multi-account support: the env var the plugin reads to override its
+    /// credential/config directory. When set, this plugin can hold multiple
+    /// accounts per agent — Nebo allocates a per-(agent, account) directory
+    /// and injects it under this name on every invocation (login + tool
+    /// calls), so each account's tokens, refresh, and cache stay isolated.
+    /// gws sets this to "GOOGLE_WORKSPACE_CLI_CONFIG_DIR". Plugins that don't
+    /// declare it remain single-account (machine-global).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_dir_env: Option<String>,
 }
 
 /// Help content that any artifact (plugin, skill, agent, MCP) can declare.
@@ -2754,6 +2763,7 @@ mod tests {
             label: String::new(),
             description: String::new(),
             help: None,
+            profile_dir_env: None,
         });
         assert!(m.validate().is_err());
     }

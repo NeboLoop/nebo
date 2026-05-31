@@ -1096,7 +1096,7 @@ async fn run_loop(
 
     // Load rich DB context (agent profile, user profile, personality directive, scored memories)
     let t_run_start = std::time::Instant::now();
-    let db_ctx = db_context::load_db_context(store, &memory_user_id, &inherit_scopes);
+    let db_ctx = db_context::load_db_context(store, &memory_user_id, agent_id, &inherit_scopes);
     let t_db_ctx = t_run_start.elapsed();
     info!(ms = t_db_ctx.as_millis() as u64, session_id, "[telemetry] db_context loaded");
 

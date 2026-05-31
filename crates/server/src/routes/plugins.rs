@@ -34,6 +34,14 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::plugins::auth_login),
         )
         .route(
+            "/plugins/{slug}/accounts/login",
+            axum::routing::post(handlers::plugins::auth_login_account),
+        )
+        .route(
+            "/plugins/{slug}/accounts",
+            axum::routing::get(handlers::plugins::list_plugin_accounts),
+        )
+        .route(
             "/plugins/{slug}/auth/logout",
             axum::routing::post(handlers::plugins::auth_logout),
         )
