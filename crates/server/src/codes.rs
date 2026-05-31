@@ -1281,48 +1281,6 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
         config.insert("data_dir".into(), dir.to_string_lossy().to_string());
     }
 
-    // Carry the bot's configured Identity on CONNECT so the loop agent reflects
-    // it. The primary agent is the bundled default companion (id == "assistant"):
-    // the comms layer routes any `bot_` handle to this primary bot. Source its
-    // display name, handle, and color from the agents row. An empty handle tells
-    // the gateway to fall back to bot_<id>; the backend re-adds the `bot_` prefix,
-    // so strip it here.
-    let primary = state.store.get_agent("assistant").ok().flatten();
-
-    // Display name: primary agent name, falling back to the agent profile name.
-    let agent_name = primary
-        .as_ref()
-        .map(|a| a.name.clone())
-        .filter(|n| !n.is_empty())
-        .or_else(|| {
-            state
-                .store
-                .get_agent_profile()
-                .ok()
-                .flatten()
-                .map(|p| p.name)
-                .filter(|n| !n.is_empty())
-        });
-    if let Some(name) = agent_name {
-        config.insert("agent_name".into(), name);
-    }
-
-    if let Some(agent) = primary.as_ref() {
-        // Handle is stored as `bot_<chosen>`; strip the `bot_` prefix since the
-        // backend re-adds it. Skip empty/None handles.
-        if let Some(chosen) = agent
-            .handle
-            .as_deref()
-            .map(|h| h.strip_prefix("bot_").unwrap_or(h).trim())
-            .filter(|h| !h.is_empty())
-        {
-            config.insert("agent_handle".into(), chosen.to_string());
-        }
-        if let Some(color) = agent.color.as_deref().filter(|c| !c.is_empty()) {
-            config.insert("agent_color".into(), color.to_string());
-        }
-    }
-
     state
         .comm_manager
         .set_active("neboai")
@@ -1443,61 +1401,40 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         .await
         .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
 
-    // Build set of local slugs the user has chosen to EXPOSE on the loop
-    // (enabled + disabled both count — exposure is independent of pause state).
-    // The primary/default agent ("assistant") is EXCLUDED: its loop identity is
-    // the immutable `bot_<id>` agent managed solely by the CONNECT frame
-    // (EnsureAgentForBot). Reconciling it here by name-slug would derive the
-    // handle from the display name (rename "Johnny" → `bot_johnny`) and re-key
-    // the bot — orphaning @mentions. Reconcile only manages CUSTOM agents.
-    let exposed_slugs: std::collections::HashSet<String> =
+    // Build map of ALL local roles (enabled + disabled) by slug
+    let local_agents: std::collections::HashMap<String, bool> =
         if let Ok(roles) = state.store.list_agents(1000, 0) {
             roles
                 .iter()
-                .filter(|r| r.loop_exposed != 0 && r.id != "assistant")
-                .map(|r| r.name.to_lowercase().replace(' ', "-"))
+                .map(|r| {
+                    let slug = r.name.to_lowercase().replace(' ', "-");
+                    let enabled = r.is_enabled != 0;
+                    (slug, enabled)
+                })
                 .collect()
         } else {
-            std::collections::HashSet::new()
+            std::collections::HashMap::new()
         };
 
-    // Deregister remote agents that are no longer exposed locally
-    // (truly deleted, or exposure toggled off).
+    // Deregister remote agents that are truly deleted locally (not in DB at all)
     for agent in &remote_agents {
         // Skip the default bot agent (slug starts with "bot_")
         if agent.slug.starts_with("bot_") {
             continue;
         }
-        if !exposed_slugs.contains(&agent.slug) {
-            info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering unexposed agent");
+        if !local_agents.contains_key(&agent.slug) {
+            info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering deleted agent");
             if let Err(e) = api.deregister_agent(&personal.loop_id, &agent.id).await {
                 warn!(agent_slug = %agent.slug, agent_id = %agent.id, error = %e, "reconcile: failed to deregister");
-            }
-            // Clear loop_agent_id on any local agent that mapped to this remote
-            // agent so a removed agent can no longer be addressed by its token.
-            if let Some(local) = state
-                .store
-                .get_agent_by_loop_agent_id(&agent.id)
-                .ok()
-                .flatten()
-            {
-                if let Err(e) = state.store.set_agent_loop_agent_id(&local.id, None) {
-                    warn!(agent_id = %local.id, error = %e, "reconcile: failed to clear loop_agent_id");
-                }
             }
         }
     }
 
-    // Register exposed local agents missing from remote (both enabled and disabled)
+    // Register local roles missing from remote (both enabled and disabled)
     let remote_slugs: std::collections::HashSet<String> =
         remote_agents.iter().map(|a| a.slug.clone()).collect();
     if let Ok(agents) = state.store.list_agents(1000, 0) {
         for agent in &agents {
-            // Primary agent is managed via the CONNECT frame (bot_<id>), never
-            // by name-slug here — see the exposed_slugs comment above.
-            if agent.loop_exposed == 0 || agent.id == "assistant" {
-                continue;
-            }
             let slug = agent.name.to_lowercase().replace(' ', "-");
             if !remote_slugs.contains(&slug) {
                 let status = if agent.is_enabled != 0 {
@@ -1505,37 +1442,12 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
                 } else {
                     "paused"
                 };
-                info!(agent = %agent.name, slug = %slug, status = %status, "reconcile: registering missing exposed agent");
-                match api
+                info!(agent = %agent.name, slug = %slug, status = %status, "reconcile: registering missing agent");
+                if let Err(e) = api
                     .register_agent(&personal.loop_id, &agent.name, &slug, None)
                     .await
                 {
-                    Ok(value) => {
-                        // Capture the remote agent UUID so `<@{id}>` mention
-                        // tokens from the web composer resolve to THIS agent.
-                        if let Some(loop_id) = value["id"].as_str().filter(|s| !s.is_empty()) {
-                            if let Err(e) =
-                                state.store.set_agent_loop_agent_id(&agent.id, Some(loop_id))
-                            {
-                                warn!(agent_id = %agent.id, error = %e, "reconcile: failed to store loop_agent_id");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(slug = %slug, error = %e, "reconcile: failed to register");
-                    }
-                }
-            } else if agent.loop_agent_id.is_none() {
-                // Already registered remotely but missing locally → backfill from
-                // the matching remote entry so existing installs become
-                // addressable without re-registering.
-                if let Some(remote) = remote_agents.iter().find(|a| a.slug == slug) {
-                    if let Err(e) = state
-                        .store
-                        .set_agent_loop_agent_id(&agent.id, Some(&remote.id))
-                    {
-                        warn!(agent_id = %agent.id, error = %e, "reconcile: failed to backfill loop_agent_id");
-                    }
+                    warn!(slug = %slug, error = %e, "reconcile: failed to register");
                 }
             }
         }
@@ -1682,27 +1594,10 @@ pub(crate) async fn register_agent_in_loop(
     // Deregister first to make this idempotent (avoids 409 on reinstall)
     let _ = api.deregister_agent(&personal.loop_id, slug).await;
 
-    let value = api
-        .register_agent(&personal.loop_id, name, slug, None)
+    api.register_agent(&personal.loop_id, name, slug, None)
         .await
         .map_err(|e| NeboError::Internal(format!("register agent: {e}")))?;
     info!(agent = %name, loop_id = %personal.loop_id, "registered agent in loop");
-
-    // Capture the remote agent UUID so `<@{id}>` mention tokens from the web
-    // composer resolve to this local agent in the channel branch. The local
-    // agent is found by its name-derived slug.
-    if let Some(loop_id) = value["id"].as_str().filter(|s| !s.is_empty()) {
-        if let Ok(agents) = state.store.list_agents(1000, 0) {
-            if let Some(local) = agents
-                .iter()
-                .find(|a| a.name.to_lowercase().replace(' ', "-") == slug)
-            {
-                if let Err(e) = state.store.set_agent_loop_agent_id(&local.id, Some(loop_id)) {
-                    warn!(agent_id = %local.id, error = %e, "failed to store loop_agent_id");
-                }
-            }
-        }
-    }
     Ok(())
 }
 
@@ -1735,19 +1630,6 @@ pub(crate) async fn deregister_agent_from_loop(
         .await
         .map_err(|e| NeboError::Internal(format!("deregister agent: {e}")))?;
     info!(agent = %agent_slug, remote_id = %remote.id, loop_id = %personal.loop_id, "deregistered agent from loop");
-
-    // Clear the local agent's loop_agent_id so a deregistered agent can no
-    // longer be addressed by its `<@{id}>` mention token.
-    if let Some(local) = state
-        .store
-        .get_agent_by_loop_agent_id(&remote.id)
-        .ok()
-        .flatten()
-    {
-        if let Err(e) = state.store.set_agent_loop_agent_id(&local.id, None) {
-            warn!(agent_id = %local.id, error = %e, "failed to clear loop_agent_id on deregister");
-        }
-    }
     Ok(())
 }
 

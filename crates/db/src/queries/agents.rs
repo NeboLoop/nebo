@@ -113,10 +113,9 @@ impl Store {
         Ok(())
     }
 
-    /// Sync filesystem-owned CONTENT columns only (agent_md, frontmatter).
-    /// User-mutable IDENTITY fields (name, description, color, handle, soul, rules)
-    /// are NEVER touched here — the DB row is the source of truth for identity, and
-    /// content syncs must not clobber user edits.
+    /// Sync filesystem-owned columns: content (agent_md, frontmatter) and
+    /// manifest identity (name, description). The manifest is the source of
+    /// truth for display name — without this, agents get stuck with slug names.
     pub fn sync_agent_content(
         &self,
         id: &str,
@@ -128,6 +127,26 @@ impl Store {
             "UPDATE agents SET agent_md = ?1, frontmatter = ?2, updated_at = unixepoch()
              WHERE id = ?3",
             params![agent_md, frontmatter, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Sync display name and description from the manifest.
+    /// Only updates if the manifest provides non-empty values.
+    pub fn sync_agent_identity(
+        &self,
+        id: &str,
+        name: &str,
+        description: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agents SET name = CASE WHEN ?2 != '' THEN ?2 ELSE name END,
+                    description = CASE WHEN ?3 != '' THEN ?3 ELSE description END,
+                    updated_at = unixepoch()
+             WHERE id = ?1",
+            params![id, name, description],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())

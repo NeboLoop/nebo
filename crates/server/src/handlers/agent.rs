@@ -53,8 +53,16 @@ pub async fn get_session_messages(
         .map_err(to_error_response)?
         .or_else(|| {
             state.store.get_session_by_name(&id).ok().flatten()
-        })
-        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+        });
+
+    // When no session exists yet (e.g. app just installed, no messages sent),
+    // return an empty list instead of 404.
+    let Some(session) = session else {
+        return Ok(Json(serde_json::json!({
+            "messages": [],
+            "hasMore": false,
+        })));
+    };
 
     // Messages are stored under session.name (the session_key / chat_id).
     // Fall back to scope_id, then session id for legacy data.

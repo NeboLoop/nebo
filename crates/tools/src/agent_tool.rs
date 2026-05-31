@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
@@ -79,6 +79,13 @@ pub async fn validate_agent_dependencies(
                 "agent degraded: unmet skill dependencies"
             );
             active_agent.degraded = Some(reason);
+        } else if active_agent.degraded.is_some() {
+            info!(
+                agent = %active_agent.name,
+                agent_id = %agent_id,
+                "agent restored: all skill dependencies now met"
+            );
+            active_agent.degraded = None;
         }
     }
 }

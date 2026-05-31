@@ -180,6 +180,7 @@ pub fn build_model_overrides(store: &db::Store) -> std::collections::HashMap<Str
 /// Prefers OpenAI (text-embedding-3-small), falls back to Ollama if available.
 fn build_embedding_provider(
     store: &Arc<db::Store>,
+    cfg: &Config,
 ) -> Option<Arc<dyn ai::EmbeddingProvider>> {
     let profiles = store.list_auth_profiles().ok()?;
     for profile in &profiles {
@@ -202,6 +203,35 @@ fn build_embedding_provider(
                 let cached = ai::CachedEmbeddingProvider::new(Box::new(ep), store.clone());
                 info!("embedding provider: Ollama nomic-embed-text (cached)");
                 return Some(Arc::new(cached));
+            }
+            "neboai" => {
+                let metadata: Option<serde_json::Value> = profile
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| serde_json::from_str(m).ok());
+                let is_janus = metadata
+                    .as_ref()
+                    .and_then(|m| m.get("janus_provider"))
+                    .and_then(|v| v.as_str())
+                    == Some("true");
+                if is_janus {
+                    let janus_url = &cfg.neboai.janus_url;
+                    let bot_id = config::read_bot_id().unwrap_or_default();
+                    let api_key = if profile.api_key.is_empty() {
+                        bot_id.clone()
+                    } else {
+                        profile.api_key.clone()
+                    };
+                    let ep = ai::OpenAIEmbeddingProvider::with_base_url(
+                        api_key,
+                        format!("{}/v1", janus_url),
+                    )
+                    .with_model("neboloop/nebo-embed-small".into(), 1536)
+                    .with_headers(vec![("X-Bot-ID".into(), bot_id)]);
+                    let cached = ai::CachedEmbeddingProvider::new(Box::new(ep), store.clone());
+                    info!("embedding provider: Janus neboloop/nebo-embed-small (cached)");
+                    return Some(Arc::new(cached));
+                }
             }
             _ => {}
         }
@@ -719,7 +749,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     };
 
     // Build embedding provider for vector search (memory embedding + transcript indexing)
-    let embedding_provider = build_embedding_provider(&store);
+    let embedding_provider = build_embedding_provider(&store, &cfg);
 
     // Create hybrid search adapter (FTS5 + vector similarity for memory search)
     // TurboVec indexes are lazy-loaded per user_id on first search.
@@ -1190,11 +1220,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
             let agent_id_for_bindings;
             if let Some(db_agent) = db_agent {
-                // Refresh filesystem-owned content only; never clobber user-edited identity.
+                // Refresh filesystem-owned content.
                 let _ = store.sync_agent_content(
                     &db_agent.id,
                     &loaded.agent_md,
                     &loaded.frontmatter,
+                );
+                // Sync display name/description from manifest.
+                let _ = store.sync_agent_identity(
+                    &db_agent.id,
+                    &loaded.agent_def.name,
+                    &loaded.description,
                 );
                 agent_id_for_bindings = db_agent.id.clone();
                 synced += 1;
@@ -1551,6 +1587,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             }
             if launched > 0 {
                 info!(count = launched, "launched app sidecars at startup");
+                // Re-validate now that app skills are loaded — clears degraded
+                // flags set during early validation before sidecars were up.
+                tools::validate_agent_dependencies(
+                    &startup_state.agent_registry,
+                    &startup_state.skill_loader,
+                )
+                .await;
             }
         });
     }
@@ -2061,6 +2104,21 @@ async fn handle_agent_fs_events(
                     }
                 };
 
+                // Sync app fields (ui path, binary path, window config) to DB
+                if loaded.is_app {
+                    let _ = state.store.set_agent_app_fields(
+                        &final_id,
+                        true,
+                        loaded.app_ui_path.as_ref().and_then(|p| p.to_str()),
+                        loaded.app_binary_path.as_ref().and_then(|p| p.to_str()),
+                        loaded
+                            .app_window_config
+                            .as_ref()
+                            .and_then(|wc| serde_json::to_string(wc).ok())
+                            .as_deref(),
+                    );
+                }
+
                 // Sync workflow bindings
                 if let Some(ref config) = loaded.config {
                     sync_agent_workflows(&state.store, &final_id, config);
@@ -2117,12 +2175,33 @@ async fn handle_agent_fs_events(
                     continue;
                 };
 
-                // Refresh filesystem-owned content only; never clobber user-edited identity.
+                // Refresh filesystem-owned content.
                 let _ = state.store.sync_agent_content(
                     &db_agent.id,
                     &loaded.agent_md,
                     &loaded.frontmatter,
                 );
+                // Sync display name/description from manifest.
+                let _ = state.store.sync_agent_identity(
+                    &db_agent.id,
+                    &loaded.agent_def.name,
+                    &loaded.description,
+                );
+
+                // Sync app fields on change (manifest may have flipped artifact_type)
+                if loaded.is_app {
+                    let _ = state.store.set_agent_app_fields(
+                        &db_agent.id,
+                        true,
+                        loaded.app_ui_path.as_ref().and_then(|p| p.to_str()),
+                        loaded.app_binary_path.as_ref().and_then(|p| p.to_str()),
+                        loaded
+                            .app_window_config
+                            .as_ref()
+                            .and_then(|wc| serde_json::to_string(wc).ok())
+                            .as_deref(),
+                    );
+                }
 
                 // Re-sync workflow bindings
                 if let Some(ref config) = loaded.config {

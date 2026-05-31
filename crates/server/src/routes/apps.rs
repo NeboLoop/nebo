@@ -1,9 +1,17 @@
 use axum::{Router, routing};
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::handlers::apps;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
+    // App SDK fetches from neboapp:// pages (opaque origin) need permissive
+    // CORS so WebKit allows the cross-origin response through to JS.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     Router::new()
         .route(
             "/apps/{agent_id}/ui/",
@@ -54,4 +62,5 @@ pub fn routes() -> Router<AppState> {
             "/apps/{agent_id}/identity",
             routing::get(apps::get_identity),
         )
+        .layer(cors)
 }

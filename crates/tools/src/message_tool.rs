@@ -34,9 +34,9 @@ impl DynTool for MessageTool {
         "Outbound delivery — send notifications, alerts, and SMS to the owner.\n\
          USE THIS when: user wants to send a text, notification, or alert to someone outside NeboAI.\n\n\
          - message(resource: \"owner\", action: \"notify\", text: \"Task complete!\") — Notify the owner via companion chat\n\
-         - message(resource: \"sms\", action: \"send\", to: \"+15551234567\", body: \"Hello!\") — Send SMS (macOS)\n\
+         - message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\") — Send SMS (macOS)\n\
          - message(resource: \"sms\", action: \"conversations\") — List SMS conversations\n\
-         - message(resource: \"sms\", action: \"read\", chat_id: \"+15551234567\") — Read SMS messages\n\
+         - message(resource: \"sms\", action: \"read\", phone: \"+15551234567\") — Read SMS messages\n\
          - message(resource: \"sms\", action: \"search\", query: \"meeting\") — Search SMS messages\n\
          - message(resource: \"notify\", action: \"send\", title: \"Alert\", text: \"Something happened\") — System notification\n\
          - message(resource: \"notify\", action: \"alert\", title: \"Warning\", text: \"...\") — Show alert dialog\n\
@@ -371,13 +371,20 @@ async fn handle_sms_send(input: &serde_json::Value) -> ToolResult {
         return ToolResult::error("phone is required to send SMS");
     }
 
-    let escaped_text = text.replace('"', r#"\""#);
-    let escaped_phone = phone.replace('"', r#"\""#);
+    // Use variables and `service id` to avoid quoting issues and work on modern macOS.
+    // Pipe via stdin to preserve emoji and multi-byte characters.
     let script = format!(
-        r#"tell application "Messages" to send "{}" to buddy "{}" of service "SMS""#,
-        escaped_text, escaped_phone,
+        "set theMessage to \"{text}\"\n\
+         set theBuddy to \"{phone}\"\n\
+         tell application \"Messages\"\n\
+         \tset targetService to 1st account whose service type = iMessage\n\
+         \tset targetBuddy to participant theBuddy of targetService\n\
+         \tsend theMessage to targetBuddy\n\
+         end tell",
+        text = text.replace('\\', "\\\\").replace('"', "\\\""),
+        phone = phone.replace('"', "\\\""),
     );
-    run_osascript(&script).await
+    run_osascript_stdin(&script).await
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -514,6 +521,41 @@ async fn run_sqlite3(db_path: &str, query: &str) -> ToolResult {
 // ---------------------------------------------------------------------------
 // Helper: run osascript (macOS)
 // ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+async fn run_osascript_stdin(script: &str) -> ToolResult {
+    use tokio::io::AsyncWriteExt;
+    let mut child = match tokio::process::Command::new("osascript")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return ToolResult::error(format!("Failed to run osascript: {}", e)),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(script.as_bytes()).await;
+        let _ = stdin.shutdown().await;
+    }
+    let output = child.wait_with_output().await;
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if stdout.is_empty() {
+                ToolResult::ok("SMS sent successfully")
+            } else {
+                ToolResult::ok(stdout)
+            }
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            ToolResult::error(format!("osascript error: {}", stderr))
+        }
+        Err(e) => ToolResult::error(format!("Failed to run osascript: {}", e)),
+    }
+}
 
 #[cfg(target_os = "macos")]
 async fn run_osascript(script: &str) -> ToolResult {

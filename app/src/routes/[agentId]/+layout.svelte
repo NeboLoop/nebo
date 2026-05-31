@@ -319,7 +319,7 @@
         if (ar.needsSetup) {
           setupAgentName = ar.displayName || ar.agent?.name || '';
           setupAgentDesc = ar.agent?.description || '';
-          setupInputFields = (ar as any).agent?.inputValues ? JSON.parse((ar as any).agent.inputValues) : {};
+          setupInputFields = inputs;
           showSetupModal = true;
         } else {
           showSetupModal = false;

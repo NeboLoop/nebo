@@ -194,18 +194,22 @@ fn resolve_app_ui_dir(agent_id: &str) -> Option<PathBuf> {
 }
 
 /// Generate the bridge script + meta tags injected into every HTML page served
-/// via the neboapp:// protocol. This rewrites neboapp:// URLs to HTTP so that
-/// libraries like HTMX (which use new URL() internally) work correctly.
-/// App-relative API paths are routed to the sidecar at /apps/{id}/api/*.
+/// via the neboapp:// protocol.
+///
+/// WebKit treats custom-scheme pages as opaque origins and silently blocks
+/// cross-origin fetch to `http://localhost:*`. The bridge intercepts fetch and
+/// XHR, rewriting HTTP URLs that target the Nebo server back to `neboapp://`
+/// so they route through `register_uri_scheme_protocol` (which proxies
+/// server-side via ureq — no CORS needed).
 fn neboapp_bridge(agent_id: &str) -> String {
     format!(
         concat!(
             r#"<meta name="nebo-app-id" content="{id}">"#,
-            r#"<meta name="nebo-base-url" content="http://127.0.0.1:27895">"#,
             r#"<meta name="htmx-config" content='{{"selfRequestsOnly":false}}'>"#,
-            r#"<script>(function(){{var api="http://127.0.0.1:27895/apps/{id}/api";"#,
+            r#"<script>(function(){{var O="neboapp://{id}";"#,
             r#"function rw(u){{if(typeof u!=="string")return u;"#,
-            r#"var m=u.match(/^neboapp:\/\/[^\/]+(\/.*)/);if(!m)return u;return api+m[1]}}"#,
+            r#"var h=u.match(/^https?:\/\/(?:localhost|127\.0\.0\.1):27895(\/.*)/);if(h)return O+h[1];"#,
+            r#"return u}}"#,
             r#"var F=window.fetch;window.fetch=function(i,o){{"#,
             r#"if(typeof i==="string")i=rw(i);"#,
             r#"else if(i instanceof Request)i=new Request(rw(i.url),i);"#,
@@ -356,6 +360,22 @@ fn main() {
             let uri = request.uri();
             let agent_id = uri.host().unwrap_or("");
             let path = uri.path();
+            let method = request.method().as_str();
+
+            tracing::debug!(agent_id, path, method, "neboapp:// protocol handler");
+
+            // CORS preflight — WebKit treats custom-scheme pages as opaque
+            // origins, so every fetch() is cross-origin.
+            if method == "OPTIONS" {
+                return http::Response::builder()
+                    .status(204)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                    .header("Access-Control-Max-Age", "86400")
+                    .body(Vec::new())
+                    .unwrap();
+            }
 
             // Resolve the agent's UI directory
             let ui_dir = match resolve_app_ui_dir(agent_id) {
@@ -364,6 +384,7 @@ fn main() {
                     return http::Response::builder()
                         .status(404)
                         .header("Content-Type", "text/plain")
+                        .header("Access-Control-Allow-Origin", "*")
                         .body(format!("App not found: {agent_id}").into_bytes())
                         .unwrap();
                 }
@@ -375,6 +396,7 @@ fn main() {
                 return http::Response::builder()
                     .status(400)
                     .header("Content-Type", "text/plain")
+                    .header("Access-Control-Allow-Origin", "*")
                     .body(b"Bad Request".to_vec())
                     .unwrap();
             }
@@ -388,9 +410,6 @@ fn main() {
 
             if file_path.is_file() {
                 if let Ok(data) = std::fs::read(&file_path) {
-                    // For HTML entry pages, inject meta tags so the SDK
-                    // (including older bundled versions) knows the app ID
-                    // and where to send API/WebSocket requests.
                     let is_html = mime_from_extension(&file_path).starts_with("text/html");
                     let body = if is_html {
                         let html = String::from_utf8_lossy(&data);
@@ -403,22 +422,61 @@ fn main() {
                     return http::Response::builder()
                         .status(200)
                         .header("Content-Type", mime_from_extension(&file_path))
+                        .header("Access-Control-Allow-Origin", "*")
                         .body(body)
                         .unwrap();
                 }
             }
 
             // Not a static file — proxy to the Nebo server.
-            // Try the path as-is first, then fall back to the app's sidecar API.
-            let urls = [
-                format!("http://127.0.0.1:27895{}", path),
-                format!("http://127.0.0.1:27895/apps/{}/api{}", agent_id, path),
-            ];
+            let query = uri.query().unwrap_or("");
+            let req_body = request.body().clone();
+            let content_type_in = request
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+
+            let urls = if query.is_empty() {
+                vec![
+                    format!("http://127.0.0.1:27895{}", path),
+                    format!("http://127.0.0.1:27895/apps/{}/api{}", agent_id, path),
+                ]
+            } else {
+                vec![
+                    format!("http://127.0.0.1:27895{}?{}", path, query),
+                    format!("http://127.0.0.1:27895/apps/{}/api{}?{}", agent_id, path, query),
+                ]
+            };
+
+            let agent = ureq::AgentBuilder::new()
+                .timeout(std::time::Duration::from_secs(30))
+                .build();
+
             for url in &urls {
-                if let Ok(resp) = ureq::get(url).call() {
+                tracing::debug!(url, method, "neboapp proxy attempt");
+                let req = match method {
+                    "POST" => agent.post(url),
+                    "PUT" => agent.put(url),
+                    "DELETE" => agent.delete(url),
+                    "PATCH" => agent.patch(url),
+                    _ => agent.get(url),
+                };
+                let result = if matches!(method, "POST" | "PUT" | "PATCH") && !req_body.is_empty() {
+                    req.set("Content-Type", &content_type_in)
+                        .send_bytes(&req_body)
+                } else {
+                    req.call()
+                };
+                match &result {
+                    Ok(resp) => tracing::debug!(status = resp.status(), url, "neboapp proxy response"),
+                    Err(e) => tracing::debug!(error = %e, url, "neboapp proxy error"),
+                }
+                if let Ok(resp) = result {
                     let status = resp.status();
                     if status != 404 {
-                        let content_type = resp
+                        let ct = resp
                             .header("Content-Type")
                             .unwrap_or("application/octet-stream")
                             .to_string();
@@ -426,7 +484,8 @@ fn main() {
                         let _ = resp.into_reader().read_to_end(&mut body);
                         return http::Response::builder()
                             .status(status)
-                            .header("Content-Type", content_type)
+                            .header("Content-Type", ct)
+                            .header("Access-Control-Allow-Origin", "*")
                             .body(body)
                             .unwrap();
                     }
@@ -445,6 +504,7 @@ fn main() {
                     return http::Response::builder()
                         .status(200)
                         .header("Content-Type", "text/html; charset=utf-8")
+                        .header("Access-Control-Allow-Origin", "*")
                         .body(body.into_bytes())
                         .unwrap();
                 }
@@ -453,6 +513,7 @@ fn main() {
             http::Response::builder()
                 .status(404)
                 .header("Content-Type", "text/plain")
+                .header("Access-Control-Allow-Origin", "*")
                 .body(b"Not Found".to_vec())
                 .unwrap()
         })

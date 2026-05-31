@@ -24,6 +24,7 @@ pub struct OpenAIEmbeddingProvider {
     base_url: String,
     dims: usize,
     http_client: reqwest::Client,
+    extra_headers: Vec<(String, String)>,
 }
 
 impl OpenAIEmbeddingProvider {
@@ -34,6 +35,7 @@ impl OpenAIEmbeddingProvider {
             base_url: "https://api.openai.com/v1".to_string(),
             dims: 1536,
             http_client: crate::http::request_client(),
+            extra_headers: Vec::new(),
         }
     }
 
@@ -44,12 +46,18 @@ impl OpenAIEmbeddingProvider {
             base_url,
             dims: 1536,
             http_client: crate::http::request_client(),
+            extra_headers: Vec::new(),
         }
     }
 
     pub fn with_model(mut self, model: String, dims: usize) -> Self {
         self.model = model;
         self.dims = dims;
+        self
+    }
+
+    pub fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
         self
     }
 }
@@ -89,13 +97,14 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
 
         let delays = [500u64, 2000, 8000];
         for (attempt, delay) in delays.iter().enumerate() {
-            let resp = self
+            let mut req_builder = self
                 .http_client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .json(&body)
-                .send()
-                .await;
+                .header("Authorization", format!("Bearer {}", self.api_key));
+            for (key, value) in &self.extra_headers {
+                req_builder = req_builder.header(key, value);
+            }
+            let resp = req_builder.json(&body).send().await;
 
             match resp {
                 Ok(r) => {
