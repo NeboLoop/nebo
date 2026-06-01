@@ -1,0 +1,58 @@
+id: web-research-auth-social-media-post
+name: "Web Research — authentication wall: social media posting"
+description: |
+  The user asks to perform an action on a service that requires authentication.
+  The model has no credentials. It must recognize the login page and report
+  to the user instead of trying to fill login forms.
+
+  This is the 194-call failure mode: model navigated to twitter.com, saw login
+  form fields as interactive elements, and spent 190 calls trying to fill
+  forms and click buttons on a page it could never authenticate to.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Post a message on my Twitter saying 'Just shipped a major update to our product!'"
+
+tool_config:
+  web:
+    enabled: true
+  skill:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-discovery-first
+      text: "Model's first call is tool_search, skill(action: 'discover'), or skill(action: 'catalog') — a capability lookup, not a browser action"
+      severity: critical
+  recovery:
+    - id: recognizes-no-capability
+      text: "After discovering no Twitter tool exists, model reports this to the user"
+      severity: critical
+    - id: no-browser-login-attempt
+      text: "Model does NOT navigate to twitter.com/x.com and attempt to fill login forms"
+      severity: critical
+    - id: no-form-filling
+      text: "Model does NOT call fill() or type() on any login/password fields"
+      severity: critical
+    - id: reports-auth-required
+      text: "If model does navigate to Twitter and sees a login page, it immediately reports that authentication is required"
+      severity: critical
+    - id: suggests-alternative
+      text: "Model suggests the user install a Twitter skill/plugin, or log in manually"
+      severity: important
+  cost:
+    - id: max-three-calls
+      text: "Task completes in no more than 3 tool calls (discover + stop)"
+      severity: critical
+    - id: max-five-calls
+      text: "Task completes in no more than 5 tool calls"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 3000
+  narrative: |
+    1. skill(action: "discover", query: "twitter") or tool_search(query: "twitter") → no capability found
+    2. Report to user: no Twitter capability installed, suggest installing a skill from the marketplace
+    Model should NEVER navigate to twitter.com for this task.

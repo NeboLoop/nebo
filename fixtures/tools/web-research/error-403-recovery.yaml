@@ -1,0 +1,50 @@
+id: web-research-error-403-recovery
+name: "Web Research — 403 error recovery"
+description: |
+  The model searches, clicks a result that returns 403 (or similar access
+  denied). It must recognize the error, not retry the same URL, and try
+  a different source instead.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Find the pricing for Cloudflare Workers and summarize the free tier limits"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search
+      text: "Model's first call is web(action: 'search') about Cloudflare Workers pricing"
+      severity: critical
+  recovery:
+    - id: recognizes-access-denied
+      text: "When a page returns 403/access denied, model acknowledges the error instead of retrying the same URL"
+      severity: critical
+    - id: tries-different-source
+      text: "After hitting a 403, model tries a different URL or search result"
+      severity: critical
+    - id: no-same-url-retry
+      text: "Model does not navigate to the exact same URL that returned 403"
+      severity: critical
+    - id: eventually-answers
+      text: "Model eventually finds the information from another source and provides an answer"
+      severity: important
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 3-10 tool calls"
+      severity: important
+    - id: max-fifteen-calls
+      text: "Task completes in no more than 15 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 6
+  total_tokens: 10000
+  narrative: |
+    1. search → results
+    2. navigate to first result → 403 or blocked
+    3. Recognize error, navigate to second result → read_page → success
+    4. Report pricing information

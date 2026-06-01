@@ -1,0 +1,51 @@
+id: web-research-completion-multi-source
+name: "Web Research — complex question, knows when to stop"
+description: |
+  A complex question requiring multiple sources. The model should read
+  3-5 sources, then synthesize an answer and STOP — it should not browse
+  indefinitely looking for more when it already has enough.
+target_component: web
+
+conversation:
+  - role: user
+    content: "What are the pros and cons of using Tauri vs Electron for building a desktop app in 2026? Consider bundle size, performance, ecosystem maturity, and developer experience."
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search
+      text: "Model's first call is web(action: 'search') comparing Tauri and Electron"
+      severity: critical
+  recovery:
+    - id: reads-multiple-sources
+      text: "Model reads content from at least 2 different pages (not just search snippets)"
+      severity: critical
+    - id: stops-when-sufficient
+      text: "Model stops browsing and provides an answer once it has covered the key comparison points"
+      severity: critical
+    - id: no-endless-browsing
+      text: "Model does not keep searching after it has already found pros/cons for all 4 criteria"
+      severity: important
+    - id: structured-comparison
+      text: "Final answer addresses all 4 requested criteria (bundle size, performance, ecosystem, DX)"
+      severity: important
+  cost:
+    - id: research-range
+      text: "Task completes in 5-15 tool calls (search + 3-5 page visits with read/scroll)"
+      severity: important
+    - id: max-twenty-calls
+      text: "Task completes in no more than 20 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 10
+  total_tokens: 18000
+  narrative: |
+    1. search "Tauri vs Electron 2026" → results
+    2. navigate to comparison article → read_page → scroll → read_page (covers bundle+performance)
+    3. navigate to another source → read_page (covers ecosystem+DX)
+    4. Optionally one more source for recent benchmarks
+    5. Synthesize comparison across all 4 criteria

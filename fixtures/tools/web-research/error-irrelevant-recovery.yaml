@@ -1,0 +1,50 @@
+id: web-research-error-irrelevant-recovery
+name: "Web Research — irrelevant result recovery"
+description: |
+  The model clicks a search result that looks relevant from the snippet
+  but the actual page content is irrelevant or outdated. It must go back
+  and try a different result.
+target_component: web
+
+conversation:
+  - role: user
+    content: "How do I set up hot module replacement in Vite 6? I keep getting a full page reload instead of HMR."
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search
+      text: "Model's first call is web(action: 'search') about Vite HMR setup"
+      severity: critical
+  recovery:
+    - id: recognizes-irrelevant
+      text: "If a page is about an older Vite version or a different framework, model recognizes it and moves on"
+      severity: critical
+    - id: tries-another-result
+      text: "After finding an irrelevant page, model goes back to results or searches again"
+      severity: critical
+    - id: finds-relevant-content
+      text: "Model eventually finds content specifically about Vite 6 HMR (or current Vite version)"
+      severity: important
+    - id: provides-actionable-answer
+      text: "Final answer includes specific steps or config for fixing HMR, not just generic advice"
+      severity: important
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 5-15 tool calls"
+      severity: important
+    - id: max-twenty-calls
+      text: "Task completes in no more than 20 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 10
+  total_tokens: 15000
+  narrative: |
+    1. search → results
+    2. navigate to first result → read_page → content is about Vite 3 (outdated)
+    3. go_back, navigate to different result → read_page → relevant Vite 6 content
+    4. Provide specific HMR configuration steps

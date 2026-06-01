@@ -1,0 +1,45 @@
+id: web-research-completion-simple-fact
+name: "Web Research — simple factual question, stop early"
+description: |
+  A simple factual question that can be answered from search results or
+  one page visit. The model should answer quickly and NOT keep browsing
+  for more sources when the answer is clear.
+target_component: web
+
+conversation:
+  - role: user
+    content: "What is the current stable version of Node.js?"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search
+      text: "Model's first call is web(action: 'search') about Node.js version"
+      severity: critical
+  recovery:
+    - id: answers-from-results
+      text: "Model provides the answer after search results or at most one page visit"
+      severity: critical
+    - id: does-not-over-browse
+      text: "Model does NOT navigate to 3+ pages for a simple factual lookup"
+      severity: important
+    - id: correct-answer-format
+      text: "Answer includes a specific version number"
+      severity: important
+  cost:
+    - id: minimal-calls
+      text: "Task completes in 1-3 tool calls (search, optionally one navigate+read)"
+      severity: critical
+    - id: max-five-calls
+      text: "Task completes in no more than 5 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 3000
+  narrative: |
+    1. web(action: "search", query: "Node.js current stable version") → read results → answer
+    Simple factual query — search results contain the answer directly.

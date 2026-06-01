@@ -1,0 +1,50 @@
+id: web-research-multi-page-comparison
+name: "Web Research — multi-source comparison"
+description: |
+  The model must compare information across multiple sources to answer
+  a question that requires cross-referencing. Tests whether the model
+  visits multiple pages and doesn't stop at the first result.
+target_component: web
+
+conversation:
+  - role: user
+    content: "What are the key differences between SQLite WAL mode and journal mode? Which should I use for a desktop app with concurrent reads?"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search
+      text: "Model's first call is web(action: 'search') about SQLite WAL vs journal"
+      severity: critical
+  recovery:
+    - id: visits-multiple-sources
+      text: "Model navigates to at least 2 different result pages to cross-reference information"
+      severity: important
+    - id: reads-actual-content
+      text: "Model reads page content beyond just the search result snippets"
+      severity: important
+    - id: provides-comparison
+      text: "Model's final answer compares both modes and gives a recommendation"
+      severity: critical
+    - id: page-transitions-work
+      text: "Every navigate call successfully loads a page (no repeated navigation failures)"
+      severity: important
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 5-15 tool calls"
+      severity: important
+    - id: max-twenty-calls
+      text: "Task completes in no more than 20 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 8
+  total_tokens: 15000
+  narrative: |
+    1. web(action: "search", query: "SQLite WAL mode vs journal mode differences") → results
+    2. navigate to sqlite.org docs or relevant article → read_page + scroll
+    3. navigate to another source (blog post, SO answer) → read_page
+    4. Synthesize comparison with recommendation for desktop use case

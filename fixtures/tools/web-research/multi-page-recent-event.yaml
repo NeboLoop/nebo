@@ -1,0 +1,50 @@
+id: web-research-multi-page-recent-event
+name: "Web Research — recent event requiring multiple sources"
+description: |
+  The model must research a recent topic where the first result may not
+  have complete information. Tests whether the model digs deeper when
+  initial results are insufficient.
+target_component: web
+
+conversation:
+  - role: user
+    content: "What were the major announcements at the most recent RustConf? Summarize the keynote highlights."
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search
+      text: "Model's first call is web(action: 'search') about RustConf"
+      severity: critical
+  recovery:
+    - id: navigates-to-content
+      text: "Model clicks into at least 1 search result to read full article content"
+      severity: critical
+    - id: scrolls-for-content
+      text: "Model scrolls down on at least one page to find content below the fold"
+      severity: important
+    - id: provides-summary
+      text: "Model produces a summary with specific announcements, not just 'there was a conference'"
+      severity: critical
+    - id: no-duplicate-urls
+      text: "Model does not visit the same page twice"
+      severity: important
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 5-15 tool calls"
+      severity: important
+    - id: max-twenty-calls
+      text: "Task completes in no more than 20 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 10
+  total_tokens: 18000
+  narrative: |
+    1. web(action: "search", query: "RustConf 2025 keynote announcements") → results
+    2. navigate to conference recap or blog post → read_page → scroll → read_page
+    3. navigate to another source for additional coverage → read_page
+    4. Summarize keynote highlights with specifics

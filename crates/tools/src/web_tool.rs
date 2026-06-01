@@ -939,6 +939,22 @@ impl WebTool {
                         }
                         Err(_) => {} // Snapshot failed — navigate still succeeded
                     }
+
+                    // Check for login/auth pages after navigate + snapshot
+                    let nav_url = input
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if let Some(warning) = detect_auth_page(nav_url, &text_result) {
+                        text_result = format!("{}\n\n{}", warning, text_result);
+                    }
+                }
+
+                // Check read_page content for login pages
+                if matches!(action, "snapshot" | "read_page") {
+                    if let Some(warning) = detect_auth_page("", &text_result) {
+                        text_result = format!("{}\n\n{}", warning, text_result);
+                    }
                 }
 
                 // Auto-spill large results to file for evaluate, read_page, get_page_text
@@ -1515,6 +1531,69 @@ fn truncate_snapshot(text: &str, max_chars: usize) -> String {
     )
 }
 
+/// Detect if page content indicates an authentication/login page.
+/// Returns a warning string if auth signals are found, None otherwise.
+/// Uses a two-signal threshold to avoid false positives on pages that merely
+/// mention passwords or have a "sign in" link in the header.
+fn detect_auth_page(url: &str, content: &str) -> Option<String> {
+    let url_lower = url.to_lowercase();
+    let content_lower = content.to_lowercase();
+
+    let url_is_auth = [
+        "/login",
+        "/signin",
+        "/sign-in",
+        "/sign_in",
+        "/auth/",
+        "/sso/",
+        "/oauth/",
+        "/flow/login",
+        "/accounts/login",
+        "/session/new",
+    ]
+    .iter()
+    .any(|p| url_lower.contains(p));
+
+    let has_password_field = content_lower.contains("type=\"password\"")
+        || content_lower.contains("type='password'");
+
+    let has_auth_heading = content_lower.contains("sign in to")
+        || content_lower.contains("log in to")
+        || content_lower.contains("heading \"sign in")
+        || content_lower.contains("heading \"log in");
+
+    let has_oauth =
+        content_lower.contains("sign in with") || content_lower.contains("continue with google");
+
+    let has_forgot_password = content_lower.contains("forgot password");
+
+    let signals = [
+        url_is_auth,
+        has_password_field,
+        has_auth_heading,
+        has_oauth,
+        has_forgot_password,
+    ]
+    .iter()
+    .filter(|&&b| b)
+    .count();
+
+    if signals >= 2 {
+        Some(
+            "⚠️ AUTHENTICATION REQUIRED — This page is a login/sign-in form. \
+             You do not have credentials for this service and cannot authenticate. \
+             Do NOT attempt to fill login forms, click sign-in buttons, or interact \
+             with OAuth prompts — these actions will fail. Instead, report to the user \
+             that this task requires authentication and suggest they: \
+             (1) log in manually, (2) install a skill/plugin for this service, or \
+             (3) provide the content directly."
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
 /// Map raw browser errors to AI-friendly messages with recovery suggestions.
 fn friendly_browser_error(action: &str, raw_error: &str) -> String {
     let suggestion = if raw_error.contains("Timeout") || raw_error.contains("timeout") {
@@ -1902,4 +1981,72 @@ fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
         chunks.push(current);
     }
     chunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_auth_page_twitter_login() {
+        let url = "https://x.com/i/flow/login";
+        let content = r#"heading "Sign in to X" [ref_1]
+link "Sign in with Google" [ref_2]
+textbox "Phone, email, or username" [ref_3]
+link "Forgot password?" [ref_4]
+button "Next" [ref_5]"#;
+        let result = detect_auth_page(url, content);
+        assert!(result.is_some(), "should detect Twitter login page");
+        assert!(result.unwrap().contains("AUTHENTICATION REQUIRED"));
+    }
+
+    #[test]
+    fn test_detect_auth_page_github_login() {
+        let url = "https://github.com/login";
+        let content = r#"heading "Sign in to GitHub" [ref_1]
+textbox "Username or email address" [ref_2]
+input [ref_3] type="password"
+button "Sign in" [ref_4]
+link "Forgot password?" [ref_5]"#;
+        let result = detect_auth_page(url, content);
+        assert!(result.is_some(), "should detect GitHub login page");
+    }
+
+    #[test]
+    fn test_detect_auth_page_normal_page() {
+        let url = "https://docs.rust-lang.org/book/ch01-01-installation.html";
+        let content = r#"heading "Installation" [ref_1]
+paragraph "The first step is to install Rust."
+link "rustup" [ref_2]
+code "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+heading "Troubleshooting" [ref_3]"#;
+        let result = detect_auth_page(url, content);
+        assert!(result.is_none(), "should not flag normal documentation page");
+    }
+
+    #[test]
+    fn test_detect_auth_page_settings_with_password_mention() {
+        let url = "https://example.com/settings/security";
+        let content = r#"heading "Security Settings" [ref_1]
+paragraph "Change your password"
+link "Update password" [ref_2]
+link "Two-factor authentication" [ref_3]"#;
+        let result = detect_auth_page(url, content);
+        assert!(
+            result.is_none(),
+            "should not flag settings page that merely mentions password"
+        );
+    }
+
+    #[test]
+    fn test_detect_auth_page_oauth_redirect() {
+        let url = "https://accounts.google.com/signin/oauth";
+        let content = r#"heading "Sign in" [ref_1]
+textbox "Email or phone" [ref_2]
+link "Forgot email?" [ref_3]
+button "Next" [ref_4]
+link "Create account" [ref_5]"#;
+        let result = detect_auth_page(url, content);
+        assert!(result.is_some(), "should detect Google OAuth login");
+    }
 }

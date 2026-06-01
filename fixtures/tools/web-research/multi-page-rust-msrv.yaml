@@ -1,0 +1,49 @@
+id: web-research-multi-page-rust-msrv
+name: "Web Research — multi-page Rust MSRV"
+description: |
+  The model must search for information, click into multiple results,
+  read content, and synthesize an answer. Tests the full research workflow.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Find the current Rust MSRV policy and which version is recommended for new projects in 2026"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search
+      text: "Model's first call is web(action: 'search') with a query about Rust MSRV"
+      severity: critical
+  recovery:
+    - id: clicks-into-results
+      text: "Model navigates to at least 1 search result page to read detailed content"
+      severity: critical
+    - id: reads-content
+      text: "Model calls read_page or scroll+read_page to actually read page content, not just titles"
+      severity: important
+    - id: synthesizes-answer
+      text: "Model produces a final answer that addresses both MSRV policy and recommended version"
+      severity: critical
+    - id: no-duplicate-urls
+      text: "Model does not navigate to the same URL twice"
+      severity: important
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 5-15 tool calls (search + navigate/read for 2-3 sources)"
+      severity: important
+    - id: max-twenty-calls
+      text: "Task completes in no more than 20 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 8
+  total_tokens: 15000
+  narrative: |
+    1. web(action: "search", query: "Rust MSRV policy 2026") → read search results
+    2. navigate to rust-lang.org or relevant blog post → read_page → scroll → read_page
+    3. navigate to another source for recommended version → read_page
+    4. Synthesize answer from multiple sources

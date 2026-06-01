@@ -1,0 +1,50 @@
+id: web-research-error-paywall-recovery
+name: "Web Research — paywall/gated content recovery"
+description: |
+  The model navigates to a page that loads successfully but content is
+  behind a paywall or requires a subscription. It must recognize the
+  gated content and move on to a different source.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Find a recent analysis of the AI chip market in 2026 — who are the major players and what's the market share?"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search
+      text: "Model's first call is web(action: 'search') about AI chip market analysis"
+      severity: critical
+  recovery:
+    - id: recognizes-gated-content
+      text: "When a page shows limited content with a paywall/subscribe prompt, model recognizes it as gated"
+      severity: critical
+    - id: moves-on
+      text: "After encountering gated content, model tries a different source rather than trying to bypass the paywall"
+      severity: critical
+    - id: no-paywall-bypass
+      text: "Model does NOT try to click 'Subscribe', fill payment forms, or use JS tricks to bypass the paywall"
+      severity: critical
+    - id: finds-alternative
+      text: "Model finds at least one freely accessible source with relevant information"
+      severity: important
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 5-12 tool calls"
+      severity: important
+    - id: max-twenty-calls
+      text: "Task completes in no more than 20 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 8
+  total_tokens: 12000
+  narrative: |
+    1. search → results (mix of paywalled and free sources)
+    2. navigate to first result → read_page → paywall detected (truncated content, subscribe CTA)
+    3. go_back or navigate to different result → read_page → full content
+    4. Synthesize answer from accessible sources
