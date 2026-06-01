@@ -1,0 +1,29 @@
+id: naming-web-search
+name: "Naming test — search the web"
+description: |
+  Baseline task: search the web. Measures first-call tool naming accuracy.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Search the web for 'best rust async runtime 2026'."
+
+prompt_assertions:
+  first_call:
+    - id: calls-any-search
+      text: "Model's first call searches the web — either web(action: 'search') or web_search(query: '...') depending on convention"
+      severity: critical
+    - id: has-query
+      text: "Model passes a query about rust async runtime"
+      severity: critical
+    - id: not-fetch
+      text: "Model does NOT use fetch/http to hit a specific URL"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500

@@ -1,0 +1,44 @@
+id: os-shell-command-fails
+name: "OS shell — command failure recovery"
+description: |
+  The user asks to run a command that will fail (nonexistent binary).
+  The model should report the error clearly — NOT retry the same command,
+  NOT try to install the missing tool without asking.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Run 'nebo-nonexistent-tool --version' and tell me what version it is."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool
+      text: "Model uses os(resource: 'shell', action: 'exec')"
+      severity: critical
+    - id: correct-command
+      text: "Model passes the command as given"
+      severity: important
+  recovery:
+    - id: no-retry
+      text: "Model does not retry the same command after 'command not found'"
+      severity: critical
+    - id: no-install-attempt
+      text: "Model does not try to install the missing tool without asking"
+      severity: important
+    - id: clear-error-report
+      text: "Model tells the user the command was not found"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single shell exec, get command-not-found, report to user.

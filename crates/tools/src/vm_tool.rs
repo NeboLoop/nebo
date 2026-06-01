@@ -70,7 +70,11 @@ impl VmTool {
     async fn handle_exec(&self, input: &serde_json::Value) -> ToolResult {
         let command = match input.get("command").and_then(|v| v.as_str()) {
             Some(c) => c,
-            None => return ToolResult::error("exec requires a `command` string"),
+            None => return ToolResult::error(crate::errors::missing_param(
+                "exec",
+                "command",
+                "vm(action: \"exec\", command: \"ls -la /tmp\")",
+            )),
         };
 
         let timeout = input
@@ -131,11 +135,19 @@ impl VmTool {
     async fn handle_write_file(&self, input: &serde_json::Value) -> ToolResult {
         let path = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
-            None => return ToolResult::error("writeFile requires a `path` string"),
+            None => return ToolResult::error(crate::errors::missing_param(
+                "writeFile",
+                "path",
+                "vm(action: \"writeFile\", path: \"/tmp/hello.txt\", content: \"hello world\")",
+            )),
         };
         let content = match input.get("content").and_then(|v| v.as_str()) {
             Some(c) => c,
-            None => return ToolResult::error("writeFile requires a `content` string"),
+            None => return ToolResult::error(crate::errors::missing_param(
+                "writeFile",
+                "content",
+                "vm(action: \"writeFile\", path: \"/tmp/hello.txt\", content: \"hello world\")",
+            )),
         };
 
         if let Err(e) = self.ensure_running().await {
@@ -159,7 +171,11 @@ impl VmTool {
     async fn handle_read_file(&self, input: &serde_json::Value) -> ToolResult {
         let path = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
-            None => return ToolResult::error("readFile requires a `path` string"),
+            None => return ToolResult::error(crate::errors::missing_param(
+                "readFile",
+                "path",
+                "vm(action: \"readFile\", path: \"/tmp/hello.txt\")",
+            )),
         };
 
         if let Err(e) = self.ensure_running().await {
@@ -181,16 +197,27 @@ impl VmTool {
                 .iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect(),
-            _ => return ToolResult::error("copyOut requires a `paths` array of strings"),
+            _ => return ToolResult::error(crate::errors::missing_param(
+                "copyOut",
+                "paths",
+                "vm(action: \"copyOut\", paths: [\"/tmp/output.txt\"], dest: \"~/Downloads/\")",
+            )),
         };
 
         let dest = match input.get("dest").and_then(|v| v.as_str()) {
             Some(d) => d,
-            None => return ToolResult::error("copyOut requires a `dest` string (host path)"),
+            None => return ToolResult::error(crate::errors::missing_param(
+                "copyOut",
+                "dest",
+                "vm(action: \"copyOut\", paths: [\"/tmp/output.txt\"], dest: \"~/Downloads/\")",
+            )),
         };
 
         if vm_paths.is_empty() {
-            return ToolResult::error("copyOut `paths` array is empty");
+            return ToolResult::error(
+                "copyOut `paths` array is empty. Provide at least one VM file path to copy.\n\
+                 Example: vm(action: \"copyOut\", paths: [\"/tmp/output.txt\"], dest: \"~/Downloads/\")",
+            );
         }
 
         if let Err(e) = self.ensure_running().await {
@@ -337,7 +364,11 @@ impl DynTool for VmTool {
         Box::pin(async move {
             let action = match input.get("action").and_then(|v| v.as_str()) {
                 Some(a) => a.to_string(),
-                None => return ToolResult::error("vm() requires an `action` field"),
+                None => return ToolResult::error(crate::errors::missing_param(
+                    "vm",
+                    "action",
+                    "vm(action: \"exec\", command: \"ls -la\")\nAvailable actions: exec, writeFile, readFile, copyOut, list, status, stop",
+                )),
             };
 
             match action.as_str() {

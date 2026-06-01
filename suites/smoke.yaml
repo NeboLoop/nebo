@@ -1,0 +1,25 @@
+name: smoke
+fixtures:
+  # Priority 1: OS file operations (highest volume)
+  - ../fixtures/tools/os-file-read.yaml
+  - ../fixtures/tools/os-file-write.yaml
+  - ../fixtures/tools/os-file-edit.yaml
+  - ../fixtures/tools/os-file-grep.yaml
+  - ../fixtures/tools/os-file-glob.yaml
+  # Priority 2: OS shell failure recovery
+  - ../fixtures/tools/os-shell-path-not-found.yaml
+  - ../fixtures/tools/os-shell-permission-denied.yaml
+  - ../fixtures/tools/os-shell-command-fails.yaml
+  # Priority 3: Web resource routing
+  - ../fixtures/tools/web-search-vs-fetch.yaml
+  - ../fixtures/tools/web-fetch-api.yaml
+  - ../fixtures/tools/web-browser-interaction.yaml
+  # Priority 4: Agent resource routing
+  - ../fixtures/tools/agent-vs-agents.yaml
+  - ../fixtures/tools/agents-delegate.yaml
+  # Priority 5: Skill-plugin choreography
+  - ../fixtures/tools/skill-plugin-choreography.yaml
+  # Priority 6: Recovery and spiral prevention
+  - ../fixtures/tools/os-file-discovery-spiral.yaml
+  - ../fixtures/tools/os-shell-retry-spiral.yaml
+  - ../fixtures/tools/os-file-search-loop.yaml

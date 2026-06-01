@@ -10,6 +10,10 @@ pub struct Fixture {
     pub description: String,
     #[serde(default)]
     pub target_component: String,
+    #[serde(default)]
+    pub setup: Vec<String>,
+    #[serde(default)]
+    pub teardown: Vec<String>,
     pub conversation: Vec<ConversationTurn>,
     #[serde(default)]
     pub tool_config: HashMap<String, ToolConfig>,

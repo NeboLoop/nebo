@@ -434,11 +434,19 @@ impl DynTool for ExecuteTool {
         Box::pin(async move {
             let skill_name = match input["skill"].as_str() {
                 Some(s) if !s.is_empty() => s,
-                _ => return ToolResult::error("skill is required"),
+                _ => return ToolResult::error(crate::errors::missing_param(
+                    "execute",
+                    "skill",
+                    "skill_execute(skill: \"my-skill\", script: \"run.sh\")",
+                )),
             };
             let script_path = match input["script"].as_str() {
                 Some(s) if !s.is_empty() => s,
-                _ => return ToolResult::error("script is required"),
+                _ => return ToolResult::error(crate::errors::missing_param(
+                    "execute",
+                    "script",
+                    "skill_execute(skill: \"my-skill\", script: \"run.sh\")",
+                )),
             };
             let args = input
                 .get("args")

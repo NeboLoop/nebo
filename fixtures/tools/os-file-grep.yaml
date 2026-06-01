@@ -1,0 +1,48 @@
+id: os-file-grep
+name: "OS file grep — correct tool routing"
+description: |
+  The user asks the agent to search for a pattern in files. The model must use
+  os(resource: "file", action: "grep") — NOT hallucinate "grep" as a standalone
+  tool or use shell grep.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Search for the word 'TODO' in all files under /tmp/nebo-test/"
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'os', not 'grep' or 'bash'"
+      severity: critical
+    - id: correct-resource
+      text: "Model uses resource: 'file'"
+      severity: critical
+    - id: correct-action
+      text: "Model uses action: 'grep'"
+      severity: critical
+    - id: has-regex
+      text: "Model passes a regex/pattern parameter containing 'TODO'"
+      severity: critical
+    - id: has-path
+      text: "Model passes path: '/tmp/nebo-test/' or similar"
+      severity: critical
+  recovery:
+    - id: no-shell-grep
+      text: "Model does NOT fall back to os(resource: 'shell', action: 'exec', command: 'grep -r TODO /tmp/nebo-test/')"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single os(resource: "file", action: "grep", regex: "TODO",
+    path: "/tmp/nebo-test/") call. Model reports the matches.

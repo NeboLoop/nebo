@@ -1,0 +1,46 @@
+id: os-file-search-loop
+name: "OS file search — single pattern match, no directory-by-directory loop"
+description: |
+  The user asks to find a specific file type. The model should use a single
+  glob or find command with a pattern — not individually check directories
+  one by one in a loop.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Can you locate 1 markdown file for me? Any markdown file is okay"
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-pattern-search
+      text: "Model uses glob or find with a *.md pattern — not individual ls commands on separate directories"
+      severity: critical
+    - id: correct-tool
+      text: "Model uses os(resource: 'file', action: 'glob') or os(resource: 'shell', action: 'exec') with find/ls glob"
+      severity: critical
+  recovery:
+    - id: no-directory-loop
+      text: "Model does NOT check directories one by one (ls ~/Documents, ls ~/Desktop, ls ~/Downloads, etc.)"
+      severity: critical
+    - id: no-repeated-options
+      text: "Model does NOT repeat the same response or options list if the first search returns results"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+    - id: max-two-calls
+      text: "Task completes in no more than 2 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single os(resource: "file", action: "glob", pattern: "~/**/*.md") or
+    os(resource: "shell", action: "exec", command: "find ~ -name '*.md' -maxdepth 3 -print -quit")
+    call. Model returns the first match found. No directory-by-directory enumeration.

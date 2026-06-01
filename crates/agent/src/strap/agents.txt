@@ -1,11 +1,12 @@
-### agents — Agent Management
-USE THIS when: user wants to manage agents (list, activate, deactivate), delegate tasks to a specific agent, or install a new agent.
+### agents — Agent Registry & Delegation
+USE THIS when: user mentions a NAMED agent by name, or wants to list/activate/delegate to installed agents.
+CRITICAL: When the user says "ask <agent-name> to..." or "have <agent-name> do...", use agents(action: "delegate") — NOT agent(resource: "task", action: "spawn"). Delegation loads the agent's full identity, plugins, and skills. Spawning creates a blank sub-agent with no personality.
 
+- agents(action: "delegate", name: "chief-of-staff", prompt: "Check my email for urgent items") — Delegate to a NAMED agent
+- agents(action: "delegate", id: "13223420-...", prompt: "...", wait: false) — Background delegation
 - agents(action: "list") — List available agents
-- agents(action: "activate", name: "chief-of-staff") — Activate an agent (injects persona, registers triggers)
-- agents(action: "deactivate") — Deactivate current agent, revert to default
+- agents(action: "activate", name: "chief-of-staff") — Activate an agent
+- agents(action: "deactivate") — Deactivate current agent
 - agents(action: "info", name: "chief-of-staff") — Show agent details
 - agents(action: "create", name: "my-agent", agent_md: "# Agent...") — Create a user agent
 - agents(action: "install", code: "AGNT-XXXX-XXXX") — Install from marketplace
-- agents(action: "delegate", name: "chief-of-staff", prompt: "Check my email for urgent items") — Delegate task to installed agent (loads full identity + plugins + skills)
-- agents(action: "delegate", id: "13223420-...", prompt: "...", wait: false) — Background delegation

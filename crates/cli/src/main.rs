@@ -65,6 +65,11 @@ enum Commands {
         #[command(subcommand)]
         command: McpCommands,
     },
+    /// Prompt testing and optimization harness
+    Test {
+        #[command(subcommand)]
+        command: TestCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -83,6 +88,55 @@ enum McpCommands {
         /// Target application
         #[arg(long, value_enum, default_value = "claude-desktop")]
         target: mcp_serve::ConfigTarget,
+    },
+}
+
+#[derive(Subcommand)]
+enum TestCommands {
+    /// Inspect the assembled system prompt
+    Prompt {
+        /// Fixture YAML file (populates agent name from fixture)
+        #[arg(long)]
+        fixture: Option<String>,
+        /// Component overrides: "tool.shell:./overrides/shell-v2.md"
+        #[arg(long = "override")]
+        overrides: Option<Vec<String>>,
+    },
+    /// Run fixture(s) live against a running Nebo server
+    Run {
+        /// Single fixture YAML
+        #[arg(long)]
+        fixture: Option<String>,
+        /// Suite YAML (list of fixture paths)
+        #[arg(long)]
+        suite: Option<String>,
+        /// Component overrides
+        #[arg(long = "override")]
+        overrides: Option<Vec<String>>,
+        /// Model to use (overrides server default)
+        #[arg(long)]
+        model: Option<String>,
+        /// Grader model for LLM-as-judge evaluation
+        #[arg(long)]
+        grader: Option<String>,
+        /// Number of runs per fixture (for variance measurement)
+        #[arg(long, default_value = "1")]
+        runs: usize,
+        /// Nebo server URL
+        #[arg(long, default_value = "localhost:27895")]
+        server: String,
+        /// Save trace JSON to this directory
+        #[arg(long)]
+        output: Option<String>,
+        /// Baseline trace directory for comparison
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Output JSON instead of tables
+        #[arg(long)]
+        json: bool,
+        /// Experiment name (enables statistical analysis and history tracking)
+        #[arg(long)]
+        experiment: Option<String>,
     },
 }
 
@@ -357,6 +411,9 @@ async fn main() -> anyhow::Result<()> {
                 bridge.run().await?;
             }
         },
+        Some(Commands::Test { command }) => {
+            run_test_command(command).await?;
+        }
     }
 
     Ok(())
@@ -740,6 +797,177 @@ fn detect_parent_browser() -> String {
         }
     }
     "unknown".to_string()
+}
+
+async fn run_test_command(command: TestCommands) -> anyhow::Result<()> {
+    use agent::testing::{engine, fixture, grader, reporter, trace};
+    use std::path::Path;
+
+    match command {
+        TestCommands::Prompt { fixture, overrides } => {
+            let overrides = engine::parse_overrides(&overrides.unwrap_or_default())
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let fix = fixture
+                .as_deref()
+                .map(|p| fixture::load_fixture(Path::new(p)))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!(e))?;
+            engine::inspect_prompt(fix.as_ref(), &overrides);
+        }
+        TestCommands::Run {
+            fixture: fixture_path,
+            suite,
+            overrides,
+            model,
+            grader: grader_model,
+            runs,
+            server,
+            output,
+            baseline,
+            json,
+            experiment,
+        } => {
+            let overrides = engine::parse_overrides(&overrides.unwrap_or_default())
+                .map_err(|e| anyhow::anyhow!(e))?;
+
+            let fixtures = resolve_fixtures(fixture_path.as_deref(), suite.as_deref())?;
+            if fixtures.is_empty() {
+                anyhow::bail!("No fixtures specified. Use --fixture or --suite.");
+            }
+
+            let mut all_traces: Vec<trace::Trace> = Vec::new();
+            let mut all_candidate_scores: Vec<trace::FixtureScores> = Vec::new();
+
+            let mut failed_fixtures: Vec<String> = Vec::new();
+
+            for fix in &fixtures {
+                println!("Running fixture: {} ({}x)", fix.id, runs);
+
+                let mut traces = match engine::run_live(fix, &server, model.as_deref(), &overrides, runs).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("  FAILED: {}", e);
+                        failed_fixtures.push(fix.id.clone());
+                        continue;
+                    }
+                };
+
+                if let Some(ref grader_model) = grader_model {
+                    for trace in &mut traces {
+                        match grader::grade(trace, fix, &server, grader_model).await {
+                            Ok(grade) => trace.grade = Some(grade),
+                            Err(e) => eprintln!("  grading failed: {}", e),
+                        }
+                    }
+                }
+
+                if json {
+                    reporter::print_json_report(&traces);
+                } else {
+                    reporter::print_report(fix, &traces);
+                }
+
+                if let Some(ref output_dir) = output {
+                    let dir = Path::new(output_dir);
+                    for trace in &traces {
+                        if let Err(e) = trace.save(dir) {
+                            eprintln!("  save failed: {}", e);
+                        }
+                    }
+                    println!("  Traces saved to {}", dir.display());
+                }
+
+                if baseline.is_some() || experiment.is_some() {
+                    all_candidate_scores.push(trace::FixtureScores::from_traces(&fix.id, &traces));
+                }
+
+                if let Some(ref baseline_dir) = baseline {
+                    if let Ok(baseline_traces) = trace::Trace::load_dir(Path::new(baseline_dir)) {
+                        if !baseline_traces.is_empty() {
+                            reporter::print_comparison(&baseline_traces, &traces);
+                        }
+                    }
+                }
+
+                all_traces.extend(traces);
+            }
+
+            if !failed_fixtures.is_empty() {
+                eprintln!("\n  {} fixture(s) failed: {}", failed_fixtures.len(), failed_fixtures.join(", "));
+            }
+
+            if let Some(ref exp_name) = experiment {
+                let metadata = engine::build_experiment_metadata(exp_name, &overrides, runs);
+
+                // Load baseline scores if provided
+                let baseline_scores = if let Some(ref baseline_dir) = baseline {
+                    let baseline_traces = trace::Trace::load_dir(Path::new(baseline_dir))
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    // Group baseline traces by fixture_id
+                    let mut by_fixture: std::collections::HashMap<String, Vec<&trace::Trace>> = std::collections::HashMap::new();
+                    for t in &baseline_traces {
+                        by_fixture.entry(t.fixture_id.clone()).or_default().push(t);
+                    }
+                    by_fixture.into_iter().map(|(fid, traces)| {
+                        let owned: Vec<trace::Trace> = traces.into_iter().cloned().collect();
+                        trace::FixtureScores::from_traces(&fid, &owned)
+                    }).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+
+                let result = reporter::compute_experiment_result(
+                    metadata,
+                    &baseline_scores,
+                    &all_candidate_scores,
+                );
+
+                reporter::print_experiment_result(&result);
+
+                if let Some(ref output_dir) = output {
+                    let exp_dir = Path::new(output_dir).join(exp_name);
+                    engine::save_experiment(&exp_dir, &result, &all_traces)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    println!("  Experiment saved to {}", exp_dir.display());
+
+                    reporter::append_history(Path::new(output_dir), &result)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    println!("  History updated: {}/history.jsonl", output_dir);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_fixtures(
+    fixture_path: Option<&str>,
+    suite_path: Option<&str>,
+) -> anyhow::Result<Vec<agent::testing::fixture::Fixture>> {
+    use agent::testing::fixture;
+    use std::path::Path;
+
+    let mut fixtures = Vec::new();
+
+    if let Some(path) = fixture_path {
+        fixtures.push(
+            fixture::load_fixture(Path::new(path)).map_err(|e| anyhow::anyhow!(e))?,
+        );
+    }
+
+    if let Some(path) = suite_path {
+        let suite_dir = Path::new(path).parent().unwrap_or(Path::new("."));
+        let suite =
+            fixture::load_suite(Path::new(path)).map_err(|e| anyhow::anyhow!(e))?;
+        for fixture_rel in &suite.fixtures {
+            let full_path = suite_dir.join(fixture_rel);
+            fixtures.push(
+                fixture::load_fixture(&full_path).map_err(|e| anyhow::anyhow!(e))?,
+            );
+        }
+    }
+
+    Ok(fixtures)
 }
 
 fn run_onboard(cfg: &config::Config) -> anyhow::Result<()> {

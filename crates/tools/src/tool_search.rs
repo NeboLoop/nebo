@@ -68,10 +68,18 @@ impl DynTool for ToolSearchTool {
         Box::pin(async move {
             let query = match input.get("query").and_then(|v| v.as_str()) {
                 Some(q) => q.trim(),
-                None => return ToolResult::error("missing required parameter: query"),
+                None => return ToolResult::error(crate::errors::missing_param(
+                    "search",
+                    "query",
+                    "tool_search(query: \"file operations\")",
+                )),
             };
             if query.is_empty() {
-                return ToolResult::error("query must not be empty");
+                return ToolResult::error(crate::errors::missing_param(
+                    "search",
+                    "query",
+                    "tool_search(query: \"file operations\")",
+                ));
             }
 
             let max_results = input
@@ -152,14 +160,15 @@ impl DynTool for ToolSearchTool {
 
             debug!(query, found = matches.len(), total = stubs.len(), "tool_search");
 
-            ToolResult::ok(
-                json!({
-                    "matches": match_names,
-                    "descriptions": descriptions,
-                    "total_deferred": stubs.len(),
-                })
-                .to_string(),
-            )
+            let mut result = json!({
+                "matches": match_names,
+                "descriptions": descriptions,
+                "total_deferred": stubs.len(),
+            });
+            if match_names.is_empty() {
+                result["hint"] = json!("No matching tools found. Try skill(action: \"discover\", query: \"...\") to check if a skill is available for this task.");
+            }
+            ToolResult::ok(result.to_string())
         })
     }
 }

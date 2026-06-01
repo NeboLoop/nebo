@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::DomainInput;
+use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
@@ -169,7 +170,7 @@ impl DynTool for SkillTool {
         Box::pin(async move {
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
+                Err(e) => return ToolResult::error(format!("Failed to parse input: {}. Do not retry — this is a schema error.", e)),
             };
 
             match domain_input.action.as_str() {
@@ -216,9 +217,11 @@ impl DynTool for SkillTool {
                 "discover" => {
                     let query = input["query"].as_str().unwrap_or("");
                     if query.is_empty() {
-                        return ToolResult::error(
-                            "query is required — describe what you're trying to do",
-                        );
+                        return ToolResult::error(errors::missing_param(
+                            "discover",
+                            "query",
+                            "skill(action: \"discover\", query: \"email management\")",
+                        ));
                     }
                     let matches = self.loader.discover_summaries(query).await;
                     if matches.is_empty() {
@@ -236,10 +239,15 @@ impl DynTool for SkillTool {
                                 slug, slug, slug
                             ));
                         }
-                        ToolResult::ok(format!(
-                            "No skills match \"{}\". Try a different query or check the catalog.",
+                        {
+                        ToolResult::error(format!(
+                            "No skills or plugins found for \"{}\". \
+                             This capability is not available. \
+                             Report this to the user and suggest they install a skill from the marketplace. \
+                             Do NOT attempt to perform the task through the browser or shell — it will not work.",
                             query
                         ))
+                    }
                     } else {
                         let lines: Vec<String> = matches
                             .iter()
@@ -256,7 +264,11 @@ impl DynTool for SkillTool {
                 "help" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "help",
+                            "name",
+                            "skill(action: \"help\", name: \"calendar\")",
+                        ));
                     }
 
                     match self.loader.get(name).await {
@@ -352,7 +364,7 @@ impl DynTool for SkillTool {
                                 Ok(content) => {
                                     ToolResult::ok(format!("# Skill: {}\n\n{}", name, content))
                                 }
-                                Err(e) => ToolResult::error(format!("Failed to read skill: {}", e)),
+                                Err(e) => ToolResult::error(format!("Failed to read skill: {}. Do not retry — this is a filesystem error.", e)),
                             }
                         }
                     }
@@ -360,7 +372,11 @@ impl DynTool for SkillTool {
                 "browse" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "browse",
+                            "name",
+                            "skill(action: \"browse\", name: \"xlsx-processor\")",
+                        ));
                     }
                     let filter_path = input["path"].as_str().unwrap_or("");
 
@@ -409,7 +425,7 @@ impl DynTool for SkillTool {
                                     ))
                                 }
                             }
-                            Err(e) => ToolResult::error(format!("Failed to list resources: {}", e)),
+                            Err(e) => ToolResult::error(format!("Failed to list resources: {}. Do not retry — this is a filesystem error.", e)),
                         },
                         None => ToolResult::error(format!("Skill '{}' not found", name)),
                     }
@@ -418,7 +434,11 @@ impl DynTool for SkillTool {
                     let name = input["name"].as_str().unwrap_or("");
                     let path = input["path"].as_str().unwrap_or("");
                     if name.is_empty() || path.is_empty() {
-                        return ToolResult::error("name and path are required");
+                        return ToolResult::error(errors::missing_param(
+                            "read_resource",
+                            "name and path",
+                            "skill(action: \"read_resource\", name: \"xlsx-processor\", path: \"scripts/recalc.py\")",
+                        ));
                     }
 
                     match self.loader.get(name).await {
@@ -437,7 +457,11 @@ impl DynTool for SkillTool {
                 "load" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "load",
+                            "name",
+                            "skill(action: \"load\", name: \"coding-assistant\")",
+                        ));
                     }
                     let dir = match Self::user_skills_dir() {
                         Ok(d) => d,
@@ -453,7 +477,7 @@ impl DynTool for SkillTool {
                             skill_dir.join("SKILL.md"),
                         ) {
                             Ok(_) => ToolResult::ok(format!("Skill '{}' enabled.", name)),
-                            Err(e) => ToolResult::error(format!("Failed to enable skill: {}", e)),
+                            Err(e) => ToolResult::error(format!("Failed to enable skill: {}. Do not retry — this is a filesystem error.", e)),
                         }
                     } else {
                         ToolResult::error(format!(
@@ -465,7 +489,11 @@ impl DynTool for SkillTool {
                 "unload" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "unload",
+                            "name",
+                            "skill(action: \"unload\", name: \"coding-assistant\")",
+                        ));
                     }
                     let dir = match Self::user_skills_dir() {
                         Ok(d) => d,
@@ -481,7 +509,7 @@ impl DynTool for SkillTool {
                             skill_dir.join("SKILL.md.disabled"),
                         ) {
                             Ok(_) => ToolResult::ok(format!("Skill '{}' disabled.", name)),
-                            Err(e) => ToolResult::error(format!("Failed to disable skill: {}", e)),
+                            Err(e) => ToolResult::error(format!("Failed to disable skill: {}. Do not retry — this is a filesystem error.", e)),
                         }
                     } else {
                         ToolResult::error(format!("Skill '{}' not found.", name))
@@ -492,7 +520,11 @@ impl DynTool for SkillTool {
                     let content_raw = input["content"].as_str().unwrap_or("");
 
                     if name.is_empty() || content_raw.is_empty() {
-                        return ToolResult::error("name and content are required");
+                        return ToolResult::error(errors::missing_param(
+                            "create",
+                            "name and content",
+                            "skill(action: \"create\", name: \"my-skill\", content: \"---\\nname: my-skill\\n---\\nInstructions here\")",
+                        ));
                     }
 
                     // LLMs often send literal \n instead of real newlines in tool call strings.
@@ -515,7 +547,7 @@ impl DynTool for SkillTool {
 
                     let skill_dir = dir.join(name);
                     if let Err(e) = std::fs::create_dir_all(&skill_dir) {
-                        return ToolResult::error(format!("Failed to create skill dir: {}", e));
+                        return ToolResult::error(format!("Failed to create skill dir: {}. Do not retry — this is a filesystem error.", e));
                     }
                     let path = skill_dir.join("SKILL.md");
                     match std::fs::write(&path, final_content) {
@@ -524,7 +556,7 @@ impl DynTool for SkillTool {
                             name,
                             path.display()
                         )),
-                        Err(e) => ToolResult::error(format!("Failed to write skill: {}", e)),
+                        Err(e) => ToolResult::error(format!("Failed to write skill: {}. Do not retry — this is a filesystem error.", e)),
                     }
                 }
                 "update" => {
@@ -532,7 +564,11 @@ impl DynTool for SkillTool {
                     let content = input["content"].as_str().unwrap_or("");
 
                     if name.is_empty() || content.is_empty() {
-                        return ToolResult::error("name and content are required");
+                        return ToolResult::error(errors::missing_param(
+                            "update",
+                            "name and content",
+                            "skill(action: \"update\", name: \"my-skill\", content: \"---\\nname: my-skill\\n---\\nUpdated instructions\")",
+                        ));
                     }
 
                     // Check if skill exists in loader or as file
@@ -550,7 +586,7 @@ impl DynTool for SkillTool {
                                     return ToolResult::ok(format!("Updated skill '{}'", name));
                                 }
                                 Err(e) => {
-                                    return ToolResult::error(format!("Failed to update: {}", e));
+                                    return ToolResult::error(format!("Failed to update: {}. Do not retry — this is a filesystem error.", e));
                                 }
                             }
                         }
@@ -566,13 +602,17 @@ impl DynTool for SkillTool {
                     }
                     match std::fs::write(&skill_md, content) {
                         Ok(_) => ToolResult::ok(format!("Updated skill '{}'", name)),
-                        Err(e) => ToolResult::error(format!("Failed to update: {}", e)),
+                        Err(e) => ToolResult::error(format!("Failed to update: {}. Do not retry — this is a filesystem error.", e)),
                     }
                 }
                 "delete" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "delete",
+                            "name",
+                            "skill(action: \"delete\", name: \"my-skill\")",
+                        ));
                     }
 
                     // Protect marketplace (installed) skills from deletion
@@ -644,14 +684,18 @@ impl DynTool for SkillTool {
                     let value = input["value"].as_str().unwrap_or("");
 
                     if name.is_empty() || key.is_empty() || value.is_empty() {
-                        return ToolResult::error("name, key, and value are required");
+                        return ToolResult::error(errors::missing_param(
+                            "configure",
+                            "name, key, and value",
+                            "skill(action: \"configure\", name: \"brave-search\", key: \"BRAVE_API_KEY\", value: \"...\")",
+                        ));
                     }
 
                     let store = match &self.store {
                         Some(s) => s,
                         None => {
                             return ToolResult::error(
-                                "configure not available — store not configured",
+                                "configure not available — store not configured. The user needs to restart Nebo so the database initializes.",
                             );
                         }
                     };
@@ -674,7 +718,7 @@ impl DynTool for SkillTool {
                     // Encrypt and store
                     let encrypted = match auth::credential::encrypt(value) {
                         Ok(v) => v,
-                        Err(e) => return ToolResult::error(format!("encryption failed: {}", e)),
+                        Err(e) => return ToolResult::error(format!("encryption failed: {}. Do not retry — this is a configuration error.", e)),
                     };
 
                     match store.set_skill_secret(name, key, &encrypted) {
@@ -682,13 +726,17 @@ impl DynTool for SkillTool {
                             "Configured {} for skill '{}'. The value is stored encrypted.",
                             key, name
                         )),
-                        Err(e) => ToolResult::error(format!("failed to save secret: {}", e)),
+                        Err(e) => ToolResult::error(format!("failed to save secret: {}. Do not retry — this is a database error.", e)),
                     }
                 }
                 "secrets" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "secrets",
+                            "name",
+                            "skill(action: \"secrets\", name: \"brave-search\")",
+                        ));
                     }
 
                     // Show declared secrets and their configuration status
@@ -709,7 +757,7 @@ impl DynTool for SkillTool {
                         Some(s) => s,
                         None => {
                             return ToolResult::error(
-                                "secrets not available — store not configured",
+                                "secrets not available — store not configured. The user needs to restart Nebo so the database initializes.",
                             );
                         }
                     };
@@ -760,7 +808,7 @@ impl DynTool for SkillTool {
                         Some(s) => s,
                         None => {
                             return ToolResult::error(
-                                "install not available — store not configured",
+                                "install not available — store not configured. The user needs to restart Nebo so the database initializes.",
                             );
                         }
                     };
@@ -799,19 +847,23 @@ impl DynTool for SkillTool {
 
                             ToolResult::ok(format!("Installed skill: {}", name))
                         }
-                        Err(e) => ToolResult::error(format!("install failed: {}", e)),
+                        Err(e) => ToolResult::error(format!("install failed: {}. Do not retry — this is an API error.", e)),
                     }
                 }
                 "reviews" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required for reviews");
+                        return ToolResult::error(errors::missing_param(
+                            "reviews",
+                            "name",
+                            "skill(action: \"reviews\", name: \"calendar\")",
+                        ));
                     }
                     let store = match &self.store {
                         Some(s) => s,
                         None => {
                             return ToolResult::error(
-                                "reviews not available — store not configured",
+                                "reviews not available — store not configured. The user needs to restart Nebo so the database initializes.",
                             );
                         }
                     };
@@ -856,7 +908,7 @@ impl DynTool for SkillTool {
                                 lines.join("\n")
                             ))
                         }
-                        Err(e) => ToolResult::error(format!("failed to fetch reviews: {}", e)),
+                        Err(e) => ToolResult::error(format!("failed to fetch reviews: {}. Do not retry — this is an API error.", e)),
                     }
                 }
                 "rate" => {
@@ -865,15 +917,23 @@ impl DynTool for SkillTool {
                     let review_body =
                         input["review"].as_str().or_else(|| input["body"].as_str()).unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required for rate");
+                        return ToolResult::error(errors::missing_param(
+                            "rate",
+                            "name",
+                            "skill(action: \"rate\", name: \"calendar\", rating: 5, review: \"Great skill\")",
+                        ));
                     }
                     if !(1..=5).contains(&rating) {
-                        return ToolResult::error("rating must be between 1 and 5");
+                        return ToolResult::error(errors::missing_param(
+                            "rate",
+                            "rating",
+                            "skill(action: \"rate\", name: \"calendar\", rating: 5, review: \"Great skill\") — rating must be 1-5",
+                        ));
                     }
                     let store = match &self.store {
                         Some(s) => s,
                         None => {
-                            return ToolResult::error("rate not available — store not configured");
+                            return ToolResult::error("rate not available — store not configured. The user needs to restart Nebo so the database initializes.");
                         }
                     };
                     let api = match crate::build_neboai_api(store) {
@@ -891,7 +951,7 @@ impl DynTool for SkillTool {
                             "Posted {}★ review on skill '{}'.",
                             rating, name
                         )),
-                        Err(e) => ToolResult::error(format!("failed to post review: {}", e)),
+                        Err(e) => ToolResult::error(format!("failed to post review: {}. Do not retry — this is an API error.", e)),
                     }
                 }
                 other => ToolResult::error(format!(

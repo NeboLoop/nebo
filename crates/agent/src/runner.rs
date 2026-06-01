@@ -2076,7 +2076,12 @@ async fn run_loop(
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
-        let full_system = if deferred_listing.is_empty() {
+        // When a custom system prompt is provided, it already contains the STRAP
+        // section (the caller is responsible for including it). Skip appending a
+        // second copy so overrides from the eval harness take effect.
+        let full_system = if !system_prompt.is_empty() {
+            format!("{}\n\n{}{}", static_system, tools_list, dynamic_suffix)
+        } else if deferred_listing.is_empty() {
             format!(
                 "{}\n\n{}\n\n{}{}",
                 static_system, strap_section, tools_list, dynamic_suffix

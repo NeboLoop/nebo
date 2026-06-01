@@ -1,3 +1,4 @@
+use crate::errors;
 use crate::origin::ToolContext;
 use crate::policy::Policy;
 use crate::process::{self, ProcessRegistry};
@@ -94,7 +95,11 @@ impl ShellTool {
 
     async fn handle_bash(&self, input: &ShellInput) -> ToolResult {
         if input.command.is_empty() {
-            return ToolResult::error("Error: command is required");
+            return ToolResult::error(errors::missing_param(
+                "exec",
+                "command",
+                "shell(action: \"exec\", command: \"ls -la\")",
+            ));
         }
 
         // Handle background execution
@@ -116,6 +121,16 @@ impl ShellTool {
         cmd.arg(&input.command);
 
         if !input.cwd.is_empty() {
+            let cwd_path = std::path::Path::new(&input.cwd);
+            if !cwd_path.exists() {
+                return ToolResult::error(errors::path_not_found(&input.cwd));
+            }
+            if !cwd_path.is_dir() {
+                return ToolResult::error(format!(
+                    "Not a directory: {}. The cwd parameter must be a directory path.",
+                    input.cwd
+                ));
+            }
             cmd.current_dir(&input.cwd);
         }
 
@@ -138,11 +153,31 @@ impl ShellTool {
 
         match result {
             Err(_) => ToolResult {
-                content: format!("Command timed out after {}s", timeout_secs),
+                content: format!(
+                    "Command timed out after {}s: `{}`\n\
+                     The command did not complete within the timeout. \
+                     Try a shorter operation, a more specific path, or increase the timeout parameter.",
+                    timeout_secs,
+                    if input.command.len() > 80 {
+                        format!("{}...", crate::truncate_str(&input.command, 80))
+                    } else {
+                        input.command.clone()
+                    }
+                ),
                 is_error: true,
                 image_url: None,
             },
-            Ok(Err(e)) => ToolResult::error(format!("Command failed: {}", e)),
+            Ok(Err(e)) => {
+                let err_str = e.to_string();
+                if err_str.contains("No such file or directory") || err_str.contains("not found") {
+                    let base_cmd = extract_base_command(&input.command);
+                    ToolResult::error(errors::command_not_found(&base_cmd))
+                } else if err_str.contains("Permission denied") {
+                    ToolResult::error(errors::permission_denied(&input.command, "execute"))
+                } else {
+                    ToolResult::error(format!("Command failed to start: {}", e))
+                }
+            }
             Ok(Ok(output)) => {
                 let mut result = String::new();
 
@@ -162,11 +197,22 @@ impl ShellTool {
 
                 if !output.status.success() {
                     let code = output.status.code().unwrap_or(-1);
-                    return ToolResult {
-                        content: format!("Command exited with code {}\n{}", code, result),
-                        is_error: true,
-                        image_url: None,
-                    };
+                    let (is_error, semantic_msg) =
+                        interpret_exit_code(&input.command, code, &result);
+                    if let Some(msg) = semantic_msg {
+                        if !result.is_empty() {
+                            result.push('\n');
+                        }
+                        result.push_str(&msg);
+                    }
+                    if is_error {
+                        return ToolResult {
+                            content: format!("Command exited with code {}\n{}", code, result),
+                            is_error: true,
+                            image_url: None,
+                        };
+                    }
+                    // Non-error exit (e.g. grep exit 1 = no matches) — fall through to success path
                 }
 
                 if result.is_empty() {
@@ -585,5 +631,58 @@ impl ShellTool {
             Ok(()) => ToolResult::ok(format!("Killed session {}", session_id)),
             Err(e) => ToolResult::error(format!("Error killing session: {}", e)),
         }
+    }
+}
+
+/// Extract the base command name from a (possibly piped) command string.
+/// Uses the LAST segment in a pipeline, since that determines the exit code.
+fn extract_base_command(command: &str) -> String {
+    let last_segment = command.rsplit('|').next().unwrap_or(command);
+    last_segment
+        .trim()
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Interpret a command's exit code using command-specific semantics.
+/// Returns (is_error, optional_message).
+fn interpret_exit_code(command: &str, exit_code: i32, _output: &str) -> (bool, Option<String>) {
+    let base = extract_base_command(command);
+    match base.as_str() {
+        // grep/rg: 0=matches found, 1=no matches, 2+=error
+        "grep" | "rg" | "egrep" | "fgrep" => {
+            if exit_code == 1 {
+                (false, Some("No matches found. This is not an error — the pattern does not appear in the searched files. Do not retry the same search.".to_string()))
+            } else {
+                (true, None)
+            }
+        }
+        // diff: 0=identical, 1=differences found, 2+=error
+        "diff" | "colordiff" => {
+            if exit_code == 1 {
+                (false, Some("Files differ.".to_string()))
+            } else {
+                (true, None)
+            }
+        }
+        // find: 0=success, 1=some dirs inaccessible (partial), 2+=error
+        "find" | "fd" => {
+            if exit_code == 1 {
+                (false, Some("Some directories were inaccessible.".to_string()))
+            } else {
+                (true, None)
+            }
+        }
+        // test/[: 0=true, 1=false, 2+=error
+        "test" | "[" => {
+            if exit_code == 1 {
+                (false, Some("Condition is false.".to_string()))
+            } else {
+                (true, None)
+            }
+        }
+        _ => (true, None),
     }
 }

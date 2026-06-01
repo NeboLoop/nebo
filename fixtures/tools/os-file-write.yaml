@@ -1,0 +1,48 @@
+id: os-file-write
+name: "OS file write — correct tool routing"
+description: |
+  The user asks the agent to create a file with specific content. The model
+  must use os(resource: "file", action: "write") — NOT hallucinate "write"
+  as a standalone tool or use shell echo/redirect.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Create a file at /tmp/nebo-test-output.txt with the content 'hello world'."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'os', not 'write' or 'bash'"
+      severity: critical
+    - id: correct-resource
+      text: "Model uses resource: 'file'"
+      severity: critical
+    - id: correct-action
+      text: "Model uses action: 'write'"
+      severity: critical
+    - id: correct-path
+      text: "Model passes the correct path '/tmp/nebo-test-output.txt'"
+      severity: critical
+    - id: correct-content
+      text: "Model passes content: 'hello world'"
+      severity: critical
+  recovery:
+    - id: no-shell-fallback
+      text: "Model does NOT use shell echo/redirect to write the file"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single os(resource: "file", action: "write", path: "/tmp/nebo-test-output.txt",
+    content: "hello world") call. Model confirms the file was created.

@@ -1,0 +1,7 @@
+name: regressed-5
+fixtures:
+  - ../fixtures/tools/os-file-glob.yaml
+  - ../fixtures/tools/os-file-edit.yaml
+  - ../fixtures/tools/os-file-search-loop.yaml
+  - ../fixtures/tools/os-shell-retry-spiral.yaml
+  - ../fixtures/tools/web-browser-interaction.yaml

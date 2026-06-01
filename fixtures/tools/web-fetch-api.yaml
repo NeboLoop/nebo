@@ -1,0 +1,39 @@
+id: web-fetch-api
+name: "Web — fetch for known URL"
+description: |
+  The user provides a specific URL and wants the content. The model must use
+  web(action: "fetch") or web(action: "get") — NOT open a browser and navigate.
+  This tests the model's ability to pick HTTP fetch over browser automation
+  when the URL is known and no interaction is needed.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Fetch https://httpbin.org/json and show me the response."
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-fetch-or-get
+      text: "Model uses web(action: 'fetch') or web(action: 'get'), not web(action: 'navigate')"
+      severity: critical
+    - id: correct-url
+      text: "Model passes the exact URL https://httpbin.org/json"
+      severity: critical
+    - id: no-browser
+      text: "Model does NOT open a browser tab for a simple API fetch"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 2000
+  narrative: |
+    Single web(action: "fetch", url: "https://httpbin.org/json") call.
+    Model displays the JSON response.

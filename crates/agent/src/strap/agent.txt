@@ -1,5 +1,6 @@
-### agent — Self-Management & Cognition
-USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, analyzing images, or asking the user a question.
+### agent — Self-Management, Cognition & Agent Registry
+USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, analyzing images, asking the user a question, OR delegating to/managing installed agents.
+CRITICAL: To delegate to a NAMED agent (e.g. "chief-of-staff"), use agent(resource: "registry", action: "delegate") — NOT agent(resource: "task", action: "spawn"). Delegation loads the agent's full identity, plugins, and skills. Spawning creates a blank sub-agent with no personality.
 
 **Sub-agents (parallel work):**
 Spawn sub-agents for independent work. Two modes:
@@ -66,3 +67,14 @@ For complex decisions, consult advisors who return independent perspectives.
 - agent(resource: ask, action: prompt, text: "What would you like?") — Prompt user for input
 - agent(resource: ask, action: confirm, text: "Proceed with deletion?") — Yes/no confirmation
 - agent(resource: ask, action: select, text: "Pick a color", options: ["red", "blue", "green"]) — Multiple choice
+
+**Registry (installed agent management + delegation):**
+When user mentions a named agent or wants to list/activate/delegate to installed agents.
+- agent(resource: registry, action: delegate, name: "chief-of-staff", prompt: "Check my email for urgent items") — Delegate to a NAMED agent
+- agent(resource: registry, action: delegate, id: "13223420-...", prompt: "...", wait: false) — Background delegation
+- agent(resource: registry, action: list) — List available agents
+- agent(resource: registry, action: activate, name: "chief-of-staff") — Activate an agent
+- agent(resource: registry, action: deactivate) — Deactivate current agent
+- agent(resource: registry, action: info, name: "chief-of-staff") — Show agent details
+- agent(resource: registry, action: create, name: "my-agent", agent_md: "# Agent...") — Create a user agent
+- agent(resource: registry, action: install, code: "AGNT-XXXX-XXXX") — Install from marketplace

@@ -80,7 +80,11 @@ impl DynTool for MusicTool {
                 "search" => {
                     let query = input["query"].as_str().unwrap_or("");
                     if query.is_empty() {
-                        return ToolResult::error("query is required for search action");
+                        return ToolResult::error(crate::errors::missing_param(
+                            "search",
+                            "query",
+                            "desktop(resource: \"music\", action: \"search\", query: \"beethoven symphony\")",
+                        ));
                     }
                     handle_search(query).await
                 }

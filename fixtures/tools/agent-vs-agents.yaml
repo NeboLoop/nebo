@@ -1,0 +1,43 @@
+id: agent-memory-store
+name: "Agent memory store — correct resource routing"
+description: |
+  Storing a preference should use agent(resource: "memory", action: "store").
+  Verifies the model correctly identifies the memory resource, not task or registry.
+target_component: agent
+
+conversation:
+  - role: user
+    content: "Remember that my favorite color is blue."
+
+tool_config:
+  agent:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool
+      text: "Model calls 'agent'"
+      severity: critical
+    - id: correct-resource
+      text: "Model uses resource: 'memory'"
+      severity: critical
+    - id: correct-action
+      text: "Model uses action: 'store'"
+      severity: critical
+    - id: has-key
+      text: "Model passes a key related to 'favorite color'"
+      severity: important
+    - id: has-value
+      text: "Model passes value: 'blue' or similar"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single agent(resource: "memory", action: "store", key: "favorite_color",
+    value: "blue") call.

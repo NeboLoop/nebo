@@ -99,9 +99,36 @@ pub async fn run_live(
     let mut traces = Vec::new();
     for run_idx in 0..runs {
         let run_id = format!("run-{}", run_idx + 1);
+
+        // Run setup commands before each run
+        for cmd in &fixture.setup {
+            info!(fixture = %fixture.id, run = %run_id, cmd = %cmd, "running setup");
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .output()
+                .map_err(|e| format!("setup command failed: {}", e))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("setup command failed: {} — {}", cmd, stderr));
+            }
+        }
+
         info!(fixture = %fixture.id, run = %run_id, "starting live test run");
 
-        match run_single(&ws_url, fixture, &run_id, model, system_override.as_deref()).await {
+        let result =
+            run_single(&ws_url, fixture, &run_id, model, system_override.as_deref()).await;
+
+        // Run teardown commands after each run (even if the run failed)
+        for cmd in &fixture.teardown {
+            info!(fixture = %fixture.id, run = %run_id, cmd = %cmd, "running teardown");
+            let _ = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .output();
+        }
+
+        match result {
             Ok(trace) => traces.push(trace),
             Err(e) => {
                 warn!(fixture = %fixture.id, run = %run_id, error = %e, "run failed");

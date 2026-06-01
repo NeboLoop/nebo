@@ -249,7 +249,11 @@ impl DynTool for McpTool {
             let server = match input.get("server").and_then(|v| v.as_str()) {
                 Some(s) => s,
                 None => {
-                    return ToolResult::error("server is required. Specify the MCP server name.");
+                    return ToolResult::error(crate::errors::missing_param(
+                        "mcp",
+                        "server",
+                        "mcp(server: \"slack\", resource: \"tools\", action: \"list\")",
+                    ));
                 }
             };
             let resource = match input.get("resource").and_then(|v| v.as_str()) {

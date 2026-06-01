@@ -245,7 +245,7 @@ impl DynTool for OsTool {
         // File
         props.insert("path".into(), prop("string", "File or directory path"));
         props.insert("content".into(), prop("string", "REQUIRED for write. The file content to write. Must use this exact field name — not 'text' or 'data'."));
-        props.insert("pattern".into(), prop("string", "Glob or grep pattern"));
+        props.insert("pattern".into(), prop("string", "Pattern to match: filename glob (for glob action) or regex (for grep action)"));
         props.insert(
             "old_string".into(),
             prop("string", "String to find (for edit)"),
@@ -264,10 +264,8 @@ impl DynTool for OsTool {
             prop("integer", "Max lines/results to return"),
         );
         props.insert("append".into(), prop("boolean", "Append to file"));
-        props.insert(
-            "regex".into(),
-            prop("string", "Regular expression (for grep)"),
-        );
+        // "pattern" is already registered above (used by both glob and grep)
+        // "regex" kept on FileInput for backward compat but removed from schema
         props.insert(
             "case_insensitive".into(),
             prop("boolean", "Case-insensitive search"),

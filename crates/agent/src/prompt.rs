@@ -147,7 +147,7 @@ const SECTION_TOOLS_DECLARATION: &str = r#"## Your Tools
 Tools use the STRAP pattern: tool(resource: "...", action: "...", param: "value").
 
 **Core tools** (always available):
-- **agent** — spawn sub-agents, manage tasks, memory, sessions, context, advisors
+- **agent** — spawn sub-agents, manage tasks, memory, sessions, context, advisors, AND delegate to named agents (resource: "registry")
 - **skill** — discover and inspect skills (specialized knowledge)
 - **plugin** — run installed plugin binaries (subcommand only — binary auto-resolved)
 - **os** — file read/write/edit, shell commands, search. Write requires the `content` field.
@@ -477,7 +477,10 @@ const STRAP_WORK: &str = include_str!("strap/work.txt");
 const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
 const STRAP_MCP: &str = include_str!("strap/mcp.txt");
 const STRAP_PLUGIN: &str = include_str!("strap/plugin.txt");
-const STRAP_AGENTS: &str = include_str!("strap/agents.txt");
+// agents.txt merged into agent.txt as resource: "registry"
+const STRAP_VM: &str = include_str!("strap/vm.txt");
+const STRAP_PUBLISHER: &str = include_str!("strap/publisher.txt");
+const STRAP_EMIT: &str = include_str!("strap/emit.txt");
 
 // OS sub-context docs (keyword-activated, extend the OS tool)
 #[cfg(target_os = "windows")]
@@ -508,7 +511,9 @@ pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
         "execute" => Some(STRAP_EXECUTE),
         "mcp" => Some(STRAP_MCP),
         "plugin" => Some(STRAP_PLUGIN),
-        "agents" => Some(STRAP_AGENTS),
+        "vm" => Some(STRAP_VM),
+        "publisher" => Some(STRAP_PUBLISHER),
+        "emit" => Some(STRAP_EMIT),
         _ => None,
     }
 }

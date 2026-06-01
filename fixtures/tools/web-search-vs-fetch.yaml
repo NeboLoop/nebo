@@ -1,0 +1,41 @@
+id: web-search-vs-fetch
+name: "Web — search vs fetch routing"
+description: |
+  The user asks to look something up. The model must use web(action: "search")
+  for discovery queries — NOT web(action: "fetch") with a guessed URL, NOT
+  web(action: "navigate") to a search engine with query params.
+target_component: web
+
+conversation:
+  - role: user
+    content: "What's the weather in Austin, TX right now?"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-search
+      text: "Model uses web(action: 'search') for the initial lookup"
+      severity: critical
+    - id: no-direct-url
+      text: "Model does NOT navigate directly to google.com/search?q=... or similar"
+      severity: critical
+    - id: has-query
+      text: "Model passes a reasonable search query about Austin TX weather"
+      severity: important
+  recovery:
+    - id: follows-results
+      text: "If model needs more detail, it clicks into a search result rather than guessing a URL"
+      severity: important
+  cost:
+    - id: max-three-calls
+      text: "Task completes in 1-3 tool calls"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 3000
+  narrative: |
+    web(action: "search", query: "weather Austin TX") → read results → report.

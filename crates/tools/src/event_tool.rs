@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::DomainInput;
+use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use chrono::Local;
@@ -99,7 +100,11 @@ impl DynTool for EventTool {
                     let prompt = input["prompt"].as_str().unwrap_or("");
 
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "create",
+                            "name",
+                            "event(action: \"create\", name: \"daily-report\", cron: \"0 30 9 * * *\", command: \"echo hello\")",
+                        ));
                     }
 
                     // Resolve schedule: prefer `cron`, fall back to `at` (relative time)
@@ -125,7 +130,11 @@ impl DynTool for EventTool {
                         ("", Some(prompt))
                     } else {
                         if command.is_empty() {
-                            return ToolResult::error("command is required for bash tasks");
+                            return ToolResult::error(errors::missing_param(
+                                "create",
+                                "command",
+                                "event(action: \"create\", name: \"cleanup\", cron: \"0 0 * * *\", command: \"rm -rf /tmp/cache/*\")",
+                            ));
                         }
                         (command, None::<&str>)
                     };
@@ -200,7 +209,11 @@ impl DynTool for EventTool {
                 "delete" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "delete",
+                            "name",
+                            "event(action: \"delete\", name: \"daily-report\")",
+                        ));
                     }
                     match self.store.delete_cron_job_by_name(name) {
                         Ok(count) => {
@@ -216,7 +229,11 @@ impl DynTool for EventTool {
                 "pause" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "pause",
+                            "name",
+                            "event(action: \"pause\", name: \"daily-report\")",
+                        ));
                     }
                     match self.store.disable_cron_job_by_name(name) {
                         Ok(_) => ToolResult::ok(format!("Paused task: {}", name)),
@@ -226,7 +243,11 @@ impl DynTool for EventTool {
                 "resume" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "resume",
+                            "name",
+                            "event(action: \"resume\", name: \"daily-report\")",
+                        ));
                     }
                     match self.store.enable_cron_job_by_name(name) {
                         Ok(_) => ToolResult::ok(format!("Resumed task: {}", name)),
@@ -236,7 +257,11 @@ impl DynTool for EventTool {
                 "run" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "run",
+                            "name",
+                            "event(action: \"run\", name: \"daily-report\")",
+                        ));
                     }
                     match self.store.get_cron_job_by_name(name) {
                         Ok(Some(job)) => {
@@ -324,7 +349,11 @@ impl DynTool for EventTool {
                 "history" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
-                        return ToolResult::error("name is required");
+                        return ToolResult::error(errors::missing_param(
+                            "history",
+                            "name",
+                            "event(action: \"history\", name: \"daily-report\")",
+                        ));
                     }
                     // Get the job by name to find its ID, then fetch history
                     match self.store.get_cron_job_by_name(name) {

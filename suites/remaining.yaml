@@ -1,0 +1,8 @@
+name: remaining
+fixtures:
+  - ../fixtures/tools/agent-vs-agents.yaml
+  - ../fixtures/tools/agents-delegate.yaml
+  - ../fixtures/tools/skill-plugin-choreography.yaml
+  - ../fixtures/tools/os-file-discovery-spiral.yaml
+  - ../fixtures/tools/os-shell-retry-spiral.yaml
+  - ../fixtures/tools/os-file-search-loop.yaml

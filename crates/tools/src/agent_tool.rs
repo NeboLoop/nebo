@@ -146,6 +146,30 @@ impl PersonaTool {
         }
     }
 
+    pub async fn handle_action(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let action = input["action"].as_str().unwrap_or("");
+
+        match action {
+            "list" => self.handle_list().await,
+            "activate" => self.handle_activate(input).await,
+            "deactivate" => self.handle_deactivate(input).await,
+            "info" => self.handle_info(input).await,
+            "create" => self.handle_create(input).await,
+            "update" => self.handle_update(input).await,
+            "delete" => self.handle_delete(input).await,
+            "install" => self.handle_install(input).await,
+            "reload" => self.handle_reload(input).await,
+            "repair" => self.handle_repair(input).await,
+            "setup" => self.handle_setup(input).await,
+            "stats" => self.handle_stats(input).await,
+            "delegate" => self.handle_delegate(input, ctx).await,
+            _ => ToolResult::error(format!(
+                "Unknown registry action '{}'. Available: list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats, delegate",
+                action
+            )),
+        }
+    }
+
     async fn handle_list(&self) -> ToolResult {
         // Get agents from loader cache
         let fs_agents = self.agent_loader.list().await;
@@ -237,7 +261,11 @@ impl PersonaTool {
     async fn handle_activate(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
-            return ToolResult::error("'name' is required to activate an agent");
+            return ToolResult::error(crate::errors::missing_param(
+                "activate",
+                "name",
+                "bot(resource: \"registry\", action: \"activate\", name: \"chief-of-staff\")",
+            ));
         }
 
         // Try loading from filesystem first
@@ -493,7 +521,11 @@ impl PersonaTool {
     async fn handle_create(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
-            return ToolResult::error("'name' is required to create an agent");
+            return ToolResult::error(crate::errors::missing_param(
+                "create",
+                "name",
+                "bot(resource: \"registry\", action: \"create\", name: \"my-agent\", description: \"An agent that...\")",
+            ));
         }
 
         let description = input["description"].as_str().unwrap_or("");
@@ -679,7 +711,11 @@ impl PersonaTool {
     async fn handle_update(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
-            return ToolResult::error("'name' is required to identify the agent to update");
+            return ToolResult::error(crate::errors::missing_param(
+                "update",
+                "name",
+                "bot(resource: \"registry\", action: \"update\", name: \"my-agent\", description: \"Updated description\")",
+            ));
         }
 
         // Find the agent in DB
@@ -1057,7 +1093,11 @@ impl PersonaTool {
     async fn handle_delete(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
-            return ToolResult::error("'name' is required to delete an agent");
+            return ToolResult::error(crate::errors::missing_param(
+                "delete",
+                "name",
+                "bot(resource: \"registry\", action: \"delete\", name: \"my-agent\")",
+            ));
         }
 
         // Find in DB
@@ -1161,7 +1201,11 @@ impl PersonaTool {
     async fn handle_reload(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
-            return ToolResult::error("'name' is required to identify the agent to reload");
+            return ToolResult::error(crate::errors::missing_param(
+                "reload",
+                "name",
+                "bot(resource: \"registry\", action: \"reload\", name: \"my-agent\")",
+            ));
         }
         let check_update = input["check_update"].as_bool().unwrap_or(false);
         let apply_update = input["apply_update"].as_bool().unwrap_or(false);
@@ -1975,7 +2019,11 @@ impl PersonaTool {
     async fn handle_stats(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
-            return ToolResult::error("'name' is required to get agent stats");
+            return ToolResult::error(crate::errors::missing_param(
+                "stats",
+                "name",
+                "bot(resource: \"registry\", action: \"stats\", name: \"my-agent\")",
+            ));
         }
 
         // Resolve agent_id from DB
@@ -2089,7 +2137,11 @@ impl PersonaTool {
     async fn handle_setup(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
-            return ToolResult::error("'name' is required to set up an agent");
+            return ToolResult::error(crate::errors::missing_param(
+                "setup",
+                "name",
+                "bot(resource: \"registry\", action: \"setup\", name: \"my-agent\")",
+            ));
         }
 
         let db_agent = match self.store.list_agents(500, 0) {
@@ -2120,10 +2172,18 @@ impl PersonaTool {
         let prompt = input["prompt"].as_str().unwrap_or("");
 
         if prompt.is_empty() {
-            return ToolResult::error("'prompt' is required for delegate");
+            return ToolResult::error(crate::errors::missing_param(
+                "delegate",
+                "prompt",
+                "bot(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\")",
+            ));
         }
         if name.is_empty() && id.is_empty() {
-            return ToolResult::error("'name' or 'id' is required for delegate");
+            return ToolResult::error(crate::errors::missing_param(
+                "delegate",
+                "name",
+                "bot(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\")",
+            ));
         }
 
         // Resolve agent_id from registry or loader
@@ -2145,11 +2205,12 @@ impl PersonaTool {
             }
         } else {
             // Resolve by name — check registry first, then loader/DB
+            // Normalize slugs: "chief-of-staff" matches "Chief of Staff"
             let registry = self.agent_registry.read().await;
-            let lower = name.to_lowercase();
+            let normalized = name.to_lowercase().replace(['-', '_'], " ");
             let found = registry
                 .iter()
-                .find(|(_, v)| v.name.to_lowercase() == lower)
+                .find(|(_, v)| v.name.to_lowercase().replace(['-', '_'], " ") == normalized)
                 .map(|(k, _)| k.clone());
             drop(registry);
 
@@ -2236,7 +2297,10 @@ impl PersonaTool {
 
         let orch = match self.orchestrator.get() {
             Some(o) => o,
-            None => return ToolResult::error("Sub-agent orchestrator not ready"),
+            None => return ToolResult::error(
+                "Sub-agent orchestrator not ready. The server may still be starting up. \
+                 Try again in a moment, or do the work directly instead of delegating.",
+            ),
         };
 
         let req = crate::orchestrator::SpawnRequest {
@@ -2279,16 +2343,23 @@ impl PersonaTool {
 
     /// Find an agent by name across loader cache and DB.
     async fn find_agent(&self, name: &str) -> Option<napp::agent_loader::LoadedAgent> {
-        // Check loader cache first
+        // Check loader cache first (exact lowercase key)
         if let Some(agent) = self.agent_loader.get_by_name(name).await {
             return Some(agent);
+        }
+        // Try normalized form: "chief-of-staff" → "chief of staff"
+        let normalized = name.to_lowercase().replace(['-', '_'], " ");
+        if normalized != name.to_lowercase() {
+            if let Some(agent) = self.agent_loader.get_by_name(&normalized).await {
+                return Some(agent);
+            }
         }
 
         // Fallback: check DB (agents created via REST API or marketplace install)
         if let Ok(db_agents) = self.store.list_agents(500, 0) {
-            let lower = name.to_lowercase();
             for r in db_agents {
-                if r.name.to_lowercase() == lower || r.id == name {
+                let r_normalized = r.name.to_lowercase().replace(['-', '_'], " ");
+                if r_normalized == normalized || r.id == name {
                     let agent_def = napp::agent::AgentDef {
                         id: r.id.clone(),
                         name: r.name.clone(),
@@ -2666,6 +2737,7 @@ mod tests {
                 channel_id: None,
                 degraded: None,
                 soul: None,
+                rules: None,
             });
             // Agent with no config — should remain non-degraded
             reg.insert(
@@ -2678,6 +2750,7 @@ mod tests {
                     channel_id: None,
                     degraded: None,
                     soul: None,
+                    rules: None,
                 },
             );
         }
@@ -2737,6 +2810,7 @@ mod tests {
                     channel_id: None,
                     degraded: None,
                     soul: None,
+                    rules: None,
                 },
             );
         }

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::domain::DomainInput;
+use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use comm::CommPlugin;
@@ -34,13 +35,17 @@ impl LoopTool {
     /// (e.g. "the channel" / "the conversation") for the success message.
     fn share_file(&self, path: &str, target: &str) -> ToolResult {
         if path.is_empty() {
-            return ToolResult::error("path is required for share");
+            return ToolResult::error(errors::missing_param(
+                "share",
+                "path",
+                "loop(resource: \"channel\", action: \"share\", path: \"/absolute/path/to/file.pdf\")",
+            ));
         }
 
         let p = std::path::Path::new(path);
         if !p.is_absolute() {
             return ToolResult::error(format!(
-                "path must be absolute, got: {}",
+                "path must be absolute, got: {}. Do not retry — provide the full absolute path.",
                 path
             ));
         }
@@ -49,13 +54,13 @@ impl LoopTool {
             Ok(m) => m,
             Err(e) => {
                 return ToolResult::error(format!(
-                    "Cannot access file at {}: {}",
+                    "Cannot access file at {}: {}. Do not retry — this is a filesystem error.",
                     path, e
                 ));
             }
         };
         if !meta.is_file() {
-            return ToolResult::error(format!("Not a file: {}", path));
+            return ToolResult::error(format!("Not a file: {}. Do not retry — this is a filesystem error.", path));
         }
 
         let filename = p
@@ -77,10 +82,18 @@ impl LoopTool {
                 let text = input["text"].as_str().unwrap_or("");
 
                 if to.is_empty() {
-                    return ToolResult::error("to (recipient ID) is required for dm send");
+                    return ToolResult::error(errors::missing_param(
+                        "dm send",
+                        "to",
+                        "loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\")",
+                    ));
                 }
                 if text.is_empty() {
-                    return ToolResult::error("text is required for dm send");
+                    return ToolResult::error(errors::missing_param(
+                        "dm send",
+                        "text",
+                        "loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\")",
+                    ));
                 }
 
                 let msg = comm::CommMessage {
@@ -105,7 +118,7 @@ impl LoopTool {
 
                 match self.comm.send(msg).await {
                     Ok(()) => ToolResult::ok(format!("DM sent to {}", to)),
-                    Err(e) => ToolResult::error(format!("Failed to send DM: {}", e)),
+                    Err(e) => ToolResult::error(format!("Failed to send DM: {}. Do not retry — this is a communication error.", e)),
                 }
             }
             "share" => {
@@ -128,10 +141,18 @@ impl LoopTool {
                 let text = input["text"].as_str().unwrap_or("");
 
                 if channel_id.is_empty() {
-                    return ToolResult::error("channel_id is required for channel send");
+                    return ToolResult::error(errors::missing_param(
+                        "channel send",
+                        "channel_id",
+                        "loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\")",
+                    ));
                 }
                 if text.is_empty() {
-                    return ToolResult::error("text is required for channel send");
+                    return ToolResult::error(errors::missing_param(
+                        "channel send",
+                        "text",
+                        "loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\")",
+                    ));
                 }
 
                 let msg = comm::CommMessage {
@@ -156,39 +177,47 @@ impl LoopTool {
 
                 match self.comm.send(msg).await {
                     Ok(()) => ToolResult::ok(format!("Message sent to channel {}", channel_id)),
-                    Err(e) => ToolResult::error(format!("Failed to send to channel: {}", e)),
+                    Err(e) => ToolResult::error(format!("Failed to send to channel: {}. Do not retry — this is a communication error.", e)),
                 }
             }
             "messages" => {
                 let channel_id = input["channel_id"].as_str().unwrap_or("");
                 if channel_id.is_empty() {
-                    return ToolResult::error("channel_id is required for channel messages");
+                    return ToolResult::error(errors::missing_param(
+                        "channel messages",
+                        "channel_id",
+                        "loop(resource: \"channel\", action: \"messages\", channel_id: \"...\")",
+                    ));
                 }
                 let limit = input["limit"].as_u64().unwrap_or(50) as usize;
                 match self.comm.list_channel_messages(channel_id, limit).await {
                     Ok(msgs) => {
                         ToolResult::ok(serde_json::to_string_pretty(&msgs).unwrap_or_default())
                     }
-                    Err(e) => ToolResult::error(format!("Failed to list channel messages: {}", e)),
+                    Err(e) => ToolResult::error(format!("Failed to list channel messages: {}. Do not retry — this is a communication error.", e)),
                 }
             }
             "members" => {
                 let channel_id = input["channel_id"].as_str().unwrap_or("");
                 if channel_id.is_empty() {
-                    return ToolResult::error("channel_id is required for channel members");
+                    return ToolResult::error(errors::missing_param(
+                        "channel members",
+                        "channel_id",
+                        "loop(resource: \"channel\", action: \"members\", channel_id: \"...\")",
+                    ));
                 }
                 match self.comm.list_channel_members(channel_id).await {
                     Ok(members) => {
                         ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default())
                     }
-                    Err(e) => ToolResult::error(format!("Failed to list channel members: {}", e)),
+                    Err(e) => ToolResult::error(format!("Failed to list channel members: {}. Do not retry — this is a communication error.", e)),
                 }
             }
             "list" => match self.comm.list_channels().await {
                 Ok(channels) => {
                     ToolResult::ok(serde_json::to_string_pretty(&channels).unwrap_or_default())
                 }
-                Err(e) => ToolResult::error(format!("Failed to list channels: {}", e)),
+                Err(e) => ToolResult::error(format!("Failed to list channels: {}. Do not retry — this is a communication error.", e)),
             },
             "share" => {
                 let path = input["path"].as_str().unwrap_or("");
@@ -209,30 +238,38 @@ impl LoopTool {
                 Ok(loops) => {
                     ToolResult::ok(serde_json::to_string_pretty(&loops).unwrap_or_default())
                 }
-                Err(e) => ToolResult::error(format!("Failed to list loops: {}", e)),
+                Err(e) => ToolResult::error(format!("Failed to list loops: {}. Do not retry — this is a communication error.", e)),
             },
             "get" => {
                 let loop_id = input["loop_id"].as_str().unwrap_or("");
                 if loop_id.is_empty() {
-                    return ToolResult::error("loop_id is required for group get");
+                    return ToolResult::error(errors::missing_param(
+                        "group get",
+                        "loop_id",
+                        "loop(resource: \"group\", action: \"get\", loop_id: \"...\")",
+                    ));
                 }
                 match self.comm.get_loop_info(loop_id).await {
                     Ok(info) => {
                         ToolResult::ok(serde_json::to_string_pretty(&info).unwrap_or_default())
                     }
-                    Err(e) => ToolResult::error(format!("Failed to get loop info: {}", e)),
+                    Err(e) => ToolResult::error(format!("Failed to get loop info: {}. Do not retry — this is a communication error.", e)),
                 }
             }
             "members" => {
                 let loop_id = input["loop_id"].as_str().unwrap_or("");
                 if loop_id.is_empty() {
-                    return ToolResult::error("loop_id is required for group members");
+                    return ToolResult::error(errors::missing_param(
+                        "group members",
+                        "loop_id",
+                        "loop(resource: \"group\", action: \"members\", loop_id: \"...\")",
+                    ));
                 }
                 match self.comm.list_channel_members(loop_id).await {
                     Ok(members) => {
                         ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default())
                     }
-                    Err(e) => ToolResult::error(format!("Failed to list group members: {}", e)),
+                    Err(e) => ToolResult::error(format!("Failed to list group members: {}. Do not retry — this is a communication error.", e)),
                 }
             }
             _ => ToolResult::error(format!(
@@ -249,23 +286,31 @@ impl LoopTool {
             "subscribe" => {
                 let topic = input["topic"].as_str().unwrap_or("");
                 if topic.is_empty() {
-                    return ToolResult::error("topic is required for subscribe");
+                    return ToolResult::error(errors::missing_param(
+                        "subscribe",
+                        "topic",
+                        "loop(resource: \"topic\", action: \"subscribe\", topic: \"news\")",
+                    ));
                 }
 
                 match self.comm.subscribe(topic).await {
                     Ok(()) => ToolResult::ok(format!("Subscribed to topic: {}", topic)),
-                    Err(e) => ToolResult::error(format!("Failed to subscribe: {}", e)),
+                    Err(e) => ToolResult::error(format!("Failed to subscribe: {}. Do not retry — this is a communication error.", e)),
                 }
             }
             "unsubscribe" => {
                 let topic = input["topic"].as_str().unwrap_or("");
                 if topic.is_empty() {
-                    return ToolResult::error("topic is required for unsubscribe");
+                    return ToolResult::error(errors::missing_param(
+                        "unsubscribe",
+                        "topic",
+                        "loop(resource: \"topic\", action: \"unsubscribe\", topic: \"news\")",
+                    ));
                 }
 
                 match self.comm.unsubscribe(topic).await {
                     Ok(()) => ToolResult::ok(format!("Unsubscribed from topic: {}", topic)),
-                    Err(e) => ToolResult::error(format!("Failed to unsubscribe: {}", e)),
+                    Err(e) => ToolResult::error(format!("Failed to unsubscribe: {}. Do not retry — this is a communication error.", e)),
                 }
             }
             "list" | "status" => {
@@ -345,7 +390,7 @@ impl DynTool for LoopTool {
         Box::pin(async move {
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
+                Err(e) => return ToolResult::error(format!("Failed to parse input: {}. Do not retry — this is a serialization error.", e)),
             };
 
             let mut input = input;

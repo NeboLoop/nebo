@@ -1,0 +1,48 @@
+id: agents-delegate
+name: "Agent registry delegate — persona routing"
+description: |
+  The user asks to delegate a task to a named agent persona. The model must
+  use agent(resource: "registry", action: "delegate") — NOT agent(resource: "task", action: "spawn").
+  Delegation loads the target agent's full identity, plugins, and skills.
+  Spawning creates a blank sub-agent.
+target_component: agent
+
+conversation:
+  - role: user
+    content: "Ask the chief-of-staff agent to draft my weekly report."
+
+tool_config:
+  agent:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool
+      text: "Model calls 'agent' tool"
+      severity: critical
+    - id: correct-resource
+      text: "Model uses resource: 'registry'"
+      severity: critical
+    - id: correct-action
+      text: "Model uses action: 'delegate'"
+      severity: critical
+    - id: has-name
+      text: "Model passes name: 'chief-of-staff' or similar"
+      severity: critical
+    - id: has-prompt
+      text: "Model passes a prompt about drafting the weekly report"
+      severity: important
+    - id: no-spawn
+      text: "Model does NOT use resource: 'task', action: 'spawn' which creates a blank sub-agent"
+      severity: critical
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 2000
+  narrative: |
+    Single agent(resource: "registry", action: "delegate", name: "chief-of-staff",
+    prompt: "Draft my weekly report") call.

@@ -1,0 +1,16 @@
+name: error-handling
+fixtures:
+  # File operations — all error paths upgraded
+  - ../fixtures/tools/os-file-read.yaml
+  - ../fixtures/tools/os-file-write.yaml
+  - ../fixtures/tools/os-file-edit.yaml
+  - ../fixtures/tools/os-file-grep.yaml
+  - ../fixtures/tools/os-file-glob.yaml
+  # Shell — command semantics (grep exit 1, timeout, cwd, command-not-found)
+  - ../fixtures/tools/os-shell-path-not-found.yaml
+  - ../fixtures/tools/os-shell-permission-denied.yaml
+  - ../fixtures/tools/os-shell-command-fails.yaml
+  # Spiral prevention — should improve with better error signals
+  - ../fixtures/tools/os-file-discovery-spiral.yaml
+  - ../fixtures/tools/os-shell-retry-spiral.yaml
+  - ../fixtures/tools/os-file-search-loop.yaml

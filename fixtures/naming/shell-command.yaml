@@ -1,0 +1,26 @@
+id: naming-shell-command
+name: "Naming test — run a shell command"
+description: |
+  Baseline task: run a shell command. Measures first-call tool naming accuracy.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Run 'uptime' in the terminal and show me the output."
+
+prompt_assertions:
+  first_call:
+    - id: calls-any-shell
+      text: "Model's first call runs a shell command — either os(resource: 'shell', action: 'exec') or bash(command: '...') depending on convention"
+      severity: critical
+    - id: correct-command
+      text: "Model passes command containing 'uptime'"
+      severity: critical
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500

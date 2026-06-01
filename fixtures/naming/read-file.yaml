@@ -1,0 +1,30 @@
+id: naming-read-file
+name: "Naming test — read a file"
+description: |
+  Baseline task: read a file. Measures whether the model calls the correct
+  tool on first attempt. Run with --override to compare STRAP vs flat naming.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Read the file /tmp/nebo-naming-test.txt and tell me what's in it."
+
+prompt_assertions:
+  first_call:
+    - id: calls-any-read
+      text: "Model's first call reads the file — either os(resource: 'file', action: 'read') or file_read(path: '...') depending on convention"
+      severity: critical
+    - id: correct-path
+      text: "Model passes path: '/tmp/nebo-naming-test.txt'"
+      severity: critical
+    - id: no-shell-cat
+      text: "Model does NOT fall back to shell cat/head/tail"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500

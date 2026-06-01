@@ -1,0 +1,57 @@
+id: os-file-edit
+name: "OS file edit — correct tool routing and params"
+description: |
+  The user asks the agent to replace text in an existing file. The model must
+  use os(resource: "file", action: "edit") with old_string and new_string —
+  NOT hallucinate "edit" as a standalone tool or use shell sed.
+target_component: os
+
+setup:
+  - "mkdir -p /tmp/nebo-test && echo 'This is the draft version of the document.' > /tmp/nebo-test/notes.txt"
+teardown:
+  - "rm -f /tmp/nebo-test/notes.txt"
+
+conversation:
+  - role: user
+    content: "In the file /tmp/nebo-test/notes.txt, replace 'draft version' with 'final version'."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'os', not 'edit' or 'bash'"
+      severity: critical
+    - id: correct-resource
+      text: "Model uses resource: 'file'"
+      severity: critical
+    - id: correct-action
+      text: "Model uses action: 'read' or 'edit' (read-then-edit is acceptable)"
+      severity: critical
+    - id: has-old-string
+      text: "Model passes old_string: 'draft version' in the edit call"
+      severity: critical
+    - id: has-new-string
+      text: "Model passes new_string: 'final version' in the edit call"
+      severity: critical
+  recovery:
+    - id: no-sed-fallback
+      text: "Model does NOT fall back to shell sed command"
+      severity: important
+  cost:
+    - id: max-two-calls
+      text: "Task completes in no more than 2 tool calls (read + edit is acceptable)"
+      severity: critical
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 3000
+  narrative: |
+    os(resource: "file", action: "read") then os(resource: "file", action: "edit",
+    path: "/tmp/nebo-test/notes.txt", old_string: "draft version",
+    new_string: "final version"). Reading before editing is cautious and correct.

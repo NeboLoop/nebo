@@ -1,0 +1,42 @@
+id: web-browser-interaction
+name: "Web — browser for interactive pages"
+description: |
+  The user wants to interact with a webpage (click, fill, read dynamic content).
+  The model must use browser actions (navigate, read_page, click) — NOT fetch,
+  which won't execute JavaScript or render the page.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Go to example.com and tell me what the main heading says."
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-navigate
+      text: "Model uses web(action: 'navigate') to open the page"
+      severity: critical
+    - id: reads-page
+      text: "Model calls web(action: 'read_page') after navigating"
+      severity: critical
+    - id: no-fetch
+      text: "Model does NOT use web(action: 'fetch') when the task requires seeing the rendered page"
+      severity: important
+  recovery:
+    - id: scrolls-if-needed
+      text: "If the heading isn't visible, model scrolls down before giving up"
+      severity: important
+  cost:
+    - id: max-three-calls
+      text: "Task completes in 2-3 tool calls (navigate + read_page, maybe scroll)"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 3000
+  narrative: |
+    web(action: "navigate", url: "https://example.com") → web(action: "read_page")
+    → report the heading.

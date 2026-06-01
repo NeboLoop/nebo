@@ -1,0 +1,10 @@
+name: naming-strap
+description: "Naming convention test — STRAP baseline (no override)"
+fixtures:
+  - ../fixtures/naming/read-file.yaml
+  - ../fixtures/naming/write-file.yaml
+  - ../fixtures/naming/edit-file.yaml
+  - ../fixtures/naming/grep-file.yaml
+  - ../fixtures/naming/shell-command.yaml
+  - ../fixtures/naming/web-search.yaml
+  - ../fixtures/naming/delegate-agent.yaml

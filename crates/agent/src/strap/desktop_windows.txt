@@ -43,4 +43,9 @@ USE THIS when: user wants to interact with the GUI — click, type, screenshot, 
 - os(resource: "capture", action: "capture", quality: "high") — Capture at full resolution (options: low/medium/high)
 - os(resource: "capture", action: "see", app: "Notepad") — Capture specific app with annotated element IDs
 - os(resource: "tts", action: "speak", text: "Hello") — Text-to-speech
+Speed — chain actions from one snapshot:
+- After capture(action: see), you can chain MULTIPLE input actions from the same snapshot in one response — they share element IDs.
+- Element IDs remain valid until the next capture(action: see). Chain as many inputs as you can before re-seeing.
+- Only re-see when you need to verify the result or the UI may have changed significantly.
+
 Note: Menu bar automation works best with classic Win32 apps (Notepad, WordPad, Office). UWP and Electron apps may have limited menu access.

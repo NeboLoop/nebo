@@ -1,0 +1,13 @@
+### publisher — Publish to NeboAI Marketplace
+USE THIS when: user wants to publish a skill or agent they've created to the NeboAI marketplace.
+Requires approval for every action.
+
+- publisher(action: "publish", type: "skill", name: "my-skill", version: "1.0.0", visibility: "private") — Publish a skill
+- publisher(action: "publish", type: "agent", name: "my-agent", version: "1.0.0", visibility: "public") — Publish an agent
+- publisher(action: "list") — List your published artifacts
+- publisher(action: "status", id: "uuid") — Check review status of a published artifact
+
+Visibility levels:
+- "private" (default) — only you can see and install it
+- "loop" — shared with your loops (groups)
+- "public" — submitted to the NeboAI marketplace for review. Automatically triggers the review process.

@@ -1,0 +1,48 @@
+id: os-shell-path-not-found
+name: "OS shell — path not found recovery"
+description: |
+  The user asks to read a file that doesn't exist. The model should get a
+  clear error and recover gracefully — no retries, no hallucinated content.
+  This is the degenerate loop generator: model retries the same failing
+  command, burning tokens and polluting context.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Can you read the file at /tmp/nebo-test-nonexistent-xyz.txt and summarize it for me?"
+
+tool_config:
+  os:
+    enabled: true
+    response_budget:
+      max_chars: 500
+      rationale: "Error messages should be concise"
+
+prompt_assertions:
+  first_call:
+    - id: uses-file-read
+      text: "Model uses os(resource: 'file', action: 'read') not shell cat"
+      severity: critical
+    - id: no-hallucination
+      text: "Model does not invent file contents when the file doesn't exist"
+      severity: critical
+  recovery:
+    - id: no-retry
+      text: "Model does not retry the same read after getting file-not-found"
+      severity: critical
+    - id: no-shell-fallback
+      text: "Model does not try shell cat as a fallback after file read fails"
+      severity: important
+    - id: graceful-response
+      text: "Model tells the user the file wasn't found and offers to help"
+      severity: important
+  cost:
+    - id: max-two-calls
+      text: "Task completes in 1-2 tool calls, not more"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 2000
+  narrative: |
+    Single file read, get error, tell user. No retries.

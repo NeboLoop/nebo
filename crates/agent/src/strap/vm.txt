@@ -1,0 +1,14 @@
+### vm — Isolated Linux VM
+USE THIS when: user needs a toolchain not available on the host (Go, gcc, Docker, specific Python/Node versions) or needs a clean build environment. Do NOT use for tasks that work fine on the host — use os for shell, file ops, desktop automation, browser, plugins, skills.
+Requires approval for every action.
+
+- vm(action: "exec", command: "go build ./...") — Run a shell command inside the VM
+- vm(action: "exec", command: "make test", timeout: 300) — Run with custom timeout (default 120s)
+- vm(action: "writeFile", path: "/workspace/main.go", content: "...") — Write a file into the VM
+- vm(action: "readFile", path: "/workspace/output.log") — Read a file from the VM
+- vm(action: "copyOut", paths: ["/workspace/build/binary"], dest: "/Users/me/Desktop") — Copy files from VM to host
+- vm(action: "list", path: "/workspace") — List directory contents in the VM
+- vm(action: "status") — Check if the VM is running
+- vm(action: "stop") — Shut down the VM
+
+The VM boots lazily on first use. Each exec creates a fresh session. Use writeFile to stage source code, exec to build/test, copyOut to retrieve artifacts.

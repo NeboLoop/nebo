@@ -1,0 +1,48 @@
+id: os-file-read
+name: "OS file read — correct tool routing"
+description: |
+  The user asks the agent to read a file. The model must use
+  os(resource: "file", action: "read") — NOT hallucinate "read", "file",
+  "bash", or "shell cat". This is the highest-volume tool call in the system.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Read the file at /tmp/nebo-config.txt and tell me what it says."
+
+tool_config:
+  os:
+    enabled: true
+    response_budget:
+      max_chars: 500
+      rationale: "File contents should be returned concisely"
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'os', not 'read', 'file', 'bash', 'shell', or 'system'"
+      severity: critical
+    - id: correct-resource
+      text: "Model uses resource: 'file', not resource: 'shell'"
+      severity: critical
+    - id: correct-action
+      text: "Model uses action: 'read'"
+      severity: critical
+    - id: correct-path
+      text: "Model passes path: '/tmp/nebo-config.txt' exactly"
+      severity: critical
+  recovery:
+    - id: no-shell-fallback
+      text: "Model does NOT fall back to os(resource: 'shell', action: 'exec', command: 'cat /tmp/nebo-config.txt') after a successful file read"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in exactly 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single os(resource: "file", action: "read", path: "/tmp/nebo-config.txt") call.
+    Model reads the response and reports the contents to the user.

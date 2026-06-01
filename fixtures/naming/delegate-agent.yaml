@@ -1,0 +1,35 @@
+id: naming-delegate-agent
+name: "Naming test — delegate to a named agent"
+description: |
+  Baseline task: delegate work to a named agent. Measures first-call tool naming accuracy.
+target_component: agent
+
+conversation:
+  - role: user
+    content: "Ask the chief-of-staff agent to check my calendar for today."
+
+prompt_assertions:
+  first_call:
+    - id: calls-agent
+      text: "Model calls 'agent' tool"
+      severity: critical
+    - id: uses-registry-resource
+      text: "Model uses resource: 'registry' (not 'task')"
+      severity: critical
+    - id: uses-delegate-action
+      text: "Model uses action: 'delegate'"
+      severity: critical
+    - id: has-name
+      text: "Model passes name: 'chief-of-staff'"
+      severity: critical
+    - id: no-spawn
+      text: "Model does NOT use action: 'spawn'"
+      severity: critical
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 2000

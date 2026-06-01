@@ -5,6 +5,7 @@ use grep_regex::RegexMatcherBuilder;
 use grep_searcher::sinks::Lossy;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 
+use crate::errors;
 use crate::registry::ToolResult;
 
 // ── Dangerous path deny list ───────────────────────────────────────
@@ -77,11 +78,11 @@ impl GrepTool {
         } else if p.is_file() {
             vec![path.to_string()]
         } else {
-            return ToolResult::error(format!("Error: {} not found", path));
+            return ToolResult::error(errors::path_not_found(path));
         };
 
         if files.is_empty() {
-            return ToolResult::ok(format!("No matches found for pattern: {}", pattern));
+            return ToolResult::ok(errors::no_grep_results(pattern, path));
         }
 
         // Resolve the search base for relative path display.
@@ -172,7 +173,7 @@ impl GrepTool {
         }
 
         if match_count == 0 {
-            return ToolResult::ok(format!("No matches found for pattern: {}", pattern));
+            return ToolResult::ok(errors::no_grep_results(pattern, &search_base.display().to_string()));
         }
 
         // Apply offset/limit on the formatted output lines. We need to
@@ -239,7 +240,7 @@ impl GrepTool {
         }
 
         if matched_files.is_empty() {
-            return ToolResult::ok(format!("No matches found for pattern: {}", pattern));
+            return ToolResult::ok(errors::no_grep_results(pattern, &search_base.display().to_string()));
         }
 
         // Sort by mtime descending (newest first).
@@ -304,7 +305,7 @@ impl GrepTool {
         }
 
         if counts.is_empty() {
-            return ToolResult::ok(format!("No matches found for pattern: {}", pattern));
+            return ToolResult::ok(errors::no_grep_results(pattern, &search_base.display().to_string()));
         }
 
         let total_files = counts.len();

@@ -73,7 +73,11 @@ impl DynTool for SpotlightTool {
 async fn handle_search(input: &serde_json::Value) -> ToolResult {
     let query = input["query"].as_str().unwrap_or("");
     if query.is_empty() {
-        return ToolResult::error("'query' parameter is required");
+        return ToolResult::error(crate::errors::missing_param(
+            "search",
+            "query",
+            "desktop(resource: \"search\", action: \"files\", query: \"budget report 2024\")",
+        ));
     }
     let limit = input["limit"].as_i64().unwrap_or(50) as usize;
     let dir = input["dir"].as_str().unwrap_or("");
@@ -91,7 +95,7 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let results: Vec<&str> = text.lines().take(limit).collect();
                 if results.is_empty() {
-                    ToolResult::ok("No files found")
+                    ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(action: \"glob\", pattern: \"*.ext\", path: \".\")")
                 } else {
                     ToolResult::ok(format!(
                         "Found {} results:\n{}",
@@ -123,7 +127,7 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                 let text = String::from_utf8_lossy(&out.stdout);
                 let results: Vec<&str> = text.lines().collect();
                 if results.is_empty() {
-                    ToolResult::ok("No files found")
+                    ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(action: \"glob\", pattern: \"*.ext\", path: \".\")")
                 } else {
                     ToolResult::ok(format!(
                         "Found {} results:\n{}",
@@ -144,7 +148,7 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                         let text = String::from_utf8_lossy(&out.stdout);
                         let results: Vec<&str> = text.lines().take(limit).collect();
                         if results.is_empty() {
-                            ToolResult::ok("No files found")
+                            ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(action: \"glob\", pattern: \"*.ext\", path: \".\")")
                         } else {
                             ToolResult::ok(format!(
                                 "Found {} results:\n{}",
@@ -181,7 +185,7 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let results: Vec<&str> = text.lines().take(limit).collect();
                 if results.is_empty() {
-                    ToolResult::ok("No files found")
+                    ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(action: \"glob\", pattern: \"*.ext\", path: \".\")")
                 } else {
                     ToolResult::ok(format!(
                         "Found {} results:\n{}",

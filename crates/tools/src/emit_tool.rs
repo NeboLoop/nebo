@@ -56,7 +56,11 @@ impl DynTool for EmitTool {
         Box::pin(async move {
             let source = match input["source"].as_str() {
                 Some(s) if !s.is_empty() => s.to_string(),
-                _ => return ToolResult::error("source is required"),
+                _ => return ToolResult::error(crate::errors::missing_param(
+                    "emit",
+                    "source",
+                    "emit(source: \"my-workflow\", payload: {\"key\": \"value\"})",
+                )),
             };
 
             let payload = input

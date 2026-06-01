@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::domain::DomainInput;
 use crate::origin::ToolContext;
@@ -11,6 +12,8 @@ const LARGE_OUTPUT_THRESHOLD: usize = 8_000;
 /// Default preview length (chars) included in the compact metadata response.
 const DEFAULT_PREVIEW_CHARS: usize = 1_200;
 
+const MAX_BROWSER_ACTIONS_PER_SESSION: u32 = 20;
+
 /// Callback type for broadcasting events to connected WebSocket clients.
 pub type Broadcaster = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
@@ -20,6 +23,7 @@ pub struct WebTool {
     browser: Option<Arc<browser::Manager>>,
     store: Option<Arc<db::Store>>,
     broadcaster: Option<Broadcaster>,
+    browser_action_counts: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl WebTool {
@@ -35,6 +39,7 @@ impl WebTool {
             browser: None,
             store: None,
             broadcaster: None,
+            browser_action_counts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -107,7 +112,13 @@ impl WebTool {
     async fn handle_http(&self, input: &serde_json::Value) -> ToolResult {
         let url = match input.get("url").and_then(|v| v.as_str()) {
             Some(u) => u,
-            None => return ToolResult::error("url is required for HTTP requests"),
+            None => {
+                return ToolResult::error(crate::errors::missing_param(
+                    "fetch",
+                    "url",
+                    "web(action: \"fetch\", url: \"https://example.com\")",
+                ))
+            }
         };
 
         // SSRF protection: block private IPs
@@ -123,12 +134,22 @@ impl WebTool {
         if action == "sanitize" {
             let resp = match self.client.get(url).send().await {
                 Ok(r) => r,
-                Err(e) => return ToolResult::error(format!("HTTP request failed: {}", e)),
+                Err(e) => {
+                    return ToolResult::error(format!(
+                        "HTTP request failed for {}: {}. Check that the URL is correct and the server is reachable.",
+                        url, e
+                    ))
+                }
             };
             let status = resp.status().as_u16();
             let html = match resp.text().await {
                 Ok(t) => t,
-                Err(e) => return ToolResult::error(format!("Failed to read response body: {}", e)),
+                Err(e) => {
+                    return ToolResult::error(format!(
+                        "Failed to read response body from {} (status {}): {}",
+                        url, status, e
+                    ))
+                }
             };
             let clean = sanitize_html(&html);
             let max_chars = input
@@ -239,17 +260,29 @@ impl WebTool {
                             method, url, status, display_body
                         ))
                     }
-                    Err(e) => ToolResult::error(format!("Failed to read response body: {}", e)),
+                    Err(e) => ToolResult::error(format!(
+                        "Failed to read response body from {}: {}",
+                        url, e
+                    )),
                 }
             }
-            Err(e) => ToolResult::error(format!("HTTP request failed: {}", e)),
+            Err(e) => ToolResult::error(format!(
+                "HTTP request failed for {}: {}. Check that the URL is correct and the server is reachable.",
+                url, e
+            )),
         }
     }
 
     async fn handle_search(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
         let query = match input.get("query").and_then(|v| v.as_str()) {
             Some(q) => q,
-            None => return ToolResult::error("query is required for search"),
+            None => {
+                return ToolResult::error(crate::errors::missing_param(
+                    "search",
+                    "query",
+                    "web(action: \"search\", query: \"rust async tutorial\")",
+                ))
+            }
         };
 
         // 1. Try BYOK API providers (check auth_profiles for search-* providers)
@@ -545,6 +578,24 @@ impl WebTool {
 
     async fn handle_browser(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Circuit breaker: cap browser actions per session to prevent runaway spirals.
+        // "status" is read-only and doesn't count.
+        if action != "status" {
+            let n = {
+                let mut counts = self.browser_action_counts.lock().unwrap();
+                let count = counts.entry(session_id.to_string()).or_insert(0);
+                *count += 1;
+                *count
+            };
+            if n > MAX_BROWSER_ACTIONS_PER_SESSION {
+                return ToolResult::error(format!(
+                    "Browser action limit reached. {} actions taken this session. \
+                     Report your progress to the user and ask how to proceed.",
+                    n - 1
+                ));
+            }
+        }
 
         let manager = match &self.browser {
             Some(m) => m,

@@ -72,32 +72,52 @@ impl DynTool for AppTool {
                 "list" => handle_list().await,
                 "launch" => {
                     if app.is_empty() {
-                        return ToolResult::error("'app' parameter required for launch");
+                        return ToolResult::error(crate::errors::missing_param(
+                            "launch",
+                            "app",
+                            "app(action: \"launch\", app: \"Safari\")",
+                        ));
                     }
                     handle_launch(app).await
                 }
                 "quit" => {
                     if app.is_empty() {
-                        return ToolResult::error("'app' parameter required for quit");
+                        return ToolResult::error(crate::errors::missing_param(
+                            "quit",
+                            "app",
+                            "app(action: \"quit\", app: \"Safari\")",
+                        ));
                     }
                     handle_quit(app).await
                 }
                 "quit_all" => handle_quit_all().await,
                 "activate" => {
                     if app.is_empty() {
-                        return ToolResult::error("'app' parameter required for activate");
+                        return ToolResult::error(crate::errors::missing_param(
+                            "activate",
+                            "app",
+                            "app(action: \"activate\", app: \"Safari\")",
+                        ));
                     }
                     handle_activate(app).await
                 }
                 "hide" => {
                     if app.is_empty() {
-                        return ToolResult::error("'app' parameter required for hide");
+                        return ToolResult::error(crate::errors::missing_param(
+                            "hide",
+                            "app",
+                            "app(action: \"hide\", app: \"Safari\")",
+                        ));
                     }
                     handle_hide(app).await
                 }
                 "info" => {
                     if app.is_empty() {
-                        return ToolResult::error("'app' parameter required for info");
+                        return ToolResult::error(crate::errors::missing_param(
+                            "info",
+                            "app",
+                            "app(action: \"info\", app: \"Safari\")",
+                        ));
                     }
                     handle_info(app).await
                 }

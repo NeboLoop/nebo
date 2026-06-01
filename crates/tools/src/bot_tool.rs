@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::DomainInput;
+use crate::errors;
 use crate::orchestrator::OrchestratorHandle;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
@@ -38,13 +39,14 @@ pub struct HybridSearchResult {
 }
 
 /// AgentTool is the agent's self-management domain tool.
-/// Resources: memory, task, session, context, advisors, ask.
+/// Resources: memory, task, session, context, advisors, ask, registry.
 pub struct AgentTool {
     store: Arc<Store>,
     orchestrator: OrchestratorHandle,
     advisor_runner: Option<Arc<dyn AdvisorDeliberator>>,
     hybrid_searcher: Option<Arc<dyn HybridSearcher>>,
     run_querier: RunQuerierHandle,
+    persona: Option<crate::agent_tool::PersonaTool>,
 }
 
 impl AgentTool {
@@ -55,7 +57,13 @@ impl AgentTool {
             advisor_runner: None,
             hybrid_searcher: None,
             run_querier: crate::run_querier::new_handle(),
+            persona: None,
         }
+    }
+
+    pub fn with_persona(mut self, persona: crate::agent_tool::PersonaTool) -> Self {
+        self.persona = Some(persona);
+        self
     }
 
     pub fn with_advisor_runner(mut self, runner: Arc<dyn AdvisorDeliberator>) -> Self {
@@ -84,6 +92,8 @@ impl AgentTool {
             "reset" | "compact" | "summary" => "context",
             "deliberate" => "advisors",
             "prompt" | "confirm" | "select" => "ask",
+            "delegate" | "activate" | "deactivate" | "info" | "install" | "setup" | "reload"
+            | "repair" | "stats" => "registry",
             _ => "",
         }
     }
@@ -98,7 +108,11 @@ impl AgentTool {
                 let namespace = input["namespace"].as_str().unwrap_or("tacit/general");
 
                 if key.is_empty() || value.is_empty() {
-                    return ToolResult::error("key and value are required");
+                    return ToolResult::error(errors::missing_param(
+                        "store",
+                        "key and value",
+                        "bot(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\")",
+                    ));
                 }
 
                 debug!(
@@ -152,14 +166,21 @@ impl AgentTool {
                             namespace, key, value
                         ))
                     }
-                    Err(e) => ToolResult::error(format!("Failed to store memory: {}", e)),
+                    Err(e) => ToolResult::error(format!(
+                        "Failed to store memory [{}] {}: {}. Do not retry immediately — this is a database error, not a parameter issue.",
+                        namespace, key, e
+                    )),
                 }
             }
             "recall" => {
                 let key = input["key"].as_str().unwrap_or("");
                 let namespace = input["namespace"].as_str().unwrap_or("tacit/general");
                 if key.is_empty() {
-                    return ToolResult::error("key is required");
+                    return ToolResult::error(errors::missing_param(
+                        "recall",
+                        "key",
+                        "bot(resource: \"memory\", action: \"recall\", key: \"user/name\")",
+                    ));
                 }
 
                 debug!(
@@ -226,7 +247,10 @@ impl AgentTool {
                             Err(_) => ToolResult::ok(format!("No memory found for key: {}", key)),
                         }
                     }
-                    Err(e) => ToolResult::error(format!("Failed to recall memory: {}", e)),
+                    Err(e) => ToolResult::error(format!(
+                        "Failed to recall memory [{}] {}: {}. Do not retry — this is a database error.",
+                        namespace, key, e
+                    )),
                 }
             }
             "search" => {
@@ -234,7 +258,11 @@ impl AgentTool {
                 let limit = input["limit"].as_i64().unwrap_or(20) as usize;
 
                 if query.is_empty() {
-                    return ToolResult::error("query is required for memory search");
+                    return ToolResult::error(errors::missing_param(
+                        "search",
+                        "query",
+                        "bot(resource: \"memory\", action: \"search\", query: \"project deadlines\")",
+                    ));
                 }
 
                 // Use hybrid search (FTS5 + vector) when available
@@ -279,7 +307,10 @@ impl AgentTool {
                             ))
                         }
                     }
-                    Err(e) => ToolResult::error(format!("Memory search failed: {}", e)),
+                    Err(e) => ToolResult::error(format!(
+                        "Memory search failed: {}. Do not retry — this is a database error. Try a different query or use action: \"list\" instead.",
+                        e
+                    )),
                 }
             }
             "list" => {
@@ -319,7 +350,11 @@ impl AgentTool {
                 let namespace = input["namespace"].as_str().unwrap_or("tacit/general");
 
                 if key.is_empty() {
-                    return ToolResult::error("key is required");
+                    return ToolResult::error(errors::missing_param(
+                        "delete",
+                        "key",
+                        "bot(resource: \"memory\", action: \"delete\", key: \"user/name\")",
+                    ));
                 }
                 // Delete scoped to current user/agent only — never cross-agent
                 match self
@@ -336,7 +371,11 @@ impl AgentTool {
             "clear" => {
                 let namespace = input["namespace"].as_str().unwrap_or("");
                 if namespace.is_empty() {
-                    return ToolResult::error("namespace is required to clear memories");
+                    return ToolResult::error(errors::missing_param(
+                        "clear",
+                        "namespace",
+                        "bot(resource: \"memory\", action: \"clear\", namespace: \"tacit/general\")",
+                    ));
                 }
                 match self
                     .store
@@ -395,12 +434,19 @@ impl AgentTool {
                     .unwrap_or_default();
 
                 if task_prompt.is_empty() {
-                    return ToolResult::error("prompt is required for task spawn");
+                    return ToolResult::error(errors::missing_param(
+                        "spawn",
+                        "prompt",
+                        "bot(resource: \"task\", action: \"spawn\", prompt: \"Research competitor pricing\")",
+                    ));
                 }
 
                 let orch = match self.orchestrator.get() {
                     Some(o) => o,
-                    None => return ToolResult::error("Sub-agent orchestrator not ready"),
+                    None => return ToolResult::error(
+                        "Sub-agent orchestrator not ready. The server may still be starting up. \
+                         Try again in a moment, or do the work directly instead of delegating to a sub-agent.",
+                    ),
                 };
 
                 let req = crate::orchestrator::SpawnRequest {
@@ -442,23 +488,35 @@ impl AgentTool {
             "spawn_parallel" => {
                 let tasks = match input["tasks"].as_array() {
                     Some(arr) => arr,
-                    None => return ToolResult::error("tasks array is required for spawn_parallel"),
+                    None => return ToolResult::error(errors::missing_param(
+                        "spawn_parallel",
+                        "tasks",
+                        "bot(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
+                    )),
                 };
 
                 if tasks.is_empty() {
-                    return ToolResult::error("tasks array must not be empty");
+                    return ToolResult::error(
+                        "tasks array must not be empty. Provide at least one task with a prompt.\n\
+                         Example: bot(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
+                    );
                 }
 
                 let orch = match self.orchestrator.get() {
                     Some(o) => o,
-                    None => return ToolResult::error("Sub-agent orchestrator not ready"),
+                    None => return ToolResult::error(
+                        "Sub-agent orchestrator not ready. The server may still be starting up. \
+                         Try again in a moment, or spawn tasks individually with action: \"spawn\".",
+                    ),
                 };
 
                 let stream_tx = match ctx.stream_tx {
                     Some(ref tx) => tx.clone(),
                     None => {
                         return ToolResult::error(
-                            "Stream sender not available for progress events",
+                            "Stream sender not available for progress events. \
+                             This usually means the request came from a non-streaming context. \
+                             Use action: \"spawn\" for individual tasks instead of spawn_parallel.",
                         );
                     }
                 };
@@ -525,12 +583,19 @@ impl AgentTool {
             "orchestrate" => {
                 let task_prompt = input["prompt"].as_str().unwrap_or("");
                 if task_prompt.is_empty() {
-                    return ToolResult::error("prompt is required for orchestration");
+                    return ToolResult::error(errors::missing_param(
+                        "orchestrate",
+                        "prompt",
+                        "bot(resource: \"task\", action: \"orchestrate\", prompt: \"Plan and execute a market analysis\")",
+                    ));
                 }
 
                 let orch = match self.orchestrator.get() {
                     Some(o) => o,
-                    None => return ToolResult::error("Sub-agent orchestrator not ready"),
+                    None => return ToolResult::error(
+                        "Sub-agent orchestrator not ready. The server may still be starting up. \
+                         Try again in a moment, or break the work into individual spawn calls.",
+                    ),
                 };
 
                 match orch
@@ -563,7 +628,11 @@ impl AgentTool {
             "cancel" => {
                 let task_id = input["task_id"].as_str().unwrap_or("");
                 if task_id.is_empty() {
-                    return ToolResult::error("task_id is required for cancel");
+                    return ToolResult::error(errors::missing_param(
+                        "cancel",
+                        "task_id",
+                        "bot(resource: \"task\", action: \"cancel\", task_id: \"abc123\")",
+                    ));
                 }
 
                 let orch = match self.orchestrator.get() {
@@ -601,7 +670,11 @@ impl AgentTool {
                             lines.join("\n")
                         ));
                     }
-                    return ToolResult::error("task_id is required, or orchestrator not ready");
+                    return ToolResult::error(errors::missing_param(
+                        "status",
+                        "task_id",
+                        "bot(resource: \"task\", action: \"status\", task_id: \"abc123\")",
+                    ));
                 }
 
                 if let Some(orch) = self.orchestrator.get() {
@@ -636,7 +709,11 @@ impl AgentTool {
             "create" => {
                 let subject = input["subject"].as_str().unwrap_or("");
                 if subject.is_empty() {
-                    return ToolResult::error("subject is required for task creation");
+                    return ToolResult::error(errors::missing_param(
+                        "create",
+                        "subject",
+                        "bot(resource: \"task\", action: \"create\", subject: \"Draft the quarterly report\")",
+                    ));
                 }
                 let description = input["description"]
                     .as_str()
@@ -651,13 +728,19 @@ impl AgentTool {
             "update" => {
                 let task_id = input["task_id"].as_str().unwrap_or("");
                 if task_id.is_empty() {
-                    return ToolResult::error("task_id is required");
+                    return ToolResult::error(errors::missing_param(
+                        "update",
+                        "task_id",
+                        "bot(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")",
+                    ));
                 }
                 let status = input["status"].as_str().unwrap_or("");
                 if status.is_empty() {
-                    return ToolResult::error(
-                        "status is required (pending, in_progress, completed, failed)",
-                    );
+                    return ToolResult::error(errors::missing_param(
+                        "update",
+                        "status",
+                        "bot(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")\nValid statuses: pending, in_progress, completed, failed",
+                    ));
                 }
                 let output = input["output"].as_str();
                 let error = input["error"].as_str();
@@ -699,7 +782,11 @@ impl AgentTool {
             "get" => {
                 let task_id = input["task_id"].as_str().unwrap_or("");
                 if task_id.is_empty() {
-                    return ToolResult::error("task_id is required");
+                    return ToolResult::error(errors::missing_param(
+                        "get",
+                        "task_id",
+                        "bot(resource: \"task\", action: \"get\", task_id: \"1\")",
+                    ));
                 }
                 match self.store.get_task_item(task_id) {
                     Ok(Some(t)) => {
@@ -720,7 +807,11 @@ impl AgentTool {
             "delete" => {
                 let task_id = input["task_id"].as_str().unwrap_or("");
                 if task_id.is_empty() {
-                    return ToolResult::error("task_id is required");
+                    return ToolResult::error(errors::missing_param(
+                        "delete",
+                        "task_id",
+                        "bot(resource: \"task\", action: \"delete\", task_id: \"1\")",
+                    ));
                 }
                 match self
                     .store
@@ -804,7 +895,11 @@ impl AgentTool {
             "query" => {
                 let query_text = input["query"].as_str().unwrap_or("");
                 if query_text.is_empty() {
-                    return ToolResult::error("query is required for cross-session search");
+                    return ToolResult::error(errors::missing_param(
+                        "query",
+                        "query",
+                        "bot(resource: \"session\", action: \"query\", query: \"meeting notes\")",
+                    ));
                 }
                 let limit = input["limit"].as_i64().unwrap_or(20) as usize;
 
@@ -927,9 +1022,11 @@ impl AgentTool {
             "deliberate" => {
                 let task = input["task"].as_str().unwrap_or("");
                 if task.is_empty() {
-                    return ToolResult::error(
-                        "task description is required for advisor deliberation",
-                    );
+                    return ToolResult::error(errors::missing_param(
+                        "deliberate",
+                        "task",
+                        "bot(resource: \"advisors\", action: \"deliberate\", task: \"Should we use PostgreSQL or SQLite?\")",
+                    ));
                 }
 
                 // Use the advisor runner if available (real LLM deliberation)
@@ -1032,7 +1129,11 @@ impl AgentTool {
             "prompt" | "confirm" | "select" => {
                 let text = input["text"].as_str().unwrap_or("");
                 if text.is_empty() {
-                    return ToolResult::error("text is required for ask operations");
+                    return ToolResult::error(errors::missing_param(
+                        action,
+                        "text",
+                        "bot(resource: \"ask\", action: \"prompt\", text: \"What would you like to do?\")",
+                    ));
                 }
                 let options = input
                     .get("options")
@@ -1064,7 +1165,9 @@ impl AgentTool {
                         .to_string(),
                     ),
                     None => ToolResult::error(
-                        "Ask prompt not supported in this context (no UI connected)",
+                        "Ask prompt not supported in this context — no UI is connected. \
+                         This happens when running as a sub-agent or in a non-interactive channel. \
+                         Make a reasonable decision and proceed, or explain your options to the user in your response.",
                     ),
                 }
             }
@@ -1083,7 +1186,9 @@ impl AgentTool {
 
         let querier = match self.run_querier.get() {
             Some(q) => q,
-            None => return ToolResult::error("Run registry not available"),
+            None => return ToolResult::error(
+                "Run registry not available. The server may still be starting up. Try again in a moment.",
+            ),
         };
 
         // Derive caller's entity_id from session_key.
@@ -1129,7 +1234,11 @@ impl AgentTool {
             "cancel_run" => {
                 let run_id = input["run_id"].as_str().unwrap_or("");
                 if run_id.is_empty() {
-                    return ToolResult::error("run_id is required for cancel_run");
+                    return ToolResult::error(errors::missing_param(
+                        "cancel_run",
+                        "run_id",
+                        "bot(resource: \"runs\", action: \"cancel_run\", run_id: \"abc123\")",
+                    ));
                 }
                 match querier.cancel_run(run_id, &caller_entity_id).await {
                     Ok(true) => ToolResult::ok(format!("Cancelled run {}", run_id)),
@@ -1151,7 +1260,11 @@ impl AgentTool {
             "research" => {
                 let query = input["query"].as_str().unwrap_or("");
                 if query.is_empty() {
-                    return ToolResult::error("query is required for research");
+                    return ToolResult::error(errors::missing_param(
+                        "research",
+                        "query",
+                        "bot(resource: \"research\", action: \"research\", query: \"What are the latest trends in AI?\")",
+                    ));
                 }
 
                 let data_dir = match config::data_dir() {
@@ -1180,13 +1293,21 @@ impl AgentTool {
             "submit_findings" => {
                 let subtask_id = input["subtask_id"].as_str().unwrap_or("");
                 if subtask_id.is_empty() {
-                    return ToolResult::error("subtask_id is required for submit_findings");
+                    return ToolResult::error(errors::missing_param(
+                        "submit_findings",
+                        "subtask_id",
+                        "bot(resource: \"research\", action: \"submit_findings\", subtask_id: \"sub-1\", findings: [{\"claim\": \"...\", \"source_url\": \"...\"}])",
+                    ));
                 }
 
                 // Parse findings from JSON
                 let findings_arr = match input["findings"].as_array() {
                     Some(arr) => arr,
-                    None => return ToolResult::error("findings array is required"),
+                    None => return ToolResult::error(errors::missing_param(
+                        "submit_findings",
+                        "findings",
+                        "bot(resource: \"research\", action: \"submit_findings\", subtask_id: \"sub-1\", findings: [{\"claim\": \"...\", \"source_url\": \"...\", \"confidence\": 0.9}])",
+                    )),
                 };
 
                 let mut findings = Vec::new();
@@ -1231,7 +1352,9 @@ impl AgentTool {
                     Some(d) => d,
                     None => {
                         return ToolResult::error(
-                            "No active research run found. Was bot(action: 'research') called first?",
+                            "No active research run found. You must start a research run first with:\n\
+                             bot(resource: \"research\", action: \"research\", query: \"your research question\")\n\
+                             Then submit findings from worker sub-agents using submit_findings.",
                         );
                     }
                 };
@@ -1296,7 +1419,14 @@ impl DynTool for AgentTool {
          - agent(resource: \"ask\", action: \"prompt\", text: \"What would you like?\")\n\
          - agent(resource: \"ask\", action: \"confirm\", text: \"Proceed with deletion?\")\n\
          - agent(resource: \"ask\", action: \"select\", text: \"Pick a color\", options: [\"red\", \"blue\"])\n\n\
-         GUARDRAILS: When storing memory, use the exact phrasing the user used. Do not paraphrase."
+         GUARDRAILS: When storing memory, use the exact phrasing the user used. Do not paraphrase.\n\n\
+         Registry (installed agent management + delegation):\n\
+         - agent(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\") — Delegate to a named agent\n\
+         - agent(resource: \"registry\", action: \"list\") — List installed agents\n\
+         - agent(resource: \"registry\", action: \"activate\", name: \"...\") — Activate an agent\n\
+         - agent(resource: \"registry\", action: \"info\", name: \"...\") — Show agent details\n\
+         - agent(resource: \"registry\", action: \"install\", code: \"AGNT-XXXX-XXXX\") — Install from marketplace\n\
+         - agent(resource: \"registry\", action: \"create\", name: \"...\", description: \"...\") — Create a user agent"
             .to_string()
     }
 
@@ -1307,7 +1437,7 @@ impl DynTool for AgentTool {
                 "resource": {
                     "type": "string",
                     "description": "REQUIRED. The agent resource category — determines which actions are available.",
-                    "enum": ["memory", "task", "session", "context", "advisors", "ask", "research"]
+                    "enum": ["memory", "task", "session", "context", "advisors", "ask", "research", "registry"]
                 },
                 "action": {
                     "type": "string",
@@ -1360,6 +1490,7 @@ impl DynTool for AgentTool {
             "session" => matches!(action, "list" | "status" | "history" | "query"),
             "context" => matches!(action, "summary"),
             "profile" => matches!(action, "get"),
+            "registry" => matches!(action, "list" | "info" | "stats"),
             _ => false,
         }
     }
@@ -1380,7 +1511,7 @@ impl DynTool for AgentTool {
                 let corrected = crate::domain::auto_correct_resource(
                     &domain_input,
                     &mut input,
-                    &["memory", "task", "session", "context", "advisors", "ask", "research"],
+                    &["memory", "task", "session", "context", "advisors", "ask", "research", "registry"],
                 );
                 if corrected.is_empty() {
                     self.infer_resource(&domain_input.action).to_string()
@@ -1391,7 +1522,7 @@ impl DynTool for AgentTool {
 
             if resource.is_empty() {
                 return ToolResult::error(
-                    "Resource is required. Available: memory, task, session, context, advisors, ask, research",
+                    "Resource is required. Available: memory, task, session, context, advisors, ask, research, registry",
                 );
             }
 
@@ -1404,8 +1535,15 @@ impl DynTool for AgentTool {
                 "ask" => self.handle_ask(&input, ctx).await,
                 "runs" => self.handle_runs(&input, ctx).await,
                 "research" => self.handle_research(&input, ctx).await,
+                "registry" => {
+                    if let Some(ref persona) = self.persona {
+                        persona.handle_action(&input, ctx).await
+                    } else {
+                        ToolResult::error("Agent registry not configured")
+                    }
+                }
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: memory, task, session, context, advisors, ask, runs, research",
+                    "Resource {:?} not available. Available: memory, task, session, context, advisors, ask, runs, research, registry",
                     other
                 )),
             }

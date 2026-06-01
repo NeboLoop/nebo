@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::DomainInput;
+use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use db::Store;
@@ -82,7 +83,7 @@ impl DynTool for MessageTool {
         Box::pin(async move {
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
+                Err(e) => return ToolResult::error(format!("Failed to parse input: {}. Do not retry — this is a schema error.", e)),
             };
 
             let mut input = input;
@@ -103,7 +104,7 @@ impl DynTool for MessageTool {
                 "owner" => {
                     let text = input["text"].as_str().unwrap_or("");
                     if text.is_empty() {
-                        return ToolResult::error("text is required");
+                        return ToolResult::error(errors::missing_param("notify", "text", "message(resource: \"owner\", action: \"notify\", text: \"Task complete!\")"));
                     }
 
                     // Get existing companion chat or create one
@@ -129,7 +130,7 @@ impl DynTool for MessageTool {
                             notify_crate::send("Nebo", text);
                             ToolResult::ok(format!("Notified owner: {}", text))
                         }
-                        Err(e) => ToolResult::error(format!("Failed to notify: {}", e)),
+                        Err(e) => ToolResult::error(format!("Failed to notify: {}. Do not retry — this is a database error.", e)),
                     }
                 }
                 "notify" => handle_notify(&self.store, &domain_input.action, &input).await,
@@ -154,7 +155,7 @@ async fn handle_notify(store: &Store, action: &str, input: &serde_json::Value) -
             let title = input["title"].as_str().unwrap_or("Nebo");
 
             if text.is_empty() {
-                return ToolResult::error("text is required");
+                return ToolResult::error(errors::missing_param("send", "text", "message(resource: \"notify\", action: \"send\", title: \"Alert\", text: \"Something happened\")"));
             }
 
             let id = uuid::Uuid::new_v4().to_string();
@@ -171,7 +172,7 @@ async fn handle_notify(store: &Store, action: &str, input: &serde_json::Value) -
                     notify_crate::send(title, text);
                     ToolResult::ok(format!("Notification sent: {}", text))
                 }
-                Err(e) => ToolResult::error(format!("Failed to send notification: {}", e)),
+                Err(e) => ToolResult::error(format!("Failed to send notification: {}. Do not retry — this is a database error.", e)),
             }
         }
         "alert" => {
@@ -179,7 +180,7 @@ async fn handle_notify(store: &Store, action: &str, input: &serde_json::Value) -
             let title = input["title"].as_str().unwrap_or("Nebo");
 
             if text.is_empty() {
-                return ToolResult::error("text is required for alert");
+                return ToolResult::error(errors::missing_param("alert", "text", "message(resource: \"notify\", action: \"alert\", title: \"Warning\", text: \"Something happened\")"));
             }
 
             handle_alert(title, text).await
@@ -215,7 +216,7 @@ async fn handle_alert(title: &str, text: &str) -> ToolResult {
         if which_exists("notify-send") {
             return run_command("notify-send", &["--urgency=critical", title, text]).await;
         }
-        return ToolResult::error("notify-send not found. Install libnotify for alert support.");
+        return ToolResult::error("notify-send is not installed. Install libnotify (e.g. `sudo apt install libnotify-bin`) and try again.");
     }
 
     #[cfg(target_os = "windows")]
@@ -229,7 +230,7 @@ async fn handle_alert(title: &str, text: &str) -> ToolResult {
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    ToolResult::error("alert not supported on this platform")
+    ToolResult::error("Alert is not supported on this platform. Use message(resource: \"notify\", action: \"send\", ...) to send a standard notification instead.")
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +284,7 @@ async fn handle_dnd_status() -> ToolResult {
                     .to_string(),
                 );
             }
-            Err(e) => return ToolResult::error(format!("Failed to read DND status: {}", e)),
+            Err(e) => return ToolResult::error(format!("Failed to read DND status: {}. Do not retry — this is a system error.", e)),
         }
     }
 
@@ -334,7 +335,7 @@ async fn handle_dnd_status() -> ToolResult {
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    ToolResult::error("dnd_status not supported on this platform")
+    ToolResult::error("Do Not Disturb status is not available on this platform. Do not retry.")
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +357,7 @@ async fn handle_sms(action: &str, input: &serde_json::Value) -> ToolResult {
 
 #[cfg(not(target_os = "macos"))]
 async fn handle_sms_send(_input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("SMS not supported on this platform")
+    ToolResult::error("SMS is only available on macOS (via Messages.app). Do not retry on this platform.")
 }
 
 #[cfg(target_os = "macos")]
@@ -365,10 +366,10 @@ async fn handle_sms_send(input: &serde_json::Value) -> ToolResult {
     let phone = input["phone"].as_str().unwrap_or("");
 
     if text.is_empty() {
-        return ToolResult::error("text is required to send SMS");
+        return ToolResult::error(errors::missing_param("send", "text", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")"));
     }
     if phone.is_empty() {
-        return ToolResult::error("phone is required to send SMS");
+        return ToolResult::error(errors::missing_param("send", "phone", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")"));
     }
 
     // Use variables and `service id` to avoid quoting issues and work on modern macOS.
@@ -389,7 +390,7 @@ async fn handle_sms_send(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(not(target_os = "macos"))]
 async fn handle_sms_conversations(_input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("SMS not supported on this platform")
+    ToolResult::error("SMS is only available on macOS (via Messages.app). Do not retry on this platform.")
 }
 
 #[cfg(target_os = "macos")]
@@ -397,7 +398,7 @@ async fn handle_sms_conversations(input: &serde_json::Value) -> ToolResult {
     let limit = input["limit"].as_i64().unwrap_or(20);
     let db_path = match chat_db_path() {
         Some(p) => p,
-        None => return ToolResult::error("Could not locate ~/Library/Messages/chat.db"),
+        None => return ToolResult::error("Could not locate ~/Library/Messages/chat.db. Grant Full Disk Access to Nebo in System Settings > Privacy & Security."),
     };
 
     let query = format!(
@@ -413,20 +414,20 @@ async fn handle_sms_conversations(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(not(target_os = "macos"))]
 async fn handle_sms_read(_input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("SMS not supported on this platform")
+    ToolResult::error("SMS is only available on macOS (via Messages.app). Do not retry on this platform.")
 }
 
 #[cfg(target_os = "macos")]
 async fn handle_sms_read(input: &serde_json::Value) -> ToolResult {
     let phone = input["phone"].as_str().unwrap_or("");
     if phone.is_empty() {
-        return ToolResult::error("phone is required to read SMS conversation");
+        return ToolResult::error(errors::missing_param("read", "phone", "message(resource: \"sms\", action: \"read\", phone: \"+15551234567\")"));
     }
 
     let limit = input["limit"].as_i64().unwrap_or(20);
     let db_path = match chat_db_path() {
         Some(p) => p,
-        None => return ToolResult::error("Could not locate ~/Library/Messages/chat.db"),
+        None => return ToolResult::error("Could not locate ~/Library/Messages/chat.db. Grant Full Disk Access to Nebo in System Settings > Privacy & Security."),
     };
 
     let escaped_phone = phone.replace('\'', "''");
@@ -447,20 +448,20 @@ async fn handle_sms_read(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(not(target_os = "macos"))]
 async fn handle_sms_search(_input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("SMS not supported on this platform")
+    ToolResult::error("SMS is only available on macOS (via Messages.app). Do not retry on this platform.")
 }
 
 #[cfg(target_os = "macos")]
 async fn handle_sms_search(input: &serde_json::Value) -> ToolResult {
     let query_text = input["query"].as_str().unwrap_or("");
     if query_text.is_empty() {
-        return ToolResult::error("query is required to search SMS");
+        return ToolResult::error(errors::missing_param("search", "query", "message(resource: \"sms\", action: \"search\", query: \"meeting\")"));
     }
 
     let limit = input["limit"].as_i64().unwrap_or(20);
     let db_path = match chat_db_path() {
         Some(p) => p,
-        None => return ToolResult::error("Could not locate ~/Library/Messages/chat.db"),
+        None => return ToolResult::error("Could not locate ~/Library/Messages/chat.db. Grant Full Disk Access to Nebo in System Settings > Privacy & Security."),
     };
 
     let escaped_query = query_text.replace('\'', "''");
@@ -512,9 +513,9 @@ async fn run_sqlite3(db_path: &str, query: &str) -> ToolResult {
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            ToolResult::error(format!("sqlite3 error: {}", stderr))
+            ToolResult::error(format!("sqlite3 error: {}. Do not retry — this is a database error.", stderr))
         }
-        Err(e) => ToolResult::error(format!("Failed to run sqlite3: {}", e)),
+        Err(e) => ToolResult::error(format!("Failed to run sqlite3: {}. Do not retry — this is a system error.", e)),
     }
 }
 
@@ -532,7 +533,7 @@ async fn run_osascript_stdin(script: &str) -> ToolResult {
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return ToolResult::error(format!("Failed to run osascript: {}", e)),
+        Err(e) => return ToolResult::error(format!("Failed to run osascript: {}. Do not retry — this is a system error.", e)),
     };
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(script.as_bytes()).await;
@@ -551,9 +552,9 @@ async fn run_osascript_stdin(script: &str) -> ToolResult {
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            ToolResult::error(format!("osascript error: {}", stderr))
+            ToolResult::error(format!("osascript error: {}. Do not retry — this is a system error.", stderr))
         }
-        Err(e) => ToolResult::error(format!("Failed to run osascript: {}", e)),
+        Err(e) => ToolResult::error(format!("Failed to run osascript: {}. Do not retry — this is a system error.", e)),
     }
 }
 
@@ -575,9 +576,9 @@ async fn run_osascript(script: &str) -> ToolResult {
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            ToolResult::error(format!("osascript error: {}", stderr))
+            ToolResult::error(format!("osascript error: {}. Do not retry — this is a system error.", stderr))
         }
-        Err(e) => ToolResult::error(format!("Failed to run osascript: {}", e)),
+        Err(e) => ToolResult::error(format!("Failed to run osascript: {}. Do not retry — this is a system error.", e)),
     }
 }
 
@@ -600,9 +601,9 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            ToolResult::error(format!("{} error: {}", cmd, stderr))
+            ToolResult::error(format!("{} error: {}. Do not retry — this is a system error.", cmd, stderr))
         }
-        Err(e) => ToolResult::error(format!("Failed to run {}: {}", cmd, e)),
+        Err(e) => ToolResult::error(format!("Failed to run {}: {}. Do not retry — this is a system error.", cmd, e)),
     }
 }
 
@@ -628,9 +629,9 @@ async fn run_powershell(script: &str) -> ToolResult {
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            ToolResult::error(format!("PowerShell error: {}", stderr))
+            ToolResult::error(format!("PowerShell error: {}. Do not retry — this is a system error.", stderr))
         }
-        Err(e) => ToolResult::error(format!("Failed to run PowerShell: {}", e)),
+        Err(e) => ToolResult::error(format!("Failed to run PowerShell: {}. Do not retry — this is a system error.", e)),
     }
 }
 

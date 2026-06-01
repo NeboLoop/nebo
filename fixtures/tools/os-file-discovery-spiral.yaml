@@ -1,0 +1,47 @@
+id: os-file-discovery-spiral
+name: "OS file discovery — no path-guessing spiral"
+description: |
+  The user asks the model to find a file that may not exist at an exact path.
+  The model should try ONE reasonable approach (glob or find), and if it fails,
+  report clearly — NOT spiral through 5+ retries with different path guesses.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Find me a screenshot from my Desktop"
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-search-pattern
+      text: "Model uses glob or find with a pattern (e.g. *.png, screenshot*) — not a single hardcoded path guess"
+      severity: critical
+    - id: correct-tool
+      text: "Model uses os(resource: 'file') with glob/search or os(resource: 'shell') with find/ls glob — not individual path checks"
+      severity: critical
+  recovery:
+    - id: no-path-guessing-spiral
+      text: "Model does NOT guess paths repeatedly (e.g. trying Screenshot 2024-01-01.png, then Screenshot 2024-01-02.png, etc.)"
+      severity: critical
+    - id: max-three-calls
+      text: "Model makes no more than 3 tool calls total"
+      severity: critical
+    - id: clear-report-on-miss
+      text: "If no screenshots found, model reports that clearly instead of continuing to guess"
+      severity: important
+  cost:
+    - id: efficient-discovery
+      text: "Task completes in 1-2 tool calls"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 2000
+  narrative: |
+    Model issues a glob or find for screenshot-like files on ~/Desktop
+    (e.g. os(resource: "file", action: "glob", pattern: "~/Desktop/Screenshot*")
+    or os(resource: "shell", action: "exec", command: "find ~/Desktop -iname '*screenshot*'")).
+    Reports results or absence clearly. No spiral.

@@ -21,7 +21,11 @@ impl PublisherTool {
         let version = input["version"].as_str().unwrap_or("1.0.0");
 
         if name.is_empty() {
-            return ToolResult::error("'name' is required");
+            return ToolResult::error(crate::errors::missing_param(
+                "publish",
+                "name",
+                "publish(name: \"my-agent\", type: \"agent\", version: \"1.0.0\")",
+            ));
         }
 
         let api = match crate::build_neboai_api(&self.store) {
@@ -221,7 +225,11 @@ impl PublisherTool {
     async fn handle_status(&self, input: &serde_json::Value) -> ToolResult {
         let id = input["id"].as_str().unwrap_or("");
         if id.is_empty() {
-            return ToolResult::error("'id' is required (artifact ID from NeboAI)");
+            return ToolResult::error(crate::errors::missing_param(
+                "status",
+                "id",
+                "publish(action: \"status\", id: \"artifact-uuid-here\")",
+            ));
         }
 
         let api = match crate::build_neboai_api(&self.store) {

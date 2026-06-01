@@ -1,0 +1,45 @@
+id: os-file-glob
+name: "OS file glob — correct tool routing"
+description: |
+  The user asks the agent to find files matching a pattern. The model must use
+  os(resource: "file", action: "glob") — NOT hallucinate "glob" as a standalone
+  tool or use shell find/ls.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Find all .json files in the current directory."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'os', not 'glob', 'find', or 'bash'"
+      severity: critical
+    - id: correct-resource
+      text: "Model uses resource: 'file'"
+      severity: critical
+    - id: correct-action
+      text: "Model uses action: 'glob'"
+      severity: critical
+    - id: has-pattern
+      text: "Model passes a glob pattern like '**/*.json' or '*.json', OR omits pattern to list all files (both are valid)"
+      severity: important
+  recovery:
+    - id: no-shell-find
+      text: "Model does NOT fall back to shell find command"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single os(resource: "file", action: "glob", pattern: "**/*.json",
+    path: ".") call. Model reports the matching files.

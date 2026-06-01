@@ -10,6 +10,7 @@ pub mod desktop_snapshot;
 pub mod desktop_tool;
 pub mod domain;
 pub mod emit_tool;
+pub mod errors;
 pub mod event_tool;
 pub mod events;
 pub mod execute_tool;

@@ -259,7 +259,11 @@ impl DynTool for A2UIDomainTool {
                 .unwrap_or("surface");
             let action = match input.get("action").and_then(|v| v.as_str()) {
                 Some(a) => a,
-                None => return ToolResult::error("action is required"),
+                None => return ToolResult::error(crate::errors::missing_param(
+                    "a2ui",
+                    "action",
+                    "a2ui(resource: \"surface\", action: \"create\", components: [...])\nAvailable actions: create, update, setValue, navigate, destroy",
+                )),
             };
 
             match resource {
@@ -339,11 +343,19 @@ impl A2UIDomainTool {
             "update_components" => {
                 let surface_id = match params.get("surface_id").and_then(|v| v.as_str()) {
                     Some(id) => id,
-                    None => return ToolResult::error("surface_id is required"),
+                    None => return ToolResult::error(crate::errors::missing_param(
+                        "update_components",
+                        "surface_id",
+                        "a2ui(resource: \"surface\", action: \"update_components\", surface_id: \"surf:abc:main\", components: [...])",
+                    )),
                 };
                 let components = match params.get("components").and_then(|v| v.as_array()) {
                     Some(arr) => arr.clone(),
-                    None => return ToolResult::error("components array is required"),
+                    None => return ToolResult::error(crate::errors::missing_param(
+                        "update_components",
+                        "components",
+                        "a2ui(resource: \"surface\", action: \"update_components\", surface_id: \"surf:abc:main\", components: [...])",
+                    )),
                 };
 
                 match self.host.update_components(surface_id, components).await {
@@ -358,12 +370,20 @@ impl A2UIDomainTool {
             "update_data" => {
                 let surface_id = match params.get("surface_id").and_then(|v| v.as_str()) {
                     Some(id) => id,
-                    None => return ToolResult::error("surface_id is required"),
+                    None => return ToolResult::error(crate::errors::missing_param(
+                        "update_data",
+                        "surface_id",
+                        "a2ui(resource: \"surface\", action: \"update_data\", surface_id: \"surf:abc:main\", value: {...})",
+                    )),
                 };
                 let path = params.get("path").and_then(|v| v.as_str());
                 let value = match params.get("value") {
                     Some(v) => v.clone(),
-                    None => return ToolResult::error("value is required"),
+                    None => return ToolResult::error(crate::errors::missing_param(
+                        "update_data",
+                        "value",
+                        "a2ui(resource: \"surface\", action: \"update_data\", surface_id: \"surf:abc:main\", value: {\"count\": 42})",
+                    )),
                 };
 
                 match self.host.update_data_model(surface_id, path, value).await {
@@ -382,7 +402,11 @@ impl A2UIDomainTool {
                 let agent_id_param = Self::resolve_agent_id(params, ctx);
                 let target_view = match params.get("target_view").and_then(|v| v.as_str()) {
                     Some(v) => v,
-                    None => return ToolResult::error("target_view is required"),
+                    None => return ToolResult::error(crate::errors::missing_param(
+                        "navigate",
+                        "target_view",
+                        "a2ui(resource: \"surface\", action: \"navigate\", target_view: \"settings\", views_json: {...})",
+                    )),
                 };
                 let nav_params = params.get("params").cloned();
                 let views_json = match params.get("views_json") {
@@ -413,7 +437,11 @@ impl A2UIDomainTool {
                 };
 
                 if agent_id.is_empty() {
-                    return ToolResult::error("agent_id is required for navigate");
+                    return ToolResult::error(crate::errors::missing_param(
+                        "navigate",
+                        "agent_id",
+                        "a2ui(resource: \"surface\", action: \"navigate\", agent_id: \"abc\", target_view: \"settings\", views_json: {...})",
+                    ));
                 }
 
                 match self
@@ -432,7 +460,11 @@ impl A2UIDomainTool {
             "delete" => {
                 let surface_id = match params.get("surface_id").and_then(|v| v.as_str()) {
                     Some(id) => id,
-                    None => return ToolResult::error("surface_id is required"),
+                    None => return ToolResult::error(crate::errors::missing_param(
+                        "delete",
+                        "surface_id",
+                        "a2ui(resource: \"surface\", action: \"delete\", surface_id: \"surf:abc:main\")",
+                    )),
                 };
 
                 match self.host.delete_surface(surface_id).await {

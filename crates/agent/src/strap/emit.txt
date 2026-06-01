@@ -1,0 +1,7 @@
+### emit — Fire Events for Workflows
+USE THIS when: you need to trigger a workflow or signal that something happened. Events are matched by source string against workflow subscriptions.
+
+- emit(source: "email.urgent", payload: {"from": "boss@co.com", "subject": "Q4 review"}) — Emit with data
+- emit(source: "lead.qualified") — Emit without payload
+
+The source string is a dotted identifier (e.g. "email.urgent", "lead.qualified", "daily.summary"). Workflows subscribe to event sources and run automatically when matched. Events are best-effort — if no workflow is listening, the event is silently dropped.

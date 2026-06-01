@@ -395,6 +395,20 @@ impl Registry {
         debug!(tool = %name, "executing tool");
 
         // ── Phase 1: Validate + determine resource permit ──────────
+        let (name, input) = if let Some((strap_name, params)) = resolve_flat_alias(name) {
+            let mut merged = input;
+            if let Some(obj) = merged.as_object_mut() {
+                for (k, v) in params {
+                    obj.entry(&k).or_insert(v);
+                }
+            }
+            debug!(alias = %tool_name, resolved = %strap_name, "flat-name alias resolved");
+            (strap_name, merged)
+        } else {
+            (name.to_string(), input)
+        };
+        let name = name.as_str();
+
         let permit_kind = {
             let tools = self.tools.read().await;
             let tool = match tools
@@ -611,7 +625,7 @@ impl Registry {
             self.register(Box::new(web_tool)).await;
         }
 
-        // Agent tool (memory, tasks, sessions, context, advisors, ask, runs) — always registered (core)
+        // Agent tool (memory, tasks, sessions, context, advisors, ask, runs, registry) — always registered (core)
         let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator.clone());
         let runner_for_events = advisor_runner.clone();
         if let Some(runner) = advisor_runner {
@@ -623,6 +637,33 @@ impl Registry {
         if let Some(rq) = run_querier {
             agent_tool = agent_tool.with_run_querier(rq);
         }
+
+        // Persona/registry resource — agent management, delegation, installed agents
+        {
+            let agent_reg = active_agent.unwrap_or_else(|| {
+                std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
+            });
+            let agent_loader = self
+                .agent_loader
+                .read()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| {
+                    let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    Arc::new(napp::AgentLoader::new(
+                        data.join("nebo").join("agents"),
+                        data.join("user").join("agents"),
+                    ))
+                });
+            let persona = crate::agent_tool::PersonaTool::new(
+                store.clone(),
+                agent_reg,
+                agent_loader,
+                orchestrator.clone(),
+            );
+            agent_tool = agent_tool.with_persona(persona);
+        }
+
         self.register(Box::new(agent_tool)).await;
 
         // Event tool (scheduled tasks / cron) — always registered (core)
@@ -681,35 +722,10 @@ impl Registry {
                 .await;
         }
 
-        // Persona tool (agent management: list, activate, deactivate, info, create, install) — always registered
-        {
-            let agent_reg = active_agent.unwrap_or_else(|| {
-                std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
-            });
-            let agent_loader = self
-                .agent_loader
-                .read()
-                .unwrap()
-                .clone()
-                .unwrap_or_else(|| {
-                    let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    Arc::new(napp::AgentLoader::new(
-                        data.join("nebo").join("agents"),
-                        data.join("user").join("agents"),
-                    ))
-                });
-            self.register(Box::new(crate::agent_tool::PersonaTool::new(
-                store.clone(),
-                agent_reg,
-                agent_loader,
-                orchestrator.clone(),
-            )))
-            .await;
-            self.register_deferred(Box::new(crate::publisher_tool::PublisherTool::new(
-                store.clone(),
-            )))
-            .await;
-        }
+        self.register_deferred(Box::new(crate::publisher_tool::PublisherTool::new(
+            store.clone(),
+        )))
+        .await;
 
         // Plugin tool (installed plugin binaries as STRAP resources) — always active when plugins are installed
         let ps_opt = self.plugin_store.read().unwrap().clone();
@@ -864,6 +880,47 @@ fn strip_mcp_prefix(name: &str) -> &str {
     if parts.len() == 3 { parts[2] } else { name }
 }
 
+/// Resolve flat tool names (Claude Code convention) to STRAP tool + injected params.
+/// Returns (strap_tool_name, params_to_inject) or None if not a known alias.
+fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Value)>)> {
+    let lc = name.to_lowercase();
+    let (tool, params): (&str, Vec<(&str, &str)>) = match lc.as_str() {
+        // File operations → os
+        "file_read" | "read_file" | "fileread" | "read" => {
+            ("os", vec![("resource", "file"), ("action", "read")])
+        }
+        "file_write" | "write_file" | "filewrite" => {
+            ("os", vec![("resource", "file"), ("action", "write")])
+        }
+        "file_edit" | "edit_file" | "fileedit" | "edit" => {
+            ("os", vec![("resource", "file"), ("action", "edit")])
+        }
+        "grep" | "grep_tool" | "greptool" | "file_grep" => {
+            ("os", vec![("resource", "file"), ("action", "grep")])
+        }
+        "glob" | "glob_tool" | "globtool" | "file_glob" => {
+            ("os", vec![("resource", "file"), ("action", "glob")])
+        }
+        // Shell → os
+        "bash" | "shell" | "bash_tool" | "bashtool" | "run_command" | "exec" => {
+            ("os", vec![("resource", "shell"), ("action", "exec")])
+        }
+        // Web operations → web
+        "web_search" | "websearch" | "websearchtool" | "search" => {
+            ("web", vec![("action", "search")])
+        }
+        "web_fetch" | "webfetch" | "webfetchtool" | "fetch" | "fetch_url" => {
+            ("web", vec![("action", "fetch")])
+        }
+        _ => return None,
+    };
+    let params = params
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+        .collect();
+    Some((tool.to_string(), params))
+}
+
 /// Provide specific correction for known hallucinated tool names.
 fn tool_correction(name: &str) -> String {
     match name.to_lowercase().as_str() {
@@ -927,24 +984,15 @@ fn tool_correction(name: &str) -> String {
         "workflow" | "automation" | "work_flow" => {
             "INSTEAD USE: work(action: \"list\") to see workflows, work(resource: \"name\", action: \"run\") to run".to_string()
         }
-        // Common MCP tool names (monument.sh, basecamp, etc.)
-        "project" | "projects" => {
-            "INSTEAD USE: mcp(server: \"monument.sh\", resource: \"project\", action: \"list\") or similar MCP call".to_string()
-        }
-        "todo" | "todos" | "todolist" => {
-            "INSTEAD USE: mcp(server: \"monument.sh\", resource: \"todo\", action: \"list\") or similar MCP call".to_string()
-        }
-        "comment" | "comments" => {
-            "INSTEAD USE: mcp(server: \"monument.sh\", resource: \"comment\", action: \"list\") or similar MCP call".to_string()
-        }
-        "account" | "accounts" => {
-            "INSTEAD USE: mcp(server: \"basecamp\", resource: \"account\", action: \"list\") or similar MCP call".to_string()
-        }
         _ => {
             if name.starts_with("mcp__") {
                 "INSTEAD USE: mcp(server: \"<server>\", resource: \"<tool>\", action: \"<action>\") — call MCP tools via the mcp STRAP tool, not by their namespaced name".to_string()
             } else {
-                format!("'{}' is not a tool. If this is from an MCP server, use: mcp(server: \"<server_name>\", resource: \"{}\", action: \"list\"). Otherwise check your available tools.", name, name)
+                format!(
+                    "'{}' is not a recognized tool. Use skill(action: \"discover\", query: \"{}\") to find a skill, \
+                     or check your available tools with tool_search(query: \"{}\").",
+                    name, name, name
+                )
             }
         }
     }
@@ -971,6 +1019,9 @@ mod tests {
         assert!(tool_correction("bot").contains("agent"));
         assert!(tool_correction("desktop").contains("os"));
         assert!(tool_correction("music").contains("os"));
-        assert!(tool_correction("unknown_tool").contains("check your available tools"));
+        assert!(tool_correction("unknown_tool").contains("not a recognized tool"));
+        assert!(tool_correction("unknown_tool").contains("skill(action: \"discover\""));
+        assert!(tool_correction("unknown_tool").contains("tool_search"));
+        assert!(tool_correction("mcp__server__tool").contains("mcp(server:"));
     }
 }

@@ -34,6 +34,7 @@ pub mod steering;
 pub mod summarizer;
 pub mod task_graph;
 pub mod tool_filter;
+pub mod testing;
 pub mod transcript;
 
 pub use agent_worker::{AgentWorkerRegistry, ChannelDispatcher};

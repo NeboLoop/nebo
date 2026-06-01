@@ -1,0 +1,32 @@
+id: naming-edit-file
+name: "Naming test — edit a file"
+description: |
+  Baseline task: replace text in a file. Measures first-call tool naming accuracy.
+target_component: os
+
+conversation:
+  - role: user
+    content: "In the file /tmp/nebo-greeting.txt, replace 'Hello' with 'Goodbye'."
+
+prompt_assertions:
+  first_call:
+    - id: calls-any-edit
+      text: "Model's first call edits the file — either os(resource: 'file', action: 'edit') or file_edit(path: '...') depending on convention"
+      severity: critical
+    - id: correct-path
+      text: "Model passes the correct file path"
+      severity: critical
+    - id: has-old-string
+      text: "Model passes old_string: 'Hello'"
+      severity: critical
+    - id: has-new-string
+      text: "Model passes new_string: 'Goodbye'"
+      severity: critical
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500

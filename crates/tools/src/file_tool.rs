@@ -1,3 +1,4 @@
+use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::ToolResult;
 use serde::Deserialize;
@@ -81,7 +82,7 @@ impl FileTool {
 
     fn handle_read(&self, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
-            return ToolResult::error("Error: path is required");
+            return ToolResult::error(errors::missing_param("read", "path", "os(resource: \"file\", action: \"read\", path: \"/tmp/file.txt\")"));
         }
 
         // Resolve the user-supplied path through the canonical resolver:
@@ -105,7 +106,10 @@ impl FileTool {
         let metadata = match std::fs::metadata(&path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return ToolResult::error(format!("File not found: {}", path));
+                return ToolResult::error(errors::file_not_found(&path));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                return ToolResult::error(errors::permission_denied(&path, "read"));
             }
             Err(e) => {
                 return ToolResult::error(format!("Error accessing file: {}", e));
@@ -231,7 +235,7 @@ impl FileTool {
 
     fn handle_write(&self, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
-            return ToolResult::error("Error: path is required");
+            return ToolResult::error(errors::missing_param("write", "path", "os(resource: \"file\", action: \"write\", path: \"/tmp/file.txt\", content: \"hello\")"));
         }
         // Reject empty content (catches wrong field name like 'text' instead of 'content').
         // Append to existing file with empty content is allowed (no-op but not an error).
@@ -281,13 +285,13 @@ impl FileTool {
 
     fn handle_edit(&self, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
-            return ToolResult::error("Error: path is required");
+            return ToolResult::error(errors::missing_param("edit", "path", "os(resource: \"file\", action: \"edit\", path: \"/tmp/file.txt\", old_string: \"old\", new_string: \"new\")"));
         }
         if input.old_string.is_empty() {
-            return ToolResult::error("Error: old_string is required");
+            return ToolResult::error(errors::missing_param("edit", "old_string", "os(resource: \"file\", action: \"edit\", path: \"/tmp/file.txt\", old_string: \"text to find\", new_string: \"replacement\")"));
         }
         if input.old_string == input.new_string {
-            return ToolResult::error("Error: old_string and new_string are identical");
+            return ToolResult::error("Error: old_string and new_string are identical. The edit would produce no change.");
         }
 
         // Same fuzzy fallback as read: edit requires the file to exist.
@@ -303,7 +307,10 @@ impl FileTool {
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return ToolResult::error(format!("File not found: {}", path));
+                return ToolResult::error(errors::file_not_found(&path));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                return ToolResult::error(errors::permission_denied(&path, "edit"));
             }
             Err(e) => return ToolResult::error(format!("Error reading file: {}", e)),
         };
@@ -345,6 +352,7 @@ impl FileTool {
 
         // If pattern/glob are empty but path contains glob metacharacters,
         // treat path as the full glob expression (e.g. "/Users/x/Desktop/*.{png,jpg}").
+        let mut pattern_was_defaulted = false;
         let (resolved_pattern, base_path) = if !pattern.is_empty() {
             let bp = if input.path.is_empty() {
                 std::env::current_dir()
@@ -357,18 +365,16 @@ impl FileTool {
         } else {
             let expanded = expand_path(&input.path);
             if expanded.contains('*') || expanded.contains('?') || expanded.contains('{') {
-                let p = Path::new(&expanded);
-                let parent = p
-                    .parent()
-                    .map(|pp| pp.to_string_lossy().to_string())
-                    .unwrap_or_else(|| ".".to_string());
-                let file_part = p
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_else(|| expanded.clone());
-                (file_part, parent)
+                // Split path at the first glob metacharacter boundary.
+                // e.g. "fixtures/**/*.yaml" → base="fixtures", pattern="**/*.yaml"
+                // e.g. "src/*.rs" → base="src", pattern="*.rs"
+                let (base, pat) = split_path_at_glob(&expanded);
+                (pat, base)
+            } else if Path::new(&expanded).is_dir() {
+                pattern_was_defaulted = true;
+                ("*".to_string(), expanded)
             } else {
-                return ToolResult::error("Error: pattern is required");
+                return ToolResult::error(errors::missing_param("glob", "pattern", "os(resource: \"file\", action: \"glob\", pattern: \"*.rs\", path: \".\")"));
             }
         };
         let pattern = &resolved_pattern;
@@ -405,7 +411,7 @@ impl FileTool {
 
         if files_with_time.is_empty() {
             return ToolResult::ok(format!(
-                "No files found matching \"{}\" in {}",
+                "No files found matching \"{}\" in {}. This is not an error — no files match this pattern in this directory. Try a different pattern or path.",
                 pattern, base_path
             ));
         }
@@ -423,12 +429,23 @@ impl FileTool {
         result.push_str("\n\n");
         result.push_str(&paths.join("\n"));
 
+        if pattern_was_defaulted {
+            result.push_str(
+                "\n\nTo filter by type, add pattern: os(action: \"glob\", pattern: \"*.json\", path: \".\")"
+            );
+        }
+
         ToolResult::ok(result)
     }
 
     fn handle_grep(&self, input: &FileInput) -> ToolResult {
-        if input.regex.is_empty() {
-            return ToolResult::error("Error: regex is required");
+        let pattern = if !input.pattern.is_empty() {
+            &input.pattern
+        } else {
+            &input.regex
+        };
+        if pattern.is_empty() {
+            return ToolResult::error(errors::missing_param("grep", "pattern", "os(resource: \"file\", action: \"grep\", pattern: \"TODO\", path: \".\")"));
         }
 
         let path = if input.path.is_empty() {
@@ -457,7 +474,7 @@ impl FileTool {
 
         let grep = crate::grep_tool::GrepTool;
         grep.execute_search(
-            &input.regex,
+            pattern,
             &path,
             if input.glob.is_empty() {
                 None
@@ -550,6 +567,42 @@ fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String
     }
 
     matches
+}
+
+/// Split a path at the first glob metacharacter, returning (base_dir, glob_pattern).
+/// e.g. "fixtures/**/*.yaml" → ("fixtures", "**/*.yaml")
+/// e.g. "src/*.rs" → ("src", "*.rs")
+/// e.g. "**/*.rs" → (".", "**/*.rs")
+fn split_path_at_glob(path: &str) -> (String, String) {
+    let components: Vec<&str> = path.split('/').collect();
+    let mut base_parts = Vec::new();
+    let mut glob_parts = Vec::new();
+    let mut found_glob = false;
+
+    for component in &components {
+        if !found_glob
+            && !component.contains('*')
+            && !component.contains('?')
+            && !component.contains('{')
+        {
+            base_parts.push(*component);
+        } else {
+            found_glob = true;
+            glob_parts.push(*component);
+        }
+    }
+
+    let base = if base_parts.is_empty() {
+        ".".to_string()
+    } else {
+        base_parts.join("/")
+    };
+    let pattern = if glob_parts.is_empty() {
+        "*".to_string()
+    } else {
+        glob_parts.join("/")
+    };
+    (base, pattern)
 }
 
 fn relativize_path(path: &str, base: &str) -> String {
