@@ -1417,7 +1417,7 @@ async fn handle_capture(
     ax_cache: &std::sync::Mutex<HashMap<String, (Vec<UIElement>, Instant)>>,
 ) -> ToolResult {
     match action {
-        "screenshot" => capture_screenshot(input).await,
+        "screenshot" | "capture" => capture_screenshot(input).await,
         "see" => capture_see(input, snapshot_store, ax_cache).await,
         _ => ToolResult::error(format!(
             "Unknown capture action '{}'. Use: screenshot, see",

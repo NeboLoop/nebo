@@ -1237,6 +1237,78 @@ tool_corrections:
     correction: 'mcp(server: "basecamp", resource: "account", action: "list")'
   - hallucinated: ["mcp__*"]
     correction: 'call MCP tools via the mcp STRAP tool, not by their namespaced name'
+  - hallucinated_action: [capture]
+    on_tool: os
+    correction: 'os(resource: "capture", action: "capture") for desktop screenshot, or web(action: "screenshot") for browser screenshot — "capture" is a resource, not a top-level action'
+    observed: "2026-06-02 — model calls os(action: capture) which returns 'Unknown capture action'. Confuses resource name with action name."
+
+# =============================================================================
+# COMM-SESSION BEHAVIORS — Attachment Delivery & Context Pollution
+# =============================================================================
+#
+# Failure modes observed when an agent runs with Origin::Comm (a NeboAI/loops
+# chat reply) and produces a screenshot/file. These are Surface-2 (prompt
+# clarity) + Surface-1 (tool response quality) regressions — see harness.md
+# "Context Pollution Model" and docs/testing/document-upload-scenario.md for the
+# full end-to-end repro. Each has a code-side fix landed 2026-06-02; the
+# assertions guard against regression.
+
+comm_session_behaviors:
+  - id: trust-successful-tool-result
+    surface: prompt-clarity
+    failure: >
+      In a context already polluted by earlier failures, the model disbelieves
+      its OWN successful tool results and tells the user "I'm unable to capture a
+      screenshot" even though save_data_uri_to_file succeeded and the comm reply
+      went out with attachment_count>=1.
+    observed: "2026-06-02 — poisoned session from 09:21/09:58 failures; 16:10 screenshots succeeded (uri_len=171183, 167199; attachment_count=2) but model reported failure."
+    assertion: >
+      Given a tool result whose content indicates success, the model MUST report
+      success — it must not infer failure from earlier unrelated failures in the
+      same session.
+    fixes:
+      - "Bug #5 structural: neutral tool summaries + error decay so failures don't accumulate as a 'this always fails' signal."
+      - "/new clears an already-poisoned session (cannot be repaired in-session)."
+    test_kind: "mock-tool-response — inject prior failures + a success, assert no failure claim"
+
+  - id: comm-attachment-delivery-signal
+    surface: tool-reliability
+    failure: >
+      The sidecar consumes the screenshot's image_url and replaces it with
+      [Page Visual] text. The model never sees confirmation the image will reach
+      the user, so it cannot truthfully tell the user a screenshot is attached.
+    observed: "2026-06-02 — model had no signal that the comm pipeline attaches the image."
+    assertion: >
+      For Origin::Comm runs, any tool result that carried an image_url MUST have a
+      delivery note appended: '✓ Screenshot captured and will be delivered as an
+      attachment in your reply to the user.'
+    fix: "crates/agent/src/runner.rs — track had_image indices before the sidecar block; append the note when origin == Origin::Comm."
+    test_kind: "live-runner — comm origin + screenshot tool, assert note present in result content"
+
+  - id: no-local-path-markdown-image
+    surface: prompt-clarity
+    failure: >
+      Model embeds ![Screenshot](/local/abs/path.jpeg) (or file://) in the comm
+      reply text. The web frontend can't reach a local path, so it renders a
+      broken image — even though the real image is delivered as an attachment.
+    observed: "2026-06-02 10.20 — broken markdown image in NeboAI.com chat alongside a working attachment_count=3."
+    assertion: >
+      Comm reply text MUST NOT contain markdown image refs to local/file:// paths;
+      images are delivered via attachments. Server strips them as a safety net.
+    fixes:
+      - "crates/server/src/chat_dispatch.rs — strip_local_image_markdown() before sending the comm reply (when comm_file_artifacts is non-empty)."
+      - "Prompt side (candidate): instruct the model not to embed ![](localpath) on comm channels."
+    test_kind: "unit (strip_local_image_markdown) + mock-tool-response (assert model omits local markdown image)"
+
+  - id: desktop-capture-action-name
+    surface: prompt-clarity
+    failure: "Model calls os(action: capture) — confuses the 'capture' resource name with an action."
+    observed: "2026-06-02 — returned 'Unknown capture action'."
+    assertion: "Desktop screenshot = os(resource: capture, action: capture); browser screenshot = web(action: screenshot)."
+    fixes:
+      - "crates/tools/src/desktop_tool.rs — alias 'capture' => screenshot in handle_capture."
+      - "tool_corrections entry (hallucinated_action: [capture], on_tool: os)."
+    test_kind: "tool-correction regression"
 
 # =============================================================================
 # REGISTRATION SUMMARY
@@ -1314,3 +1386,11 @@ discrepancies:
     status: BY_DESIGN
     description: "tool_search is in ALWAYS_INCLUDE_TOOLS but has no STRAP doc"
     rationale: "Meta-tool for deferred discovery — schema alone is sufficient"
+
+  - id: capture-action-alias
+    status: FIXED
+    description: >
+      Manifest documents the capture resource action 'capture', but the runtime
+      handle_capture accepted only 'screenshot'/'see', so os(resource: capture,
+      action: capture) returned 'Unknown capture action'.
+    fix: "crates/tools/src/desktop_tool.rs aliases 'capture' => screenshot; manifest and runtime are now consistent (see comm_session_behaviors: desktop-capture-action-name)."

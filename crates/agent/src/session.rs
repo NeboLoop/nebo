@@ -325,6 +325,9 @@ impl SessionManager {
         // Reset conversation-scoped counters; preserve session-level preferences.
         self.store.reset_session_counters(session_id)?;
 
+        // Clear stale compaction summary so failure narratives don't carry over.
+        self.store.update_session_summary(session_id, "")?;
+
         // Update cache.
         if let Ok(mut cache) = self.chat_ids.write() {
             cache.insert(session_id.to_string(), new_chat_id.clone());

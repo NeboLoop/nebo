@@ -1028,7 +1028,38 @@ impl WebTool {
         // Execute with auto-retry for read_page character limit errors.
         // The extension (at parity with Claude) returns an error when output > maxChars.
         // Nebo handles this by retrying with tighter params so the agent always gets content.
+        tracing::info!(
+            tool = %tool_name,
+            action = %action,
+            session_id = ?session_id,
+            args_keys = ?args.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+            "browser extension execute"
+        );
         let result = executor.execute(tool_name, &args, session_id).await;
+        match &result {
+            Ok(val) => {
+                let has_page_content = val.get("pageContent").and_then(|v| v.as_str()).map(|s| s.len());
+                let has_text = val.get("text").and_then(|v| v.as_str()).map(|s| s.len());
+                let has_screenshot = val.get("screenshot").is_some();
+                tracing::info!(
+                    tool = %tool_name,
+                    action = %action,
+                    has_page_content = ?has_page_content,
+                    has_text = ?has_text,
+                    has_screenshot = has_screenshot,
+                    result_keys = ?val.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+                    "browser extension result OK"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    tool = %tool_name,
+                    action = %action,
+                    error = %e,
+                    "browser extension result ERROR"
+                );
+            }
+        }
 
         // read_page character limit retry: depth 5 → depth 3 → filter interactive
         if action == "snapshot" || action == "read_page" {
@@ -1126,13 +1157,15 @@ impl WebTool {
                     }
                 }
 
-                // Navigate-specific: auth detection + loop detection
+                // Navigate-specific: error page + auth detection + loop detection
                 if action == "navigate" {
                     let nav_url = input
                         .get("url")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    if let Some(warning) = detect_auth_page(nav_url, &text_result) {
+                    if let Some(warning) = detect_error_page(&text_result) {
+                        text_result = format!("{}\n\n{}", warning, text_result);
+                    } else if let Some(warning) = detect_auth_page(nav_url, &text_result) {
                         text_result = format!("{}\n\n{}", warning, text_result);
                     }
 
@@ -1683,6 +1716,38 @@ fn detect_auth_page(url: &str, content: &str) -> Option<String> {
              that this task requires authentication and suggest they: \
              (1) log in manually, (2) install a skill/plugin for this service, or \
              (3) provide the content directly."
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
+/// Detect HTTP error pages (404, 503, etc.) from navigate results.
+/// Returns a warning hint if the page title or content indicates an error page.
+fn detect_error_page(content: &str) -> Option<String> {
+    let content_lower = content.to_lowercase();
+
+    let title_error = content_lower.contains("title: \"404")
+        || content_lower.contains("title: \"not found")
+        || content_lower.contains("title: \"page not found")
+        || content_lower.contains("title: \"error")
+        || content_lower.contains("title: \"403")
+        || content_lower.contains("title: \"503")
+        || content_lower.contains("title: \"502")
+        || content_lower.contains("title: \"access denied")
+        || content_lower.contains("title: \"server error");
+
+    let body_error = content_lower.contains("oops! we are having trouble")
+        || content_lower.contains("this page isn't available")
+        || content_lower.contains("this page can't be found")
+        || content_lower.contains("the page you requested was not found");
+
+    if title_error || body_error {
+        Some(
+            "⚠ ERROR PAGE — This URL returned a 404/error page. Do NOT call read_page on this page. \
+             Instead: navigate to the site's homepage and use their search function, \
+             or use web(action: \"search\") to find a working URL."
                 .to_string(),
         )
     } else {

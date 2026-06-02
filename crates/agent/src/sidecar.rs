@@ -19,11 +19,11 @@ ELEMENTS:\n\
 Only list elements the agent would need to interact with (search boxes, submit buttons, login forms, main navigation). \
 Coordinates are approximate center points relative to viewport. No other text.";
 
-/// Resolve the sidecar model from models.yaml (cheapest fallback model).
+/// Resolve the sidecar model — empty string lets Janus pick the model.
 fn sidecar_model() -> String {
     config::ModelsConfig::load()
         .sidecar_model()
-        .unwrap_or_else(|| "claude-haiku-4-5-20251001".into())
+        .unwrap_or_default()
 }
 
 /// Verify a post-action screenshot using a cheap vision model.

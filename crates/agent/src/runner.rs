@@ -3078,6 +3078,7 @@ async fn run_loop(
             // Sidecar vision verification — only for providers that can't include
             // images directly in tool results. Vision-capable providers (Anthropic,
             // Gemini) get the raw image passed through instead.
+            let mut had_image: Vec<usize> = Vec::new();
             {
                 let main_supports_images = {
                     let prov_lock = providers.read().await;
@@ -3097,6 +3098,7 @@ async fn run_loop(
                         for (idx, entry) in results.iter().enumerate() {
                             if let Some((tc, result)) = entry {
                                 if let Some(ref image_url) = result.image_url {
+                                    had_image.push(idx);
                                     let image_url = image_url.clone();
                                     let action_ctx = format!("{} — {}", tc.name, result.content);
                                     let prov = provider.clone();
@@ -3127,6 +3129,18 @@ async fn run_loop(
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // For comm-origin runs, tell the model that screenshots will be
+            // delivered as attachments — otherwise it has no way to know.
+            if origin == tools::Origin::Comm && !had_image.is_empty() {
+                for idx in &had_image {
+                    if let Some((_, ref mut result)) = results[*idx] {
+                        result.content.push_str(
+                            "\n\n✓ Screenshot captured and will be delivered as an attachment in your reply to the user."
+                        );
                     }
                 }
             }

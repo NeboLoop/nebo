@@ -417,13 +417,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 ),
                             );
                             // Collect run-produced file artifacts for comm replies.
-                            // Skip inline base64 (`data:`) — those are vision
-                            // screenshots, not deliverables to attach.
                             if comm_reply.is_some() && event.error.is_none() {
+                                tracing::debug!(has_image_url = event.image_url.is_some(), "tool_result comm artifact check");
                                 if let Some(url) = &event.image_url {
-                                    if !url.starts_with("data:")
-                                        && !comm_file_artifacts.iter().any(|u| u == url)
-                                    {
+                                    if url.starts_with("data:") {
+                                        // Inline base64 image — save to files dir
+                                        // so it can be uploaded as a comm attachment.
+                                        if let Some(path) = save_data_uri_to_file(url) {
+                                            if !comm_file_artifacts.iter().any(|u| u == &path) {
+                                                comm_file_artifacts.push(path);
+                                            }
+                                        }
+                                    } else if !comm_file_artifacts.iter().any(|u| u == url) {
                                         comm_file_artifacts.push(url.clone());
                                     }
                                 }
@@ -605,6 +610,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
                 // Send final comm reply — flush remaining stream buffer + complete message
                 if let Some(reply_config) = &comm_reply {
+                    // Strip markdown image references to local files — the actual
+                    // images are delivered as comm attachments, so these would just
+                    // render as broken links in the web frontend.
+                    if !comm_file_artifacts.is_empty() {
+                        strip_local_image_markdown(&mut full_response);
+                    }
                     if !full_response.is_empty() {
                         // Build metadata with agent name for all outbound messages
                         let mut reply_meta = std::collections::HashMap::new();
@@ -1067,6 +1078,81 @@ fn mime_from_extension(path: &std::path::Path) -> String {
         _ => "application/octet-stream",
     }
     .to_string()
+}
+
+/// Save a `data:` URI (base64 image) to `<data_dir>/files/` and return the
+/// local file path. Used to materialize inline screenshots as uploadable
+/// attachments for comm replies.
+fn save_data_uri_to_file(data_uri: &str) -> Option<String> {
+    use base64::Engine;
+
+    tracing::info!(uri_len = data_uri.len(), prefix = &data_uri[..60.min(data_uri.len())], "save_data_uri_to_file called");
+
+    let (mime, b64) = if let Some(rest) = data_uri.strip_prefix("data:image/jpeg;base64,") {
+        ("jpeg", rest)
+    } else if let Some(rest) = data_uri.strip_prefix("data:image/png;base64,") {
+        ("png", rest)
+    } else if let Some(rest) = data_uri.strip_prefix("data:image/webp;base64,") {
+        ("webp", rest)
+    } else {
+        return None;
+    };
+
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(b64) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "failed to decode data URI for comm attachment");
+            return None;
+        }
+    };
+
+    let files_dir = match config::data_dir() {
+        Ok(d) => d.join("files"),
+        Err(_) => return None,
+    };
+    let _ = std::fs::create_dir_all(&files_dir);
+
+    let filename = format!("screenshot-{}.{}", uuid::Uuid::new_v4(), mime);
+    let path = files_dir.join(&filename);
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        warn!(error = %e, path = %path.display(), "failed to save screenshot for comm attachment");
+        return None;
+    }
+
+    Some(path.to_string_lossy().to_string())
+}
+
+/// Strip markdown image references that point to local file paths.
+/// These render as broken images in the web frontend — the actual
+/// images are delivered as comm attachments instead.
+fn strip_local_image_markdown(text: &mut String) {
+    while let Some(start) = text.find("![") {
+        let after_alt = match text[start + 2..].find("](") {
+            Some(i) => start + 2 + i + 2,
+            None => break,
+        };
+        let end = match text[after_alt..].find(')') {
+            Some(i) => after_alt + i + 1,
+            None => break,
+        };
+        let url = &text[after_alt..end - 1];
+        if url.starts_with('/') || url.starts_with("file://") {
+            // Remove the entire ![alt](path) and any surrounding whitespace/newlines
+            let trim_start = if start > 0 && text.as_bytes()[start - 1] == b'\n' {
+                start - 1
+            } else {
+                start
+            };
+            let trim_end = if end < text.len() && text.as_bytes()[end] == b'\n' {
+                end + 1
+            } else {
+                end
+            };
+            text.replace_range(trim_start..trim_end, "");
+        } else {
+            break;
+        }
+    }
 }
 
 /// Send a comm message through the appropriate channel provider.

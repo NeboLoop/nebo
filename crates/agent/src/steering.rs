@@ -83,6 +83,7 @@ impl Pipeline {
             Box::new(RepetitionDetector),
             Box::new(LoopDetector),
             Box::new(ErrorRecovery),
+            Box::new(ToolResultGrounding),
             Box::new(PresenceAwareness),
             Box::new(ContextPressure),
             Box::new(JanusQuotaWarning),
@@ -762,6 +763,62 @@ impl Generator for ErrorRecovery {
             ),
             priority: 6,
         }]
+    }
+}
+
+// 14b. Tool Result Grounding — prevent hallucinating tool failures when tools succeed
+struct ToolResultGrounding;
+impl Generator for ToolResultGrounding {
+    fn name(&self) -> &str {
+        "tool_result_grounding"
+    }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        if !ctx.recent_tool_names.iter().any(|n| n == "web") {
+            return vec![];
+        }
+
+        // Scan last 10 messages for web tool results that succeeded with content
+        let recent = ctx.messages.iter().rev().take(10);
+        let mut web_success_chars = 0usize;
+        for msg in recent {
+            if msg.role != "tool" {
+                continue;
+            }
+            if let Some(ref tr_json) = msg.tool_results {
+                if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr_json) {
+                    for r in &results {
+                        let is_error = r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let content_len = r
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.len())
+                            .unwrap_or(0);
+                        if !is_error && content_len > 500 {
+                            web_success_chars += content_len;
+                        }
+                    }
+                }
+            }
+            if !msg.content.is_empty() && msg.content.len() > 500 {
+                web_success_chars += msg.content.len();
+            }
+        }
+
+        if web_success_chars > 1000 {
+            vec![SteeringDirective {
+                label: "Tool Result Grounding".to_string(),
+                content: format!(
+                    "IMPORTANT: Web tools returned {} chars of content in recent calls. \
+                     Do NOT claim tools are broken, empty, or returning 0 lines — \
+                     read your actual tool results and use the data you received. \
+                     If a page is a 404, navigate elsewhere — do not declare all tools broken.",
+                    web_success_chars
+                ),
+                priority: 9,
+            }]
+        } else {
+            vec![]
+        }
     }
 }
 

@@ -2511,6 +2511,19 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             )
         };
 
+        if handle_comm_slash_command(
+            &state,
+            &text,
+            &session_key,
+            "agent_space",
+            &msg.conversation_id,
+        )
+        .await
+        .is_some()
+        {
+            return;
+        }
+
         // Pre-create chat with friendly title (agent name, not raw session key)
         let agent_name = if is_default_bot {
             "Nebo".to_string()
@@ -2663,6 +2676,19 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 )
             };
 
+            if handle_comm_slash_command(
+                &state,
+                &text,
+                &session_key,
+                &msg.topic,
+                &msg.conversation_id,
+            )
+            .await
+            .is_some()
+            {
+                return;
+            }
+
             let agent_name = if is_default_bot {
                 "Nebo".to_string()
             } else {
@@ -2776,6 +2802,19 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
         let session_key =
             agent::keyparser::build_session_key("neboai", &msg.topic, &msg.conversation_id);
+
+        if handle_comm_slash_command(
+            &state,
+            &text,
+            &session_key,
+            &msg.topic,
+            &msg.conversation_id,
+        )
+        .await
+        .is_some()
+        {
+            return;
+        }
 
         // Resolve entity config for the channel
         let entity_config = entity_config::resolve_for_chat(&state.store, "channel", &msg.topic);
@@ -3276,6 +3315,111 @@ async fn resolve_inbound_agent(
         "inbound: agent slug did not resolve locally, routing to primary bot"
     );
     (String::new(), true)
+}
+
+/// Handle built-in slash commands from comm (NeboAI) messages.
+/// Returns Some(response_text) if the prompt was a slash command that was handled,
+/// None if the prompt should be processed normally by the agent.
+async fn handle_comm_slash_command(
+    state: &AppState,
+    text: &str,
+    session_key: &str,
+    topic: &str,
+    conversation_id: &str,
+) -> Option<()> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+
+    let (cmd, _args) = match trimmed.find(' ') {
+        Some(i) => (&trimmed[..i], trimmed[i + 1..].trim()),
+        None => (trimmed, ""),
+    };
+    let cmd = cmd.to_lowercase();
+
+    let response = match cmd.as_str() {
+        "/new" | "/reset" => {
+            match state
+                .runner
+                .sessions()
+                .resolve_session_id_by_key(session_key)
+                .and_then(|sid| state.runner.sessions().reset(&sid))
+            {
+                Ok(_new_chat_id) => {
+                    tracing::info!(
+                        session_key = %session_key,
+                        "comm slash: /new — rotated to fresh conversation"
+                    );
+                    "New conversation started. Previous context has been cleared.".to_string()
+                }
+                Err(e) => format!("Failed to start new conversation: {}", e),
+            }
+        }
+
+        "/clear" => {
+            match state
+                .runner
+                .sessions()
+                .resolve_session_id_by_key(session_key)
+                .and_then(|sid| state.runner.sessions().clear_current_messages(&sid))
+            {
+                Ok(()) => "Conversation cleared.".to_string(),
+                Err(e) => format!("Failed to clear: {}", e),
+            }
+        }
+
+        "/status" => {
+            let msg_count = state
+                .runner
+                .sessions()
+                .resolve_session_id_by_key(session_key)
+                .ok()
+                .and_then(|sid| state.runner.sessions().get_messages(&sid).ok())
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            format!(
+                "Session: {}\nMessages in context: {}",
+                session_key, msg_count,
+            )
+        }
+
+        "/help" => {
+            "/new — Start a new conversation (preserves history)\n\
+             /clear — Clear current conversation messages\n\
+             /status — Show session info\n\
+             /help — Show this help"
+                .to_string()
+        }
+
+        _ => return None,
+    };
+
+    let reply = comm::CommMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        from: String::new(),
+        to: String::new(),
+        topic: topic.to_string(),
+        conversation_id: conversation_id.to_string(),
+        msg_type: comm::CommMessageType::Message,
+        content: response,
+        metadata: std::collections::HashMap::new(),
+        timestamp: 0,
+        human_injected: false,
+        human_id: None,
+        task_id: None,
+        correlation_id: None,
+        task_status: None,
+        artifacts: vec![],
+        error: None,
+        attachments: vec![],
+    };
+    if let Err(e) = state.comm_manager.send(reply).await {
+        tracing::warn!(error = %e, "failed to send slash command response via comm");
+    }
+
+    Some(())
 }
 
 /// Extract text from a comm message content (JSON or plain text).

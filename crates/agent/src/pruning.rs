@@ -472,15 +472,7 @@ fn build_tool_summary(
             } else {
                 cmd.to_string()
             };
-            let status = if tool_result.contains("error") || tool_result.contains("Error") {
-                "error"
-            } else {
-                "ok"
-            };
-            format!(
-                "[system:shell] {} → {}, {} lines",
-                cmd_short, status, line_count
-            )
+            format!("[system:shell] {} ({} lines)", cmd_short, line_count)
         }
         "system" if resource == "file" && action == "read" => {
             let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("?");
@@ -798,7 +790,9 @@ What still needs to happen, ordered by priority. Include blocked items and why.
 Full paths of files read, written, or modified. URLs accessed.
 
 ## Errors & Resolutions
-Errors encountered and how they were resolved (or if still open).
+Only include UNRESOLVED errors that block current work. Omit resolved errors \
+and transient failures (timeouts, 404s, connection drops) — these are normal \
+and should not influence future tool use.
 
 ## User Requests
 Explicit things the user asked for that haven't been addressed yet.
