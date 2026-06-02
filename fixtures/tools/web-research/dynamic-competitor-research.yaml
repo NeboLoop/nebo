@@ -1,0 +1,55 @@
+id: web-research-dynamic-competitor-research
+name: "Web Research — local competitor research via Google Maps"
+description: |
+  A small business owner wants to research competitors in their area.
+  This requires searching Google Maps, reading business listings, and
+  extracting structured data (ratings, reviews, hours, services).
+  Tests navigation of dynamic map-based sites and multi-listing extraction.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Find the top 5 plumbing companies near Austin TX on Google Maps. I need their names, ratings, number of reviews, and whether they're open now"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search-or-navigate
+      text: "Model starts with web(action: 'search') for Google Maps plumbing or navigates directly to google.com/maps"
+      severity: critical
+  recovery:
+    - id: reaches-map-results
+      text: "Model reaches a Google Maps results page showing plumbing businesses near Austin"
+      severity: critical
+    - id: extracts-multiple-listings
+      text: "Model reads and extracts data from at least 3 business listings"
+      severity: critical
+    - id: captures-structured-data
+      text: "For each business, model captures name and at least 2 of: rating, review count, hours/open status"
+      severity: critical
+    - id: scrolls-for-more
+      text: "If initial results don't show 5 businesses, model scrolls or navigates to see more"
+      severity: important
+    - id: formatted-report
+      text: "Model presents findings in a structured list or table format"
+      severity: important
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 5-20 tool calls (navigate + multiple read/scroll cycles)"
+      severity: important
+    - id: max-thirty-calls
+      text: "Task completes in no more than 30 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 12
+  total_tokens: 18000
+  narrative: |
+    1. navigate to google.com/maps or search for "plumbing companies Austin TX Google Maps"
+    2. search within Maps for "plumbing near Austin TX"
+    3. read_page → extract first batch of listings
+    4. scroll or click individual listings to get details (rating, reviews, hours)
+    5. Compile structured report of top 5 with requested data points

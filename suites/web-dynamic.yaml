@@ -1,0 +1,19 @@
+name: "Dynamic Site Research"
+description: |
+  Real-world browser-based research workflows on dynamic sites with forms,
+  autocomplete, and structured results. These are the workflows Nebo's
+  target users (realtors, consultants, small business owners) actually do:
+  government database searches, competitor research, property lookups,
+  flight pricing, and market analysis.
+
+fixtures:
+  # Government form-based search (2)
+  - ../fixtures/tools/web-research/dynamic-sos-business-search.yaml
+  - ../fixtures/tools/web-research/dynamic-property-lookup.yaml
+  # Dynamic interactive sites (1)
+  - ../fixtures/tools/web-research/dynamic-flight-search.yaml
+  # Multi-step market research (2)
+  - ../fixtures/tools/web-research/dynamic-competitor-research.yaml
+  - ../fixtures/tools/web-research/dynamic-market-research.yaml
+  # Auth-gated with graceful degradation (1)
+  - ../fixtures/tools/web-research/dynamic-linkedin-company.yaml

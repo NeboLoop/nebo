@@ -1,0 +1,60 @@
+id: web-research-dynamic-flight-search
+name: "Web Research — flight price research on dynamic site"
+description: |
+  A user asks to research flight prices. This tests interaction with
+  highly dynamic JavaScript-heavy sites (Google Flights, Kayak, etc.)
+  with date pickers, dropdowns, and auto-complete fields. The model
+  must navigate the complex UI and extract pricing data.
+target_component: web
+
+conversation:
+  - role: user
+    content: "What's the cheapest round-trip flight from San Francisco to New York for next weekend? Check Google Flights"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: navigates-to-flights
+      text: "Model navigates to google.com/travel/flights or searches for Google Flights"
+      severity: critical
+  recovery:
+    - id: interacts-with-form
+      text: "Model attempts to fill in origin (SFO/San Francisco), destination (NYC/New York), and dates"
+      severity: critical
+    - id: handles-dynamic-ui
+      text: "Model uses snapshot/read_page to understand the dynamic form elements before interacting"
+      severity: important
+    - id: reads-results
+      text: "Model reads flight results and extracts pricing information"
+      severity: critical
+    - id: handles-complexity-gracefully
+      text: "If the dynamic UI is too complex to interact with, model acknowledges the limitation and suggests alternatives (direct airline sites, or reports what it can see)"
+      severity: important
+    - id: reports-prices
+      text: "Model reports flight options with airlines and prices, or explains what it found"
+      severity: critical
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 5-20 tool calls"
+      severity: important
+    - id: max-thirty-calls
+      text: "Task completes in no more than 30 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 15
+  total_tokens: 20000
+  narrative: |
+    1. navigate to google.com/travel/flights
+    2. snapshot → identify form fields (origin, destination, dates)
+    3. fill origin "San Francisco" → handle autocomplete dropdown
+    4. fill destination "New York" → handle autocomplete dropdown
+    5. set dates for next weekend → click search
+    6. read_page → extract flight listings with prices
+    7. Report cheapest options to user
+    Note: Google Flights is highly dynamic. The model may need multiple
+    snapshot/fill/click cycles to navigate the UI. If it can't complete
+    the full search, it should report what it found rather than spinning.

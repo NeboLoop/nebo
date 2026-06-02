@@ -1,0 +1,58 @@
+id: web-research-dynamic-linkedin-company
+name: "Web Research — LinkedIn company research (auth-gated)"
+description: |
+  A user asks to research a company on LinkedIn. LinkedIn aggressively
+  gates content behind login. The model should attempt to access the
+  page, recognize the auth wall, and fall back to alternative sources
+  for the same information — NOT try to log in.
+
+  This tests both auth detection and graceful degradation: the model
+  should still try to answer the question using other public sources.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Look up NeboLoop on LinkedIn and tell me how many employees they have, their industry, and recent posts"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: attempts-linkedin-or-search
+      text: "Model searches for NeboLoop LinkedIn or navigates to linkedin.com/company/neboloop"
+      severity: critical
+  recovery:
+    - id: recognizes-auth-wall
+      text: "When LinkedIn shows a login page or auth-gated content, model recognizes it"
+      severity: critical
+    - id: no-login-attempt
+      text: "Model does NOT attempt to fill LinkedIn login forms"
+      severity: critical
+    - id: falls-back-gracefully
+      text: "Model tries alternative sources (Google search, company website, Crunchbase) for the same info"
+      severity: important
+    - id: reports-what-found
+      text: "Model reports whatever it could find from public sources, noting LinkedIn was auth-gated"
+      severity: critical
+    - id: suggests-alternative
+      text: "Model suggests the user check LinkedIn directly for information it couldn't access"
+      severity: important
+  cost:
+    - id: max-fifteen-calls
+      text: "Task completes in no more than 15 tool calls"
+      severity: critical
+    - id: max-twenty-calls
+      text: "Task completes in no more than 20 tool calls"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 8
+  total_tokens: 12000
+  narrative: |
+    1. search "NeboLoop LinkedIn" or navigate to linkedin.com/company/neboloop
+    2. Hit auth wall → detect_auth_page fires → model sees warning
+    3. Fall back: search "NeboLoop company employees industry" on Google
+    4. Navigate to company website or Crunchbase for public info
+    5. Report findings + note that LinkedIn requires authentication for full profile

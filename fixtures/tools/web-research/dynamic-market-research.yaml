@@ -1,0 +1,57 @@
+id: web-research-dynamic-market-research
+name: "Web Research — market research workflow (multi-step)"
+description: |
+  A consultant needs to research a company's market position. This is
+  a multi-step research workflow: search for the company, find their
+  website, check their offerings, then search for competitors and
+  compare. Tests sustained multi-page research with a clear goal.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Research Calendly's pricing and main competitors. I need to know their pricing tiers, and who the top 3 alternatives are with their pricing"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search
+      text: "Model starts with web(action: 'search') for Calendly pricing or navigates to calendly.com"
+      severity: critical
+  recovery:
+    - id: finds-calendly-pricing
+      text: "Model navigates to Calendly's pricing page and extracts tier names and prices"
+      severity: critical
+    - id: searches-competitors
+      text: "Model searches for Calendly alternatives/competitors after getting Calendly's pricing"
+      severity: critical
+    - id: researches-competitor-pricing
+      text: "Model visits at least 2 competitor pricing pages to get their pricing data"
+      severity: critical
+    - id: synthesizes-comparison
+      text: "Model produces a comparison of Calendly vs competitors with pricing for each"
+      severity: critical
+    - id: stops-when-sufficient
+      text: "Model stops researching after covering Calendly + 3 competitors — doesn't keep browsing"
+      severity: important
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 8-25 tool calls (multi-site research)"
+      severity: important
+    - id: max-thirty-five-calls
+      text: "Task completes in no more than 35 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 18
+  total_tokens: 25000
+  narrative: |
+    1. search "Calendly pricing" → navigate to calendly.com/pricing → read_page
+    2. Extract Calendly's pricing tiers (Free, Standard, Teams, Enterprise)
+    3. search "Calendly alternatives competitors" → read results
+    4. Navigate to competitor 1 pricing page (e.g., Cal.com) → read_page
+    5. Navigate to competitor 2 pricing page (e.g., SavvyCal) → read_page
+    6. Navigate to competitor 3 pricing page (e.g., Acuity) → read_page
+    7. Synthesize comparison table: product, tiers, prices, key differentiators

@@ -1,0 +1,55 @@
+id: web-research-dynamic-sos-business-search
+name: "Web Research — Secretary of State business entity search"
+description: |
+  A consultant needs to verify a business entity's registration status.
+  This requires navigating to a state government site, filling a search
+  form, and reading structured results. Tests form-filling on dynamic
+  government sites and extracting tabular data from results pages.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Look up 'Acme Holdings LLC' on the California Secretary of State business search to check if it's active and when it was formed"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search-or-navigate
+      text: "Model's first call is either web(action: 'search') for the CA SOS site or web(action: 'navigate') directly to bizfileonline.sos.ca.gov"
+      severity: critical
+  recovery:
+    - id: finds-search-form
+      text: "Model navigates to the CA SOS business search page and identifies the search form"
+      severity: critical
+    - id: fills-search-form
+      text: "Model fills the business name field with 'Acme Holdings LLC' and submits the form"
+      severity: critical
+    - id: reads-results
+      text: "Model reads the search results page and extracts entity name, status, and formation date"
+      severity: critical
+    - id: handles-multiple-results
+      text: "If multiple results appear, model identifies the correct entity or reports all matches"
+      severity: important
+    - id: reports-structured-answer
+      text: "Model reports the entity status (active/inactive/etc.) and formation date clearly"
+      severity: critical
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 4-12 tool calls (search/navigate + snapshot + fill + read results)"
+      severity: important
+    - id: max-twenty-calls
+      text: "Task completes in no more than 20 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 8
+  total_tokens: 12000
+  narrative: |
+    1. search "California Secretary of State business entity search" or navigate directly to bizfileonline.sos.ca.gov
+    2. snapshot → identify search form fields
+    3. fill business name field with "Acme Holdings LLC" → click search button
+    4. read_page → extract results table (entity name, number, status, formation date)
+    5. Report findings to user

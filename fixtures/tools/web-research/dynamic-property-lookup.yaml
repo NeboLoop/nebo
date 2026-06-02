@@ -1,0 +1,55 @@
+id: web-research-dynamic-property-lookup
+name: "Web Research — county property records lookup"
+description: |
+  A realtor needs to look up property tax records on a county assessor
+  site. This involves navigating to a government portal, filling address
+  search forms, and reading structured property data. Tests form-based
+  search on government sites with tabular results.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Look up the property records for 1600 Pennsylvania Ave in Washington DC on the DC property tax database. I need the assessed value and owner name"
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search-or-navigate
+      text: "Model starts with web(action: 'search') for DC property tax records or navigates to the DC OTR real property site"
+      severity: critical
+  recovery:
+    - id: finds-property-search
+      text: "Model navigates to the DC property tax lookup page and identifies the address search form"
+      severity: critical
+    - id: fills-address-form
+      text: "Model fills in the address fields (street number, street name) and submits the search"
+      severity: critical
+    - id: reads-property-data
+      text: "Model reads the property record page and extracts assessed value and owner information"
+      severity: critical
+    - id: handles-form-variants
+      text: "Model adapts to the form layout — whether it's a single address field or split fields"
+      severity: important
+    - id: reports-findings
+      text: "Model reports the assessed value and owner name clearly to the user"
+      severity: critical
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 4-15 tool calls"
+      severity: important
+    - id: max-twenty-calls
+      text: "Task completes in no more than 20 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 10
+  total_tokens: 14000
+  narrative: |
+    1. search "DC property tax records lookup" → find mytax.dc.gov or similar
+    2. navigate to the property search page → snapshot to see form
+    3. fill address fields → submit search
+    4. read_page → extract assessed value, owner name, lot/square info
+    5. Report findings to user

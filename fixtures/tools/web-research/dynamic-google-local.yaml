@@ -1,0 +1,55 @@
+id: web-research-dynamic-google-local
+name: "Web Research — Google local business search"
+description: |
+  A user asks to find top-rated local businesses. This tests the model's
+  ability to search for local businesses and extract structured data
+  (ratings, addresses, hours) from search results or business listing
+  sites. The model should use search to get initial results, then
+  optionally navigate to 1-2 pages for details — not spiral through
+  dozens of pages.
+target_component: web
+
+conversation:
+  - role: user
+    content: "Find me the top 3 rated Mexican restaurants near downtown Salt Lake City, Utah. Include their ratings, address, and hours if available."
+
+tool_config:
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-search
+      text: "Model starts with web(action: 'search') for Mexican restaurants in Salt Lake City"
+      severity: critical
+  recovery:
+    - id: extracts-from-search
+      text: "Model extracts restaurant names, ratings, and basic info from search results without navigating to individual pages unless necessary"
+      severity: critical
+    - id: no-excessive-navigation
+      text: "Model does NOT navigate to more than 3 individual restaurant pages"
+      severity: important
+    - id: reports-structured-data
+      text: "Model reports restaurant name, rating, and address for at least 2 restaurants"
+      severity: critical
+    - id: no-scroll-spiral
+      text: "Model does NOT enter a scroll-read-scroll-read spiral on any single page"
+      severity: important
+  cost:
+    - id: reasonable-calls
+      text: "Task completes in 3-10 tool calls"
+      severity: important
+    - id: max-fifteen-calls
+      text: "Task completes in no more than 15 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 5
+  total_tokens: 8000
+  narrative: |
+    1. search "top rated Mexican restaurants downtown Salt Lake City Utah"
+    2. Extract restaurant names, ratings from search results
+    3. Optionally navigate to 1 business listing page for hours
+    4. Report top 3 with ratings, addresses, hours
+    Should NOT: scroll repeatedly, navigate to 5+ separate pages,
+    re-search with minor query variations
