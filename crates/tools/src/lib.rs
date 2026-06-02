@@ -152,6 +152,7 @@ pub async fn persist_skill_from_api(
     artifact_id: &str,
     name: &str,
     code: &str,
+    store: Option<&db::Store>,
 ) -> Result<std::path::PathBuf, String> {
     let detail = api
         .get_skill(artifact_id)
@@ -184,9 +185,47 @@ pub async fn persist_skill_from_api(
         match api.download_napp(download_url).await {
             Ok(data) => {
                 std::fs::write(&napp_path, &data).map_err(|e| format!("write .napp: {e}"))?;
-                tracing::info!(skill = name, path = %napp_path.display(), size = data.len(), "stored sealed .napp");
+                tracing::info!(skill = name, path = %napp_path.display(), size = data.len(), "stored .napp");
 
-                // Extract alongside so the skill loader can find SKILL.md
+                if napp::reader::is_sealed_napp(&napp_path) {
+                    // Sealed (paid) skill — keep it sealed; the loader reads SKILL.md in
+                    // memory via the license key. Seed the key now and partial-extract
+                    // metadata (manifest.json — not the IP) so the loader resolves the
+                    // artifact_id. Do NOT write a loose SKILL.md fallback: a sibling
+                    // SKILL.md would make the loader treat this as free content.
+                    tracing::info!(skill = name, "sealed skill — keeping .napp sealed; seeding license key");
+                    if let Some(store) = store {
+                        match fetch_and_store_license_keys(
+                            api,
+                            store,
+                            &[artifact_id.to_string()],
+                            "skill",
+                        )
+                        .await
+                        {
+                            Ok(keys) => {
+                                if let Some(key) = keys.get(artifact_id) {
+                                    if let Err(e) =
+                                        napp::reader::partial_extract_sealed_napp(&napp_path, key)
+                                    {
+                                        tracing::warn!(skill = name, error = %e, "failed to partial-extract sealed skill metadata");
+                                    }
+                                } else {
+                                    tracing::warn!(skill = name, "no license key returned for sealed skill — it will not load until keys refresh");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(skill = name, error = %e, "failed to seed license key for sealed skill");
+                            }
+                        }
+                    } else {
+                        tracing::warn!(skill = name, "no store available to seed sealed skill license key");
+                    }
+                    // Sibling dir now holds the partial-extracted manifest.json.
+                    return Ok(napp_path.with_extension(""));
+                }
+
+                // Free skill — extract alongside so the skill loader can find SKILL.md.
                 // e.g. nebo/skills/my-cloud/1.0.0.napp → nebo/skills/my-cloud/1.0.0/
                 match napp::reader::extract_napp_alongside(&napp_path) {
                     Ok(extract_dir) => {
@@ -272,6 +311,60 @@ fn generate_minimal_skill_md(name: &str, description: &str) -> String {
 pub struct PersistAgentResult {
     /// The typeConfig JSON from NeboAI (contains workflow bindings, triggers, etc.)
     pub type_config: Option<serde_json::Value>,
+}
+
+/// Fetch license keys for sealed artifacts from NeboAI and store them
+/// (encrypted) in the local cache. Returns the decoded raw keys by artifact_id.
+///
+/// This is the single pathway for seeding and refreshing license keys: it is
+/// called at install time to seed a freshly installed sealed artifact (so the
+/// loader can decrypt it in memory) and by the periodic refresh to renew keys
+/// before their TTL expires. The returned raw keys let the install path
+/// partial-extract metadata (e.g. manifest.json) immediately.
+pub async fn fetch_and_store_license_keys(
+    api: &comm::api::NeboAIApi,
+    store: &db::Store,
+    artifact_ids: &[String],
+    artifact_type: &str,
+) -> Result<std::collections::HashMap<String, [u8; 32]>, String> {
+    use base64::Engine;
+
+    let mut keys = std::collections::HashMap::new();
+    if artifact_ids.is_empty() {
+        return Ok(keys);
+    }
+
+    let response = api
+        .fetch_license_keys(artifact_ids)
+        .await
+        .map_err(|e| format!("fetch license keys: {e}"))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    for (artifact_id, entry) in &response.keys {
+        let key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&entry.key)
+            .map_err(|e| format!("base64 decode: {e}"))?;
+        let Ok(key_arr): Result<[u8; 32], _> = key_bytes.try_into() else {
+            tracing::warn!(artifact_id, "invalid license key length");
+            continue;
+        };
+        // Encrypt with the keyring master key before storing at rest.
+        let encrypted = auth::credential::encrypt(&entry.key)
+            .map_err(|e| format!("encrypt key: {e}"))?;
+        let expires_at = (now + entry.ttl) as i64;
+        if let Err(e) =
+            store.upsert_license_key(artifact_id, artifact_type, "user", &encrypted, expires_at)
+        {
+            tracing::warn!(artifact_id, error = %e, "failed to store license key");
+        } else {
+            keys.insert(artifact_id.clone(), key_arr);
+        }
+    }
+    Ok(keys)
 }
 
 pub async fn persist_agent_from_api(
@@ -406,20 +499,57 @@ pub async fn persist_agent_from_api(
     std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create agent dir: {e}"))?;
     let version_dir = napp_dir.join(&version);
 
-    // Download sealed .napp and extract it
+    // Download the .napp (always wrapped in a signed NAPP envelope) and extract it.
+    //
+    // Free agents carry a plain tar.gz payload: extract it to loose files so the
+    // loader can read AGENT.md/agent.json from disk. Sealed (paid) agents carry an
+    // encrypted payload: leave the .napp sealed on disk — the loader decrypts it in
+    // memory using the license key — and seed that license key now so the agent
+    // can load immediately after install.
+    let mut sealed = false;
     if let Some(ref download_url) = download_url {
         let napp_path = napp_dir.join(format!("{}.napp", version));
         match api.download_napp(download_url).await {
             Ok(data) => {
                 std::fs::write(&napp_path, &data).map_err(|e| format!("write .napp: {e}"))?;
-                tracing::info!(agent = name, path = %napp_path.display(), size = data.len(), "stored sealed .napp");
+                tracing::info!(agent = name, path = %napp_path.display(), size = data.len(), "stored .napp");
 
-                match napp::reader::extract_napp_alongside(&napp_path) {
-                    Ok(extract_dir) => {
-                        tracing::info!(agent = name, dir = %extract_dir.display(), "extracted .napp");
+                sealed = napp::reader::is_sealed_napp(&napp_path);
+                if sealed {
+                    tracing::info!(agent = name, "sealed agent — keeping .napp sealed; seeding license key");
+                    match fetch_and_store_license_keys(
+                        api,
+                        store,
+                        &[artifact_id.to_string()],
+                        "agent",
+                    )
+                    .await
+                    {
+                        Ok(keys) => {
+                            // Partial-extract metadata (manifest.json) — not the IP — so the
+                            // loader can resolve the artifact_id and match the license key.
+                            if let Some(key) = keys.get(artifact_id) {
+                                if let Err(e) =
+                                    napp::reader::partial_extract_sealed_napp(&napp_path, key)
+                                {
+                                    tracing::warn!(agent = name, error = %e, "failed to partial-extract sealed agent metadata");
+                                }
+                            } else {
+                                tracing::warn!(agent = name, "no license key returned for sealed agent — it will not load until keys refresh");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(agent = name, error = %e, "failed to seed license key for sealed agent");
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!(agent = name, error = %e, "failed to extract .napp");
+                } else {
+                    match napp::reader::extract_napp_alongside(&napp_path) {
+                        Ok(extract_dir) => {
+                            tracing::info!(agent = name, dir = %extract_dir.display(), "extracted .napp");
+                        }
+                        Err(e) => {
+                            tracing::warn!(agent = name, error = %e, "failed to extract .napp");
+                        }
                     }
                 }
             }
@@ -429,26 +559,30 @@ pub async fn persist_agent_from_api(
         }
     }
 
-    // Validate: an agent .napp must contain both AGENT.md and agent.json
-    let agent_md_path = version_dir.join("AGENT.md");
-    let agent_json_path = version_dir.join("agent.json");
-    if !agent_md_path.exists() || !agent_json_path.exists() {
-        let missing: Vec<&str> = [
-            (!agent_md_path.exists()).then_some("AGENT.md"),
-            (!agent_json_path.exists()).then_some("agent.json"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        tracing::error!(
-            agent = name,
-            ?missing,
-            "agent .napp is incomplete — missing required files"
-        );
-        return Err(format!(
-            "agent package for {name} is incomplete: missing {}",
-            missing.join(", ")
-        ));
+    // Validate: a free agent .napp must extract to AGENT.md + agent.json on disk.
+    // Sealed agents have no loose files (the IP stays encrypted) and are validated
+    // by the loader reading them in memory with the seeded license key.
+    if !sealed {
+        let agent_md_path = version_dir.join("AGENT.md");
+        let agent_json_path = version_dir.join("agent.json");
+        if !agent_md_path.exists() || !agent_json_path.exists() {
+            let missing: Vec<&str> = [
+                (!agent_md_path.exists()).then_some("AGENT.md"),
+                (!agent_json_path.exists()).then_some("agent.json"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            tracing::error!(
+                agent = name,
+                ?missing,
+                "agent .napp is incomplete — missing required files"
+            );
+            return Err(format!(
+                "agent package for {name} is incomplete: missing {}",
+                missing.join(", ")
+            ));
+        }
     }
 
     tracing::info!(agent = name, dir = %version_dir.display(), "persisted agent artifact");

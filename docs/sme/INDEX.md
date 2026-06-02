@@ -1,6 +1,6 @@
 # Nebo Systems — Master Index
 
-> **Last updated:** 2026-05-20
+> **Last updated:** 2026-06-02
 > **Purpose:** Exhaustive inventory of every system in Nebo, mapped to its SME documentation status.
 
 ---
@@ -15,12 +15,13 @@
 | AI & Providers | 3 | 3 | 0 |
 | Data & Storage | 4 | 4 | 0 |
 | Auth & Security | 4 | 4 | 0 |
-| Communication | 3 | 3 | 0 |
+| Communication | 4 | 4 | 0 |
 | Desktop & Platform | 6 | 6 | 0 |
 | App Platform | 5 | 5 | 0 |
 | Frontend | 8 | 8 | 0 |
 | Infrastructure | 4 | 4 | 0 |
-| **Totals** | **61** | **61** | **0** |
+| Automation & Eventing | 2 | 2 | 0 |
+| **Totals** | **64** | **64** | **0** |
 
 ---
 
@@ -93,52 +94,60 @@
 
 | # | System | Crate/Module | SME Doc | Status |
 |---|--------|-------------|---------|--------|
-| 36 | NeboAI Connection (API, Comms, Janus) | `comm/neboai.rs`, `comm/api.rs` | `NEBOAI_CONNECTION.md` | Current |
+| 36 | NeboLoop Connection (API, Comms, Janus) | `comm/neboloop.rs`, `comm/api.rs` | `NEBOLOOP_CONNECTION.md` | Current |
 | 37 | Comm Plugin Framework | `comm/manager.rs`, `comm/types.rs`, wire protocol | `COMM_FRAMEWORK_SME.md` | Current |
 | 38 | Notification System | `notify/`, `server/handlers/notification.rs` | `NOTIFICATION_SYSTEM_SME.md` | Current |
+| 39 | MCP System (client + server) | `mcp/` (client.rs, bridge.rs, crypto.rs), `tools/mcp_tool.rs`, `server/handlers/mcp_server.rs` | `MCP_SYSTEM.md` | Current |
 
 ## 8. Desktop & Platform Systems
 
 | # | System | Crate/Module | SME Doc | Status |
 |---|--------|-------------|---------|--------|
-| 39 | Browser Automation (CDP) | `browser/` (14 modules) | `BROWSER_AUTOMATION.md` | Current |
-| 40 | Voice Pipeline (TTS/STT) | `voice/` | `VOICE_PIPELINE_SME.md` | Current |
-| 41 | Tauri Desktop App | `src-tauri/` (window, tray, hotkeys) | `TAURI_DESKTOP_SME.md` | Current |
-| 42 | Desktop Tools | `tools/desktop_tool.rs`, `desktop_daemon.rs`, `desktop_snapshot.rs` | `DESKTOP_TOOLS_SME.md` | Current |
-| 43 | Platform Tools | `tools/organizer.rs`, `tools/music_tool.rs`, `tools/spotlight_tool.rs`, `tools/keychain_tool.rs` | `PLATFORM_TOOLS_SME.md` | Current |
-| 44 | VM Sandbox | `vm/`, `vm-daemon/`, `tools/vm_tool.rs` | `VM_SANDBOX_SME.md` | Current |
+| 40 | Browser Automation (CDP) | `browser/` (14 modules) | `BROWSER_AUTOMATION.md` | Current |
+| 41 | Voice Pipeline (TTS/STT) | `voice/` | `VOICE_PIPELINE_SME.md` | Current |
+| 42 | Tauri Desktop App | `src-tauri/` (window, tray, hotkeys) | `TAURI_DESKTOP_SME.md` | Current |
+| 43 | Desktop Tools | `tools/desktop_tool.rs`, `desktop_daemon.rs`, `desktop_snapshot.rs` | `DESKTOP_TOOLS_SME.md` | Current |
+| 44 | Platform Tools | `tools/organizer.rs`, `tools/music_tool.rs`, `tools/spotlight_tool.rs`, `tools/keychain_tool.rs` | `PLATFORM_TOOLS_SME.md` | Current |
+| 45 | VM Sandbox | `vm/`, `vm-daemon/`, `tools/vm_tool.rs` | `VM_SANDBOX_SME.md` | Current |
 
 ## 9. App Platform Systems
 
 | # | System | Crate/Module | SME Doc | Status |
 |---|--------|-------------|---------|--------|
-| 45 | App Lifecycle & Sidecar Management | `server/app_lifecycle.rs` | `APPS.md` | Current |
-| 46 | A2UI Protocol | `a2ui/` (3 sub-crates), `server/a2ui.rs` | `A2UI_PROTOCOL.md` | Current |
-| 47 | A2UI Integration (frontend) | Removed — apps own their UI via `@neboai/app-sdk` | `A2UI_INTEGRATION.md` | Legacy |
-| 48 | App SDK (`@neboai/app-sdk`) | Published on npm; source at `NeboAI/app-sdk` | `APPS.md` | Current |
-| 49 | Napp Package Format | `napp/` (napp.rs, sealed.rs, reader.rs, signing.rs) | `NAPP_FORMAT_SME.md` | Current |
+| 46 | App Lifecycle & Sidecar Management | `server/app_lifecycle.rs` | `APPS.md` | Current |
+| 47 | A2UI Protocol | `a2ui/` (3 sub-crates), `server/a2ui.rs` | `A2UI_PROTOCOL.md` | Current |
+| 48 | A2UI Integration (frontend) | Removed — apps own their UI via `@neboai/app-sdk` | `A2UI_INTEGRATION.md` | Legacy |
+| 49 | App SDK (`@neboai/app-sdk`) | Published on npm; source at `NeboAI/app-sdk` | `APPS.md` | Current |
+| 50 | Napp Package Format | `napp/` (napp.rs, sealed.rs, reader.rs, signing.rs) | `NAPP_FORMAT_SME.md` | Current |
 
 ## 10. Frontend Systems
 
 | # | System | Crate/Module | SME Doc | Status |
 |---|--------|-------------|---------|--------|
-| 50 | Chat Controller & UI | `app/src/lib/chat/`, `components/chat/` | `CHAT_SYSTEM.md` §29 | Current |
-| 51 | Calendar & Schedule | `app/src/lib/stores/schedule.ts`, `components/Color*View.svelte` | `CALENDAR_SYSTEM.md` | Current |
-| 52 | Marketplace UI | `app/src/routes/marketplace/`, `components/marketplace/` | `APPS.md` | Current |
-| 53 | Slash Commands (frontend) | `components/chat/SlashCommandMenu.svelte` | `SLASH_COMMANDS.md` | Current |
-| 54 | Workflow Builder UI | `components/workflow/` (5 components) | `WORKFLOW_BUILDER_UI_SME.md` | Current |
-| 55 | Settings System (frontend) | `app/src/routes/settings/` (23 pages) | `FRONTEND_SETTINGS_SME.md` §1 | Current |
-| 56 | Onboarding Flow | `app/src/routes/onboarding/` | `FRONTEND_SETTINGS_SME.md` §2 | Current |
-| 57 | Internationalization | `app/src/lib/i18n/` (26 locales) | `I18N_SYSTEM_SME.md` | Current |
+| 51 | Chat Controller & UI | `app/src/lib/chat/`, `components/chat/` | `CHAT_SYSTEM.md` §29 | Current |
+| 52 | Calendar & Schedule | `app/src/lib/stores/schedule.ts`, `components/Color*View.svelte` | `CALENDAR_SYSTEM.md` | Current |
+| 53 | Marketplace UI | `app/src/routes/marketplace/`, `components/marketplace/` | `APPS.md` | Current |
+| 54 | Slash Commands (frontend) | `components/chat/SlashCommandMenu.svelte` | `SLASH_COMMANDS.md` | Current |
+| 55 | Workflow Builder UI | `components/workflow/` (5 components) | `WORKFLOW_BUILDER_UI_SME.md` | Current |
+| 56 | Settings System (frontend) | `app/src/routes/settings/` (23 pages) | `FRONTEND_SETTINGS_SME.md` §1 | Current |
+| 57 | Onboarding Flow | `app/src/routes/onboarding/` | `FRONTEND_SETTINGS_SME.md` §2 | Current |
+| 58 | Internationalization | `app/src/lib/i18n/` (26 locales) | `I18N_SYSTEM_SME.md` | Current |
 
 ## 11. Infrastructure & DevOps
 
 | # | System | Crate/Module | SME Doc | Status |
 |---|--------|-------------|---------|--------|
-| 58 | Release Pipeline & CI/CD | `.github/workflows/release.yml` | `RELEASE.md` | Current |
-| 59 | Auto-Updater | `updater/` | `BUILD_TOOLING_SME.md` §1 | Current |
-| 60 | API Code Generation | `scripts/genapi/` (Go) | `BUILD_TOOLING_SME.md` §2 | Current |
-| 61 | Plugin Publishing Pipeline | `scripts/publish-plugins.sh` | `BUILD_TOOLING_SME.md` §3 | Current |
+| 59 | Release Pipeline & CI/CD | `.github/workflows/release.yml` | `RELEASE.md` | Current |
+| 60 | Auto-Updater | `updater/` | `BUILD_TOOLING_SME.md` §1 | Current |
+| 61 | API Code Generation | `scripts/genapi/` (Go) | `BUILD_TOOLING_SME.md` §2 | Current |
+| 62 | Plugin Publishing Pipeline | `scripts/publish-plugins.sh` | `BUILD_TOOLING_SME.md` §3 | Current |
+
+## 12. Automation & Eventing Systems
+
+| # | System | Crate/Module | SME Doc | Status |
+|---|--------|-------------|---------|--------|
+| 63 | Event System (EventBus, dispatcher, emit) | `tools/events.rs`, `agent/agent_worker.rs`, event-triggered workflows | `EVENT_SYSTEM_SME.md` | Current |
+| 64 | Automation Pipeline & Workflow Engine | `workflow/` (engine, triggers, activities), `server/heartbeat.rs`, `server/scheduler.rs`, `agent/agent_worker.rs` | `AUTOMATION_SME.md` | Current |
 
 ---
 

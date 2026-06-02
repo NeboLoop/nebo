@@ -295,7 +295,15 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     }
 
     // Fetch artifact content from NeboAI and persist to filesystem
-    let skill_dir = match tools::persist_skill_from_api(&api, &artifact_id, &name, code).await {
+    let skill_dir = match tools::persist_skill_from_api(
+        &api,
+        &artifact_id,
+        &name,
+        code,
+        Some(&state.store),
+    )
+    .await
+    {
         Ok(dir) => {
             info!(code, name = %name, dir = %dir.display(), "persisted skill artifact to filesystem");
             Some(dir)
@@ -1639,9 +1647,9 @@ pub(crate) async fn deregister_agent_from_loop(
 /// Fetches fresh keys for all sealed artifacts, stores them in the DB cache,
 /// and triggers a skill reload so newly unlocked content becomes available.
 pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboError> {
-    use base64::Engine;
-
-    // Collect artifact_ids from installed sealed .napp files
+    // Renew keys for all sealed artifacts already in the cache. Rows are seeded at
+    // install time (see tools::fetch_and_store_license_keys); this keeps them fresh
+    // before their TTL expires.
     let artifact_ids: Vec<String> = state
         .store
         .list_license_key_artifact_ids()
@@ -1660,59 +1668,23 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
         debug!(error = %e, "bot registration failed (non-fatal)");
     }
 
-    // Fetch fresh license keys
-    let response = api
-        .fetch_license_keys(&artifact_ids)
+    let keys = tools::fetch_and_store_license_keys(&api, &state.store, &artifact_ids, "skill")
         .await
-        .map_err(|e| NeboError::Internal(format!("fetch license keys: {e}")))?;
+        .map_err(NeboError::Internal)?;
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let mut refreshed = 0;
-    for (artifact_id, entry) in &response.keys {
-        // Decode base64 key
-        let key_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&entry.key)
-            .map_err(|e| NeboError::Internal(format!("base64 decode: {e}")))?;
-        if key_bytes.len() != 32 {
-            warn!(
-                artifact_id,
-                len = key_bytes.len(),
-                "invalid license key length"
-            );
-            continue;
-        }
-
-        // Encrypt with keyring master key before storing
-        let encrypted = auth::credential::encrypt(&entry.key)
-            .map_err(|e| NeboError::Internal(format!("encrypt key: {e}")))?;
-
-        let expires_at = now + entry.ttl;
-        if let Err(e) = state.store.upsert_license_key(
-            artifact_id,
-            "skill", // artifact_type — refined later when we know the type
-            "user",  // scope
-            &encrypted,
-            expires_at as i64,
-        ) {
-            warn!(artifact_id, error = %e, "failed to store license key");
-        } else {
-            refreshed += 1;
-        }
-    }
-
-    if refreshed > 0 {
+    if !keys.is_empty() {
+        let refreshed = keys.len();
         info!(
             refreshed,
             total = artifact_ids.len(),
             "refreshed license keys"
         );
-        // Reload skills to pick up newly unlocked sealed content
-        // The skill loader is accessed via the tool registry
-        // Trigger a reload by touching the watcher (skills will be reloaded)
+        // Hand the fresh keys to both loaders and reload so newly unlocked sealed
+        // skills AND agents become available without a restart.
+        state.skill_loader.set_license_keys(keys.clone()).await;
+        state.agent_loader.set_license_keys(keys).await;
+        state.skill_loader.load_all().await;
+        state.agent_loader.load_all().await;
         state.hub.broadcast(
             "license_keys_refreshed",
             serde_json::json!({"count": refreshed}),

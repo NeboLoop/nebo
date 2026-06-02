@@ -185,15 +185,12 @@ impl Orchestrator {
             let model_override = req.model_override.clone();
             let user_id = req.user_id.clone();
             let max_iterations = req.max_iterations;
-            let concurrency = self.concurrency.clone();
             let parent_stream_tx = req.parent_stream_tx.clone();
             let spawn_req = req.clone();
 
             let bg_session_key = format!("subagent:{}:{}", req.parent_session_key, task_id_clone);
 
             tokio::spawn(async move {
-                let _permit = concurrency.acquire_llm_permit().await;
-
                 let mut run_req = build_subagent_request(
                     &bg_session_key,
                     &prompt,
@@ -611,7 +608,6 @@ impl Orchestrator {
 
             let runner = self.runner.clone();
             let store = self.store.clone();
-            let concurrency = self.concurrency.clone();
             let active = self.active.clone();
             let tid = task_id.clone();
             let desc = description.clone();
@@ -629,7 +625,6 @@ impl Orchestrator {
             apply_spawn_context(&mut run_req, &req);
 
             running.push(Box::pin(async move {
-                let _permit = concurrency.acquire_llm_permit().await;
                 let result = match tokio::time::timeout(
                     WORKER_TIMEOUT,
                     run_and_collect(

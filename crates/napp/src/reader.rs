@@ -18,37 +18,9 @@ use crate::NappError;
 /// Entry names are matched after stripping any leading `./` prefix.
 /// Returns `NappError::NotFound` if the entry doesn't exist in the archive.
 pub fn read_napp_entry(napp_path: &Path, entry_name: &str) -> Result<Vec<u8>, NappError> {
-    let file = std::fs::File::open(napp_path).map_err(|e| NappError::Io(e))?;
-    let gz = GzDecoder::new(file);
-    let mut archive = Archive::new(gz);
-
-    let target = entry_name.trim_start_matches("./");
-
-    for entry_result in archive
-        .entries()
-        .map_err(|e| NappError::Extraction(e.to_string()))?
-    {
-        let mut entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
-        let path = entry
-            .path()
-            .map_err(|e| NappError::Extraction(e.to_string()))?;
-        let name = path.to_string_lossy();
-        let normalized = name.trim_start_matches("./");
-
-        if normalized == target {
-            let mut content = Vec::new();
-            entry
-                .read_to_end(&mut content)
-                .map_err(|e| NappError::Extraction(e.to_string()))?;
-            return Ok(content);
-        }
-    }
-
-    Err(NappError::NotFound(format!(
-        "{} not found in {}",
-        entry_name,
-        napp_path.display()
-    )))
+    let data = std::fs::read(napp_path).map_err(NappError::Io)?;
+    let targz = napp_payload_targz(&data)?;
+    read_entry_from_targz_bytes(&targz, entry_name, napp_path)
 }
 
 /// Read a single entry from a .napp archive and return it as a UTF-8 string.
@@ -60,27 +32,9 @@ pub fn read_napp_entry_string(napp_path: &Path, entry_name: &str) -> Result<Stri
 
 /// List all entry names in a .napp (tar.gz) archive.
 pub fn list_napp_entries(napp_path: &Path) -> Result<Vec<String>, NappError> {
-    let file = std::fs::File::open(napp_path).map_err(|e| NappError::Io(e))?;
-    let gz = GzDecoder::new(file);
-    let mut archive = Archive::new(gz);
-
-    let mut entries = Vec::new();
-    for entry_result in archive
-        .entries()
-        .map_err(|e| NappError::Extraction(e.to_string()))?
-    {
-        let entry = entry_result.map_err(|e| NappError::Extraction(e.to_string()))?;
-        let path = entry
-            .path()
-            .map_err(|e| NappError::Extraction(e.to_string()))?;
-        let name = path.to_string_lossy();
-        let normalized = name.trim_start_matches("./").to_string();
-        if !normalized.is_empty() {
-            entries.push(normalized);
-        }
-    }
-
-    Ok(entries)
+    let data = std::fs::read(napp_path).map_err(NappError::Io)?;
+    let targz = napp_payload_targz(&data)?;
+    list_entries_from_targz_bytes(&targz)
 }
 
 /// Extract a single entry from a .napp archive to a destination path.
@@ -122,8 +76,9 @@ pub fn extract_napp_prefix(
     prefix: &str,
     dest_dir: &Path,
 ) -> Result<Vec<String>, NappError> {
-    let file = std::fs::File::open(napp_path).map_err(|e| NappError::Io(e))?;
-    let gz = GzDecoder::new(file);
+    let data = std::fs::read(napp_path).map_err(NappError::Io)?;
+    let targz = napp_payload_targz(&data)?;
+    let gz = GzDecoder::new(targz.as_slice());
     let mut archive = Archive::new(gz);
 
     let target_prefix = prefix.trim_start_matches("./");
@@ -162,8 +117,9 @@ pub fn extract_napp_prefix(
 /// Preserves internal structure, creates parent dirs, sets +x on binary/app.
 /// Returns a list of extracted entry names.
 pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, NappError> {
-    let file = std::fs::File::open(napp_path).map_err(NappError::Io)?;
-    let gz = GzDecoder::new(file);
+    let data = std::fs::read(napp_path).map_err(NappError::Io)?;
+    let targz = napp_payload_targz(&data)?;
+    let gz = GzDecoder::new(targz.as_slice());
     let mut archive = Archive::new(gz);
 
     let mut extracted = Vec::new();
@@ -365,6 +321,51 @@ pub fn partial_extract_sealed_napp(
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────
+
+/// Resolve the inner tar.gz bytes from a `.napp` file's raw bytes.
+///
+/// Marketplace `.napp` files downloaded from NeboAI are wrapped in a signed
+/// `NAPP` envelope (101-byte header: magic + version + ED25519 sig + SHA256);
+/// bundled/legacy `.napp` files are raw tar.gz. This unwraps and verifies the
+/// envelope when present, and returns the inner tar.gz either way.
+///
+/// Sealed (paid) payloads are encrypted and cannot be extracted to disk without
+/// a license key — those are read in memory by the loaders via the sealed
+/// readers below, so this returns an error rather than writing ciphertext.
+fn napp_payload_targz(data: &[u8]) -> Result<Vec<u8>, NappError> {
+    // Raw tar.gz (no envelope) — bundled/legacy artifacts.
+    if data.starts_with(&[0x1f, 0x8b]) {
+        return Ok(data.to_vec());
+    }
+    // Signed NAPP envelope — verify signature + hash, then unwrap.
+    let payload = crate::napp::unwrap_napp_builtin(data)?;
+    if crate::sealed::is_sealed(&payload) {
+        return Err(NappError::Extraction(
+            "sealed .napp requires a license key and cannot be extracted to disk".into(),
+        ));
+    }
+    Ok(payload)
+}
+
+/// Returns `true` if a `.napp` file wraps a sealed (encrypted) payload.
+///
+/// Reads the file, verifies + unwraps the `NAPP` envelope, then checks whether
+/// the inner payload is encrypted (sealed/paid content) rather than a plain
+/// tar.gz. Returns `false` for raw tar.gz files and for any file whose envelope
+/// cannot be read or verified — callers treat those as plain and let extraction
+/// surface the underlying error.
+pub fn is_sealed_napp(napp_path: &Path) -> bool {
+    let Ok(data) = std::fs::read(napp_path) else {
+        return false;
+    };
+    if data.starts_with(&[0x1f, 0x8b]) {
+        return false; // raw tar.gz — not sealed
+    }
+    match crate::napp::unwrap_napp_builtin(&data) {
+        Ok(payload) => crate::sealed::is_sealed(&payload),
+        Err(_) => false,
+    }
+}
 
 /// Unseal a .napp file: verify envelope → decrypt → return plain tar.gz bytes.
 fn unseal_napp_to_targz(napp_path: &Path, license_key: &[u8; 32]) -> Result<Vec<u8>, NappError> {

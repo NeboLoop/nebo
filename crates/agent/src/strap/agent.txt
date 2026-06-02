@@ -12,6 +12,11 @@ Spawn sub-agents for independent work. Two modes:
 - agent(resource: task, action: status, agent_id: "...") — Check status of a background agent
 - agent(resource: task, action: cancel, agent_id: "...") — Cancel a running sub-agent
 
+**Batch parallel spawn (preferred for 2+ independent tasks):**
+- agent(resource: task, action: spawn_parallel, tasks: [{prompt: "Search site A", tools: ["web"]}, {prompt: "Search site B", tools: ["web"]}])
+- All tasks run concurrently, results collected and returned together
+- Each sub-agent gets its own browser session — no tab conflicts
+
 **CRITICAL: Sub-agents are born blind.** They only know what you pass them.
 - **plugins**: Pass plugin install codes the sub-agent needs. It gets the plugin's description, skills, and usage docs.
 - **tools**: Pass STRAP tool names ("web", "loop", "message", "system", "agent", "skill", "event", "mcp"). It gets the full tool documentation.
@@ -26,6 +31,7 @@ For multi-step work, create tasks to track your progress. This prevents you from
 - agent(resource: task, action: delete, task_id: "1") — Remove a task
 
 When to spawn vs do it yourself:
+- **ALWAYS spawn** when: comparing across multiple websites/sources, researching multiple independent topics, any task where 2+ web searches could run simultaneously
 - Spawn when: multiple independent tasks, long-running research, tasks that don't depend on each other
 - Do it yourself when: simple single task, tasks that depend on each other's results, quick lookups
 

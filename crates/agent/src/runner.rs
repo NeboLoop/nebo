@@ -3122,7 +3122,7 @@ async fn run_loop(
                         } {
                             if let Some(text) = verification {
                                 if let Some((_, ref mut result)) = results[idx] {
-                                    result.content.push_str(&format!("\n\n[Visual: {}]", text));
+                                    result.content.push_str(&format!("\n\n[Page Visual]\n{}", text));
                                     result.image_url = None;
                                 }
                             }

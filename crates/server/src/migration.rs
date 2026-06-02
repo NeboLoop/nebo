@@ -216,7 +216,7 @@ fn extract_napps_recursive(dir: &Path) -> usize {
             count += extract_napps_recursive(&path);
         } else if path.extension().is_some_and(|ext| ext == "napp") {
             // Check if this .napp is sealed (encrypted) — skip if so
-            if is_sealed_napp(&path) {
+            if napp::reader::is_sealed_napp(&path) {
                 debug!(path = %path.display(), "skipping sealed .napp (paid content)");
                 continue;
             }
@@ -229,21 +229,6 @@ fn extract_napps_recursive(dir: &Path) -> usize {
         }
     }
     count
-}
-
-/// Check if a .napp file contains a sealed (encrypted) payload.
-///
-/// Reads the file, unwraps the envelope (verifies signature), then checks
-/// if the inner payload starts with gzip magic bytes. If not, it's sealed.
-fn is_sealed_napp(path: &Path) -> bool {
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-    match napp::napp::unwrap_napp_builtin(&data) {
-        Ok(payload) => napp::sealed::is_sealed(&payload),
-        Err(_) => false, // Can't unwrap — let extract_napp_alongside handle the error
-    }
 }
 
 // ── Phase 4: Rename roles/ → agents/ and ROLE.md → AGENT.md ─────────

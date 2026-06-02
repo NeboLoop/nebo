@@ -1391,10 +1391,12 @@ impl DynTool for AgentTool {
          - agent(resource: \"task\", action: \"spawn\", prompt: \"...\", wait: false) — Background; result delivered when done\n\
          - agent(resource: \"task\", action: \"status\", agent_id: \"...\") — Check background agent status\n\
          - agent(resource: \"task\", action: \"cancel\", agent_id: \"...\") — Cancel a running sub-agent\n\
+         - agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"...\", \"tools\": [\"web\"]}, ...]) — Run multiple sub-agents concurrently, return all results\n\
          IMPORTANT: Always pass plugins and tools the sub-agent needs. Sub-agents are born blind — they only know what you tell them.\n\
          - plugins: install codes for plugins the sub-agent should use (from your agent config or current session)\n\
          - tools: STRAP tool names the sub-agent needs (\"web\", \"loop\", \"message\", \"system\", etc.)\n\
          - skills: skill names for SKILL.md instructions pre-loaded into context\n\
+         ALWAYS spawn when: comparing across multiple websites, researching independent topics, any task with 2+ independent web lookups.\n\
          Spawn when: multiple independent tasks, long-running research, skill-heavy work. Do it yourself when: simple task, dependent results.\n\n\
          Work tracking:\n\
          - agent(resource: \"task\", action: \"create\", subject: \"Test shell tool\") — Create a trackable step\n\
@@ -1466,7 +1468,8 @@ impl DynTool for AgentTool {
                 "subtask_id": { "type": "string", "description": "Subtask ID for submit_findings" },
                 "findings": { "type": "array", "items": { "type": "object", "properties": { "claim": { "type": "string" }, "source_url": { "type": "string" }, "source_ref": { "type": "string" }, "confidence": { "type": "number" }, "quote": { "type": "string" } }, "required": ["claim"] }, "description": "Array of findings from research worker" },
                 "gaps": { "type": "array", "items": { "type": "string" }, "description": "Array of gaps (unanswered questions) from research worker" },
-                "max_iterations": { "type": "integer", "description": "Max iterations for sub-agent (default: 100)" }
+                "max_iterations": { "type": "integer", "description": "Max iterations for sub-agent (default: 100)" },
+                "tasks": { "type": "array", "items": { "type": "object", "properties": { "prompt": { "type": "string" }, "description": { "type": "string" }, "tools": { "type": "array", "items": { "type": "string" } }, "plugins": { "type": "array", "items": { "type": "string" } }, "skills": { "type": "array", "items": { "type": "string" } } }, "required": ["prompt"] }, "description": "Array of tasks for spawn_parallel — each runs as a concurrent sub-agent" }
             },
             "required": ["resource", "action"]
         })

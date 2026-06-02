@@ -92,6 +92,10 @@ pub struct AgentLoader {
     installed_dir: PathBuf,
     user_dir: PathBuf,
     agents: Arc<RwLock<HashMap<String, LoadedAgent>>>,
+    /// License keys (artifact_id → 32-byte key) for decrypting sealed agent
+    /// `.napp` files in memory. Populated from the DB cache at startup and on
+    /// license refresh via [`set_license_keys`].
+    license_keys: Arc<RwLock<HashMap<String, [u8; 32]>>>,
 }
 
 impl AgentLoader {
@@ -101,7 +105,14 @@ impl AgentLoader {
             installed_dir,
             user_dir,
             agents: Arc::new(RwLock::new(HashMap::new())),
+            license_keys: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Replace the cached license keys used to decrypt sealed agent `.napp` files.
+    /// Callers should trigger a reload afterwards so newly unlocked agents load.
+    pub async fn set_license_keys(&self, keys: HashMap<String, [u8; 32]>) {
+        *self.license_keys.write().await = keys;
     }
 
     /// Set the embedded bundled agents (compiled into the binary, lowest priority).
@@ -138,6 +149,18 @@ impl AgentLoader {
         // 2. Load user agents (override installed by name)
         for agent in scan_user_agents(&self.user_dir) {
             loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+        }
+
+        // 3. Load sealed (paid) agents — decrypted in memory using license keys.
+        //    Skips any .napp with a sibling extracted AGENT.md (free content above).
+        {
+            let keys = self.license_keys.read().await;
+            for agent in scan_sealed_agents(&self.installed_dir, &keys) {
+                loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+            }
+            for agent in scan_sealed_agents(&self.user_dir, &keys) {
+                loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+            }
         }
 
         let count = loaded.len();
@@ -177,6 +200,7 @@ impl AgentLoader {
         let installed_dir = self.installed_dir.clone();
         let user_dir = self.user_dir.clone();
         let agents = self.agents.clone();
+        let license_keys = self.license_keys.clone();
         let bundled = self.bundled;
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgentFsEvent>(32);
 
@@ -265,6 +289,17 @@ impl AgentLoader {
                         }
                         for agent in scan_user_agents(&user_dir) {
                             loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+                        }
+
+                        // Sealed (paid) agents — decrypted in memory using license keys.
+                        {
+                            let keys = license_keys.read().await;
+                            for agent in scan_sealed_agents(&installed_dir, &keys) {
+                                loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+                            }
+                            for agent in scan_sealed_agents(&user_dir, &keys) {
+                                loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+                            }
                         }
 
                         // Diff old cache vs new scan and emit events

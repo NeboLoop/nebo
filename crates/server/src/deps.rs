@@ -23,6 +23,7 @@ pub enum DepType {
     Skill,
     Workflow,
     Plugin,
+    Agent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +124,15 @@ fn resolve_cascade_inner<'a>(
             }
 
             if autonomous {
+                // Signal the UI that this dependency is now being installed so it can
+                // render a live per-dependency progress indicator.
+                state.hub.broadcast(
+                    "dep_started",
+                    serde_json::json!({
+                        "depType": format!("{:?}", dep.dep_type),
+                        "reference": dep.reference,
+                    }),
+                );
                 match install_dep(state, &dep).await {
                     Ok(child_deps) => {
                         state.hub.broadcast(
@@ -229,7 +239,21 @@ async fn is_installed(state: &AppState, dep: &DepRef) -> bool {
         DepType::Skill => is_skill_installed(&dep.reference),
         DepType::Workflow => is_workflow_installed(state, &dep.reference),
         DepType::Plugin => state.plugin_store.resolve(&dep.reference, "*").is_some(),
+        DepType::Agent => is_agent_installed(state, &dep.reference),
     }
+}
+
+fn is_agent_installed(state: &AppState, reference: &str) -> bool {
+    // Direct id match (UUID), then fall back to simple-name match against installed agents.
+    if state.store.get_agent(reference).ok().flatten().is_some() {
+        return true;
+    }
+    let simple = extract_simple_name(reference).to_lowercase();
+    state
+        .store
+        .list_agents(1000, 0)
+        .map(|agents| agents.iter().any(|a| a.name.to_lowercase() == simple))
+        .unwrap_or(false)
 }
 
 fn is_skill_installed(reference: &str) -> bool {
@@ -348,7 +372,43 @@ async fn install_dep(state: &AppState, dep: &DepRef) -> Result<Vec<DepRef>, Stri
         DepType::Skill => install_skill(state, &api, &dep.reference).await,
         DepType::Workflow => install_workflow(state, &api, &dep.reference).await,
         DepType::Plugin => install_plugin(state, &api, &dep.reference).await,
+        DepType::Agent => install_agent(state, &api, &dep.reference).await,
     }
+}
+
+/// Install an agent dependency via the same redeem→persist pathway used for the
+/// top-level agent install (no parallel installer). Returns the new agent's own
+/// dependencies so the cascade can recurse.
+async fn install_agent(
+    state: &AppState,
+    api: &NeboAIApi,
+    reference: &str,
+) -> Result<Vec<DepRef>, String> {
+    let resp = api
+        .install_skill(reference)
+        .await
+        .map_err(|e| format!("install_agent: {}", e))?;
+
+    let artifact_id = resp.artifact.id.clone();
+    let name = resp.artifact.name.clone();
+
+    if let Err(e) =
+        tools::persist_agent_from_api(api, &artifact_id, &name, reference, &state.store).await
+    {
+        return Err(format!("persist agent {}: {}", name, e));
+    }
+    tracing::info!(reference, name = %name, "cascade: persisted agent");
+
+    // Reload so the new agent appears immediately.
+    state.agent_loader.load_all().await;
+
+    // Recurse into the agent's own dependencies.
+    if let Ok(Some(agent)) = state.store.get_agent(&artifact_id) {
+        if !agent.frontmatter.is_empty() {
+            return Ok(extract_agent_deps_from_frontmatter(&agent.frontmatter));
+        }
+    }
+    Ok(vec![])
 }
 
 async fn install_skill(
@@ -366,7 +426,15 @@ async fn install_skill(
     let name = resp.artifact.name.clone();
 
     // Persist to disk (download .napp or write loose files)
-    let skill_dir = match tools::persist_skill_from_api(api, &artifact_id, &name, reference).await {
+    let skill_dir = match tools::persist_skill_from_api(
+        api,
+        &artifact_id,
+        &name,
+        reference,
+        Some(&state.store),
+    )
+    .await
+    {
         Ok(dir) => {
             tracing::info!(reference, name = %name, dir = %dir.display(), "cascade: persisted skill");
             Some(dir)
@@ -517,45 +585,77 @@ async fn install_plugin(
 /// from both the top-level `skills` array and from inline activity skill references.
 pub fn extract_agent_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef> {
     let mut deps = Vec::new();
-    // Try parsing as full AgentConfig first (has typed workflows with activities)
-    match napp::agent::parse_agent_config(frontmatter_json) {
-        Ok(config) => {
-            tracing::info!(
-                plugins = config.requires.plugins.len(),
-                skills = config.skills.len(),
-                workflows = config.workflows.len(),
-                "extract_deps: parsed AgentConfig OK"
-            );
-            return extract_agent_deps(&config);
+    let mut seen = HashSet::new();
+    let mut push = |dep_type: DepType, reference: String| {
+        if reference.is_empty() {
+            return;
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "extract_deps: parse_agent_config failed, trying raw JSON");
+        let key = format!("{:?}:{}", dep_type, reference);
+        if seen.insert(key) {
+            deps.push(DepRef {
+                dep_type,
+                reference,
+            });
+        }
+    };
+
+    // 1. Runtime AgentConfig shape: requires.plugins, top-level skills, inline activities.
+    if let Ok(config) = napp::agent::parse_agent_config(frontmatter_json) {
+        for d in extract_agent_deps(&config) {
+            push(d.dep_type, d.reference);
         }
     }
-    // Fallback: parse as raw JSON for simpler frontmatter
+
+    // 2. Marketplace-published shape: `dependencies: { agents, skills, plugins }`,
+    //    plus legacy raw `requires.plugins` / top-level `skills` string arrays.
+    //    Entries may be plain strings or objects { qualifiedName, id, name }.
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(frontmatter_json) {
+        let dependencies = &val["dependencies"];
+        for (key, dep_type) in [
+            ("agents", DepType::Agent),
+            ("skills", DepType::Skill),
+            ("plugins", DepType::Plugin),
+            ("workflows", DepType::Workflow),
+        ] {
+            if let Some(arr) = dependencies[key].as_array() {
+                for item in arr {
+                    if let Some(reference) = dep_ref_from_value(item) {
+                        push(dep_type.clone(), reference);
+                    }
+                }
+            }
+        }
         if let Some(plugins) = val["requires"]["plugins"].as_array() {
             for p in plugins {
                 if let Some(p) = p.as_str() {
-                    deps.push(DepRef {
-                        dep_type: DepType::Plugin,
-                        reference: p.to_string(),
-                    });
+                    push(DepType::Plugin, p.to_string());
                 }
             }
         }
         if let Some(skills) = val["skills"].as_array() {
             for s in skills {
                 if let Some(s) = s.as_str() {
-                    deps.push(DepRef {
-                        dep_type: DepType::Skill,
-                        reference: s.to_string(),
-                    });
+                    push(DepType::Skill, s.to_string());
                 }
             }
         }
     }
+
+    tracing::info!(count = deps.len(), "extract_deps: extracted (merged shapes)");
     deps
+}
+
+/// A marketplace dependency entry is either a plain reference string or an object
+/// `{ qualifiedName, id, name }`. Prefer the qualified name (a marketplace ref),
+/// then the id.
+fn dep_ref_from_value(item: &serde_json::Value) -> Option<String> {
+    if let Some(s) = item.as_str() {
+        return Some(s.to_string());
+    }
+    item["qualifiedName"]
+        .as_str()
+        .or_else(|| item["id"].as_str())
+        .map(String::from)
 }
 
 /// Extract dependencies from an agent config.

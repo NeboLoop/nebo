@@ -681,41 +681,44 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Load cached license keys from DB for sealed .napp decryption.
     // Keys were fetched from NeboAI on a previous startup and cached with TTL.
-    {
+    // Shared by both the skill loader (below) and the agent loader (later) so
+    // sealed skills AND sealed agents decrypt in memory.
+    let cached_license_keys: std::collections::HashMap<String, [u8; 32]> = {
         use base64::Engine;
         let cached_keys = store.list_license_key_artifact_ids().unwrap_or_default();
-        if !cached_keys.is_empty() {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            let mut keys = std::collections::HashMap::new();
-            for artifact_id in &cached_keys {
-                if let Ok(Some(row)) = store.get_license_key(artifact_id) {
-                    if row.expires_at > now {
-                        // Decrypt the stored key with keyring master key
-                        if let Ok(plaintext) = auth::credential::decrypt(&row.encrypted_key) {
-                            if let Ok(key_bytes) =
-                                base64::engine::general_purpose::STANDARD.decode(&plaintext)
-                            {
-                                if key_bytes.len() == 32 {
-                                    let mut key = [0u8; 32];
-                                    key.copy_from_slice(&key_bytes);
-                                    keys.insert(artifact_id.clone(), key);
-                                }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let mut keys = std::collections::HashMap::new();
+        for artifact_id in &cached_keys {
+            if let Ok(Some(row)) = store.get_license_key(artifact_id) {
+                if row.expires_at > now {
+                    // Decrypt the stored key with keyring master key
+                    if let Ok(plaintext) = auth::credential::decrypt(&row.encrypted_key) {
+                        if let Ok(key_bytes) =
+                            base64::engine::general_purpose::STANDARD.decode(&plaintext)
+                        {
+                            if key_bytes.len() == 32 {
+                                let mut key = [0u8; 32];
+                                key.copy_from_slice(&key_bytes);
+                                keys.insert(artifact_id.clone(), key);
                             }
                         }
                     }
                 }
             }
-            if !keys.is_empty() {
-                info!(
-                    count = keys.len(),
-                    "loaded cached license keys for sealed .napp files"
-                );
-                skill_loader.set_license_keys(keys).await;
-            }
         }
+        keys
+    };
+    if !cached_license_keys.is_empty() {
+        info!(
+            count = cached_license_keys.len(),
+            "loaded cached license keys for sealed .napp files"
+        );
+        skill_loader
+            .set_license_keys(cached_license_keys.clone())
+            .await;
     }
 
     skill_loader.load_all().await;
@@ -1194,6 +1197,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )
         .with_bundled(tools::skills::bundled::BUNDLED_AGENTS),
     );
+    // Provide cached license keys so sealed (paid) agents decrypt in memory.
+    if !cached_license_keys.is_empty() {
+        agent_loader
+            .set_license_keys(cached_license_keys.clone())
+            .await;
+    }
     agent_loader.load_all().await;
     let (_watcher_handle, agent_fs_rx) = agent_loader.watch();
     tool_registry.set_agent_loader(agent_loader.clone());

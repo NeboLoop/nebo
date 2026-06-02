@@ -95,8 +95,8 @@ pub struct ExtensionBridge {
     default_browser: Arc<Mutex<Option<String>>>,
     /// Timestamp of last active connection (for grace period on reconnect).
     last_connected: Arc<Mutex<Option<Instant>>>,
-    /// Single-slot cache for read_page results (2.5s TTL).
-    page_cache: Arc<Mutex<Option<PageCacheEntry>>>,
+    /// Per-session cache for read_page results (2.5s TTL).
+    page_cache: Arc<Mutex<HashMap<String, PageCacheEntry>>>,
 }
 
 impl ExtensionBridge {
@@ -107,7 +107,7 @@ impl ExtensionBridge {
             next_id: Arc::new(AtomicI64::new(1)),
             default_browser: Arc::new(Mutex::new(None)),
             last_connected: Arc::new(Mutex::new(None)),
-            page_cache: Arc::new(Mutex::new(None)),
+            page_cache: Arc::new(Mutex::new(HashMap::new())),
         };
         // Detect default browser in background
         let db = bridge.default_browser.clone();
@@ -200,24 +200,26 @@ impl ExtensionBridge {
         args: &serde_json::Value,
         session_id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
-        // Check read_page cache (snapshot-then-release)
+        let cache_key = session_id.unwrap_or("_default").to_string();
+
+        // Check read_page cache (session-scoped, snapshot-then-release)
         if tool == "read_page" {
             let cached = {
                 let guard = self.page_cache.lock().await;
                 guard
-                    .as_ref()
+                    .get(&cache_key)
                     .filter(|e| e.timestamp.elapsed() < Duration::from_millis(2500))
                     .map(|e| e.result.clone())
             };
             if let Some(result) = cached {
-                debug!("read_page cache hit");
+                debug!(session = %cache_key, "read_page cache hit");
                 return Ok(result);
             }
         }
 
-        // Invalidate cache before mutation tools
+        // Invalidate this session's cache before mutation tools
         if MUTATION_TOOLS.contains(&tool) {
-            *self.page_cache.lock().await = None;
+            self.page_cache.lock().await.remove(&cache_key);
         }
 
         let conns = self.connections.lock().await;
@@ -288,13 +290,16 @@ impl ExtensionBridge {
             }
         };
 
-        // Populate read_page cache on success
+        // Populate read_page cache on success (session-scoped)
         if tool == "read_page" {
             if let Ok(ref value) = result {
-                *self.page_cache.lock().await = Some(PageCacheEntry {
-                    result: value.clone(),
-                    timestamp: Instant::now(),
-                });
+                self.page_cache.lock().await.insert(
+                    cache_key,
+                    PageCacheEntry {
+                        result: value.clone(),
+                        timestamp: Instant::now(),
+                    },
+                );
             }
         }
 
@@ -313,12 +318,14 @@ impl ExtensionBridge {
             return Ok(vec![]);
         }
 
-        // Invalidate page cache if any mutation tool is in the batch
+        let cache_key = session_id.unwrap_or("_default").to_string();
+
+        // Invalidate this session's page cache if any mutation tool is in the batch
         let has_mutation = actions
             .iter()
             .any(|a| MUTATION_TOOLS.contains(&a.tool.as_str()));
         if has_mutation {
-            *self.page_cache.lock().await = None;
+            self.page_cache.lock().await.remove(&cache_key);
         }
 
         let conns = self.connections.lock().await;
@@ -394,7 +401,7 @@ impl ExtensionBridge {
                     })
                     .collect();
 
-                // Populate read_page cache from last successful read_page in batch
+                // Populate read_page cache from last successful read_page in batch (session-scoped)
                 if let Some(last_read) = actions.iter().rposition(|a| a.tool == "read_page") {
                     if let Some(Ok(ref value)) = results_arr.get(last_read).map(|item| {
                         if item["error"].is_null() {
@@ -403,10 +410,13 @@ impl ExtensionBridge {
                             Err(())
                         }
                     }) {
-                        *self.page_cache.lock().await = Some(PageCacheEntry {
-                            result: value.clone(),
-                            timestamp: Instant::now(),
-                        });
+                        self.page_cache.lock().await.insert(
+                            cache_key,
+                            PageCacheEntry {
+                                result: value.clone(),
+                                timestamp: Instant::now(),
+                            },
+                        );
                     }
                 }
 

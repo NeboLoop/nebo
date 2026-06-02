@@ -119,6 +119,7 @@
 		agentName={item.name}
 		agentDescription={item.description}
 		inputs={setupInputs}
+		dependencies={(item as any)?.dependencies ?? (item as any)?.typeConfig?.dependencies}
 		onComplete={handleSetupComplete}
 		onCancel={handleSetupCancel}
 	/>

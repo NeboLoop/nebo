@@ -699,15 +699,16 @@ impl Registry {
 
         // Execute tool (script execution) — deferred (only activated when user mentions scripts/code)
         if let (Some(loader), Some(tier)) = (&skill_loader, &plan_tier) {
-            self.register_deferred(Box::new(
-                crate::execute_tool::ExecuteTool::new(
-                    loader.clone(),
-                    tier.clone(),
-                    sandbox_manager.clone(),
-                )
-                .with_store(store.clone()),
-            ))
-            .await;
+            let mut execute_tool = crate::execute_tool::ExecuteTool::new(
+                loader.clone(),
+                tier.clone(),
+                sandbox_manager.clone(),
+            )
+            .with_store(store.clone());
+            if let Some(ps) = self.plugin_store.read().unwrap().clone() {
+                execute_tool = execute_tool.with_plugin_store(ps);
+            }
+            self.register_deferred(Box::new(execute_tool)).await;
         }
 
         // Message tool (owner notifications) — always registered (core)

@@ -836,8 +836,14 @@ impl DynTool for SkillTool {
                             let artifact_id = resp.artifact.id.clone();
 
                             // Fetch and persist artifact content
-                            if let Err(e) =
-                                crate::persist_skill_from_api(&api, &artifact_id, &name, code).await
+                            if let Err(e) = crate::persist_skill_from_api(
+                                &api,
+                                &artifact_id,
+                                &name,
+                                code,
+                                self.store.as_deref(),
+                            )
+                            .await
                             {
                                 tracing::warn!(code, error = %e, "failed to persist skill after install");
                             }

@@ -245,7 +245,7 @@ export function attachWebSocketListeners(): void {
   );
 
   // --- Code install lifecycle ---
-  for (const evt of ['code_processing', 'code_result', 'plugin_installing', 'plugin_installed', 'dep_pending', 'dep_installed', 'dep_failed', 'dep_cascade_complete'] as const) {
+  for (const evt of ['code_processing', 'code_result', 'plugin_installing', 'plugin_installed', 'dep_started', 'dep_pending', 'dep_installed', 'dep_failed', 'dep_cascade_complete'] as const) {
     unsubs.push(
       ws.on(evt, (data: any) => {
         if (typeof window !== 'undefined') {

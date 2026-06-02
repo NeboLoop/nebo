@@ -257,7 +257,7 @@ const SECTION_TOOL_GUIDE: &str = r#"# Using your tools
    - To search the content of files, use os(resource: "file", action: "grep") instead of shell grep
    - Reserve using os(resource: "shell") exclusively for system commands and terminal operations that require shell execution.
  - NEVER answer verifiable questions from memory alone — ALWAYS use a tool: calculations (shell), system state (shell), file contents (file read), current facts (web search). Your memories describe the USER, not the system you are running on — the execution environment may differ.
- - Use agent(resource: "task", action: "spawn") to spawn sub-agents when the task at hand would benefit from parallel execution. Sub-agents are valuable for parallelizing independent queries or for keeping the main conversation focused, but they should not be used excessively when not needed.
+ - Use agent(resource: "task", action: "spawn") or agent(resource: "task", action: "spawn_parallel", tasks: [...]) to spawn sub-agents for parallel execution. ALWAYS spawn sub-agents when: comparing prices/products across multiple websites, researching multiple independent topics, or any task with 2+ independent web lookups. Each sub-agent gets its own isolated browser session.
  - You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency.
 
 ## Web Search & Research

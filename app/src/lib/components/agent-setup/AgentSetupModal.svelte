@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { installStoreProduct, listAgents, activateAgent, getAgent, updateAgentInputs, listAgentWorkflows, updateAgentWorkflow, authLogin } from '$lib/api/nebo';
+	import { installStoreProduct, activateAgent, getAgent, updateAgentInputs, listAgentWorkflows, updateAgentWorkflow, authLogin, installDeps } from '$lib/api/nebo';
 	import type { AgentWorkflow } from '$lib/api/neboComponents';
 	import type { AgentInputField } from '$lib/types/agentPage';
 	import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
@@ -11,6 +11,7 @@
 		agentName,
 		agentDescription,
 		inputs = {},
+		dependencies = undefined,
 		existingAgentId,
 		onComplete,
 		onCancel,
@@ -19,12 +20,14 @@
 		agentName: string;
 		agentDescription: string;
 		inputs: Record<string, unknown>;
+		/** Marketplace product dependencies: { agents?, skills?, plugins?, workflows? } */
+		dependencies?: unknown;
 		existingAgentId?: string;
 		onComplete: (agentId: string) => void;
 		onCancel: () => void;
 	} = $props();
 
-	type Step = 'inputs' | 'auth' | 'schedule' | 'installing' | 'done';
+	type Step = 'inputs' | 'auth' | 'schedule' | 'installing' | 'installing-deps' | 'done';
 	let step = $state<Step>('inputs');
 	let error = $state('');
 
@@ -42,6 +45,103 @@
 	let authInProgress = $state(false);
 
 	const currentAuthPlugin = $derived(authQueue[authIndex]);
+
+	// Dependency install progress
+	type DepUiState = 'pending' | 'installing' | 'done' | 'failed';
+	interface DepRow { reference: string; depType: string; label: string; state: DepUiState; error?: string; }
+	let depRows = $state<DepRow[]>([]);
+	let depsAdvanced = false;
+	let depsForced = false;
+	let depTimeout: ReturnType<typeof setTimeout> | undefined;
+	const installedDeps = $derived(depRows.filter(d => d.state === 'done').length);
+
+	/** Last segment of a qualified ref, version-stripped: `@org/type/name@1.0` → `name`. */
+	function prettyRef(ref: string): string {
+		let s = ref;
+		const at = s.indexOf('@', 1);
+		if (at > 0) s = s.slice(0, at);
+		return s.split('/').pop() || ref;
+	}
+
+	/** Build the initial ring list from the marketplace product `dependencies` object. */
+	function normalizeDeps(): DepRow[] {
+		const out: DepRow[] = [];
+		const dep = dependencies as any;
+		if (!dep || typeof dep !== 'object') return out;
+		for (const [key, type] of [['agents', 'agent'], ['skills', 'skill'], ['plugins', 'plugin'], ['workflows', 'workflow']] as const) {
+			const arr = dep[key];
+			if (!Array.isArray(arr)) continue;
+			for (const item of arr) {
+				const reference = typeof item === 'string' ? item : (item?.qualifiedName || item?.id || '');
+				if (!reference) continue;
+				const label = (item && typeof item === 'object' && item.name) ? item.name : prettyRef(reference);
+				out.push({ reference, depType: type, label, state: 'pending' });
+			}
+		}
+		return out;
+	}
+
+	function ensureDepRow(reference: string, depTypeRaw?: string): DepRow {
+		let idx = depRows.findIndex(d => d.reference === reference || prettyRef(d.reference) === prettyRef(reference));
+		if (idx === -1) {
+			depRows = [...depRows, { reference, depType: (depTypeRaw || '').toLowerCase() || 'skill', label: prettyRef(reference), state: 'pending' }];
+			idx = depRows.length - 1;
+		}
+		return depRows[idx];
+	}
+
+	function handleDepStarted(e: CustomEvent) {
+		const row = ensureDepRow(e.detail?.reference, e.detail?.depType);
+		if (row.state !== 'done' && row.state !== 'failed') row.state = 'installing';
+	}
+	function handleDepInstalled(e: CustomEvent) {
+		ensureDepRow(e.detail?.reference, e.detail?.depType).state = 'done';
+	}
+	function handleDepFailed(e: CustomEvent) {
+		const row = ensureDepRow(e.detail?.reference, e.detail?.depType);
+		row.state = 'failed';
+		row.error = e.detail?.error;
+	}
+	function handleDepPending(e: CustomEvent) {
+		ensureDepRow(e.detail?.reference, e.detail?.depType);
+	}
+	function handleDepCascadeComplete(e: CustomEvent) {
+		if (step !== 'installing-deps') return;
+		const pending = e.detail?.pending ?? 0;
+		// Non-autonomous mode stops at pending — force-install once.
+		if (pending > 0 && !depsForced && agentId) {
+			depsForced = true;
+			installDeps(agentId)
+				.then((res: any) => { applyCascadeResults(res?.cascade?.results); finishDeps(); })
+				.catch(() => finishDeps());
+			return;
+		}
+		finishDeps();
+	}
+
+	function applyCascadeResults(results: any[]) {
+		if (!Array.isArray(results)) return;
+		for (const r of results) {
+			const ref = r?.dep?.reference;
+			if (!ref) continue;
+			const row = ensureDepRow(ref, r?.dep?.depType);
+			const st = r?.status;
+			if (typeof st === 'string') {
+				if (st === 'installed' || st === 'already_installed') row.state = 'done';
+			} else if (st && typeof st === 'object') {
+				if ('failed' in st) { row.state = 'failed'; row.error = st.failed?.error; }
+				else if ('unresolvable' in st) { row.state = 'failed'; row.error = st.unresolvable?.reason; }
+			}
+		}
+	}
+
+	function finishDeps() {
+		// Already-installed deps emit no event — resolve any leftovers as done.
+		depRows = depRows.map(d => (d.state === 'pending' || d.state === 'installing') ? { ...d, state: 'done' } : d);
+		if (depsAdvanced) return;
+		depsAdvanced = true;
+		afterDepsInstalled();
+	}
 
 	$effect(() => {
 		if (Array.isArray(inputs)) {
@@ -107,12 +207,23 @@
 		window.addEventListener('nebo:plugin_auth_complete', handleAuthComplete as EventListener);
 		window.addEventListener('nebo:plugin_auth_error', handleAuthError as EventListener);
 		window.addEventListener('nebo:plugin_auth_url', handleAuthUrl as EventListener);
+		window.addEventListener('nebo:dep_started', handleDepStarted as EventListener);
+		window.addEventListener('nebo:dep_installed', handleDepInstalled as EventListener);
+		window.addEventListener('nebo:dep_failed', handleDepFailed as EventListener);
+		window.addEventListener('nebo:dep_pending', handleDepPending as EventListener);
+		window.addEventListener('nebo:dep_cascade_complete', handleDepCascadeComplete as EventListener);
 	});
 
 	onDestroy(() => {
 		window.removeEventListener('nebo:plugin_auth_complete', handleAuthComplete as EventListener);
 		window.removeEventListener('nebo:plugin_auth_error', handleAuthError as EventListener);
 		window.removeEventListener('nebo:plugin_auth_url', handleAuthUrl as EventListener);
+		window.removeEventListener('nebo:dep_started', handleDepStarted as EventListener);
+		window.removeEventListener('nebo:dep_installed', handleDepInstalled as EventListener);
+		window.removeEventListener('nebo:dep_failed', handleDepFailed as EventListener);
+		window.removeEventListener('nebo:dep_pending', handleDepPending as EventListener);
+		window.removeEventListener('nebo:dep_cascade_complete', handleDepCascadeComplete as EventListener);
+		if (depTimeout) clearTimeout(depTimeout);
 	});
 
 	function summarizeTrigger(wf: AgentWorkflow): string {
@@ -134,25 +245,39 @@
 			if (existingAgentId) {
 				agentId = existingAgentId;
 			} else {
-				await installStoreProduct(appId);
-
-				const agentsRes = await listAgents();
-				const allAgents = (agentsRes?.agents || []) as { id: string; name: string }[];
-				const matchedAgent = allAgents.find(
-					(r) => r.name?.toLowerCase() === agentName.toLowerCase()
-				);
-
-				if (!matchedAgent) {
-					error = 'Agent installed but could not be found.';
-					step = 'inputs';
-					return;
-				}
-
-				agentId = matchedAgent.id;
+				// The install response carries the installed agent id (== product id),
+				// so we address it directly instead of matching by display name.
+				const res = await installStoreProduct(appId);
+				agentId = res?.agentId || appId;
 			}
 
-			let pluginsNeedingAuth: PluginAuthEntry[] = [];
+			// Persist any collected inputs up front.
+			if (Object.keys(inputValues).length > 0) {
+				await updateAgentInputs(agentId, inputValues).catch(() => {});
+			}
 
+			// Show per-dependency install progress, driven by dep_* WS events.
+			depRows = normalizeDeps();
+			if (depRows.length > 0) {
+				depsAdvanced = false;
+				depsForced = false;
+				step = 'installing-deps';
+				// Safety net: advance even if no terminal cascade event arrives.
+				depTimeout = setTimeout(() => finishDeps(), 30000);
+			} else {
+				await afterDepsInstalled();
+			}
+		} catch (e: any) {
+			error = e?.error || e?.message || 'Failed to install agent';
+			step = 'inputs';
+		}
+	}
+
+	/** Post-dependency-install: load setup data and route to auth / schedule / done. */
+	async function afterDepsInstalled() {
+		if (depTimeout) { clearTimeout(depTimeout); depTimeout = undefined; }
+		try {
+			let pluginsNeedingAuth: PluginAuthEntry[] = [];
 			try {
 				const agentRes = await getAgent(agentId);
 				if (agentRes?.inputFields) {
@@ -169,11 +294,6 @@
 				workflows = Array.isArray(wfList) ? wfList as AgentWorkflow[] : [];
 			} catch { /* ignore */ }
 
-			if (Object.keys(inputValues).length > 0) {
-				await updateAgentInputs(agentId, inputValues).catch(() => {});
-			}
-
-			// Check if plugins need auth before proceeding
 			if (pluginsNeedingAuth.length > 0) {
 				authQueue = pluginsNeedingAuth;
 				authIndex = 0;
@@ -184,7 +304,7 @@
 				await finalize();
 			}
 		} catch (e: any) {
-			error = e?.error || e?.message || 'Failed to install agent';
+			error = e?.error || e?.message || 'Failed to set up agent';
 			step = 'inputs';
 		}
 	}
@@ -257,6 +377,44 @@
 				<span class="loading loading-spinner loading-lg text-primary"></span>
 				<p class="text-base font-medium mt-4">Setting up {agentName}...</p>
 				<p class="text-sm text-base-content/70 mt-1">This just takes a moment</p>
+			</div>
+
+		{:else if step === 'installing-deps'}
+			<div class="px-6 py-8 overflow-y-auto">
+				<div class="text-center mb-6">
+					<h2 class="font-display text-xl font-bold">Installing components</h2>
+					<p class="text-xs text-base-content/50 mt-1">{installedDeps} of {depRows.length} ready</p>
+				</div>
+				<div class="flex flex-col gap-2.5">
+					{#each depRows as dep (dep.reference)}
+						<div class="flex items-center gap-3 rounded-xl border border-base-content/10 p-3">
+							{#if dep.state === 'done'}
+								<div class="w-9 h-9 shrink-0 rounded-full bg-success/15 flex items-center justify-center">
+									<svg class="w-4 h-4 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+								</div>
+							{:else if dep.state === 'failed'}
+								<div class="w-9 h-9 shrink-0 rounded-full bg-error/15 flex items-center justify-center">
+									<X class="w-4 h-4 text-error" />
+								</div>
+							{:else if dep.state === 'installing'}
+								<div class="w-9 h-9 shrink-0 rounded-full bg-primary/10 flex items-center justify-center">
+									<span class="loading loading-spinner loading-sm text-primary"></span>
+								</div>
+							{:else}
+								<div class="w-9 h-9 shrink-0 rounded-full bg-base-content/10 flex items-center justify-center">
+									<span class="w-2 h-2 rounded-full bg-base-content/40"></span>
+								</div>
+							{/if}
+							<div class="min-w-0 flex-1">
+								<p class="text-sm font-medium truncate">{dep.label}</p>
+								<p class="text-xs text-base-content/70 capitalize">
+									{dep.depType}{dep.state === 'failed' ? ' · failed' : dep.state === 'done' ? ' · ready' : dep.state === 'installing' ? ' · installing…' : ' · waiting'}
+								</p>
+								{#if dep.error}<p class="text-xs text-error mt-0.5 truncate">{dep.error}</p>{/if}
+							</div>
+						</div>
+					{/each}
+				</div>
 			</div>
 
 		{:else if step === 'done'}

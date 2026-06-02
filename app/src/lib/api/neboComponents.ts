@@ -1110,6 +1110,7 @@ export interface InstallDepsResponse {
 
 export interface InstallStoreProductResponse {
 	success: boolean
+	agentId?: string
 }
 
 export interface JanusCompleteResponse {

@@ -39,6 +39,7 @@
 26. [Tool Scope Isolation](#26-tool-scope-isolation)
 27. [Edge Cases](#27-edge-cases)
 28. [Key Files](#28-key-files)
+29. [.napp Envelope & Sealed-Content Pipeline](#29-napp-envelope--sealed-content-pipeline)
 
 ---
 
@@ -1203,3 +1204,90 @@ Apps without a sidecar binary (pure frontend) work fine — they use the SDK's `
 | Apps listing page | `app/src/routes/apps/+page.svelte` |
 | App wrapper route | `app/src/routes/app/[agentId]/+page.svelte` |
 | Chat embed page | `app/src/routes/(embed)/chat-embed/[agentId]/+page.svelte` |
+
+---
+
+## 29. .napp Envelope & Sealed-Content Pipeline
+
+Every artifact (`app`, `agent`, `skill`, `plugin`) is delivered as a `.napp` file.
+**A `.napp` downloaded from NeboAI is NOT a bare tar.gz** — it is wrapped in a
+signed envelope. Reading one means: unwrap the envelope → (maybe) decrypt →
+extract the inner tar.gz. Skipping the unwrap step is the classic bug (you feed
+`NAPP…` bytes into a gzip decoder and get "invalid gzip header").
+
+### Envelope format (101-byte header)
+
+```
+┌────────┬─────────┬──────────────────┬───────────────┬─────────────┐
+│ "NAPP" │ version │ ED25519 signature│  SHA256 hash  │   payload   │
+│ 4 bytes│ 1 byte  │     64 bytes     │   32 bytes    │  (variable) │
+└────────┴─────────┴──────────────────┴───────────────┴─────────────┘
+         0x01                                          offset 101 →
+```
+
+- Server seals/wraps with `WrapNapp`/`SealNapp`; signed by the **one platform-wide
+  Ed25519 key** (k8s secret `neboloop-signing-key`, served at `GET /api/v1/apps/signing-key`).
+- Client verifies against the **embedded** `crates/napp/neboai_public_key.bin`
+  (`napp::signing::builtin_verifying_key()`). Embedded key == served key — the
+  signing key does **not** rotate.
+- `unwrap_napp` checks magic → version → SHA256 → Ed25519 sig, returns the payload.
+
+### Free vs sealed payload
+
+The inner payload is one of two things, distinguished by `napp::sealed::is_sealed`
+(gzip magic `1f 8b` at the start = plain; anything else = sealed):
+
+| Payload | Served when | At rest | How it loads |
+|---------|-------------|---------|--------------|
+| **plain tar.gz** | artifact is free (no license) — `sealAndServeNapp` serves the stored `.napp` unchanged | **extracted to loose files** (`{version}/AGENT.md`, etc.) | loader reads loose files from disk |
+| **sealed (AES-256-GCM)** | artifact is licensed (redeem code / purchase) — `sealAndServeNapp` seals on-the-fly | **stays sealed**; only `manifest.json`+executables partial-extracted | loader decrypts `SKILL.md`/`AGENT.md` **in memory** with the license key |
+
+### License keys (per-artifact, never the master secret)
+
+- Server derives a per-artifact key: `DeriveLicenseKey(masterSecret, artifactId)`
+  (HKDF-SHA256, info `"neboai-license-v1"`). The **master secret is per-license,
+  stored in the DB** (ScyllaDB) — not a rotating k8s secret. Authorization is
+  server-side, so the same key works regardless of who holds the license.
+- Client fetches the derived 32-byte key via `POST /api/v1/licenses/keys`
+  (`fetch_license_keys`), stores it AES-encrypted in the `license_keys` table
+  (TTL'd), and decrypts it into the loaders' in-memory key maps.
+
+### Canonical client functions (do not duplicate)
+
+| Concern | Single implementation |
+|---------|----------------------|
+| File `.napp` → inner tar.gz (unwrap envelope, error if sealed) | `napp::reader::napp_payload_targz` — used by `extract_all`, `read_napp_entry`, `list_napp_entries`, `extract_napp_prefix` |
+| Is this `.napp` sealed? | `napp::reader::is_sealed_napp` |
+| Fetch + store (+ return) license keys | `tools::fetch_and_store_license_keys` — used by install seeding AND `refresh_license_keys` |
+| Read a sealed entry in memory | `napp::reader::read_sealed_napp_entry` |
+| Partial-extract metadata (manifest.json, binaries — NOT the IP) | `napp::reader::partial_extract_sealed_napp` |
+
+### Install → load pipeline for a sealed artifact
+
+```
+install (persist_{agent,skill}_from_api):
+  download .napp (sealed) → is_sealed_napp? yes
+    → fetch_and_store_license_keys([artifact_id])   (seed the key row + get raw key)
+    → partial_extract_sealed_napp(napp, key)         (writes manifest.json so the
+                                                       loader can resolve artifact_id)
+    → DO NOT extract IP, DO NOT require loose files, DO NOT write a loose stub
+
+startup (crates/server/src/lib.rs):
+  decrypt cached license_keys from DB → set_license_keys on BOTH skill_loader AND agent_loader
+
+load (skill Loader / AgentLoader):
+  scan_sealed_napps / scan_sealed_agents:
+    sibling has SKILL.md/AGENT.md? → free, already loaded, skip
+    else read artifact_id from partial-extracted manifest.json → look up key → decrypt in memory
+
+refresh (refresh_license_keys, after redeem / on reconnect):
+  fetch_and_store_license_keys(all cached ids) → set_license_keys on both loaders → reload both
+```
+
+**Gotcha:** writing a loose `SKILL.md`/`AGENT.md` for a sealed artifact makes the
+loader treat it as *free* (sibling-file check) and load the stub instead of the
+sealed content. The install path must not fall back to loose files for sealed artifacts.
+
+**Source:** `crates/napp/src/{napp,sealed,reader,agent_loader}.rs`,
+`crates/tools/src/{lib,skills/loader}.rs`, `crates/server/src/{lib,codes}.rs`;
+server side `neboloop/internal/packaging/{napp,sealed}.go`.

@@ -1,21 +1,29 @@
 name: "Web Research"
 description: |
   Full web research workflow tests: multi-page research, error recovery,
-  research completion (knowing when to stop), and authentication detection.
-  These test real browsing behavior, not just tool routing.
+  research completion (knowing when to stop), authentication detection,
+  and real-world dynamic-site workflows (form filling, competitor research,
+  government databases). These test real browsing behavior, not just tool routing.
 
 fixtures:
   # Multi-page research (3)
-  - fixtures/tools/web-research/multi-page-rust-msrv.yaml
-  - fixtures/tools/web-research/multi-page-comparison.yaml
-  - fixtures/tools/web-research/multi-page-recent-event.yaml
+  - ../fixtures/tools/web-research/multi-page-rust-msrv.yaml
+  - ../fixtures/tools/web-research/multi-page-comparison.yaml
+  - ../fixtures/tools/web-research/multi-page-recent-event.yaml
   # Error recovery (3)
-  - fixtures/tools/web-research/error-403-recovery.yaml
-  - fixtures/tools/web-research/error-paywall-recovery.yaml
-  - fixtures/tools/web-research/error-irrelevant-recovery.yaml
+  - ../fixtures/tools/web-research/error-403-recovery.yaml
+  - ../fixtures/tools/web-research/error-paywall-recovery.yaml
+  - ../fixtures/tools/web-research/error-irrelevant-recovery.yaml
   # Research completion (2)
-  - fixtures/tools/web-research/completion-simple-fact.yaml
-  - fixtures/tools/web-research/completion-multi-source.yaml
+  - ../fixtures/tools/web-research/completion-simple-fact.yaml
+  - ../fixtures/tools/web-research/completion-multi-source.yaml
   # Authentication detection (2)
-  - fixtures/tools/web-research/auth-social-media-post.yaml
-  - fixtures/tools/web-research/auth-private-repo.yaml
+  - ../fixtures/tools/web-research/auth-social-media-post.yaml
+  - ../fixtures/tools/web-research/auth-private-repo.yaml
+  # Dynamic sites & real-world workflows (6)
+  - ../fixtures/tools/web-research/dynamic-sos-business-search.yaml
+  - ../fixtures/tools/web-research/dynamic-competitor-research.yaml
+  - ../fixtures/tools/web-research/dynamic-property-lookup.yaml
+  - ../fixtures/tools/web-research/dynamic-flight-search.yaml
+  - ../fixtures/tools/web-research/dynamic-market-research.yaml
+  - ../fixtures/tools/web-research/dynamic-linkedin-company.yaml

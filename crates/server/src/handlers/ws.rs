@@ -279,6 +279,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
     // Spawn periodic cleanup of stale runs in the global registry (10 min expiry).
     let cleanup_registry = state.run_registry.clone();
     let cleanup_bridge = state.extension_bridge.clone();
+    let cleanup_store = state.store.clone();
     let cleanup_token = CancellationToken::new();
     let cleanup_token_clone = cleanup_token.clone();
     tokio::spawn(async move {
@@ -290,9 +291,17 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                     let stale_sessions = cleanup_registry.cleanup_stale(600).await;
                     if !stale_sessions.is_empty() {
                         warn!(cleaned = stale_sessions.len(), "expired stale runs from global registry");
-                        // Clean up browser tab groups for expired sessions
+                        // Clean up browser tab groups for expired sessions.
+                        // Extension tracks tabs by session UUID, so resolve from session_key.
                         for sk in &stale_sessions {
-                            cleanup_bridge.send_command("hide_indicators", Some(sk)).await;
+                            let session_uuid = cleanup_store
+                                .get_session_by_name(sk)
+                                .ok()
+                                .flatten()
+                                .map(|s| s.id);
+                            let id = session_uuid.as_deref().unwrap_or(sk.as_str());
+                            cleanup_bridge.send_command("hide_indicators", Some(id)).await;
+                            cleanup_bridge.send_command("close_session_tabs", Some(id)).await;
                         }
                     }
                 }
@@ -361,7 +370,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             seen.clear();
                                         }
                                     }
-                                    dispatch_chat(&state, &parsed).await;
+                                    dispatch_chat(&state, &parsed, &cleanup_token).await;
                                 }
                                 "cancel" => {
                                     let data = &parsed["data"];
@@ -1400,7 +1409,7 @@ async fn handle_builtin_slash(
 }
 
 /// Dispatch a chat message to the agent runner via the unified chat pipeline.
-async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
+async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &CancellationToken) {
     let data = &msg["data"];
     let session_id = data["session_id"].as_str().unwrap_or("default").to_string();
     let prompt = data["prompt"].as_str().unwrap_or("").to_string();
@@ -1704,7 +1713,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         channel: channel.clone(),
         origin: Origin::User,
         agent_id: agent_id.clone(),
-        cancel_token: CancellationToken::new(),
+        cancel_token: conn_token.child_token(),
         lane: lanes::MAIN.to_string(),
         comm_reply,
         entity_config,
@@ -1998,6 +2007,12 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     // Task 1: Read tool requests from this connection's channel → send to WS
     let send_task = tokio::spawn(async move {
         while let Some(req) = request_rx.recv().await {
+            debug!(
+                tool = %req.tool,
+                session_id = ?req.session_id,
+                is_command = req.is_command,
+                "extension_ws forwarding tool request"
+            );
             let msg = if req.is_command {
                 // Fire-and-forget command (show_indicators, hide_indicators)
                 let mut m = serde_json::json!({ "type": req.tool });

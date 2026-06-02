@@ -792,9 +792,20 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             }
         }
 
-        // Clean up browser tab groups/indicators for this session
+        // Clean up browser tabs for this session.
+        // The extension tracks tabs by session UUID, not session_key, so resolve it.
+        let browser_session_id = runner
+            .store()
+            .get_session_by_name(&sid)
+            .ok()
+            .flatten()
+            .map(|s| s.id);
+        let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
         extension_bridge
-            .send_command("hide_indicators", Some(&sid))
+            .send_command("hide_indicators", Some(cleanup_id))
+            .await;
+        extension_bridge
+            .send_command("close_session_tabs", Some(cleanup_id))
             .await;
 
         // RunHandle unregisters from RunRegistry on drop (including panics)
@@ -946,8 +957,18 @@ pub async fn run_chat_events(
             }
         }
 
+        let browser_session_id = runner
+            .store()
+            .get_session_by_name(&sid)
+            .ok()
+            .flatten()
+            .map(|s| s.id);
+        let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
         extension_bridge
-            .send_command("hide_indicators", Some(&sid))
+            .send_command("hide_indicators", Some(cleanup_id))
+            .await;
+        extension_bridge
+            .send_command("close_session_tabs", Some(cleanup_id))
             .await;
         drop(_run_handle);
         Ok(())

@@ -337,7 +337,9 @@ pub async fn install_store_product(
     let session_id = format!("store-install-{}", id);
     crate::codes::handle_code(&state, code_type, validated_code, &session_id).await;
 
-    Ok(Json(serde_json::json!({ "success": true })))
+    // The marketplace product id equals the installed artifact/agent id, so the
+    // frontend can address the agent directly instead of matching by name.
+    Ok(Json(serde_json::json!({ "success": true, "agentId": id })))
 }
 
 /// DELETE /store/products/{id}/install — uninstall a product.

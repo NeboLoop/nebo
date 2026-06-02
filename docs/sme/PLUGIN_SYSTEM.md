@@ -569,8 +569,10 @@ pub struct PluginStore {
 | `resolve(slug, version_range)` | No | Local-only semver resolution → `Option<PathBuf>` |
 | `ensure(slug, version_range, download_fn)` | Yes | Resolve locally or download, returns binary path |
 | `install_from_napp(slug, napp_data)` | Yes | Install from .napp archive (binary + plugin.json + PLUGIN.md + skills/) |
+| `ensure_deps(manifest, download_fn)` | Yes | Recursively ensure a manifest's non-optional `dependencies[]` (plugin→plugin); skips deps already resolved locally. Returns the slugs newly installed |
 | `verify_integrity(slug, version)` | No | SHA256 check against cached manifest |
-| `list_installed()` | No | All installed `(slug, Version, PathBuf)` tuples |
+| `list_installed()` | No | All installed `(slug, Version, PathBuf, source)` 4-tuples — `source` is `"user"` or `"installed"` (user dir takes priority) |
+| `path_with_plugins()` | No | Builds a `PATH` string prepending every installed plugin's bin directory ahead of the system `PATH` (dedup'd). Used by `ExecuteTool` env injection |
 | `garbage_collect(referenced_slugs)` | No | Remove unreferenced plugin slug directories |
 | `quarantine(slug, version, reason)` | No | Delete binary, write `.quarantined` marker |
 
@@ -723,9 +725,9 @@ The hot-reload watcher clones the `plugin_store` Arc and passes it to the reload
 
 The `ExecuteTool` struct has `plugin_store: Option<Arc<napp::plugin::PluginStore>>`, set via `with_plugin_store()`.
 
-**Current wiring caveat:** `ExecuteTool` supports plugin env injection, but `Registry::register_all_with_permissions()` currently registers it with `.with_store(...)` only. Until registry construction also calls `.with_plugin_store(plugin_store)`, skill scripts may not receive `GWS_BIN`/`PATH` injection even though this runtime path exists.
+**Current wiring caveat (CONFIRMED open):** `ExecuteTool` fully supports plugin env injection, but `Registry::register_all_with_permissions()` registers it with `.with_store(...)` only — it never calls `.with_plugin_store(plugin_store)` (see `registry.rs`, the `ExecuteTool::new(...)` registration). The `plugin_store` field therefore stays `None`, so the injection block below is dead at runtime and skill scripts do **not** receive `GWS_BIN` or the augmented `PATH`. The fix is a one-line `.with_plugin_store(ps)` on that registration. (Note: `OsTool` and `SkillTool` *are* wired with the plugin store in the same function — only `ExecuteTool` is missed.)
 
-**Env var injection** happens after secret injection (line ~303), before the script subprocess is spawned:
+**Env var injection** happens after secret injection, before the script subprocess is spawned:
 
 ```rust
 if let Some(ref plugin_store) = self.plugin_store {
@@ -735,12 +737,14 @@ if let Some(ref plugin_store) = self.plugin_store {
             cmd.env(&env_name, binary_path.to_string_lossy().as_ref());
         }
     }
+    cmd.env("PATH", plugin_store.path_with_plugins());
 }
 ```
 
 When `plugin_store` is actually set on `ExecuteTool`, this means:
 - Plugin `gws` version `>=1.2.0` resolves to e.g., `/data/nebo/plugins/gws/1.2.0/gws`
 - Environment variable `GWS_BIN` is set to that path
+- `PATH` is prepended with every installed plugin's bin dir via `path_with_plugins()`, so scripts can also call the binary by bare name
 - The skill's script can use `$GWS_BIN` to invoke the binary
 
 ---
@@ -1069,7 +1073,7 @@ Future events (not yet implemented):
 
 | File | Lines | What |
 |------|-------|------|
-| `crates/napp/src/plugin.rs` | ~1400 | Core module: types (incl. capabilities, dependencies, validation), PluginStore, helpers, tests |
+| `crates/napp/src/plugin.rs` | ~3067 | Core module: types (incl. capabilities, dependencies, validation), PluginStore (incl. `ensure_deps`, `path_with_plugins`), helpers, tests |
 | `crates/napp/src/agent.rs` | — | `AgentTrigger::Watch` with optional `event` field |
 | `crates/napp/src/napp.rs` | — | .napp extraction: ALLOWED_FILES includes PLUGIN.md/plugin.json, `skills/` prefix support |
 | `crates/napp/src/lib.rs` | — | `pub mod plugin;` + NappError variants |

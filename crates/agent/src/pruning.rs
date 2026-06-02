@@ -496,13 +496,36 @@ fn build_tool_summary(
             let result_count = tool_result.matches("\"title\"").count().max(1);
             format!("[web:search] '{}' ({} results)", query, result_count)
         }
+        "web" if action == "navigate" => {
+            let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+            let url_short = if url.len() > 60 { format!("{}...", &url[..57]) } else { url.to_string() };
+            let visual = extract_visual_section(tool_result);
+            if let Some(vis) = visual {
+                format!("[web:navigate] {} — {}", url_short, vis)
+            } else {
+                format!("[web:navigate] {}", url_short)
+            }
+        }
+        "web" if action == "read_page" || action == "snapshot" => {
+            let visual = extract_visual_section(tool_result);
+            if let Some(vis) = visual {
+                format!("[web:read_page] {}", vis)
+            } else {
+                format!("[web:read_page] {} elements", tool_result.matches("ref_").count())
+            }
+        }
+        "web" if matches!(action, "click" | "fill" | "type" | "scroll" | "hover" | "press") => {
+            let first_line = tool_result.lines().next().unwrap_or("ok");
+            let visual = extract_visual_section(tool_result);
+            if let Some(vis) = visual {
+                format!("[web:{}] {} — {}", action, first_line, vis)
+            } else {
+                format!("[web:{}] {}", action, first_line)
+            }
+        }
         "web" if action == "fetch" => {
             let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("?");
-            let url_short = if url.len() > 60 {
-                format!("{}...", &url[..57])
-            } else {
-                url.to_string()
-            };
+            let url_short = if url.len() > 60 { format!("{}...", &url[..57]) } else { url.to_string() };
             format!("[web:fetch] {} ({} lines)", url_short, line_count)
         }
         "bot" => {
@@ -516,6 +539,34 @@ fn build_tool_summary(
             }
         }
     }
+}
+
+/// Extract the `[Page Visual]` sidecar section from a tool result, if present.
+/// Returns the structured visual assessment (PAGE/STATUS/BLOCKER/CONTENT/ACTION lines).
+fn extract_visual_section(result: &str) -> Option<String> {
+    let marker = "[Page Visual]\n";
+    let start = result.find(marker)?;
+    let visual = &result[start + marker.len()..];
+    let trimmed = visual.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Keep only the structured lines (PAGE, STATUS, BLOCKER, CONTENT, ACTION, ELEMENTS)
+    let compact: String = trimmed
+        .lines()
+        .filter(|l| {
+            let l = l.trim();
+            l.starts_with("PAGE:")
+                || l.starts_with("STATUS:")
+                || l.starts_with("BLOCKER:")
+                || l.starts_with("CONTENT:")
+                || l.starts_with("ACTION:")
+                || l.starts_with("ELEMENTS:")
+                || l.starts_with("- ")
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if compact.is_empty() { None } else { Some(compact) }
 }
 
 /// Message summarization: truncate old user/assistant messages to reduce context

@@ -464,6 +464,7 @@
 		agentName={skill.name}
 		agentDescription={skill.description || ''}
 		inputs={setupInputs}
+		dependencies={skill?.dependencies ?? skill?.typeConfig?.dependencies}
 		onComplete={handleSetupComplete}
 		onCancel={handleSetupCancel}
 	/>
