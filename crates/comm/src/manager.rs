@@ -105,13 +105,14 @@ impl PluginManager {
         &self,
         conversation_id: &str,
         is_typing: bool,
+        status: Option<&str>,
     ) -> Result<(), CommError> {
         let inner = self.inner.read().await;
         let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
         if !active.is_connected() {
             return Err(CommError::NotConnected);
         }
-        active.send_typing(conversation_id, is_typing).await
+        active.send_typing(conversation_id, is_typing, status).await
     }
 
     /// Upload a file through the active plugin and return its attachment metadata.

@@ -846,11 +846,15 @@ impl CommPlugin for NeboAIPlugin {
         &self,
         conversation_id: &str,
         is_typing: bool,
+        status: Option<&str>,
     ) -> Result<(), CommError> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(CommError::NotConnected);
         }
-        let content = serde_json::json!({ "typing": is_typing });
+        let mut content = serde_json::json!({ "typing": is_typing });
+        if let Some(s) = status {
+            content["status"] = serde_json::Value::String(s.to_string());
+        }
         self.send_on_conversation(conversation_id, "typing", content, true)
             .await
     }

@@ -2597,17 +2597,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             channel_ctx: None,
         };
 
-        // Show a "typing" indicator on the remote conversation while the agent
-        // works (best-effort, ephemeral). Cleared after run_chat completes.
-        let _ = state
-            .comm_manager
-            .send_typing(&msg.conversation_id, true)
-            .await;
         chat_dispatch::run_chat(&state, config).await;
-        let _ = state
-            .comm_manager
-            .send_typing(&msg.conversation_id, false)
-            .await;
 
         state.event_bus.emit(tools::events::Event {
             source: format!("neboai.agent_space.{}", agent_slug),
@@ -2760,15 +2750,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 channel_ctx: None,
             };
 
-            let _ = state
-                .comm_manager
-                .send_typing(&msg.conversation_id, true)
-                .await;
             chat_dispatch::run_chat(&state, config).await;
-            let _ = state
-                .comm_manager
-                .send_typing(&msg.conversation_id, false)
-                .await;
 
             state.event_bus.emit(tools::events::Event {
                 source: format!("neboai.agent_space.{}", agent_slug),
@@ -2860,15 +2842,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             channel_ctx: None,
         };
 
-        let _ = state
-            .comm_manager
-            .send_typing(&msg.conversation_id, true)
-            .await;
         chat_dispatch::run_chat(&state, config).await;
-        let _ = state
-            .comm_manager
-            .send_typing(&msg.conversation_id, false)
-            .await;
 
         // Also emit into event bus so role event triggers can fire
         state.event_bus.emit(tools::events::Event {
@@ -3052,6 +3026,28 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             return;
         }
 
+        // Slash commands addressed to the bot in a channel (e.g. "<@bot> /stop").
+        // Strip mention tokens so the command resolves, then handle it instead of
+        // dispatching an agent run. Single canonical stop/new/clear path for channels
+        // (previously these only worked in DMs/agent_spaces).
+        let command_text = MENTION_TOKEN_RE.replace_all(&text, "").trim().to_string();
+        if command_text.starts_with('/') {
+            let session_key =
+                agent::keyparser::build_session_key("neboai", "channel", &msg.conversation_id);
+            if handle_comm_slash_command(
+                &state,
+                &command_text,
+                &session_key,
+                "channel",
+                &msg.conversation_id,
+            )
+            .await
+            .is_some()
+            {
+                return;
+            }
+        }
+
         // Respond → route to the resolved agent (primary bot when empty/None).
         let agent_id = resolved_agent_id.clone().unwrap_or_default();
         let agent_name = {
@@ -3190,15 +3186,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             channel_ctx: None,
         };
 
-        let _ = state
-            .comm_manager
-            .send_typing(&msg.conversation_id, true)
-            .await;
         chat_dispatch::run_chat(&state, config).await;
-        let _ = state
-            .comm_manager
-            .send_typing(&msg.conversation_id, false)
-            .await;
 
         state.event_bus.emit(tools::events::Event {
             source: "neboai.channel".to_string(),
@@ -3340,6 +3328,11 @@ async fn handle_comm_slash_command(
 
     let response = match cmd.as_str() {
         "/new" | "/reset" => {
+            let cancelled = state.run_registry.cancel_by_session(session_key).await;
+            if cancelled {
+                tracing::info!(session_key = %session_key, "cancelled active run before /new");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
             match state
                 .runner
                 .sessions()
@@ -3358,6 +3351,11 @@ async fn handle_comm_slash_command(
         }
 
         "/clear" => {
+            let cancelled = state.run_registry.cancel_by_session(session_key).await;
+            if cancelled {
+                tracing::info!(session_key = %session_key, "cancelled active run before /clear");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
             match state
                 .runner
                 .sessions()
@@ -3366,6 +3364,20 @@ async fn handle_comm_slash_command(
             {
                 Ok(()) => "Conversation cleared.".to_string(),
                 Err(e) => format!("Failed to clear: {}", e),
+            }
+        }
+
+        "/stop" | "/cancel" | "/halt" => {
+            let cancelled = state.run_registry.cancel_by_session(session_key).await;
+            tracing::info!(
+                session_key = %session_key,
+                cancelled,
+                "comm slash: /stop — cancel requested"
+            );
+            if cancelled {
+                "Stopped.".to_string()
+            } else {
+                "Nothing is running right now.".to_string()
             }
         }
 
@@ -3388,6 +3400,7 @@ async fn handle_comm_slash_command(
         "/help" => {
             "/new — Start a new conversation (preserves history)\n\
              /clear — Clear current conversation messages\n\
+             /stop — Stop the current run\n\
              /status — Show session info\n\
              /help — Show this help"
                 .to_string()

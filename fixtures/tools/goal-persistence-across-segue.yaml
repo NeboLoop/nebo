@@ -1,0 +1,49 @@
+id: goal-persistence-across-segue
+name: "Goal persistence — stay on a multi-step objective across a segue"
+description: |
+  The user sets a multi-step objective, then sends a brief clarifying aside mid-task.
+  The model must answer the aside AND return to the original objective — not abandon
+  the purpose. This guards the "we lost the purpose" failure: the model drifting off
+  a multi-step task after a confusing detour, or treating its own objective as stale.
+  Tests the "## Current Objective" persistence language and task-list usage.
+target_component: prompt
+
+conversation:
+  - role: user
+    content: "Review the plugin queue: list the pending plugins, spot-check each one, and approve or skip them. Work through the whole queue."
+  - role: assistant
+    content: "Starting the review. I'll list the pending plugins first, then work through each one."
+  - role: user
+    content: "By the way, how many are in the queue right now?"
+
+prompt_assertions:
+  first_call:
+    - id: answers-the-aside
+      text: "Model answers the count question (the user's latest message) directly"
+      severity: critical
+    - id: keeps-objective
+      text: "Model does NOT treat the queue-review objective as finished or abandoned — it stays the active goal"
+      severity: critical
+  recovery:
+    - id: returns-to-objective
+      text: "After answering the aside, the model continues the queue review (or states it is resuming it) — it does not ask 'what would you like to do?' as if the task were lost"
+      severity: critical
+    - id: no-purpose-loss
+      text: "Model does NOT pivot to an unrelated task or invent a new goal (e.g. 'let's create a new agent')"
+      severity: critical
+    - id: uses-task-list
+      text: "Model tracks the multi-step work with agent(resource: 'task') rather than holding the plan only in prose"
+      severity: important
+  cost:
+    - id: stays-efficient
+      text: "Model does not spiral or re-discover the task; it proceeds directly"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 2000
+  narrative: |
+    Model answers the count (a quick list/lookup), then immediately resumes the
+    queue review it was mid-way through — "There are N pending; continuing the
+    review now." It keeps the objective in its task list and does not ask the user
+    to restate what they wanted.

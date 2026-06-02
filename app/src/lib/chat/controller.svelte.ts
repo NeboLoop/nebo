@@ -81,6 +81,27 @@ export function toolDisplayName(tool: string, input: Record<string, unknown>): s
   return tool;
 }
 
+function toolActivityLabel(toolName: string): string {
+  const labels: Record<string, string> = {
+    bash:    'running a command',
+    grep:    'searching files',
+    glob:    'finding files',
+    read:    'reading a file',
+    write:   'writing a file',
+    edit:    'editing a file',
+
+    web:     'searching the web',
+    browser: 'reading a page',
+    bot:     'thinking it through',
+    desktop: 'using the desktop',
+    event:   'checking the schedule',
+    loop:    'sending a message',
+
+    os:      'checking the workspace',
+  };
+  return labels[toolName] || 'working';
+}
+
 /** Format a timestamp for display. */
 export function formatTime(ts: string | number): string {
   try {
@@ -254,6 +275,7 @@ export function createChatController(config: ChatControllerConfig) {
     if (data.tool_id) {
       pendingTools.set(data.tool_id, { idx, startTime: Date.now() });
     }
+    activityStatus = toolActivityLabel(data.tool || '');
   }
 
   function handleToolResult(data: any) {

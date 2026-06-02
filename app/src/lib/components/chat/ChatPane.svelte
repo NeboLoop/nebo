@@ -785,7 +785,7 @@
     {#if isLoading && groupedMessages.length > 0 && groupedMessages[groupedMessages.length - 1]?.type !== 'assistant'}
       <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2">
         <span class="loading loading-spinner loading-xs text-primary"></span>
-        <span class="text-sm text-base-content/50 animate-pulse">Working...</span>
+        <span class="text-sm text-base-content/50 animate-pulse">{activityStatus || 'Working...'}</span>
       </div>
     {/if}
   </div>

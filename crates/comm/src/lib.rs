@@ -127,6 +127,7 @@ pub trait CommPlugin: Send + Sync {
         &self,
         _conversation_id: &str,
         _is_typing: bool,
+        _status: Option<&str>,
     ) -> Result<(), CommError> {
         Ok(())
     }

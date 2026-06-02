@@ -1187,12 +1187,23 @@ When messages are evicted by the sliding window:
 ### Stage 3: Micro-Compact (every iteration, above threshold)
 
 `micro_compact()`:
-- Trims old tool results to `[trimmed: {tool} result]`
+- Replaces old tool results with an **informative neutral summary** via `build_tool_summary()` (pruning.rs:453) — e.g. `[system:shell] ls Desktop (68 lines)`, `[web:search] 'flights' (12 results)`, `[web:navigate] url — <page visual>` — instead of the old generic `[trimmed: {tool} result]`. Per-tool intelligence preserves what the call did without keeping the full payload.
+- **Error decay (context-pollution fix):** the compacted result is always rewritten with `is_error: false` (pruning.rs:242, 252, 362, 372). Once a failed tool call ages out of the protected-recent window, it no longer reads as a failure to the model. This is the structural half of the "hallucinated failure from context pollution" fix (see `docs/testing/document-upload-scenario.md` Bug 1) — it prevents accumulated past failures from making the model disbelieve its own later successes. Note: it only protects *future* turns; an already-poisoned session must be cleared with `/new`.
+- Preserves original `tool_call_id`s on the rewritten result so the orphan filter in `build_messages` still pairs compacted results with their `tool_use`.
 - Protects 3 most recent tool results (`MICRO_COMPACT_KEEP_RECENT`)
 - Min savings threshold: 1,000 tokens (`MICRO_COMPACT_MIN_SAVINGS`)
 - Priority ordering: web → file → shell/system → other
 - **Count-based trigger:** If >4 compactable tool results (`MICRO_COMPACT_COUNT_TRIGGER`), strip aggressively regardless of age (keep only `MICRO_COMPACT_KEEP_RECENT` most recent)
 - **Time-based trigger:** If >5 minutes (`TIME_BASED_GAP_THRESHOLD_SECS = 300`) since last activity, keep only 1 recent result (`TIME_BASED_KEEP_RECENT = 1`). Matches Claude Code parity.
+
+### Runner-Side Tool-Result Hygiene (`runner.rs`)
+
+Complements pruning. Applied as each iteration's tool results are saved (runner.rs ~3160-3239):
+- **Error cap:** error results over `ERROR_CAP = 10_000` chars are truncated to first 5K + last 5K with a `[N characters truncated]` marker (prevents error dumps from dominating context).
+- **Success cap:** success results over `RESULT_CAP = 30_000` chars are persisted to `/tmp/nebo-tool-results/<uuid>.txt` and replaced with a 4K preview + a `read` path. `UNIVERSAL_TOOL_RESULT_CAP = 100_000` is the final hard ceiling.
+- **Empty-result guard:** an empty non-error result becomes `({tool} completed with no output)` so the model doesn't read it as end-of-output.
+- **Comm delivery note:** for `Origin::Comm` runs, any tool result that carried an `image_url` (recorded in `had_image` *before* the sidecar nulls it) gets `✓ Screenshot captured and will be delivered as an attachment…` appended — so the model knows the attachment is on its way (`document-upload-scenario.md` Bug 2).
+- **Duplicate-read note:** re-reading a file already read this session appends `(Note: this file was already read earlier in this session)`.
 
 ### Hard Message Cap
 

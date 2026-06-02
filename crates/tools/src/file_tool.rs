@@ -2,16 +2,12 @@ use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::ToolResult;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::SystemTime;
 
 /// File operations: read, write, edit, glob, grep.
 pub struct FileTool {
     pub on_file_read: Option<Box<dyn Fn(&str) + Send + Sync>>,
-    read_cache: Mutex<HashMap<String, (SystemTime, i64, i64)>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,7 +49,6 @@ impl FileTool {
     pub fn new() -> Self {
         Self {
             on_file_read: None,
-            read_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -123,27 +118,11 @@ impl FileTool {
             ));
         }
 
-        // File read dedup: skip if same file, same range, file unchanged
-        if let Ok(mtime) = metadata.modified() {
-            let cache_key = path.clone();
-            if let Ok(cache) = self.read_cache.lock() {
-                if let Some(&(cached_mtime, cached_offset, cached_limit)) = cache.get(&cache_key) {
-                    if cached_mtime == mtime
-                        && cached_offset == input.offset
-                        && cached_limit == input.limit
-                    {
-                        if let Some(ref callback) = self.on_file_read {
-                            callback(&path);
-                        }
-                        return ToolResult::ok(format!(
-                            "File unchanged since last read at line {}. Contents are already in your conversation context.",
-                            offset
-                        ));
-                    }
-                }
-            }
-        }
-
+        // NOTE: A read MUST always return the file's content. We deliberately do NOT
+        // suppress repeat reads with a "contents already in your context" placeholder —
+        // that assumption is unverifiable (false across compaction/eviction) and the old
+        // path-keyed, process-global cache gaslit the model into a retry spiral when a
+        // prior read had returned nothing useful. See the #research loop incident.
         let mut file = match std::fs::File::open(&path) {
             Ok(f) => f,
             Err(e) => return ToolResult::error(format!("Error opening file: {}", e)),
@@ -151,7 +130,10 @@ impl FileTool {
 
         // Check for binary content before attempting line-based reading
         {
-            let mut sample = vec![0u8; 8192.min(metadata.len() as usize)];
+            // Read a fixed window via a real syscall — never size this from
+            // metadata.len(), which can be 0 for dataless/placeholder files (e.g.
+            // iCloud "optimize storage") even when the file has content.
+            let mut sample = [0u8; 8192];
             if let Ok(n) = file.read(&mut sample) {
                 if n > 0 && is_binary_content(&sample[..n], n) {
                     return ToolResult::ok("[Binary file detected — content not shown]");
@@ -217,13 +199,6 @@ impl FileTool {
                 "{}\n\n[Output truncated: {} total chars, showing first {}. Use offset/limit params to read specific sections.]",
                 truncated, total_len, FILE_READ_MAX_CHARS
             );
-        }
-
-        // Update read cache
-        if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
-            if let Ok(mut cache) = self.read_cache.lock() {
-                cache.insert(path.clone(), (mtime, input.offset, input.limit));
-            }
         }
 
         if let Some(ref callback) = self.on_file_read {

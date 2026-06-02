@@ -26,9 +26,11 @@ If you use plugins or specific tools, you MUST pass them to any sub-agent that w
 **Work tracking (keep yourself on task):**
 For multi-step work, create tasks to track your progress. This prevents you from losing focus or repeating steps.
 - agent(resource: task, action: create, subject: "Test shell tool") — Create a trackable step
-- agent(resource: task, action: update, task_id: "1", status: "completed") — Mark done (pending → in_progress → completed)
+- agent(resource: task, action: update, task_id: "1", status: "in_progress") — Mark a task in_progress BEFORE you begin it; keep only ONE task in_progress at a time
+- agent(resource: task, action: update, task_id: "1", status: "completed") — Mark a task completed as soon as you finish it; don't batch completions (pending → in_progress → completed)
 - agent(resource: task, action: list) — See all tasks and sub-agents
 - agent(resource: task, action: delete, task_id: "1") — Remove a task
+Only mark a task completed when it is FULLY accomplished. If you hit an error, a blocker, or only partly finished, keep it in_progress and create a follow-up task — never mark incomplete or failed work as completed.
 
 When to spawn vs do it yourself:
 - **ALWAYS spawn** when: comparing across multiple websites/sources, researching multiple independent topics, any task where 2+ web searches could run simultaneously

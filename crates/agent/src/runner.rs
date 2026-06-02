@@ -79,12 +79,71 @@ fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
     if call.name != "os" {
         return None;
     }
-    let resource = call.input.get("resource").and_then(|v| v.as_str())?;
     let action = call.input.get("action").and_then(|v| v.as_str())?;
-    if resource != "file" || action != "read" {
+    // Resource is frequently omitted — the os tool infers it from the action
+    // (read→file, exec→shell). Mirror that inference here so dedup tracking
+    // works for the no-resource call shape the model actually produces.
+    let resource = call
+        .input
+        .get("resource")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| match action {
+            "read" | "write" | "edit" | "glob" | "grep" => "file".into(),
+            "exec" | "shell" | "poll" | "log" => "shell".into(),
+            _ => String::new(),
+        });
+
+    // Direct file read.
+    if resource == "file" && action == "read" {
+        return call
+            .input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+
+    // Shell read: cat/head/tail/jq/python json.tool etc. re-reading a file the
+    // model already has. These bypass file-read dedup entirely otherwise.
+    if resource == "shell" {
+        let command = call.input.get("command").and_then(|v| v.as_str())?;
+        return extract_shell_read_path(command);
+    }
+
+    None
+}
+
+/// Detect a shell command whose sole purpose is dumping a file's contents and
+/// return the target path, so the duplicate-read note can fire for shell reads.
+/// Only matches read-only file-dump commands — not commands with side effects.
+fn extract_shell_read_path(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    // Bail on anything that pipes, redirects, or chains — too ambiguous to
+    // attribute to a single file read.
+    if trimmed.contains('|') || trimmed.contains('>') || trimmed.contains("&&") {
         return None;
     }
-    call.input.get("path").and_then(|v| v.as_str()).map(|s| s.to_string())
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let cmd = *tokens.first()?;
+    let base = cmd.rsplit('/').next().unwrap_or(cmd);
+    let is_dump = matches!(
+        base,
+        "cat" | "head" | "tail" | "less" | "more" | "bat" | "nl" | "jq"
+    );
+    if !is_dump {
+        return None;
+    }
+    // Take the last token that is not a flag or a jq filter expression.
+    let path = tokens
+        .iter()
+        .skip(1)
+        .rev()
+        .find(|t| !t.starts_with('-') && **t != "." && !t.starts_with('\''))?;
+    let cleaned = path.trim_matches(|c| c == '"' || c == '\'');
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(cleaned.to_string())
 }
 
 /// Pick a non-gateway provider when available.  Falls back to first provider
@@ -990,6 +1049,19 @@ async fn run_loop(
     let mut recent_tool_result_hashes: Vec<(u64, u64, u64)> = Vec::new();
     // Parallel vec of tool names (same indexing as recent_tool_result_hashes)
     let mut recent_tool_names: Vec<String> = Vec::new();
+    // Hashes of recent tool-result CONTENT (any tool, any args) for tool-agnostic
+    // redundant-fetch detection: the same file read via os(read), then cat, then jq
+    // returns identical bytes through different calls — catch it regardless of how it
+    // was requested. Last 20 kept.
+    let mut recent_result_content_hashes: Vec<u64> = Vec::new();
+    // Per-target read-failure counter (defense-in-depth backstop for the #research
+    // read-loop incident): repeated FAILED reads of the SAME path — even via
+    // different methods/args, which the identical-args guard misses — get blocked
+    // after a threshold so the agent reports instead of spiraling. NOT a substitute
+    // for the file-read fix.
+    let mut read_failures: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    const READ_FAILURE_LIMIT: usize = 3;
     let mut provider_idx: usize = 0;
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
@@ -1556,9 +1628,19 @@ async fn run_loop(
                 .is_some()
             {
                 turn_exit_reason = "adaptive_limit_no_progress".to_string();
-                info!(
+                let last_tool = recent_tool_names.last().cloned().unwrap_or_default();
+                let worst_read = read_failures
+                    .iter()
+                    .max_by_key(|(_, c)| **c)
+                    .map(|(p, c)| format!("{} (failed {}x)", p, c))
+                    .unwrap_or_default();
+                warn!(
                     session_id,
-                    iteration, "adaptive limit: stopping, no progress"
+                    iteration,
+                    consecutive_error_iterations,
+                    last_tool = %last_tool,
+                    repeated_read_failures = %worst_read,
+                    "agentic loop stopping at adaptive iteration limit — no progress"
                 );
                 break;
             }
@@ -2897,6 +2979,31 @@ async fn run_loop(
                 }
             }
 
+            // Defense-in-depth: block repeated reads of the SAME target that keep
+            // FAILING via different methods/args (which the identical-args guard above
+            // misses — the #research read-loop). After READ_FAILURE_LIMIT failures of a
+            // path, force the model to report instead of retrying. NOT a substitute for
+            // the file-read fix.
+            for (idx, tc) in tool_calls.iter().enumerate() {
+                if blocked_results[idx].is_some() {
+                    continue;
+                }
+                if let Some(p) = extract_file_read_path(tc) {
+                    if read_failures.get(&p).copied().unwrap_or(0) >= READ_FAILURE_LIMIT {
+                        warn!(session_id, path = %p, "blocking read after repeated failures");
+                        blocked_results[idx] = Some((
+                            tc.clone(),
+                            ToolResult::error(format!(
+                                "Blocked: reading {} has failed {} times via different methods. \
+                                 Stop retrying — tell the user the file could not be read and ask \
+                                 how they'd like to proceed.",
+                                p, READ_FAILURE_LIMIT
+                            )),
+                        ));
+                    }
+                }
+            }
+
             // Partition tool calls into concurrent-safe (read-only) and sequential (writes).
             // Concurrent-safe tools run in parallel via FuturesUnordered, then
             // sequential tools run one at a time to prevent state conflicts.
@@ -3185,12 +3292,40 @@ async fn run_loop(
                 });
                 if !result.is_error {
                     all_errors_this_iteration = false;
+                    // A successful read clears the failure count for that target.
+                    if let Some(p) = extract_file_read_path(&tc) {
+                        read_failures.remove(&p);
+                    }
+                } else if let Some(p) = extract_file_read_path(&tc) {
+                    // A failed read of a path bumps its counter — even when interleaved
+                    // with successful discovery calls (which is why the all-errors
+                    // counter alone misses this).
+                    *read_failures.entry(p).or_insert(0) += 1;
                 }
 
                 // Empty result guard (Claude Code pattern): prevent models from
                 // interpreting empty tool_result as end-of-output.
                 if result.content.is_empty() && !result.is_error {
                     result.content = format!("({} completed with no output)", tc.name);
+                }
+
+                // Tool-agnostic redundant-result dedup: if this result's content is
+                // identical to one returned earlier this session — by ANY tool or args
+                // (e.g. the same file read via os(read), then cat, then jq) — tell the
+                // model it already has this instead of letting it re-fetch in a loop.
+                // Hash is taken pre-truncation so it reflects the full original content.
+                if !result.is_error && result.content.len() > 200 {
+                    let content_hash = simple_hash(result.content.as_bytes());
+                    if recent_result_content_hashes.contains(&content_hash) {
+                        result.content.push_str(
+                            "\n\n(Note: this is identical to a result you already received earlier in this session. You already have this content — use it instead of fetching it again.)",
+                        );
+                    } else {
+                        recent_result_content_hashes.push(content_hash);
+                        if recent_result_content_hashes.len() > 20 {
+                            recent_result_content_hashes.remove(0);
+                        }
+                    }
                 }
 
                 // Error truncation: first 5K + last 5K with marker (Claude Code pattern)

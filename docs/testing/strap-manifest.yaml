@@ -54,12 +54,17 @@ strap_docs:
             example: 'os(resource: "file", action: "glob", pattern: "**/*.rs", path: "/project")'
           grep:
             params:
-              regex: { type: string, required: true }
+              # Search term is `pattern` (renamed from `regex` in optimization Round 2 —
+              # matches Claude Code's GrepTool priors). `regex` kept as a backward-compat
+              # fallback on FileInput but REMOVED from the JSON schema.
+              pattern: { type: string, required: true }
               path: { type: string, required: true }
-              output_mode: { type: string, required: false, values: ["files"] }
+              glob: { type: string, required: false }
+              case_insensitive: { type: bool, required: false }
+              output_mode: { type: string, required: false, values: ["content", "files", "count"] }
               context_before: { type: int, required: false }
               context_after: { type: int, required: false }
-            example: 'os(resource: "file", action: "grep", regex: "TODO", path: "/project")'
+            example: 'os(resource: "file", action: "grep", pattern: "TODO", path: "/project")'
       shell:
         actions:
           exec:

@@ -12,6 +12,7 @@
 docs/.archive/
 docs/plans/
 results*/
+.testing/
 overrides/
 .nebo/
 .understand-anything/

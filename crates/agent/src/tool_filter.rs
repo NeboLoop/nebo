@@ -210,7 +210,12 @@ const TOOL_CONTEXTS: &[&str] = &["web", "event", "loop", "work", "execute", "emi
 
 /// Tools always included in the schema list regardless of context.
 /// These are core agent capabilities that should never be filtered out.
-const ALWAYS_INCLUDE_TOOLS: &[&str] = &["agent", "skill", "event", "message", "tool_search", "plugin"];
+/// os/web/mcp are critical action+loader tools — they must always be visible so
+/// the model is never blind to its own primary capabilities (and the system
+/// prompt prose lists them as "always available"). The schema rides in the cached
+/// prefix, so the token cost is paid once on cache write and ~10% on cache reads.
+const ALWAYS_INCLUDE_TOOLS: &[&str] =
+    &["agent", "skill", "event", "message", "tool_search", "plugin", "os", "web", "mcp"];
 
 // Keyword-based deferred activation removed. Tools now load and unload via
 // message-history scanning (extract_discovered_deferred_tools), following

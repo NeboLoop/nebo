@@ -35,6 +35,27 @@ pub fn md_to_html(md: &str) -> String {
     html_output
 }
 
+fn tool_activity_label(tool_name: &str) -> &str {
+    match tool_name {
+        "bash"    => "running a command",
+        "grep"    => "searching files",
+        "glob"    => "finding files",
+        "read"    => "reading a file",
+        "write"   => "writing a file",
+        "edit"    => "editing a file",
+
+        "web"     => "searching the web",
+        "browser" => "reading a page",
+        "bot"     => "thinking it through",
+        "desktop" => "using the desktop",
+        "event"   => "checking the schedule",
+        "loop"    => "sending a message",
+
+        "os"      => "checking the workspace",
+        _         => "working",
+    }
+}
+
 /// Configuration for a chat run — decorators that customize behavior
 /// without changing the underlying execution flow.
 pub struct ChatConfig {
@@ -182,6 +203,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         // RunHandle auto-unregisters from RunRegistry on drop (panic-safe).
         let _run_handle = run_handle;
 
+        // Send initial typing indicator for NeboLoop conversations
+        if let Some(ref cm) = comm_manager {
+            if let Some(ref cr) = comm_reply {
+                let _ = cm.send_typing(&cr.conversation_id, true, None).await;
+            }
+        }
+
         // Helper: build a WS broadcast payload with session_id, agentId, and
         // optional originAgentId (for @mention delegate routing).
         macro_rules! ws_payload {
@@ -260,6 +288,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 let mut comm_buffer = String::new();
                 let mut last_comm_flush: Option<tokio::time::Instant> = None;
                 let mut comm_streamed = false;
+                let mut needs_separator = false;
                 // File artifacts produced by tools during this run, collected from
                 // ToolResult events. Only populated for comm replies; attached to the
                 // final loop/DM reply so generated files (images, reports) reach the
@@ -284,6 +313,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 text_buffer.clear();
                             }
                             hub.broadcast("chat_cancelled", ws_payload!());
+                            if let Some(ref cm) = comm_manager {
+                                if let Some(ref cr) = comm_reply {
+                                    let _ = cm.send_typing(&cr.conversation_id, false, None).await;
+                                }
+                            }
                             break;
                         }
                         ev = rx.recv() => match ev {
@@ -297,6 +331,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
                     match event.event_type {
                         StreamEventType::Text => {
+                            if needs_separator
+                                && !full_response.is_empty()
+                                && !full_response.ends_with(|c: char| c.is_whitespace())
+                                && !event.text.starts_with(|c: char| c.is_whitespace())
+                            {
+                                full_response.push_str("\n\n");
+                                text_buffer.push_str("\n\n");
+                                if comm_reply.is_some() {
+                                    comm_buffer.push_str("\n\n");
+                                }
+                            }
+                            needs_separator = false;
                             full_response.push_str(&event.text);
                             text_buffer.push_str(&event.text);
                             if last_flush.elapsed().as_millis() as u64 >= COALESCE_MS {
@@ -372,6 +418,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "content": event.text,
                                 ),
                             );
+                            if let Some(ref cm) = comm_manager {
+                                if let Some(ref cr) = comm_reply {
+                                    let _ = cm.send_typing(&cr.conversation_id, true, Some("thinking")).await;
+                                }
+                            }
                         }
                         StreamEventType::ToolCall => {
                             // Flush pending text before tool event to prevent fragmentation
@@ -394,6 +445,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "input": tc.input,
                                     ),
                                 );
+                                if let Some(ref cm) = comm_manager {
+                                    if let Some(ref cr) = comm_reply {
+                                        let _ = cm.send_typing(&cr.conversation_id, true, Some(tool_activity_label(&tc.name))).await;
+                                    }
+                                }
                             }
                         }
                         StreamEventType::ToolResult => {
@@ -433,6 +489,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     }
                                 }
                             }
+                            needs_separator = true;
                         }
                         StreamEventType::Error => {
                             hub.broadcast(
@@ -586,6 +643,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "summary": &event.text,
                                 ),
                             );
+                            needs_separator = true;
                         }
                         StreamEventType::Done => {}
                     }
@@ -599,6 +657,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             "content": &text_buffer,
                         ),
                     );
+                }
+
+                // Clear typing indicator for NeboLoop conversations
+                if let Some(ref cm) = comm_manager {
+                    if let Some(ref cr) = comm_reply {
+                        let _ = cm.send_typing(&cr.conversation_id, false, None).await;
+                    }
                 }
 
                 // Render HTML before comm reply (which may move full_response)

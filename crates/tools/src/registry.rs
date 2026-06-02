@@ -601,9 +601,16 @@ impl Registry {
             }
         };
 
-        // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — deferred
-        // Activated by keyword matching (file, read, write, shell, run, etc.)
-        // Saves ~8-10K tokens on requests that don't involve OS operations.
+        // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — CORE.
+        // The file/shell meta-tool is the agent's primary way to act; it must always be
+        // visible. It previously was deferred to save ~8-10K schema tokens, but that left
+        // the model blind to its own core capability — it had to tool_search to discover
+        // os, and the tool unloaded when that discovery message was evicted from the sliding
+        // window, causing mid-task thrashing. The system-prompt prefix is cached
+        // (Anthropic cache_control / Janus prefix caching), so the schema costs ~10% on
+        // cache reads — far cheaper than the discovery round-trips and context pollution
+        // that deferral caused. Reserve deferral for genuinely optional surface
+        // (per-skill, MCP, niche platform tools).
         let policy = self.policy.read().await.clone();
         let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone())
             .with_store(store.clone());
@@ -611,7 +618,7 @@ impl Registry {
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
         }
-        self.register_deferred(Box::new(os_tool)).await;
+        self.register(Box::new(os_tool)).await;
 
         // Web tool (HTTP fetch + search + browser) — requires "web" permission
         if allowed("web") {
