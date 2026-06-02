@@ -164,12 +164,13 @@ These docs exist but are reference/planning documents rather than system SME doc
 | `ORGCHART_COMPONENT.md` | Component | Single UI component spec |
 | `APP_UX_RESTRUCTURE.md` | Planning | UX refactor tracking |
 | `STARTUP_PERFORMANCE.md` | Performance | Startup optimization reference |
+| `MIGRATION-SME.md` | Migration | Go→Rust port reference (no behavior may be lost) |
 
 ---
 
 ## SME Document Inventory
 
-All 17 new SME documents created:
+All new SME documents created:
 
 | # | Document | Systems Covered | Lines |
 |---|----------|----------------|-------|
@@ -191,7 +192,11 @@ All 17 new SME documents created:
 | 16 | `I18N_SYSTEM_SME.md` | 25 locales, svelte-i18n, lazy loading | ~1020 |
 | 17 | `WORKFLOW_BUILDER_UI_SME.md` | Visual editor, canvas, node types | ~908 |
 | 18 | `VM_SANDBOX_SME.md` | VM isolation, wire protocol, bundle mgmt, CDN | ~920 |
-| | **Total new documentation** | | **~13,147** |
+| 19 | `MCP_SYSTEM.md` | MCP client + server, OAuth/PKCE, stdio bridge | ~599 |
+| 20 | `EVENT_SYSTEM_SME.md` | EventBus, dispatcher, emit tool, event-triggered workflows | ~823 |
+| 21 | `AUTOMATION_SME.md` | Heartbeats, cron, workflow engine, agent workers | ~1407 |
+| 22 | `NEBOLOOP_CONNECTION.md` | NeboAI connection, hub chat, wire protocol | ~674 |
+| | **Total new documentation** | | **~16,650** |
 
 ---
 
@@ -235,5 +240,5 @@ cli / src-tauri (entry points)
 | Frontend stores | 17 |
 | i18n locales | 26 |
 | Proto files | 9 |
-| Total SME docs | 50 |
+| Total SME docs | 49 |
 | Missing SME docs | 0 |
