@@ -330,13 +330,16 @@ impl DynTool for McpTool {
                 }
             };
 
-            // Build the input for the MCP call — pass everything except server/resource/action
-            // (action is a STRAP convention, not an MCP tool parameter)
+            // Build the input for the MCP call — strip ONLY the routing params: `server`
+            // and `resource` (we use `resource` as the MCP tool name for call_tool).
+            // KEEP `action` and every other field: for STRAP-style MCP servers (e.g.
+            // NeboLoop's customer/catalog/skill/plugin tools) `action` is a REQUIRED
+            // parameter of the underlying tool — stripping it made every such call fail
+            // with "action required" and sent the agent into a retry spiral.
             let mut mcp_input = input.clone();
             if let Some(obj) = mcp_input.as_object_mut() {
                 obj.remove("server");
                 obj.remove("resource");
-                obj.remove("action");
             }
 
             // Proactive refresh: if token is expired, refresh before calling
