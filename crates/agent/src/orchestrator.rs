@@ -1099,7 +1099,10 @@ fn format_dep_context(deps: &[(String, String)]) -> String {
 fn task_prefix_for_type(agent_type: &AgentType) -> &'static str {
     match agent_type {
         AgentType::Explore => {
-            "[EXPLORATION agent — search, read, research only. Do NOT modify files or execute destructive commands. Report findings clearly.]\n\n"
+            "[EXPLORE agent — a fast, read-only file & code search specialist.\n\
+             READ-ONLY: only search and read. Do NOT create, edit, or delete files, and do NOT run destructive or state-changing commands.\n\
+             Be FAST: search smartly, and wherever possible issue MULTIPLE PARALLEL tool calls for grepping and reading files in a single response. Start broad, then narrow; check multiple locations and naming conventions.\n\
+             Report your findings clearly and concisely — the caller relays your final message, so include the essentials: file paths, line numbers, and what you found.]\n\n"
         }
         AgentType::Plan => {
             "[PLANNING agent — analyze, break down steps, identify files and patterns. Produce a clear actionable plan. Do NOT implement anything.]\n\n"
@@ -1202,8 +1205,8 @@ mod tests {
     #[test]
     fn test_task_prefixes() {
         let explore = task_prefix_for_type(&AgentType::Explore);
-        assert!(explore.contains("EXPLORATION"));
-        assert!(explore.contains("Do NOT modify"));
+        assert!(explore.contains("EXPLORE"));
+        assert!(explore.contains("READ-ONLY"));
 
         let plan = task_prefix_for_type(&AgentType::Plan);
         assert!(plan.contains("PLANNING"));

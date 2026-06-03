@@ -2,12 +2,23 @@ use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::ToolResult;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// File operations: read, write, edit, glob, grep.
 pub struct FileTool {
     pub on_file_read: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    /// Per-(session, path) record of the file's mtime (ms) at the last successful read,
+    /// for the read-before-edit + staleness guard. Keyed by `session_key\u{1f}path`.
+    ///
+    /// Metadata only — we never cache the content (the content always travels in the
+    /// read's tool_result, and re-reads always return fresh content). This mirrors the
+    /// useful half of Claude Code's readFileState while deliberately omitting its content
+    /// dedup, whose "refer to the earlier read" stub turns into a blank once that earlier
+    /// read is evicted by compaction.
+    read_state: Arc<Mutex<HashMap<String, i64>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +60,7 @@ impl FileTool {
     pub fn new() -> Self {
         Self {
             on_file_read: None,
+            read_state: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -56,16 +68,17 @@ impl FileTool {
         "file"
     }
 
-    pub fn execute(&self, _ctx: &ToolContext, input: serde_json::Value) -> ToolResult {
+    pub fn execute(&self, ctx: &ToolContext, input: serde_json::Value) -> ToolResult {
         let fi: FileInput = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
         };
 
+        let session = ctx.session_key.as_str();
         match fi.action.as_str() {
-            "read" => self.handle_read(&fi),
-            "write" => self.handle_write(&fi),
-            "edit" => self.handle_edit(&fi),
+            "read" => self.handle_read(session, &fi),
+            "write" => self.handle_write(session, &fi),
+            "edit" => self.handle_edit(session, &fi),
             "glob" => self.handle_glob(&fi),
             "grep" => self.handle_grep(&fi),
             other => ToolResult::error(format!(
@@ -75,7 +88,48 @@ impl FileTool {
         }
     }
 
-    fn handle_read(&self, input: &FileInput) -> ToolResult {
+    fn read_state_key(session: &str, path: &str) -> String {
+        format!("{session}\u{1f}{path}")
+    }
+
+    /// Record that `path` was read in `session` at the file's current mtime.
+    fn record_read(&self, session: &str, path: &str, mtime_ms: i64) {
+        if let Ok(mut m) = self.read_state.lock() {
+            m.insert(Self::read_state_key(session, path), mtime_ms);
+        }
+    }
+
+    /// Guard for edit/overwrite: the file must have been read in this session, and
+    /// must not have changed on disk since that read. Returns Err(message) otherwise.
+    fn check_editable(&self, session: &str, path: &str, verb: &str) -> Result<(), String> {
+        let guard = match self.read_state.lock() {
+            Ok(g) => g,
+            Err(_) => return Ok(()), // poisoned lock: don't block the edit on our bookkeeping
+        };
+        match guard.get(&Self::read_state_key(session, path)) {
+            None => Err(format!(
+                "File has not been read yet: {path}\n\
+                 Read it first so your {verb} is based on its current contents:\n\
+                 os(resource: \"file\", action: \"read\", path: \"{path}\")"
+            )),
+            Some(&read_mtime) => {
+                // Only reject when the file is demonstrably newer than our recorded read.
+                // If we can't stat it, stay lenient (don't block on our own bookkeeping).
+                if let Some(cur) = current_mtime_ms(path) {
+                    if cur > read_mtime {
+                        return Err(format!(
+                            "File has been modified since you last read it (by the user, a \
+                             linter, or another process): {path}\n\
+                             Read it again before this {verb} so you don't overwrite those changes."
+                        ));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn handle_read(&self, session: &str, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
             return ToolResult::error(errors::missing_param("read", "path", "os(resource: \"file\", action: \"read\", path: \"/tmp/file.txt\")"));
         }
@@ -205,10 +259,20 @@ impl FileTool {
             callback(&path);
         }
 
+        // Record the read so a later Edit/Write of this path can require a prior read
+        // and detect on-disk changes since now. Metadata only — content is never cached.
+        let mtime_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.record_read(session, &path, mtime_ms);
+
         ToolResult::ok(result)
     }
 
-    fn handle_write(&self, input: &FileInput) -> ToolResult {
+    fn handle_write(&self, session: &str, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
             return ToolResult::error(errors::missing_param("write", "path", "os(resource: \"file\", action: \"write\", path: \"/tmp/file.txt\", content: \"hello\")"));
         }
@@ -225,6 +289,15 @@ impl FileTool {
         }
 
         let path = expand_path(&input.path);
+
+        // Overwriting an existing file requires a prior read (and that it hasn't changed
+        // since), so we don't silently clobber edits made by the user or another process.
+        // Creating a new file, or appending, does not need a prior read.
+        if !input.append && Path::new(&path).exists() {
+            if let Err(msg) = self.check_editable(session, &path, "write") {
+                return ToolResult::error(msg);
+            }
+        }
 
         // Create parent directories
         if let Some(parent) = Path::new(&path).parent() {
@@ -246,6 +319,11 @@ impl FileTool {
 
         match result {
             Ok(()) => {
+                // Refresh read-state to the file we just wrote, so a subsequent edit/write
+                // in this session isn't wrongly flagged stale against our own write.
+                if let Some(m) = current_mtime_ms(&path) {
+                    self.record_read(session, &path, m);
+                }
                 let action = if input.append { "Appended" } else { "Wrote" };
                 ToolResult::ok(format!(
                     "{} {} bytes to {}",
@@ -258,7 +336,7 @@ impl FileTool {
         }
     }
 
-    fn handle_edit(&self, input: &FileInput) -> ToolResult {
+    fn handle_edit(&self, session: &str, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
             return ToolResult::error(errors::missing_param("edit", "path", "os(resource: \"file\", action: \"edit\", path: \"/tmp/file.txt\", old_string: \"old\", new_string: \"new\")"));
         }
@@ -277,6 +355,12 @@ impl FileTool {
 
         if let Err(e) = validate_file_path(&path, "edit") {
             return ToolResult::error(format!("Error: {}", e));
+        }
+
+        // Edit requires a prior read of the current contents, and that the file hasn't
+        // changed on disk since that read (read-before-edit + staleness guard).
+        if let Err(msg) = self.check_editable(session, &path, "edit") {
+            return ToolResult::error(msg);
         }
 
         let content = match std::fs::read_to_string(&path) {
@@ -313,6 +397,12 @@ impl FileTool {
 
         if let Err(e) = std::fs::write(&path, &new_content) {
             return ToolResult::error(format!("Error writing file: {}", e));
+        }
+
+        // Refresh read-state to the post-edit file so a follow-up edit in this session
+        // isn't wrongly flagged stale against our own edit.
+        if let Some(m) = current_mtime_ms(&path) {
+            self.record_read(session, &path, m);
         }
 
         if input.replace_all && count > 1 {
@@ -671,6 +761,18 @@ pub fn expand_path(path: &str) -> String {
     types::pathres::expand(path).to_string_lossy().into_owned()
 }
 
+/// Current on-disk modification time of `path` in milliseconds since the epoch, or
+/// `None` if it can't be determined. Used by the read-before-edit staleness guard.
+fn current_mtime_ms(path: &str) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -843,6 +945,102 @@ mod tests {
             "expected fresh read after modification: {}",
             r2.content
         );
+    }
+
+    // ── Read-before-edit + staleness guard ──────────────────────────
+    #[test]
+    fn edit_requires_prior_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.txt");
+        fs::write(&path, "alpha\n").unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": path.to_str().unwrap(),"old_string":"alpha","new_string":"beta"}),
+        );
+        assert!(r.is_error);
+        assert!(r.content.contains("has not been read yet"), "{}", r.content);
+    }
+
+    #[test]
+    fn read_then_edit_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.txt");
+        fs::write(&path, "alpha\n").unwrap();
+        let tool = FileTool::new();
+        let p = path.to_str().unwrap();
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"alpha","new_string":"beta"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "beta\n");
+    }
+
+    #[test]
+    fn edit_rejected_when_modified_since_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.txt");
+        fs::write(&path, "alpha\n").unwrap();
+        let tool = FileTool::new();
+        let p = path.to_str().unwrap();
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        // External modification bumps mtime after the read.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&path, "alpha changed\n").unwrap();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"alpha","new_string":"beta"}),
+        );
+        assert!(r.is_error);
+        assert!(r.content.contains("modified since"), "{}", r.content);
+    }
+
+    #[test]
+    fn second_edit_after_first_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.txt");
+        fs::write(&path, "a b a\n").unwrap();
+        let tool = FileTool::new();
+        let p = path.to_str().unwrap();
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        assert!(!tool
+            .execute(&ctx(), json!({"action":"edit","path": p,"old_string":"b","new_string":"B"}))
+            .is_error);
+        // Second edit without a re-read: read-state was refreshed by the first edit.
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"B","new_string":"BB"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+    }
+
+    #[test]
+    fn write_new_file_without_read_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt");
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"write","path": path.to_str().unwrap(),"content":"hi\n"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hi\n");
+    }
+
+    #[test]
+    fn overwrite_existing_without_read_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exists.txt");
+        fs::write(&path, "old\n").unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"write","path": path.to_str().unwrap(),"content":"new\n"}),
+        );
+        assert!(r.is_error);
+        assert!(r.content.contains("has not been read yet"), "{}", r.content);
     }
 
     // ── relativize_path ─────────────────────────────────────────────

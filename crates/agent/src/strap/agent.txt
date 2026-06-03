@@ -17,6 +17,10 @@ Spawn sub-agents for independent work. Two modes:
 - All tasks run concurrently, results collected and returned together
 - Each sub-agent gets its own browser session — no tab conflicts
 
+**Searching with an explore sub-agent (agent_type: "explore"):**
+- agent(resource: task, action: spawn, prompt: "Find where X is configured across the repo", agent_type: "explore") — a fast, READ-ONLY search specialist that issues parallel greps/reads and reports back. Keeps bulky search output out of your context.
+- Delegate the search when you're hunting for code/files/answers and aren't confident you'll find the match in the first couple of tries. When you already know the exact file path, just read it directly — don't spawn an agent for that.
+
 **CRITICAL: Sub-agents are born blind.** They only know what you pass them.
 - **plugins**: Pass plugin install codes the sub-agent needs. It gets the plugin's description, skills, and usage docs.
 - **tools**: Pass STRAP tool names ("web", "loop", "message", "system", "agent", "skill", "event", "mcp"). It gets the full tool documentation.

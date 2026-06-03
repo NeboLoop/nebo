@@ -743,6 +743,11 @@ impl Registry {
         )))
         .await;
 
+        // Notebook tool (.ipynb cell editing) — deferred (activated when the user
+        // mentions notebooks / Jupyter / .ipynb).
+        self.register_deferred(Box::new(crate::notebook_tool::NotebookTool::new()))
+            .await;
+
         // Plugin tool — ALWAYS registered when a plugin store exists, even with ZERO
         // plugins installed, so the agent can always list/discover/install plugins from
         // the system prompt (no chicken-and-egg where the tool only appears after the

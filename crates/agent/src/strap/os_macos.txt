@@ -3,7 +3,7 @@
 CRITICAL RULES:
 1. ALWAYS call this tool. NEVER answer from memory or training data about files.
 2. When asked to read a file, CALL os(resource: "file", action: "read") — do NOT say "this file doesn't exist" without calling first.
-3. When asked to write or edit a file, CALL the tool directly — do NOT read first, do NOT assume it will fail.
+3. Before you edit or overwrite an EXISTING file, READ it first — edit and overwrite require a prior read and are rejected otherwise (this prevents clobbering changes made since you last saw the file). Creating a brand-new file needs no prior read.
 4. Include ALL required parameters on every call. Missing params cause errors.
 5. glob = FIND files by name pattern (*.md, *.yaml). grep = match text INSIDE files by regex. Do not confuse them.
 6. NEVER use sudo without asking the user first. On permission denied, explain and offer alternatives.
@@ -14,8 +14,8 @@ Prefer file actions over shell: use file read NOT shell cat, file grep NOT shell
 | action | when to use | required params | optional |
 |--------|------------|----------------|----------|
 | read | read file contents | path | offset, limit |
-| write | create/overwrite file | path, content | append |
-| edit | replace text in file (call directly, don't read first) | path, old_string, new_string | replace_all |
+| write | create new file, or overwrite (read first to overwrite) | path, content | append |
+| edit | replace text in file (READ the file first) | path, old_string, new_string | replace_all |
 | glob | find files by NAME pattern (*.yaml, src/**/*.rs) | pattern, path | limit |
 | grep | search file CONTENTS for a regex match | pattern, path | glob, case_insensitive, output_mode, context_before, context_after |
 

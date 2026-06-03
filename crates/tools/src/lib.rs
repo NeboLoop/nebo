@@ -22,6 +22,7 @@ pub mod loop_tool;
 pub mod mcp_tool;
 pub mod message_tool;
 pub mod music_tool;
+pub mod notebook_tool;
 pub mod orchestrator;
 mod organizer;
 pub mod origin;
