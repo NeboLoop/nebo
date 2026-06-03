@@ -1,5 +1,9 @@
 ### plugin — Installed Plugin Binaries
 
+Discover & list (this tool is always available, even with zero plugins installed):
+- plugin(action: "list") — list installed plugins (slug, version, enabled/disabled). Use this to answer "what plugins do I have?"
+- plugin(action: "discover", query: "<keyword>") — search the NeboAI marketplace for plugins. Returns names + install codes. To install one, share its PLUG-XXXX-XXXX code for the user to approve (installs are always user-approved).
+
 Before running a plugin command, load the skill for that service first:
 1. Use skill(action: "discover", query: "<service>") to find the matching skill (e.g., "gmail", "drive", "calendar")
 2. Load the skill with skill(action: "help", name: "<skill-name>") to get full syntax, flags, and examples

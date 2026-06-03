@@ -505,11 +505,14 @@ async fn install_plugin(
         .map_err(|e| format!("redeem plugin code: {e}"))?;
 
     let name = resp.artifact.name.clone();
-    let slug = if resp.artifact.slug.is_empty() {
-        name.to_lowercase().replace(' ', "-")
-    } else {
-        resp.artifact.slug.clone()
-    };
+    // Resolve strictly by the canonical slug (server guarantees it NOT NULL + unique).
+    // Never derive it from the display name — fail loudly on a missing slug.
+    if resp.artifact.slug.is_empty() {
+        return Err(format!(
+            "plugin dependency '{name}' has no slug in the redeem response; refusing to guess from the display name"
+        ));
+    }
+    let slug = resp.artifact.slug.clone();
     let download_url = resp
         .download_url
         .ok_or_else(|| format!("plugin {} has no download URL in redeem response", name))?;
@@ -542,17 +545,17 @@ async fn install_plugin(
             state.skill_loader.load_all().await;
             state.skill_loader.resume_watcher();
 
-            // Re-register plugin tool
+            // Re-register the plugin tool to refresh its state after install. Always
+            // register (never gate on list_installed) — the tool must stay present in
+            // the prompt regardless of how many plugins are installed.
             state.tools.unregister("plugin").await;
-            if !state.plugin_store.list_installed().is_empty() {
-                state
-                    .tools
-                    .register(Box::new(tools::plugin_tool::PluginTool::new(
-                        state.plugin_store.clone(),
-                        state.store.clone(),
-                    )))
-                    .await;
-            }
+            state
+                .tools
+                .register(Box::new(tools::plugin_tool::PluginTool::new(
+                    state.plugin_store.clone(),
+                    state.store.clone(),
+                )))
+                .await;
 
             // Plugin command tools are discovered via the `plugin` STRAP tool (lookup),
             // not registered individually (13K+ tools overwhelm the LLM context).

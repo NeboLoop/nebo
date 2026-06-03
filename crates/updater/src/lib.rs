@@ -108,6 +108,12 @@ pub fn detect_install_method() -> &'static str {
 
     #[cfg(target_os = "linux")]
     {
+        // Running inside an AppImage — the runtime sets $APPIMAGE to the .AppImage path.
+        // Update via the bundled installer (single-file swap), not raw binary replacement.
+        if std::env::var_os("APPIMAGE").is_some() {
+            return "app_bundle";
+        }
+
         if std::process::Command::new("dpkg")
             .args(["-S", &path])
             .output()
@@ -157,7 +163,8 @@ pub fn bundle_asset_name(version: &str) -> Option<String> {
     let arch = cdn_arch();
     match std::env::consts::OS {
         "macos" => Some(format!("Nebo-{}-{}.dmg", pkg_version, arch)),
-        "windows" => Some(format!("Nebo-{}-{}.msi", pkg_version, arch)),
+        // CI builds an NSIS installer named `Nebo-{ver}-setup.exe` (no arch component).
+        "windows" => Some(format!("Nebo-{}-setup.exe", pkg_version)),
         "linux" => Some(format!("Nebo-{}-{}.AppImage", pkg_version, arch)),
         _ => None,
     }
@@ -242,9 +249,8 @@ pub async fn verify_checksum(binary_path: &std::path::Path, tag: &str) -> Result
         .build()?;
 
     let resp = client.get(&url).send().await?;
-    if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(());
-    }
+    // Fail closed: a missing checksums.txt must NOT silently skip verification —
+    // an unverified installer is exactly what we refuse to apply to users.
     if !resp.status().is_success() {
         return Err(UpdateError::Other(format!(
             "checksums returned {}",
@@ -283,8 +289,14 @@ pub async fn verify_checksum(binary_path: &std::path::Path, tag: &str) -> Result
 }
 
 /// Apply the update: replace current binary and restart.
-pub fn apply_update(new_binary_path: &std::path::Path) -> Result<(), UpdateError> {
-    apply::apply(new_binary_path)
+///
+/// `data_dir` is where the deferred helper writes `UPDATE_FAILED.json` on rollback,
+/// so the restored app can surface an error to the user on next startup.
+pub fn apply_update(
+    new_binary_path: &std::path::Path,
+    data_dir: &std::path::Path,
+) -> Result<(), UpdateError> {
+    apply::apply(new_binary_path, data_dir)
 }
 
 /// Register a pre-apply hook (called before process restart).
@@ -465,6 +477,35 @@ mod tests {
     #[test]
     fn test_detect_install_method() {
         let method = detect_install_method();
-        assert!(["direct", "homebrew", "package_manager"].contains(&method));
+        assert!(["direct", "homebrew", "package_manager", "app_bundle"].contains(&method));
+    }
+
+    #[test]
+    fn test_bundle_asset_name() {
+        // Strips a leading `v` from the tag.
+        let mac = bundle_asset_name("v1.2.3");
+        #[cfg(target_os = "macos")]
+        assert_eq!(mac, Some(format!("Nebo-1.2.3-{}.dmg", cdn_arch())));
+
+        // Windows must match the CI artifact exactly: NSIS `-setup.exe`, no arch, not `.msi`.
+        #[cfg(target_os = "windows")]
+        {
+            let win = bundle_asset_name("v1.2.3").unwrap();
+            assert_eq!(win, "Nebo-1.2.3-setup.exe");
+            assert!(!win.contains(".msi"), "must not be an MSI: {}", win);
+            assert!(
+                !win.contains("amd64") && !win.contains("arm64"),
+                "windows installer name carries no arch: {}",
+                win
+            );
+        }
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            bundle_asset_name("1.2.3"),
+            Some(format!("Nebo-1.2.3-{}.AppImage", cdn_arch()))
+        );
+
+        let _ = mac;
     }
 }

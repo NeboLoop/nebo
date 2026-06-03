@@ -324,6 +324,23 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
         }
     }
 
+    // Surface a failed-and-rolled-back update from a prior session. The deferred update
+    // helper writes UPDATE_FAILED.json on rollback; the (restored, working) app reads and
+    // deletes it on the first client connect and toasts an error. (Startup broadcasts are
+    // lost — no client is connected yet — so this is delivered on connect instead.)
+    if let Ok(dir) = config::data_dir() {
+        let marker = dir.join("UPDATE_FAILED.json");
+        if let Ok(contents) = std::fs::read_to_string(&marker) {
+            let _ = std::fs::remove_file(&marker);
+            let payload = serde_json::from_str::<serde_json::Value>(&contents)
+                .unwrap_or_else(|_| serde_json::json!({ "error": contents.trim() }));
+            let msg = serde_json::json!({ "type": "update_error", "data": payload });
+            let _ = socket
+                .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
+                .await;
+        }
+    }
+
     loop {
         tokio::select! {
             // Broadcast events to client

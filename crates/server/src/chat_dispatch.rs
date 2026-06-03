@@ -294,6 +294,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // final loop/DM reply so generated files (images, reports) reach the
                 // channel Slack-style. Deduped by source URL/path.
                 let mut comm_file_artifacts: Vec<String> = Vec::new();
+                // Run-produced media (images/files) referenced as /api/v1/files/<name>
+                // URLs, streamed to the LOCAL app on chat_complete so it renders inline.
+                let mut app_file_artifacts: Vec<String> = Vec::new();
                 // Match the local-chat streaming cadence (COALESCE_MS) so loop
                 // replies stream token-smooth like ChatGPT/Claude instead of
                 // arriving in half-second chunks. The chunks are ephemeral
@@ -472,20 +475,21 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "is_error": event.error.is_some(),
                                 ),
                             );
-                            // Collect run-produced file artifacts for comm replies.
-                            if comm_reply.is_some() && event.error.is_none() {
-                                tracing::debug!(has_image_url = event.image_url.is_some(), "tool_result comm artifact check");
+                            // Collect run-produced media: persist to <data_dir>/files and
+                            // reference by /api/v1/files/<name> — for the LOCAL app (always,
+                            // rendered inline) and comm replies (when replying to a channel;
+                            // resolve_comm_attachments maps the same /api/v1/files prefix).
+                            if event.error.is_none() {
                                 if let Some(url) = &event.image_url {
-                                    if url.starts_with("data:") {
-                                        // Inline base64 image — save to files dir
-                                        // so it can be uploaded as a comm attachment.
-                                        if let Some(path) = save_data_uri_to_file(url) {
-                                            if !comm_file_artifacts.iter().any(|u| u == &path) {
-                                                comm_file_artifacts.push(path);
-                                            }
+                                    if let Some(app_url) = to_app_artifact_url(url) {
+                                        if !app_file_artifacts.contains(&app_url) {
+                                            app_file_artifacts.push(app_url.clone());
                                         }
-                                    } else if !comm_file_artifacts.iter().any(|u| u == url) {
-                                        comm_file_artifacts.push(url.clone());
+                                        if comm_reply.is_some()
+                                            && !comm_file_artifacts.contains(&app_url)
+                                        {
+                                            comm_file_artifacts.push(app_url);
+                                        }
                                     }
                                 }
                             }
@@ -836,11 +840,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     }
                 }
 
-                // Always send chat_complete
+                // Always send chat_complete (with any run-produced media artifacts so
+                // the app renders them inline).
                 hub.broadcast(
                     "chat_complete",
                     ws_payload!(
                         "html": html,
+                        "artifacts": &app_file_artifacts,
                     ),
                 );
 
@@ -1143,6 +1149,36 @@ fn mime_from_extension(path: &std::path::Path) -> String {
         _ => "application/octet-stream",
     }
     .to_string()
+}
+
+/// Map a run-produced `image_url` to a URL the LOCAL app can render and comm replies
+/// can attach: `data:` URIs are persisted to `<data_dir>/files/`, local files are
+/// located (or copied) under that dir, and both are referenced as `/api/v1/files/<name>`
+/// (served by `handlers::files::serve_file`). `http(s)` URLs pass through; unservable
+/// refs return None.
+fn to_app_artifact_url(image_url: &str) -> Option<String> {
+    if image_url.starts_with("http://") || image_url.starts_with("https://") {
+        return Some(image_url.to_string());
+    }
+    if image_url.starts_with("/api/v1/files/") {
+        return Some(image_url.to_string());
+    }
+    let abs_path = if image_url.starts_with("data:") {
+        save_data_uri_to_file(image_url)?
+    } else {
+        image_url.to_string()
+    };
+    let files_dir = config::data_dir().ok()?.join("files");
+    let p = std::path::Path::new(&abs_path);
+    if let Ok(rel) = p.strip_prefix(&files_dir) {
+        return Some(format!("/api/v1/files/{}", rel.to_string_lossy()));
+    }
+    // Local file outside <data_dir>/files — copy it in so serve_file can reach it.
+    let _ = std::fs::create_dir_all(&files_dir);
+    let filename = p.file_name()?.to_string_lossy().to_string();
+    let dest = files_dir.join(&filename);
+    std::fs::copy(p, &dest).ok()?;
+    Some(format!("/api/v1/files/{}", filename))
 }
 
 /// Save a `data:` URI (base64 image) to `<data_dir>/files/` and return the

@@ -47,6 +47,9 @@ struct PluginInput {
     /// Optional timeout in seconds (default: 120).
     #[serde(default)]
     timeout: i64,
+    /// Search query for action: "discover" (marketplace plugin search).
+    #[serde(default)]
+    query: String,
 }
 
 fn default_action() -> String {
@@ -90,6 +93,89 @@ impl PluginTool {
             slugs.push(slug.clone());
         }
         slugs
+    }
+
+    /// List installed plugins (slug, version, enabled/disabled, signature status).
+    /// The direct answer to "what plugins are installed?" — parity with skill catalog.
+    fn handle_list(&self) -> ToolResult {
+        let installed = self.plugin_store.list_installed();
+        if installed.is_empty() {
+            return ToolResult::ok(
+                "No plugins installed. Use plugin(action: \"discover\", query: \"<keyword>\") to \
+                 find plugins in the marketplace; install one with its PLUG-XXXX-XXXX code (this \
+                 requires your approval).",
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut lines = Vec::new();
+        for (slug, version, _path, sig) in &installed {
+            if !seen.insert(slug.clone()) {
+                continue;
+            }
+            let enabled = self
+                .db_store
+                .get_plugin_by_slug(slug)
+                .ok()
+                .flatten()
+                .map(|r| r.is_enabled != 0)
+                .unwrap_or(true);
+            lines.push(format!(
+                "- {} v{} ({}, signature: {})",
+                slug,
+                version,
+                if enabled { "enabled" } else { "disabled" },
+                sig
+            ));
+        }
+        ToolResult::ok(format!(
+            "{} installed plugin(s):\n{}",
+            lines.len(),
+            lines.join("\n")
+        ))
+    }
+
+    /// Search the NeboAI marketplace for plugins. Returns names + install codes so the
+    /// agent can offer to install one (install is HIL — the user pastes/approves the code,
+    /// which installs via the canonical code path).
+    async fn handle_discover(&self, query: &str) -> ToolResult {
+        let api = match crate::build_neboai_api(&self.db_store) {
+            Ok(a) => a,
+            Err(e) => return ToolResult::error(format!("marketplace unavailable: {}", e)),
+        };
+        let q = if query.trim().is_empty() {
+            None
+        } else {
+            Some(query.trim())
+        };
+        match api.list_products(Some("plugin"), q, None, None, Some(20)).await {
+            Ok(v) => {
+                let items = v
+                    .get("results")
+                    .and_then(|x| x.as_array())
+                    .or_else(|| v.get("plugins").and_then(|x| x.as_array()));
+                match items {
+                    Some(arr) if !arr.is_empty() => {
+                        let mut lines = Vec::new();
+                        for it in arr {
+                            let name = it.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                            let slug = it.get("slug").and_then(|x| x.as_str()).unwrap_or("");
+                            let code = it.get("code").and_then(|x| x.as_str()).unwrap_or("");
+                            let desc =
+                                it.get("description").and_then(|x| x.as_str()).unwrap_or("");
+                            lines.push(format!("- {} ({}) — {} [{}]", name, slug, desc, code));
+                        }
+                        ToolResult::ok(format!(
+                            "Found {} plugin(s):\n{}\n\nTo install one, share its PLUG-XXXX-XXXX \
+                             code with the user to approve (installs via the marketplace code path).",
+                            lines.len(),
+                            lines.join("\n")
+                        ))
+                    }
+                    _ => ToolResult::ok("No plugins found in the marketplace for that query."),
+                }
+            }
+            Err(e) => ToolResult::error(format!("marketplace search failed: {}", e)),
+        }
     }
 
     /// Find the skills directory for a plugin slug.
@@ -198,10 +284,17 @@ impl DynTool for PluginTool {
     fn description(&self) -> String {
         let slugs = self.active_slugs();
         if slugs.is_empty() {
-            return "Execute installed plugin binaries. No plugins are currently active.".to_string();
+            return "Run installed plugin binaries. No plugins are installed yet — use \
+                    plugin(action: \"list\") to confirm, and plugin(action: \"discover\", \
+                    query: \"<keyword>\") to find plugins in the marketplace (install requires \
+                    the user's approval via the plugin's PLUG-XXXX-XXXX code)."
+                .to_string();
         }
 
-        let mut out = String::from("Execute installed plugin binaries.\n\n");
+        let mut out = String::from(
+            "Run installed plugin binaries. plugin(action: \"list\") shows what's installed; \
+             plugin(action: \"discover\", query: \"…\") searches the marketplace.\n\n",
+        );
         out.push_str("ALWAYS use this tool for channel messaging — Slack, Discord, Teams, and any other channel-backed plugin. \
                       `plugin(resource: \"<channel-slug>\", command: \"upload|post|dm|reply ...\")` is the canonical pathway for \
                       sending files, messages, and DMs out through a channel. \
@@ -311,9 +404,16 @@ impl DynTool for PluginTool {
             "action".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "Action: 'exec' (default — run a plugin command) or 'events' (list the plugin's declared NDJSON watch events)",
-                "enum": ["exec", "events"],
+                "description": "Action: 'list' (installed plugins), 'discover' (search the marketplace by query), 'exec' (default — run a plugin command), or 'events' (the plugin's declared NDJSON watch events)",
+                "enum": ["list", "discover", "exec", "events"],
                 "default": "exec"
+            }),
+        );
+        props.insert(
+            "query".into(),
+            serde_json::json!({
+                "type": "string",
+                "description": "Search query for action: 'discover'."
             }),
         );
         props.insert(
@@ -364,7 +464,7 @@ impl DynTool for PluginTool {
             .get("action")
             .and_then(|v| v.as_str())
             .unwrap_or("exec");
-        matches!(action, "search" | "skills" | "services" | "help" | "events")
+        matches!(action, "list" | "discover" | "events")
     }
 
     fn execute_dyn<'a>(
@@ -378,32 +478,34 @@ impl DynTool for PluginTool {
                 Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
             };
 
-            if pi.resource.is_empty() {
-                return ToolResult::error(
-                    "resource is required — set it to the plugin slug. \
-                     Example: plugin(resource: \"gws\", action: \"exec\", command: \"gmail +triage\")"
-                        .to_string(),
-                );
-            }
-
-            // The plugin tool exposes a single canonical action — `exec` —
-            // for running plugin commands. `events` is the only other action,
-            // and it surfaces the plugin's declared NDJSON watch events for
-            // workflow trigger registration.
-            //
-            // Discovery actions (`search`, `skills`, `services`, `help`) were
-            // removed in v0.10.0 — every plugin's command catalog now lives
-            // in this tool's `description()`, so the agent sees the full API
-            // upfront and never needs a discovery round-trip.
+            // `list` and `discover` don't need a plugin slug; `exec`/`events` do.
             match pi.action.as_str() {
-                "exec" | "" => self.handle_exec(&pi, ctx).await,
-                "events" => self.handle_events(&pi.resource),
+                "list" => self.handle_list(),
+                "discover" => self.handle_discover(&pi.query).await,
+                "exec" | "" => {
+                    if pi.resource.is_empty() {
+                        return ToolResult::error(
+                            "resource is required — set it to the plugin slug. \
+                             Example: plugin(resource: \"gws\", action: \"exec\", command: \"gmail +triage\")"
+                                .to_string(),
+                        );
+                    }
+                    self.handle_exec(&pi, ctx).await
+                }
+                "events" => {
+                    if pi.resource.is_empty() {
+                        return ToolResult::error(
+                            "resource is required (the plugin slug) for action: \"events\".".to_string(),
+                        );
+                    }
+                    self.handle_events(&pi.resource)
+                }
                 "search" | "skills" | "services" | "help" => ToolResult::error(format!(
-                    "action '{}' was removed in v0.10.0. All plugin commands are listed in this tool's description — call them directly with action: \"exec\".",
+                    "action '{}' was removed in v0.10.0. Use action: \"list\" to see installed plugins, \"discover\" to search the marketplace, or call commands directly with action: \"exec\".",
                     pi.action
                 )),
                 other => ToolResult::error(format!(
-                    "Unknown action: '{}'. Valid actions: exec, events.",
+                    "Unknown action: '{}'. Valid actions: list, discover, exec, events.",
                     other
                 )),
             }

@@ -7,6 +7,30 @@ use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use comm::CommPlugin;
 
+/// Best-effort MIME type from a file extension (matches the comm/app file conventions).
+fn mime_for_path(p: &std::path::Path) -> &'static str {
+    match p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "pdf" => "application/pdf",
+        "txt" | "md" | "log" => "text/plain",
+        "json" => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
 /// LoopTool provides NeboAI communication capabilities.
 /// Resources: dm, channel, group, topic.
 pub struct LoopTool {
@@ -68,9 +92,34 @@ impl LoopTool {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
 
-        let mut result = ToolResult::ok(format!("Shared {} to {}.", filename, target));
+        // Truthful: nothing is uploaded here. `image_url` is collected by the chat
+        // dispatcher and stapled onto the reply this run sends to the channel. To
+        // proactively post a file to a named channel, use channel/dm `send` with `path`.
+        let mut result = ToolResult::ok(format!(
+            "Attached {}. It will be delivered with your reply to {}.",
+            filename, target
+        ));
         result.image_url = Some(path.to_string());
         result
+    }
+
+    /// Read a local file and upload it, returning the attachment to embed in an
+    /// outbound message. Errors are returned verbatim (no premature success).
+    async fn upload_local_file(&self, path: &str) -> Result<comm::wire::Attachment, String> {
+        let p = std::path::Path::new(path);
+        if !p.is_absolute() {
+            return Err(format!("path must be absolute, got: {}", path));
+        }
+        let data = std::fs::read(p).map_err(|e| format!("cannot read {}: {}", path, e))?;
+        let filename = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+        let mime = mime_for_path(p);
+        self.comm
+            .upload_file(&filename, mime, data)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     async fn handle_dm(&self, input: &serde_json::Value) -> ToolResult {
@@ -80,21 +129,33 @@ impl LoopTool {
             "send" => {
                 let to = input["to"].as_str().unwrap_or("");
                 let text = input["text"].as_str().unwrap_or("");
+                let path = input["path"].as_str().unwrap_or("");
 
                 if to.is_empty() {
                     return ToolResult::error(errors::missing_param(
                         "dm send",
                         "to",
-                        "loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\")",
+                        "loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\", path: \"/abs/file.png\")",
                     ));
                 }
-                if text.is_empty() {
+                if text.is_empty() && path.is_empty() {
                     return ToolResult::error(errors::missing_param(
                         "dm send",
-                        "text",
+                        "text or path",
                         "loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\")",
                     ));
                 }
+
+                let mut attachments = Vec::new();
+                if !path.is_empty() {
+                    match self.upload_local_file(path).await {
+                        Ok(att) => attachments.push(att),
+                        Err(e) => return ToolResult::error(format!(
+                            "Failed to upload {}: {}. The file was NOT sent.", path, e
+                        )),
+                    }
+                }
+                let had_file = !attachments.is_empty();
 
                 let msg = comm::CommMessage {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -113,12 +174,13 @@ impl LoopTool {
                     task_status: None,
                     artifacts: Vec::new(),
                     error: None,
-                    attachments: Vec::new(),
+                    attachments,
                 };
 
                 match self.comm.send(msg).await {
+                    Ok(()) if had_file => ToolResult::ok(format!("DM with the attached file sent to {}", to)),
                     Ok(()) => ToolResult::ok(format!("DM sent to {}", to)),
-                    Err(e) => ToolResult::error(format!("Failed to send DM: {}. Do not retry — this is a communication error.", e)),
+                    Err(e) => ToolResult::error(format!("Failed to send DM: {}. The message was NOT delivered.", e)),
                 }
             }
             "share" => {
@@ -139,21 +201,35 @@ impl LoopTool {
             "send" => {
                 let channel_id = input["channel_id"].as_str().unwrap_or("");
                 let text = input["text"].as_str().unwrap_or("");
+                let path = input["path"].as_str().unwrap_or("");
 
                 if channel_id.is_empty() {
                     return ToolResult::error(errors::missing_param(
                         "channel send",
                         "channel_id",
-                        "loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\")",
+                        "loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\", path: \"/abs/file.png\")",
                     ));
                 }
-                if text.is_empty() {
+                if text.is_empty() && path.is_empty() {
                     return ToolResult::error(errors::missing_param(
                         "channel send",
-                        "text",
+                        "text or path",
                         "loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\")",
                     ));
                 }
+
+                // Optional file: upload it and attach. Real delivery — we only report
+                // success after the upload AND the send both succeed.
+                let mut attachments = Vec::new();
+                if !path.is_empty() {
+                    match self.upload_local_file(path).await {
+                        Ok(att) => attachments.push(att),
+                        Err(e) => return ToolResult::error(format!(
+                            "Failed to upload {}: {}. The file was NOT sent.", path, e
+                        )),
+                    }
+                }
+                let had_file = !attachments.is_empty();
 
                 let msg = comm::CommMessage {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -172,12 +248,13 @@ impl LoopTool {
                     task_status: None,
                     artifacts: Vec::new(),
                     error: None,
-                    attachments: Vec::new(),
+                    attachments,
                 };
 
                 match self.comm.send(msg).await {
+                    Ok(()) if had_file => ToolResult::ok(format!("Sent to channel {} with the attached file.", channel_id)),
                     Ok(()) => ToolResult::ok(format!("Message sent to channel {}", channel_id)),
-                    Err(e) => ToolResult::error(format!("Failed to send to channel: {}. Do not retry — this is a communication error.", e)),
+                    Err(e) => ToolResult::error(format!("Failed to send to channel: {}. The message was NOT delivered.", e)),
                 }
             }
             "messages" => {

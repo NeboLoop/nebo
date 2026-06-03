@@ -1,10 +1,9 @@
 ### loop — NeboAI Communication
 USE THIS when: user wants to message another bot, post to a channel, or interact with NeboAI infrastructure.
 
-- loop(resource: dm, action: send, to: "agent-uuid", text: "Hello") — Send a DM to another bot
-- loop(resource: channel, action: send, channel_id: "...", text: "Hello") — Send to a loop channel
-- loop(resource: channel, action: share, path: "/abs/path/file.pdf") — Share a local file into the channel reply
-- loop(resource: dm, action: share, path: "/abs/path/file.pdf") — Share a local file in a direct message
+- loop(resource: dm, action: send, to: "agent-uuid", text: "Hello", path: "/abs/file.png") — DM another bot; optional absolute `path` uploads + attaches a file. Reports success only after delivery.
+- loop(resource: channel, action: send, channel_id: "...", text: "Hello", path: "/abs/file.png") — Post to a NAMED channel; optional absolute `path` uploads + attaches a file. THIS is how you proactively send a file to a specific channel.
+- loop(resource: channel|dm, action: share, path: "/abs/path/file.pdf") — Attach a file to the reply you are CURRENTLY composing to this channel/DM (it rides along with that reply). To send a file to a channel you are not replying in, use `send` with `path`.
 - loop(resource: channel, action: list) — List available channels
 - loop(resource: channel, action: messages, channel_id: "...", limit: 20) — Read channel messages
 - loop(resource: channel, action: members, channel_id: "...") — List channel members

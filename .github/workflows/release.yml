@@ -286,7 +286,8 @@ jobs:
             pkg-config \
             build-essential \
             protobuf-compiler \
-            libopenblas-dev
+            libopenblas-dev \
+            libfuse2
 
       - name: Configure OpenBLAS paths
         run: |
@@ -325,6 +326,12 @@ jobs:
           fi
 
       - name: Build Tauri desktop app
+        # APPIMAGE_EXTRACT_AND_RUN lets the bundler's linuxdeploy/appimagetool run
+        # without a working FUSE mount on the runner; NO_STRIP avoids strip failures
+        # inside the AppDir. `bundle.targets: "all"` already emits both .deb and AppImage.
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          NO_STRIP: true
         run: cargo tauri build
 
       - name: Extract desktop binary
@@ -342,9 +349,19 @@ jobs:
           mkdir -p release-artifacts
           cp nebo-linux-${{ matrix.arch }} release-artifacts/
           cp nebo-linux-${{ matrix.arch }}-headless release-artifacts/
+          PKG_VERSION="${{ github.ref_name }}"
+          PKG_VERSION="${PKG_VERSION#v}"
           DEB=$(ls target/release/bundle/deb/*.deb 2>/dev/null || true)
           if [ -n "$DEB" ]; then
             cp $DEB release-artifacts/
+          fi
+          # AppImage — rename to the arch-qualified name the updater expects
+          # (bundle_asset_name → `Nebo-{ver}-{arch}.AppImage`).
+          APPIMAGE=$(ls target/release/bundle/appimage/*.AppImage 2>/dev/null | head -n1 || true)
+          if [ -n "$APPIMAGE" ]; then
+            cp "$APPIMAGE" "release-artifacts/Nebo-${PKG_VERSION}-${{ matrix.arch }}.AppImage"
+          else
+            echo "WARNING: no AppImage produced — Linux desktop auto-update asset will be missing"
           fi
 
       - uses: actions/cache/save@v4
@@ -564,6 +581,8 @@ jobs:
             nebo-linux-amd64 nebo-linux-arm64 \
             nebo-linux-amd64-headless nebo-linux-arm64-headless \
             nebo-windows-amd64.exe Nebo-*-setup.exe \
+            Nebo-*.AppImage \
+            *.deb \
             Nebo-*.dmg 2>/dev/null | tee checksums.txt
           echo "Generated checksums:"
           cat checksums.txt

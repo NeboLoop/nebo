@@ -228,8 +228,15 @@ impl PersonaTool {
                 } else {
                     "disabled"
                 };
+                // Apps are agents with a UI — label them so they're not overlooked.
+                let kind = if agent.is_app.unwrap_or(0) != 0 {
+                    "app"
+                } else {
+                    "agent"
+                };
                 lines.push(format!(
-                    "- [db/{}] {} — {}",
+                    "- [{}/{}] {} — {}",
+                    kind,
                     enabled,
                     agent.name,
                     if agent.description.is_empty() {
@@ -243,15 +250,17 @@ impl PersonaTool {
 
         let registry = self.agent_registry.read().await;
         let active_count = registry.len();
+        // "Active" = loaded into memory this session — a SUBSET of installed. Phrase it
+        // so it's not misread as "only these are installed" (every line below IS installed).
         let status = if active_count > 0 {
             let names: Vec<&str> = registry.values().map(|r| r.name.as_str()).collect();
-            format!(" ({} active: {})", active_count, names.join(", "))
+            format!(" ({} currently active in memory: {})", active_count, names.join(", "))
         } else {
             String::new()
         };
 
         ToolResult::ok(format!(
-            "{} agents available{}:\n{}",
+            "{} installed agent(s)/app(s){}:\n{}",
             lines.len(),
             status,
             lines.join("\n")

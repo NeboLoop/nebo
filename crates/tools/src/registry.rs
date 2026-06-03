@@ -735,16 +735,17 @@ impl Registry {
         )))
         .await;
 
-        // Plugin tool (installed plugin binaries as STRAP resources) — always active when plugins are installed
+        // Plugin tool — ALWAYS registered when a plugin store exists, even with ZERO
+        // plugins installed, so the agent can always list/discover/install plugins from
+        // the system prompt (no chicken-and-egg where the tool only appears after the
+        // first install). Its description() handles the zero-state and points at discover.
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
-            if !ps.list_installed().is_empty() {
-                let mut pt = crate::plugin_tool::PluginTool::new(ps, store.clone());
-                if let Some(ref bc) = broadcaster {
-                    pt = pt.with_broadcaster(bc.clone());
-                }
-                self.register(Box::new(pt)).await;
+            let mut pt = crate::plugin_tool::PluginTool::new(ps, store.clone());
+            if let Some(ref bc) = broadcaster {
+                pt = pt.with_broadcaster(bc.clone());
             }
+            self.register(Box::new(pt)).await;
         }
 
         // VM tool (isolated Linux environment for builds/toolchains) — deferred

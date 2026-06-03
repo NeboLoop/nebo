@@ -296,8 +296,13 @@ impl DynTool for SkillTool {
                                     slug
                                 ));
                             }
+                            // `help` is a lightweight inspect — it does NOT dump the full
+                            // skill body into the conversation. To actually load and follow
+                            // the skill's instructions, use skill(action: "load").
                             if !skill.template.is_empty() {
-                                output.push_str(&format!("\n---\n\n{}", skill.template));
+                                output.push_str(
+                                    "\nTo load and follow this skill's full instructions, use skill(action: \"load\", name: \"...\").\n",
+                                );
                             }
                             // Append resource info
                             if let Ok(resources) = skill.list_resources() {
@@ -463,20 +468,33 @@ impl DynTool for SkillTool {
                             "skill(action: \"load\", name: \"coding-assistant\")",
                         ));
                     }
+                    // Canonical "give me this skill's instructions": if enabled, return
+                    // its expanded body so you can follow it now (loaded inline, rides in
+                    // message history, unloads via the sliding window).
+                    if let Some(skill) = self.loader.get(name).await {
+                        if skill.enabled {
+                            let body = self.loader.expand_template(&skill, self.store.as_deref());
+                            return ToolResult::ok(format!(
+                                "Loaded skill '{}'. Follow these instructions:\n\n{}",
+                                skill.name, body
+                            ));
+                        }
+                    }
+                    // Otherwise enable a disabled skill on disk (available next message).
                     let dir = match Self::user_skills_dir() {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
                     let skill_dir = dir.join(name);
-
-                    if self.loader.get(name).await.is_some_and(|s| s.enabled) {
-                        ToolResult::ok(format!("Skill '{}' is already enabled.", name))
-                    } else if skill_dir.join("SKILL.md.disabled").exists() {
+                    if skill_dir.join("SKILL.md.disabled").exists() {
                         match std::fs::rename(
                             skill_dir.join("SKILL.md.disabled"),
                             skill_dir.join("SKILL.md"),
                         ) {
-                            Ok(_) => ToolResult::ok(format!("Skill '{}' enabled.", name)),
+                            Ok(_) => ToolResult::ok(format!(
+                                "Enabled skill '{}'. It will be available on your next message.",
+                                name
+                            )),
                             Err(e) => ToolResult::error(format!("Failed to enable skill: {}. Do not retry — this is a filesystem error.", e)),
                         }
                     } else {

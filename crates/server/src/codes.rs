@@ -724,10 +724,12 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
 
     let artifact_id;
     let name;
+    let slug_hint;
 
     if let Ok(ref resp) = redeem_result {
         artifact_id = resp.artifact.id.clone();
         name = resp.artifact.name.clone();
+        slug_hint = resp.artifact.slug.clone();
     } else {
         // Redemption failed (likely already redeemed) — look up by code
         warn!(
@@ -749,6 +751,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         if let Some(item) = found {
             artifact_id = item["id"].as_str().unwrap_or("").to_string();
             name = item["name"].as_str().unwrap_or("").to_string();
+            slug_hint = item["slug"].as_str().unwrap_or("").to_string();
         } else {
             return Err(NeboError::Internal(format!(
                 "install_plugin: code not found: {code}"
@@ -767,8 +770,16 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         }),
     );
 
-    // Fetch plugin manifest from NeboAI (platform-specific binary info)
-    let slug = name.to_lowercase().replace(' ', "-");
+    // Resolve by the canonical marketplace slug — NEVER derive it from the display
+    // name. ("Google Workspace" → "google-workspace" 404'd; the real slug is "gws".)
+    // The server guarantees slug NOT NULL + UNIQUE(slug,type), so an empty slug is a
+    // data error — fail loudly rather than silently munge the name into a wrong slug.
+    if slug_hint.is_empty() {
+        return Err(NeboError::Internal(format!(
+            "plugin '{name}' has no slug in the marketplace record; refusing to guess from the display name"
+        )));
+    }
+    let slug = slug_hint;
     let detail = api
         .get_plugin(&slug, &platform)
         .await
@@ -920,17 +931,17 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     state.skill_loader.load_all().await;
     state.skill_loader.resume_watcher();
 
-    // Re-register plugin tool so the new plugin appears as a resource
+    // Re-register the plugin tool so the new plugin appears as a resource. Always
+    // register (never gate on list_installed) — the tool must stay present in the
+    // prompt regardless of how many plugins are installed.
     state.tools.unregister("plugin").await;
-    if !plugin_store.list_installed().is_empty() {
-        state
-            .tools
-            .register(Box::new(tools::plugin_tool::PluginTool::new(
-                plugin_store.clone(),
-                state.store.clone(),
-            )))
-            .await;
-    }
+    state
+        .tools
+        .register(Box::new(tools::plugin_tool::PluginTool::new(
+            plugin_store.clone(),
+            state.store.clone(),
+        )))
+        .await;
 
     // Plugin command tools are discovered via the `plugin` STRAP tool (lookup),
     // not registered individually (13K+ tools overwhelm the LLM context).

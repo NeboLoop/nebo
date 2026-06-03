@@ -246,13 +246,35 @@ impl DynTool for McpTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
+            // `mcp(action: "list")` with no server — enumerate connected MCP servers (a
+            // uniform "list" verb across extension types). No server/resource needed.
+            let action_opt = input.get("action").and_then(|v| v.as_str());
+            let server_opt = input.get("server").and_then(|v| v.as_str()).unwrap_or("");
+            if action_opt == Some("list") && server_opt.is_empty() {
+                let connected = self.bridge.connected_tools();
+                if connected.is_empty() {
+                    return ToolResult::ok(
+                        "No MCP servers connected. Add servers in Connectors settings.",
+                    );
+                }
+                let lines: Vec<String> = connected
+                    .iter()
+                    .map(|(server, tools)| format!("- {} ({} tools)", server.replace('_', "."), tools.len()))
+                    .collect();
+                return ToolResult::ok(format!(
+                    "{} connected MCP server(s):\n{}",
+                    lines.len(),
+                    lines.join("\n")
+                ));
+            }
+
             let server = match input.get("server").and_then(|v| v.as_str()) {
                 Some(s) => s,
                 None => {
                     return ToolResult::error(crate::errors::missing_param(
                         "mcp",
                         "server",
-                        "mcp(server: \"slack\", resource: \"tools\", action: \"list\")",
+                        "mcp(server: \"slack\", resource: \"tools\", action: \"list\") — or mcp(action: \"list\") to list connected servers",
                     ));
                 }
             };

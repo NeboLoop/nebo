@@ -1726,6 +1726,46 @@ $bmp.Dispose()"#,
     }
 }
 
+/// Persist captured image bytes to `<data_dir>/files/<uuid>.<ext>` so the agent can
+/// reference the file (e.g. share it to a channel) and the app can render it via the
+/// `GET /api/v1/files/<name>` route. Returns (filename, absolute_path) on success.
+fn persist_capture(bytes: &[u8], ext: &str) -> Option<(String, String)> {
+    let dir = config::data_dir().ok()?.join("files");
+    std::fs::create_dir_all(&dir).ok()?;
+    let filename = format!("capture-{}.{}", uuid::Uuid::new_v4(), ext);
+    let path = dir.join(&filename);
+    std::fs::write(&path, bytes).ok()?;
+    Some((filename, path.to_string_lossy().into_owned()))
+}
+
+/// Build the screenshot ToolResult: persist the final bytes to `<data_dir>/files`,
+/// surface the saved path + `/api/v1/files/<name>` URL in the content (so the agent
+/// can share/display it), and keep the `data:` URI in `image_url` so the vision
+/// sidecar still works for vision-incapable providers.
+fn finalize_capture(bytes: &[u8], mime: &str, summary: &str) -> ToolResult {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let data_uri = format!("data:{};base64,{}", mime, b64);
+    let ext = if mime.contains("png") {
+        "png"
+    } else if mime.contains("webp") {
+        "webp"
+    } else {
+        "jpg"
+    };
+    let content = match persist_capture(bytes, ext) {
+        Some((filename, abs)) => format!(
+            "{summary}\nSaved to: {abs}\nTo share or display this image, use the path {abs} (served at /api/v1/files/{filename})."
+        ),
+        None => summary.to_string(),
+    };
+    ToolResult {
+        content,
+        is_error: false,
+        image_url: Some(data_uri),
+    }
+}
+
 /// Compress a screenshot to JPEG at the given quality level, resize, and base64-encode.
 /// Accepts both PNG and JPEG input (auto-detected via magic bytes).
 ///
@@ -1734,7 +1774,6 @@ $bmp.Dispose()"#,
 /// - "medium": 1280px max width, 65% JPEG (default)
 /// - "high":   original format, no compression
 fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
-    use base64::Engine;
     use image::ImageReader;
     use std::io::Cursor;
 
@@ -1742,15 +1781,11 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
 
     if quality == "high" {
         let mime = if is_jpeg { "image/jpeg" } else { "image/png" };
-        let b64 = base64::engine::general_purpose::STANDARD.encode(img_bytes);
-        return ToolResult {
-            content: format!(
-                "Screenshot captured (high quality, {} bytes)",
-                img_bytes.len()
-            ),
-            is_error: false,
-            image_url: Some(format!("data:{};base64,{}", mime, b64)),
-        };
+        return finalize_capture(
+            img_bytes,
+            mime,
+            &format!("Screenshot captured (high quality, {} bytes)", img_bytes.len()),
+        );
     }
 
     let (max_width, jpeg_quality) = match quality {
@@ -1769,15 +1804,11 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
             // Fall back to raw bytes if decode fails
             let mime = if is_jpeg { "image/jpeg" } else { "image/png" };
             tracing::warn!(error = %e, "failed to decode screenshot for compression, returning raw");
-            let b64 = base64::engine::general_purpose::STANDARD.encode(img_bytes);
-            return ToolResult {
-                content: format!(
-                    "Screenshot captured ({} bytes, uncompressed)",
-                    img_bytes.len()
-                ),
-                is_error: false,
-                image_url: Some(format!("data:{};base64,{}", mime, b64)),
-            };
+            return finalize_capture(
+                img_bytes,
+                mime,
+                &format!("Screenshot captured ({} bytes, uncompressed)", img_bytes.len()),
+            );
         }
     };
 
@@ -1796,9 +1827,10 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
             let jpeg_bytes = jpeg_buf.into_inner();
             let original_kb = img_bytes.len() / 1024;
             let compressed_kb = jpeg_bytes.len() / 1024;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
-            ToolResult {
-                content: format!(
+            finalize_capture(
+                &jpeg_bytes,
+                "image/jpeg",
+                &format!(
                     "Screenshot captured ({}KB → {}KB, {}x{} {}% JPEG)",
                     original_kb,
                     compressed_kb,
@@ -1806,22 +1838,16 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
                     img.height(),
                     jpeg_quality
                 ),
-                is_error: false,
-                image_url: Some(format!("data:image/jpeg;base64,{}", b64)),
-            }
+            )
         }
         Err(e) => {
             let mime = if is_jpeg { "image/jpeg" } else { "image/png" };
             tracing::warn!(error = %e, "JPEG encode failed, returning raw image");
-            let b64 = base64::engine::general_purpose::STANDARD.encode(img_bytes);
-            ToolResult {
-                content: format!(
-                    "Screenshot captured ({} bytes, uncompressed)",
-                    img_bytes.len()
-                ),
-                is_error: false,
-                image_url: Some(format!("data:{};base64,{}", mime, b64)),
-            }
+            finalize_capture(
+                img_bytes,
+                mime,
+                &format!("Screenshot captured ({} bytes, uncompressed)", img_bytes.len()),
+            )
         }
     }
 }

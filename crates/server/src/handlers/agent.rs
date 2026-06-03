@@ -596,6 +596,10 @@ pub async fn update_apply(State(state): State<AppState>) -> HandlerResult<serde_
         path
     };
 
+    // Where the deferred helper writes UPDATE_FAILED.json on rollback (read on next
+    // WS client connect to surface a toast). Falls back to temp dir if unresolved.
+    let data_dir = config::data_dir().unwrap_or_else(|_| std::env::temp_dir());
+
     // Respond first, then apply — so the client sees the success response
     let hub = state.hub.clone();
     tokio::spawn(async move {
@@ -604,7 +608,7 @@ pub async fn update_apply(State(state): State<AppState>) -> HandlerResult<serde_
         // Run apply in a blocking thread with a timeout
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            tokio::task::spawn_blocking(move || updater::apply_update(&binary_path)),
+            tokio::task::spawn_blocking(move || updater::apply_update(&binary_path, &data_dir)),
         )
         .await;
 

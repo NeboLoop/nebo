@@ -134,6 +134,72 @@ export function createChatController(config: ChatControllerConfig) {
   let usageClearTimer: ReturnType<typeof setTimeout> | null = null;
   let activeSessionKey: string | undefined = config.sessionKey;
 
+  // --- Fluid streaming: decouple render cadence from bursty network arrival ---
+  // Incoming chunks accumulate in pendingStream; a requestAnimationFrame loop drains
+  // them into the displayed streamingContent at a steady character rate (scaling with
+  // backlog so it never falls behind), producing a smooth typewriter flow.
+  let pendingStream: Record<string, string> = {};
+  let rafHandle: number | null = null;
+
+  function drainPending() {
+    rafHandle = null;
+    let hasMore = false;
+    for (const aid of Object.keys(pendingStream)) {
+      const pending = pendingStream[aid];
+      if (!pending) { delete pendingStream[aid]; continue; }
+      const n = Math.max(2, Math.floor(pending.length / 8));
+      streamingContent[aid] = (streamingContent[aid] || '') + pending.slice(0, n);
+      const rest = pending.slice(n);
+      if (rest) { pendingStream[aid] = rest; hasMore = true; }
+      else delete pendingStream[aid];
+    }
+    if (hasMore) schedulePump();
+  }
+
+  function schedulePump() {
+    if (rafHandle != null) return;
+    if (typeof requestAnimationFrame === 'undefined') { flushPending(); return; }
+    rafHandle = requestAnimationFrame(drainPending);
+  }
+
+  // Immediately move buffered text to the display (on completion/reset) so nothing is lost.
+  function flushPending(aid?: string) {
+    const keys = aid ? [aid] : Object.keys(pendingStream);
+    for (const k of keys) {
+      if (pendingStream[k]) {
+        streamingContent[k] = (streamingContent[k] || '') + pendingStream[k];
+        delete pendingStream[k];
+      }
+    }
+  }
+
+  function resetStreaming() {
+    if (rafHandle != null && typeof cancelAnimationFrame !== 'undefined') {
+      cancelAnimationFrame(rafHandle);
+    }
+    rafHandle = null;
+    pendingStream = {};
+    streamingContent = {};
+  }
+
+  // Map run-produced artifact URLs (/api/v1/files/...) to renderable attachments.
+  function artifactsToAttachments(artifacts: unknown): UploadedAttachment[] {
+    if (!Array.isArray(artifacts)) return [];
+    return artifacts
+      .filter((u): u is string => typeof u === 'string' && u.length > 0)
+      .map((url) => {
+        const filename = url.split('/').pop() || 'file';
+        const ext = filename.split('.').pop()?.toLowerCase() || '';
+        const mimeType =
+          ({
+            png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+            webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm',
+            mov: 'video/quicktime', pdf: 'application/pdf',
+          } as Record<string, string>)[ext] || 'application/octet-stream';
+        return { fileId: url, filename, mimeType, size: 0, url };
+      });
+  }
+
   // --- Event filtering ---
   function isMyEvent(data: any): boolean {
     if (activeSessionKey) {
@@ -149,43 +215,44 @@ export function createChatController(config: ChatControllerConfig) {
     if (data.done) return;
     const aid = data.agentId || agentId;
     if (aid === agentId && !isLoading) { isLoading = true; phaseStartTime = Date.now(); }
-    const chunk = data.chunk || data.content || '';
-    const existing = streamingContent[aid] || '';
+    let chunk = data.chunk || data.content || '';
     // Extract "Working on:" status lines — show as activity indicator, not chat text
     const STATUS_RE = /\n?_Working[^_]*_\n?/g;
     const statusMatch = chunk.match(STATUS_RE);
     if (statusMatch) {
-      // Extract the label (strip markdown italic markers and whitespace)
-      const raw = statusMatch[statusMatch.length - 1].replace(/_/g, '').trim();
-      activityStatus = raw;
-      // Strip all status lines from both existing content and chunk
-      const cleanChunk = chunk.replace(STATUS_RE, '');
-      streamingContent[aid] = existing.replace(STATUS_RE, '') + cleanChunk;
-    } else {
-      streamingContent[aid] = existing + chunk;
+      activityStatus = statusMatch[statusMatch.length - 1].replace(/_/g, '').trim();
+      chunk = chunk.replace(STATUS_RE, '');
     }
+    if (!chunk) return;
+    // Buffer the chunk; the rAF drain renders it smoothly (no spurts).
+    pendingStream[aid] = (pendingStream[aid] || '') + chunk;
+    schedulePump();
   }
 
   function handleChatComplete(data: any) {
     if (!isMyEvent(data)) return;
     const aid = data.agentId || agentId;
+    // Flush any buffered streamed text before finalizing so nothing is lost.
+    flushPending(aid);
     const content = streamingContent[aid];
-    if (content) {
+    const attachments = artifactsToAttachments(data.artifacts);
+    if (content || attachments.length) {
       const isDelegate = aid !== agentId;
       const delegateAgent = isDelegate ? allAgents.find(a => a.id === aid) : null;
       messages = [...messages, {
         id: 'msg-' + Date.now(),
         type: 'assistant' as const,
-        content,
+        content: content || '',
         html: data.html || undefined,
         time: formatTime(Date.now()),
         ...(delegateAgent ? {
           delegateAgentId: delegateAgent.id,
           delegateAgentName: delegateAgent.name,
         } : {}),
+        ...(attachments.length ? { attachments } : {}),
       }];
       delete streamingContent[aid];
-      config.onResponseComplete?.(content);
+      config.onResponseComplete?.(content || '');
     }
     if (aid === agentId) {
       isLoading = false;
@@ -200,6 +267,7 @@ export function createChatController(config: ChatControllerConfig) {
   function handleChatMessage(data: any) {
     if (!isMyEvent(data)) return;
     const aid = data.agentId || agentId;
+    flushPending(aid);
     const content = data.content || data.text || streamingContent[aid] || '';
     if (!content) return;
     const isDelegate = aid !== agentId;
@@ -242,6 +310,7 @@ export function createChatController(config: ChatControllerConfig) {
 
     // Commit pending streaming text before the tool so tool groups from
     // different agentic loop turns are separated by assistant text.
+    flushPending(aid);
     const pendingText = streamingContent[aid];
     if (pendingText) {
       const isDelegate = aid !== agentId;
@@ -361,14 +430,14 @@ export function createChatController(config: ChatControllerConfig) {
     if (!isMyEvent(data)) return;
     if (data.success) {
       messages = [];
-      streamingContent = {};
+      resetStreaming();
     }
   }
 
   function handleChatCancelled(data: any) {
     if (!isMyEvent(data)) return;
     isLoading = false;
-    streamingContent = {};
+    resetStreaming();
     phaseStartTime = 0;
     activityStatus = '';
   }
@@ -454,13 +523,13 @@ export function createChatController(config: ChatControllerConfig) {
     else payload.agent_id = agentId;
     ws.send('cancel', payload);
     isLoading = false;
-    streamingContent = {};
+    resetStreaming();
     phaseStartTime = 0;
   }
 
   function newThread() {
     messages = [];
-    streamingContent = {};
+    resetStreaming();
     isLoading = false;
     if (config.sessionKey) {
       ws.send('rotate_chat', { session_id: config.sessionKey });
@@ -500,7 +569,7 @@ export function createChatController(config: ChatControllerConfig) {
 
   function clearMessages() {
     messages = [];
-    streamingContent = {};
+    resetStreaming();
   }
 
   function setMessages(msgs: ChatMessage[]) {
