@@ -158,6 +158,19 @@ impl NeboAIApi {
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
+    /// List marketplace collections (curated bundles). Returns NeboAI's
+    /// `{ "collections": [...] }` envelope verbatim.
+    pub async fn list_collections(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/collections", None::<&()>)
+            .await
+    }
+
+    /// Get a single collection (with its items) by id.
+    pub async fn get_collection(&self, id: &str) -> Result<serde_json::Value, CommError> {
+        let path = format!("/api/v1/collections/{}", urlencoding::encode(id));
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
     // ── Apps / Tools ────────────────────────────────────────────────
 
     /// List apps from NeboAI catalog.

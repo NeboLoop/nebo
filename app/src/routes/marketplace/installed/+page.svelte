@@ -27,15 +27,15 @@
 		try {
 			// Fetch all products and filter to installed
 			const [skillsRes, agentsRes, workflowsRes] = await Promise.all([
-				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/products', { type: 'agent', pageSize: 100 }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/products', { type: 'workflow', pageSize: 100 }).catch(() => ({ skills: [] }))
+				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ products: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'agent', pageSize: 100 }).catch(() => ({ products: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'workflow', pageSize: 100 }).catch(() => ({ products: [] }))
 			]);
 
 			const all = [
-				...(skillsRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'skill' }, i)),
-				...(agentsRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'agent' }, i + 100)),
-				...(workflowsRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'workflow' }, i + 200))
+				...(skillsRes.products || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'skill' }, i)),
+				...(agentsRes.products || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'agent' }, i + 100)),
+				...(workflowsRes.products || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'workflow' }, i + 200))
 			];
 
 			installed = all.filter(item => item.installed);

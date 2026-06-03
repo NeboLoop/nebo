@@ -17,17 +17,17 @@
 	onMount(async () => {
 		try {
 			const [productsRes, topRes, featuredRes] = await Promise.all([
-				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/products/top', { pageSize: 100 }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/featured', { type: 'skill' }).catch(() => ({ apps: [] }))
+				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ products: [] })),
+				webapi.get<any>('/api/v1/store/products/top', { pageSize: 100 }).catch(() => ({ products: [] })),
+				webapi.get<any>('/api/v1/store/featured', { type: 'skill' }).catch(() => ({ products: [] }))
 			]);
 
-			const skills = productsRes.skills || [];
-			const top = topRes.skills || [];
+			const skills = productsRes.products || [];
+			const top = topRes.products || [];
 
 			allSkills = skills.map((s: any, i: number) => toAppItem(s, i));
 			topSkills = top.map((s: any, i: number) => toAppItem(s, i));
-			featured = (featuredRes.apps || []).map((a: any, i: number) => toAppItem({ ...a, type: a.type || 'skill' }, i));
+			featured = (featuredRes.products || []).map((a: any, i: number) => toAppItem({ ...a, type: a.type || 'skill' }, i));
 		} catch { /* ignore */ }
 		loading = false;
 	});

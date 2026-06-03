@@ -61,6 +61,7 @@ export interface Agent {
 	handle?: string
 	color?: string
 	loopExposed: boolean
+	loopAgentId?: string
 }
 
 export interface AgentProfile {
@@ -736,6 +737,10 @@ export interface ApplyUpdateResponse {
 	status: string
 }
 
+export interface AuthLoginAccountResponse {
+	started: boolean
+}
+
 export interface AuthLoginResponse {
 	started: boolean
 }
@@ -1069,11 +1074,6 @@ export interface GetStorageResponse {
 	value: string
 }
 
-export interface GetStoreCollectionResponse {
-	collection: unknown
-	id: string
-}
-
 export interface GetStoreProductFeedbackResponse {
 	feedback: unknown
 }
@@ -1110,7 +1110,7 @@ export interface InstallDepsResponse {
 
 export interface InstallStoreProductResponse {
 	success: boolean
-	agentId?: string
+	agentId: string
 }
 
 export interface JanusCompleteResponse {
@@ -1212,6 +1212,10 @@ export interface ListPersonalityPresetsResponse {
 	presets: unknown
 }
 
+export interface ListPluginAccountsResponse {
+	accounts: unknown[]
+}
+
 export interface ListPluginEventsResponse {
 	plugin: unknown
 	events: unknown[]
@@ -1246,11 +1250,6 @@ export interface ListSkillSecretsResponse {
 
 export interface ListStorageResponse {
 	items: unknown[]
-}
-
-export interface ListStoreCollectionsResponse {
-	collections: unknown
-	total: number
 }
 
 export interface ListStoreOrgsResponse {

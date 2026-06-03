@@ -1,10 +1,29 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { collections, createCollection } from '$lib/stores/collections.js';
+  import { listStoreCollections } from '$lib/api/index';
 
   interface PrivateOrg { id: string; name: string; initial: string; itemCount: number }
-  const PRIVATE_ORGS: PrivateOrg[] = []; // TODO: load from API when collections endpoint exists
+  const PRIVATE_ORGS: PrivateOrg[] = [];
   const MARKETPLACE_PRIVATE_ITEMS: Record<string, unknown>[] = [];
+
+  type MarketCollection = { id: string; name: string; desc: string; itemCount: number };
+  let marketCollections = $state<MarketCollection[]>([]);
+
+  onMount(async () => {
+    try {
+      const res = await listStoreCollections() as { collections?: Record<string, unknown>[] } | null;
+      if (Array.isArray(res?.collections)) {
+        marketCollections = res.collections.map((c: Record<string, unknown>) => ({
+          id: String(c.id ?? ''),
+          name: String(c.name ?? ''),
+          desc: String(c.description ?? c.desc ?? ''),
+          itemCount: Number(c.itemCount ?? (Array.isArray(c.items) ? c.items.length : 0)),
+        }));
+      }
+    } catch {}
+  });
   import Package from 'lucide-svelte/icons/package';
   import Plus from 'lucide-svelte/icons/plus';
   import X from 'lucide-svelte/icons/x';
@@ -209,8 +228,27 @@
     </div>
   {/if}
 
+  <!-- Marketplace collections -->
+  {#if marketCollections.length > 0}
+    <div class="mb-6">
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Curated Collections</div>
+      <div class="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2.5">
+        {#each marketCollections as col}
+          <a href="/marketplace/collections/{col.id}" class="p-3.5 rounded-lg border border-base-300 bg-base-100 cursor-pointer hover:border-base-content/20 hover:shadow-sm transition-all block">
+            <div class="flex items-center gap-2 mb-1.5">
+              <Package class="w-4 h-4 text-accent shrink-0" />
+              <span class="text-sm font-semibold truncate flex-1">{col.name}</span>
+            </div>
+            <div class="text-xs text-base-content/70 leading-snug mb-2">{col.desc}</div>
+            <div class="text-xs text-base-content/50 font-mono">{col.itemCount} items</div>
+          </a>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   <!-- Shared with you -->
-  {#if PRIVATE_ORGS.length === 0 && myCollections.length === 0}
+  {#if PRIVATE_ORGS.length === 0 && myCollections.length === 0 && marketCollections.length === 0}
     <div class="text-center py-12">
       <Package class="w-8 h-8 text-base-content/30 mx-auto mb-3" />
       <div class="text-sm font-medium mb-1">No collections yet</div>

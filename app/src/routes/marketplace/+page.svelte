@@ -24,14 +24,14 @@
 				skillsRes,
 				featuredSkillRes
 			] = await Promise.all([
-				webapi.get<any>('/api/v1/store/products', { type: 'agent', pageSize: 100 }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/featured', { type: 'skill' }).catch(() => ({ apps: [] }))
+				webapi.get<any>('/api/v1/store/products', { type: 'agent', pageSize: 100 }).catch(() => ({ products: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ products: [] })),
+				webapi.get<any>('/api/v1/store/featured', { type: 'skill' }).catch(() => ({ products: [] }))
 			]);
 
-			agents = (agentsRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: 'agent' }, i));
-			skillItems = (skillsRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: 'skill' }, i));
-			featuredSkills = (featuredSkillRes.apps || []).map((a: any, i: number) =>
+			agents = (agentsRes.products || []).map((s: any, i: number) => toAppItem({ ...s, type: 'agent' }, i));
+			skillItems = (skillsRes.products || []).map((s: any, i: number) => toAppItem({ ...s, type: 'skill' }, i));
+			featuredSkills = (featuredSkillRes.products || []).map((a: any, i: number) =>
 				toAppItem({ ...a, type: a.type || 'skill' }, i)
 			);
 		} catch {

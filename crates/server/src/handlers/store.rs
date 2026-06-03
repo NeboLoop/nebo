@@ -42,9 +42,10 @@ pub async fn list_store_products(
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("list_products: {e}"))))?;
 
-    let mut out = normalize_to_skills(resp);
-
-    // Enrich with local install state — NeboAI doesn't know what's on this machine
+    // NeboAI returns the canonical { "products": [...], "total": N } envelope —
+    // pass it through verbatim, only enriching with local install state (which
+    // NeboAI can't know). No client-side key remapping.
+    let mut out = resp;
     enrich_installed_state(&mut out, &state.store);
 
     Ok(Json(out))
@@ -60,7 +61,7 @@ pub async fn list_store_products_top(
         .list_top_skills(params.page, params.page_size)
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("list_top_skills: {e}"))))?;
-    Ok(Json(normalize_to_skills(resp)))
+    Ok(Json(resp))
 }
 
 /// GET /store/featured — featured products.
@@ -73,7 +74,7 @@ pub async fn list_store_featured(
         .get_featured(params.artifact_type.as_deref())
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("get_featured: {e}"))))?;
-    Ok(Json(normalize_to_apps(resp)))
+    Ok(Json(resp))
 }
 
 /// GET /store/categories — list all marketplace categories with counts.
@@ -201,36 +202,6 @@ pub async fn submit_store_product_feedback(
     Ok(Json(resp))
 }
 
-// ── NeboAI response normalization ────────────────────────────────
-//
-// NeboAI returns `{ "results": [...], "total": N }` but our frontend
-// expects `{ "skills": [...] }` for product lists and `{ "apps": [...] }`
-// for featured. If the response already has the expected key, pass through.
-
-fn normalize_to_skills(mut val: serde_json::Value) -> serde_json::Value {
-    if val.get("skills").is_some() {
-        return val;
-    }
-    if let Some(results) = val.as_object_mut().and_then(|o| o.remove("results")) {
-        val.as_object_mut()
-            .unwrap()
-            .insert("skills".to_string(), results);
-    }
-    val
-}
-
-fn normalize_to_apps(mut val: serde_json::Value) -> serde_json::Value {
-    if val.get("apps").is_some() {
-        return val;
-    }
-    if let Some(results) = val.as_object_mut().and_then(|o| o.remove("results")) {
-        val.as_object_mut()
-            .unwrap()
-            .insert("apps".to_string(), results);
-    }
-    val
-}
-
 // ── Local install state enrichment ─────────────────────────────────
 
 /// Check if an artifact is installed locally by slug, checking both
@@ -295,7 +266,7 @@ fn enrich_installed_item(val: &mut serde_json::Value, store: &db::Store) {
 /// Enrich a product list response with local install state.
 /// Looks for `{ "skills": [...] }` structure.
 fn enrich_installed_state(resp: &mut serde_json::Value, store: &db::Store) {
-    if let Some(items) = resp.get_mut("skills").and_then(|v| v.as_array_mut()) {
+    if let Some(items) = resp.get_mut("products").and_then(|v| v.as_array_mut()) {
         for item in items.iter_mut() {
             enrich_installed_item(item, store);
         }
@@ -459,16 +430,29 @@ pub async fn uninstall_store_product(
 // Currently stubs — will proxy to NeboAI API when collection
 // endpoints are available server-side.
 
-/// GET /store/collections — list all collections.
+/// GET /store/collections — list all collections (proxied from NeboAI).
 pub async fn list_store_collections(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
-    Ok(Json(serde_json::json!({ "collections": [], "total": 0 })))
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .list_collections()
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("list_collections: {e}"))))?;
+    Ok(Json(resp))
 }
 
-/// GET /store/collections/{id} — get a single collection.
-pub async fn get_store_collection(Path(id): Path<String>) -> HandlerResult<serde_json::Value> {
-    Ok(Json(serde_json::json!({ "collection": null, "id": id })))
+/// GET /store/collections/{id} — get a single collection (proxied from NeboAI).
+pub async fn get_store_collection(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .get_collection(&id)
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("get_collection: {e}"))))?;
+    Ok(Json(resp))
 }
 
 /// POST /store/collections — create a new collection.

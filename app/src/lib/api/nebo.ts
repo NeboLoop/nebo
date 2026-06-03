@@ -1119,6 +1119,20 @@ export function removePlugin(slug: string) {
 }
 
 /**
+ * @description "List plugin accounts"
+ */
+export function listPluginAccounts(slug: string, agentId: string) {
+	return webapi.get<components.ListPluginAccountsResponse>(`/api/v1/plugins/${slug}/accounts`, { agentId })
+}
+
+/**
+ * @description "Auth login account"
+ */
+export function authLoginAccount(slug: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.AuthLoginAccountResponse>(`/api/v1/plugins/${slug}/accounts/login`, req)
+}
+
+/**
  * @description "Auth login"
  */
 export function authLogin(slug: string, req: Record<string, unknown> = {}) {
@@ -1360,7 +1374,7 @@ export function listStoreCategories() {
  * @description "List store collections"
  */
 export function listStoreCollections() {
-	return webapi.get<components.ListStoreCollectionsResponse>(`/api/v1/store/collections`)
+	return webapi.get<unknown>(`/api/v1/store/collections`)
 }
 
 /**
@@ -1374,7 +1388,7 @@ export function createStoreCollection(req: Record<string, unknown> = {}) {
  * @description "Get store collection"
  */
 export function getStoreCollection(id: string) {
-	return webapi.get<components.GetStoreCollectionResponse>(`/api/v1/store/collections/${id}`)
+	return webapi.get<unknown>(`/api/v1/store/collections/${id}`)
 }
 
 /**

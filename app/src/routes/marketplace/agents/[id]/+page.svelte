@@ -79,7 +79,7 @@
 		}
 		loading = false;
 		webapi.get<any>(`/api/v1/store/products/${agentId}/similar`).then((res: any) => {
-			similarItems = (res.apps || []).map((a: any, i: number) => toAppItem(a, i));
+			similarItems = (res.products || []).map((a: any, i: number) => toAppItem(a, i));
 		}).catch(() => {});
 	});
 

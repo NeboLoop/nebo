@@ -21,9 +21,9 @@
 
   onMount(async () => {
     try {
-      const res = await listStoreProducts() as { apps?: Record<string, unknown>[] } | null;
-      if (res?.apps?.length) {
-        allProducts = res.apps.map((a: Record<string, unknown>) => {
+      const res = await listStoreProducts() as { products?: Record<string, unknown>[] } | null;
+      if (res?.products?.length) {
+        allProducts = res.products.map((a: Record<string, unknown>) => {
           const t = String(a.type || a.category || 'skill');
           const typeMap: Record<string, string> = { agent: 'agents', skill: 'skills', plugin: 'plugins', connector: 'connectors' };
           return {
@@ -100,6 +100,7 @@
   const navItems = [
     { id: 'featured', path: '/marketplace', label: 'Featured' },
     { id: 'agents', path: '/marketplace/agents', label: 'Agents' },
+    { id: 'apps', path: '/marketplace/apps', label: 'Apps' },
     { id: 'skills', path: '/marketplace/skills', label: 'Skills' },
     { id: 'plugins', path: '/marketplace/plugins', label: 'Plugins' },
     { id: 'connectors', path: '/marketplace/connectors', label: 'Connectors' },
@@ -176,7 +177,7 @@
     <div class="flex-1 overflow-y-auto">
       <div class="flex flex-col items-center gap-1 py-2">
         {#each navItems as item}
-          {@const icons: Record<string, string> = { featured: '◆', agents: '◉', skills: '⚡', plugins: '🔌', connectors: '⬡', collections: '▤', installed: '✓' }}
+          {@const icons: Record<string, string> = { featured: '◆', agents: '◉', apps: '▦', skills: '⚡', plugins: '🔌', connectors: '⬡', collections: '▤', installed: '✓' }}
           <a
             href={item.path}
             class="w-8 h-8 rounded-md flex items-center justify-center text-sm transition-colors {marketplaceTab === item.id ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)]' : 'hover:bg-base-200'}"

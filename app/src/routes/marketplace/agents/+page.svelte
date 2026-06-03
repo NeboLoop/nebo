@@ -16,13 +16,13 @@
 	onMount(async () => {
 		try {
 			const [productsRes, featuredRes] = await Promise.all([
-				webapi.get<any>('/api/v1/store/products', { type: 'agent', pageSize: 100 }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/featured', { type: 'agent' }).catch(() => ({ apps: [] }))
+				webapi.get<any>('/api/v1/store/products', { type: 'agent', pageSize: 100 }).catch(() => ({ products: [] })),
+				webapi.get<any>('/api/v1/store/featured', { type: 'agent' }).catch(() => ({ products: [] }))
 			]);
 
-			const agents = productsRes.skills || [];
+			const agents = productsRes.products || [];
 			allAgents = agents.map((r: any, i: number) => toAppItem({ ...r, type: 'agent' }, i));
-			featured = (featuredRes.apps || []).map((a: any, i: number) => toAppItem({ ...a, type: a.type || 'agent' }, i));
+			featured = (featuredRes.products || []).map((a: any, i: number) => toAppItem({ ...a, type: a.type || 'agent' }, i));
 		} catch { /* ignore */ }
 		loading = false;
 	});

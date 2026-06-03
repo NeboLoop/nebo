@@ -21,9 +21,9 @@
 
   onMount(async () => {
     try {
-      const res = await listStoreProducts({ type: 'connector' }) as { apps?: Record<string, unknown>[] } | null;
-      if (res?.apps?.length) {
-        connectors = res.apps.map((a: Record<string, unknown>) => ({
+      const res = await listStoreProducts({ type: 'connector' }) as { products?: Record<string, unknown>[] } | null;
+      if (res?.products?.length) {
+        connectors = res.products.map((a: Record<string, unknown>) => ({
           id: String(a.id ?? ''), name: String(a.name ?? ''), desc: String(a.description ?? ''),
           category: String(a.category ?? ''), rating: Number(a.rating ?? 0),
           installs: Number(a.installCount ?? 0), featured: Boolean(a.featured ?? false),

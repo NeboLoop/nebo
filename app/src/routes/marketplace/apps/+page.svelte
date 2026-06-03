@@ -22,13 +22,13 @@
     return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
   }
 
-  let plugins = $state<{ id: string; name: string; desc: string; category: string; rating: number; installs: number; featured: boolean; price: string; code: string }[]>([]);
+  let apps = $state<{ id: string; name: string; desc: string; category: string; rating: number; installs: number; featured: boolean; price: string; code: string }[]>([]);
 
   onMount(async () => {
     try {
-      const res = await listStoreProducts({ type: 'plugin' }) as { products?: Record<string, unknown>[] } | null;
+      const res = await listStoreProducts({ type: 'app' }) as { products?: Record<string, unknown>[] } | null;
       if (res?.products?.length) {
-        plugins = res.products.map((a: Record<string, unknown>) => ({
+        apps = res.products.map((a: Record<string, unknown>) => ({
           id: String(a.id ?? ''), name: String(a.name ?? ''), desc: String(a.description ?? ''),
           category: String(a.category ?? ''), rating: Number(a.rating ?? 0),
           installs: Number(a.installCount ?? 0), featured: Boolean(a.featured ?? false),
@@ -39,34 +39,34 @@
   });
 </script>
 
-<svelte:head><title>Plugins - Marketplace - Nebo</title></svelte:head>
+<svelte:head><title>Apps - Marketplace - Nebo</title></svelte:head>
 
 <div class="p-6 max-w-[960px]">
   <div class="mb-5">
-    <div class="text-base font-semibold mb-1">Plugins</div>
-    <div class="text-xs text-base-content/50">Connect your agents to external services and APIs.</div>
+    <div class="text-base font-semibold mb-1">Apps</div>
+    <div class="text-xs text-base-content/50">Native apps that extend what your companion can do on your computer.</div>
   </div>
 
   <div class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3">
-    {#each plugins as plugin}
-      <a href="/marketplace/plugins/{plugin.id}" class="p-4 rounded-xl border border-base-300 bg-base-100 cursor-pointer hover:shadow-md hover:border-base-content/20 transition-all block group">
-        <div class="w-11 h-11 rounded-xl {getIconColor(plugin.id)} grid place-items-center text-sm font-bold mb-3">
-          {getInitials(plugin.name)}
+    {#each apps as app}
+      <a href="/marketplace/apps/{app.id}" class="p-4 rounded-xl border border-base-300 bg-base-100 cursor-pointer hover:shadow-md hover:border-base-content/20 transition-all block group">
+        <div class="w-11 h-11 rounded-xl {getIconColor(app.id)} grid place-items-center text-sm font-bold mb-3">
+          {getInitials(app.name)}
         </div>
-        <div class="text-sm font-semibold mb-0.5 group-hover:text-primary transition-colors">{plugin.name}</div>
-        <div class="text-xs text-base-content/60 leading-snug mb-3 line-clamp-2">{plugin.desc}</div>
+        <div class="text-sm font-semibold mb-0.5 group-hover:text-primary transition-colors">{app.name}</div>
+        <div class="text-xs text-base-content/60 leading-snug mb-3 line-clamp-2">{app.desc}</div>
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-1.5">
             <Star class="w-3 h-3 text-warning fill-warning" />
-            <span class="text-xs font-medium">{plugin.rating}</span>
-            <span class="text-xs text-base-content/40 ml-0.5">{plugin.installs.toLocaleString()}</span>
+            <span class="text-xs font-medium">{app.rating}</span>
+            <span class="text-xs text-base-content/40 ml-0.5">{app.installs.toLocaleString()}</span>
           </div>
-          {#if $installedIds.has(plugin.id)}
+          {#if $installedIds.has(app.id)}
             <span class="text-xs font-medium text-success">Installed</span>
-          {:else if plugin.price === 'Get'}
+          {:else if app.price === 'Get'}
             <span class="text-xs font-medium text-primary">Free</span>
           {:else}
-            <span class="text-xs text-base-content/50">{plugin.price}</span>
+            <span class="text-xs text-base-content/50">{app.price}</span>
           {/if}
         </div>
       </a>

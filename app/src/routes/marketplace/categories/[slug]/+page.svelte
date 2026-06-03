@@ -37,9 +37,9 @@
 		}
 
 		try {
-			const productsRes = await webapi.get<any>('/api/v1/store/products', { category: catMeta.name, pageSize: 100 }).catch(() => ({ skills: [] }));
+			const productsRes = await webapi.get<any>('/api/v1/store/products', { category: catMeta.name, pageSize: 100 }).catch(() => ({ products: [] }));
 
-			const rawProducts = productsRes.skills || [];
+			const rawProducts = productsRes.products || [];
 
 			// Split products by type
 			const skillList: any[] = [];
