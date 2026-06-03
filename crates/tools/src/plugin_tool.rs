@@ -635,7 +635,7 @@ impl PluginTool {
     async fn run_plugin_command(&self, pi: &PluginInput, ctx: &ToolContext) -> ToolResult {
         if pi.command.is_empty() && pi.args.is_empty() {
             return ToolResult::error(
-                "command is required for exec. Use action: \"services\" to discover available commands.",
+                "command is required for exec. Run plugin(action: \"list\") to see installed plugins; each plugin's commands are shown in this tool's description (or load the plugin's skill for full syntax).",
             );
         }
 

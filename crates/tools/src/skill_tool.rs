@@ -210,7 +210,7 @@ impl DynTool for SkillTool {
                                 enabled - shown
                             ));
                         }
-                        result.push_str("\n\nTo use a skill: skill(action: \"help\", name: \"<name>\") for instructions, then spawn a sub-agent with the skill pre-loaded.");
+                        result.push_str("\n\nTo use a skill: skill(action: \"load\", name: \"<name>\") to load its full instructions, then follow them inline. (help = a short metadata preview; load = the actual instructions.)");
                         ToolResult::ok(result)
                     }
                 }
@@ -255,7 +255,7 @@ impl DynTool for SkillTool {
                             .map(|s| format!("- **{}** — {}", s.name, s.description))
                             .collect();
                         ToolResult::ok(format!(
-                            "Skills matching \"{}\":\n{}\n\nTo use a skill, call: skill(action: \"help\", name: \"<name>\") for full instructions.",
+                            "Skills matching \"{}\":\n{}\n\nTo use a skill, call: skill(action: \"load\", name: \"<name>\") to load its full instructions, then follow them inline.",
                             query,
                             lines.join("\n")
                         ))
