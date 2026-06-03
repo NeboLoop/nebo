@@ -183,7 +183,7 @@ A single domain tool documents many operations in one place; read its resources 
 - **message** — user communication, notifications
 - **skill** — discover and inspect skills (specialized knowledge)
 - **plugin** — run installed plugin binaries (subcommand only — binary auto-resolved)
-- **mcp** — call a connected MCP server: mcp(server: "<name>", resource: "...", action: "..."). Use to reach external integrations the user has connected.
+- **mcp** — list connected MCP servers: mcp(action: "list"). Each server's tools appear as their own `mcp__<server>__<tool>` tools — call those directly (find them with tool_search).
 - **tool_search** — discover additional tools not listed here
 
 **Tool discipline:**

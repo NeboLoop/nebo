@@ -44,7 +44,7 @@ pub struct IntegrationInfo {
 pub struct Bridge {
     connections: Mutex<HashMap<String, Connection>>,
     client: Arc<McpClient>,
-    _registry: Arc<dyn ProxyToolRegistry>,
+    registry: Arc<dyn ProxyToolRegistry>,
 }
 
 impl Bridge {
@@ -52,7 +52,7 @@ impl Bridge {
         Self {
             connections: Mutex::new(HashMap::new()),
             client,
-            _registry: registry,
+            registry,
         }
     }
 
@@ -127,13 +127,25 @@ impl Bridge {
             .list_tools(integration_id, server_url, access_token)
             .await?;
 
-        // Track connection and tool names (tools are exposed via the mcp STRAP tool,
-        // not as individual proxy tools in the registry)
+        // Expose each external tool as its own proxy tool (`mcp__<server>__<tool>`)
+        // carrying the server's real input schema, so the model calls it with correct
+        // arguments. This is the single canonical call pathway for MCP tools — the `mcp`
+        // STRAP tool itself only enumerates servers (mcp(action:"list")).
         let tool_names: Vec<String> = tools
             .iter()
             .map(|t| make_tool_name(server_type, &t.name))
             .collect();
         let original_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+
+        for (t, proxy_name) in tools.iter().zip(tool_names.iter()) {
+            self.registry.register_proxy(
+                proxy_name,
+                &t.name,
+                &t.description,
+                t.input_schema.clone(),
+                integration_id,
+            );
+        }
 
         let mut conns = self.connections.lock().await;
         conns.insert(
@@ -166,6 +178,9 @@ impl Bridge {
         integration_id: &str,
     ) {
         if let Some(conn) = conns.remove(integration_id) {
+            for name in &conn.tool_names {
+                self.registry.unregister_proxy(name);
+            }
             self.client.close_session(integration_id).await;
             info!(
                 id = integration_id,

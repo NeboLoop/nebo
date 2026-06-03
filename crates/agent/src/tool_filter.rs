@@ -460,21 +460,24 @@ mod tests {
         assert!(names.contains(&"event"), "event must always be included");
         assert!(names.contains(&"message"), "message must always be included");
         assert!(names.contains(&"tool_search"), "tool_search must always be included");
+        // web/os are also core (always-on) since the "web is not optional" change.
+        assert!(names.contains(&"web"), "web is a core tool, always included");
+        assert!(names.contains(&"os"), "os is a core tool, always included");
         // Non-core tools without matching context are filtered out
-        assert!(!names.contains(&"web"), "web should be filtered without keywords");
         assert!(!names.contains(&"loop"), "loop should be filtered without keywords");
     }
 
     #[test]
     fn test_contextual_keyword_activates_context() {
-        let tools = vec![make_tool("os"), make_tool("web")];
+        // `loop` is a non-core tool, so it exercises keyword gating (web/os are now core).
+        let tools = vec![make_tool("os"), make_tool("loop")];
         let messages = vec![make_msg("user", "Take a screenshot of the current screen")];
         let (result, contexts) = filter_tools_with_context(&tools, &messages, &[], &HashSet::new());
         // "desktop" sub-context keyword activates os tool
         assert!(result.iter().any(|t| t.name == "os"));
         assert!(contexts.contains(&"desktop".to_string()));
-        // web should be filtered out (no web keywords)
-        assert!(!result.iter().any(|t| t.name == "web"));
+        // loop should be filtered out (no loop keywords)
+        assert!(!result.iter().any(|t| t.name == "loop"));
     }
 
     #[test]

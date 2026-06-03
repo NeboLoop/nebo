@@ -879,9 +879,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let mcp_client = Arc::new(mcp::McpClient::new(encryptor));
     let bridge = Arc::new(mcp::Bridge::new(mcp_client, tool_registry.clone()));
     tool_registry.set_bridge(bridge.clone());
+    // Store is needed by MCP proxy tools for OAuth token refresh during calls.
+    tool_registry.set_store(store.clone());
 
-    // Register MCP STRAP tool — single tool for all connected MCP servers
-    let mcp_tool = tools::mcp_tool::McpTool::new(bridge.clone(), store.clone());
+    // Register the MCP enumeration tool — mcp(action:"list") lists connected servers.
+    // Each server's tools are exposed as their own mcp__<server>__<tool> proxy tools.
+    let mcp_tool = tools::mcp_tool::McpTool::new(bridge.clone());
     tool_registry.register(Box::new(mcp_tool)).await;
 
     // Sync MCP integrations from DB — reconnect with stored OAuth tokens

@@ -157,6 +157,8 @@ pub struct Registry {
     bridge: std::sync::RwLock<Option<Arc<mcp::Bridge>>>,
     plugin_store: std::sync::RwLock<Option<Arc<napp::plugin::PluginStore>>>,
     agent_loader: std::sync::RwLock<Option<Arc<napp::AgentLoader>>>,
+    /// DB store for MCP proxy tools (OAuth token refresh during tool calls).
+    store: std::sync::RwLock<Option<Arc<db::Store>>>,
     resource_permits: ResourcePermits,
 }
 
@@ -172,6 +174,7 @@ impl Registry {
             bridge: std::sync::RwLock::new(None),
             plugin_store: std::sync::RwLock::new(None),
             agent_loader: std::sync::RwLock::new(None),
+            store: std::sync::RwLock::new(None),
             resource_permits: ResourcePermits::new(),
         }
     }
@@ -179,6 +182,11 @@ impl Registry {
     /// Set the MCP bridge for proxy tool execution.
     pub fn set_bridge(&self, bridge: Arc<mcp::Bridge>) {
         *self.bridge.write().unwrap() = Some(bridge);
+    }
+
+    /// Set the DB store (used by MCP proxy tools for OAuth token refresh).
+    pub fn set_store(&self, store: Arc<db::Store>) {
+        *self.store.write().unwrap() = Some(store);
     }
 
     /// Set the plugin store for injecting plugin binary env vars into subprocesses.
@@ -774,6 +782,7 @@ struct McpProxyTool {
     tool_schema: Option<serde_json::Value>,
     integration_id: String,
     bridge: Arc<mcp::Bridge>,
+    store: Arc<db::Store>,
 }
 
 impl DynTool for McpProxyTool {
@@ -801,20 +810,14 @@ impl DynTool for McpProxyTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            match self
-                .bridge
-                .call_tool(&self.integration_id, &self.original_name, input)
-                .await
-            {
-                Ok(result) => {
-                    if result.is_error {
-                        ToolResult::error(result.content)
-                    } else {
-                        ToolResult::ok(result.content)
-                    }
-                }
-                Err(e) => ToolResult::error(format!("MCP tool call failed: {}", e)),
-            }
+            crate::mcp_tool::call_mcp_tool(
+                &self.store,
+                &self.bridge,
+                &self.integration_id,
+                &self.original_name,
+                input,
+            )
+            .await
         })
     }
 }
@@ -828,19 +831,28 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         schema: Option<serde_json::Value>,
         integration_id: &str,
     ) {
+        let bridge = match self.bridge.read().unwrap().as_ref() {
+            Some(b) => b.clone(),
+            None => {
+                warn!(tool = %name, "cannot register MCP proxy: bridge not set");
+                return;
+            }
+        };
+        let store = match self.store.read().unwrap().as_ref() {
+            Some(s) => s.clone(),
+            None => {
+                warn!(tool = %name, "cannot register MCP proxy: store not set");
+                return;
+            }
+        };
         let tool = McpProxyTool {
             proxy_name: name.to_string(),
             original_name: original_name.to_string(),
             tool_description: description.to_string(),
             tool_schema: schema,
             integration_id: integration_id.to_string(),
-            bridge: self
-                .bridge
-                .read()
-                .unwrap()
-                .as_ref()
-                .expect("bridge not set")
-                .clone(),
+            bridge,
+            store,
         };
         // MCP proxy tools are deferred — activated by keyword matching or direct call
         if tokio::runtime::Handle::try_current().is_ok() {

@@ -5,11 +5,13 @@ use tracing::{info, warn};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
-/// McpTool is a STRAP domain tool for calling connected MCP servers.
-/// Usage: mcp(server: "monument.sh", resource: "project", action: "list")
+/// McpTool enumerates connected MCP servers. It is the discovery verb for MCP —
+/// `mcp(action: "list")` — NOT a call path. Each MCP tool is exposed to the model as
+/// its own proxy tool (`mcp__<server>__<tool>`) carrying the server's real input
+/// schema, so the model calls it with correct arguments. Those proxies are the single
+/// canonical call pathway (see `call_mcp_tool` + `McpProxyTool` in registry.rs).
 pub struct McpTool {
     bridge: Arc<mcp::Bridge>,
-    store: Arc<db::Store>,
 }
 
 /// Check if a stored OAuth token is expired (with 60s buffer).
@@ -125,19 +127,110 @@ pub async fn refresh_mcp_token(
     Ok(result.access_token)
 }
 
-impl McpTool {
-    pub fn new(bridge: Arc<mcp::Bridge>, store: Arc<db::Store>) -> Self {
-        Self { bridge, store }
+/// Attempt proactive token refresh if an integration's OAuth token is expired.
+/// Returns true if a refresh happened. Shared by the per-tool MCP proxies.
+async fn maybe_refresh_token(store: &db::Store, bridge: &mcp::Bridge, integration_id: &str) -> bool {
+    let integration = match store.get_mcp_integration(integration_id) {
+        Ok(Some(i)) if i.auth_type == "oauth" => i,
+        _ => return false,
+    };
+
+    let cred = match store.get_mcp_credential_full(&integration.id, "oauth_token") {
+        Ok(Some(c)) => c,
+        _ => return false,
+    };
+
+    if !is_token_expired(cred.expires_at) || cred.refresh_token.is_none() {
+        return false;
     }
 
-    /// Build a dynamic description showing connected servers and their tools.
+    info!(integration = integration_id, "MCP token expired, attempting refresh");
+    match refresh_mcp_token(store, bridge.client(), integration_id).await {
+        Ok(_) => {
+            info!(integration = integration_id, "MCP token refreshed");
+            true
+        }
+        Err(e) => {
+            warn!(integration = integration_id, error = %e, "MCP token refresh failed");
+            false
+        }
+    }
+}
+
+/// Canonical MCP tool execution: proactive token refresh, call via the bridge, and a
+/// single 401-retry that refreshes the token before retrying. This is THE call pathway
+/// for MCP tools — invoked by the per-tool proxy tools (`McpProxyTool`). The input is
+/// forwarded verbatim to the underlying tool (no argument stripping), so a tool whose
+/// own schema requires `resource`/`action` receives them unchanged.
+pub async fn call_mcp_tool(
+    store: &db::Store,
+    bridge: &mcp::Bridge,
+    integration_id: &str,
+    tool_name: &str,
+    input: serde_json::Value,
+) -> ToolResult {
+    // Proactive refresh: if the token is expired, refresh before calling.
+    maybe_refresh_token(store, bridge, integration_id).await;
+
+    match bridge.call_tool(integration_id, tool_name, input.clone()).await {
+        Ok(result) => {
+            if result.is_error {
+                ToolResult::error(result.content)
+            } else {
+                ToolResult::ok(result.content)
+            }
+        }
+        Err(e) => {
+            let err_str = e.to_string();
+            // Retry once on 401 (token may have been revoked server-side before expiry).
+            if err_str.contains("401") || err_str.contains("Unauthorized") {
+                info!(integration = %integration_id, "MCP 401, attempting token refresh");
+                match refresh_mcp_token(store, bridge.client(), integration_id).await {
+                    Ok(_) => match bridge.call_tool(integration_id, tool_name, input).await {
+                        Ok(result) => {
+                            if result.is_error {
+                                ToolResult::error(result.content)
+                            } else {
+                                ToolResult::ok(result.content)
+                            }
+                        }
+                        Err(retry_err) => ToolResult::error(format!(
+                            "MCP call failed after token refresh: {}",
+                            retry_err
+                        )),
+                    },
+                    Err(refresh_err) => {
+                        let _ =
+                            store.set_mcp_connection_status(integration_id, "disconnected", 0);
+                        ToolResult::error(format!(
+                            "MCP authentication expired and refresh failed: {}. Reconnect the integration in settings.",
+                            refresh_err
+                        ))
+                    }
+                }
+            } else {
+                ToolResult::error(format!("MCP call failed: {}", e))
+            }
+        }
+    }
+}
+
+impl McpTool {
+    pub fn new(bridge: Arc<mcp::Bridge>) -> Self {
+        Self { bridge }
+    }
+
+    /// Build a dynamic description listing connected servers. This tool only
+    /// enumerates servers; each server's tools are called via their own proxy tools.
     fn build_description(&self) -> String {
         let mut desc = String::from(
-            "Call tools on connected MCP servers.\n\n\
-             Resources (server name) and Actions (tool name) depend on which servers are connected.\n\n",
+            "List connected MCP servers. Usage: mcp(action: \"list\").\n\n\
+             To CALL a tool on a server, use that tool's own proxy tool named \
+             `mcp__<server>__<tool>` (e.g. `mcp__neboloop__customer`). Discover the exact \
+             names and argument schemas with tool_search(query: \"<server or capability>\"), \
+             then call the proxy directly — its arguments match the server's real schema.\n\n",
         );
 
-        // List connected servers and their tools from the bridge
         let connected = self.bridge.connected_tools();
         if connected.is_empty() {
             desc.push_str(
@@ -149,59 +242,9 @@ impl McpTool {
                 let display = server.replace('_', ".");
                 desc.push_str(&format!("- {} → {}\n", display, tools.join(", ")));
             }
-            desc.push_str("\nExamples:\n");
-            if let Some((server, tools)) = connected.first() {
-                let display = server.replace('_', ".");
-                if let Some(tool) = tools.first() {
-                    desc.push_str(&format!(
-                        "  mcp(server: \"{}\", resource: \"{}\", action: \"list\")\n",
-                        display, tool
-                    ));
-                }
-            }
         }
 
         desc
-    }
-
-    /// Attempt proactive token refresh if expired, returning true if refresh happened.
-    async fn maybe_refresh_token(&self, integration_id: &str) -> bool {
-        // Check if this is an OAuth integration with expired token
-        let integration = match self.store.get_mcp_integration(integration_id) {
-            Ok(Some(i)) if i.auth_type == "oauth" => i,
-            _ => return false,
-        };
-
-        let cred = match self
-            .store
-            .get_mcp_credential_full(&integration.id, "oauth_token")
-        {
-            Ok(Some(c)) => c,
-            _ => return false,
-        };
-
-        if !is_token_expired(cred.expires_at) {
-            return false;
-        }
-
-        if cred.refresh_token.is_none() {
-            return false;
-        }
-
-        info!(
-            integration = integration_id,
-            "MCP token expired, attempting refresh"
-        );
-        match refresh_mcp_token(&self.store, self.bridge.client(), integration_id).await {
-            Ok(_) => {
-                info!(integration = integration_id, "MCP token refreshed");
-                true
-            }
-            Err(e) => {
-                warn!(integration = integration_id, error = %e, "MCP token refresh failed");
-                false
-            }
-        }
     }
 }
 
@@ -218,190 +261,51 @@ impl DynTool for McpTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "server": {
-                    "type": "string",
-                    "description": "MCP server name (e.g., \"monument.sh\")"
-                },
-                "resource": {
-                    "type": "string",
-                    "description": "Tool/resource name on the server (e.g., \"project\", \"todo\")"
-                },
                 "action": {
                     "type": "string",
-                    "description": "Action to perform (e.g., \"list\", \"create\", \"get\")"
+                    "enum": ["list"],
+                    "description": "Only \"list\" — enumerate connected MCP servers. To call a tool, use its `mcp__<server>__<tool>` proxy (find it with tool_search)."
                 }
             },
-            "required": ["server", "resource"],
-            "additionalProperties": true
+            "additionalProperties": false
         })
     }
 
     fn requires_approval(&self) -> bool {
-        true
+        // Enumeration only — read-only, no approval needed.
+        false
     }
 
     fn execute_dyn<'a>(
         &'a self,
         _ctx: &'a ToolContext,
-        input: serde_json::Value,
+        _input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            // `mcp(action: "list")` with no server — enumerate connected MCP servers (a
-            // uniform "list" verb across extension types). No server/resource needed.
-            let action_opt = input.get("action").and_then(|v| v.as_str());
-            let server_opt = input.get("server").and_then(|v| v.as_str()).unwrap_or("");
-            if action_opt == Some("list") && server_opt.is_empty() {
-                let connected = self.bridge.connected_tools();
-                if connected.is_empty() {
-                    return ToolResult::ok(
-                        "No MCP servers connected. Add servers in Connectors settings.",
-                    );
-                }
-                let lines: Vec<String> = connected
-                    .iter()
-                    .map(|(server, tools)| format!("- {} ({} tools)", server.replace('_', "."), tools.len()))
-                    .collect();
-                return ToolResult::ok(format!(
-                    "{} connected MCP server(s):\n{}",
-                    lines.len(),
-                    lines.join("\n")
-                ));
-            }
-
-            let server = match input.get("server").and_then(|v| v.as_str()) {
-                Some(s) => s,
-                None => {
-                    return ToolResult::error(crate::errors::missing_param(
-                        "mcp",
-                        "server",
-                        "mcp(server: \"slack\", resource: \"tools\", action: \"list\") — or mcp(action: \"list\") to list connected servers",
-                    ));
-                }
-            };
-            let resource = match input.get("resource").and_then(|v| v.as_str()) {
-                Some(r) => r,
-                None => {
-                    return ToolResult::error(
-                        "resource is required. Specify the tool name on the server.",
-                    );
-                }
-            };
-
-            // Slugify server name to match the bridge key
-            let server_slug = server
-                .to_lowercase()
-                .chars()
-                .map(|c| if c.is_alphanumeric() { c } else { '_' })
-                .collect::<String>();
-            let server_slug = server_slug.trim_matches('_');
-
-            // Find the integration by matching slug against connected tools
             let connected = self.bridge.connected_tools();
-            let (integration_id, _tools) = match connected
+            if connected.is_empty() {
+                return ToolResult::ok(
+                    "No MCP servers connected. Add servers in Connectors settings.",
+                );
+            }
+            let lines: Vec<String> = connected
                 .iter()
-                .find(|(s, _)| s == server_slug || s.contains(server_slug))
-            {
-                Some((_, tools)) => {
-                    // Find integration ID from bridge connections
-                    match self.bridge.find_integration_for_tool(server_slug, resource) {
-                        Some(id) => (id, tools),
-                        None => {
-                            return ToolResult::error(format!(
-                                "Server '{}' is connected but tool '{}' not found. Available tools: {}",
-                                server,
-                                resource,
-                                tools.join(", ")
-                            ));
-                        }
-                    }
-                }
-                None => {
-                    let available: Vec<String> =
-                        connected.iter().map(|(s, _)| s.replace('_', ".")).collect();
-                    return ToolResult::error(format!(
-                        "MCP server '{}' is not connected. Connected servers: {}",
+                .map(|(server, tools)| {
+                    format!(
+                        "- {} ({} tools): call via mcp__{}__<tool> (e.g. mcp__{}__{})",
+                        server.replace('_', "."),
+                        tools.len(),
                         server,
-                        if available.is_empty() {
-                            "none".to_string()
-                        } else {
-                            available.join(", ")
-                        }
-                    ));
-                }
-            };
-
-            // Build the input for the MCP call — strip ONLY the routing params: `server`
-            // and `resource` (we use `resource` as the MCP tool name for call_tool).
-            // KEEP `action` and every other field: for STRAP-style MCP servers (e.g.
-            // NeboLoop's customer/catalog/skill/plugin tools) `action` is a REQUIRED
-            // parameter of the underlying tool — stripping it made every such call fail
-            // with "action required" and sent the agent into a retry spiral.
-            let mut mcp_input = input.clone();
-            if let Some(obj) = mcp_input.as_object_mut() {
-                obj.remove("server");
-                obj.remove("resource");
-            }
-
-            // Proactive refresh: if token is expired, refresh before calling
-            self.maybe_refresh_token(&integration_id).await;
-
-            // Call the tool via bridge
-            match self
-                .bridge
-                .call_tool(&integration_id, resource, mcp_input.clone())
-                .await
-            {
-                Ok(result) => {
-                    if result.is_error {
-                        ToolResult::error(result.content)
-                    } else {
-                        ToolResult::ok(result.content)
-                    }
-                }
-                Err(e) => {
-                    let err_str = e.to_string();
-                    // Retry once on 401 (token may have been revoked server-side before expiry)
-                    if err_str.contains("401") || err_str.contains("Unauthorized") {
-                        info!(integration = %integration_id, "MCP 401, attempting token refresh");
-                        match refresh_mcp_token(&self.store, self.bridge.client(), &integration_id)
-                            .await
-                        {
-                            Ok(_) => {
-                                match self
-                                    .bridge
-                                    .call_tool(&integration_id, resource, mcp_input)
-                                    .await
-                                {
-                                    Ok(result) => {
-                                        if result.is_error {
-                                            ToolResult::error(result.content)
-                                        } else {
-                                            ToolResult::ok(result.content)
-                                        }
-                                    }
-                                    Err(retry_err) => ToolResult::error(format!(
-                                        "MCP call failed after token refresh: {}",
-                                        retry_err
-                                    )),
-                                }
-                            }
-                            Err(refresh_err) => {
-                                let _ = self.store.set_mcp_connection_status(
-                                    &integration_id,
-                                    "disconnected",
-                                    0,
-                                );
-                                ToolResult::error(format!(
-                                    "MCP authentication expired and refresh failed: {}. Reconnect the integration in settings.",
-                                    refresh_err
-                                ))
-                            }
-                        }
-                    } else {
-                        ToolResult::error(format!("MCP call failed: {}", e))
-                    }
-                }
-            }
+                        server,
+                        tools.first().map(|t| t.as_str()).unwrap_or("<tool>")
+                    )
+                })
+                .collect();
+            ToolResult::ok(format!(
+                "{} connected MCP server(s). Discover a tool's schema with tool_search, then call its mcp__<server>__<tool> proxy:\n{}",
+                connected.len(),
+                lines.join("\n")
+            ))
         })
     }
 }

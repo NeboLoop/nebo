@@ -631,7 +631,7 @@ mod tests {
         let input = serde_json::json!({"action": "launch"});
         let result = tool.execute_dyn(&ctx, input).await;
         assert!(result.is_error);
-        assert!(result.content.contains("'app' parameter required"));
+        assert!(result.content.contains("Missing required parameter 'app'"));
     }
 
     #[tokio::test]
@@ -641,7 +641,7 @@ mod tests {
         let input = serde_json::json!({"action": "quit"});
         let result = tool.execute_dyn(&ctx, input).await;
         assert!(result.is_error);
-        assert!(result.content.contains("'app' parameter required"));
+        assert!(result.content.contains("Missing required parameter 'app'"));
     }
 
     #[tokio::test]
@@ -651,7 +651,7 @@ mod tests {
         let input = serde_json::json!({"action": "activate"});
         let result = tool.execute_dyn(&ctx, input).await;
         assert!(result.is_error);
-        assert!(result.content.contains("'app' parameter required"));
+        assert!(result.content.contains("Missing required parameter 'app'"));
     }
 
     #[tokio::test]
@@ -661,7 +661,7 @@ mod tests {
         let input = serde_json::json!({"action": "hide"});
         let result = tool.execute_dyn(&ctx, input).await;
         assert!(result.is_error);
-        assert!(result.content.contains("'app' parameter required"));
+        assert!(result.content.contains("Missing required parameter 'app'"));
     }
 
     #[tokio::test]
@@ -671,7 +671,7 @@ mod tests {
         let input = serde_json::json!({"action": "info"});
         let result = tool.execute_dyn(&ctx, input).await;
         assert!(result.is_error);
-        assert!(result.content.contains("'app' parameter required"));
+        assert!(result.content.contains("Missing required parameter 'app'"));
     }
 
     #[cfg(target_os = "macos")]

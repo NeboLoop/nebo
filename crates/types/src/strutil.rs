@@ -54,8 +54,8 @@ mod tests {
 
     #[test]
     fn safe_truncate_mutates_in_place() {
-        let mut s = String::from("héllo world"); // é is 2 bytes
-        safe_truncate(&mut s, 3); // would fall inside é → back off to 1
-        assert_eq!(s, "h");
+        let mut s = String::from("héllo world"); // é is 2 bytes (indices 1–2)
+        safe_truncate(&mut s, 3); // byte 3 is a char boundary (start of 'l') → keep "hé"
+        assert_eq!(s, "hé");
     }
 }

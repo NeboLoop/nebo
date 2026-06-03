@@ -484,6 +484,6 @@ mod tests {
         let input = serde_json::json!({"action": "search"});
         let result = tool.execute_dyn(&ctx, input).await;
         assert!(result.is_error);
-        assert!(result.content.contains("query is required"));
+        assert!(result.content.contains("Missing required parameter 'query'"));
     }
 }

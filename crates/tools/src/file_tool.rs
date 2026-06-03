@@ -791,9 +791,12 @@ mod tests {
         );
     }
 
-    // ── File read dedup (same offset/limit, unchanged file) ─────────
+    // ── Repeat reads always return content (no suppression) ─────────
+    // A read MUST always return the file's content. We deliberately removed the old
+    // path-keyed "contents unchanged" cache — it was unverifiable across compaction and
+    // gaslit the model into a retry spiral (the #research read-loop incident).
     #[test]
-    fn file_read_dedup() {
+    fn file_read_repeat_returns_content() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hello.txt");
         fs::write(&path, "line one\nline two\n").unwrap();
@@ -805,18 +808,19 @@ mod tests {
         assert!(!r1.is_error);
         assert!(r1.content.contains("line one"));
 
+        // A second identical read returns the content again — never a placeholder.
         let r2 = tool.execute(&ctx(), input);
         assert!(!r2.is_error);
         assert!(
-            r2.content.contains("unchanged"),
-            "expected dedup cache hit: {}",
+            r2.content.contains("line one"),
+            "repeat read must return content, not a cache placeholder: {}",
             r2.content
         );
     }
 
-    // ── File read dedup invalidation on modification ────────────────
+    // ── Reads always reflect the current file contents ──────────────
     #[test]
-    fn file_read_dedup_invalidation() {
+    fn file_read_reflects_modification() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mut.txt");
         fs::write(&path, "version 1\n").unwrap();

@@ -1629,13 +1629,17 @@ Windows specific instructions.
         skill_name: &str,
         skill_md: &str,
     ) {
-        let skill_dir = plugins_dir
-            .join(slug)
-            .join(version)
-            .join("skills")
-            .join(skill_name);
+        let version_dir = plugins_dir.join(slug).join(version);
+        let skill_dir = version_dir.join("skills").join(skill_name);
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), skill_md).unwrap();
+        // Write a minimal plugin manifest so PluginStore::is_ready(slug) returns true.
+        // The loader only loads skills for active/ready plugins (the is_plugin_active
+        // gate), so without a manifest the embedded skill would be skipped.
+        let manifest = format!(
+            r#"{{"id":"{slug}-id","slug":"{slug}","name":"{slug}","version":"{version}","platforms":{{}}}}"#
+        );
+        std::fs::write(version_dir.join("plugin.json"), manifest).unwrap();
     }
 
     #[tokio::test]
