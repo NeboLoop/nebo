@@ -432,6 +432,22 @@ impl Generator for PendingTaskAction {
     }
 }
 
+// --- Interactive-mode suppressor tuning (relaxed safety net) ---
+//
+// In Interactive mode the agent is allowed a brief preamble + milestone updates
+// (see prompt.rs comm_style). The suppressors must tolerate that but still catch
+// genuine over-narration. Autonomous mode keeps the original aggressive limits.
+
+/// Iterations at the start of an interactive turn where narration is never
+/// suppressed (tolerates the opening preamble + a first milestone).
+const INTERACTIVE_PREAMBLE_GRACE_ITERS: usize = 2;
+/// Past the grace window, suppress only when this many of the last 6 assistant
+/// turns narrate (sustained chatter, not the occasional milestone).
+const INTERACTIVE_NARRATION_THRESHOLD: usize = 3;
+/// Interactive output-length trigger. A ≤100-word final ≈ 600 chars, so this
+/// only fires on genuine overrun rather than a normal milestone update.
+const INTERACTIVE_OUTPUT_CHAR_LIMIT: usize = 600;
+
 // 5. Output Discipline — proactive reinforcement for non-Claude models.
 // Modeled after Hermes TOOL_USE_ENFORCEMENT_GUIDANCE which uses forceful
 // language ("MUST", "immediately", "not acceptable") targeted at GPT/Codex.
@@ -453,15 +469,30 @@ impl Generator for OutputDiscipline {
             .map(|m| m.content.len())
             .unwrap_or(0);
 
-        if last_len > 300 {
+        let interactive = ctx.execution_mode == tools::ExecutionMode::Interactive;
+        let limit = if interactive {
+            INTERACTIVE_OUTPUT_CHAR_LIMIT
+        } else {
+            300
+        };
+
+        if last_len > limit {
+            let content = if interactive {
+                // Interactive: shape, don't silence — preambles/milestones are allowed.
+                "Your last response ran long. Keep text alongside tool calls to a few \
+                 words, keep results to 1-3 sentences, and don't repeat what you already said."
+                    .to_string()
+            } else {
+                "Your last response was too long. Corrections:\n\
+                 1. Tool calls: output ZERO text alongside them.\n\
+                 2. Results: 1-3 sentences maximum.\n\
+                 3. Never repeat information you already said.\n\
+                 4. Never announce errors or limitations — handle them silently or try a different approach."
+                    .to_string()
+            };
             vec![SteeringDirective {
                 label: "Output Discipline".to_string(),
-                content: "Your last response was too long. Corrections:\n\
-                         1. Tool calls: output ZERO text alongside them.\n\
-                         2. Results: 1-3 sentences maximum.\n\
-                         3. Never repeat information you already said.\n\
-                         4. Never announce errors or limitations — handle them silently or try a different approach."
-                    .to_string(),
+                content,
                 priority: 9,
             }]
         } else {
@@ -481,6 +512,13 @@ impl Generator for NarrationSuppressor {
             return vec![];
         }
 
+        let interactive = ctx.execution_mode == tools::ExecutionMode::Interactive;
+
+        // Interactive mode tolerates the opening preamble + a first milestone.
+        if interactive && ctx.iteration <= INTERACTIVE_PREAMBLE_GRACE_ITERS {
+            return vec![];
+        }
+
         // Count recent assistant messages that have BOTH text (>50 chars) AND tool calls
         let mut narrating_turns = 0usize;
         for msg in ctx.messages.iter().rev().take(6) {
@@ -496,12 +534,26 @@ impl Generator for NarrationSuppressor {
             }
         }
 
-        // Fire on first narrating turn (was 2 — too late for GPT)
-        if narrating_turns >= 1 {
+        // Autonomous: fire on the first narrating turn (was 2 — too late for GPT).
+        // Interactive: only fire on sustained chatter, past the grace window.
+        let threshold = if interactive {
+            INTERACTIVE_NARRATION_THRESHOLD
+        } else {
+            1
+        };
+        if narrating_turns >= threshold {
+            let content = if interactive {
+                "You're narrating too much. Brief preambles and milestone updates are fine, \
+                 but most tool calls need no surrounding text — cut the running commentary."
+                    .to_string()
+            } else {
+                "STOP narrating your tool calls. Output ONLY the tool call — \
+                 ZERO text before, between, or after. The user sees your tool calls directly."
+                    .to_string()
+            };
             return vec![SteeringDirective {
                 label: "Narration".to_string(),
-                content: "STOP narrating your tool calls. Output ONLY the tool call — \
-                         ZERO text before, between, or after. The user sees your tool calls directly.".to_string(),
+                content,
                 priority: 8,
             }];
         }
@@ -1079,7 +1131,9 @@ mod tests {
             proactive_items: vec![],
             provider_id: "openai".to_string(),
             recent_tool_names: vec![],
-            execution_mode: tools::ExecutionMode::Interactive,
+            // Default to Autonomous: the failure-mode tests (fm2/fm3) exercise the
+            // aggressive non-Claude suppression. Interactive-mode tests opt in explicitly.
+            execution_mode: tools::ExecutionMode::Autonomous,
         }
     }
 
@@ -1366,6 +1420,86 @@ mod tests {
         assert!(
             !dirs.iter().any(|d| d.label == "Output Discipline"),
             "OutputDiscipline should be skipped for Claude"
+        );
+    }
+
+    #[test]
+    fn test_interactive_narration_grace_then_sustained() {
+        let narration =
+            "Let me check your calendar and find the conflict before I move anything around.";
+        let tool_call = r#"[{"name":"event","input":{"action":"list"}}]"#;
+        let generator = NarrationSuppressor;
+
+        // Grace window (iteration <= 2): the opening preamble is tolerated.
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "move my 2pm"),
+            make_assistant_with_tools(narration, tool_call),
+        ]);
+        ctx.execution_mode = tools::ExecutionMode::Interactive;
+        ctx.iteration = 2;
+        assert!(
+            generator.generate(&ctx).is_empty(),
+            "preamble tolerated during grace window"
+        );
+
+        // Past grace, a single narrating turn is still tolerated (threshold is 3).
+        ctx.iteration = 4;
+        assert!(
+            generator.generate(&ctx).is_empty(),
+            "occasional milestone tolerated past grace"
+        );
+
+        // Past grace, sustained narration (>=3 of last 6) fires with softened text.
+        let mut msgs = vec![make_msg("user", "do it")];
+        for _ in 0..3 {
+            msgs.push(make_assistant_with_tools(narration, tool_call));
+        }
+        let mut ctx2 = make_ctx(msgs);
+        ctx2.execution_mode = tools::ExecutionMode::Interactive;
+        ctx2.iteration = 4;
+        let dirs = generator.generate(&ctx2);
+        assert_eq!(dirs.len(), 1, "sustained narration fires in interactive mode");
+        assert!(dirs[0].content.contains("milestone updates are fine"));
+    }
+
+    #[test]
+    fn test_autonomous_narration_unchanged() {
+        // Regression: autonomous still fires on the first narrating turn.
+        let narration =
+            "Let me search for flights from Denver to Tokyo and compare a few airlines for you.";
+        let tool_call = r#"[{"name":"web","input":{"action":"search","query":"flights"}}]"#;
+        let generator = NarrationSuppressor;
+        let mut ctx = make_ctx(vec![
+            make_msg("user", "find flights"),
+            make_assistant_with_tools(narration, tool_call),
+        ]);
+        ctx.execution_mode = tools::ExecutionMode::Autonomous;
+        ctx.iteration = 2;
+        let dirs = generator.generate(&ctx);
+        assert_eq!(dirs.len(), 1);
+        assert!(dirs[0].content.contains("STOP narrating"));
+    }
+
+    #[test]
+    fn test_interactive_output_discipline_tolerates_milestone() {
+        // ~380-char response: fires in Autonomous (>300) but tolerated in Interactive (<600).
+        let mid = "I'd be happy to help you with that! Let me explain in detail what I'm going to do. First, I'll search the web for the latest information. Then I'll compile all the results into a comprehensive summary. After that, I'll format everything nicely for you. This process might take a moment, so please bear with me while I work through each step carefully and thoroughly.";
+        assert!(mid.len() > 300 && mid.len() < 600, "fixture must sit between the two limits");
+        let generator = OutputDiscipline;
+        let mut ctx = make_ctx(vec![make_msg("user", "weather?"), make_msg("assistant", mid)]);
+        ctx.iteration = 2;
+
+        ctx.execution_mode = tools::ExecutionMode::Interactive;
+        assert!(
+            generator.generate(&ctx).is_empty(),
+            "mid-length output tolerated in interactive mode"
+        );
+
+        ctx.execution_mode = tools::ExecutionMode::Autonomous;
+        assert_eq!(
+            generator.generate(&ctx).len(),
+            1,
+            "same output fires in autonomous mode (>300)"
         );
     }
 
