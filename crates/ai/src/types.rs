@@ -487,6 +487,10 @@ pub fn is_transient_error(err: &ProviderError) -> bool {
             "tls handshake",
             "timeout",
             "no such host",
+            // Upstream LLM hiccups that clear on retry — e.g. dashscope/Janus
+            // returning a completion with no text and no tool calls.
+            "empty response",
+            "empty completion",
         ];
         keywords.iter().any(|kw| lower.contains(kw))
     } else {
@@ -600,5 +604,25 @@ impl Provider for ProfiledProvider {
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         self.inner.stream(req).await
+    }
+}
+
+#[cfg(test)]
+mod transient_tests {
+    use super::*;
+
+    #[test]
+    fn empty_response_is_transient_and_retried() {
+        // Upstream "empty response" (e.g. dashscope via Janus) must self-recover.
+        let err = ProviderError::Stream(
+            "Provider dashscope returned empty response (finish_reason=)".to_string(),
+        );
+        assert!(is_transient_error(&err), "empty response should be transient");
+    }
+
+    #[test]
+    fn unrelated_stream_error_not_transient() {
+        let err = ProviderError::Stream("invalid request: bad tool schema".to_string());
+        assert!(!is_transient_error(&err));
     }
 }
