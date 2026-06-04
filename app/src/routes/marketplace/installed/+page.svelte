@@ -4,6 +4,7 @@
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import ArtifactIcon from '$lib/components/marketplace/ArtifactIcon.svelte';
+	import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
 	import { Trash2, RefreshCw, PackageCheck, ExternalLink } from 'lucide-svelte';
 	import webapi from '$lib/api/gocliRequest';
 	import * as api from '$lib/api/nebo';
@@ -13,6 +14,9 @@
 	let error = $state('');
 	let installed = $state<AppItem[]>([]);
 	let uninstallingId = $state<string | null>(null);
+	let pendingUninstall = $state<AppItem | null>(null);
+
+	const isAgent = (i: AppItem | null) => i?.type === 'agent' || i?.type === 'workflow';
 
 	let installedAgents = $derived(installed.filter(i => i.type === 'agent' || i.type === 'workflow'));
 	let installedSkills = $derived(installed.filter(i => i.type === 'skill'));
@@ -46,12 +50,20 @@
 		}
 	}
 
-	async function uninstall(item: AppItem) {
-		if (!confirm($t('marketplace.installedPage.uninstallConfirm', { values: { name: item.name } }))) return;
+	// Open the confirm modal — agents carry a memory-loss warning since their
+	// private memories are deleted with them.
+	function uninstall(item: AppItem) {
+		pendingUninstall = item;
+	}
+
+	async function confirmUninstall() {
+		const item = pendingUninstall;
+		if (!item) return;
 		uninstallingId = item.id;
 		try {
 			await api.removePlugin(item.id);
 			installed = installed.filter(i => i.id !== item.id);
+			pendingUninstall = null;
 		} catch (err: any) {
 			error = err?.message || 'Failed to uninstall';
 		} finally {
@@ -195,3 +207,16 @@
 		{/if}
 	{/if}
 </div>
+
+{#if pendingUninstall}
+	<ConfirmModal
+		title="Uninstall {pendingUninstall.name}?"
+		message={isAgent(pendingUninstall)
+			? `This removes ${pendingUninstall.name} and permanently deletes everything it has learned — all of its memories go with it. This can't be undone.`
+			: `This removes ${pendingUninstall.name} from your companion. This can't be undone.`}
+		confirmLabel="Uninstall"
+		busy={uninstallingId === pendingUninstall.id}
+		onCancel={() => (pendingUninstall = null)}
+		onConfirm={confirmUninstall}
+	/>
+{/if}
