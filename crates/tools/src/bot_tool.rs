@@ -1459,6 +1459,17 @@ impl AgentTool {
         };
         let run_id = format!("research-{}", uuid::Uuid::new_v4().as_simple());
 
+        // Pre-compute the run's report path + a unique, readable Work-panel filename
+        // (the harness writes a generic report.md per run-dir, which would collide in files/).
+        let report_src = data_dir.join("research").join(&run_id).join("report.md");
+        let files_dir = data_dir.join("files");
+        let short = run_id.rsplit('-').next().unwrap_or(&run_id);
+        let work_name = format!(
+            "{}-{}.md",
+            research_slug(query),
+            &short[..short.len().min(8)]
+        );
+
         match crate::deep_research::run(
             agent,
             data_dir,
@@ -1470,10 +1481,39 @@ impl AgentTool {
         )
         .await
         {
-            Ok(report) => ToolResult::ok(crate::deep_research::format_report(&report)),
+            Ok(report) => {
+                let mut result = ToolResult::ok(crate::deep_research::format_report(&report));
+                // Surface the report in the Work panel under its unique name.
+                if report_src.exists() {
+                    let _ = std::fs::create_dir_all(&files_dir);
+                    let dest = files_dir.join(&work_name);
+                    if std::fs::copy(&report_src, &dest).is_ok() {
+                        result = result.with_image_url(dest.to_string_lossy().to_string());
+                    }
+                }
+                result
+            }
             Err(e) => ToolResult::error(format!("Deep research failed: {}", e)),
         }
     }
+}
+
+/// Slugify a research question into a readable filename stem (lowercase, alnum + single
+/// dashes, capped). Falls back to "research" if the question has no usable characters.
+fn research_slug(question: &str) -> String {
+    let mut out = String::new();
+    for c in question.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+        if out.len() >= 40 {
+            break;
+        }
+    }
+    let slug = out.trim_matches('-').to_string();
+    if slug.is_empty() { "research".to_string() } else { slug }
 }
 
 impl DynTool for AgentTool {

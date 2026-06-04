@@ -127,6 +127,28 @@
   const artifactIcons = { document: FileText, code: Code, table: Table, slides: Presentation };
   const activeArtifact = $derived(artifacts.find(a => a.id === activeArtifactId));
 
+  // Turn an inline `filename` mention (rendered as <code>filename</code>) into a clickable
+  // chip when that filename is one of the message's produced Work items.
+  function linkWorkMentions(html: string, items?: { id: string; title: string }[]): string {
+    if (!items?.length) return html;
+    let out = html;
+    for (const it of items) {
+      const code = `<code>${it.title}</code>`;
+      if (!out.includes(code)) continue;
+      const chip = `<button type="button" data-work-id="${it.id.replace(/"/g, '&quot;')}" class="inline-flex items-center px-1.5 py-0.5 rounded-md bg-base-200 border border-base-content/10 hover:border-primary/40 hover:bg-primary/5 cursor-pointer text-xs font-mono no-underline text-base-content align-baseline">${it.title}</button>`;
+      out = out.split(code).join(chip);
+    }
+    return out;
+  }
+
+  function handleWorkMentionClick(e: MouseEvent) {
+    const el = (e.target as HTMLElement)?.closest?.('[data-work-id]');
+    if (el) {
+      e.preventDefault();
+      openArtifact(el.getAttribute('data-work-id') || '');
+    }
+  }
+
   async function openArtifact(id: string) {
     activeArtifactId = id;
     creationsOpen = true;
@@ -734,11 +756,12 @@
               <span class="text-xs font-medium">{msg.delegateAgentName}</span>
             </div>
           {/if}
-          <div class="text-sm leading-relaxed prose prose-sm max-w-none">
+          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+          <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
             {#if msg.html}
-              {@html renderMentionChips(msg.html)}
+              {@html linkWorkMentions(renderMentionChips(msg.html), (msg as any).workItems)}
             {:else}
-              {@html renderMarkdown(msg.content)}
+              {@html linkWorkMentions(renderMarkdown(msg.content), (msg as any).workItems)}
             {/if}
           </div>
           {#if msg.attachments?.length}
