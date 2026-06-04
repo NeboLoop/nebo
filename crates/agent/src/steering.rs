@@ -131,6 +131,9 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(OutputDiscipline),
         Box::new(NarrationSuppressor),
         Box::new(RepetitionDetector),
+        Box::new(ToolResultGrounding),
+        Box::new(AskToolNudge),
+        Box::new(ResearchDelegationNudge),
     ]
 }
 
@@ -300,14 +303,11 @@ impl Pipeline {
             Box::new(PendingTaskAction),
             Box::new(LoopDetector),
             Box::new(ErrorRecovery),
-            Box::new(ToolResultGrounding),
             Box::new(PresenceAwareness),
             Box::new(ContextPressure),
             Box::new(JanusQuotaWarning),
             Box::new(TaskTrackingNudge),
             Box::new(TaskCompletionNudge),
-            Box::new(AskToolNudge),
-            Box::new(ResearchDelegationNudge),
         ];
 
         Self { generators }
@@ -329,20 +329,12 @@ impl Pipeline {
             }
         }
 
-        // Provider-specific skip rules
-        // NOTE: Janus is a gateway that proxies to any upstream (GPT, Claude, Gemini).
-        // Only skip for direct Anthropic connections where we know it's Claude.
-        let is_claude = ctx.provider_id == "anthropic";
+        // Provider-specific skip rules. JanusQuotaWarning is Janus-only; skip for Ollama.
+        // (The narration/output/repetition/ask suppressors that were Claude-skipped moved to
+        // message-stream reminders, each carrying its own Claude-skip via ReminderContext.)
         let is_ollama = ctx.provider_id == "ollama";
 
         for g in &self.generators {
-            // Skip ask_tool_nudge for direct Claude — Claude follows the system prompt well.
-            // (narration/output/repetition moved to message-stream reminders with their own
-            // Claude-skip; ask_tool_nudge migrates in a later round.)
-            if is_claude && g.name() == "ask_tool_nudge" {
-                continue;
-            }
-            // Skip JanusQuotaWarning for Ollama
             if is_ollama && g.name() == "janus_quota_warning" {
                 continue;
             }
@@ -1040,13 +1032,19 @@ impl Generator for ErrorRecovery {
 
 // 14b. Tool Result Grounding — prevent hallucinating tool failures when tools succeed
 struct ToolResultGrounding;
-impl Generator for ToolResultGrounding {
-    fn name(&self) -> &str {
+impl Reminder for ToolResultGrounding {
+    fn name(&self) -> &'static str {
         "tool_result_grounding"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+    fn priority(&self) -> u8 {
+        9
+    }
+    fn min_turns_between(&self) -> usize {
+        2
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
         if !ctx.recent_tool_names.iter().any(|n| n == "web") {
-            return vec![];
+            return None;
         }
 
         // Scan last 10 messages for web tool results that succeeded with content
@@ -1076,21 +1074,16 @@ impl Generator for ToolResultGrounding {
             }
         }
 
-        if web_success_chars > 1000 {
-            vec![SteeringDirective {
-                label: "Tool Result Grounding".to_string(),
-                content: format!(
-                    "IMPORTANT: Web tools returned {} chars of content in recent calls. \
-                     Do NOT claim tools are broken, empty, or returning 0 lines — \
-                     read your actual tool results and use the data you received. \
-                     If a page is a 404, navigate elsewhere — do not declare all tools broken.",
-                    web_success_chars
-                ),
-                priority: 9,
-            }]
-        } else {
-            vec![]
+        if web_success_chars <= 1000 {
+            return None;
         }
+        Some(format!(
+            "IMPORTANT: Web tools returned {} chars of content in recent calls. \
+             Do NOT claim tools are broken, empty, or returning 0 lines — \
+             read your actual tool results and use the data you received. \
+             If a page is a 404, navigate elsewhere — do not declare all tools broken.",
+            web_success_chars
+        ))
     }
 }
 
@@ -1198,26 +1191,31 @@ impl Generator for TaskCompletionNudge {
 
 // 17. Ask Tool Nudge — steer the LLM to use the interactive ask widget instead of plain-text questions
 struct AskToolNudge;
-impl Generator for AskToolNudge {
-    fn name(&self) -> &str {
+impl Reminder for AskToolNudge {
+    fn name(&self) -> &'static str {
         "ask_tool_nudge"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        // Find the last assistant message
-        let last_assistant = ctx
+    fn priority(&self) -> u8 {
+        7
+    }
+    fn min_turns_between(&self) -> usize {
+        2
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        if ctx.is_claude() {
+            return None;
+        }
+        // Find the last non-empty assistant message
+        let msg = ctx
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == "assistant" && !m.content.is_empty());
-        let msg = match last_assistant {
-            Some(m) => m,
-            None => return vec![],
-        };
+            .find(|m| m.role == "assistant" && !m.content.is_empty())?;
 
         // Skip if this turn already had an ask tool call
         if let Some(ref tc) = msg.tool_calls {
             if tc.contains("\"ask\"") {
-                return vec![];
+                return None;
             }
         }
 
@@ -1239,19 +1237,16 @@ impl Generator for AskToolNudge {
         .any(|p| lower.contains(p));
 
         if !has_question_mark && !has_choice_phrase {
-            return vec![];
+            return None;
         }
-
-        vec![SteeringDirective {
-            label: "Ask Tool".to_string(),
-            content: "When you need user input, ALWAYS use the ask tool instead of asking in plain text.\n\
-                     - Yes/no: agent(resource: \"ask\", action: \"confirm\", text: \"...\")\n\
-                     - Choices: agent(resource: \"ask\", action: \"select\", text: \"...\", options: [\"A\", \"B\", \"C\"])\n\
-                     - Open-ended: agent(resource: \"ask\", action: \"prompt\", text: \"...\")\n\
-                     Never ask questions as plain text �� use the ask tool so the user gets interactive buttons."
+        Some(
+            "When you need user input, ALWAYS use the ask tool instead of asking in plain text.\n\
+             - Yes/no: agent(resource: \"ask\", action: \"confirm\", text: \"...\")\n\
+             - Choices: agent(resource: \"ask\", action: \"select\", text: \"...\", options: [\"A\", \"B\", \"C\"])\n\
+             - Open-ended: agent(resource: \"ask\", action: \"prompt\", text: \"...\")\n\
+             Never ask questions as plain text — use the ask tool so the user gets interactive buttons."
                 .to_string(),
-            priority: 7,
-        }]
+        )
     }
 }
 
@@ -1267,14 +1262,20 @@ impl Generator for AskToolNudge {
 ///
 /// Triggers when 3+ of the recent (≤8) tool calls were discovery-flavored.
 struct ResearchDelegationNudge;
-impl Generator for ResearchDelegationNudge {
-    fn name(&self) -> &str {
+impl Reminder for ResearchDelegationNudge {
+    fn name(&self) -> &'static str {
         "research_delegation_nudge"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+    fn priority(&self) -> u8 {
+        8
+    }
+    fn min_turns_between(&self) -> usize {
+        3
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
         let recent = &ctx.recent_tool_names;
         if recent.len() < 3 {
-            return vec![];
+            return None;
         }
         let window: Vec<&String> = recent.iter().rev().take(8).collect();
         let mut discovery_count = 0usize;
@@ -1293,19 +1294,16 @@ impl Generator for ResearchDelegationNudge {
             discovery_count += plugin_count.saturating_sub(1);
         }
         if discovery_count < 3 {
-            return vec![];
+            return None;
         }
-
-        vec![SteeringDirective {
-            label: "Delegate Research".to_string(),
-            content: "You've made several discovery / how-to tool calls in this turn. \
-                      STOP exploring inline — it pollutes the main context. \
-                      Spawn a sub-agent to do the research and report back: \
-                      agent(resource: \"task\", action: \"spawn\", prompt: \"Figure out exactly how to <specific question>. Return the exact command / syntax / path as a single answer.\"). \
-                      The sub-agent uses its own context for the exploration; you get one consolidated answer to act on."
+        Some(
+            "You've made several discovery / how-to tool calls in this turn. \
+             STOP exploring inline — it pollutes the main context. \
+             Spawn a sub-agent to do the research and report back: \
+             agent(resource: \"task\", action: \"spawn\", prompt: \"Figure out exactly how to <specific question>. Return the exact command / syntax / path as a single answer.\"). \
+             The sub-agent uses its own context for the exploration; you get one consolidated answer to act on."
                 .to_string(),
-            priority: 8,
-        }]
+        )
     }
 }
 
@@ -1460,27 +1458,21 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_skips_ask_tool_nudge_for_claude() {
-        let pipeline = Pipeline::new();
-        let mut ctx = make_ctx(vec![
-            make_msg("user", "help me pick a color"),
-            make_msg("assistant", "Which color do you prefer? Red or blue?"),
-        ]);
-        ctx.iteration = 2;
-
-        // OpenAI should get AskToolNudge
-        ctx.provider_id = "openai".to_string();
-        let (dirs_openai, _) = pipeline.generate(&ctx);
-        let has_ask_nudge_openai = dirs_openai.iter().any(|d| d.label == "Ask Tool");
-
-        // Claude should NOT get AskToolNudge
-        ctx.provider_id = "anthropic".to_string();
-        let (dirs_claude, _) = pipeline.generate(&ctx);
-        let has_ask_nudge_claude = dirs_claude.iter().any(|d| d.label == "Ask Tool");
-
-        // AskToolNudge fires for openai but not claude
-        assert!(has_ask_nudge_openai, "OpenAI should get ask_tool_nudge");
-        assert!(!has_ask_nudge_claude, "Claude should skip ask_tool_nudge");
+    fn test_ask_tool_nudge_skips_when_ask_tool_used() {
+        // Assistant already asked via the ask tool → no nudge.
+        let asked = ChatMessage {
+            tool_calls: Some(
+                r#"[{"name":"agent","input":{"resource":"ask","action":"select"}}]"#.to_string(),
+            ),
+            ..make_msg("assistant", "Which do you prefer?")
+        };
+        let msgs = vec![make_msg("user", "pick"), asked];
+        assert!(
+            AskToolNudge
+                .check(&rctx_prov(&msgs, tools::ExecutionMode::Interactive, "openai", 2))
+                .is_none(),
+            "no nudge when the ask tool was already used"
+        );
     }
 
     #[test]
@@ -1576,33 +1568,76 @@ mod tests {
     }
 
     #[test]
-    fn test_fm1_plain_text_question() {
-        // Assistant asks a question on its own line ending with ? → AskToolNudge fires (OpenAI), skipped (Claude)
-        let pipeline = Pipeline::new();
-        let mut ctx = make_ctx(vec![
+    fn test_ask_tool_nudge_question_and_claude_skip() {
+        // Assistant asks a plain-text question → fires (non-Claude), skipped (direct Claude).
+        let msgs = vec![
             make_msg("user", "Help me redecorate my living room"),
-            make_msg(
-                "assistant",
-                "I can suggest a few options.\nWhich do you prefer?",
-            ),
-        ]);
-        ctx.iteration = 2;
-
-        // OpenAI: should fire
-        ctx.provider_id = "openai".to_string();
-        let (dirs, _) = pipeline.generate(&ctx);
+            make_msg("assistant", "I can suggest a few options.\nWhich do you prefer?"),
+        ];
         assert!(
-            dirs.iter().any(|d| d.label == "Ask Tool"),
-            "AskToolNudge should fire for OpenAI when assistant asks plain-text question"
+            AskToolNudge
+                .check(&rctx_prov(&msgs, tools::ExecutionMode::Interactive, "openai", 2))
+                .is_some(),
+            "fires for non-Claude on a plain-text question"
         );
-
-        // Claude: should be skipped
-        ctx.provider_id = "anthropic".to_string();
-        let (dirs, _) = pipeline.generate(&ctx);
         assert!(
-            !dirs.iter().any(|d| d.label == "Ask Tool"),
-            "AskToolNudge should be skipped for Claude"
+            AskToolNudge
+                .check(&rctx_prov(&msgs, tools::ExecutionMode::Interactive, "anthropic", 2))
+                .is_none(),
+            "skipped for direct Claude"
         );
+    }
+
+    /// Build a ReminderContext with explicit messages + recent_tool_names.
+    fn rctx_tools<'a>(
+        messages: &'a [ChatMessage],
+        recent_tool_names: &'a [String],
+        iteration: usize,
+    ) -> ReminderContext<'a> {
+        ReminderContext {
+            iteration,
+            execution_mode: tools::ExecutionMode::Interactive,
+            messages,
+            recent_tool_names,
+            provider_id: "openai",
+        }
+    }
+
+    #[test]
+    fn test_tool_result_grounding_fires_on_web_success() {
+        let big = "x".repeat(1500);
+        let tr = serde_json::json!([{ "content": big, "is_error": false }]).to_string();
+        let tool_msg = ChatMessage {
+            tool_results: Some(tr),
+            ..make_msg("tool", "")
+        };
+        let msgs = vec![make_msg("user", "look it up"), tool_msg];
+        let web = vec!["web".to_string()];
+        let out = ToolResultGrounding
+            .check(&rctx_tools(&msgs, &web, 3))
+            .expect("fires on substantial web result");
+        assert!(out.contains("Do NOT claim tools are broken"));
+        // No web tool in the recent set → no fire.
+        assert!(ToolResultGrounding.check(&rctx_tools(&msgs, &[], 3)).is_none());
+    }
+
+    #[test]
+    fn test_research_delegation_nudge_on_discovery_loop() {
+        let names = vec![
+            "tool_search".to_string(),
+            "skill".to_string(),
+            "tool_search".to_string(),
+        ];
+        assert!(
+            ResearchDelegationNudge
+                .check(&rctx_tools(&[], &names, 3))
+                .unwrap()
+                .contains("Spawn a sub-agent"),
+            "fires after 3 discovery calls"
+        );
+        // Only one discovery call → no fire.
+        let few = vec!["tool_search".to_string(), "web".to_string(), "os".to_string()];
+        assert!(ResearchDelegationNudge.check(&rctx_tools(&[], &few, 3)).is_none());
     }
 
     #[test]
