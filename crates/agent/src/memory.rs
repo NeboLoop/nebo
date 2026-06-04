@@ -269,7 +269,12 @@ pub fn store_facts(
             Some(&metadata),
             user_id,
         ) {
-            debug!(
+            // Promote from debug — this is the silent killer. upsert_memory
+            // self-verifies the row survived the FTS trigger and returns Err if
+            // it rolled back; burying that at debug means automatic memory saves
+            // can fail completely invisibly. Surface it so a broken FTS index or
+            // degraded provider correlates with "memory stopped saving".
+            warn!(
                 "failed to store memory entry {}/{}: {}",
                 entry.namespace, entry.key, e
             );

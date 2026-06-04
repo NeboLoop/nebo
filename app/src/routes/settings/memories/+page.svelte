@@ -1,11 +1,21 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { Memory } from '$lib/api/nebo';
+  import Info from 'lucide-svelte/icons/info';
+  import X from 'lucide-svelte/icons/x';
 
   let memories = $state<{ id: string; layer: string; value: string; tags: string[]; accessCount: number }[]>([]);
   let searchText = $state('');
   let layerFilter = $state('all');
+  let showInfo = $state(false);
   const layers = ['all', 'tacit', 'daily', 'entity'];
+
+  // Plain-language explanation of each memory layer, shown in the info modal.
+  const layerInfo: { key: string; label: string; blurb: string }[] = [
+    { key: 'tacit', label: 'Tacit', blurb: 'Lasting facts about you and how you work — your preferences, role, and the people and projects that keep coming up. Your companion leans on these to act the way you’d want.' },
+    { key: 'daily', label: 'Daily', blurb: 'Day-to-day notes tied to a specific date — what happened and what’s coming up. These power briefings and follow-ups, and naturally age out over time.' },
+    { key: 'entity', label: 'Entity', blurb: 'What your companion knows about the specific people, companies, and things you deal with — so it has context the next time they come up.' }
+  ];
 
   onMount(async () => {
     try {
@@ -14,7 +24,10 @@
       if (resp?.memories?.length) {
         memories = resp.memories.map((m: Memory) => ({
           id: String(m.id),
-          layer: m.namespace || 'tacit',
+          // Namespaces are stored as "<layer>/<sub>" (e.g. "tacit/general").
+          // The layer is the prefix — counts, filter chips, and the badge all
+          // key off it, so a full path here zeroed every per-layer count.
+          layer: (m.namespace || 'tacit').split('/')[0],
           value: m.value || '',
           tags: m.tags || [],
           accessCount: m.accessCount ?? 0,
@@ -46,7 +59,18 @@
 </script>
 
 <div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Memories</h2>
+  <div class="flex items-center gap-1.5 mb-1">
+    <h2 class="text-lg font-bold">Memories</h2>
+    <button
+      type="button"
+      onclick={() => (showInfo = true)}
+      class="p-0.5 rounded-full text-base-content/40 hover:text-base-content hover:bg-base-200 transition-colors cursor-pointer"
+      aria-label="What are the memory types?"
+      title="What are the memory types?"
+    >
+      <Info class="w-4 h-4" />
+    </button>
+  </div>
   <p class="text-xs text-base-content/70">View and manage your agent's stored knowledge.</p>
 </div>
 
@@ -89,3 +113,27 @@
     </div>
   {/each}
 </div>
+
+<!-- Memory-types explainer -->
+{#if showInfo}
+  <div class="fixed inset-0 z-50 flex items-center justify-center">
+    <button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => (showInfo = false)} aria-label="Close"></button>
+    <div class="relative bg-base-100 rounded-2xl border border-base-300 w-full max-w-md mx-4 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-bold">How memory works</h3>
+        <button type="button" onclick={() => (showInfo = false)} class="p-1.5 rounded-full hover:bg-base-200 transition-colors cursor-pointer" aria-label="Close">
+          <X class="w-4 h-4" />
+        </button>
+      </div>
+      <p class="text-sm text-base-content/70 mb-4">Your companion remembers across conversations in three layers:</p>
+      <div class="flex flex-col gap-3">
+        {#each layerInfo as info}
+          <div class="flex gap-3">
+            <span class="px-2 py-0.5 h-fit rounded text-sm font-semibold font-mono uppercase shrink-0 {layerColors[info.key]}">{info.label}</span>
+            <p class="text-sm text-base-content/70 leading-relaxed">{info.blurb}</p>
+          </div>
+        {/each}
+      </div>
+    </div>
+  </div>
+{/if}
