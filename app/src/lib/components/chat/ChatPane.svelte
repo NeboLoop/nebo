@@ -83,7 +83,7 @@
 
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
-  let creationsTitle = $state('Creations');
+  let creationsTitle = $state('Work');
   let activeArtifactId = $state<string | null>(null);
 
   // Replace <@id> tokens (already HTML-escaped) with styled mention chips
@@ -226,7 +226,7 @@
     composerRef?.focusAndInsert(e.key);
   }
 
-  export function showCreations(title = 'Creations') {
+  export function showCreations(title = 'Work') {
     creationsTitle = title;
     creationsOpen = true;
   }
@@ -458,7 +458,7 @@
         <button
           class="text-sm ml-auto cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
           onclick={() => creationsOpen = !creationsOpen}
-          title={creationsOpen ? 'Close creations panel' : 'Open creations panel'}
+          title={creationsOpen ? 'Close Work panel' : 'Open Work panel'}
         >
           {headerRight}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{creationsOpen ? 'text-primary' : ''}">
@@ -913,7 +913,7 @@
       <button
         class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors shrink-0"
         onclick={() => creationsOpen = false}
-        title="Close creations"
+        title="Close Work panel"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
@@ -976,8 +976,8 @@
             <path d="M9 3v18"/>
             <path d="M14 9l3 3-3 3"/>
           </svg>
-          <div class="text-sm font-medium">No creations yet</div>
-          <div class="text-xs text-center max-w-[220px]">When an agent creates a document, sheet, image, or report it will appear here.</div>
+          <div class="text-sm font-medium">Nothing here yet</div>
+          <div class="text-xs text-center max-w-[220px]">When Nebo makes a report, sheet, or design, it'll appear here.</div>
         </div>
       {/if}
     </div>

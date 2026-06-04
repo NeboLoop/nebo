@@ -249,7 +249,7 @@
   agentId={agentId}
   {threadId}
   headerTitle={thread?.name ?? 'Thread'}
-  headerRight="Creations"
+  headerRight="Work"
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
   quotaWarning={chat.quotaWarning}

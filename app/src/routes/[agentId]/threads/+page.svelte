@@ -112,7 +112,7 @@
   agentName={agent?.name ?? 'Agent'}
   agentId={agentId}
   headerTitle="New thread"
-  headerRight="Creations"
+  headerRight="Work"
   placeholder="Start a new thread with {agent?.name}..."
   emptyTitle={greeting}
   emptyDesc="New thread with {agent?.name ?? 'your companion'} · clean context, fresh start."
