@@ -402,10 +402,16 @@ impl Store {
         Ok(())
     }
 
+    /// Count CONVERSATIONAL messages only (user + assistant) — tool-call/result
+    /// rows (role='tool') are not messages, they ride inside the assistant turn's
+    /// tool_calls/tool_results columns. This matches what get_chat_messages_budgeted
+    /// loads, so the "N messages" badge is honest and the client's
+    /// `hasMore = loadedRawCount < totalMessages` paging math is correct (counting
+    /// tool rows here inflated the total and broke scroll-up).
     pub fn count_chat_messages(&self, chat_id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?1",
+            "SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?1 AND role IN ('user', 'assistant')",
             params![chat_id],
             |row| row.get(0),
         )
