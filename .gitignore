@@ -16,3 +16,6 @@ results*/
 overrides/
 .nebo/
 .understand-anything/
+
+# Playwright MCP screenshot scratch output
+.playwright-mcp/

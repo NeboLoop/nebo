@@ -1125,12 +1125,21 @@ async fn run_loop(
         }
     };
 
+    // Canonical memory owner: the on-device local user id, NOT the loosely-passed
+    // (often empty) request user_id. ALL memory scoping derives from this so the
+    // bot tool, extraction, injection, and the per-agent UI agree on one owner
+    // base — otherwise the same memory could land under different scopes between
+    // sessions depending on what the caller passed.
+    let memory_owner = store
+        .ensure_local_user_id()
+        .unwrap_or_else(|_| user_id.to_string());
+
     // Scope memory by agent: each agent gets its own memory namespace to prevent cross-contamination.
-    // Main bot uses the raw user_id; agents use "user_id:agent:agent_id".
-    // With context_isolated, further scoped to "user_id:agent:agent_id:ctx:context_id".
+    // Main bot uses the raw owner; agents use "owner:agent:agent_id".
+    // With context_isolated, further scoped to "owner:agent:agent_id:ctx:context_id".
     let memory_user_id = if !agent_id.is_empty() {
         // Canonical base scope (one definition shared with the memory API).
-        let agent_scope = crate::memory::agent_memory_scope(user_id, agent_id);
+        let agent_scope = crate::memory::agent_memory_scope(&memory_owner, agent_id);
         if memory_config.context_isolated {
             if let Some(ref ctx) = context_id {
                 format!("{}:ctx:{}", agent_scope, ctx)
@@ -1141,14 +1150,14 @@ async fn run_loop(
             agent_scope
         }
     } else {
-        user_id.to_string()
+        memory_owner.clone()
     };
 
     // Build the inheritance chain for READ access
     let mut inherit_scopes: Vec<db_context::InheritScope> = Vec::new();
 
     if !agent_id.is_empty() {
-        let agent_scope = crate::memory::agent_memory_scope(user_id, agent_id);
+        let agent_scope = crate::memory::agent_memory_scope(&memory_owner, agent_id);
 
         // If context-isolated, inherit agent-wide memories (all tacit/)
         if memory_config.context_isolated && context_id.is_some() {
@@ -1161,7 +1170,7 @@ async fn run_loop(
         // If inherit_user enabled, inherit user's preferences only
         if memory_config.inherit_user {
             inherit_scopes.push(db_context::InheritScope {
-                user_id: user_id.to_string(),
+                user_id: memory_owner.clone(),
                 namespace_prefix: "tacit/preferences".to_string(),
             });
         }
