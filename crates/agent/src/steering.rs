@@ -725,12 +725,21 @@ impl Generator for PresenceAwareness {
 
         match ctx.user_presence.as_str() {
             "unfocused" | "away" => {
+                // In Interactive mode the agent is normally allowed a preamble +
+                // milestone updates; stepping away cancels that explicitly so the
+                // dynamic suffix overrides the cached interactive comm-style.
+                let content = if ctx.execution_mode == tools::ExecutionMode::Interactive {
+                    "The user stepped away — switch to silent autonomous work. Skip preambles \
+                     and status updates; keep working and deliver a summary when they return."
+                        .to_string()
+                } else {
+                    "The user stepped away. Continue working autonomously on active tasks. \
+                     Be thorough but concise in your output."
+                        .to_string()
+                };
                 vec![SteeringDirective {
                     label: "Presence".to_string(),
-                    content:
-                        "The user stepped away. Continue working autonomously on active tasks. \
-                              Be thorough but concise in your output."
-                            .to_string(),
+                    content,
                     priority: 4,
                 }]
             }
@@ -1190,6 +1199,29 @@ mod tests {
         let result = generator.generate(&ctx);
         assert_eq!(result.len(), 1);
         assert!(result[0].content.contains("stepped away"));
+    }
+
+    #[test]
+    fn test_presence_awareness_away_mode_aware() {
+        let messages = vec![make_msg("user", "hello"), make_msg("assistant", "hi")];
+        let generator = PresenceAwareness;
+
+        // Interactive: stepping away explicitly cancels the preamble/updates.
+        let mut ctx = make_ctx(messages.clone());
+        ctx.iteration = 3;
+        ctx.user_presence = "away".to_string();
+        ctx.execution_mode = tools::ExecutionMode::Interactive;
+        let interactive = generator.generate(&ctx);
+        assert_eq!(interactive.len(), 1);
+        assert!(interactive[0].content.contains("silent autonomous work"));
+        assert!(interactive[0].content.contains("Skip preambles"));
+
+        // Autonomous: original text (already silent by default).
+        ctx.execution_mode = tools::ExecutionMode::Autonomous;
+        let autonomous = generator.generate(&ctx);
+        assert_eq!(autonomous.len(), 1);
+        assert!(autonomous[0].content.contains("Be thorough but concise"));
+        assert!(!autonomous[0].content.contains("Skip preambles"));
     }
 
     #[test]
