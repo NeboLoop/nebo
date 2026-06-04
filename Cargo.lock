@@ -4884,6 +4884,8 @@ dependencies = [
 name = "nebo-agent"
 version = "0.10.2"
 dependencies = [
+ "a2ui-validation",
+ "async-trait",
  "chrono",
  "chrono-tz",
  "futures",
@@ -5186,6 +5188,7 @@ dependencies = [
  "chrono",
  "dirs 6.0.0",
  "flate2",
+ "futures",
  "glob",
  "globset",
  "grep-matcher",
