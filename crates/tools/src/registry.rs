@@ -89,6 +89,14 @@ impl ToolResult {
         self.http_status = Some(status);
         self
     }
+
+    /// Attach a produced file/artifact (absolute path, `/api/v1/files/<name>` URL, or
+    /// `data:` URI). chat_dispatch normalizes + materializes it under `<data_dir>/files/`
+    /// and surfaces it to the app as a "Work" artifact.
+    pub fn with_image_url(mut self, url: impl Into<String>) -> Self {
+        self.image_url = Some(url.into());
+        self
+    }
 }
 
 /// Tool interface that all tools must implement.

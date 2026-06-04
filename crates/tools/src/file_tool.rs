@@ -325,12 +325,20 @@ impl FileTool {
                     self.record_read(session, &path, m);
                 }
                 let action = if input.append { "Appended" } else { "Wrote" };
-                ToolResult::ok(format!(
+                let result = ToolResult::ok(format!(
                     "{} {} bytes to {}",
                     action,
                     input.content.len(),
                     path
-                ))
+                ));
+                // Surface user-facing documents (reports/sheets/designs) as "Work"
+                // artifacts so they're clickable + viewable in the Work panel. Scratch/
+                // code/config writes are NOT artifacts — gate on a work-product extension.
+                if is_work_document(&path) {
+                    result.with_image_url(path)
+                } else {
+                    result
+                }
             }
             Err(e) => ToolResult::error(format!("Error writing file: {}", e)),
         }
@@ -675,6 +683,21 @@ fn relativize_path(path: &str, base: &str) -> String {
         .strip_prefix(base)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| path.to_string())
+}
+
+/// Extensions that count as user-facing "Work" products (reports, sheets, designs,
+/// images). Code/config/scratch files are deliberately excluded so the Work panel
+/// surfaces deliverables, not noise.
+fn is_work_document(path: &str) -> bool {
+    const WORK_EXTS: &[&str] = &[
+        "md", "pdf", "csv", "xlsx", "xls", "docx", "doc", "pptx", "ppt", "html", "png",
+        "jpg", "jpeg", "gif", "svg",
+    ];
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .is_some_and(|e| WORK_EXTS.contains(&e.as_str()))
 }
 
 /// Sensitive paths that the agent should never access.

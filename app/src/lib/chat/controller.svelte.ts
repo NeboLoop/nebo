@@ -31,12 +31,15 @@ export interface AgentInfo {
   isApp?: boolean;
 }
 
+/** A produced document/report/sheet/design surfaced in the "Work" panel (click to open). */
+export interface WorkItem { id: string; title: string; kind: 'document' | 'code' | 'table' | 'slides'; url: string; }
+
 export type ChatMessage =
   | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[] }
   | { type: 'thinking'; content: string; duration: string }
   | { type: 'tool'; name: string; status: string; duration: string; request: Record<string, unknown>; response: string; statusText?: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
-  | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[] };
+  | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[] };
 
 export interface ChatControllerConfig {
   agentId: string;
@@ -182,21 +185,43 @@ export function createChatController(config: ChatControllerConfig) {
     streamingContent = {};
   }
 
-  // Map run-produced artifact URLs (/api/v1/files/...) to renderable attachments.
+  const IMAGE_VIDEO_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mov'];
+  const urlExt = (url: string) => (url.split('/').pop() || '').split('.').pop()?.toLowerCase() || '';
+  const isMedia = (url: string) => IMAGE_VIDEO_EXTS.includes(urlExt(url));
+
+  // Map run-produced media URLs (/api/v1/files/...) to inline attachments (images/video).
+  // Documents go to the Work panel instead — see artifactsToWorkItems.
   function artifactsToAttachments(artifacts: unknown): UploadedAttachment[] {
     if (!Array.isArray(artifacts)) return [];
     return artifacts
-      .filter((u): u is string => typeof u === 'string' && u.length > 0)
+      .filter((u): u is string => typeof u === 'string' && u.length > 0 && isMedia(u))
       .map((url) => {
         const filename = url.split('/').pop() || 'file';
-        const ext = filename.split('.').pop()?.toLowerCase() || '';
+        const ext = urlExt(url);
         const mimeType =
           ({
             png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
             webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm',
-            mov: 'video/quicktime', pdf: 'application/pdf',
+            mov: 'video/quicktime',
           } as Record<string, string>)[ext] || 'application/octet-stream';
         return { fileId: url, filename, mimeType, size: 0, url };
+      });
+  }
+
+  // Map run-produced DOCUMENT URLs to "Work" items (reports/sheets/code → clickable cards
+  // that open + render in the Work panel). Media is excluded (rendered inline instead).
+  function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
+    if (!Array.isArray(artifacts)) return [];
+    return artifacts
+      .filter((u): u is string => typeof u === 'string' && u.length > 0 && !isMedia(u))
+      .map((url) => {
+        const title = url.split('/').pop() || 'file';
+        const ext = urlExt(url);
+        const kind: WorkItem['kind'] =
+          ext === 'csv' || ext === 'xlsx' || ext === 'xls' ? 'table'
+            : ['js', 'ts', 'py', 'rs', 'go', 'json', 'sh', 'css'].includes(ext) ? 'code'
+              : 'document';
+        return { id: url, title, kind, url };
       });
   }
 
@@ -236,7 +261,8 @@ export function createChatController(config: ChatControllerConfig) {
     flushPending(aid);
     const content = streamingContent[aid];
     const attachments = artifactsToAttachments(data.artifacts);
-    if (content || attachments.length) {
+    const workItems = artifactsToWorkItems(data.artifacts);
+    if (content || attachments.length || workItems.length) {
       const isDelegate = aid !== agentId;
       const delegateAgent = isDelegate ? allAgents.find(a => a.id === aid) : null;
       messages = [...messages, {
@@ -250,6 +276,7 @@ export function createChatController(config: ChatControllerConfig) {
           delegateAgentName: delegateAgent.name,
         } : {}),
         ...(attachments.length ? { attachments } : {}),
+        ...(workItems.length ? { workItems } : {}),
       }];
       delete streamingContent[aid];
       config.onResponseComplete?.(content || '');

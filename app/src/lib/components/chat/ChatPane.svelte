@@ -22,7 +22,7 @@
     messageId?: string;
     title: string;
     kind: 'document' | 'code' | 'table' | 'slides';
-    preview: string;
+    url?: string;
   }
 
   interface ToolMsg {
@@ -112,17 +112,36 @@
     return renderMentionChips(html);
   }
 
-  // Artifacts will be populated by agent tool results in the future
-  const artifacts: Artifact[] = [];
+  // "Work" artifacts produced by the agent — flattened from each assistant message's
+  // workItems (set by the controller from run-produced document URLs), tagged with messageId.
+  const artifacts = $derived<Artifact[]>(
+    (messages as any[]).flatMap((m) =>
+      (m.workItems ?? []).map((w: any) => ({
+        id: w.id, messageId: m.id, title: w.title, kind: w.kind, url: w.url,
+      }))
+    )
+  );
+  // Lazy-loaded file content keyed by artifact id (undefined = not fetched, '' = loading).
+  let loadedContent = $state<Record<string, string | undefined>>({});
 
   const artifactIcons = { document: FileText, code: Code, table: Table, slides: Presentation };
   const activeArtifact = $derived(artifacts.find(a => a.id === activeArtifactId));
 
-  function openArtifact(id: string) {
+  async function openArtifact(id: string) {
     activeArtifactId = id;
     creationsOpen = true;
     const a = artifacts.find(x => x.id === id);
     if (a) creationsTitle = a.title;
+    // Fetch the file content once, on first open.
+    if (a?.url && loadedContent[id] === undefined) {
+      loadedContent = { ...loadedContent, [id]: '' };
+      try {
+        const res = await fetch(a.url);
+        loadedContent = { ...loadedContent, [id]: res.ok ? await res.text() : 'Failed to load file.' };
+      } catch {
+        loadedContent = { ...loadedContent, [id]: 'Failed to load file.' };
+      }
+    }
   }
   const CREATIONS_MIN = 220;
   let creationsWidth = $state(CREATIONS_MIN);
@@ -921,12 +940,15 @@
     <!-- Creations content -->
     <div class="flex-1 overflow-y-auto">
       {#if activeArtifact}
+        {@const body = loadedContent[activeArtifact.id]}
         <div class="p-4">
-          {#if activeArtifact.kind === 'code'}
-            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap rounded-lg bg-base-200 p-4 overflow-x-auto">{activeArtifact.preview}</pre>
+          {#if body === undefined || body === ''}
+            <div class="text-xs text-base-content/50 py-8 text-center">Loading…</div>
+          {:else if activeArtifact.kind === 'code'}
+            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap rounded-lg bg-base-200 p-4 overflow-x-auto">{body}</pre>
           {:else if activeArtifact.kind === 'table'}
-            {@const lines = activeArtifact.preview.split('\n')}
-            {@const headerCells = lines[0]?.split('|').map(c => c.trim()).filter(Boolean) ?? []}
+            {@const lines = body.split('\n').filter(l => l.trim())}
+            {@const headerCells = lines[0]?.split(',').map(c => c.trim()) ?? []}
             {@const bodyLines = lines.slice(1)}
             <div class="overflow-x-auto rounded-lg border border-base-300">
               <table class="table table-xs w-full">
@@ -940,7 +962,7 @@
                 <tbody>
                   {#each bodyLines as line}
                     <tr class="border-t border-base-300">
-                      {#each line.split('|').map(c => c.trim()).filter(Boolean) as cell}
+                      {#each line.split(',').map(c => c.trim()) as cell}
                         <td class="text-xs">{cell}</td>
                       {/each}
                     </tr>
@@ -949,24 +971,8 @@
               </table>
             </div>
           {:else}
-            <!-- Document / slides: render simple markdown -->
-            <div class="text-sm leading-relaxed">
-              {#each activeArtifact.preview.split('\n') as line}
-                {#if line.startsWith('## ')}
-                  <h2 class="text-base font-semibold mt-4 mb-2">{line.slice(3)}</h2>
-                {:else if line.startsWith('### ')}
-                  <h3 class="text-sm font-semibold mt-3 mb-1">{line.slice(4)}</h3>
-                {:else if line.startsWith('**') && line.endsWith('**')}
-                  <p class="font-semibold mt-2">{line.replace(/\*\*/g, '')}</p>
-                {:else if line.startsWith('- ')}
-                  <p class="ml-3">&bull; {line.slice(2)}</p>
-                {:else if line.trim() === ''}
-                  <div class="h-2"></div>
-                {:else}
-                  <p>{line}</p>
-                {/if}
-              {/each}
-            </div>
+            <!-- Document / slides: full markdown via the shared renderer -->
+            <div class="prose prose-sm max-w-none">{@html renderMarkdown(body)}</div>
           {/if}
         </div>
       {:else}
