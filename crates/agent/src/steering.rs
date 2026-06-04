@@ -73,6 +73,9 @@ pub struct ReminderContext<'a> {
     pub agent_soul: Option<&'a str>,
     /// The session's detected objective mode (e.g. "research") from `detect_objective`.
     pub detected_mode: &'a str,
+    /// HTTP status if a tool this iteration was rate-limited/forbidden (429/403), so the
+    /// model backs off instead of hammer-retrying the same host.
+    pub rate_limited: Option<u16>,
 }
 
 impl ReminderContext<'_> {
@@ -124,6 +127,7 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(IdentityReinforce),
         Box::new(PluginAffinity),
         Box::new(ResearchModeNudge),
+        Box::new(RateLimit),
     ]
 }
 
@@ -985,6 +989,36 @@ impl Reminder for ResearchModeNudge {
     }
 }
 
+/// RateLimit — a tool this iteration came back 429 (rate-limited) or 403 (forbidden).
+/// Tell the model to back off that host rather than hammer-retrying it into a deeper
+/// block. Safety-adjacent; fires in both modes. Unblocked by `ToolResult.http_status`.
+struct RateLimit;
+impl Reminder for RateLimit {
+    fn name(&self) -> &'static str {
+        "rate_limit"
+    }
+    fn priority(&self) -> u8 {
+        9 // safety — a hammer-retry loop wastes budget and worsens the block
+    }
+    fn min_turns_between(&self) -> usize {
+        2
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        let status = ctx.rate_limited?;
+        let kind = if status == 429 {
+            "rate-limited (HTTP 429)"
+        } else {
+            "forbidden (HTTP 403)"
+        };
+        Some(format!(
+            "A request just came back {kind}. Do NOT immediately retry the same host — that \
+             deepens the block. Wait, try a different source, or move on to another part of \
+             the task. If the user needs that specific source, tell them it's currently \
+             blocking automated requests."
+        ))
+    }
+}
+
 // 14b. Tool Result Grounding — prevent hallucinating tool failures when tools succeed
 struct ToolResultGrounding;
 impl Reminder for ToolResultGrounding {
@@ -1344,6 +1378,16 @@ mod tests {
         assert!(out.contains("slack"));
         // No plugin calls → silent.
         assert!(PluginAffinity.check(&base_rctx()).is_none());
+    }
+
+    #[test]
+    fn test_rate_limit_reminder() {
+        let limited = ReminderContext { rate_limited: Some(429), ..base_rctx() };
+        assert!(RateLimit.check(&limited).unwrap().contains("429"));
+        let forbidden = ReminderContext { rate_limited: Some(403), ..base_rctx() };
+        assert!(RateLimit.check(&forbidden).unwrap().contains("403"));
+        // No rate limit → silent.
+        assert!(RateLimit.check(&base_rctx()).is_none());
     }
 
     #[test]
@@ -1866,6 +1910,7 @@ mod tests {
             agent_name: "Nebo",
             agent_soul: None,
             detected_mode: "",
+            rate_limited: None,
         }
     }
 

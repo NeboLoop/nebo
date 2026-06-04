@@ -3197,12 +3197,18 @@ async fn run_loop(
             const UNIVERSAL_TOOL_RESULT_CAP: usize = 100_000;
             let mut all_errors_this_iteration = true;
             let mut had_results = false;
+            // Highest-signal rate-limit status seen this iteration (429/403) — feeds the
+            // RateLimit reminder so the model backs off instead of hammer-retrying a host.
+            let mut iteration_rate_limited: Option<u16> = None;
             // Lightweight snapshots for the background tool summary generator.
             let mut summary_tool_calls: Vec<ai::ToolCall> = Vec::new();
             let mut summary_tool_results: Vec<ToolResult> = Vec::new();
             for entry in results.into_iter().flatten() {
                 let (tc, mut result) = entry;
                 had_results = true;
+                if matches!(result.http_status, Some(429) | Some(403)) {
+                    iteration_rate_limited = result.http_status;
+                }
                 // Capture pre-truncation snapshots for the summarizer (only name + short content)
                 summary_tool_calls.push(tc.clone());
                 summary_tool_results.push(ToolResult {
@@ -3401,6 +3407,7 @@ async fn run_loop(
                     agent_name: &agent_name,
                     agent_soul: active_agent_entry.as_ref().and_then(|r| r.soul.as_deref()),
                     detected_mode: &detected_mode,
+                    rate_limited: iteration_rate_limited,
                 };
                 if let Some(reminder) = steering::select_reminder(&rctx, &mut reminder_cadence) {
                     if let Err(e) = sessions.append_message(
