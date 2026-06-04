@@ -10,7 +10,7 @@
 	import ListCard from '$lib/components/marketplace/ListCard.svelte';
 	import webapi from '$lib/api/gocliRequest';
 	import { type AppItem, toAppItem } from '$lib/types/marketplace';
-	import { slugify } from '$lib/data/categories';
+	import { slugify, categoryMeta } from '$lib/data/categories';
 
 	const KIND_TYPE: Record<string, string> = {
 		all: '', agents: 'agent', apps: 'app', skills: 'skill',
@@ -83,6 +83,16 @@
 
 	const spotlight = $derived(featured[0] ?? items[0] ?? null);
 
+	// A category on its own (no kind/price/publisher) gets the editorial
+	// storefront treatment: headline + lede + featured + Top + All.
+	const isCategoryView = $derived(!!category && kind === 'all' && price === 'all' && !publisher);
+	const categoryItems = $derived(category ? items.filter((it) => slugify(it.category) === category) : []);
+	const categoryName = $derived(categoryItems[0]?.category ?? '');
+	const catMeta = $derived(categoryName ? categoryMeta[categoryName] : undefined);
+	const categoryFeatured = $derived(
+		featured.find((f) => slugify(f.category) === category) ?? categoryItems[0] ?? null
+	);
+
 	// Group all items by category, ordered by the catalog's category order.
 	const byCategory = $derived.by(() => {
 		const groups = new Map<string, AppItem[]>();
@@ -108,8 +118,35 @@
 	<div class="flex justify-center py-16">
 		<span class="loading loading-spinner loading-md text-primary"></span>
 	</div>
+{:else if isCategoryView}
+	<!-- Category storefront — headline + lede + featured + Top + All -->
+	<div class="max-w-6xl mx-auto pb-10">
+		<div class="px-6 pt-6">
+			<h1 class="font-display text-3xl font-bold tracking-tight">{categoryName || 'Category'}</h1>
+			{#if catMeta}
+				<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{catMeta.lede}</p>
+			{/if}
+		</div>
+
+		{#if categoryItems.length === 0}
+			<div class="flex flex-col items-center justify-center py-16 text-center">
+				<Search class="w-10 h-10 text-base-content/40 mb-3" />
+				<p class="text-base font-medium">Nothing here yet</p>
+			</div>
+		{:else}
+			{#if categoryFeatured}
+				<div class="px-6 pt-6">
+					<FeaturedCard item={categoryFeatured} />
+				</div>
+			{/if}
+			<SectionListGrid title="Top in {categoryName}" items={categoryItems.slice(0, 6)} />
+			{#if categoryItems.length > 6}
+				<SectionListGrid title="All in {categoryName}" items={categoryItems.slice(6)} />
+			{/if}
+		{/if}
+	</div>
 {:else if isFiltering}
-	<!-- Filtered: flat result list -->
+	<!-- Filtered: flat result list (kind / price / publisher) -->
 	<div class="max-w-6xl mx-auto px-6 py-6">
 		{#if publisher}
 			<h1 class="font-display text-xl font-bold mb-1">By {publisher}</h1>
