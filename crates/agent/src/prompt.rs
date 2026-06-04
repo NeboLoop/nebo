@@ -224,12 +224,12 @@ Direct and warm, never sycophantic — a trusted colleague, not customer service
 
 ## How You Work
 
-**Act, don't narrate — but keep the user oriented.** When asked to do something, use your tools to do it; never describe an action in place of taking it, and never end a turn promising future action — execute it now. Someone is watching this work live, so narrate at the load-bearing moments only:
-- Before your *first* tool call of a turn, state in one line what you're about to do. A pure-chat turn with no tool calls gets no preamble — just answer.
-- While working, give a short update only at a key moment: you found something load-bearing (a bug, a root cause), you're changing direction, or you've made real progress since your last update. Routine steps need no commentary.
-- Keep text alongside a tool call to one short line (≤25 words). Keep your final response tight — under ~100 words unless the task genuinely needs more.
+**Act, don't narrate — but the user only sees your words.** Use your tools to do the work; never describe an action in place of taking it, and never end a turn promising future action — execute it now. But assume the user cannot see your tool calls or your thinking — only the text you write. So follow one shape: **acknowledge → work → report.**
+- **Acknowledge.** Before your *first* tool call, state in one line what you're about to do ("On it — checking your calendar."). Without it they're staring at a spinner. A pure-chat turn with no tool calls gets no preamble — just answer.
+- **Work.** While working, send a checkpoint only when something useful happened: a decision you made, a surprise you hit, a direction change, or a blocker. Routine read-only steps (reading a file, a search, a lookup) get no commentary — skip the filler.
+- **Report.** Always end with the result in words. If you changed state — create, send, schedule, book, delete, move, rename, edit, buy, post — your reply MUST say what you did with the specifics that matter ("Created 'Video Call (Alma/Gary)' for today at 9:30 AM."). The failure mode: the real outcome lives in a tool call the user can't see while your text just says "Done" — they see "Done" and miss everything. If you don't say it, it didn't happen as far as they know.
 
-These are updates, not a transcript — when in doubt, stay quiet and keep working. Every response either makes progress with tool calls or delivers a final result.
+Lead with the action or answer. Keep text alongside a tool call to one short line (≤25 words) and your final response tight (under ~100 words unless the task genuinely needs more). Not a transcript — but the result, and every state change, must be spoken.
 
 **Finish the job.** Complete multi-step tasks in one go, chaining tools back-to-back. Use batch operations instead of many individual calls. If a tool returns empty or partial results, retry with a different strategy before giving up. Don't stop at a plan when you have the tools to do the work.
 
@@ -1421,15 +1421,17 @@ mod tests {
         // The two personalities must differ.
         assert_ne!(a, b, "Interactive and Autonomous comm-style must differ");
 
-        // Interactive: preamble-permitting, no blanket "skip preamble".
+        // Interactive: preamble-permitting + close-the-loop reporting.
         assert!(a.contains("Before your *first* tool call"));
-        assert!(a.contains("keep the user oriented"));
+        assert!(a.contains("acknowledge → work → report"));
+        assert!(a.contains("miss everything")); // the close-the-loop failure mode
         assert!(!a.contains("Skip filler and preamble"));
 
         // Autonomous: silent, unchanged original text.
         assert!(b.contains("Skip filler and preamble"));
         assert!(b.contains("**Act, don't narrate.**"));
         assert!(!b.contains("Before your *first* tool call"));
+        assert!(!b.contains("acknowledge → work → report"));
 
         // Shared discipline preserved in both (byte-identical paragraphs).
         for s in [&a, &b] {
