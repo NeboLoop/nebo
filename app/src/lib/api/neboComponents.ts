@@ -1088,6 +1088,7 @@ export interface GetStatsResponse {
 
 export interface GetStatusResponse {
 	status: string
+	reason: string
 	activeTasks: PendingTask[]
 	queuedTasks: PendingTask[]
 	providers: unknown

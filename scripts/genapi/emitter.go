@@ -238,6 +238,9 @@ func emitAPIFunction(b *strings.Builder, route Route, funcName string, handlers 
 	if h != nil {
 		if len(h.ResponseKeys) > 0 {
 			responseType = "components." + handlerToResponseTypeName(funcName)
+		} else if h.ResponseStruct != "" {
+			// Typed handler return: -> HandlerResult<StructName>
+			responseType = "components." + h.ResponseStruct
 		}
 		queryParams = h.QueryParams
 	}

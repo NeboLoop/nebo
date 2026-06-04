@@ -19,7 +19,7 @@
 		appId: string;
 		agentName: string;
 		agentDescription: string;
-		inputs: Record<string, unknown>;
+		inputs: Record<string, unknown> | Record<string, unknown>[];
 		/** Marketplace product dependencies: { agents?, skills?, plugins?, workflows? } */
 		dependencies?: unknown;
 		existingAgentId?: string;

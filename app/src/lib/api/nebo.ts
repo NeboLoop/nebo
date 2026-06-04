@@ -58,7 +58,7 @@ export function sendChannelMessage(channelId: string, req: Record<string, unknow
  * @description "Handle available"
  */
 export function handleAvailable(handle: string) {
-	return webapi.get<unknown>(`/api/v1/agent/handle-available`, { handle })
+	return webapi.get<components.HandleAvailableResponse>(`/api/v1/agent/handle-available`, { handle })
 }
 
 /**
@@ -695,7 +695,7 @@ export function deleteEntityConfig(entityType: string, entityId: string) {
  * @description "List extensions"
  */
 export function listExtensions() {
-	return webapi.get<unknown>(`/api/v1/extensions`)
+	return webapi.get<components.ListExtensionsResponse>(`/api/v1/extensions`)
 }
 
 /**
@@ -905,14 +905,14 @@ export function updateModel(provider: string, modelId: string, req: Record<strin
  * @description "Nebo a i account status"
  */
 export function neboAIAccountStatus() {
-	return webapi.get<unknown>(`/api/v1/neboai/account`)
+	return webapi.get<components.AccountStatusResponse>(`/api/v1/neboai/account`)
 }
 
 /**
  * @description "Nebo a i account disconnect"
  */
 export function neboAIAccountDisconnect() {
-	return webapi.delete<unknown>(`/api/v1/neboai/account`)
+	return webapi.delete<components.DisconnectResponse>(`/api/v1/neboai/account`)
 }
 
 /**
@@ -1024,14 +1024,14 @@ export function neboAIMarketplaceCancelSubscription(id: string, req: Record<stri
  * @description "Nebo a i oauth start"
  */
 export function neboAIOauthStart(janus?: string) {
-	return webapi.get<unknown>(`/api/v1/neboai/oauth/start`, { janus })
+	return webapi.get<components.OAuthStartResponse>(`/api/v1/neboai/oauth/start`, { janus })
 }
 
 /**
  * @description "Nebo a i oauth status"
  */
 export function neboAIOauthStatus(state?: string) {
-	return webapi.get<unknown>(`/api/v1/neboai/oauth/status`, { state })
+	return webapi.get<components.OAuthStatusResponse>(`/api/v1/neboai/oauth/status`, { state })
 }
 
 /**

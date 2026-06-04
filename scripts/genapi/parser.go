@@ -432,6 +432,9 @@ func scanHandlers(dir string, structs map[string]*RustStruct, storeMethodTypes m
 
 var reFuncSig = regexp.MustCompile(`pub\s+async\s+fn\s+(\w+)\s*\(`)
 
+// reHandlerReturn captures a typed response struct from `-> HandlerResult<StructName>`.
+var reHandlerReturn = regexp.MustCompile(`->\s*HandlerResult<\s*([A-Za-z_][A-Za-z0-9_]*)\s*>`)
+
 func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruct, storeMethodTypes map[string]string, queryStructs map[string]*RustStruct) []*HandlerInfo {
 	var result []*HandlerInfo
 
@@ -460,6 +463,12 @@ func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruc
 				keys[i].InferredTS = refineType(keys[i], varTypes, structs, handlerToFuncName(h.QualifiedName), h.FuncName)
 			}
 			h.ResponseKeys = keys
+		} else if m := reHandlerReturn.FindStringSubmatch(body); m != nil {
+			// No json! response — wire the typed return struct `-> HandlerResult<StructName>`
+			// when StructName is a known Serialize struct.
+			if _, ok := structs[m[1]]; ok {
+				h.ResponseStruct = m[1]
+			}
 		}
 
 		result = append(result, h)

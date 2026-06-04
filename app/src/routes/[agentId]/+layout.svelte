@@ -39,7 +39,7 @@
   let showInstallModal = $state(false);
   let setupAgentName = $state('');
   let setupAgentDesc = $state('');
-  let setupInputFields = $state<Record<string, unknown>>({});
+  let setupInputFields = $state<Record<string, unknown>[]>([]);
 
   const DEFAULT_CONFIG = { persona: '', agentMd: '', soul: '', rules: '', model: 'claude-sonnet-4-6', inputs: [] as unknown[], workflows: {} as Record<string, WorkflowConfig> };
 
@@ -311,7 +311,7 @@
         const soul = (ar.agent as Agent)?.soul || '';
         const rules = (ar.agent as Agent)?.rules || '';
         const model = typeof ar.model === 'string' ? ar.model : (ar.model as Record<string, unknown>)?.id as string ?? 'claude-sonnet-4-6';
-        const inputs = Array.isArray(ar.inputFields) ? ar.inputFields : [];
+        const inputs = Array.isArray(ar.inputFields) ? ar.inputFields as Record<string, unknown>[] : [];
         // Workflows from separate endpoint — merged below
         apiConfig[id] = { persona, agentMd, soul, rules, model, inputs, workflows: apiConfig[id]?.workflows ?? {} };
 
