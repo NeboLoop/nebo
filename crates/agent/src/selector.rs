@@ -239,9 +239,13 @@ impl ModelSelector {
                 failure_count: 0,
                 cooldown_until: Instant::now(),
             });
-        entry.failure_count += 1;
-        // Exponential backoff: 5s, 10s, 20s, 40s... capped at 1 hour
-        let backoff_secs = std::cmp::min(5 * 2u64.pow(entry.failure_count.saturating_sub(1)), 3600);
+        entry.failure_count = entry.failure_count.saturating_add(1);
+        // Exponential backoff: 5s, 10s, 20s, 40s... capped at 1 hour. Saturating + a capped
+        // exponent — without this, a model that fails ~63 times overflows u64 (5 * 2^62) and
+        // panics WHILE holding this write lock, poisoning it for the whole process. The cap
+        // at 3600s means any exponent past ~10 is moot anyway.
+        let exp = entry.failure_count.saturating_sub(1).min(16);
+        let backoff_secs = 5u64.saturating_mul(2u64.saturating_pow(exp)).min(3600);
         entry.cooldown_until = Instant::now() + Duration::from_secs(backoff_secs);
 
         self.excluded
@@ -571,6 +575,19 @@ mod tests {
             selector.get_cooldown_remaining("anthropic/claude-sonnet-4-5"),
             Duration::ZERO
         );
+    }
+
+    #[test]
+    fn test_cooldown_backoff_no_overflow() {
+        // Regression: a model that fails many times must NOT overflow the backoff math
+        // (5 * 2^n) and panic while holding the cooldown write lock (which poisons it).
+        let selector = ModelSelector::new(ModelRoutingConfig::default());
+        for _ in 0..200 {
+            selector.mark_failed("janus/nebo-1");
+        }
+        // Backoff stays capped at 1 hour; the lock is still usable (not poisoned).
+        let remaining = selector.get_cooldown_remaining("janus/nebo-1");
+        assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(3600));
     }
 
     #[test]
