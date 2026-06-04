@@ -1257,6 +1257,86 @@ impl PluginStore {
         Ok(binary_path)
     }
 
+    /// Recover from `.napp` installs interrupted by a crash or hot-reload SIGKILL.
+    ///
+    /// `install_from_napp_inner` extracts to `<version>.staging` and only renames it
+    /// to the live `<version>` dir *after* verification. If the process dies in
+    /// between, the staging dir is orphaned: never promoted, and never cleaned (the
+    /// `.staging` GC only runs at the tail of a *successful* install of the same
+    /// plugin). `is_ready()` correctly gates the half-install out, so the plugin
+    /// silently never works.
+    ///
+    /// Run once at startup. For each orphaned `<version>.staging` (no matching
+    /// promoted `<version>` dir):
+    ///   - retained `<version>.napp` present → re-drive the canonical install from it
+    ///     (re-extract → verify → swap). Same pathway, so no forked logic.
+    ///   - otherwise unrecoverable → remove the orphan.
+    /// If a promoted `<version>` already exists, the staging is stale → remove it.
+    ///
+    /// Sealed (paid) plugins never extract to disk, so an orphaned staging-with-binary
+    /// is always a loose plugin whose `.napp` re-extracts without a license key.
+    pub async fn reconcile_orphaned_staging(&self) {
+        // Collect first — never mutate a directory while iterating its ReadDir.
+        let mut orphans: Vec<(PathBuf, String, String)> = Vec::new();
+        for root in [&self.installed_dir, &self.user_dir] {
+            let Ok(entries) = std::fs::read_dir(root) else {
+                continue;
+            };
+            for slug_entry in entries.flatten() {
+                let slug_path = slug_entry.path();
+                if !slug_path.is_dir() {
+                    continue;
+                }
+                let slug = slug_entry.file_name().to_string_lossy().to_string();
+                let Ok(inner) = std::fs::read_dir(&slug_path) else {
+                    continue;
+                };
+                for entry in inner.flatten() {
+                    let fname = entry.file_name().to_string_lossy().to_string();
+                    if let Some(version) = fname.strip_suffix(".staging") {
+                        if entry.path().is_dir() {
+                            orphans.push((slug_path.clone(), slug.clone(), version.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
+        for (slug_path, slug, version) in orphans {
+            let staging = slug_path.join(format!("{version}.staging"));
+
+            // Already promoted? Stale leftover.
+            if slug_path.join(&version).exists() {
+                let _ = std::fs::remove_dir_all(&staging);
+                info!(plugin = %slug, version = %version, "startup: removed stale .staging (version already installed)");
+                continue;
+            }
+
+            // Resume from the retained .napp if we have it.
+            let napp_path = slug_path.join(format!("{version}.napp"));
+            if !napp_path.exists() {
+                let _ = std::fs::remove_dir_all(&staging);
+                warn!(plugin = %slug, version = %version, "startup: removed orphaned .staging with no retained .napp to resume from");
+                continue;
+            }
+            let bytes = match std::fs::read(&napp_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!(plugin = %slug, version = %version, error = %e, "startup: could not read retained .napp to resume install");
+                    continue;
+                }
+            };
+            match self.install_from_napp(&slug, &version, &bytes).await {
+                Ok(_) => {
+                    info!(plugin = %slug, version = %version, "startup: resumed interrupted .napp install")
+                }
+                Err(e) => {
+                    warn!(plugin = %slug, version = %version, error = %e, "startup: failed to resume interrupted .napp install")
+                }
+            }
+        }
+    }
+
     /// Install a plugin from a .napp archive containing binary + plugin.json + PLUGIN.md + skills/.
     ///
     /// Stores the .napp archive at `<installed_dir>/<slug>/<version>.napp`, then

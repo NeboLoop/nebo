@@ -627,6 +627,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         None,
     ));
 
+    // Recover plugin installs interrupted mid-swap by a prior crash/hot-reload
+    // SIGKILL (orphaned `<version>.staging` dirs). Must run before the plugin
+    // scan / skill load below so resumed plugins are picked up.
+    plugin_store.reconcile_orphaned_staging().await;
+
     // Populate plugin env var cache from DB (stored API keys, tokens, etc.)
     {
         let installed = plugin_store.list_installed();
