@@ -80,6 +80,8 @@ pub fn format_directives(directives: &[SteeringDirective]) -> String {
 
 /// Minimum turns between ANY two reminders, regardless of type (global throttle).
 const GLOBAL_MIN_TURNS_BETWEEN_REMINDERS: usize = 2;
+/// Consecutive silent tool-only assistant turns before SilenceBreaker fires.
+const SILENCE_BREAKER_THRESHOLD: usize = 3;
 
 /// Lightweight context for reminder checks, built after tool results in run_loop.
 pub struct ReminderContext<'a> {
@@ -107,10 +109,9 @@ pub struct ReminderCadence {
     global_last: Option<usize>,
 }
 
-/// The registered reminders. EMPTY in Round 1 — the channel is inert until the
-/// corrective/informational reminders land in later rounds.
+/// The registered reminders. Grows as corrective/informational reminders land.
 fn reminders() -> Vec<Box<dyn Reminder>> {
-    Vec::new()
+    vec![Box::new(SilenceBreaker)]
 }
 
 /// Wrap reminder text as a `<system-reminder>` with a gentle, ignorable tail.
@@ -159,6 +160,61 @@ fn select_from(
     cadence.last_fired.insert(name, ctx.iteration);
     cadence.global_last = Some(ctx.iteration);
     Some(wrap_system_reminder(&text))
+}
+
+// --- Concrete reminders ---
+
+/// Counts the most-recent run of consecutive assistant turns that called tools but
+/// produced no text. Any assistant turn with text breaks the streak.
+fn silent_tool_streak(messages: &[ChatMessage]) -> usize {
+    let mut streak = 0usize;
+    for m in messages.iter().rev() {
+        if m.role != "assistant" {
+            continue;
+        }
+        let has_tools = m
+            .tool_calls
+            .as_ref()
+            .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
+        if has_tools && m.content.trim().is_empty() {
+            streak += 1;
+        } else {
+            break;
+        }
+    }
+    streak
+}
+
+/// SilenceBreaker — when the model has run several tool-only turns in a row with no
+/// text, nudge it to tell the user what it's finding. Interactive only; autonomous
+/// work is silent by design.
+struct SilenceBreaker;
+impl Reminder for SilenceBreaker {
+    fn name(&self) -> &'static str {
+        "silence_breaker"
+    }
+    fn priority(&self) -> u8 {
+        7
+    }
+    fn min_turns_between(&self) -> usize {
+        3
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        if ctx.execution_mode != tools::ExecutionMode::Interactive {
+            return None;
+        }
+        let streak = silent_tool_streak(ctx.messages);
+        if streak >= SILENCE_BREAKER_THRESHOLD {
+            Some(format!(
+                "You've taken {streak} actions in a row without telling the user anything — \
+                 they're watching a spinner with no idea what you're doing. Before your next \
+                 tool call, write one short line: what you've found so far and what you're \
+                 checking next."
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 /// Runs all registered generators to produce steering directives.
@@ -1825,10 +1881,76 @@ mod tests {
     }
 
     #[test]
-    fn test_select_reminder_inert() {
-        // Round 1: the global registry is empty — nothing ever fires.
+    fn test_select_reminder_no_fire_when_quiet() {
+        // Empty history → no silent streak → no reminder.
         let mut cadence = ReminderCadence::default();
         assert!(select_reminder(&rctx(5), &mut cadence).is_none());
+    }
+
+    /// `n` consecutive silent (empty-content + tool-call) assistant turns, each
+    /// followed by a tool-result row, after an initial user message.
+    fn silent_msgs(n: usize) -> Vec<ChatMessage> {
+        let tc = r#"[{"name":"web","input":{"action":"search","query":"x"}}]"#;
+        let mut v = vec![make_msg("user", "research the thing")];
+        for _ in 0..n {
+            v.push(make_assistant_with_tools("", tc));
+            v.push(make_msg("tool", "result"));
+        }
+        v
+    }
+
+    fn rctx_msgs(messages: &[ChatMessage], mode: tools::ExecutionMode) -> ReminderContext<'_> {
+        ReminderContext {
+            iteration: 5,
+            execution_mode: mode,
+            messages,
+            recent_tool_names: &[],
+        }
+    }
+
+    #[test]
+    fn test_silence_breaker_fires_at_threshold() {
+        let msgs = silent_msgs(3);
+        let ctx = rctx_msgs(&msgs, tools::ExecutionMode::Interactive);
+        let mut cadence = ReminderCadence::default();
+        let out = select_from(&reminders(), &ctx, &mut cadence).expect("fires at 3 silent turns");
+        assert!(out.contains("watching a spinner"));
+        assert!(out.starts_with("<system-reminder>"));
+    }
+
+    #[test]
+    fn test_silence_breaker_below_threshold() {
+        let msgs = silent_msgs(2);
+        let ctx = rctx_msgs(&msgs, tools::ExecutionMode::Interactive);
+        let mut cadence = ReminderCadence::default();
+        assert!(select_from(&reminders(), &ctx, &mut cadence).is_none());
+    }
+
+    #[test]
+    fn test_silence_breaker_autonomous_stays_silent() {
+        let msgs = silent_msgs(5);
+        let ctx = rctx_msgs(&msgs, tools::ExecutionMode::Autonomous);
+        let mut cadence = ReminderCadence::default();
+        assert!(
+            select_from(&reminders(), &ctx, &mut cadence).is_none(),
+            "autonomous work is silent by design"
+        );
+    }
+
+    #[test]
+    fn test_silence_breaker_resets_on_text() {
+        let tc = r#"[{"name":"web","input":{}}]"#;
+        let msgs = vec![
+            make_assistant_with_tools("", tc),
+            make_assistant_with_tools("", tc),
+            make_assistant_with_tools("Found the strongest lead.", tc), // most recent has text
+        ];
+        let ctx = rctx_msgs(&msgs, tools::ExecutionMode::Interactive);
+        let mut cadence = ReminderCadence::default();
+        assert!(
+            select_from(&reminders(), &ctx, &mut cadence).is_none(),
+            "a turn with text resets the silent streak"
+        );
     }
 
     #[test]
