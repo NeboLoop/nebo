@@ -96,6 +96,10 @@ pub struct ReminderContext<'a> {
     pub recent_tool_names: &'a [String],
     /// Provider for Claude-skip rules ("anthropic" = direct Claude, self-regulates).
     pub provider_id: &'a str,
+    /// Tracked work tasks for the session (task-tracking reminders).
+    pub work_tasks: &'a [WorkTask],
+    /// The current user prompt (complexity detection for task-tracking).
+    pub user_prompt: &'a str,
 }
 
 impl ReminderContext<'_> {
@@ -134,6 +138,8 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(ToolResultGrounding),
         Box::new(AskToolNudge),
         Box::new(ResearchDelegationNudge),
+        Box::new(TaskTrackingNudge),
+        Box::new(TaskCompletionNudge),
     ]
 }
 
@@ -299,15 +305,11 @@ impl Pipeline {
             Box::new(ChannelAdapter),
             Box::new(ChannelPluginRouting),
             Box::new(LoopFileSharing),
-            Box::new(ToolNudge),
-            Box::new(PendingTaskAction),
             Box::new(LoopDetector),
             Box::new(ErrorRecovery),
             Box::new(PresenceAwareness),
             Box::new(ContextPressure),
             Box::new(JanusQuotaWarning),
-            Box::new(TaskTrackingNudge),
-            Box::new(TaskCompletionNudge),
         ];
 
         Self { generators }
@@ -577,59 +579,10 @@ impl Generator for LoopFileSharing {
     }
 }
 
-// 3. Tool Nudge
-struct ToolNudge;
-impl Generator for ToolNudge {
-    fn name(&self) -> &str {
-        "tool_nudge"
-    }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.active_task.is_empty() {
-            return vec![];
-        }
-        let turns = count_assistant_turns(&ctx.messages);
-        let turns_since = count_turns_since_any_tool_use(&ctx.messages);
-        if turns >= 5 && turns_since >= 5 {
-            vec![SteeringDirective {
-                label: "Tool Nudge".to_string(),
-                content: "You have an active task but haven't used any tools recently. \
-                          Consider using your available tools to make progress."
-                    .to_string(),
-                priority: 7,
-            }]
-        } else {
-            vec![]
-        }
-    }
-}
-
-// 4. Pending Task Action
-struct PendingTaskAction;
-impl Generator for PendingTaskAction {
-    fn name(&self) -> &str {
-        "pending_task_action"
-    }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.active_task.is_empty() || ctx.iteration < 2 {
-            return vec![];
-        }
-        // Don't fire if tools were used recently (model is actively working)
-        if count_turns_since_any_tool_use(&ctx.messages) == 0 {
-            return vec![];
-        }
-        let content = format!(
-            "Your objective: {}\n\
-             You still have work to do — your last response was text-only but the task is NOT complete.\n\
-             Call a tool RIGHT NOW to continue. Do NOT respond with text explaining what you plan to do.",
-            ctx.active_task
-        );
-        vec![SteeringDirective {
-            label: "Action Required".to_string(),
-            content,
-            priority: 8,
-        }]
-    }
-}
+// ToolNudge + PendingTaskAction were CUT in R5: text-only responses always end the
+// loop (runner.rs ~3715), so there is no mid-task tool-less stall to nudge, and the
+// post-tool reminder hook always runs right after a tool was used. Their "finish the
+// task" intent is covered by the static comm-style ("Finish the job …").
 
 // --- Interactive-mode suppressor tuning (relaxed safety net) ---
 //
@@ -1089,18 +1042,20 @@ impl Reminder for ToolResultGrounding {
 
 // 15. Task Tracking Nudge — steer the LLM to break complex requests into tracked tasks
 struct TaskTrackingNudge;
-impl Generator for TaskTrackingNudge {
-    fn name(&self) -> &str {
+impl Reminder for TaskTrackingNudge {
+    fn name(&self) -> &'static str {
         "task_tracking_nudge"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        // Only fire on first iteration (when user just sent a request)
-        if ctx.iteration != 1 {
-            return vec![];
-        }
-        // Don't fire if tasks already exist (LLM already tracking)
-        if !ctx.work_tasks.is_empty() {
-            return vec![];
+    fn priority(&self) -> u8 {
+        6
+    }
+    fn min_turns_between(&self) -> usize {
+        99 // effectively once: only fires at iteration 1
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        // Only fire early (the user's request just landed) and only if no tasks yet.
+        if ctx.iteration != 1 || !ctx.work_tasks.is_empty() {
+            return None;
         }
 
         // Detect multi-step complexity in the user prompt
@@ -1141,51 +1096,51 @@ impl Generator for TaskTrackingNudge {
         let is_long = ctx.user_prompt.len() > 200;
 
         if signal_count < 2 && !is_long {
-            return vec![];
+            return None;
         }
 
-        vec![SteeringDirective {
-            label: "Task Tracking".to_string(),
-            content: "This looks like a multi-step request. Break it into trackable tasks so the user \
-                     can see your progress:\n\
-                     1. Create tasks: bot(resource: \"task\", action: \"create\", subject: \"...\")\n\
-                     2. Update as you work: bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
-                     3. Mark complete with output: bot(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
-                     Create all tasks upfront, then work through them one at a time."
+        Some(
+            "This looks like a multi-step request. Break it into trackable tasks so the user \
+             can see your progress:\n\
+             1. Create tasks: bot(resource: \"task\", action: \"create\", subject: \"...\")\n\
+             2. Update as you work: bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
+             3. Mark complete with output: bot(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
+             Create all tasks upfront, then work through them one at a time."
                 .to_string(),
-            priority: 6,
-        }]
+        )
     }
 }
 
 // 16. Task Completion Nudge — remind to update tasks when work is being done but tasks aren't progressing
 struct TaskCompletionNudge;
-impl Generator for TaskCompletionNudge {
-    fn name(&self) -> &str {
+impl Reminder for TaskCompletionNudge {
+    fn name(&self) -> &'static str {
         "task_completion_nudge"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+    fn priority(&self) -> u8 {
+        5
+    }
+    fn min_turns_between(&self) -> usize {
+        3
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
         // Only fire if there ARE tasks and tools are being used
         if ctx.work_tasks.is_empty() || ctx.iteration < 3 {
-            return vec![];
+            return None;
         }
-        // Check: all tasks still pending despite tool usage
+        // All tasks still pending despite recent tool usage → nudge to update status.
         let all_pending = ctx.work_tasks.iter().all(|t| t.status == "pending");
-        let has_tool_use = count_turns_since_any_tool_use(&ctx.messages) == 0;
-
-        if all_pending && has_tool_use {
-            vec![SteeringDirective {
-                label: "Task Progress".to_string(),
-                content: "You have tasks but none are marked in_progress or completed. \
-                         Update task status as you work: \
-                         bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\") \
-                         before starting, then status: \"completed\" with output when done."
-                    .to_string(),
-                priority: 5,
-            }]
-        } else {
-            vec![]
+        let has_tool_use = count_turns_since_any_tool_use(ctx.messages) == 0;
+        if !all_pending || !has_tool_use {
+            return None;
         }
+        Some(
+            "You have tasks but none are marked in_progress or completed. \
+             Update task status as you work: \
+             bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\") \
+             before starting, then status: \"completed\" with output when done."
+                .to_string(),
+        )
     }
 }
 
@@ -1600,6 +1555,8 @@ mod tests {
             messages,
             recent_tool_names,
             provider_id: "openai",
+            work_tasks: &[],
+            user_prompt: "",
         }
     }
 
@@ -1756,25 +1713,74 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_fm4_pending_task_text_only() {
-        // Active task, iteration 3, last response text-only → PendingTaskAction fires
-        let generator = PendingTaskAction;
-        let mut ctx = make_ctx(vec![
-            make_msg("user", "Clean up my inbox"),
-            make_msg("assistant", "I'll start cleaning up your inbox now."),
-            make_msg("assistant", "I found 50 emails to archive."),
-        ]);
-        ctx.active_task = "Clean up inbox".to_string();
-        ctx.iteration = 3;
+    fn rctx_prompt(user_prompt: &str, iteration: usize) -> ReminderContext<'_> {
+        ReminderContext {
+            iteration,
+            execution_mode: tools::ExecutionMode::Interactive,
+            messages: &[],
+            recent_tool_names: &[],
+            provider_id: "openai",
+            work_tasks: &[],
+            user_prompt,
+        }
+    }
 
-        let result = generator.generate(&ctx);
-        assert_eq!(
-            result.len(),
-            1,
-            "PendingTaskAction should fire when active task + text-only response"
+    fn rctx_tasks<'a>(
+        messages: &'a [ChatMessage],
+        work_tasks: &'a [WorkTask],
+        iteration: usize,
+    ) -> ReminderContext<'a> {
+        ReminderContext {
+            iteration,
+            execution_mode: tools::ExecutionMode::Interactive,
+            messages,
+            recent_tool_names: &[],
+            provider_id: "openai",
+            work_tasks,
+            user_prompt: "",
+        }
+    }
+
+    fn task(status: &str) -> WorkTask {
+        WorkTask {
+            id: "1".to_string(),
+            subject: "do it".to_string(),
+            status: status.to_string(),
+            details: None,
+        }
+    }
+
+    #[test]
+    fn test_task_tracking_nudge_on_complex_first_turn() {
+        let prompt = "First research the market, then compare vendors and analyze the options.";
+        assert!(
+            TaskTrackingNudge
+                .check(&rctx_prompt(prompt, 1))
+                .unwrap()
+                .contains("trackable tasks"),
+            "fires on a complex first-turn request"
         );
-        assert_eq!(result[0].label, "Action Required");
+        // Only at iteration 1.
+        assert!(TaskTrackingNudge.check(&rctx_prompt(prompt, 2)).is_none());
+        // Simple prompt → no fire.
+        assert!(TaskTrackingNudge.check(&rctx_prompt("what time is it?", 1)).is_none());
+    }
+
+    #[test]
+    fn test_task_completion_nudge_when_pending() {
+        let tc = r#"[{"name":"web","input":{}}]"#;
+        let msgs = vec![make_assistant_with_tools("", tc)]; // last assistant used a tool
+        let pending = vec![task("pending")];
+        assert!(
+            TaskCompletionNudge
+                .check(&rctx_tasks(&msgs, &pending, 3))
+                .unwrap()
+                .contains("Update task status"),
+            "fires when tasks stay pending while tools run"
+        );
+        // A task already in_progress → no nudge.
+        let in_progress = vec![task("in_progress")];
+        assert!(TaskCompletionNudge.check(&rctx_tasks(&msgs, &in_progress, 3)).is_none());
     }
 
     #[test]
@@ -1941,6 +1947,8 @@ mod tests {
             messages: &[],
             recent_tool_names: &[],
             provider_id: "openai",
+            work_tasks: &[],
+            user_prompt: "",
         }
     }
 
@@ -1988,6 +1996,8 @@ mod tests {
             messages,
             recent_tool_names: &[],
             provider_id,
+            work_tasks: &[],
+            user_prompt: "",
         }
     }
 

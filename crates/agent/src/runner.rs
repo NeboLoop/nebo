@@ -3485,6 +3485,8 @@ async fn run_loop(
                     messages: &msgs,
                     recent_tool_names: &recent_tool_names,
                     provider_id: selected_provider_id,
+                    work_tasks: &work_tasks,
+                    user_prompt,
                 };
                 if let Some(reminder) = steering::select_reminder(&rctx, &mut reminder_cadence) {
                     if let Err(e) = sessions.append_message(
