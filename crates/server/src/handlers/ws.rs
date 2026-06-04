@@ -1687,65 +1687,37 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &C
             }
         });
 
-    // Parse @mentions BEFORE primary chat so we can give the primary agent awareness
+    // @mentions route the message to the addressed agent(s). When the user
+    // @mentions other agents, ONLY they respond — the thread's own agent stays
+    // quiet (Slack/Discord semantics: you addressed pam, pam answers, the thread
+    // owner doesn't butt in). With no mentions, the thread's agent responds.
     let mentioned = parse_mention_tokens(&prompt, &agent_id);
 
-    // Build routing context for the primary agent (injected as invisible system message)
-    let mention_context = if !mentioned.is_empty() {
-        let mut names: Vec<String> = Vec::new();
-        for mid in &mentioned {
-            let name = state
-                .store
-                .get_agent(mid)
-                .ok()
-                .flatten()
-                .map(|a| a.name)
-                .unwrap_or_else(|| mid.clone());
-            names.push(format!("@{}", name));
-        }
-        let roster = names.join(", ");
-        Some(format!(
-            "{} {} been @mentioned and will respond separately in this thread. \
-            Do not answer on their behalf — focus on your own response to the user.",
-            roster,
-            if names.len() == 1 { "has" } else { "have" },
-        ))
+    if mentioned.is_empty() {
+        let config = ChatConfig {
+            session_key,
+            prompt: prompt.clone(),
+            system,
+            user_id: user_id.clone(),
+            channel: channel.clone(),
+            origin: Origin::User,
+            agent_id: agent_id.clone(),
+            cancel_token: conn_token.child_token(),
+            lane: lanes::MAIN.to_string(),
+            comm_reply,
+            entity_config,
+            images,
+            entity_name: String::new(), // resolved from agent_registry in run_chat
+            origin_agent_id: None,
+            mention_context: app_context,
+            tool_scope: if scope.is_empty() { None } else { Some(scope) },
+            plan_mode: false,
+            channel_ctx: None,
+        };
+        run_chat(state, config).await;
     } else {
-        None
-    };
-
-    // Merge app context and mention context into a single invisible system message
-    let merged_context = match (app_context, mention_context) {
-        (Some(app), Some(mention)) => Some(format!("{}\n\n{}", app, mention)),
-        (Some(app), None) => Some(app),
-        (None, Some(mention)) => Some(mention),
-        (None, None) => None,
-    };
-
-    let config = ChatConfig {
-        session_key,
-        prompt: prompt.clone(),
-        system,
-        user_id: user_id.clone(),
-        channel: channel.clone(),
-        origin: Origin::User,
-        agent_id: agent_id.clone(),
-        cancel_token: conn_token.child_token(),
-        lane: lanes::MAIN.to_string(),
-        comm_reply,
-        entity_config,
-        images,
-        entity_name: String::new(), // resolved from agent_registry in run_chat
-        origin_agent_id: None,
-        mention_context: merged_context,
-        tool_scope: if scope.is_empty() { None } else { Some(scope) }, plan_mode: false,
-        channel_ctx: None,
-    };
-
-    run_chat(state, config).await;
-
-    // Fork async chats to each @mentioned agent
-    if !mentioned.is_empty() {
+        // Route only to the mentioned agent(s). Each runs in its own session and
+        // broadcasts back into this thread (origin_agent_id).
         let state = state.clone();
         tokio::spawn(async move {
             for mid in mentioned {

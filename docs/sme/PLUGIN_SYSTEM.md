@@ -619,12 +619,33 @@ Install a plugin from a sealed `.napp` archive. Used by `handle_plugin_code()` w
 
 The extracted .napp contains: `manifest.json`, `plugin.json`, `PLUGIN.md`, the native binary, and optionally `skills/{name}/SKILL.md` entries. After extraction, all files land in the version directory — the skill loader picks up embedded skills from there.
 
+> **Extraction exec-bit (`crates/napp/src/reader.rs::extract_all`, fix d661e280):**
+> extraction writes files via `std::fs::write`, which creates mode 0644. It previously
+> restored `+x` only for entries literally named `binary`/`app`/`bin/*`/`scripts/*`, so
+> a binary packaged as `rwxr-xr-x` but named after its slug (e.g. `stadium-ops`) lost
+> its executable bit. `extract_all` now captures `entry.header().mode()` and restores
+> 0o755 when the archived entry was executable (`mode & 0o111 != 0`) OR matches those
+> conventional names. (`install_from_napp_inner` also force-chmods the resolved binary
+> to 0o755, but the exec-bit fix keeps any other packaged executables runnable.)
+
 ### find_binary_in_version_dir()
 
-Two-step binary discovery:
+Two-step binary discovery (`crates/napp/src/plugin.rs`):
 
 1. Read `plugin.json` → look up current platform → check if `binary_name` file exists
-2. Fallback: scan directory for first executable file (Unix: mode & 0o111; Windows: .exe/.bat/.cmd)
+2. **Robust fallback** (scan, skipping metadata): iterate the version dir, skipping
+   dotfiles and metadata (`plugin.json`, `manifest.json`, `signatures.json`, and any
+   `*.md`/`*.json`/`*.txt`). Prefer an executable (Unix: mode & 0o111; Windows:
+   `.exe`/`.bat`/`.cmd`). If no executable is found, return the **largest** remaining
+   plain file — a compiled binary dwarfs the manifest/signature/markdown files. This
+   makes discovery succeed even when `plugin.json` fails to parse or the archive lost
+   the `+x` bit.
+
+> **Fix (d661e280):** the fallback previously returned the *first* non-`plugin.json`,
+> non-dotfile entry, which could surface a metadata file (and never recovered if the
+> binary lacked `+x`). The largest-non-metadata heuristic plus the expanded skip-list
+> fixes plugin dependency installs failing with *"extraction error: no binary found in
+> extracted .napp"*.
 
 ---
 
@@ -844,12 +865,24 @@ For plugins: `state.plugin_store.resolve(&dep.reference, "*").is_some()`
 ### install_dep()
 
 For plugins: calls `install_plugin()` which:
-1. Extracts the simple slug name from the reference
-2. Builds a NeboAI API client
-3. Calls `plugin_store.ensure()` with a download callback
-4. Reads the installed manifest's `dependencies[]` field
-5. Returns non-optional deps as child `DepRef` entries for recursive resolution
-6. Plugin tools are available via the consolidated STRAP `PluginTool`
+1. Redeems the install code via `api.install_skill(reference)` (plugins share the redeem endpoint)
+2. Resolves strictly by the canonical `artifact.slug` (fails loudly if missing — never guesses from the display name)
+3. Resolves the `{platform}` template in the redeem response's `download_url` (see fix below)
+4. Downloads the per-platform `.napp` via `api.download_napp(url)`, then `plugin_store.install_from_napp(slug, "latest", &napp_data)` — extracts binary + plugin.json + embedded skills
+5. Reloads skills, re-registers the `plugin` STRAP tool
+6. Reads the installed manifest's `dependencies[]` field, returns non-optional deps as child `DepRef` entries for recursive resolution
+
+> **`{platform}` template resolution (`crates/server/src/deps.rs::install_plugin`, fix d661e280):**
+> The redeem response's `download_url` is a **template** —
+> `/api/v1/apps/<id>/download/{platform}`. The cascade previously passed the literal
+> `{platform}` straight to `download_napp()`, which 404s (*"binary not found"*), so plugin
+> **dependencies** never fetched the binary-bearing `.napp` and `install_from_napp` then
+> failed with *"no binary found in extracted .napp"*. The fix substitutes
+> `napp::plugin::current_platform_key()` for `{platform}` before download, mirroring the
+> code-redemption path in `codes.rs` (which resolves the concrete per-platform URL via
+> `get_plugin` → `platform_binary.download_url`). The two paths differ in *how* they
+> reach the per-platform URL (template substitution here vs. `get_plugin` lookup in
+> codes.rs) but both now download the real per-platform archive.
 
 ---
 
@@ -1066,6 +1099,7 @@ Future events (not yet implemented):
 - **Concurrent download:** `downloading` mutex deduplicates — second caller polls for first to complete (30s timeout).
 - **Invalid version range:** `semver::VersionReq::parse()` fails → `resolve()` returns None.
 - **Empty version range / `*`:** Matches any installed version, returns highest.
+- **Plugin dependency `.napp` download (fix d661e280):** the redeem response's `download_url` is a `{platform}` template. The cascade (`deps.rs::install_plugin`) substitutes `current_platform_key()` before download; without it the literal `{platform}` 404s and install fails with *"no binary found in extracted .napp"*. Two contributing robustness fixes landed alongside: `extract_all` now preserves the archived `+x` bit (slug-named binaries kept their mode), and `find_binary_in_version_dir` falls back to the largest non-metadata file when no executable is present. See §6 and §11.
 
 ---
 
@@ -1076,6 +1110,7 @@ Future events (not yet implemented):
 | `crates/napp/src/plugin.rs` | ~3067 | Core module: types (incl. capabilities, dependencies, validation), PluginStore (incl. `ensure_deps`, `path_with_plugins`), helpers, tests |
 | `crates/napp/src/agent.rs` | — | `AgentTrigger::Watch` with optional `event` field |
 | `crates/napp/src/napp.rs` | — | .napp extraction: ALLOWED_FILES includes PLUGIN.md/plugin.json, `skills/` prefix support |
+| `crates/napp/src/reader.rs` | — | `extract_all()` — extracts .napp to dir; preserves archived executable bit (`mode & 0o111`) so slug-named binaries stay runnable |
 | `crates/napp/src/lib.rs` | — | `pub mod plugin;` + NappError variants |
 | `crates/agent/src/agent_worker.rs` | — | Watch loop auto-emission: resolves event from manifest, emits NDJSON into EventBus |
 | `crates/tools/src/events.rs` | — | `EventBus`, `Event` struct definitions |
