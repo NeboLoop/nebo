@@ -192,7 +192,8 @@ impl WebTool {
                 return ToolResult::ok(format!(
                     "HTTP {} — Status: {}\n\n(no visible text)",
                     url, status
-                ));
+                ))
+                .with_http_status(status);
             }
             let idx = chunk_idx.min(total - 1);
             return ToolResult::ok(format!(
@@ -203,7 +204,8 @@ impl WebTool {
                 total,
                 max_chars,
                 chunks[idx]
-            ));
+            ))
+            .with_http_status(status);
         }
 
         // Infer HTTP method from action name (get/post/put/delete/head) or explicit method param
@@ -288,6 +290,7 @@ impl WebTool {
                             "HTTP {} {} — Status: {}\n\n{}",
                             method, url, status, display_body
                         ))
+                        .with_http_status(status)
                     }
                     Err(e) => ToolResult::error(format!(
                         "Failed to read response body from {}: {}",
@@ -328,6 +331,7 @@ impl WebTool {
                     content: format!("[Cached from sibling agent]\n\n{}", cached.content),
                     is_error: cached.is_error,
                     image_url: None,
+                    http_status: None,
                 };
             }
         }
@@ -698,6 +702,7 @@ impl WebTool {
                             content: format!("[Already visited by sibling agent]\n\n{}", cached.content),
                             is_error: cached.is_error,
                             image_url: None,
+                            http_status: None,
                         };
                     }
                 }
@@ -1101,6 +1106,7 @@ impl WebTool {
                                     content,
                                     is_error: false,
                                     image_url: None,
+                                    http_status: None,
                                 };
                             }
                         }
@@ -1211,6 +1217,7 @@ impl WebTool {
                     content: text_result,
                     is_error: false,
                     image_url: screenshot_b64,
+                    http_status: None,
                 }
             }
             Err(e) => ToolResult::error(friendly_browser_error(action, &e.to_string())),

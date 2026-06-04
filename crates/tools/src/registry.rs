@@ -54,21 +54,25 @@ impl ResourcePermits {
 }
 
 /// Result of a tool execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolResult {
     pub content: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
+    /// Upstream HTTP status for tools that make HTTP calls (e.g. web fetch), so a
+    /// programmatic caller can branch on 429/403/4xx without string-parsing `content`.
+    /// `None` for non-HTTP tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
 }
 
 impl ToolResult {
     pub fn ok(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
-            is_error: false,
-            image_url: None,
+            ..Default::default()
         }
     }
 
@@ -76,8 +80,14 @@ impl ToolResult {
         Self {
             content: content.into(),
             is_error: true,
-            image_url: None,
+            ..Default::default()
         }
+    }
+
+    /// Attach an upstream HTTP status (builder; chains off `ok`/`error`).
+    pub fn with_http_status(mut self, status: u16) -> Self {
+        self.http_status = Some(status);
+        self
     }
 }
 

@@ -3307,6 +3307,7 @@ async fn run_loop(
                     content: crate::runner::truncate_str(&result.content, 300).to_string(),
                     is_error: result.is_error,
                     image_url: None,
+                    http_status: None,
                 });
                 if !result.is_error {
                     all_errors_this_iteration = false;

@@ -166,6 +166,7 @@ impl ShellTool {
                 ),
                 is_error: true,
                 image_url: None,
+                http_status: None,
             },
             Ok(Err(e)) => {
                 let err_str = e.to_string();
@@ -210,6 +211,7 @@ impl ShellTool {
                             content: format!("Command exited with code {}\n{}", code, result),
                             is_error: true,
                             image_url: None,
+                            http_status: None,
                         };
                     }
                     // Non-error exit (e.g. grep exit 1 = no matches) — fall through to success path

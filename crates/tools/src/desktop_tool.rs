@@ -627,6 +627,7 @@ async fn handle_input(
                         content: format!("Clicked '{}' at ({},{}) and typed text", label, cx, cy),
                         is_error: type_result.is_error,
                         image_url: None,
+                        http_status: None,
                     };
                 }
 
@@ -641,6 +642,7 @@ async fn handle_input(
                             ),
                             is_error: r.is_error,
                             image_url: None,
+                            http_status: None,
                         }
                     }
                     "double_click" => {
@@ -652,6 +654,7 @@ async fn handle_input(
                             ),
                             is_error: r.is_error,
                             image_url: None,
+                            http_status: None,
                         }
                     }
                     "right_click" => {
@@ -663,6 +666,7 @@ async fn handle_input(
                             ),
                             is_error: r.is_error,
                             image_url: None,
+                            http_status: None,
                         }
                     }
                     "move" => {
@@ -674,6 +678,7 @@ async fn handle_input(
                             ),
                             is_error: r.is_error,
                             image_url: None,
+                            http_status: None,
                         }
                     }
                     _ => ToolResult::error(format!(
@@ -1512,6 +1517,7 @@ async fn capture_see(
         content: serde_json::to_string_pretty(&response).unwrap_or_default(),
         is_error: false,
         image_url: screenshot.image_url,
+        http_status: None,
     }
 }
 
@@ -1763,6 +1769,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, summary: &str) -> ToolResult {
         content,
         is_error: false,
         image_url: Some(data_uri),
+        http_status: None,
     }
 }
 
