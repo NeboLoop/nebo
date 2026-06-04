@@ -100,6 +100,20 @@ pub struct ReminderContext<'a> {
     pub work_tasks: &'a [WorkTask],
     /// The current user prompt (complexity detection for task-tracking).
     pub user_prompt: &'a str,
+    /// The current modifiable objective (active_task) — the goal-anchor reminder re-injects it.
+    pub active_task: &'a str,
+    /// Rolling (name_hash, args_hash, result_hash) for recent tool calls (duplicate detection).
+    pub recent_tool_result_hashes: &'a [(u64, u64, u64)],
+    /// User presence: "focused" / "unfocused" / "away" / "" (presence reminder).
+    pub user_presence: &'a str,
+    /// Whether the user just transitioned back to focused.
+    pub user_just_returned: bool,
+    /// Janus cost/quota warning, if any.
+    pub quota_warning: Option<&'a str>,
+    /// Consecutive iterations where all tool calls errored (error-recovery reminder).
+    pub consecutive_error_iterations: usize,
+    /// The run's iteration budget (budget-warning reminder).
+    pub max_iterations: usize,
 }
 
 impl ReminderContext<'_> {
@@ -141,6 +155,13 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(TaskTrackingNudge),
         Box::new(TaskCompletionNudge),
         Box::new(UntrustedContent),
+        Box::new(BudgetWarning),
+        Box::new(DuplicateToolCall),
+        Box::new(PresenceAwareness),
+        Box::new(ContextPressure),
+        Box::new(JanusQuotaWarning),
+        Box::new(ErrorRecovery),
+        Box::new(ObjectiveReinforce),
     ]
 }
 
@@ -343,11 +364,6 @@ impl Pipeline {
             Box::new(ChannelAdapter),
             Box::new(ChannelPluginRouting),
             Box::new(LoopFileSharing),
-            Box::new(LoopDetector),
-            Box::new(ErrorRecovery),
-            Box::new(PresenceAwareness),
-            Box::new(ContextPressure),
-            Box::new(JanusQuotaWarning),
         ];
 
         Self { generators }
@@ -821,79 +837,75 @@ impl Reminder for RepetitionDetector {
 // Uses (name_hash, args_hash, result_hash) tuples instead of tool name strings.
 // This correctly distinguishes web(navigate, google.com) → web(click, button)
 // (legitimate browser work) from web(search, "flights") × 5 (actual loop).
-struct LoopDetector;
-impl Generator for LoopDetector {
-    fn name(&self) -> &str {
-        "loop_detector"
+// LoopDetector was split in R6. Its budget warnings → BudgetWarning; its duplicate-
+// tool detection → DuplicateToolCall. Its soft "user asked to STOP" directive was
+// dropped — should_force_break already hard-stops on user-stop (the authoritative path).
+
+/// BudgetWarning — iteration-budget pressure (Hermes 70%/90% thresholds).
+struct BudgetWarning;
+impl Reminder for BudgetWarning {
+    fn name(&self) -> &'static str {
+        "budget_warning"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        let mut directives = Vec::new();
-
-        // Budget pressure warnings (Hermes pattern — 70%/90% thresholds).
-        // This is the only loop-related steering we keep. Hermes has no explicit
-        // loop detection — just an iteration budget of 90. We match that approach.
-        const MAX_ITERATIONS: usize = 100;
-        let pct = (ctx.iteration * 100) / MAX_ITERATIONS;
+    fn priority(&self) -> u8 {
+        9
+    }
+    fn min_turns_between(&self) -> usize {
+        5
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        let max = ctx.max_iterations.max(1);
+        let pct = (ctx.iteration * 100) / max;
+        let remaining = max.saturating_sub(ctx.iteration);
         if pct >= 90 {
-            let remaining = MAX_ITERATIONS.saturating_sub(ctx.iteration);
-            directives.push(SteeringDirective {
-                label: "Budget Critical".to_string(),
-                content: format!(
-                    "BUDGET WARNING: Iteration {}/{}. Only {} left. \
-                     Provide your final answer NOW. No more tool calls unless absolutely critical.",
-                    ctx.iteration, MAX_ITERATIONS, remaining
-                ),
-                priority: 10,
-            });
+            Some(format!(
+                "BUDGET WARNING: Iteration {}/{}. Only {} left. \
+                 Provide your final answer NOW. No more tool calls unless absolutely critical.",
+                ctx.iteration, max, remaining
+            ))
         } else if pct >= 70 {
-            let remaining = MAX_ITERATIONS.saturating_sub(ctx.iteration);
-            directives.push(SteeringDirective {
-                label: "Budget Caution".to_string(),
-                content: format!(
-                    "Budget: iteration {}/{}. {} iterations left. Start consolidating your work.",
-                    ctx.iteration, MAX_ITERATIONS, remaining
-                ),
-                priority: 6,
-            });
+            Some(format!(
+                "Budget: iteration {}/{}. {} iterations left. Start consolidating your work.",
+                ctx.iteration, max, remaining
+            ))
+        } else {
+            None
         }
+    }
+}
 
-        // User stop detection (soft steering — hard stop is in should_force_break)
-        if user_requested_stop(&ctx.messages) {
-            directives.push(SteeringDirective {
-                label: "User Stop".to_string(),
-                content: "The user has asked you to STOP. Cease all tool calls immediately. \
-                         Respond with a brief summary and stop."
-                    .to_string(),
-                priority: 10,
-            });
-        }
-
-        // Duplicate tool call detection
-        let mut seen: std::collections::HashMap<(u64, u64), (usize, String)> = std::collections::HashMap::new();
+/// DuplicateToolCall — same tool + identical args called 3+ times in the recent window.
+struct DuplicateToolCall;
+impl Reminder for DuplicateToolCall {
+    fn name(&self) -> &'static str {
+        "duplicate_tool_call"
+    }
+    fn priority(&self) -> u8 {
+        8
+    }
+    fn min_turns_between(&self) -> usize {
+        3
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        let mut seen: std::collections::HashMap<(u64, u64), (usize, String)> =
+            std::collections::HashMap::new();
         for (i, &(name_hash, args_hash, _)) in ctx.recent_tool_result_hashes.iter().enumerate() {
             let name = ctx.recent_tool_names.get(i).cloned().unwrap_or_default();
             seen.entry((name_hash, args_hash))
                 .and_modify(|e| e.0 += 1)
                 .or_insert((1, name));
         }
-
-        for ((_,_), (count, tool_name)) in &seen {
+        for (count, tool_name) in seen.values() {
             if *count >= 3 {
-                directives.push(SteeringDirective {
-                    label: "Duplicate Tool Call".to_string(),
-                    content: format!(
-                        "You have called {} with identical arguments {} times. \
-                         The result will not change. Try a different approach: \
-                         different parameters, a different tool, or summarize \
-                         what you know and respond to the user.",
-                        tool_name, count
-                    ),
-                    priority: 8,
-                });
+                return Some(format!(
+                    "You have called {} with identical arguments {} times. The result will not \
+                     change. Try a different approach: different parameters, a different tool, or \
+                     summarize what you know and respond to the user.",
+                    tool_name, count
+                ));
             }
         }
-
-        directives
+        None
     }
 }
 
@@ -904,21 +916,25 @@ impl Generator for LoopDetector {
 
 // 9. Presence Awareness — adapts behavior based on user focus state
 struct PresenceAwareness;
-impl Generator for PresenceAwareness {
-    fn name(&self) -> &str {
+impl Reminder for PresenceAwareness {
+    fn name(&self) -> &'static str {
         "presence_awareness"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+    fn priority(&self) -> u8 {
+        4
+    }
+    fn min_turns_between(&self) -> usize {
+        3
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
         if ctx.user_presence.is_empty() || ctx.iteration < 2 {
-            return vec![];
+            return None;
         }
-
-        match ctx.user_presence.as_str() {
-            "unfocused" | "away" => {
+        match ctx.user_presence {
+            "unfocused" | "away" => Some(
                 // In Interactive mode the agent is normally allowed a preamble +
-                // milestone updates; stepping away cancels that explicitly so the
-                // dynamic suffix overrides the cached interactive comm-style.
-                let content = if ctx.execution_mode == tools::ExecutionMode::Interactive {
+                // milestone updates; stepping away cancels that explicitly.
+                if ctx.execution_mode == tools::ExecutionMode::Interactive {
                     "The user stepped away — switch to silent autonomous work. Skip preambles \
                      and status updates; keep working and deliver a summary when they return."
                         .to_string()
@@ -926,69 +942,66 @@ impl Generator for PresenceAwareness {
                     "The user stepped away. Continue working autonomously on active tasks. \
                      Be thorough but concise in your output."
                         .to_string()
-                };
-                vec![SteeringDirective {
-                    label: "Presence".to_string(),
-                    content,
-                    priority: 4,
-                }]
-            }
-            "focused" if ctx.user_just_returned => {
-                vec![SteeringDirective {
-                    label: "Presence".to_string(),
-                    content: "The user is back. If you completed work while they were away, \
-                              briefly summarize what you accomplished."
-                        .to_string(),
-                    priority: 4,
-                }]
-            }
-            _ => vec![],
+                },
+            ),
+            "focused" if ctx.user_just_returned => Some(
+                "The user is back. If you completed work while they were away, \
+                 briefly summarize what you accomplished."
+                    .to_string(),
+            ),
+            _ => None,
         }
     }
 }
 
 // 10. Context Pressure
 struct ContextPressure;
-impl Generator for ContextPressure {
-    fn name(&self) -> &str {
+impl Reminder for ContextPressure {
+    fn name(&self) -> &'static str {
         "context_pressure"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        // Fire every 15 iterations starting at 15 as a proxy for high context usage
+    fn priority(&self) -> u8 {
+        6
+    }
+    fn min_turns_between(&self) -> usize {
+        10
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        // Fire every 15 iterations starting at 15 as a proxy for high context usage.
         if ctx.iteration < 15 || ctx.iteration % 15 != 0 {
-            return vec![];
+            return None;
         }
-        vec![SteeringDirective {
-            label: "Context Pressure".to_string(),
-            content: "Context window is filling up. Summarize tool results instead of echoing them verbatim. \
-                      If you need earlier results, re-run the tool rather than quoting from memory."
+        Some(
+            "Context window is filling up. Summarize tool results instead of echoing them \
+             verbatim. If you need earlier results, re-run the tool rather than quoting from memory."
                 .to_string(),
-            priority: 6,
-        }]
+        )
     }
 }
 
 // 12. Janus Quota Warning
 struct JanusQuotaWarning;
-impl Generator for JanusQuotaWarning {
-    fn name(&self) -> &str {
+impl Reminder for JanusQuotaWarning {
+    fn name(&self) -> &'static str {
         "janus_quota_warning"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if let Some(ref warning) = ctx.quota_warning {
-            if !warning.is_empty() {
-                return vec![SteeringDirective {
-                    label: "Cost Alert".to_string(),
-                    content: format!(
-                        "{}. Be cost-conscious — prefer shorter responses, \
-                         avoid unnecessary tool calls, and minimize token usage.",
-                        warning
-                    ),
-                    priority: 7,
-                }];
-            }
+    fn priority(&self) -> u8 {
+        7
+    }
+    fn min_turns_between(&self) -> usize {
+        5
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        // Janus-specific cost warning — skip for Ollama (local, free).
+        if ctx.provider_id == "ollama" {
+            return None;
         }
-        vec![]
+        let warning = ctx.quota_warning.filter(|w| !w.is_empty())?;
+        Some(format!(
+            "{}. Be cost-conscious — prefer shorter responses, avoid unnecessary tool calls, \
+             and minimize token usage.",
+            warning
+        ))
     }
 }
 
@@ -997,27 +1010,53 @@ impl Generator for JanusQuotaWarning {
 // consecutive errors as an advisory, not a command. Single failures are normal
 // (browser timeouts, transient network issues).
 struct ErrorRecovery;
-impl Generator for ErrorRecovery {
-    fn name(&self) -> &str {
+impl Reminder for ErrorRecovery {
+    fn name(&self) -> &'static str {
         "error_recovery"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        // Don't fire on 1-2 errors — single failures are normal, especially
-        // in browser automation (click timeouts, page loading, etc.)
+    fn priority(&self) -> u8 {
+        6
+    }
+    fn min_turns_between(&self) -> usize {
+        3
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        // Don't fire on 1-2 errors — single failures are normal (browser timeouts, etc.).
         if ctx.consecutive_error_iterations < 3 {
-            return vec![];
+            return None;
         }
+        Some(format!(
+            "Note: {} consecutive iterations had errors. Consider reading the error messages \
+             carefully and trying a different approach if the current one isn't working.",
+            ctx.consecutive_error_iterations
+        ))
+    }
+}
 
-        // At 3+: soft advisory suggesting a different approach
-        vec![SteeringDirective {
-            label: "Error Recovery".to_string(),
-            content: format!(
-                "Note: {} consecutive iterations had errors. Consider reading the error messages \
-                 carefully and trying a different approach if the current one isn't working.",
-                ctx.consecutive_error_iterations
-            ),
-            priority: 6,
-        }]
+/// Re-state the modifiable objective every N turns so a weak model doesn't drift off
+/// the goal over a long run. Claude Code does the analogue (todo/task re-injection on a
+/// cadence, never every turn). Content template mirrors the recap: goal → stay on it.
+const OBJECTIVE_REINFORCE_EVERY: usize = 8;
+struct ObjectiveReinforce;
+impl Reminder for ObjectiveReinforce {
+    fn name(&self) -> &'static str {
+        "objective_reinforce"
+    }
+    fn priority(&self) -> u8 {
+        6
+    }
+    fn min_turns_between(&self) -> usize {
+        OBJECTIVE_REINFORCE_EVERY
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        if ctx.active_task.is_empty() || ctx.iteration < OBJECTIVE_REINFORCE_EVERY {
+            return None;
+        }
+        Some(format!(
+            "Current objective: {}\nStill on it? If the user changed direction, follow them; \
+             otherwise keep making progress toward this goal and don't drift into tangents.",
+            ctx.active_task
+        ))
     }
 }
 
@@ -1387,52 +1426,48 @@ mod tests {
         assert_eq!(result[0].label, "Identity");
     }
 
+    fn rctx_presence(presence: &'static str, mode: tools::ExecutionMode) -> ReminderContext<'static> {
+        ReminderContext {
+            iteration: 3,
+            execution_mode: mode,
+            user_presence: presence,
+            ..base_rctx()
+        }
+    }
+
     #[test]
     fn test_presence_awareness_away() {
-        let messages = vec![make_msg("user", "hello"), make_msg("assistant", "hi")];
-        let generator = PresenceAwareness;
-        let mut ctx = make_ctx(messages);
-        ctx.iteration = 3;
-        ctx.user_presence = "away".to_string();
-        let result = generator.generate(&ctx);
-        assert_eq!(result.len(), 1);
-        assert!(result[0].content.contains("stepped away"));
+        let out = PresenceAwareness
+            .check(&rctx_presence("away", tools::ExecutionMode::Autonomous))
+            .expect("fires when away");
+        assert!(out.contains("stepped away"));
     }
 
     #[test]
     fn test_presence_awareness_away_mode_aware() {
-        let messages = vec![make_msg("user", "hello"), make_msg("assistant", "hi")];
-        let generator = PresenceAwareness;
-
         // Interactive: stepping away explicitly cancels the preamble/updates.
-        let mut ctx = make_ctx(messages.clone());
-        ctx.iteration = 3;
-        ctx.user_presence = "away".to_string();
-        ctx.execution_mode = tools::ExecutionMode::Interactive;
-        let interactive = generator.generate(&ctx);
-        assert_eq!(interactive.len(), 1);
-        assert!(interactive[0].content.contains("silent autonomous work"));
-        assert!(interactive[0].content.contains("Skip preambles"));
-
+        let interactive = PresenceAwareness
+            .check(&rctx_presence("away", tools::ExecutionMode::Interactive))
+            .unwrap();
+        assert!(interactive.contains("silent autonomous work"));
+        assert!(interactive.contains("Skip preambles"));
         // Autonomous: original text (already silent by default).
-        ctx.execution_mode = tools::ExecutionMode::Autonomous;
-        let autonomous = generator.generate(&ctx);
-        assert_eq!(autonomous.len(), 1);
-        assert!(autonomous[0].content.contains("Be thorough but concise"));
-        assert!(!autonomous[0].content.contains("Skip preambles"));
+        let autonomous = PresenceAwareness
+            .check(&rctx_presence("away", tools::ExecutionMode::Autonomous))
+            .unwrap();
+        assert!(autonomous.contains("Be thorough but concise"));
+        assert!(!autonomous.contains("Skip preambles"));
     }
 
     #[test]
     fn test_presence_awareness_returned() {
-        let messages = vec![make_msg("user", "hello"), make_msg("assistant", "hi")];
-        let generator = PresenceAwareness;
-        let mut ctx = make_ctx(messages);
-        ctx.iteration = 3;
-        ctx.user_presence = "focused".to_string();
-        ctx.user_just_returned = true;
-        let result = generator.generate(&ctx);
-        assert_eq!(result.len(), 1);
-        assert!(result[0].content.contains("user is back"));
+        let ctx = ReminderContext {
+            iteration: 3,
+            user_presence: "focused",
+            user_just_returned: true,
+            ..base_rctx()
+        };
+        assert!(PresenceAwareness.check(&ctx).unwrap().contains("user is back"));
     }
 
     #[test]
@@ -1521,33 +1556,23 @@ mod tests {
         );
     }
 
+    fn rctx_errors(consecutive_error_iterations: usize) -> ReminderContext<'static> {
+        ReminderContext {
+            consecutive_error_iterations,
+            ..base_rctx()
+        }
+    }
+
     #[test]
-    fn test_error_recovery_silent_at_1_and_2() {
-        let recovery = ErrorRecovery;
-        let mut ctx = make_ctx(vec![]);
-
-        ctx.consecutive_error_iterations = 1;
-        assert!(
-            recovery.generate(&ctx).is_empty(),
-            "should NOT fire at 1 error"
-        );
-
-        ctx.consecutive_error_iterations = 2;
-        assert!(
-            recovery.generate(&ctx).is_empty(),
-            "should NOT fire at 2 errors"
-        );
+    fn test_error_recovery_silent_below_3() {
+        assert!(ErrorRecovery.check(&rctx_errors(1)).is_none(), "no fire at 1 error");
+        assert!(ErrorRecovery.check(&rctx_errors(2)).is_none(), "no fire at 2 errors");
     }
 
     #[test]
     fn test_error_recovery_soft_advisory_at_3() {
-        let recovery = ErrorRecovery;
-        let mut ctx = make_ctx(vec![]);
-        ctx.consecutive_error_iterations = 3;
-        let result = recovery.generate(&ctx);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].priority, 6, "should be low priority advisory");
-        assert!(result[0].content.contains("different approach"));
+        let out = ErrorRecovery.check(&rctx_errors(3)).expect("fires at 3 errors");
+        assert!(out.contains("different approach"));
     }
 
     // --- Level 2: Failure-mode scenario tests ---
@@ -1589,12 +1614,9 @@ mod tests {
     ) -> ReminderContext<'a> {
         ReminderContext {
             iteration,
-            execution_mode: tools::ExecutionMode::Interactive,
             messages,
             recent_tool_names,
-            provider_id: "openai",
-            work_tasks: &[],
-            user_prompt: "",
+            ..base_rctx()
         }
     }
 
@@ -1754,12 +1776,8 @@ mod tests {
     fn rctx_prompt(user_prompt: &str, iteration: usize) -> ReminderContext<'_> {
         ReminderContext {
             iteration,
-            execution_mode: tools::ExecutionMode::Interactive,
-            messages: &[],
-            recent_tool_names: &[],
-            provider_id: "openai",
-            work_tasks: &[],
             user_prompt,
+            ..base_rctx()
         }
     }
 
@@ -1770,12 +1788,9 @@ mod tests {
     ) -> ReminderContext<'a> {
         ReminderContext {
             iteration,
-            execution_mode: tools::ExecutionMode::Interactive,
             messages,
-            recent_tool_names: &[],
-            provider_id: "openai",
             work_tasks,
-            user_prompt: "",
+            ..base_rctx()
         }
     }
 
@@ -1836,138 +1851,79 @@ mod tests {
         assert!(TaskCompletionNudge.check(&rctx_tasks(&msgs, &in_progress, 3)).is_none());
     }
 
-    #[test]
-    fn test_fm5_consecutive_errors_no_fire_at_1() {
-        // Hermes approach: single error is normal, no steering needed
-        let generator = ErrorRecovery;
-        let mut ctx = make_ctx(vec![]);
-        ctx.consecutive_error_iterations = 1;
-        assert!(
-            generator.generate(&ctx).is_empty(),
-            "ErrorRecovery should NOT fire at 1 error (single failures are normal)"
-        );
+    fn rctx_hashes<'a>(
+        hashes: &'a [(u64, u64, u64)],
+        names: &'a [String],
+    ) -> ReminderContext<'a> {
+        ReminderContext {
+            recent_tool_result_hashes: hashes,
+            recent_tool_names: names,
+            ..base_rctx()
+        }
     }
 
     #[test]
-    fn test_fm6_no_same_tool_loop_detection() {
-        // Hermes approach: no same-tool detection, model self-corrects
-        let generator = LoopDetector;
-        let mut ctx = make_ctx(vec![]);
-        ctx.recent_tool_result_hashes = vec![(100, 200, 300), (100, 200, 301), (100, 200, 302)];
-
-        let result = generator.generate(&ctx);
-        assert!(
-            !result.iter().any(|d| d.label == "Loop Warning"),
-            "LoopDetector should NOT fire on same-tool calls (removed)"
-        );
-    }
-
-    #[test]
-    fn test_fm7_no_ping_pong_detection() {
-        // Hermes approach: no ping-pong detection
-        let generator = LoopDetector;
-        let mut ctx = make_ctx(vec![]);
-        ctx.recent_tool_result_hashes = vec![
-            (1, 2, 10), // A
-            (3, 4, 20), // B
-            (1, 2, 11), // A again
-            (3, 4, 21), // B again
-        ];
-
-        let result = generator.generate(&ctx);
-        assert!(
-            !result.iter().any(|d| d.label == "Ping-Pong"),
-            "LoopDetector should NOT have ping-pong detection (removed)"
-        );
-    }
-
-    #[test]
-    fn test_duplicate_detection_fires_at_3() {
-        let generator = LoopDetector;
-        let mut ctx = make_ctx(vec![]);
-        ctx.recent_tool_result_hashes = vec![
-            (42, 99, 1),
-            (42, 99, 2),
-            (42, 99, 3),
-        ];
-        ctx.recent_tool_names = vec![
-            "web".to_string(),
-            "web".to_string(),
-            "web".to_string(),
-        ];
-
-        let result = generator.generate(&ctx);
-        assert!(
-            result.iter().any(|d| d.label == "Duplicate Tool Call"),
-            "LoopDetector should emit Duplicate Tool Call at 3 identical (name, args) pairs"
-        );
+    fn test_duplicate_detection_fires_at_3_with_tool_name() {
+        let hashes = [(42, 99, 1), (42, 99, 2), (42, 99, 3)];
+        let names = vec!["web".to_string(), "web".to_string(), "web".to_string()];
+        let out = DuplicateToolCall
+            .check(&rctx_hashes(&hashes, &names))
+            .expect("fires at 3 identical (name, args) pairs");
+        assert!(out.contains("web"), "names the duplicated tool");
     }
 
     #[test]
     fn test_duplicate_detection_silent_below_3() {
-        let generator = LoopDetector;
-        let mut ctx = make_ctx(vec![]);
-        ctx.recent_tool_result_hashes = vec![
-            (42, 99, 1),
-            (42, 99, 2),
-        ];
-        ctx.recent_tool_names = vec![
-            "web".to_string(),
-            "web".to_string(),
-        ];
-
-        let result = generator.generate(&ctx);
-        assert!(
-            !result.iter().any(|d| d.label == "Duplicate Tool Call"),
-            "LoopDetector should NOT fire Duplicate Tool Call with only 2 identical pairs"
-        );
+        let hashes = [(42, 99, 1), (42, 99, 2)];
+        let names = vec!["web".to_string(), "web".to_string()];
+        assert!(DuplicateToolCall.check(&rctx_hashes(&hashes, &names)).is_none());
     }
 
     #[test]
     fn test_duplicate_detection_different_args_no_fire() {
-        let generator = LoopDetector;
-        let mut ctx = make_ctx(vec![]);
-        ctx.recent_tool_result_hashes = vec![
-            (42, 100, 1),
-            (42, 200, 2),
-            (42, 300, 3),
-        ];
-        ctx.recent_tool_names = vec![
-            "system".to_string(),
-            "system".to_string(),
-            "system".to_string(),
-        ];
+        // Same tool, different args each time → not a duplicate.
+        let hashes = [(42, 100, 1), (42, 200, 2), (42, 300, 3)];
+        let names = vec!["system".to_string(), "system".to_string(), "system".to_string()];
+        assert!(DuplicateToolCall.check(&rctx_hashes(&hashes, &names)).is_none());
+    }
 
-        let result = generator.generate(&ctx);
+    #[test]
+    fn test_budget_warning_thresholds() {
+        let at = |iter: usize| ReminderContext {
+            iteration: iter,
+            max_iterations: 100,
+            ..base_rctx()
+        };
+        assert!(BudgetWarning.check(&at(50)).is_none(), "no warning below 70%");
         assert!(
-            !result.iter().any(|d| d.label == "Duplicate Tool Call"),
-            "LoopDetector should NOT fire when args_hash differs across calls"
+            BudgetWarning.check(&at(75)).unwrap().contains("consolidating"),
+            "caution at 70%+"
+        );
+        assert!(
+            BudgetWarning.check(&at(95)).unwrap().contains("final answer NOW"),
+            "critical at 90%+"
         );
     }
 
     #[test]
-    fn test_duplicate_detection_includes_tool_name() {
-        let generator = LoopDetector;
-        let mut ctx = make_ctx(vec![]);
-        ctx.recent_tool_result_hashes = vec![
-            (77, 88, 10),
-            (77, 88, 20),
-            (77, 88, 30),
-        ];
-        ctx.recent_tool_names = vec![
-            "bot".to_string(),
-            "bot".to_string(),
-            "bot".to_string(),
-        ];
-
-        let result = generator.generate(&ctx);
-        let dup = result.iter().find(|d| d.label == "Duplicate Tool Call")
-            .expect("should have Duplicate Tool Call directive");
+    fn test_objective_reinforce_cadence_and_goal() {
+        // No objective → never fires.
         assert!(
-            dup.content.contains("bot"),
-            "Duplicate Tool Call content should include the tool name 'bot', got: {}",
-            dup.content
+            ObjectiveReinforce
+                .check(&ReminderContext { iteration: 20, active_task: "", ..base_rctx() })
+                .is_none()
         );
+        // Before the cadence floor → no fire.
+        assert!(
+            ObjectiveReinforce
+                .check(&ReminderContext { iteration: 3, active_task: "Plan the trip", ..base_rctx() })
+                .is_none()
+        );
+        // At/after the floor → fires, restating the goal verbatim.
+        let out = ObjectiveReinforce
+            .check(&ReminderContext { iteration: 8, active_task: "Plan the Tokyo trip", ..base_rctx() })
+            .expect("fires");
+        assert!(out.contains("Plan the Tokyo trip"));
     }
 
     // --- Reminder engine tests ---
@@ -1993,15 +1949,31 @@ mod tests {
         }
     }
 
-    fn rctx(iteration: usize) -> ReminderContext<'static> {
+    /// Fully-defaulted reminder context; tests override only the fields they vary
+    /// via struct update (`ReminderContext { iteration, ..base_rctx() }`).
+    fn base_rctx() -> ReminderContext<'static> {
         ReminderContext {
-            iteration,
+            iteration: 1,
             execution_mode: tools::ExecutionMode::Interactive,
             messages: &[],
             recent_tool_names: &[],
             provider_id: "openai",
             work_tasks: &[],
             user_prompt: "",
+            active_task: "",
+            recent_tool_result_hashes: &[],
+            user_presence: "",
+            user_just_returned: false,
+            quota_warning: None,
+            consecutive_error_iterations: 0,
+            max_iterations: 100,
+        }
+    }
+
+    fn rctx(iteration: usize) -> ReminderContext<'static> {
+        ReminderContext {
+            iteration,
+            ..base_rctx()
         }
     }
 
@@ -2047,10 +2019,8 @@ mod tests {
             iteration,
             execution_mode: mode,
             messages,
-            recent_tool_names: &[],
             provider_id,
-            work_tasks: &[],
-            user_prompt: "",
+            ..base_rctx()
         }
     }
 

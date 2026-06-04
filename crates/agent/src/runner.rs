@@ -2029,7 +2029,7 @@ async fn run_loop(
             consecutive_error_iterations,
             recent_tool_result_hashes: recent_tool_result_hashes.clone(),
             recent_tool_names: recent_tool_names.clone(),
-            user_presence,
+            user_presence: user_presence.clone(),
             user_just_returned,
             proactive_items,
             provider_id: selected_provider_id.to_string(),
@@ -3487,6 +3487,13 @@ async fn run_loop(
                     provider_id: selected_provider_id,
                     work_tasks: &work_tasks,
                     user_prompt,
+                    active_task: &active_task,
+                    recent_tool_result_hashes: &recent_tool_result_hashes,
+                    user_presence: &user_presence,
+                    user_just_returned,
+                    quota_warning: state.quota_warning.as_deref(),
+                    consecutive_error_iterations,
+                    max_iterations,
                 };
                 if let Some(reminder) = steering::select_reminder(&rctx, &mut reminder_cadence) {
                     if let Err(e) = sessions.append_message(
