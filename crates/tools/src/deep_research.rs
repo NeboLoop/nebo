@@ -874,6 +874,27 @@ struct FetchedSource {
     claims: Vec<Claim>,
 }
 
+/// Non-blocking phase-progress emitter — feeds the fan-out UI without ever blocking the
+/// harness if the receiver is full or gone (`try_send`).
+type ProgressTx = Option<tokio::sync::mpsc::Sender<ai::StreamEvent>>;
+
+fn emit_progress(tx: &ProgressTx, text: impl Into<String>) {
+    if let Some(tx) = tx {
+        let _ = tx.try_send(ai::StreamEvent {
+            event_type: ai::StreamEventType::SubagentProgress,
+            text: text.into(),
+            tool_call: None,
+            error: None,
+            usage: None,
+            rate_limit: None,
+            widgets: None,
+            provider_metadata: None,
+            stop_reason: None,
+            image_url: None,
+        });
+    }
+}
+
 fn source_hash(url: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -936,9 +957,11 @@ pub async fn run(
     question: String,
     cfg: Config,
     cancel: CancellationToken,
+    progress: ProgressTx,
 ) -> Result<ResearchReport, String> {
     let dir = crate::research::create_run_dir(&data_dir, &run_id, &question)?;
     let _ = crate::research::update_run_status(&dir, crate::research::RunStatus::Running);
+    emit_progress(&progress, "Scoping the research question…");
 
     let bail = |dir: &Path| {
         let _ = crate::research::update_run_status(dir, crate::research::RunStatus::Cancelled);
@@ -968,6 +991,7 @@ pub async fn run(
     };
     persist(&dir, "scope.json", &scope);
     debug!(angles = scope.angles.len(), "deep_research: scoped");
+    emit_progress(&progress, format!("Searching {} angles…", scope.angles.len()));
 
     // ── Phase 1: Search (one sub-agent per angle) ──
     let mut search_futs: Vec<BoxFut<AngleResults>> = Vec::new();
@@ -998,6 +1022,7 @@ pub async fn run(
     let url_dupes = plan.dropped.iter().filter(|d| matches!(d.reason, DropReason::Duplicate { .. })).count();
     let budget_dropped = plan.dropped.iter().filter(|d| matches!(d.reason, DropReason::Budget)).count();
     debug!(fetch = plan.fetch.len(), dupes = url_dupes, budget = budget_dropped, "deep_research: fetch plan");
+    emit_progress(&progress, format!("Fetching {} sources…", plan.fetch.len()));
 
     if cancel.is_cancelled() {
         bail(&dir);
@@ -1090,6 +1115,7 @@ pub async fn run(
 
     // ── Phase 3: Verify (barrier — 3 adversarial votes per claim) ──
     let votes_per = cfg.votes_per_claim;
+    emit_progress(&progress, format!("Verifying {} claims (×{} adversarial votes)…", ranked.len(), votes_per));
     let mut verify_futs: Vec<BoxFut<(usize, Vote)>> = Vec::new();
     for (ci, claim) in ranked.iter().enumerate() {
         for v in 0..votes_per {
@@ -1145,6 +1171,7 @@ pub async fn run(
     }
 
     // ── Phase 4: Synthesize ──
+    emit_progress(&progress, format!("Synthesizing {} confirmed claims…", confirmed.len()));
     let stats = base_stats(confirmed.len(), killed.len(), verified);
     let report = match run_typed::<ReportOut>(&agent, StructuredTask {
         system: SYNTH_SYS.into(),

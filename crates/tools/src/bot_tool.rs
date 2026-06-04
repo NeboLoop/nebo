@@ -1452,6 +1452,7 @@ impl AgentTool {
             query.to_string(),
             cfg,
             ctx.cancel_token.clone(),
+            ctx.stream_tx.clone(),
         )
         .await
         {
