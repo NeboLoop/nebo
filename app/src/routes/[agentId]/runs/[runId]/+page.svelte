@@ -327,7 +327,8 @@
                 </button>
 
                 {#if activity.error}
-                  <div class="text-xs text-error mt-0.5">{activity.error}</div>
+                  <!-- Red only for genuine failures; a clean early-exit reason is informational. -->
+                  <div class="text-xs mt-0.5 {st === 'failed' ? 'text-error' : 'text-base-content/60'}">{activity.error}</div>
                 {/if}
 
                 <!-- Expanded activity detail -->
@@ -424,8 +425,9 @@
                             <div class="text-xs text-base-content/70 whitespace-pre-wrap">{actOutput}</div>
                           </div>
                         {:else if activity.error}
-                          <div class="p-3 rounded-lg border border-error/30 bg-error/5">
-                            <div class="text-xs text-error">{activity.error}</div>
+                          <!-- Failures get the red treatment; clean exits read as info. -->
+                          <div class="p-3 rounded-lg border {st === 'failed' ? 'border-error/30 bg-error/5' : 'border-info/30 bg-info/5'}">
+                            <div class="text-xs {st === 'failed' ? 'text-error' : 'text-base-content/70'}">{activity.error}</div>
                           </div>
                         {:else if st === 'running'}
                           <div class="p-3 rounded-lg border border-warning/30 bg-warning/5 flex items-center gap-2">
