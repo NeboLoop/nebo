@@ -15,7 +15,7 @@ export interface AppItem {
 	installed: boolean;
 	iconBg: string;
 	iconEmoji: string;
-	type: 'skill' | 'workflow' | 'agent';
+	type: 'skill' | 'workflow' | 'agent' | 'plugin' | 'connector' | 'app' | 'collection';
 	price: string;
 	priceCents: number;
 }
@@ -25,6 +25,10 @@ export function itemHref(item: AppItem): string {
 	switch (item.type) {
 		case 'workflow': return `/marketplace/agents/${item.id}`;
 		case 'agent': return `/marketplace/agents/${item.id}`;
+		case 'plugin': return `/marketplace/plugins/${item.id}`;
+		case 'connector': return `/marketplace/connectors/${item.id}`;
+		case 'app': return `/marketplace/apps/${item.id}`;
+		case 'collection': return `/marketplace/collections/${item.id}`;
 		default: return `/marketplace/skills/${item.id}`;
 	}
 }

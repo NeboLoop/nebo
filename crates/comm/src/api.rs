@@ -1160,14 +1160,15 @@ fn build_query(
             params.push(format!("category={}", urlencoding::encode(c)));
         }
     }
-    if let Some(p) = page {
-        if p > 0 {
-            params.push(format!("page={}", p));
-        }
+    // NeboAI paginates with `limit`/`offset` (not page/pageSize). Translate so the
+    // client can actually page the full catalog instead of always getting page 1.
+    let limit = page_size.filter(|&ps| ps > 0);
+    if let Some(ps) = limit {
+        params.push(format!("limit={}", ps));
     }
-    if let Some(ps) = page_size {
-        if ps > 0 {
-            params.push(format!("pageSize={}", ps));
+    if let (Some(p), Some(ps)) = (page, limit) {
+        if p > 1 {
+            params.push(format!("offset={}", (p - 1) * ps));
         }
     }
     if params.is_empty() {

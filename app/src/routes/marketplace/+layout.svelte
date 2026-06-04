@@ -2,13 +2,14 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
-  import { listStoreProducts } from '$lib/api/index';
+  import webapi from '$lib/api/gocliRequest';
   import { collections } from '$lib/stores/collections.js';
   import { installItem } from '$lib/stores/marketplace.js';
   import { getWebSocketClient } from '$lib/websocket/client';
   import CodeInstallModal from '$lib/components/chat/CodeInstallModal.svelte';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
+  import { slugify } from '$lib/data/categories';
   const sidebarCollapsed = sidebarCollapsedFor('marketplace');
   import Search from 'lucide-svelte/icons/search';
   import X from 'lucide-svelte/icons/x';
@@ -16,32 +17,26 @@
   let { children } = $props();
 
   type MarketItem = { id: string; name: string; desc: string; category: string; rating: number; installs: number; featured: boolean; price: string; code: string; type: string; path: string; private: boolean; org?: Record<string, unknown> };
-  let allProducts = $state<MarketItem[]>([]);
   let categories = $state<{ slug: string; name: string; emoji: string; count: number }[]>([]);
 
+  // Sum every known per-type count field so a category's total reflects all
+  // artifact kinds (skills, plugins, agents, collections, apps, connectors).
+  function categoryTotal(c: Record<string, unknown>): number {
+    const keys = ['skillCount', 'pluginCount', 'agentCount', 'collectionCount', 'appCount', 'connectorCount', 'workflowCount', 'toolCount'];
+    return keys.reduce((sum, k) => sum + Number(c[k] ?? 0), 0);
+  }
+
   onMount(async () => {
+    // Categories for the sidebar — fetched directly with their server-side counts.
     try {
-      const res = await listStoreProducts() as { products?: Record<string, unknown>[] } | null;
-      if (res?.products?.length) {
-        allProducts = res.products.map((a: Record<string, unknown>) => {
-          const t = String(a.type || a.category || 'skill');
-          const typeMap: Record<string, string> = { agent: 'agents', skill: 'skills', plugin: 'plugins', connector: 'connectors' };
-          return {
-            id: String(a.id ?? ''), name: String(a.name ?? ''), desc: String(a.description ?? ''),
-            category: String(a.category ?? ''), rating: Number(a.rating ?? 0),
-            installs: Number(a.installCount ?? 0), featured: Boolean(a.featured ?? false),
-            price: String(a.price ?? 'Get'), code: String(a.code ?? ''),
-            type: t, path: `/marketplace/${typeMap[t] || 'skills'}/${a.id}`,
-            private: false,
-          };
-        });
-        // Derive categories from products
-        const catMap = new Map<string, number>();
-        for (const p of allProducts) {
-          if (p.category) catMap.set(p.category, (catMap.get(p.category) || 0) + 1);
-        }
-        categories = [...catMap.entries()].map(([slug, count]) => ({
-          slug, name: slug.charAt(0).toUpperCase() + slug.slice(1), emoji: '', count,
+      const catRes = await webapi.get<any>('/api/v1/store/categories').catch(() => ({ categories: [] }));
+      const cats = (catRes.categories || []) as Record<string, unknown>[];
+      if (cats.length) {
+        categories = cats.map((c) => ({
+          slug: String(c.slug ?? ''),
+          name: String(c.name ?? ''),
+          emoji: String(c.emoji ?? ''),
+          count: categoryTotal(c),
         }));
       }
     } catch {}
@@ -60,19 +55,42 @@
     return () => { if (debounceTimer) clearTimeout(debounceTimer); };
   });
 
-  const allSearchItems = $derived(allProducts);
+  // Backend-powered search — scales past the first loaded page to the whole
+  // catalog (NeboLoop Search). The dropdown shows the top 8; Enter / "See all"
+  // opens the full results page.
+  let searchResults = $state<MarketItem[]>([]);
+  let searchLoading = $state(false);
 
-  const searchResults = $derived.by(() => {
-    const q = debouncedQuery.toLowerCase().trim();
-    if (!q) return [];
-    return allSearchItems
-      .filter(item => item.name.toLowerCase().includes(q) || item.desc.toLowerCase().includes(q) || item.category.toLowerCase().includes(q))
-      .slice(0, 8);
+  $effect(() => {
+    const q = debouncedQuery.trim();
+    if (!q) {
+      searchResults = [];
+      searchLoading = false;
+      return;
+    }
+    searchLoading = true;
+    webapi
+      .get<any>('/api/v1/store/products', { q, pageSize: 8 })
+      .then((res: any) => {
+        if (debouncedQuery.trim() !== q) return;
+        searchResults = ((res?.products as Record<string, unknown>[]) || []).map((a) => {
+          const tp = String(a.type || a.category || 'skill');
+          const typeMap: Record<string, string> = { agent: 'agents', skill: 'skills', plugin: 'plugins', connector: 'connectors', app: 'apps', collection: 'collections' };
+          return {
+            id: String(a.id ?? ''), name: String(a.name ?? ''), desc: String(a.description ?? ''),
+            category: String(a.category ?? ''), rating: 0, installs: 0, featured: false,
+            price: String(a.price ?? 'Get'), code: String(a.code ?? ''),
+            type: tp, path: `/marketplace/${typeMap[tp] || 'skills'}/${a.id}`, private: false
+          };
+        });
+      })
+      .catch(() => { if (debouncedQuery.trim() === q) searchResults = []; })
+      .finally(() => { if (debouncedQuery.trim() === q) searchLoading = false; });
   });
 
   const showResults = $derived(searchFocused && debouncedQuery.trim().length > 0);
 
-  const typeLabels: Record<string, string> = { skill: 'Skill', agent: 'Agent', plugin: 'Plugin', connector: 'Connector', private: 'Private' };
+  const typeLabels: Record<string, string> = { skill: 'Skill', agent: 'Agent', plugin: 'Plugin', connector: 'Connector', app: 'App', collection: 'Collection', private: 'Private' };
 
   function selectResult(path: string) {
     searchQuery = '';
@@ -81,32 +99,59 @@
     goto(path);
   }
 
+  function submitSearch() {
+    const q = searchQuery.trim();
+    if (!q) return;
+    searchFocused = false;
+    goto(`/marketplace/search?q=${encodeURIComponent(q)}`);
+  }
+
   function clearSearch() {
     searchQuery = '';
     debouncedQuery = '';
   }
 
+  // On the unified /marketplace page the active tab is driven by the `kind`
+  // param (all/agents/apps/...). Everywhere else it derives from the pathname.
+  const activeKind = $derived($page.url.searchParams.get('kind') || 'all');
+  const activePrice = $derived($page.url.searchParams.get('price') || 'all');
+  const activeCategory = $derived($page.url.searchParams.get('category') || '');
+  // Detail pages (/marketplace/<type>/<id>) shouldn't show the kind filter bar.
+  const isDetail = $derived(/^\/marketplace\/(agents|apps|skills|plugins|connectors|collections)\/.+/.test($page.url.pathname));
+
   const marketplaceTab = $derived.by(() => {
     const p = $page.url.pathname;
-    if (p === '/marketplace') return 'featured';
-    // Collections sub-routes: /marketplace/collections/acme → collections-acme
-    const colMatch = p.match(/\/marketplace\/collections\/([^/]+)/);
-    if (colMatch) return `collections-${colMatch[1]}`;
-    if (p === '/marketplace/collections') return 'collections';
+    if (p === '/marketplace') return activeKind;
     const match = p.match(/\/marketplace\/([^/]+)/);
-    return match ? match[1] : 'featured';
+    return match ? match[1] : 'all';
   });
 
   const navItems = [
-    { id: 'featured', path: '/marketplace', label: 'Featured' },
-    { id: 'agents', path: '/marketplace/agents', label: 'Agents' },
-    { id: 'apps', path: '/marketplace/apps', label: 'Apps' },
-    { id: 'skills', path: '/marketplace/skills', label: 'Skills' },
-    { id: 'plugins', path: '/marketplace/plugins', label: 'Plugins' },
-    { id: 'connectors', path: '/marketplace/connectors', label: 'Connectors' },
-    { id: 'collections', path: '/marketplace/collections', label: 'Collections' },
+    { id: 'all', path: '/marketplace', label: 'All' },
+    { id: 'agents', path: '/marketplace?kind=agents', label: 'Agents' },
+    { id: 'apps', path: '/marketplace?kind=apps', label: 'Apps' },
+    { id: 'skills', path: '/marketplace?kind=skills', label: 'Skills' },
+    { id: 'plugins', path: '/marketplace?kind=plugins', label: 'Plugins' },
+    { id: 'connectors', path: '/marketplace?kind=connectors', label: 'Connectors' },
+    { id: 'collections', path: '/marketplace?kind=collections', label: 'Collections' },
+    { id: 'shared', path: '/marketplace/shared', label: 'Shared' },
     { id: 'installed', path: '/marketplace/installed', label: 'Installed' },
   ];
+
+  const priceOptions = [
+    { value: 'all', label: 'All' },
+    { value: 'free', label: 'Free' },
+    { value: 'paid', label: 'Paid' },
+  ];
+
+  // Set the ?price= filter on the current /marketplace URL.
+  function setPrice(value: string) {
+    const url = new URL($page.url);
+    url.pathname = '/marketplace';
+    if (value === 'all') url.searchParams.delete('price');
+    else url.searchParams.set('price', value);
+    goto(url.pathname + url.search, { replaceState: true, noScroll: true });
+  }
 
   const topCategories = $derived(categories.slice(0, 8));
 
@@ -177,7 +222,7 @@
     <div class="flex-1 overflow-y-auto">
       <div class="flex flex-col items-center gap-1 py-2">
         {#each navItems as item}
-          {@const icons: Record<string, string> = { featured: '◆', agents: '◉', apps: '▦', skills: '⚡', plugins: '🔌', connectors: '⬡', collections: '▤', installed: '✓' }}
+          {@const icons: Record<string, string> = { all: '◆', agents: '◉', apps: '▦', skills: '⚡', plugins: '🔌', connectors: '⬡', collections: '▤', shared: '↗', installed: '✓' }}
           <a
             href={item.path}
             class="w-8 h-8 rounded-md flex items-center justify-center text-sm transition-colors {marketplaceTab === item.id ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)]' : 'hover:bg-base-200'}"
@@ -187,7 +232,7 @@
       </div>
       <div class="flex flex-col items-center gap-1 border-t border-base-300 py-2">
         {#each topCategories.slice(0, 6) as cat}
-          <a href="/marketplace/categories" class="w-8 h-8 rounded-md flex items-center justify-center text-xs font-bold text-base-content/50 hover:bg-base-200 transition-colors" title={cat.name}>
+          <a href="/marketplace?category={slugify(cat.name)}" class="w-8 h-8 rounded-md flex items-center justify-center text-xs font-bold text-base-content/50 hover:bg-base-200 transition-colors" title={cat.name}>
             {cat.name[0]}
           </a>
         {/each}
@@ -219,29 +264,44 @@
     </div>
 
     <div class="flex-1 overflow-y-auto">
-      <div class="p-1.5">
-        {#each navItems as item}
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">Category</div>
+      <div class="px-1.5">
+        <a
+          href="/marketplace"
+          class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors {!activeCategory
+            ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)] font-medium'
+            : 'hover:bg-base-200'}"
+        >
+          <span class="flex-1 truncate">All categories</span>
+        </a>
+        {#each categories as cat}
           <a
-            href={item.path}
-            class="flex items-center gap-1.5 py-1 px-2.5 mx-0 rounded-md text-sm transition-colors {marketplaceTab === item.id || (item.id === 'collections' && marketplaceTab.startsWith('collections-'))
+            href="/marketplace?category={slugify(cat.name)}"
+            class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors {activeCategory === slugify(cat.name)
               ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)] font-medium'
               : 'hover:bg-base-200'}"
           >
-            {item.label}
+            <span class="flex-1 truncate">{cat.name}</span>
+            {#if cat.count > 0}
+              <span class="text-xs font-mono text-base-content/50 shrink-0">{cat.count}</span>
+            {/if}
           </a>
         {/each}
       </div>
 
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">Categories</div>
-      <div class="px-1.5">
-        {#each topCategories as cat}
-          <a href="/marketplace/categories" class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm hover:bg-base-200 transition-colors">
-            <span class="flex-1">{cat.name}</span>
-          </a>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">Pricing</div>
+      <div class="p-1.5">
+        {#each priceOptions as opt}
+          <button
+            type="button"
+            class="w-full flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm text-left transition-colors border-none bg-transparent cursor-pointer {activePrice === opt.value
+              ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)] font-medium'
+              : 'hover:bg-base-200'}"
+            onclick={() => setPrice(opt.value)}
+          >
+            {opt.label}
+          </button>
         {/each}
-        <a href="/marketplace/categories" class="block py-1.5 px-2.5 text-sm text-primary font-medium">
-          All categories &rarr;
-        </a>
       </div>
     </div>
   {/if}
@@ -250,10 +310,23 @@
 
 <!-- Main content area -->
 <div class="flex-1 flex flex-col bg-base-100 min-w-0">
-  <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
-    <span class="text-sm font-semibold">{navItems.find(i => i.id === marketplaceTab)?.label ?? (marketplaceTab.startsWith('collections') ? 'Collections' : 'Marketplace')}</span>
-    <div class="relative ml-auto">
-      <div class="flex items-center h-[26px] w-[220px] rounded-[5px] px-[9px] gap-1.5 text-sm border border-base-300 bg-base-100">
+  <div class="h-12 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
+    {#if !isDetail}
+      <div class="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
+        {#each navItems as item}
+          <a
+            href={item.path}
+            class="shrink-0 px-3 py-1 rounded-lg text-sm transition-colors {marketplaceTab === item.id
+              ? 'bg-base-content text-base-100 font-semibold'
+              : 'text-base-content/70 font-medium hover:text-base-content hover:bg-base-200'}"
+          >{item.label}</a>
+        {/each}
+      </div>
+    {:else}
+      <div class="flex-1"></div>
+    {/if}
+    <div class="relative ml-auto shrink-0">
+      <form class="flex items-center h-[26px] w-[220px] rounded-[5px] px-[9px] gap-1.5 text-sm border border-base-300 bg-base-100" onsubmit={(e) => { e.preventDefault(); submitSearch(); }}>
         <Search class="w-3 h-3 text-base-content/50 shrink-0" />
         <input
           type="text"
@@ -264,11 +337,11 @@
           class="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50 min-w-0"
         />
         {#if searchQuery}
-          <button class="p-0 bg-transparent border-none cursor-pointer shrink-0" onclick={clearSearch}>
+          <button type="button" class="p-0 bg-transparent border-none cursor-pointer shrink-0" onclick={clearSearch}>
             <X class="w-3 h-3 text-base-content/50" />
           </button>
         {/if}
-      </div>
+      </form>
       {#if showResults}
         <div class="absolute top-full right-0 mt-1 w-[340px] bg-base-100 border border-base-300 rounded-lg shadow-xl z-50 overflow-hidden">
           {#if searchResults.length > 0}
@@ -293,6 +366,12 @@
                 {/if}
               </button>
             {/each}
+            <button
+              class="w-full px-3.5 py-2.5 text-left text-sm font-medium text-primary cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-t border-t-base-300"
+              onmousedown={submitSearch}
+            >See all results for "{debouncedQuery}"</button>
+          {:else if searchLoading}
+            <div class="px-3.5 py-4 text-center text-xs text-base-content/50">Searching…</div>
           {:else}
             <div class="px-3.5 py-4 text-center text-xs text-base-content/50">No results for "{debouncedQuery}"</div>
           {/if}

@@ -7,16 +7,25 @@
 
 	let { item, label }: { item: AppItem; label?: string } = $props();
 
-	const typeLabel = $derived(label || `Featured ${item.type === 'agent' ? 'Agent' : item.type === 'workflow' ? 'Workflow' : 'Skill'}`);
+	const TYPE_NAMES: Record<AppItem['type'], string> = {
+		agent: 'Agent',
+		app: 'App',
+		skill: 'Skill',
+		plugin: 'Plugin',
+		connector: 'Connector',
+		workflow: 'Workflow',
+		collection: 'Collection'
+	};
+	const typeLabel = $derived(label || `Featured ${TYPE_NAMES[item.type] ?? 'Item'}`);
 </script>
 
 <a
 	href={itemHref(item)}
-	class="block rounded-2xl {item.iconBg} p-6 sm:p-8 hover:opacity-95 transition-opacity"
+	class="block rounded-2xl bg-gradient-to-br from-accent/10 to-base-200 border border-base-300 p-6 sm:p-8 hover:border-base-content/20 hover:shadow-md transition-all"
 >
-	<p class="text-sm font-semibold uppercase tracking-wider text-base-content/80 mb-2">{typeLabel}</p>
+	<p class="text-xs font-semibold uppercase tracking-wider text-accent mb-2">{typeLabel}</p>
 	<div class="flex items-start gap-4 mb-4">
-		<ArtifactIcon emoji={item.iconEmoji} bg="bg-base-100/50" size="xl" />
+		<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="xl" />
 		<div class="flex-1 min-w-0">
 			<h3 class="font-display text-2xl sm:text-3xl font-bold leading-tight">{item.name}</h3>
 			<p class="text-base text-base-content/80 mt-2 line-clamp-3 leading-relaxed">{item.description}</p>

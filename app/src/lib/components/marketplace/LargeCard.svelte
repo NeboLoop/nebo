@@ -11,7 +11,11 @@
 
 	let { item, label }: { item: AppItem; label?: string } = $props();
 
-	const typeLabel = $derived(label || (item.type === 'agent' ? 'AGENT' : item.type === 'workflow' ? 'WORKFLOW' : 'SKILL'));
+	const TYPE_NAMES: Record<AppItem['type'], string> = {
+		agent: 'AGENT', app: 'APP', skill: 'SKILL', plugin: 'PLUGIN',
+		connector: 'CONNECTOR', workflow: 'WORKFLOW', collection: 'COLLECTION'
+	};
+	const typeLabel = $derived(label || TYPE_NAMES[item.type] || 'ITEM');
 
 	let installing = $state(false);
 	let showSetupModal = $state(false);
