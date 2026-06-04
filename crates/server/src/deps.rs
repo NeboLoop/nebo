@@ -517,7 +517,15 @@ async fn install_plugin(
         .download_url
         .ok_or_else(|| format!("plugin {} has no download URL in redeem response", name))?;
 
-    // Download .napp directly from redeem response URL
+    // The redeem response hands back a URL TEMPLATE: /api/v1/apps/<id>/download/{platform}.
+    // The literal "{platform}" 404s ("binary not found") — the cascade must resolve the
+    // running platform's URL, exactly like the code-redemption path (codes.rs) does via
+    // get_plugin. Substitute here so we download the real per-platform .napp (which
+    // contains the compiled binary), not a 404 body.
+    let platform = napp::plugin::current_platform_key();
+    let download_url = download_url.replace("{platform}", &platform);
+
+    // Download .napp directly from the resolved per-platform URL
     let napp_data = api
         .download_napp(&download_url)
         .await

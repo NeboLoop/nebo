@@ -152,6 +152,10 @@ pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, Nap
             std::fs::create_dir_all(parent)?;
         }
 
+        // Capture the archived mode before the mutable read borrow — a binary
+        // packaged as rwxr-xr-x must stay executable after extraction.
+        let entry_mode = entry.header().mode().unwrap_or(0o644);
+
         let mut content = Vec::new();
         entry
             .read_to_end(&mut content)
@@ -159,9 +163,13 @@ pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, Nap
 
         std::fs::write(&dest_path, &content)?;
 
-        // Set executable permissions for binaries, scripts, and bin/ entries
+        // Restore the executable bit when the archived entry was executable, or
+        // for conventionally-named binary/script entries. `std::fs::write`
+        // creates 0644, which would otherwise strip the +x off a packaged
+        // binary named after its slug (e.g. "stadium-ops").
         #[cfg(unix)]
-        if normalized == "binary"
+        if entry_mode & 0o111 != 0
+            || normalized == "binary"
             || normalized == "app"
             || normalized.starts_with("bin/")
             || normalized.starts_with("scripts/")

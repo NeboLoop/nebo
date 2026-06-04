@@ -2019,16 +2019,30 @@ impl PluginStore {
             }
         }
 
-        // Fallback: find first executable file
-        let entries = std::fs::read_dir(version_dir).ok()?;
-        for entry in entries.flatten() {
+        // Fallback: scan files, skipping known metadata. Prefer an executable;
+        // otherwise pick the largest plain file — a compiled binary dwarfs the
+        // manifest/signature/markdown files, so this finds it even when
+        // plugin.json fails to parse or the archive lost the +x bit.
+        let mut largest: Option<(u64, PathBuf)> = None;
+        for entry in std::fs::read_dir(version_dir).ok()?.flatten() {
             let path = entry.path();
             if !path.is_file() {
                 continue;
             }
-            // Skip metadata files
-            let name = path.file_name()?.to_str()?;
-            if name == "plugin.json" || name.starts_with('.') {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            let lower = name.to_ascii_lowercase();
+            if matches!(
+                lower.as_str(),
+                "plugin.json" | "manifest.json" | "signatures.json"
+            ) || lower.ends_with(".md")
+                || lower.ends_with(".json")
+                || lower.ends_with(".txt")
+            {
                 continue;
             }
             #[cfg(unix)]
@@ -2042,14 +2056,19 @@ impl PluginStore {
             }
             #[cfg(not(unix))]
             {
-                // On Windows, check for common executable extensions
-                if name.ends_with(".exe") || name.ends_with(".bat") || name.ends_with(".cmd") {
+                if lower.ends_with(".exe") || lower.ends_with(".bat") || lower.ends_with(".cmd") {
                     return Some(path);
+                }
+            }
+            if let Ok(meta) = path.metadata() {
+                let sz = meta.len();
+                if largest.as_ref().is_none_or(|(s, _)| sz > *s) {
+                    largest = Some((sz, path));
                 }
             }
         }
 
-        None
+        largest.map(|(_, p)| p)
     }
 
     /// Start watching for filesystem changes in plugin directories.
