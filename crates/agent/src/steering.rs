@@ -94,6 +94,15 @@ pub struct ReminderContext<'a> {
     pub execution_mode: tools::ExecutionMode,
     pub messages: &'a [ChatMessage],
     pub recent_tool_names: &'a [String],
+    /// Provider for Claude-skip rules ("anthropic" = direct Claude, self-regulates).
+    pub provider_id: &'a str,
+}
+
+impl ReminderContext<'_> {
+    /// Direct Claude follows the system prompt well — suppression-style reminders skip it.
+    fn is_claude(&self) -> bool {
+        self.provider_id == "anthropic"
+    }
 }
 
 /// A single event-driven reminder. `check` returns the reminder body only when its
@@ -114,9 +123,15 @@ pub struct ReminderCadence {
     global_last: Option<usize>,
 }
 
-/// The registered reminders. Grows as corrective/informational reminders land.
+/// The registered reminders. Grows as generators migrate off the suffix.
 fn reminders() -> Vec<Box<dyn Reminder>> {
-    vec![Box::new(SilenceBreaker), Box::new(ActionConfirm)]
+    vec![
+        Box::new(SilenceBreaker),
+        Box::new(ActionConfirm),
+        Box::new(OutputDiscipline),
+        Box::new(NarrationSuppressor),
+        Box::new(RepetitionDetector),
+    ]
 }
 
 /// Wrap reminder text as a `<system-reminder>` with a gentle, ignorable tail.
@@ -283,9 +298,6 @@ impl Pipeline {
             Box::new(LoopFileSharing),
             Box::new(ToolNudge),
             Box::new(PendingTaskAction),
-            Box::new(OutputDiscipline),
-            Box::new(NarrationSuppressor),
-            Box::new(RepetitionDetector),
             Box::new(LoopDetector),
             Box::new(ErrorRecovery),
             Box::new(ToolResultGrounding),
@@ -324,16 +336,10 @@ impl Pipeline {
         let is_ollama = ctx.provider_id == "ollama";
 
         for g in &self.generators {
-            // Skip narration/discipline generators for direct Claude only — Claude follows system prompt well
-            if is_claude
-                && matches!(
-                    g.name(),
-                    "narration_suppressor"
-                        | "output_discipline"
-                        | "repetition_detector"
-                        | "ask_tool_nudge"
-                )
-            {
+            // Skip ask_tool_nudge for direct Claude — Claude follows the system prompt well.
+            // (narration/output/repetition moved to message-stream reminders with their own
+            // Claude-skip; ask_tool_nudge migrates in a later round.)
+            if is_claude && g.name() == "ask_tool_nudge" {
                 continue;
             }
             // Skip JanusQuotaWarning for Ollama
@@ -653,14 +659,19 @@ const INTERACTIVE_OUTPUT_CHAR_LIMIT: usize = 600;
 // Modeled after Hermes TOOL_USE_ENFORCEMENT_GUIDANCE which uses forceful
 // language ("MUST", "immediately", "not acceptable") targeted at GPT/Codex.
 struct OutputDiscipline;
-impl Generator for OutputDiscipline {
-    fn name(&self) -> &str {
+impl Reminder for OutputDiscipline {
+    fn name(&self) -> &'static str {
         "output_discipline"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        // Only fire when the last response was excessively long
-        if ctx.iteration < 1 {
-            return vec![];
+    fn priority(&self) -> u8 {
+        9
+    }
+    fn min_turns_between(&self) -> usize {
+        2
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        if ctx.is_claude() || ctx.iteration < 1 {
+            return None;
         }
         let last_len = ctx
             .messages
@@ -676,48 +687,46 @@ impl Generator for OutputDiscipline {
         } else {
             300
         };
-
-        if last_len > limit {
-            let content = if interactive {
-                // Interactive: shape, don't silence — preambles/milestones are allowed.
-                "Your last response ran long. Keep text alongside tool calls to a few \
-                 words, keep results to 1-3 sentences, and don't repeat what you already said."
-                    .to_string()
-            } else {
-                "Your last response was too long. Corrections:\n\
-                 1. Tool calls: output ZERO text alongside them.\n\
-                 2. Results: 1-3 sentences maximum.\n\
-                 3. Never repeat information you already said.\n\
-                 4. Never announce errors or limitations — handle them silently or try a different approach."
-                    .to_string()
-            };
-            vec![SteeringDirective {
-                label: "Output Discipline".to_string(),
-                content,
-                priority: 9,
-            }]
-        } else {
-            vec![]
+        if last_len <= limit {
+            return None;
         }
+        Some(if interactive {
+            // Interactive: shape, don't silence — preambles/milestones are allowed.
+            "Your last response ran long. Keep text alongside tool calls to a few \
+             words, keep results to 1-3 sentences, and don't repeat what you already said."
+                .to_string()
+        } else {
+            "Your last response was too long. Corrections:\n\
+             1. Tool calls: output ZERO text alongside them.\n\
+             2. Results: 1-3 sentences maximum.\n\
+             3. Never repeat information you already said.\n\
+             4. Never announce errors or limitations — handle them silently or try a different approach."
+                .to_string()
+        })
     }
 }
 
 // 6b. Narration Suppressor — detects text+tool narration pattern
 struct NarrationSuppressor;
-impl Generator for NarrationSuppressor {
-    fn name(&self) -> &str {
+impl Reminder for NarrationSuppressor {
+    fn name(&self) -> &'static str {
         "narration_suppressor"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.iteration < 1 {
-            return vec![];
+    fn priority(&self) -> u8 {
+        8
+    }
+    fn min_turns_between(&self) -> usize {
+        2
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        if ctx.is_claude() || ctx.iteration < 1 {
+            return None;
         }
-
         let interactive = ctx.execution_mode == tools::ExecutionMode::Interactive;
 
         // Interactive mode tolerates the opening preamble + a first milestone.
         if interactive && ctx.iteration <= INTERACTIVE_PREAMBLE_GRACE_ITERS {
-            return vec![];
+            return None;
         }
 
         // Count recent assistant messages that have BOTH text (>50 chars) AND tool calls
@@ -742,36 +751,36 @@ impl Generator for NarrationSuppressor {
         } else {
             1
         };
-        if narrating_turns >= threshold {
-            let content = if interactive {
-                "You're narrating too much. Brief preambles and milestone updates are fine, \
-                 but most tool calls need no surrounding text — cut the running commentary."
-                    .to_string()
-            } else {
-                "STOP narrating your tool calls. Output ONLY the tool call — \
-                 ZERO text before, between, or after. The user sees your tool calls directly."
-                    .to_string()
-            };
-            return vec![SteeringDirective {
-                label: "Narration".to_string(),
-                content,
-                priority: 8,
-            }];
+        if narrating_turns < threshold {
+            return None;
         }
-
-        vec![]
+        Some(if interactive {
+            "You're narrating too much. Brief preambles and milestone updates are fine, \
+             but most tool calls need no surrounding text — cut the running commentary."
+                .to_string()
+        } else {
+            "STOP narrating your tool calls. Output ONLY the tool call — \
+             ZERO text before, between, or after. The user sees your tool calls directly."
+                .to_string()
+        })
     }
 }
 
 // 6c. Repetition Detector — catches GPT's habit of restating the same info
 struct RepetitionDetector;
-impl Generator for RepetitionDetector {
-    fn name(&self) -> &str {
+impl Reminder for RepetitionDetector {
+    fn name(&self) -> &'static str {
         "repetition_detector"
     }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.iteration < 3 {
-            return vec![];
+    fn priority(&self) -> u8 {
+        9
+    }
+    fn min_turns_between(&self) -> usize {
+        2
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        if ctx.is_claude() || ctx.iteration < 3 {
+            return None;
         }
 
         // Collect recent non-empty assistant text responses
@@ -785,10 +794,10 @@ impl Generator for RepetitionDetector {
             .collect();
 
         if recent_texts.len() < 2 {
-            return vec![];
+            return None;
         }
 
-        // Simple similarity: check if bigrams overlap significantly between consecutive responses
+        // Simple similarity: check if 3-grams overlap significantly between consecutive responses
         let mut repetitive_pairs = 0usize;
         for window in recent_texts.windows(2) {
             let a_words: Vec<&str> = window[0].split_whitespace().collect();
@@ -796,7 +805,6 @@ impl Generator for RepetitionDetector {
             if a_words.len() < 10 || b_words.len() < 10 {
                 continue;
             }
-            // Count shared 3-grams
             let a_trigrams: std::collections::HashSet<String> = a_words
                 .windows(3)
                 .map(|w| w.join(" ").to_lowercase())
@@ -812,19 +820,17 @@ impl Generator for RepetitionDetector {
             }
         }
 
-        if repetitive_pairs >= 1 {
-            return vec![SteeringDirective {
-                label: "Repetition".to_string(),
-                content: "You are REPEATING YOURSELF. Your recent responses contain the same information \
-                         restated multiple times. STOP. Either:\n\
-                         (a) Take a NEW action with a tool, or\n\
-                         (b) Give the user a final 1-sentence answer and STOP.\n\
-                         Do NOT output another status update.".to_string(),
-                priority: 9,
-            }];
+        if repetitive_pairs < 1 {
+            return None;
         }
-
-        vec![]
+        Some(
+            "You are REPEATING YOURSELF. Your recent responses contain the same information \
+             restated multiple times. STOP. Either:\n\
+             (a) Take a NEW action with a tool, or\n\
+             (b) Give the user a final 1-sentence answer and STOP.\n\
+             Do NOT output another status update."
+                .to_string(),
+        )
     }
 }
 
@@ -1600,59 +1606,46 @@ mod tests {
     }
 
     #[test]
-    fn test_fm2_narration_with_tools() {
-        // Assistant says "Let me search for flights..." + tool call (>50 chars text)
-        let pipeline = Pipeline::new();
+    fn test_narration_suppressor_fires_and_skips_claude() {
         let narration = "Let me search for flights from Denver to Tokyo. I'll check multiple airlines for the best prices and dates.";
-        let tool_call = r#"[{"name":"web","input":{"action":"search","query":"flights Denver to Tokyo June"}}]"#;
-        let mut ctx = make_ctx(vec![
+        let tc = r#"[{"name":"web","input":{"action":"search","query":"flights Denver to Tokyo"}}]"#;
+        let msgs = vec![
             make_msg("user", "Search for flights"),
-            make_assistant_with_tools(narration, tool_call),
-        ]);
-        ctx.iteration = 2;
-
-        // OpenAI: NarrationSuppressor should fire
-        ctx.provider_id = "openai".to_string();
-        let (dirs, _) = pipeline.generate(&ctx);
+            make_assistant_with_tools(narration, tc),
+        ];
+        // Non-Claude (autonomous): fires on the first narrating turn.
         assert!(
-            dirs.iter().any(|d| d.label == "Narration"),
-            "NarrationSuppressor should fire for OpenAI when text+tool call detected"
+            NarrationSuppressor
+                .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "openai", 2))
+                .is_some(),
+            "fires for non-Claude when text+tool detected"
         );
-
-        // Claude: should be skipped
-        ctx.provider_id = "anthropic".to_string();
-        let (dirs, _) = pipeline.generate(&ctx);
+        // Direct Claude: skipped — it self-regulates.
         assert!(
-            !dirs.iter().any(|d| d.label == "Narration"),
-            "NarrationSuppressor should be skipped for Claude"
+            NarrationSuppressor
+                .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "anthropic", 2))
+                .is_none(),
+            "skipped for direct Claude"
         );
     }
 
     #[test]
-    fn test_fm3_verbose_output() {
-        // Assistant response > 300 chars, no tool call → OutputDiscipline fires (OpenAI), skipped (Claude)
-        let pipeline = Pipeline::new();
+    fn test_output_discipline_fires_and_skips_claude() {
         let verbose = "I'd be happy to help you with that! Let me explain in detail what I'm going to do. First, I'll search the web for the latest information. Then I'll compile all the results into a comprehensive summary. After that, I'll format everything nicely for you. This process might take a moment, so please bear with me while I work through each step carefully and thoroughly.";
-        let mut ctx = make_ctx(vec![
-            make_msg("user", "What's the weather?"),
-            make_msg("assistant", verbose),
-        ]);
-        ctx.iteration = 2;
-
-        // OpenAI: OutputDiscipline should fire
-        ctx.provider_id = "openai".to_string();
-        let (dirs, _) = pipeline.generate(&ctx);
+        let msgs = vec![make_msg("user", "weather?"), make_msg("assistant", verbose)];
+        // Non-Claude (autonomous, >300 chars): fires.
         assert!(
-            dirs.iter().any(|d| d.label == "Output Discipline"),
-            "OutputDiscipline should fire for OpenAI when response > 300 chars"
+            OutputDiscipline
+                .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "openai", 2))
+                .is_some(),
+            "fires for non-Claude when response > 300 chars"
         );
-
-        // Claude: should be skipped
-        ctx.provider_id = "anthropic".to_string();
-        let (dirs, _) = pipeline.generate(&ctx);
+        // Direct Claude: skipped.
         assert!(
-            !dirs.iter().any(|d| d.label == "Output Discipline"),
-            "OutputDiscipline should be skipped for Claude"
+            OutputDiscipline
+                .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "anthropic", 2))
+                .is_none(),
+            "skipped for direct Claude"
         );
     }
 
@@ -1660,39 +1653,36 @@ mod tests {
     fn test_interactive_narration_grace_then_sustained() {
         let narration =
             "Let me check your calendar and find the conflict before I move anything around.";
-        let tool_call = r#"[{"name":"event","input":{"action":"list"}}]"#;
-        let generator = NarrationSuppressor;
+        let tc = r#"[{"name":"event","input":{"action":"list"}}]"#;
 
         // Grace window (iteration <= 2): the opening preamble is tolerated.
-        let mut ctx = make_ctx(vec![
+        let one = vec![
             make_msg("user", "move my 2pm"),
-            make_assistant_with_tools(narration, tool_call),
-        ]);
-        ctx.execution_mode = tools::ExecutionMode::Interactive;
-        ctx.iteration = 2;
+            make_assistant_with_tools(narration, tc),
+        ];
         assert!(
-            generator.generate(&ctx).is_empty(),
+            NarrationSuppressor
+                .check(&rctx_prov(&one, tools::ExecutionMode::Interactive, "openai", 2))
+                .is_none(),
             "preamble tolerated during grace window"
         );
-
         // Past grace, a single narrating turn is still tolerated (threshold is 3).
-        ctx.iteration = 4;
         assert!(
-            generator.generate(&ctx).is_empty(),
+            NarrationSuppressor
+                .check(&rctx_prov(&one, tools::ExecutionMode::Interactive, "openai", 4))
+                .is_none(),
             "occasional milestone tolerated past grace"
         );
 
         // Past grace, sustained narration (>=3 of last 6) fires with softened text.
-        let mut msgs = vec![make_msg("user", "do it")];
+        let mut many = vec![make_msg("user", "do it")];
         for _ in 0..3 {
-            msgs.push(make_assistant_with_tools(narration, tool_call));
+            many.push(make_assistant_with_tools(narration, tc));
         }
-        let mut ctx2 = make_ctx(msgs);
-        ctx2.execution_mode = tools::ExecutionMode::Interactive;
-        ctx2.iteration = 4;
-        let dirs = generator.generate(&ctx2);
-        assert_eq!(dirs.len(), 1, "sustained narration fires in interactive mode");
-        assert!(dirs[0].content.contains("milestone updates are fine"));
+        let out = NarrationSuppressor
+            .check(&rctx_prov(&many, tools::ExecutionMode::Interactive, "openai", 4))
+            .expect("sustained narration fires in interactive mode");
+        assert!(out.contains("milestone updates are fine"));
     }
 
     #[test]
@@ -1700,17 +1690,15 @@ mod tests {
         // Regression: autonomous still fires on the first narrating turn.
         let narration =
             "Let me search for flights from Denver to Tokyo and compare a few airlines for you.";
-        let tool_call = r#"[{"name":"web","input":{"action":"search","query":"flights"}}]"#;
-        let generator = NarrationSuppressor;
-        let mut ctx = make_ctx(vec![
+        let tc = r#"[{"name":"web","input":{"action":"search","query":"flights"}}]"#;
+        let msgs = vec![
             make_msg("user", "find flights"),
-            make_assistant_with_tools(narration, tool_call),
-        ]);
-        ctx.execution_mode = tools::ExecutionMode::Autonomous;
-        ctx.iteration = 2;
-        let dirs = generator.generate(&ctx);
-        assert_eq!(dirs.len(), 1);
-        assert!(dirs[0].content.contains("STOP narrating"));
+            make_assistant_with_tools(narration, tc),
+        ];
+        let out = NarrationSuppressor
+            .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "openai", 2))
+            .expect("fires");
+        assert!(out.contains("STOP narrating"));
     }
 
     #[test]
@@ -1718,20 +1706,17 @@ mod tests {
         // ~380-char response: fires in Autonomous (>300) but tolerated in Interactive (<600).
         let mid = "I'd be happy to help you with that! Let me explain in detail what I'm going to do. First, I'll search the web for the latest information. Then I'll compile all the results into a comprehensive summary. After that, I'll format everything nicely for you. This process might take a moment, so please bear with me while I work through each step carefully and thoroughly.";
         assert!(mid.len() > 300 && mid.len() < 600, "fixture must sit between the two limits");
-        let generator = OutputDiscipline;
-        let mut ctx = make_ctx(vec![make_msg("user", "weather?"), make_msg("assistant", mid)]);
-        ctx.iteration = 2;
-
-        ctx.execution_mode = tools::ExecutionMode::Interactive;
+        let msgs = vec![make_msg("user", "weather?"), make_msg("assistant", mid)];
         assert!(
-            generator.generate(&ctx).is_empty(),
+            OutputDiscipline
+                .check(&rctx_prov(&msgs, tools::ExecutionMode::Interactive, "openai", 2))
+                .is_none(),
             "mid-length output tolerated in interactive mode"
         );
-
-        ctx.execution_mode = tools::ExecutionMode::Autonomous;
-        assert_eq!(
-            generator.generate(&ctx).len(),
-            1,
+        assert!(
+            OutputDiscipline
+                .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "openai", 2))
+                .is_some(),
             "same output fires in autonomous mode (>300)"
         );
     }
@@ -1920,6 +1905,7 @@ mod tests {
             execution_mode: tools::ExecutionMode::Interactive,
             messages: &[],
             recent_tool_names: &[],
+            provider_id: "openai",
         }
     }
 
@@ -1952,11 +1938,21 @@ mod tests {
     }
 
     fn rctx_msgs(messages: &[ChatMessage], mode: tools::ExecutionMode) -> ReminderContext<'_> {
+        rctx_prov(messages, mode, "openai", 5)
+    }
+
+    fn rctx_prov<'a>(
+        messages: &'a [ChatMessage],
+        mode: tools::ExecutionMode,
+        provider_id: &'a str,
+        iteration: usize,
+    ) -> ReminderContext<'a> {
         ReminderContext {
-            iteration: 5,
+            iteration,
             execution_mode: mode,
             messages,
             recent_tool_names: &[],
+            provider_id,
         }
     }
 
