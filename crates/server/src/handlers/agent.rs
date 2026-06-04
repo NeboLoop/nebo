@@ -209,8 +209,25 @@ pub async fn get_status(State(state): State<AppState>) -> HandlerResult<serde_js
         .map(|t| t.len())
         .unwrap_or(0);
 
+    // Surface a status string AND a human-readable reason so the UI can tell the
+    // user *what* is wrong (and how to fix it) instead of a bare "Degraded".
+    let (status, reason) = if provider_count == 0 {
+        (
+            "no_providers",
+            "No AI providers configured — add an API key in Settings → Providers.",
+        )
+    } else if tool_names.is_empty() {
+        (
+            "no_tools",
+            "The agent runtime started without any tools registered.",
+        )
+    } else {
+        ("ready", "")
+    };
+
     Ok(Json(serde_json::json!({
-        "status": if provider_count > 0 { "ready" } else { "no_providers" },
+        "status": status,
+        "reason": reason,
         "activeTasks": active_tasks,
         "queuedTasks": queued_tasks,
         "providers": provider_count,

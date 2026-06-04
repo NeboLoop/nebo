@@ -4,7 +4,7 @@
   import CheckCircle from 'lucide-svelte/icons/check-circle';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
 
-  let services = $state<{ name: string; status: 'operational' | 'degraded' | 'down'; latency: string }[]>([]);
+  let services = $state<{ name: string; status: 'operational' | 'degraded' | 'down'; latency: string; reason?: string }[]>([]);
 
   onMount(async () => {
     try {
@@ -16,11 +16,14 @@
 
       const svcList: typeof services = [];
 
-      // Agent runtime from status
+      // Agent runtime from status. The backend emits "ready" when healthy
+      // (providers present + tools registered); anything else carries a reason.
+      const runtime = statusResp as { status?: string; reason?: string; tools?: number } | null;
       svcList.push({
         name: 'Agent Runtime',
-        status: statusResp?.status === 'running' ? 'operational' : statusResp ? 'degraded' : 'down',
-        latency: statusResp ? `${statusResp.tools} tools` : '—',
+        status: !runtime ? 'down' : runtime.status === 'ready' ? 'operational' : 'degraded',
+        latency: runtime ? `${runtime.tools} tools` : '—',
+        reason: runtime?.reason || undefined,
       });
 
       // Lanes as services
@@ -80,15 +83,20 @@
   <h3 class="text-base font-semibold mb-3">Services</h3>
   <div class="flex flex-col gap-1.5">
     {#each services as service}
-      <div class="flex items-center justify-between p-3 rounded-lg border border-base-content/5 bg-base-100">
-        <div class="flex items-center gap-2.5">
-          <div class="w-2 h-2 rounded-full {service.status === 'operational' ? 'bg-success' : 'bg-warning'}"></div>
-          <span class="text-sm font-medium">{service.name}</span>
+      <div class="flex items-center justify-between p-3 rounded-lg border border-base-content/5 bg-base-100 gap-4">
+        <div class="flex items-start gap-2.5 min-w-0">
+          <div class="w-2 h-2 rounded-full mt-1.5 shrink-0 {service.status === 'operational' ? 'bg-success' : service.status === 'down' ? 'bg-error' : 'bg-warning'}"></div>
+          <div class="min-w-0">
+            <span class="text-sm font-medium">{service.name}</span>
+            {#if service.reason}
+              <p class="text-xs text-base-content/60 mt-0.5">{service.reason}</p>
+            {/if}
+          </div>
         </div>
-        <div class="flex items-center gap-4">
+        <div class="flex items-center gap-4 shrink-0">
           <span class="text-xs text-base-content/50 font-mono">{service.latency}</span>
-          <span class="px-2 py-0.5 rounded text-sm font-semibold {service.status === 'operational' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'}">
-            {service.status === 'operational' ? 'Operational' : 'Degraded'}
+          <span class="px-2 py-0.5 rounded text-sm font-semibold {service.status === 'operational' ? 'bg-success/10 text-success' : service.status === 'down' ? 'bg-error/10 text-error' : 'bg-warning/10 text-warning'}">
+            {service.status === 'operational' ? 'Operational' : service.status === 'down' ? 'Down' : 'Degraded'}
           </span>
         </div>
       </div>
