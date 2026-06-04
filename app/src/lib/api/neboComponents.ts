@@ -1212,7 +1212,7 @@ export interface ListIntegrationsResponse {
 }
 
 export interface ListMemoriesResponse {
-	memories: Memory[]
+	memories: unknown[]
 	total: number
 }
 

@@ -21,6 +21,43 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// List memories belonging to one agent, matched by the canonical scope
+    /// SUFFIX `:agent:<id>` rather than an exact owner-prefixed scope. The owner
+    /// base is passed loosely at runtime (and isn't yet canonical), so suffix
+    /// matching shows the right memories regardless of owner id. An empty
+    /// `agent_id` selects the main bot: everything NOT scoped to a specific agent.
+    pub fn list_memories_for_agent(
+        &self,
+        agent_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Memory>, NeboError> {
+        let conn = self.conn()?;
+        const COLS: &str = "id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count, user_id";
+        let rows = if agent_id.is_empty() {
+            let sql = format!(
+                "SELECT {COLS} FROM memories WHERE user_id NOT LIKE '%:agent:%' \
+                 ORDER BY access_count DESC LIMIT ?1 OFFSET ?2"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.query_map(params![limit, offset], row_to_memory)
+                .map_err(|e| NeboError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+        } else {
+            let exact = format!("%:agent:{}", agent_id);
+            let ctx = format!("%:agent:{}:ctx:%", agent_id);
+            let sql = format!(
+                "SELECT {COLS} FROM memories WHERE user_id LIKE ?1 OR user_id LIKE ?2 \
+                 ORDER BY access_count DESC LIMIT ?3 OFFSET ?4"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.query_map(params![exact, ctx, limit, offset], row_to_memory)
+                .map_err(|e| NeboError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+        };
+        rows.map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn list_memories_by_namespace(
         &self,
         namespace_prefix: &str,

@@ -1129,7 +1129,8 @@ async fn run_loop(
     // Main bot uses the raw user_id; agents use "user_id:agent:agent_id".
     // With context_isolated, further scoped to "user_id:agent:agent_id:ctx:context_id".
     let memory_user_id = if !agent_id.is_empty() {
-        let agent_scope = format!("{}:agent:{}", user_id, agent_id);
+        // Canonical base scope (one definition shared with the memory API).
+        let agent_scope = crate::memory::agent_memory_scope(user_id, agent_id);
         if memory_config.context_isolated {
             if let Some(ref ctx) = context_id {
                 format!("{}:ctx:{}", agent_scope, ctx)
@@ -1147,7 +1148,7 @@ async fn run_loop(
     let mut inherit_scopes: Vec<db_context::InheritScope> = Vec::new();
 
     if !agent_id.is_empty() {
-        let agent_scope = format!("{}:agent:{}", user_id, agent_id);
+        let agent_scope = crate::memory::agent_memory_scope(user_id, agent_id);
 
         // If context-isolated, inherit agent-wide memories (all tacit/)
         if memory_config.context_isolated && context_id.is_some() {

@@ -715,6 +715,20 @@ pub fn load_memory_context(store: &Store, user_id: &str) -> String {
 /// Load scored tacit memories for use in prompt assembly.
 /// Merges primary scope with inherited scopes (agent-wide, user preferences).
 /// Inherited memories are scored at 0.8x to rank below local memories.
+/// Canonical memory scope key for an agent — the ONE place this convention is
+/// defined. The main bot (empty `agent_id`) uses the raw owner `user_id`; every
+/// other agent uses `"{owner}:agent:{agent_id}"`. The runner (writes + reads) and
+/// the memory API (per-agent UI) both call this so the UI scope always matches
+/// what the agent actually stored. Context-isolation suffixes are layered on by
+/// the runner on top of this base.
+pub fn agent_memory_scope(owner_user_id: &str, agent_id: &str) -> String {
+    if agent_id.is_empty() {
+        owner_user_id.to_string()
+    } else {
+        format!("{}:agent:{}", owner_user_id, agent_id)
+    }
+}
+
 pub fn load_scored_memories(
     store: &Store,
     user_id: &str,

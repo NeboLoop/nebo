@@ -13,6 +13,11 @@ pub struct ListQuery {
     pub offset: i64,
     #[serde(default)]
     pub namespace: Option<String>,
+    /// Scope the listing to a single agent's memory. The main bot ("assistant"/
+    /// empty) uses the raw owner scope; every other agent uses
+    /// "{owner}:agent:{agent_id}" — matching how the runner scopes writes/reads.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 fn default_limit() -> i64 {
@@ -24,19 +29,38 @@ pub async fn list_memories(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    let memories = if let Some(ref ns) = q.namespace {
-        state
+    // agent_id scoping takes precedence — the per-agent Memory view shows only
+    // that agent's memories (matched by the `:agent:<id>` scope suffix), so the
+    // user can trust memory is not global. "assistant"/"main" is the main bot's
+    // UI route id → the empty runtime agent_id.
+    let (memories, total) = if let Some(ref aid) = q.agent_id {
+        let aid = if aid == "assistant" || aid == "main" {
+            ""
+        } else {
+            aid.as_str()
+        };
+        let mems = state
             .store
-            .list_memories_by_namespace(ns, q.limit, q.offset)
+            .list_memories_for_agent(aid, q.limit, q.offset)
+            .map_err(to_error_response)?;
+        let total = mems.len() as i64;
+        (mems, total)
+    } else if let Some(ref ns) = q.namespace {
+        (
+            state
+                .store
+                .list_memories_by_namespace(ns, q.limit, q.offset)
+                .map_err(to_error_response)?,
+            state.store.count_memories_by_namespace(ns).unwrap_or(0),
+        )
     } else {
-        state.store.list_memories(q.limit, q.offset)
-    }
-    .map_err(to_error_response)?;
-
-    let total = if let Some(ref ns) = q.namespace {
-        state.store.count_memories_by_namespace(ns).unwrap_or(0)
-    } else {
-        state.store.count_memories().unwrap_or(0)
+        (
+            state
+                .store
+                .list_memories(q.limit, q.offset)
+                .map_err(to_error_response)?,
+            state.store.count_memories().unwrap_or(0),
+        )
     };
 
     Ok(Json(serde_json::json!({

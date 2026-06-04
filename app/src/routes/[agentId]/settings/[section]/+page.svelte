@@ -10,9 +10,7 @@
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import SetupWizard from '$lib/components/SetupWizard.svelte';
   import Check from 'lucide-svelte/icons/check';
-  import Trash2 from 'lucide-svelte/icons/trash-2';
-  import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import type { Memory } from '$lib/api/neboComponents';
+  import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
   import type { PluginAccount } from '$lib/api/pluginAccounts';
 
   const ctx = getContext<AgentPageContext>('agentPage');
@@ -217,54 +215,6 @@
       await api.updateAgent(agentId, { rules: editRules });
       rulesSaved = true;
       setTimeout(() => rulesSaved = false, 2000);
-    } catch { /* silent */ }
-  }
-
-  // --- Memory browsing ---
-  let memoryStats = $state<{ totalCount: number; layerCounts: Record<string, number>; namespaces: string[] } | null>(null);
-  let expandedBank = $state<string | null>(null);
-  let bankEntries = $state<Memory[]>([]);
-  let bankLoading = $state(false);
-  let memoryLoading = $state(false);
-
-  $effect(() => { if (section === 'memory' && !memoryStats) loadMemoryStats(); });
-
-  async function loadMemoryStats() {
-    memoryLoading = true;
-    try {
-      const api = await import('$lib/api/nebo');
-      const resp = await api.getStats() as { totalCount: number; layerCounts: unknown; namespaces: string[] };
-      memoryStats = {
-        totalCount: resp.totalCount ?? 0,
-        layerCounts: (resp.layerCounts ?? {}) as Record<string, number>,
-        namespaces: resp.namespaces ?? [],
-      };
-    } catch { /* silent */ }
-    finally { memoryLoading = false; }
-  }
-
-  async function toggleBank(ns: string) {
-    if (expandedBank === ns) { expandedBank = null; bankEntries = []; return; }
-    expandedBank = ns;
-    bankLoading = true;
-    try {
-      const api = await import('$lib/api/nebo');
-      const resp = await api.listMemories(50, 0, ns);
-      bankEntries = (resp?.memories ?? []) as Memory[];
-    } catch { bankEntries = []; }
-    finally { bankLoading = false; }
-  }
-
-  async function deleteMemoryEntry(id: number) {
-    try {
-      const api = await import('$lib/api/nebo');
-      await api.deleteMemory(String(id));
-      bankEntries = bankEntries.filter(e => e.id !== id);
-      if (memoryStats && expandedBank) {
-        const counts = { ...memoryStats.layerCounts };
-        if (counts[expandedBank] > 0) counts[expandedBank]--;
-        memoryStats = { ...memoryStats, totalCount: memoryStats.totalCount - 1, layerCounts: counts };
-      }
     } catch { /* silent */ }
   }
 
@@ -974,56 +924,7 @@
       {/if}
 
     {:else if section === 'memory'}
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Memory Banks</div>
-      <div class="text-xs text-base-content/70 mb-3">Browse and manage memories across all layers.</div>
-      {#if memoryLoading}
-        <div class="text-xs text-base-content/50 py-6 text-center">Loading memory stats...</div>
-      {:else if memoryStats}
-        <div class="text-xs text-base-content/50 mb-3 font-mono">{memoryStats.totalCount} total memories</div>
-        <div class="flex flex-col gap-1.5">
-          {#each Object.entries(memoryStats.layerCounts) as [layer, count]}
-            <div>
-              <button
-                class="w-full flex items-center justify-between py-2 px-3 rounded-lg border border-base-300 bg-base-100 text-sm cursor-pointer hover:bg-base-200/50 transition-colors"
-                onclick={() => toggleBank(layer)}
-              >
-                <span class="flex items-center gap-1.5">
-                  <ChevronRight class="w-3.5 h-3.5 text-base-content/50 transition-transform {expandedBank === layer ? 'rotate-90' : ''}" />
-                  <span class="font-medium">{layer}</span>
-                </span>
-                <span class="text-xs text-base-content/50 font-mono">{count}</span>
-              </button>
-              {#if expandedBank === layer}
-                <div class="ml-3 mt-1 border-l-2 border-base-300 pl-3">
-                  {#if bankLoading}
-                    <div class="text-xs text-base-content/50 py-3">Loading...</div>
-                  {:else if bankEntries.length === 0}
-                    <div class="text-xs text-base-content/50 py-3">No entries.</div>
-                  {:else}
-                    <div class="flex flex-col gap-0.5">
-                      {#each bankEntries as entry}
-                        <div class="flex items-start gap-2 py-1.5 px-2 rounded border border-transparent hover:border-base-300 hover:bg-base-200/50 group">
-                          <div class="flex-1 min-w-0">
-                            <div class="text-xs font-mono font-medium truncate">{entry.key}</div>
-                            <div class="text-xs text-base-content/70 line-clamp-2 mt-0.5">{entry.value}</div>
-                          </div>
-                          <button
-                            class="opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer bg-transparent border-none shrink-0 mt-0.5 p-0.5"
-                            onclick={() => deleteMemoryEntry(entry.id)}
-                            title="Delete memory"
-                          ><Trash2 class="w-3 h-3 text-error" /></button>
-                        </div>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          {/each}
-        </div>
-      {:else}
-        <div class="text-xs text-base-content/50 py-6 text-center">No memories found.</div>
-      {/if}
+      <MemoryManager {agentId} />
 
     {:else if section === 'permissions'}
       <div class="text-xs text-base-content/70 mb-2">Control what {agent?.name} can access and execute.</div>

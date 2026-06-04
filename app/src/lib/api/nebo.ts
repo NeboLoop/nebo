@@ -827,8 +827,8 @@ export function localModelsStatus() {
 /**
  * @description "List memories"
  */
-export function listMemories(limit?: number, offset?: number, namespace?: string) {
-	return webapi.get<components.ListMemoriesResponse>(`/api/v1/memories`, { limit, offset, namespace })
+export function listMemories(limit?: number, offset?: number, namespace?: string, agent_id?: string) {
+	return webapi.get<components.ListMemoriesResponse>(`/api/v1/memories`, { limit, offset, namespace, agent_id })
 }
 
 /**
