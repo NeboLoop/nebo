@@ -44,6 +44,10 @@ pub struct Context {
     pub provider_id: String,
     /// Recent tool names (parallel to recent_tool_result_hashes). Last 10 kept.
     pub recent_tool_names: Vec<String>,
+    /// Communication personality: Interactive (preamble allowed) vs Autonomous
+    /// (silent). Mode-branches narration/output suppressors. (Wired in Round 1;
+    /// consumed by the suppressors in Round 2.)
+    pub execution_mode: tools::ExecutionMode,
 }
 
 /// A steering directive generator.
@@ -1075,6 +1079,7 @@ mod tests {
             proactive_items: vec![],
             provider_id: "openai".to_string(),
             recent_tool_names: vec![],
+            execution_mode: tools::ExecutionMode::Interactive,
         }
     }
 

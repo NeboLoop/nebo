@@ -22,6 +22,37 @@ impl Default for Origin {
     }
 }
 
+/// Communication personality for a run, derived from `Origin`.
+///
+/// Orthogonal to `PromptMode` (Full/Minimal): a subagent is Minimal+Autonomous,
+/// a heartbeat may be Full+Autonomous. This selects the system-prompt "voice"
+/// (preamble + milestone updates vs. silent execution + a structured final
+/// report), NOT how much of the prompt is assembled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ExecutionMode {
+    /// A human is watching the live stream (direct chat). Allow a brief preamble
+    /// before the first tool call and short milestone updates while working.
+    #[default]
+    Interactive,
+    /// Background run (cron / comm / heartbeat / subagent). Execute silently and
+    /// deliver a single structured final report.
+    Autonomous,
+}
+
+impl From<Origin> for ExecutionMode {
+    fn from(origin: Origin) -> Self {
+        // Exhaustive match (no `_`): a future Origin variant must be classified.
+        match origin {
+            Origin::User => ExecutionMode::Interactive,
+            Origin::Comm
+            | Origin::App
+            | Origin::Skill
+            | Origin::System
+            | Origin::Mcp => ExecutionMode::Autonomous,
+        }
+    }
+}
+
 /// Type alias for the shared ask-channels map used by `ask_user()`.
 pub type AskChannels = std::sync::Arc<
     tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
@@ -118,5 +149,32 @@ impl ToolContext {
             .await;
 
         resp_rx.await.ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_mode_from_origin_table() {
+        assert_eq!(ExecutionMode::from(Origin::User), ExecutionMode::Interactive);
+        for o in [
+            Origin::Comm,
+            Origin::App,
+            Origin::Skill,
+            Origin::System,
+            Origin::Mcp,
+        ] {
+            assert_eq!(ExecutionMode::from(o), ExecutionMode::Autonomous);
+        }
+    }
+
+    #[test]
+    fn execution_mode_default_matches_user_origin() {
+        assert_eq!(
+            ExecutionMode::default(),
+            ExecutionMode::from(Origin::default())
+        );
     }
 }

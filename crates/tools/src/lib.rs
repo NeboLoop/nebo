@@ -84,7 +84,7 @@ pub use music_tool::MusicTool;
 pub use orchestrator::{
     OrchestratorHandle, SpawnRequest, SpawnResult, SubAgentOrchestrator, new_handle,
 };
-pub use origin::{AskChannels, ChannelContext, Origin, ToolContext};
+pub use origin::{AskChannels, ChannelContext, ExecutionMode, Origin, ToolContext};
 pub use os_tool::OsTool;
 pub use policy::{AskMode, Policy, PolicyLevel};
 pub use process::ProcessRegistry;

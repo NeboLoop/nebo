@@ -1538,6 +1538,7 @@ async fn run_loop(
     let static_system = if system_prompt.is_empty() {
         let pctx = prompt::PromptContext {
             mode: prompt_mode,
+            execution_mode: origin.into(),
             agent_name: agent_name.clone(),
             active_skill: active_skill_template,
             agent_catalog,
@@ -1634,6 +1635,7 @@ async fn run_loop(
                     user_just_returned: false,
                     proactive_items: vec![],
                     provider_id: String::new(),
+                    execution_mode: origin.into(),
                 })
                 .is_some()
             {
@@ -2026,6 +2028,7 @@ async fn run_loop(
             user_just_returned,
             proactive_items,
             provider_id: selected_provider_id.to_string(),
+            execution_mode: origin.into(),
         };
 
         // Circuit-breaker: check if the loop must be force-broken before making the next LLM call
