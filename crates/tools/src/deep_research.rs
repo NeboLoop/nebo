@@ -23,9 +23,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::bot_tool::{StructuredAgent, StructuredTask};
-use crate::origin::ToolContext;
-use crate::registry::DynTool;
-use crate::web_tool::WebTool;
 
 // ─── Tuning constants (mirror the reference workflow `standard` depth) ───
 
@@ -902,6 +899,14 @@ fn source_hash(url: &str) -> String {
     format!("{:016x}", h.finish())
 }
 
+/// Per-sub-agent browser-tab/session key. `run_id` is already `research-<uuid>`, so the
+/// `subagent:research-<uuid>:sa-<node>` shape gives each sub-agent its OWN browser tab
+/// (1:1 ownership), while `web_tool::session_group_key` strips the `:sa-<node>` suffix to
+/// share the run's visited-page dedup cache across all its sub-agents.
+fn tab_key(run_id: &str, node: &str) -> String {
+    format!("subagent:{run_id}:sa-{node}")
+}
+
 fn persist(dir: &Path, name: &str, value: &impl Serialize) {
     match serde_json::to_string_pretty(value) {
         Ok(json) => {
@@ -934,13 +939,17 @@ async fn run_typed<T: for<'de> Deserialize<'de>>(
     serde_json::from_value(value).map_err(|e| format!("output deserialize failed: {e}"))
 }
 
-/// Fetch a single URL through the `web` tool's sanitize action: clean text + HTTP status.
-/// Rate-limited/forbidden responses (429/403) are surfaced so the caller can mark the
-/// source unreliable instead of hammer-retrying.
-async fn fetch_text(web: &Arc<WebTool>, url: &str) -> Result<(String, Option<u16>), String> {
-    let ctx = ToolContext::default();
+/// Fetch a single URL through the canonical `web` tool's sanitize action (under the
+/// sub-agent's own tab), returning clean text + HTTP status. Rate-limited/forbidden
+/// responses (429/403) are surfaced so the caller can mark the source unreliable instead
+/// of hammer-retrying.
+async fn fetch_text(
+    agent: &Arc<dyn StructuredAgent>,
+    tab: String,
+    url: &str,
+) -> Result<(String, Option<u16>), String> {
     let input = json!({ "resource": "http", "action": "sanitize", "url": url, "chunk_size": 6000 });
-    let result = web.execute_dyn(&ctx, input).await;
+    let result = agent.execute_tool(tab, "web".to_string(), input).await;
     if result.is_error {
         return Err(result.content);
     }
@@ -951,7 +960,6 @@ async fn fetch_text(web: &Arc<WebTool>, url: &str) -> Result<(String, Option<u16
 /// `<data_dir>/research/<run_id>/` and returns the final (or salvaged) report.
 pub async fn run(
     agent: Arc<dyn StructuredAgent>,
-    web: Arc<WebTool>,
     data_dir: PathBuf,
     run_id: String,
     question: String,
@@ -977,6 +985,7 @@ pub async fn run(
         task: scope_task(&question),
         schema: scope_schema(&cfg),
         aux_tools: vec![],
+        tab_key: tab_key(&run_id, "scope"),
     }, &cancel).await {
         Ok(s) => s,
         Err(e) => {
@@ -995,8 +1004,9 @@ pub async fn run(
 
     // ── Phase 1: Search (one sub-agent per angle) ──
     let mut search_futs: Vec<BoxFut<AngleResults>> = Vec::new();
-    for angle in &scope.angles {
-        let (agent, cancel, q, angle) = (agent.clone(), cancel.clone(), question.clone(), angle.clone());
+    for (i, angle) in scope.angles.iter().enumerate() {
+        let (agent, cancel, q, angle, run_id) =
+            (agent.clone(), cancel.clone(), question.clone(), angle.clone(), run_id.clone());
         search_futs.push(Box::pin(async move {
             let label = angle.label.clone();
             match run_typed::<SearchOut>(&agent, StructuredTask {
@@ -1004,6 +1014,7 @@ pub async fn run(
                 task: search_task(&q, &angle),
                 schema: search_schema(&cfg),
                 aux_tools: vec!["web".into()],
+                tab_key: tab_key(&run_id, &format!("search-{i}")),
             }, &cancel).await {
                 Ok(out) => AngleResults { angle: label, results: out.results },
                 Err(e) => {
@@ -1033,7 +1044,8 @@ pub async fn run(
     let sources_dir = dir.join("sources");
     let mut fetch_futs: Vec<BoxFut<FetchedSource>> = Vec::new();
     for planned in plan.fetch {
-        let (agent, cancel, web, q, cfg) = (agent.clone(), cancel.clone(), web.clone(), question.clone(), cfg);
+        let (agent, cancel, q, cfg, run_id) =
+            (agent.clone(), cancel.clone(), question.clone(), cfg, run_id.clone());
         let sources_dir = sources_dir.clone();
         fetch_futs.push(Box::pin(async move {
             let hash = source_hash(&planned.url);
@@ -1042,7 +1054,7 @@ pub async fn run(
                 row: SourceRow { url: planned.url.clone(), quality: SourceQuality::Unreliable, angle: planned.angle.clone(), claim_count: claims.len() },
                 claims,
             };
-            let (body, status) = match fetch_text(&web, &planned.url).await {
+            let (body, status) = match fetch_text(&agent, tab_key(&run_id, &format!("fetch-{hash}")), &planned.url).await {
                 Ok(v) => v,
                 Err(e) => {
                     warn!(url = %planned.url, error = %e, "deep_research: fetch failed");
@@ -1061,6 +1073,7 @@ pub async fn run(
                 task: extract_task(&q, &planned, &body),
                 schema: extract_schema(&cfg),
                 aux_tools: vec![],
+                tab_key: tab_key(&run_id, &format!("extract-{hash}")),
             }, &cancel).await {
                 Ok(e) => e,
                 Err(e) => {
@@ -1119,7 +1132,8 @@ pub async fn run(
     let mut verify_futs: Vec<BoxFut<(usize, Vote)>> = Vec::new();
     for (ci, claim) in ranked.iter().enumerate() {
         for v in 0..votes_per {
-            let (agent, cancel, q, claim) = (agent.clone(), cancel.clone(), question.clone(), claim.clone());
+            let (agent, cancel, q, claim, run_id) =
+                (agent.clone(), cancel.clone(), question.clone(), claim.clone(), run_id.clone());
             let required = cfg.refutations_required;
             verify_futs.push(Box::pin(async move {
                 let vote: Vote = run_typed::<Verdict>(&agent, StructuredTask {
@@ -1127,6 +1141,7 @@ pub async fn run(
                     task: verify_task(&q, &claim, v, votes_per, required),
                     schema: verdict_schema(),
                     aux_tools: vec!["web".into()],
+                    tab_key: tab_key(&run_id, &format!("verify-{ci}-{v}")),
                 }, &cancel).await.ok();
                 (ci, vote)
             }));
@@ -1178,6 +1193,7 @@ pub async fn run(
         task: synth_task(&question, &confirmed, &killed),
         schema: report_schema(),
         aux_tools: vec![],
+        tab_key: tab_key(&run_id, "synth"),
     }, &cancel).await {
         Ok(out) => build_report(&question, out, killed_rows, sources, stats),
         Err(e) => {

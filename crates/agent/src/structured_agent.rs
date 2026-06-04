@@ -1,37 +1,47 @@
 //! `StructuredRunner` — the agent-crate implementation of `tools::bot_tool::StructuredAgent`.
 //!
-//! The deep-research harness (in the tools crate) drives its sub-agents through this trait
-//! so it never has to depend on the agent crate (which owns the AI providers). Each call
-//! resolves a provider, wires the requested aux tools (currently `web`) into a forced
-//! `StructuredOutput` loop via [`crate::structured::agent_structured`], and returns the
-//! schema-validated JSON.
+//! The deep-research harness (tools crate) drives its sub-agents through this trait so it
+//! never depends on the agent crate (which owns the AI providers). Every tool call — both
+//! a sub-agent's aux-tool use and the harness's deterministic fetch — dispatches through
+//! the canonical [`tools::Registry::execute`], so there is exactly ONE web pathway: the
+//! fully-wired registry tool (browser, store, broadcaster). Each call carries the
+//! sub-agent's `tab_key` as the `ToolContext` session, giving 1:1 sub-agent→browser-tab
+//! ownership while siblings (`subagent:{parent}:sa-{id}`) share the parent's dedup cache.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use ai::{Provider, ToolCall, ToolDefinition};
+use ai::{Provider, ToolCall};
 use serde_json::Value;
 
+use tools::Registry;
 use tools::bot_tool::{StructuredAgent, StructuredTask};
 use tools::origin::ToolContext;
-use tools::registry::DynTool;
-use tools::web_tool::WebTool;
+use tools::registry::ToolResult;
 
 use crate::structured::{StructuredRequest, agent_structured};
 
-/// Runs forced-structured-output sub-agents for the deep-research harness.
+/// Runs forced-structured-output sub-agents (and single tool calls) for the deep-research
+/// harness, dispatching everything through the canonical tool registry.
 pub struct StructuredRunner {
     providers: Arc<Vec<Arc<dyn Provider>>>,
-    web: Arc<WebTool>,
+    registry: Arc<Registry>,
 }
 
 impl StructuredRunner {
-    pub fn new(providers: Arc<Vec<Arc<dyn Provider>>>, store: Arc<db::Store>) -> Self {
-        Self {
-            providers,
-            web: Arc::new(WebTool::new().with_store(store)),
-        }
+    pub fn new(providers: Arc<Vec<Arc<dyn Provider>>>, registry: Arc<Registry>) -> Self {
+        Self { providers, registry }
+    }
+
+    /// A `ToolContext` scoped to one sub-agent's tab/session. `session_id` keys the
+    /// browser tab (1:1 ownership); `session_key`'s `subagent:{parent}:sa-{id}` shape lets
+    /// `web_tool::session_group_key` share the parent's visited-page cache across siblings.
+    fn ctx_for(tab_key: &str) -> ToolContext {
+        let mut ctx = ToolContext::default();
+        ctx.session_key = tab_key.to_string();
+        ctx.session_id = tab_key.to_string();
+        ctx
     }
 }
 
@@ -47,39 +57,29 @@ impl StructuredAgent for StructuredRunner {
                 .ok_or_else(|| "no AI providers configured".to_string())?
                 .clone();
 
-            // Materialise the requested aux tools as ToolDefinitions. Only `web` is
-            // offered to research sub-agents today.
+            // Offer the requested aux tools from the canonical registry — these are the
+            // real, fully-wired tool definitions (e.g. the browser-enabled `web`).
             let mut aux = Vec::new();
             for name in &task.aux_tools {
-                if name == "web" {
-                    aux.push(ToolDefinition {
-                        name: "web".to_string(),
-                        description: self.web.description(),
-                        input_schema: self.web.schema(),
-                    });
+                if let Some(def) = self.registry.definition(name).await {
+                    aux.push(def);
                 }
             }
 
             let req = StructuredRequest::new(task.system, task.task, task.schema, String::new())
                 .with_aux_tools(aux);
 
-            let web = self.web.clone();
+            let registry = self.registry.clone();
+            let ctx = Self::ctx_for(&task.tab_key);
             let tool_exec = move |tc: ToolCall| {
-                let web = web.clone();
+                let registry = registry.clone();
+                let ctx = ctx.clone();
                 async move {
-                    if tc.name == "web" {
-                        let ctx = ToolContext::default();
-                        let result = web.execute_dyn(&ctx, tc.input).await;
-                        if result.is_error {
-                            Err(result.content)
-                        } else {
-                            Ok(result.content)
-                        }
+                    let result = registry.execute(&ctx, &tc.name, tc.input).await;
+                    if result.is_error {
+                        Err(result.content)
                     } else {
-                        Err(format!(
-                            "tool '{}' is not available to a research sub-agent",
-                            tc.name
-                        ))
+                        Ok(result.content)
                     }
                 }
             };
@@ -87,6 +87,18 @@ impl StructuredAgent for StructuredRunner {
             agent_structured(provider, req, tool_exec)
                 .await
                 .map_err(|e| e.to_string())
+        })
+    }
+
+    fn execute_tool<'a>(
+        &'a self,
+        tab_key: String,
+        tool: String,
+        input: Value,
+    ) -> Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>> {
+        Box::pin(async move {
+            let ctx = Self::ctx_for(&tab_key);
+            self.registry.execute(&ctx, &tool, input).await
         })
     }
 }

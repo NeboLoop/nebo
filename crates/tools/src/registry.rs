@@ -304,6 +304,12 @@ impl Registry {
         self.def_cache.read().await.values().cloned().collect()
     }
 
+    /// Get a single tool's definition by name (for callers that offer a curated tool
+    /// subset to a sub-agent, e.g. the deep-research harness).
+    pub async fn definition(&self, name: &str) -> Option<ToolDefinition> {
+        self.def_cache.read().await.get(name).cloned()
+    }
+
     /// List only non-deferred tools as full AI tool definitions.
     /// Deferred tools are excluded — use `list_deferred_stubs()` for compact listings.
     pub async fn list_active(&self, activated: &HashSet<String>) -> Vec<ToolDefinition> {

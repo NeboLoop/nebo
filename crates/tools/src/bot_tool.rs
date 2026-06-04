@@ -27,12 +27,18 @@ pub struct StructuredTask {
     pub schema: serde_json::Value,
     /// STRAP tool names the sub-agent may call during its free phase (e.g. `["web"]`).
     pub aux_tools: Vec<String>,
+    /// Browser-tab / session identity for this sub-agent. Aux-tool calls execute under
+    /// this key so each sub-agent owns its own tab (the 1:1 sub-agent→tab model), while
+    /// siblings keyed `subagent:{parent}:sa-{id}` share the parent's visited-page cache.
+    pub tab_key: String,
 }
 
-/// Trait for running one forced-structured-output sub-agent (implemented by
-/// `agent::structured_agent::StructuredRunner`). Defined here so the deep-research
-/// harness in the tools crate can drive sub-agents without a circular dependency on
-/// the agent crate (which owns the providers).
+/// Trait for running forced-structured-output sub-agents AND executing single tools on
+/// their behalf (implemented by `agent::structured_agent::StructuredRunner`). Defined
+/// here so the deep-research harness in the tools crate can drive sub-agents without a
+/// circular dependency on the agent crate (which owns the providers). Both methods
+/// dispatch tool calls through the canonical `Registry::execute` — there is no separate
+/// web pathway.
 pub trait StructuredAgent: Send + Sync {
     fn run<'a>(
         &'a self,
@@ -40,6 +46,16 @@ pub trait StructuredAgent: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>,
     >;
+
+    /// Execute one registered tool directly (no LLM) under `tab_key` — for the harness's
+    /// deterministic fetch+sanitize step. Returns the canonical [`ToolResult`] (content +
+    /// `http_status` + `is_error`) so the caller can branch on rate-limit statuses.
+    fn execute_tool<'a>(
+        &'a self,
+        tab_key: String,
+        tool: String,
+        input: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>>;
 }
 
 /// Trait for hybrid memory search (implemented by agent::search wrapper).
@@ -1442,11 +1458,9 @@ impl AgentTool {
             Err(e) => return ToolResult::error(format!("Cannot determine data dir: {}", e)),
         };
         let run_id = format!("research-{}", uuid::Uuid::new_v4().as_simple());
-        let web = Arc::new(crate::web_tool::WebTool::new().with_store(self.store.clone()));
 
         match crate::deep_research::run(
             agent,
-            web,
             data_dir,
             run_id,
             query.to_string(),

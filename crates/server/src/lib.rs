@@ -765,7 +765,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         } else {
             Some(Arc::new(agent::structured_agent::StructuredRunner::new(
                 shared_providers.clone(),
-                store.clone(),
+                tool_registry.clone(),
             )))
         };
 
