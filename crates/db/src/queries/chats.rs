@@ -194,8 +194,15 @@ impl Store {
         before: Option<&str>,
     ) -> Result<Vec<ChatMessage>, NeboError> {
         let conn = self.conn()?;
-        // Fetch a generous batch newest-first (50 is plenty — budget will cut it short)
-        let batch_limit: i64 = 50;
+        // Fetch a generous batch newest-first. This must be large enough to reach
+        // back PAST a long tool-execution run: tool calls/results are stored as
+        // their own rows (role='tool') and pure tool-call assistant turns have
+        // empty content, so a chat can have dozens of consecutive text-less rows
+        // before the previous conversational turn. A small batch would return
+        // nothing but that tool run and the chat would render as "Used N tools"
+        // with no conversation. The content budget below still cuts text-heavy
+        // chats short, so this only matters for tool-heavy ones.
+        let batch_limit: i64 = 250;
         let mut msgs: Vec<ChatMessage> = if let Some(before_id) = before {
             let cursor_ts: i64 = conn
                 .query_row(
@@ -235,21 +242,17 @@ impl Store {
                 .map_err(|e| NeboError::Database(e.to_string()))?
         };
         // msgs is newest-first — accumulate budget and truncate.
-        // Tool calls/results are collapsed in the UI ("Used N tools"), so their
-        // size must NOT determine how much conversation loads — a single huge
-        // tool_result (e.g. a web-search dump) would otherwise eat the whole
-        // budget, loading a single text-less turn and rendering the chat as
-        // nothing but tool activity. Cap each turn's tool contribution so
-        // conversational turns (user + assistant text) always make the window.
-        const MAX_TOOL_BUDGET_PER_MSG: usize = 1500;
+        // The budget is measured in CONVERSATIONAL TEXT (message content) only.
+        // Tool calls/results are collapsed in the UI ("Used N tools") and do NOT
+        // count against the window — otherwise a long tool run (or one huge
+        // web-search result) fills the budget and the chat loads showing only
+        // tool activity with no conversation. By counting content alone, the
+        // window keeps extending back through tool activity until it has gathered
+        // a real slice of the conversation. batch_limit bounds the payload.
         let mut budget: i64 = 0;
         let mut keep = 0usize;
         for msg in &msgs {
-            let tool_size = (msg.tool_calls.as_ref().map_or(0, |s| s.len())
-                + msg.tool_results.as_ref().map_or(0, |s| s.len()))
-            .min(MAX_TOOL_BUDGET_PER_MSG) as i64;
-            let size = msg.content.len() as i64 + tool_size;
-            budget += size;
+            budget += msg.content.len() as i64;
             keep += 1;
             if budget >= max_chars && keep > 1 {
                 break;
