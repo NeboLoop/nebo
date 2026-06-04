@@ -2854,10 +2854,11 @@ pub async fn list_agent_chats(
     let enriched: Vec<serde_json::Value> = enriched_chats
         .iter()
         .map(|(chat, msg_count, last_content)| {
-            let preview = if last_content.len() > 120 {
-                format!("{}...", last_content.chars().take(120).collect::<String>())
+            let clean = strip_to_plain(last_content);
+            let preview = if clean.chars().count() > 120 {
+                format!("{}...", clean.chars().take(120).collect::<String>())
             } else {
-                last_content.clone()
+                clean
             };
             let updated_at_relative = format_relative_time(chat.updated_at, now);
             serde_json::json!({
@@ -2880,6 +2881,24 @@ pub async fn list_agent_chats(
         "activeChatId": active_chat_id,
         "total": total,
     })))
+}
+
+/// Strip HTML tags and markdown markers to a plain-text thread-list preview snippet.
+/// (Hidden system-reminder messages are already excluded at the query layer; this
+/// cleans markdown/HTML in normal assistant/user content like `## Heading`, `**bold**`.)
+fn strip_to_plain(input: &str) -> String {
+    use std::sync::LazyLock;
+    static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"<[^>]+>").unwrap());
+    static LINK: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\[([^\]]+)\]\([^)]*\)").unwrap());
+    static MD: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"[*_`#>~]+").unwrap());
+    static WS: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
+
+    let s = TAG.replace_all(input, " "); // strip HTML/XML tags (incl. any <system-reminder>)
+    let s = LINK.replace_all(&s, "$1"); // [text](url) -> text
+    let s = MD.replace_all(&s, ""); // strip markdown markers * _ ` # > ~
+    let s = s.replace("- ", " "); // strip list-item dashes
+    WS.replace_all(&s, " ").trim().to_string() // collapse whitespace/newlines
 }
 
 /// Format an epoch timestamp as a relative time string.

@@ -490,8 +490,14 @@ impl Store {
                  LEFT JOIN (
                      SELECT m.chat_id,
                             COUNT(*) AS cnt,
+                            -- Preview = last VISIBLE message: skip tool results (empty),
+                            -- empty content, and hidden system-injected messages
+                            -- (reminders carry metadata {\"hidden\":true}).
                             (SELECT m2.content FROM chat_messages m2
                              WHERE m2.chat_id = m.chat_id
+                               AND m2.role != 'tool'
+                               AND m2.content != ''
+                               AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"hidden\":true%')
                              ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1) AS last_content
                      FROM chat_messages m
                      GROUP BY m.chat_id
