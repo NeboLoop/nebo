@@ -215,15 +215,38 @@ Direct and warm, never sycophantic — a trusted colleague, not customer service
 
 **Don't guess.** If required context is missing and retrievable, retrieve it. If it's not retrievable, ask. If you must proceed with incomplete information, label your assumptions explicitly."#;
 
+/// Interactive comm style (direct chat — a human is watching the live stream):
+/// a brief preamble before the first tool call + milestone updates while working.
+/// The relaxed narration/output suppressors (steering.rs) catch over-narration.
+const COMM_STYLE_INTERACTIVE: &str = r#"## Voice
+
+Direct and warm, never sycophantic — a trusted colleague, not customer service. Match the user's energy: a one-line request gets a one-line answer; a detailed question gets a thorough one. Lead with the answer or action, not the reasoning or a restatement of the question. Brevity is the default, but never clip a response that genuinely needs depth — correctness outranks concision. No emojis unless the user explicitly asks. Do not use a colon before tool calls — just end with a period.
+
+## How You Work
+
+**Act, don't narrate — but keep the user oriented.** When asked to do something, use your tools to do it; never describe an action in place of taking it, and never end a turn promising future action — execute it now. Someone is watching this work live, so narrate at the load-bearing moments only:
+- Before your *first* tool call of a turn, state in one line what you're about to do. A pure-chat turn with no tool calls gets no preamble — just answer.
+- While working, give a short update only at a key moment: you found something load-bearing (a bug, a root cause), you're changing direction, or you've made real progress since your last update. Routine steps need no commentary.
+- Keep text alongside a tool call to one short line (≤25 words). Keep your final response tight — under ~100 words unless the task genuinely needs more.
+
+These are updates, not a transcript — when in doubt, stay quiet and keep working. Every response either makes progress with tool calls or delivers a final result.
+
+**Finish the job.** Complete multi-step tasks in one go, chaining tools back-to-back. Use batch operations instead of many individual calls. If a tool returns empty or partial results, retry with a different strategy before giving up. Don't stop at a plan when you have the tools to do the work.
+
+**Ground every claim in a tool result.** Never report state you didn't observe this turn. Never say "tested" or "verified" unless you actually called the tool and saw the result. For anything verifiable — calculations, system state, file contents, current facts — use a tool rather than answering from memory or priors. Your memories describe the *user*, not the machine you're running on. Equally, when a check did pass or a task is complete, state it plainly — don't hedge confirmed results with disclaimers, downgrade finished work to "partial," or re-verify what you already checked. The goal is an accurate report, not a defensive one.
+
+**Diagnose before retrying.** If something fails, read the error and check your assumptions before trying again. Don't blindly repeat a failed call, but don't abandon a viable approach after one failure either. Escalate to the user only when genuinely stuck after investigating.
+
+**Don't guess.** If required context is missing and retrievable, retrieve it. If it's not retrievable, ask. If you must proceed with incomplete information, label your assumptions explicitly."#;
+
 /// Select the comm-style block for the run's execution mode.
 ///
-/// Round 1: Interactive shares the Autonomous text (byte-identical output).
-/// Round 3 gives Interactive its own preamble-permitting block.
+/// Interactive: preamble + milestone updates (human watching the live stream).
+/// Autonomous: silent execution, structured final report (cron/comm/heartbeat/subagent).
 fn comm_style(mode: tools::ExecutionMode) -> &'static str {
     match mode {
-        tools::ExecutionMode::Interactive | tools::ExecutionMode::Autonomous => {
-            COMM_STYLE_AUTONOMOUS
-        }
+        tools::ExecutionMode::Interactive => COMM_STYLE_INTERACTIVE,
+        tools::ExecutionMode::Autonomous => COMM_STYLE_AUTONOMOUS,
     }
 }
 
@@ -1377,10 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn test_comm_style_round1_byte_identical_across_modes() {
-        // Round 1: Interactive and Autonomous share the same comm-style block,
-        // so build_static must produce byte-identical output regardless of mode.
-        // (Round 3 gives Interactive its own preamble-permitting block.)
+    fn test_comm_style_branches_by_mode() {
         let interactive = PromptContext {
             agent_name: "Nebo".to_string(),
             execution_mode: tools::ExecutionMode::Interactive,
@@ -1393,12 +1413,30 @@ mod tests {
         };
         let a = build_static(&interactive);
         let b = build_static(&autonomous);
-        assert_eq!(a, b, "Round 1 comm-style must be byte-identical across modes");
 
-        // Placeholder must be replaced, and the original voice text preserved.
-        assert!(!a.contains("{comm_style}"), "{{comm_style}} not replaced");
-        assert!(a.contains("Skip filler and preamble"));
-        assert!(a.contains("Act, don't narrate."));
+        // Placeholder must always be replaced.
+        assert!(!a.contains("{comm_style}"), "{{comm_style}} not replaced (interactive)");
+        assert!(!b.contains("{comm_style}"), "{{comm_style}} not replaced (autonomous)");
+
+        // The two personalities must differ.
+        assert_ne!(a, b, "Interactive and Autonomous comm-style must differ");
+
+        // Interactive: preamble-permitting, no blanket "skip preamble".
+        assert!(a.contains("Before your *first* tool call"));
+        assert!(a.contains("keep the user oriented"));
+        assert!(!a.contains("Skip filler and preamble"));
+
+        // Autonomous: silent, unchanged original text.
+        assert!(b.contains("Skip filler and preamble"));
+        assert!(b.contains("**Act, don't narrate.**"));
+        assert!(!b.contains("Before your *first* tool call"));
+
+        // Shared discipline preserved in both (byte-identical paragraphs).
+        for s in [&a, &b] {
+            assert!(s.contains("**Finish the job.**"));
+            assert!(s.contains("**Ground every claim in a tool result.**"));
+            assert!(s.contains("**Don't guess.**"));
+        }
     }
 
     #[test]
