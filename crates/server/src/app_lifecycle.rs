@@ -204,7 +204,7 @@ impl AppLifecycle {
             sock_path: sock_path.to_path_buf(),
         });
 
-        let agent_root = self.tool_dir.parent().unwrap_or(&self.tool_dir);
+        let agent_root = &self.tool_dir;
         let defs = match read_tool_defs_from_config(agent_root, &self.agent_id) {
             Some(d) => d,
             None => return,
@@ -275,7 +275,7 @@ impl AppLifecycle {
                             let caller: Arc<dyn SidecarCaller> = Arc::new(GrpcSidecarCaller {
                                 sock_path: sock_path.clone(),
                             });
-                            let agent_root = tool_dir.parent().unwrap_or(&tool_dir);
+                            let agent_root = &tool_dir;
                             if let Some(defs) = read_tool_defs_from_config(agent_root, &agent_id) {
                                 for def in defs {
                                     let tool = SidecarActionTool::new(def, caller.clone());
