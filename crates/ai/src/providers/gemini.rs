@@ -215,6 +215,19 @@ impl Provider for GeminiProvider {
             body["tools"] = serde_json::to_value(&tools).unwrap_or_default();
         }
 
+        // Map the cross-provider ToolChoice to Gemini's toolConfig (Auto → omitted).
+        let fcc = match &req.tool_choice {
+            ToolChoice::Auto => None,
+            ToolChoice::Any => Some(serde_json::json!({"mode": "ANY"})),
+            ToolChoice::Tool(name) => {
+                Some(serde_json::json!({"mode": "ANY", "allowedFunctionNames": [name]}))
+            }
+            ToolChoice::None => Some(serde_json::json!({"mode": "NONE"})),
+        };
+        if let Some(fcc) = fcc {
+            body["toolConfig"] = serde_json::json!({ "functionCallingConfig": fcc });
+        }
+
         // Generation config
         let mut gen_config = serde_json::Map::new();
         if req.temperature > 0.0 {

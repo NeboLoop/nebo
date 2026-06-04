@@ -641,6 +641,7 @@ async fn evaluate_step(
     }];
 
     let req = ChatRequest {
+        tool_choice: Default::default(),
         messages,
         tools: vec![],
         max_tokens: 100,
@@ -697,6 +698,7 @@ async fn run_llm_loop(
             return Err(WorkflowError::MaxIterations(activity.id.clone()));
         }
         let req = ChatRequest {
+            tool_choice: Default::default(),
             messages: messages.clone(),
             tools: tool_defs.to_vec(),
             max_tokens: 16384,

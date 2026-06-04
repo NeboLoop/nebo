@@ -150,6 +150,7 @@ pub async fn summarize(
     };
 
     let req = ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
             content: truncated.to_string(),

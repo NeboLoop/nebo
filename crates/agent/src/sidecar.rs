@@ -44,6 +44,7 @@ pub async fn verify_screenshot(
     };
 
     let req = ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
             content: format!("Action performed: {}", action_context),

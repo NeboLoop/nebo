@@ -547,12 +547,21 @@ impl Provider for AnthropicProvider {
             }
         }
 
+        // Map the cross-provider ToolChoice to Anthropic's shape (Auto → omitted).
+        let tool_choice = match &req.tool_choice {
+            ToolChoice::Auto => None,
+            ToolChoice::Any => Some(serde_json::json!({"type": "any"})),
+            ToolChoice::Tool(name) => Some(serde_json::json!({"type": "tool", "name": name})),
+            ToolChoice::None => Some(serde_json::json!({"type": "none"})),
+        };
+
         let api_req = AnthropicApiRequest {
             model: model.to_string(),
             max_tokens,
             messages,
             system: system_blocks,
             tools,
+            tool_choice,
             stream: true,
             thinking: if req.enable_thinking {
                 Some(ThinkingConfig {
@@ -665,6 +674,8 @@ struct AnthropicApiRequest {
     system: Option<Vec<SystemBlock>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,

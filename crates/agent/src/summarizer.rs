@@ -71,6 +71,7 @@ pub async fn summarize_tool_batch(
     }
 
     let req = ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
             content: prompt,
@@ -136,6 +137,7 @@ pub async fn generate_session_title(
     let truncated = truncate_str(user_prompt, 300);
 
     let request = ChatRequest {
+        tool_choice: Default::default(),
         model: model.to_string(),
         system: system.to_string(),
         static_system: String::new(),

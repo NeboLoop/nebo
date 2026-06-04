@@ -529,6 +529,7 @@ async fn run_chat(
 
 async fn send_chat_message(provider: &dyn ai::Provider, prompt: &str) -> anyhow::Result<()> {
     let req = ai::ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),
             content: prompt.into(),

@@ -632,6 +632,20 @@ impl Provider for OpenAIProvider {
                 map.insert("metadata".to_string(), serde_json::to_value(meta).unwrap());
             }
         }
+        // Map the cross-provider ToolChoice to OpenAI's `tool_choice` (Auto → omitted).
+        let tool_choice_val = match &req.tool_choice {
+            ToolChoice::Auto => None,
+            ToolChoice::Any => Some(serde_json::json!("required")),
+            ToolChoice::Tool(name) => {
+                Some(serde_json::json!({"type": "function", "function": {"name": name}}))
+            }
+            ToolChoice::None => Some(serde_json::json!("none")),
+        };
+        if let Some(tc) = tool_choice_val {
+            if let serde_json::Value::Object(ref mut map) = body_val {
+                map.insert("tool_choice".to_string(), tc);
+            }
+        }
 
         // Debug: log the full request body on first few requests to diagnose Janus errors
         if let Ok(body_json) = serde_json::to_string(&body_val) {

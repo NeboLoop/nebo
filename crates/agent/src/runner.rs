@@ -951,6 +951,7 @@ impl Runner {
         }
 
         let req = ChatRequest {
+            tool_choice: Default::default(),
             messages: vec![Message {
                 role: "user".to_string(),
                 content: prompt.to_string(),
@@ -2262,6 +2263,7 @@ async fn run_loop(
 
         // Build ChatRequest
         let chat_req = ChatRequest {
+            tool_choice: Default::default(),
             messages: ai_messages,
             tools: tool_defs,
             max_tokens: if output_escalated { ESCALATED_MAX_OUTPUT_TOKENS } else { DEFAULT_MAX_OUTPUT_TOKENS },
@@ -3781,6 +3783,7 @@ async fn run_loop(
                     convert_messages(&sessions.get_messages(session_id).unwrap_or_default());
 
                 let summary_req = ChatRequest {
+                    tool_choice: Default::default(),
                     messages: summary_messages,
                     tools: vec![], // No tools — text-only response
                     max_tokens: 4096,
@@ -4378,6 +4381,7 @@ The "mode" field (required for "set" and "update") classifies HOW the agent shou
     );
 
     let req = ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
             content: classify_prompt,

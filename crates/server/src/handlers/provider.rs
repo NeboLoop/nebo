@@ -448,6 +448,7 @@ pub async fn test_provider(
 /// Test a provider by sending a minimal chat request.
 async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String, String> {
     let req = ai::ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),
             content: "Say OK".into(),

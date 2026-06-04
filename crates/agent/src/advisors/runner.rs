@@ -132,6 +132,7 @@ async fn run_single_advisor(
     let system_prompt = advisor.build_system_prompt(task);
 
     let req = ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
             content: format!(

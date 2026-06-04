@@ -1344,6 +1344,7 @@ async fn generate_chat_title_if_needed(
         .ok_or_else(|| types::NeboError::Internal("no providers available".into()))?;
 
     let req = ai::ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),
             content: format!(

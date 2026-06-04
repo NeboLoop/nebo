@@ -203,6 +203,7 @@ pub async fn consolidate_scope(
     );
 
     let req = ai::ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".to_string(),
             content: prompt,

@@ -117,6 +117,7 @@ pub async fn synthesize_directive(
     );
 
     let req = ai::ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".to_string(),
             content: prompt,

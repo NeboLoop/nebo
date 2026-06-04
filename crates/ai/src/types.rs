@@ -303,6 +303,29 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
+/// How the model may use the offered tools on a request.
+/// `Auto` (default) is omitted on the wire, so existing requests stay byte-identical.
+/// `Any`/`Tool`/`None` are mapped per-provider; providers that can't force tool calls
+/// (ollama/local/cli) treat non-`Auto` as a best-effort no-op.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolChoice {
+    /// Model decides whether to call a tool.
+    #[default]
+    Auto,
+    /// Model MUST call some tool (any of the offered ones).
+    Any,
+    /// Model MUST call the named tool.
+    Tool(String),
+    /// Model must NOT call any tool.
+    None,
+}
+
+/// Serde helper: `tool_choice` is omitted when it's the default `Auto`.
+fn is_auto(tc: &ToolChoice) -> bool {
+    *tc == ToolChoice::Auto
+}
+
 /// Image content for vision messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageContent {
@@ -325,11 +348,14 @@ pub struct Message {
 }
 
 /// A request to an AI provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub messages: Vec<Message>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDefinition>,
+    /// How the model may use the offered tools. `Auto` (default) is omitted on the wire.
+    #[serde(default, skip_serializing_if = "is_auto")]
+    pub tool_choice: ToolChoice,
     #[serde(default)]
     pub max_tokens: i32,
     #[serde(default)]
@@ -624,5 +650,32 @@ mod transient_tests {
     fn unrelated_stream_error_not_transient() {
         let err = ProviderError::Stream("invalid request: bad tool schema".to_string());
         assert!(!is_transient_error(&err));
+    }
+
+    #[test]
+    fn tool_choice_auto_omitted_non_auto_wired() {
+        // Auto must be omitted on the wire → existing requests stay byte-identical.
+        let auto = ChatRequest {
+            tool_choice: ToolChoice::Auto,
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&auto).unwrap();
+        assert!(
+            v.get("tool_choice").is_none(),
+            "Auto tool_choice must be omitted"
+        );
+
+        // Non-Auto is serialized (the per-provider adapter then maps it).
+        let forced = ChatRequest {
+            tool_choice: ToolChoice::Tool("StructuredOutput".to_string()),
+            ..Default::default()
+        };
+        let v2 = serde_json::to_value(&forced).unwrap();
+        assert!(
+            v2.get("tool_choice").is_some(),
+            "non-Auto tool_choice must be present"
+        );
+
+        assert_eq!(ToolChoice::default(), ToolChoice::Auto);
     }
 }

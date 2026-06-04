@@ -551,6 +551,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         );
 
                                         let req = ai::ChatRequest {
+                                            tool_choice: Default::default(),
                                             messages: vec![ai::Message {
                                                 role: "user".into(),
                                                 content: summary_prompt,
@@ -953,6 +954,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         drop(providers);
 
                                         let req = ai::ChatRequest {
+                                            tool_choice: Default::default(),
                                             messages: vec![ai::Message {
                                                 role: "user".to_string(),
                                                 content: completion_prompt,
@@ -1335,6 +1337,7 @@ async fn handle_builtin_slash(
                 );
 
                 let req = ai::ChatRequest {
+                    tool_choice: Default::default(),
                     messages: vec![ai::Message {
                         role: "user".into(),
                         content: summary_prompt,

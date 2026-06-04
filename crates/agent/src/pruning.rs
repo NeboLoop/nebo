@@ -810,6 +810,7 @@ Rules, limitations, or preferences the user stated.
 Anything else essential for resuming this work that doesn't fit above.";
 
     let req = ChatRequest {
+        tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
             content: user_content,

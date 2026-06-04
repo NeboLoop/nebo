@@ -738,6 +738,7 @@ async fn start_janus_stream(
     drop(providers);
 
     let req = ai::ChatRequest {
+        tool_choice: Default::default(),
         messages: body.messages,
         tools: vec![],
         max_tokens: body.max_tokens.unwrap_or(2000),

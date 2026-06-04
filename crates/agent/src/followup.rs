@@ -81,6 +81,7 @@ Bad: [\"Can you tell me more about how this works?\", \"What are the alternative
         .collect();
 
     let request = ChatRequest {
+        tool_choice: Default::default(),
         model: model.to_string(),
         system: system.to_string(),
         static_system: String::new(),
