@@ -284,23 +284,41 @@
     }
   });
 
-  // Initial scroll to bottom
+  // Initial scroll to bottom. Markdown, tool blocks, and images render
+  // asynchronously and keep growing the content AFTER first paint — a single
+  // scroll lands mid-conversation. Re-pin to the bottom every frame until the
+  // content height stabilizes (or a short cap), so we settle at the true end.
   $effect(() => {
     if (messagesContainer && hasMessages && !initialScrollDone) {
       scrollingProgrammatically = true;
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (messagesContainer) {
-            messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: 'instant' });
-            showScrollButton = false;
-            autoScrollEnabled = true;
-          }
+      let lastHeight = -1;
+      let stableFrames = 0;
+      let frames = 0;
+      const pin = () => {
+        const el = messagesContainer;
+        if (!el) return;
+        el.scrollTop = el.scrollHeight;
+        frames += 1;
+        if (el.scrollHeight === lastHeight) {
+          stableFrames += 1;
+        } else {
+          stableFrames = 0;
+          lastHeight = el.scrollHeight;
+        }
+        // Settle once the height has held steady for a few frames, or after a
+        // ~0.7s cap (guards against content that never stops changing).
+        if (stableFrames >= 3 || frames >= 40) {
+          showScrollButton = false;
+          autoScrollEnabled = true;
+          initialScrollDone = true;
           requestAnimationFrame(() => {
-            initialScrollDone = true;
             scrollingProgrammatically = false;
           });
-        });
-      });
+          return;
+        }
+        requestAnimationFrame(pin);
+      };
+      requestAnimationFrame(pin);
     }
   });
 
