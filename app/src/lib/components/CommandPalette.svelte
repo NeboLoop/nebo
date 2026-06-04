@@ -46,7 +46,6 @@
     { category: 'Settings', label: 'Rules', icon: 'settings', action: () => goto('/settings/rules') },
     { category: 'Settings', label: 'Advisors', icon: 'settings', action: () => goto('/settings/advisors') },
     { category: 'Settings', label: 'Permissions', icon: 'settings', action: () => goto('/settings/permissions') },
-    { category: 'Settings', label: 'Sessions', icon: 'settings', action: () => goto('/settings/sessions') },
     { category: 'Settings', label: 'Memories', icon: 'settings', action: () => goto('/settings/memories') },
     { category: 'Settings', label: 'Developer', icon: 'settings', action: () => goto('/settings/developer') },
     { category: 'Settings', label: 'About', icon: 'settings', action: () => goto('/settings/about') },

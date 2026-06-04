@@ -13,7 +13,6 @@
   import Lock from 'lucide-svelte/icons/lock';
   import Cable from 'lucide-svelte/icons/cable';
   import Shield from 'lucide-svelte/icons/shield';
-  import History from 'lucide-svelte/icons/history';
   import Brain from 'lucide-svelte/icons/brain';
   import Code from 'lucide-svelte/icons/code';
   import BarChart3 from 'lucide-svelte/icons/bar-chart-3';
@@ -56,7 +55,6 @@
     null,
     { id: 'permissions', path: '/settings/permissions', label: 'Permissions', icon: Shield },
     null,
-    { id: 'sessions', path: '/settings/sessions', label: 'Sessions', icon: History },
     { id: 'memories', path: '/settings/memories', label: 'Memories', icon: Brain },
     { id: 'status', path: '/settings/status', label: 'Status', icon: Activity },
     null,
