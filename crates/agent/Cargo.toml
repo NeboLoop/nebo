@@ -10,6 +10,7 @@ ai = { workspace = true }
 db = { workspace = true }
 tools = { workspace = true }
 config = { workspace = true }
+a2ui-validation = { workspace = true }
 napp = { workspace = true }
 notify_crate = { workspace = true }
 workflow = { workspace = true }
@@ -37,3 +38,4 @@ turbovec = "0.5"
 
 [dev-dependencies]
 tempfile = "3"
+async-trait = { workspace = true }
