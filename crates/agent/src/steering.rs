@@ -119,6 +119,8 @@ pub struct ReminderContext<'a> {
     /// The active agent's soul/persona text, if any — a short essence is re-asserted
     /// periodically so a long run doesn't drift from its identity (identity-reinforce).
     pub agent_soul: Option<&'a str>,
+    /// The session's detected objective mode (e.g. "research") from `detect_objective`.
+    pub detected_mode: &'a str,
 }
 
 impl ReminderContext<'_> {
@@ -168,6 +170,8 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(ErrorRecovery),
         Box::new(ObjectiveReinforce),
         Box::new(IdentityReinforce),
+        Box::new(PluginAffinity),
+        Box::new(ResearchModeNudge),
     ]
 }
 
@@ -1006,6 +1010,97 @@ fn soul_essence(soul: &str) -> String {
     format!(" — {s}.")
 }
 
+/// Distinct `plugin` resource slugs the agent has called this session (assistant turns).
+fn recent_plugin_slugs(messages: &[ChatMessage]) -> Vec<String> {
+    let mut slugs = std::collections::BTreeSet::new();
+    for m in messages {
+        if m.role != "assistant" {
+            continue;
+        }
+        let Some(ref tc) = m.tool_calls else { continue };
+        let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc) else {
+            continue;
+        };
+        for c in &calls {
+            if c.get("name").and_then(|v| v.as_str()) != Some("plugin") {
+                continue;
+            }
+            let Some(input) = c.get("input") else { continue };
+            // `input` may be an object or a JSON-encoded string.
+            let obj = if let Some(s) = input.as_str() {
+                serde_json::from_str::<serde_json::Value>(s).ok()
+            } else {
+                Some(input.clone())
+            };
+            if let Some(slug) = obj
+                .as_ref()
+                .and_then(|o| o.get("resource"))
+                .and_then(|v| v.as_str())
+            {
+                if !slug.is_empty() {
+                    slugs.insert(slug.to_string());
+                }
+            }
+        }
+    }
+    slugs.into_iter().collect()
+}
+
+/// PluginAffinity — after the agent uses a channel/messaging plugin, surface the slugs
+/// it's already used so it calls them directly instead of re-running `plugin` discovery.
+/// Informational (Claude-Code style "a capability is available"); migrated from the
+/// runner's suffix injection in R8. Fires after a plugin call lands in the window.
+struct PluginAffinity;
+impl Reminder for PluginAffinity {
+    fn name(&self) -> &'static str {
+        "plugin_affinity"
+    }
+    fn priority(&self) -> u8 {
+        3
+    }
+    fn min_turns_between(&self) -> usize {
+        6
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        let slugs = recent_plugin_slugs(ctx.messages);
+        if slugs.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "Plugins you've already used this session: {}. Call them directly — \
+             no need to run `plugin` discovery again.",
+            slugs.join(", ")
+        ))
+    }
+}
+
+/// ResearchModeNudge — when `detect_objective` classified the session as a research task,
+/// steer the agent to the deterministic research harness instead of ad-hoc searching.
+/// Migrated from the runner's suffix injection in R8 (delivered via the stream now).
+struct ResearchModeNudge;
+impl Reminder for ResearchModeNudge {
+    fn name(&self) -> &'static str {
+        "research_mode_nudge"
+    }
+    fn priority(&self) -> u8 {
+        9 // routing nudge — outranks most informational reminders
+    }
+    fn min_turns_between(&self) -> usize {
+        4
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        if ctx.detected_mode != "research" {
+            return None;
+        }
+        Some(
+            "This task calls for multi-source research. Use \
+             bot(resource: \"research\", action: \"deep_research\", query: \"<the user's research question>\") \
+             to run the verified deep-research harness rather than searching ad-hoc."
+                .to_string(),
+        )
+    }
+}
+
 // 14b. Tool Result Grounding — prevent hallucinating tool failures when tools succeed
 struct ToolResultGrounding;
 impl Reminder for ToolResultGrounding {
@@ -1399,6 +1494,31 @@ mod tests {
             .check(&rctx_presence("away", tools::ExecutionMode::Autonomous))
             .expect("fires when away");
         assert!(out.contains("stepped away"));
+    }
+
+    #[test]
+    fn test_plugin_affinity_fires_after_plugin_use() {
+        let tc = r#"[{"name":"plugin","input":{"resource":"slack","command":"post"}}]"#;
+        let msgs = vec![
+            make_msg("user", "post to slack"),
+            make_assistant_with_tools("", tc),
+            make_msg("tool", "posted"),
+        ];
+        let ctx = ReminderContext { messages: &msgs, ..base_rctx() };
+        let out = PluginAffinity.check(&ctx).expect("fires after plugin use");
+        assert!(out.contains("slack"));
+        // No plugin calls → silent.
+        assert!(PluginAffinity.check(&base_rctx()).is_none());
+    }
+
+    #[test]
+    fn test_research_mode_nudge() {
+        let research = ReminderContext { detected_mode: "research", ..base_rctx() };
+        let out = ResearchModeNudge.check(&research).expect("fires for research mode");
+        assert!(out.contains("deep_research"));
+        // Other modes → silent.
+        let chat = ReminderContext { detected_mode: "chat", ..base_rctx() };
+        assert!(ResearchModeNudge.check(&chat).is_none());
     }
 
     #[test]
@@ -1927,6 +2047,7 @@ mod tests {
             max_iterations: 100,
             agent_name: "Nebo",
             agent_soul: None,
+            detected_mode: "",
         }
     }
 

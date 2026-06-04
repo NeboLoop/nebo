@@ -2093,62 +2093,7 @@ async fn run_loop(
             });
         }
 
-        // Plugin affinity: surface recently used plugin slugs so the LLM doesn't re-discover.
-        {
-            let mut used_plugins = std::collections::BTreeSet::new();
-            for msg in &window_messages {
-                if let Some(ref tc_json) = msg.tool_calls {
-                    if let Ok(tcs) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) {
-                        for tc in &tcs {
-                            let name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                            if name == "plugin" {
-                                if let Some(input) = tc.get("input") {
-                                    let input_obj = if let Some(s) = input.as_str() {
-                                        serde_json::from_str::<serde_json::Value>(s).ok()
-                                    } else {
-                                        Some(input.clone())
-                                    };
-                                    if let Some(obj) = input_obj {
-                                        if let Some(slug) = obj.get("resource").and_then(|v| v.as_str()) {
-                                            if !slug.is_empty() {
-                                                used_plugins.insert(slug.to_string());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if !used_plugins.is_empty() {
-                let slugs: Vec<String> = used_plugins.into_iter().collect();
-                all_directives.push(steering::SteeringDirective {
-                    label: "Plugin Affinity".to_string(),
-                    content: format!(
-                        "Recently used plugins this session: {}. You can use these directly without searching again.",
-                        slugs.join(", ")
-                    ),
-                    priority: 3,
-                });
-            }
-        }
-
-        // Inject research mode nudge when detect_objective classified this as a research task.
-        // Short directive only — the full methodology is delivered via the bot tool result.
-        {
-            let detected_mode = sessions.get_detected_mode(session_id);
-            if detected_mode == "research" {
-                all_directives.push(steering::SteeringDirective {
-                    label: "Research Mode".to_string(),
-                    content: "This task requires multi-source research. \
-                        Call bot(resource: \"research\", action: \"research\", query: \"<the user's research question>\") \
-                        to activate parallel sub-agent research."
-                        .to_string(),
-                    priority: 9,
-                });
-            }
-        }
+        // Plugin affinity + research-mode nudge moved to message-stream reminders (R8).
 
         // Convert ChatMessage to ai::Message (no steering injection — steering goes in system prompt)
         let ai_messages = convert_messages(&window_messages);
@@ -3482,6 +3427,7 @@ async fn run_loop(
             // reminder registry is populated in later rounds.
             {
                 let msgs = sessions.get_messages(session_id).unwrap_or_default();
+                let detected_mode = sessions.get_detected_mode(session_id);
                 let rctx = steering::ReminderContext {
                     iteration,
                     execution_mode: origin.into(),
@@ -3499,6 +3445,7 @@ async fn run_loop(
                     max_iterations,
                     agent_name: &agent_name,
                     agent_soul: active_agent_entry.as_ref().and_then(|r| r.soul.as_deref()),
+                    detected_mode: &detected_mode,
                 };
                 if let Some(reminder) = steering::select_reminder(&rctx, &mut reminder_cadence) {
                     if let Err(e) = sessions.append_message(
