@@ -763,14 +763,14 @@
             onmousedown={(e) => { e.preventDefault(); selectMention(agent); }}
           >
             <div class="w-6 h-6 rounded-md flex items-center justify-center font-mono text-xs font-semibold shrink-0 {c.bgClass} {c.inkClass}">{agent.initial}</div>
-            <div class="flex-1 min-w-0">
-              <span class="text-sm font-medium">{agent.name}</span>
+            <div class="flex-1 min-w-0 flex items-center gap-1.5">
+              <span class="text-sm font-medium shrink-0">{agent.name}</span>
               {#if !agent.isApp}
-                <span class="inline-flex items-center gap-0.5 align-middle ml-1.5 px-1 py-0.5 rounded bg-base-200 text-xs font-medium text-base-content/70" title="Companion bot">
+                <span class="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-base-200 text-xs font-medium text-base-content/70 shrink-0" title="Companion bot">
                   <Bot class="w-3 h-3" />bot
                 </span>
               {/if}
-              <span class="text-xs text-base-content/70 ml-1.5">{agent.role}</span>
+              <span class="text-xs text-base-content/70 truncate">{agent.role}</span>
             </div>
           </button>
         {/each}
