@@ -723,14 +723,24 @@ pub fn load_scored_memories(
 ) -> Vec<ScoredMemory> {
     let mut all_scored: Vec<ScoredMemory> = Vec::new();
 
-    // Primary scope (agent or context-level memories)
-    if let Ok(memories) = store.get_tacit_memories_with_min_confidence(
-        user_id,
-        "tacit/",
-        MIN_CONFIDENCE_THRESHOLD,
-        (limit * 3) as i64,
-    ) {
-        all_scored = rank_memories(memories, limit);
+    // Always-on injection is the IDENTITY slice only: who the agent is talking
+    // to and how it should act (preferences + personality). Everything else in
+    // tacit/ — arbitrary learned facts like "favorite color is blue" — is NOT
+    // blanket-injected; it surfaces on demand by relevance to the current
+    // message (db_context::load_prompt_relevant_memories, FTS-scoped). Blanket-
+    // injecting all of tacit/ every turn was the prompt-bloat and cross-topic
+    // conflation source.
+    for prefix in ["tacit/preferences", "tacit/personality"] {
+        if let Ok(memories) = store.get_tacit_memories_with_min_confidence(
+            user_id,
+            prefix,
+            MIN_CONFIDENCE_THRESHOLD,
+            (limit * 2) as i64,
+        ) {
+            for m in rank_memories(memories, limit) {
+                all_scored.push(m);
+            }
+        }
     }
 
     // Inherited scopes (user preferences, agent-wide for context-isolated)

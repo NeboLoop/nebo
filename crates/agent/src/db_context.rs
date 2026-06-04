@@ -56,8 +56,10 @@ pub fn load_db_context(
         .map(|m| m.value);
     let t_directive = t0.elapsed();
 
-    // Load scored tacit memories (primary + inherited scopes)
-    let tacit_memories = memory::load_scored_memories(store, user_id, inherit_scopes, 40);
+    // Load the always-on identity slice only (preferences + personality +
+    // inherited user prefs), kept small. Everything else is relevance-gated at
+    // injection time, not blanket-loaded.
+    let tacit_memories = memory::load_scored_memories(store, user_id, inherit_scopes, 8);
     let t_memories = t0.elapsed();
 
     // Per-agent plugin accounts (only present for multi-account agents).
