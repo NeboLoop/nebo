@@ -82,6 +82,11 @@ pub fn format_directives(directives: &[SteeringDirective]) -> String {
 const GLOBAL_MIN_TURNS_BETWEEN_REMINDERS: usize = 2;
 /// Consecutive silent tool-only assistant turns before SilenceBreaker fires.
 const SILENCE_BREAKER_THRESHOLD: usize = 3;
+/// Tool `action` values that change user-visible state — the model must confirm these.
+const STATE_CHANGING_ACTIONS: &[&str] = &[
+    "create", "send", "schedule", "delete", "remove", "move", "rename", "edit", "write", "post",
+    "upload", "book", "buy", "pay", "reply", "share", "cancel",
+];
 
 /// Lightweight context for reminder checks, built after tool results in run_loop.
 pub struct ReminderContext<'a> {
@@ -111,7 +116,7 @@ pub struct ReminderCadence {
 
 /// The registered reminders. Grows as corrective/informational reminders land.
 fn reminders() -> Vec<Box<dyn Reminder>> {
-    vec![Box::new(SilenceBreaker)]
+    vec![Box::new(SilenceBreaker), Box::new(ActionConfirm)]
 }
 
 /// Wrap reminder text as a `<system-reminder>` with a gentle, ignorable tail.
@@ -214,6 +219,53 @@ impl Reminder for SilenceBreaker {
         } else {
             None
         }
+    }
+}
+
+/// Returns the first state-changing `"<action> via <tool>"` found in a tool_calls
+/// JSON array (`[{"name":..,"input":{"action":..}}]`), or None.
+fn state_changing_action(tool_calls_json: &str) -> Option<String> {
+    let calls: serde_json::Value = serde_json::from_str(tool_calls_json).ok()?;
+    for c in calls.as_array()? {
+        let action = c
+            .get("input")
+            .and_then(|i| i.get("action"))
+            .and_then(|a| a.as_str())
+            .unwrap_or("");
+        if STATE_CHANGING_ACTIONS.contains(&action) {
+            let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("a tool");
+            return Some(format!("{action} via {name}"));
+        }
+    }
+    None
+}
+
+/// ActionConfirm — when the model just ran a state-changing tool (create/send/...),
+/// remind it that its reply must tell the user what it did. Fixes the observed
+/// "created a calendar event but only said 'Done'" failure. Interactive only;
+/// autonomous mode delivers a structured report at the end.
+struct ActionConfirm;
+impl Reminder for ActionConfirm {
+    fn name(&self) -> &'static str {
+        "action_confirm"
+    }
+    fn priority(&self) -> u8 {
+        8 // higher than SilenceBreaker — confirming an action outranks breaking silence
+    }
+    fn min_turns_between(&self) -> usize {
+        2
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        if ctx.execution_mode != tools::ExecutionMode::Interactive {
+            return None;
+        }
+        let last = ctx.messages.iter().rev().find(|m| m.role == "assistant")?;
+        let action = state_changing_action(last.tool_calls.as_deref()?)?;
+        Some(format!(
+            "You just ran a state-changing action ({action}). The user can't see your tool \
+             calls — your reply MUST state what you did, with the specifics that matter (the \
+             name, time, or recipient). Don't end with only a tool chip or \"Done\"."
+        ))
     }
 }
 
@@ -1951,6 +2003,51 @@ mod tests {
             select_from(&reminders(), &ctx, &mut cadence).is_none(),
             "a turn with text resets the silent streak"
         );
+    }
+
+    #[test]
+    fn test_action_confirm_fires_on_state_change() {
+        let tc = r#"[{"id":"1","name":"os","input":{"action":"create","title":"Video Call"}}]"#;
+        let msgs = vec![
+            make_msg("user", "schedule the 9:30"),
+            make_assistant_with_tools("", tc),
+            make_msg("tool", "Event created: Video Call"),
+        ];
+        let ctx = rctx_msgs(&msgs, tools::ExecutionMode::Interactive);
+        let mut cadence = ReminderCadence::default();
+        let out = select_from(&reminders(), &ctx, &mut cadence).expect("fires on state change");
+        assert!(out.contains("state-changing action (create via os)"));
+        assert!(out.contains("MUST state what you did"));
+    }
+
+    #[test]
+    fn test_action_confirm_autonomous_silent() {
+        let tc = r#"[{"id":"1","name":"os","input":{"action":"create","title":"X"}}]"#;
+        let msgs = vec![make_assistant_with_tools("", tc)];
+        let ctx = rctx_msgs(&msgs, tools::ExecutionMode::Autonomous);
+        let mut cadence = ReminderCadence::default();
+        assert!(select_from(&reminders(), &ctx, &mut cadence).is_none());
+    }
+
+    #[test]
+    fn test_action_confirm_ignores_reads() {
+        let tc = r#"[{"id":"1","name":"web","input":{"action":"search","query":"x"}}]"#;
+        let msgs = vec![make_assistant_with_tools("", tc)];
+        let ctx = rctx_msgs(&msgs, tools::ExecutionMode::Interactive);
+        let mut cadence = ReminderCadence::default();
+        // search is a read — neither ActionConfirm nor SilenceBreaker (streak 1) fires.
+        assert!(select_from(&reminders(), &ctx, &mut cadence).is_none());
+    }
+
+    #[test]
+    fn test_state_changing_action_parse() {
+        assert_eq!(
+            state_changing_action(r#"[{"name":"event","input":{"action":"create"}}]"#),
+            Some("create via event".to_string())
+        );
+        assert!(state_changing_action(r#"[{"name":"web","input":{"action":"search"}}]"#).is_none());
+        assert!(state_changing_action("[]").is_none());
+        assert!(state_changing_action("not json").is_none());
     }
 
     #[test]
