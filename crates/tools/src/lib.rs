@@ -5,6 +5,7 @@ pub mod agent_tool;
 pub mod app_tool;
 pub mod bot_tool;
 pub mod channel_bridge;
+pub mod deep_research;
 pub mod desktop_daemon;
 pub mod desktop_snapshot;
 pub mod desktop_tool;
