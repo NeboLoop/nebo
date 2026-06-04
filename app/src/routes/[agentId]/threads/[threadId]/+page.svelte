@@ -26,6 +26,9 @@
   interface MessageMeta {
     toolCalls?: ToolCallMeta[];
     contentBlocks?: ContentBlockMeta[];
+    /** System-injected messages (e.g. <system-reminder> steering) — visible to
+     * the model, hidden from the user. Never render these as chat bubbles. */
+    hidden?: boolean;
   }
 
   const ctx = getContext<AgentPageContext>('agentPage');
@@ -116,6 +119,14 @@
   function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
     const result: ChatMessage[] = [];
     for (const m of rawMessages) {
+      let meta: MessageMeta | null = null;
+      if (m.metadata) {
+        try { meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata; } catch {}
+      }
+      // System-injected messages (steering reminders, post-tool nudges) are for
+      // the model only — never render them as chat bubbles.
+      if (meta?.hidden) continue;
+
       if (m.role === 'user') {
         result.push({
           type: 'user' as const,
@@ -127,10 +138,6 @@
       }
       if (m.role !== 'assistant') continue;
 
-      let meta: MessageMeta | null = null;
-      if (m.metadata) {
-        try { meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata; } catch {}
-      }
       const toolCalls: ToolCallMeta[] = meta?.toolCalls || [];
       const contentBlocks: ContentBlockMeta[] = meta?.contentBlocks || [];
 

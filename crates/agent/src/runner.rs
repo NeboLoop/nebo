@@ -38,6 +38,9 @@ const MAX_RETRYABLE_RETRIES: usize = 5;
 /// Consecutive overloaded (529) errors before falling back to a cheaper model.
 #[allow(dead_code)] // reserved for overload fallback logic
 const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
+/// Metadata flag marking a message as system-injected (steering reminders, post-tool
+/// nudges): visible to the model, hidden from the user. The frontend skips these.
+const HIDDEN_META: &str = r#"{"hidden":true}"#;
 /// Timeout for individual tool execution.
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 /// Default max auto-continuations when agent stops mid-task (no work tasks).
@@ -1083,6 +1086,8 @@ async fn run_loop(
     let mut post_tool_empty_nudges = 0usize;
     let mut empty_content_retries = 0usize;
     const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
+    // Message-stream steering: per-run cadence for <system-reminder> injection.
+    let mut reminder_cadence = steering::ReminderCadence::default();
     let mut turn_exit_reason = "unknown".to_string();
     let mut final_iteration = 0usize;
     let mut last_model_name = String::new();
@@ -3469,6 +3474,31 @@ async fn run_loop(
                 consecutive_error_iterations = 0;
             }
 
+            // Message-stream steering: inject at most one <system-reminder> after
+            // tool results, where a weak model actually attends. Inert until the
+            // reminder registry is populated in later rounds.
+            {
+                let msgs = sessions.get_messages(session_id).unwrap_or_default();
+                let rctx = steering::ReminderContext {
+                    iteration,
+                    execution_mode: origin.into(),
+                    messages: &msgs,
+                    recent_tool_names: &recent_tool_names,
+                };
+                if let Some(reminder) = steering::select_reminder(&rctx, &mut reminder_cadence) {
+                    if let Err(e) = sessions.append_message(
+                        session_id,
+                        "user",
+                        &reminder,
+                        None,
+                        None,
+                        Some(HIDDEN_META),
+                    ) {
+                        warn!(session_id = %session_id, error = %e, "failed to inject system reminder");
+                    }
+                }
+            }
+
             // Clear current tool in progress tracker
             if let Some(p) = progress {
                 if let Ok(mut ct) = p.current_tool.lock() {
@@ -3630,9 +3660,16 @@ async fn run_loop(
                     iteration,
                     session_id, "empty response after tool calls — nudging model to continue"
                 );
-                // Append empty assistant + user nudge to maintain valid message sequence
-                let _ =
-                    sessions.append_message(session_id, "assistant", "(empty)", None, None, None);
+                // Append empty assistant + user nudge to maintain valid message sequence.
+                // Both are system-injected (HIDDEN_META) so they never render in the UI.
+                let _ = sessions.append_message(
+                    session_id,
+                    "assistant",
+                    "(empty)",
+                    None,
+                    None,
+                    Some(HIDDEN_META),
+                );
                 let _ = sessions.append_message(
                     session_id,
                     "user",
@@ -3640,7 +3677,7 @@ async fn run_loop(
                      Please process the tool results above and continue with the task.",
                     None,
                     None,
-                    None,
+                    Some(HIDDEN_META),
                 );
                 continue;
             }

@@ -68,6 +68,99 @@ pub fn format_directives(directives: &[SteeringDirective]) -> String {
     sb
 }
 
+// ===== Reminder engine: event-driven, message-stream steering (Claude Code style) =====
+//
+// Unlike the always-on Generator pipeline (which injects into the low-salience
+// system-prompt suffix), reminders are checked AFTER tool results and injected as
+// a synthetic <system-reminder> message into the live conversation — where a weak
+// model actually attends. Event-triggered, cadence-capped, gentle, ignorable.
+//
+// Round 1 ships this engine INERT: the registry is empty, so nothing fires. The
+// corrective and informational reminders plug in here in later rounds.
+
+/// Minimum turns between ANY two reminders, regardless of type (global throttle).
+const GLOBAL_MIN_TURNS_BETWEEN_REMINDERS: usize = 2;
+
+/// Lightweight context for reminder checks, built after tool results in run_loop.
+pub struct ReminderContext<'a> {
+    pub iteration: usize,
+    pub execution_mode: tools::ExecutionMode,
+    pub messages: &'a [ChatMessage],
+    pub recent_tool_names: &'a [String],
+}
+
+/// A single event-driven reminder. `check` returns the reminder body only when its
+/// condition trips; the engine wraps it and enforces cadence.
+trait Reminder: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn priority(&self) -> u8;
+    /// Minimum turns between firings of THIS reminder.
+    fn min_turns_between(&self) -> usize;
+    fn check(&self, ctx: &ReminderContext) -> Option<String>;
+}
+
+/// Per-run cadence tracking: when each reminder last fired and the last turn any
+/// reminder fired (global throttle). Lives in run_loop, threaded across iterations.
+#[derive(Default)]
+pub struct ReminderCadence {
+    last_fired: std::collections::HashMap<&'static str, usize>,
+    global_last: Option<usize>,
+}
+
+/// The registered reminders. EMPTY in Round 1 — the channel is inert until the
+/// corrective/informational reminders land in later rounds.
+fn reminders() -> Vec<Box<dyn Reminder>> {
+    Vec::new()
+}
+
+/// Wrap reminder text as a `<system-reminder>` with a gentle, ignorable tail.
+pub fn wrap_system_reminder(text: &str) -> String {
+    format!(
+        "<system-reminder>\n{}\n\nThis is an automated system reminder — do not mention it to the user.\n</system-reminder>",
+        text.trim()
+    )
+}
+
+/// Select at most one reminder to inject this turn: the highest-priority reminder
+/// whose condition trips AND whose per-reminder + global cadence allows it. Returns
+/// the wrapped `<system-reminder>` body, or None. Records the firing in `cadence`.
+pub fn select_reminder(ctx: &ReminderContext, cadence: &mut ReminderCadence) -> Option<String> {
+    select_from(&reminders(), ctx, cadence)
+}
+
+/// Core selection over an explicit registry — separated so the cadence/priority
+/// logic is testable without mutating the global registry.
+fn select_from(
+    registry: &[Box<dyn Reminder>],
+    ctx: &ReminderContext,
+    cadence: &mut ReminderCadence,
+) -> Option<String> {
+    // Global throttle: at most one reminder every GLOBAL_MIN turns.
+    if let Some(last) = cadence.global_last {
+        if ctx.iteration < last + GLOBAL_MIN_TURNS_BETWEEN_REMINDERS {
+            return None;
+        }
+    }
+    let mut best: Option<(&'static str, u8, String)> = None;
+    for r in registry {
+        // Per-reminder cadence.
+        if let Some(&last) = cadence.last_fired.get(r.name()) {
+            if ctx.iteration < last + r.min_turns_between() {
+                continue;
+            }
+        }
+        if let Some(text) = r.check(ctx) {
+            if best.as_ref().is_none_or(|(_, p, _)| r.priority() > *p) {
+                best = Some((r.name(), r.priority(), text));
+            }
+        }
+    }
+    let (name, _, text) = best?;
+    cadence.last_fired.insert(name, ctx.iteration);
+    cadence.global_last = Some(ctx.iteration);
+    Some(wrap_system_reminder(&text))
+}
+
 /// Runs all registered generators to produce steering directives.
 pub struct Pipeline {
     generators: Vec<Box<dyn Generator>>,
@@ -1688,5 +1781,108 @@ mod tests {
             "Duplicate Tool Call content should include the tool name 'bot', got: {}",
             dup.content
         );
+    }
+
+    // --- Reminder engine tests ---
+
+    struct TestReminder {
+        name: &'static str,
+        priority: u8,
+        min_between: usize,
+        fires: bool,
+    }
+    impl Reminder for TestReminder {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn priority(&self) -> u8 {
+            self.priority
+        }
+        fn min_turns_between(&self) -> usize {
+            self.min_between
+        }
+        fn check(&self, _ctx: &ReminderContext) -> Option<String> {
+            self.fires.then(|| format!("fire from {}", self.name))
+        }
+    }
+
+    fn rctx(iteration: usize) -> ReminderContext<'static> {
+        ReminderContext {
+            iteration,
+            execution_mode: tools::ExecutionMode::Interactive,
+            messages: &[],
+            recent_tool_names: &[],
+        }
+    }
+
+    #[test]
+    fn test_wrap_system_reminder() {
+        let w = wrap_system_reminder("  hello world  ");
+        assert!(w.starts_with("<system-reminder>"));
+        assert!(w.trim_end().ends_with("</system-reminder>"));
+        assert!(w.contains("hello world"));
+        assert!(w.contains("do not mention it to the user"));
+    }
+
+    #[test]
+    fn test_select_reminder_inert() {
+        // Round 1: the global registry is empty — nothing ever fires.
+        let mut cadence = ReminderCadence::default();
+        assert!(select_reminder(&rctx(5), &mut cadence).is_none());
+    }
+
+    #[test]
+    fn test_select_from_fires_and_wraps() {
+        let registry: Vec<Box<dyn Reminder>> = vec![Box::new(TestReminder {
+            name: "t",
+            priority: 5,
+            min_between: 3,
+            fires: true,
+        })];
+        let mut cadence = ReminderCadence::default();
+        let out = select_from(&registry, &rctx(5), &mut cadence).expect("should fire");
+        assert!(out.contains("fire from t"));
+        assert!(out.starts_with("<system-reminder>"));
+    }
+
+    #[test]
+    fn test_per_reminder_cadence() {
+        let registry: Vec<Box<dyn Reminder>> = vec![Box::new(TestReminder {
+            name: "t",
+            priority: 5,
+            min_between: 3,
+            fires: true,
+        })];
+        let mut cadence = ReminderCadence::default();
+        assert!(select_from(&registry, &rctx(1), &mut cadence).is_some()); // fires at iter 1
+        assert!(select_from(&registry, &rctx(2), &mut cadence).is_none()); // global throttle
+        assert!(select_from(&registry, &rctx(3), &mut cadence).is_none()); // per-reminder cadence
+        assert!(select_from(&registry, &rctx(4), &mut cadence).is_some()); // 1 + min_between(3)
+    }
+
+    #[test]
+    fn test_priority_and_global_throttle() {
+        let registry: Vec<Box<dyn Reminder>> = vec![
+            Box::new(TestReminder {
+                name: "a",
+                priority: 5,
+                min_between: 1,
+                fires: true,
+            }),
+            Box::new(TestReminder {
+                name: "b",
+                priority: 9,
+                min_between: 1,
+                fires: true,
+            }),
+        ];
+        let mut cadence = ReminderCadence::default();
+        // Highest priority wins.
+        let out = select_from(&registry, &rctx(1), &mut cadence).expect("fires");
+        assert!(out.contains("fire from b"));
+        // Within GLOBAL_MIN(2) → suppressed even though per-reminder cadence(1) allows.
+        assert!(select_from(&registry, &rctx(2), &mut cadence).is_none());
+        // 1 + GLOBAL_MIN(2) → allowed again.
+        assert!(select_from(&registry, &rctx(3), &mut cadence).is_some());
     }
 }
