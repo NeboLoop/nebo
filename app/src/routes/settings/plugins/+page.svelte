@@ -3,6 +3,11 @@
   import { setPluginConfig } from '$lib/api/index';
   import { getWebSocketClient } from '$lib/websocket/client';
   import SetupWizard from '$lib/components/SetupWizard.svelte';
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
+  import StatCard from '$lib/components/settings/StatCard.svelte';
+  import SettingsRow from '$lib/components/settings/SettingsRow.svelte';
+  import BrowseCard from '$lib/components/settings/BrowseCard.svelte';
+  import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
 
   interface Plugin {
     id: string;
@@ -36,6 +41,7 @@
   let modalDependents = $state<Dependent[]>([]);
   let modalLoading = $state(false);
   let removing = $state(false);
+  let confirmingUninstall = $state(false);
   let apiKeyInputs = $state<Record<string, string>>({});
   let apiKeySaving = $state(false);
   let apiKeySaveResult = $state<'saved' | 'error' | null>(null);
@@ -104,6 +110,9 @@
   });
 
   let searchQuery = $state('');
+
+  const connectedCount = $derived(plugins.filter((p) => authStatuses[p.id] === 'connected').length);
+  const totalEvents = $derived(plugins.reduce((n, p) => n + p.eventCount, 0));
 
   const filteredPlugins = $derived.by(() => {
     const sorted = [...plugins].sort((a, b) => a.name.localeCompare(b.name));
@@ -185,6 +194,7 @@
     modalDependents = [];
     modalLoading = true;
     removing = false;
+    confirmingUninstall = false;
     apiKeyInputs = {};
     apiKeySaving = false;
     apiKeySaveResult = null;
@@ -240,37 +250,41 @@
   }
 </script>
 
-<div class="mb-5">
-  <div class="flex items-center justify-between mb-1">
-    <h2 class="text-base font-semibold">Plugins</h2>
-    <span class="text-xs text-base-content/50 font-mono">{plugins.length} installed</span>
-  </div>
-  <p class="text-xs text-base-content/70">Manage installed plugins and their connections.</p>
+<SettingsHeader title="Plugins" description="Manage installed plugins and their connections." />
+
+<div class="flex gap-3 mb-6">
+  <StatCard label="Installed" value={plugins.length} />
+  <StatCard label="Connected" value={connectedCount} accent="success" />
+  <StatCard label="Events" value={totalEvents} />
 </div>
 
-{#if plugins.length > 0}
-  <div class="mb-4">
-    <input type="text" bind:value={searchQuery} placeholder="Search plugins…" class="input input-sm input-bordered w-full max-w-xs text-sm" />
+<div class="mb-6">
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-base font-semibold">Installed Plugins</h3>
+    {#if plugins.length > 0}
+      <input type="text" bind:value={searchQuery} placeholder="Search plugins…" class="input input-sm input-bordered max-w-xs text-sm" />
+    {/if}
   </div>
-{/if}
 
-{#if plugins.length === 0}
-  <div class="text-center py-12">
-    <div class="text-xs text-base-content/50 mb-2">No plugins installed.</div>
-    <a href="/marketplace/plugins" class="text-sm text-primary hover:underline">Browse plugins &rarr;</a>
-  </div>
-{:else if filteredPlugins.length === 0}
-  <div class="text-center py-8">
-    <div class="text-xs text-base-content/50">No plugins match "{searchQuery}"</div>
-  </div>
-{:else}
-  <div class="flex flex-col gap-2">
-    {#each filteredPlugins as plugin}
-      <div class="flex items-center gap-3 p-3.5 rounded-lg border border-base-content/5 bg-base-100">
-        <div class="w-9 h-9 rounded-lg bg-base-200 grid place-items-center text-base shrink-0">&#128268;</div>
-        <div class="flex-1 min-w-0">
+  {#if plugins.length === 0}
+    <div class="text-center py-12">
+      <div class="text-xs text-base-content/50 mb-2">No plugins installed.</div>
+      <a href="/marketplace/plugins" class="text-sm text-primary hover:underline">Browse plugins &rarr;</a>
+    </div>
+  {:else if filteredPlugins.length === 0}
+    <div class="text-center py-8">
+      <div class="text-xs text-base-content/50">No plugins match "{searchQuery}"</div>
+    </div>
+  {:else}
+    <div class="flex flex-col gap-1.5">
+      {#each filteredPlugins as plugin}
+        {@const connected = authStatuses[plugin.id] === 'connected' || !plugin.hasAuth}
+        <SettingsRow>
+          {#snippet leading()}
+            <div class="w-2 h-2 rounded-full shrink-0 {connected ? 'bg-success' : 'bg-base-content/20'}" title={connected ? 'Ready' : 'Not connected'}></div>
+          {/snippet}
           <div class="flex items-center gap-2">
-            <button class="text-sm font-medium text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-left" onclick={() => openPluginDetail(plugin)}>{plugin.name}</button>
+            <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-left" onclick={() => openPluginDetail(plugin)}>{plugin.name}</button>
             {#if plugin.version}
               <span class="text-xs text-base-content/50 font-mono">{plugin.version}</span>
             {/if}
@@ -291,33 +305,35 @@
               {/if}
             </div>
           {/if}
-        </div>
-        <div class="flex items-center gap-2 shrink-0">
-          {#if plugin.hasAuth && plugin.authEnvVars.length > 0 && !plugin.authKeysSet}
-            <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>Set API Keys</button>
-          {:else if plugin.hasAuth && plugin.authType !== 'env'}
-            {@const status = authStatuses[plugin.id] ?? 'disconnected'}
-            {#if status === 'connected'}
-              <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">Connected</span>
-              <button class="px-3 py-1 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => disconnectPlugin(plugin.id)}>Disconnect</button>
-            {:else if status === 'connecting'}
-              <span class="px-2 py-0.5 rounded text-xs font-medium bg-info/10 text-info">Connecting…</span>
+          {#snippet actions()}
+            {#if plugin.hasAuth && plugin.authEnvVars.length > 0 && !plugin.authKeysSet}
+              <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>Set API Keys</button>
+            {:else if plugin.hasAuth && plugin.authType !== 'env'}
+              {@const status = authStatuses[plugin.id] ?? 'disconnected'}
+              {#if status === 'connected'}
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">Connected</span>
+                <button class="px-3 py-1 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => disconnectPlugin(plugin.id)}>Disconnect</button>
+              {:else if status === 'connecting'}
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-info/10 text-info">Connecting…</span>
+              {:else}
+                <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => connectPlugin(plugin.id)}>Connect</button>
+              {/if}
+            {:else if plugin.hasAuth && plugin.authType === 'env'}
+              {#if plugin.authKeysSet}
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">Key Set</span>
+              {/if}
+              <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>{plugin.authKeysSet ? 'Update Keys' : 'Set API Keys'}</button>
             {:else}
-              <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => connectPlugin(plugin.id)}>Connect</button>
+              <span class="text-xs text-base-content/40">No auth needed</span>
             {/if}
-          {:else if plugin.hasAuth && plugin.authType === 'env'}
-            {#if plugin.authKeysSet}
-              <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">Key Set</span>
-            {/if}
-            <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>{plugin.authKeysSet ? 'Update Keys' : 'Set API Keys'}</button>
-          {:else}
-            <span class="text-xs text-base-content/40">No auth needed</span>
-          {/if}
-        </div>
-      </div>
-    {/each}
-  </div>
-{/if}
+          {/snippet}
+        </SettingsRow>
+      {/each}
+    </div>
+  {/if}
+</div>
+
+<BrowseCard title="Browse Plugins" description="Discover more plugins in the marketplace." href="/marketplace/plugins" />
 
 <!-- Plugin Detail Modal -->
 {#if selectedPlugin}
@@ -478,8 +494,8 @@
         </div>
         <div>
           {#if canUninstall}
-            <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={uninstallPlugin} disabled={removing}>
-              {removing ? 'Removing…' : 'Uninstall'}
+            <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={() => (confirmingUninstall = true)}>
+              Uninstall
             </button>
           {:else if !modalLoading && modalDependents.length > 0}
             <div class="tooltip tooltip-left" data-tip="Cannot uninstall — {modalDependents.length} {modalDependents.length === 1 ? 'item depends' : 'items depend'} on this plugin">
@@ -490,6 +506,17 @@
       </div>
     </div>
   </div>
+
+  {#if confirmingUninstall && selectedPlugin}
+    <ConfirmModal
+      title="Uninstall {selectedPlugin.name}?"
+      message="This removes the plugin and its binary from this companion. You can reinstall it from the marketplace later."
+      confirmLabel="Uninstall"
+      busy={removing}
+      onCancel={() => (confirmingUninstall = false)}
+      onConfirm={uninstallPlugin}
+    />
+  {/if}
 {/if}
 
 {#if wizardOpen && selectedPlugin?.setup}

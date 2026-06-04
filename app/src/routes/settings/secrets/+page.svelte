@@ -132,7 +132,7 @@
 </script>
 
 <div class="mb-7">
-  <h2 class="text-base font-semibold mb-1">Secrets</h2>
+  <h2 class="text-lg font-bold mb-1">Secrets</h2>
   <p class="text-xs text-base-content/70">Manage API keys and credentials used by your skills and plugins.</p>
 </div>
 

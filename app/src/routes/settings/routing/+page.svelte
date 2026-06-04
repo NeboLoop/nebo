@@ -230,7 +230,7 @@
 </script>
 
 <div class="mb-7">
-  <h2 class="text-base font-semibold mb-1">Routing</h2>
+  <h2 class="text-lg font-bold mb-1">Routing</h2>
   <p class="text-xs text-base-content/70">Configure which models handle which task types.</p>
 </div>
 

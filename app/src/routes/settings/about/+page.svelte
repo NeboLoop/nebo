@@ -42,7 +42,7 @@
 </script>
 
 <div class="mb-7">
-  <h2 class="text-base font-semibold mb-1">About</h2>
+  <h2 class="text-lg font-bold mb-1">About</h2>
   <p class="text-xs text-base-content/70">Application information and resources.</p>
 </div>
 

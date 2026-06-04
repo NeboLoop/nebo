@@ -302,7 +302,7 @@
   );
 </script>
 
-<div class="mb-6">
+<div class="mb-7">
   <h2 class="text-lg font-bold mb-1">MCP Servers</h2>
   <p class="text-xs text-base-content/70">Manage Model Context Protocol server connections.</p>
 </div>
