@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import KeyRound from 'lucide-svelte/icons/key-round';
   import Plus from 'lucide-svelte/icons/plus';
@@ -240,10 +241,7 @@
   }
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Providers</h2>
-  <p class="text-xs text-base-content/70">Configure LLM providers, API keys, and model availability.</p>
-</div>
+<SettingsHeader title="Providers" description="Configure LLM providers, API keys, and model availability." />
 
 {#if loading}
   <div class="flex items-center justify-center gap-3 py-16">

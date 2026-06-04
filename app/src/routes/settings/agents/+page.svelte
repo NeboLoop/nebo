@@ -118,7 +118,7 @@
       <span class="px-2 py-0.5 rounded text-xs font-medium {selected.status === 'online' ? 'bg-success/10 text-success' : 'bg-base-200 text-base-content/60'}">{selected.status}</span>
     </div>
     {#snippet footer()}
-      <a href="/{selected.id}/settings" class="px-3 py-1.5 rounded-md border border-base-300 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors no-underline">Configure</a>
+      <a href="/{selected?.id}/settings" class="px-3 py-1.5 rounded-md border border-base-300 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors no-underline">Configure</a>
       <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={() => (confirming = true)}>Uninstall</button>
     {/snippet}
   </ManageModal>

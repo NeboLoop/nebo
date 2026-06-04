@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
 
   let presets = $state<{ id: string; name: string }[]>([]);
@@ -40,10 +41,7 @@
   ];
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Personality</h2>
-  <p class="text-xs text-base-content/70">Tune your agent's communication style and behavior.</p>
-</div>
+<SettingsHeader title="Personality" description="Tune your agent's communication style and behavior." />
 
 <!-- Preset selector -->
 <div class="mb-6">

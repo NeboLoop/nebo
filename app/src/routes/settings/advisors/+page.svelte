@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import { ADVISOR_ROLE_COLORS } from '$lib/tokens.js';
   import type { Advisor } from '$lib/api/nebo';
@@ -22,10 +23,7 @@
   });
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Advisors</h2>
-  <p class="text-xs text-base-content/70">Manage advisor personas that provide different perspectives.</p>
-</div>
+<SettingsHeader title="Advisors" description="Manage advisor personas that provide different perspectives." />
 
 <div class="flex flex-col gap-2 mb-6">
   {#each advisors as advisor}

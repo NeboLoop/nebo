@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount, onDestroy } from 'svelte';
   import Power from 'lucide-svelte/icons/power';
   import Plus from 'lucide-svelte/icons/plus';
@@ -302,10 +303,7 @@
   );
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">MCP Servers</h2>
-  <p class="text-xs text-base-content/70">Manage Model Context Protocol server connections.</p>
-</div>
+<SettingsHeader title="MCP Servers" description="Manage Model Context Protocol server connections." />
 
 <!-- Summary -->
 <div class="flex gap-3 mb-6">

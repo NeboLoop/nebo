@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import ApprovalModal from '$lib/components/ApprovalModal.svelte';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
@@ -102,10 +103,7 @@
   }
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Permissions</h2>
-  <p class="text-xs text-base-content/70">Control what your agent can access and do.</p>
-</div>
+<SettingsHeader title="Permissions" description="Control what your agent can access and do." />
 
 <!-- Autonomous mode -->
 <div class="flex items-center justify-between p-4 rounded-xl border border-base-300 mb-7">

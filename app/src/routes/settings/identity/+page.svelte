@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import Check from 'lucide-svelte/icons/check';
   import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
@@ -65,22 +66,16 @@
   }
 </script>
 
-<div class="mb-7">
-  <div class="flex items-center justify-between">
-    <div>
-      <h2 class="text-lg font-bold mb-1">Identity</h2>
-      <p class="text-xs text-base-content/70">Configure your agent's name, avatar, and persona.</p>
-    </div>
-    <div class="flex items-center gap-2">
-      {#if saved}
-        <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
-      {/if}
-      <button onclick={revert} class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none" title="Revert to last saved">
-        <RotateCcw class="w-3.5 h-3.5 text-base-content/50" />
-      </button>
-    </div>
-  </div>
-</div>
+<SettingsHeader title="Identity" description="Configure your agent's name, avatar, and persona.">
+  {#snippet action()}
+    {#if saved}
+      <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+    {/if}
+    <button onclick={revert} class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none" title="Revert to last saved">
+      <RotateCcw class="w-3.5 h-3.5 text-base-content/50" />
+    </button>
+  {/snippet}
+</SettingsHeader>
 
 <!-- Avatar -->
 <div class="mb-6">

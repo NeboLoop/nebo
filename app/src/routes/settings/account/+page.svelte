@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount, onDestroy } from 'svelte';
   import { neboAIOAuthStartWithJanus, neboAIOAuthStatus } from '$lib/api/index';
 
@@ -25,7 +26,7 @@
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const status = await api.neboAIAccountStatus() as Record<string, unknown> | null;
+      const status = await api.neboAIAccountStatus() as unknown as Record<string, unknown> | null;
       if (status) {
         connected = !!status.connected;
         if (status.email) user.email = String(status.email);
@@ -106,10 +107,7 @@
   }
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">NeboAI Account</h2>
-  <p class="text-xs text-base-content/70">Manage your NeboAI connection and account settings.</p>
-</div>
+<SettingsHeader title="NeboAI Account" description="Manage your NeboAI connection and account settings." />
 
 <!-- Connection status + inline connect/disconnect action -->
 <div class="p-4 rounded-xl border border-base-content/10 bg-base-100 mb-2">

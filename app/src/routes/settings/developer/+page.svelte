@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { devMode } from '$lib/stores/devmode.js';
 
   let appPath = $state('');
@@ -9,10 +10,7 @@
   ];
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Developer</h2>
-  <p class="text-xs text-base-content/70">Developer tools and advanced settings.</p>
-</div>
+<SettingsHeader title="Developer" description="Developer tools and advanced settings." />
 
 <!-- Dev mode toggle -->
 <div class="p-4 rounded-xl border border-base-content/10 bg-base-100 mb-2">

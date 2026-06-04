@@ -8,6 +8,8 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"preview": "vite preview",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"prepare": "svelte-kit sync || echo ''"
 	},
 	"devDependencies": {
@@ -19,6 +21,7 @@
 		"@tailwindcss/vite": "^4.2.4",
 		"@types/node": "^25.6.2",
 		"svelte": "^5.55.2",
+		"svelte-check": "^4.3.5",
 		"tailwindcss": "^4.2.4",
 		"tsx": "^4.21.0",
 		"typescript": "^6.0.3",

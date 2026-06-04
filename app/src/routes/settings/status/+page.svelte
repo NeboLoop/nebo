@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import Activity from 'lucide-svelte/icons/activity';
   import CheckCircle from 'lucide-svelte/icons/check-circle';
@@ -54,10 +55,7 @@
   const allOperational = $derived(operationalCount === services.length && services.length > 0);
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Status</h2>
-  <p class="text-xs text-base-content/70">System health and service status.</p>
-</div>
+<SettingsHeader title="Status" description="System health and service status." />
 
 <!-- Overall status -->
 <div class="p-4 rounded-xl border mb-6 {allOperational ? 'border-success/30 bg-success/5' : 'border-warning/30 bg-warning/5'}">

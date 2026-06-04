@@ -137,7 +137,7 @@
       </div>
     {/if}
     {#snippet footer()}
-      <button class="px-3 py-1.5 rounded-md border border-base-300 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => selected && toggleSkill(selected)}>{selected.enabled ? 'Disable' : 'Enable'}</button>
+      <button class="px-3 py-1.5 rounded-md border border-base-300 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => selected && toggleSkill(selected)}>{selected?.enabled ? 'Disable' : 'Enable'}</button>
       <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={() => (confirming = true)}>Uninstall</button>
     {/snippet}
   </ManageModal>

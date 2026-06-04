@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import CreditCard from 'lucide-svelte/icons/credit-card';
@@ -207,10 +208,7 @@
   }
 </script>
 
-<div class="mb-6">
-  <h2 class="text-lg font-bold mb-1">Billing</h2>
-  <p class="text-xs text-base-content/70">Manage your subscription and payment methods.</p>
-</div>
+<SettingsHeader title="Billing" description="Manage your subscription and payment methods." />
 
 {#if isLoading}
   <div class="flex items-center justify-center gap-3 py-16">

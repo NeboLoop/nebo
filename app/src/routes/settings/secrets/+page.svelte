@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import Lock from 'lucide-svelte/icons/lock';
   import Zap from 'lucide-svelte/icons/zap';
@@ -15,6 +16,7 @@
     hint: string;
     required: boolean;
     configured: boolean;
+    secret?: boolean;
   }
 
   interface SecretGroup {
@@ -131,10 +133,7 @@
   }
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Secrets</h2>
-  <p class="text-xs text-base-content/70">Manage API keys and credentials used by your skills and plugins.</p>
-</div>
+<SettingsHeader title="Secrets" description="Manage API keys and credentials used by your skills and plugins." />
 
 {#if loading}
   <div class="flex items-center justify-center gap-3 py-16">

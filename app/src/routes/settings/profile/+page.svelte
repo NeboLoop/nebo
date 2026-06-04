@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import { themeMode } from '$lib/stores/theme.js';
   import Check from 'lucide-svelte/icons/check';
@@ -18,7 +19,7 @@
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.userGetProfile() as { profile?: Record<string, unknown> };
+      const resp = await api.userGetProfile() as unknown as { profile?: Record<string, unknown> };
       if (resp?.profile) {
         const p = resp.profile;
         user = {
@@ -93,22 +94,16 @@
   ];
 </script>
 
-<div class="mb-7">
-  <div class="flex items-center justify-between">
-    <div>
-      <h2 class="text-lg font-bold mb-1">Profile</h2>
-      <p class="text-xs text-base-content/70">Your personal information and preferences.</p>
-    </div>
-    <div class="flex items-center gap-2">
-      {#if saved}
-        <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
-      {/if}
-      <button onclick={revert} class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none" title="Revert to last saved">
-        <RotateCcw class="w-3.5 h-3.5 text-base-content/50" />
-      </button>
-    </div>
-  </div>
-</div>
+<SettingsHeader title="Profile" description="Your personal information and preferences.">
+  {#snippet action()}
+    {#if saved}
+      <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+    {/if}
+    <button onclick={revert} class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none" title="Revert to last saved">
+      <RotateCcw class="w-3.5 h-3.5 text-base-content/50" />
+    </button>
+  {/snippet}
+</SettingsHeader>
 
 <!-- Theme -->
 <div class="mb-6">

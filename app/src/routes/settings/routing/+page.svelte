@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import Sparkles from 'lucide-svelte/icons/sparkles';
   import Brain from 'lucide-svelte/icons/brain';
@@ -229,10 +230,7 @@
   }
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Routing</h2>
-  <p class="text-xs text-base-content/70">Configure which models handle which task types.</p>
-</div>
+<SettingsHeader title="Routing" description="Configure which models handle which task types." />
 
 {#if loading}
   <div class="flex items-center justify-center gap-3 py-16">

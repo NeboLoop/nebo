@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
@@ -41,10 +42,7 @@
   ];
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">About</h2>
-  <p class="text-xs text-base-content/70">Application information and resources.</p>
-</div>
+<SettingsHeader title="About" description="Application information and resources." />
 
 <div class="p-4 rounded-xl border border-base-content/5 bg-base-100 mb-6">
   <div class="flex items-center gap-3 mb-4">

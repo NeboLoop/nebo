@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import * as api from '$lib/api/nebo';
@@ -112,10 +113,7 @@
   }
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Usage</h2>
-  <p class="text-xs text-base-content/70">Monitor your plan usage and billing balance.</p>
-</div>
+<SettingsHeader title="Usage" description="Monitor your plan usage and billing balance." />
 
 {#if isLoading}
   <div class="flex items-center justify-center gap-3 py-16">

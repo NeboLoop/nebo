@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
 
   let rules = $state<{ section: string; rules: { enabled: boolean; text: string }[] }[]>([]);
@@ -23,10 +24,7 @@
   });
 </script>
 
-<div class="mb-7">
-  <h2 class="text-lg font-bold mb-1">Rules</h2>
-  <p class="text-xs text-base-content/70">Define behavior constraints and guidelines for your agent.</p>
-</div>
+<SettingsHeader title="Rules" description="Define behavior constraints and guidelines for your agent." />
 
 {#each rules as section}
   <div class="mb-5">
