@@ -18,6 +18,30 @@ pub trait AdvisorDeliberator: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>;
 }
 
+/// One structured sub-agent request for the deep-research harness. The agent does free
+/// tool work with the named `aux_tools`, then is FORCED through a schema-validated
+/// `StructuredOutput` call (see `agent::structured::agent_structured`).
+pub struct StructuredTask {
+    pub system: String,
+    pub task: String,
+    pub schema: serde_json::Value,
+    /// STRAP tool names the sub-agent may call during its free phase (e.g. `["web"]`).
+    pub aux_tools: Vec<String>,
+}
+
+/// Trait for running one forced-structured-output sub-agent (implemented by
+/// `agent::structured_agent::StructuredRunner`). Defined here so the deep-research
+/// harness in the tools crate can drive sub-agents without a circular dependency on
+/// the agent crate (which owns the providers).
+pub trait StructuredAgent: Send + Sync {
+    fn run<'a>(
+        &'a self,
+        task: StructuredTask,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>,
+    >;
+}
+
 /// Trait for hybrid memory search (implemented by agent::search wrapper).
 /// Combines FTS5 text search + vector cosine similarity with adaptive weights.
 pub trait HybridSearcher: Send + Sync {
@@ -45,6 +69,7 @@ pub struct AgentTool {
     orchestrator: OrchestratorHandle,
     advisor_runner: Option<Arc<dyn AdvisorDeliberator>>,
     hybrid_searcher: Option<Arc<dyn HybridSearcher>>,
+    structured_agent: Option<Arc<dyn StructuredAgent>>,
     run_querier: RunQuerierHandle,
     persona: Option<crate::agent_tool::PersonaTool>,
 }
@@ -56,6 +81,7 @@ impl AgentTool {
             orchestrator,
             advisor_runner: None,
             hybrid_searcher: None,
+            structured_agent: None,
             run_querier: crate::run_querier::new_handle(),
             persona: None,
         }
@@ -68,6 +94,11 @@ impl AgentTool {
 
     pub fn with_advisor_runner(mut self, runner: Arc<dyn AdvisorDeliberator>) -> Self {
         self.advisor_runner = Some(runner);
+        self
+    }
+
+    pub fn with_structured_agent(mut self, agent: Arc<dyn StructuredAgent>) -> Self {
+        self.structured_agent = Some(agent);
         self
     }
 
@@ -86,7 +117,7 @@ impl AgentTool {
             "store" | "recall" | "search" => "memory",
             "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create"
             | "update" | "delete" => "task",
-            "research" | "submit_findings" => "research",
+            "research" | "deep_research" | "submit_findings" => "research",
             "active" | "cancel_run" => "runs",
             "history" | "query" => "session",
             "reset" | "compact" | "summary" => "context",
@@ -1253,10 +1284,11 @@ impl AgentTool {
         }
     }
 
-    async fn handle_research(&self, input: &serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+    async fn handle_research(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("");
 
         match action {
+            "deep_research" => self.handle_deep_research(input, ctx).await,
             "research" => {
                 let query = input["query"].as_str().unwrap_or("");
                 if query.is_empty() {
@@ -1369,9 +1401,62 @@ impl AgentTool {
                 }
             }
             other => ToolResult::error(format!(
-                "Unknown research action: {:?}. Available: research, submit_findings",
+                "Unknown research action: {:?}. Available: deep_research, research, submit_findings",
                 other
             )),
+        }
+    }
+
+    /// Run the deterministic deep-research harness: scope → search → fetch/extract →
+    /// 3-vote adversarial verify → synthesize. Unlike `research` (a manual lead-prompt
+    /// flow the agent drives itself), this is a single bounded, self-contained action.
+    async fn handle_deep_research(
+        &self,
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> ToolResult {
+        let query = input["query"].as_str().unwrap_or("").trim();
+        if query.is_empty() {
+            return ToolResult::error(errors::missing_param(
+                "deep_research",
+                "query",
+                "bot(resource: \"research\", action: \"deep_research\", query: \"How effective is X for Y?\", depth: \"standard\")",
+            ));
+        }
+
+        let agent = match &self.structured_agent {
+            Some(a) => a.clone(),
+            None => {
+                return ToolResult::error(
+                    "Deep research is unavailable: no structured-output-capable AI provider is configured. \
+                     Configure a provider (Anthropic/OpenAI/Gemini/Janus) and retry.",
+                );
+            }
+        };
+
+        let depth = input["depth"].as_str().unwrap_or("standard");
+        let cfg = crate::deep_research::Config::for_depth(depth);
+
+        let data_dir = match config::data_dir() {
+            Ok(d) => d,
+            Err(e) => return ToolResult::error(format!("Cannot determine data dir: {}", e)),
+        };
+        let run_id = format!("research-{}", uuid::Uuid::new_v4().as_simple());
+        let web = Arc::new(crate::web_tool::WebTool::new().with_store(self.store.clone()));
+
+        match crate::deep_research::run(
+            agent,
+            web,
+            data_dir,
+            run_id,
+            query.to_string(),
+            cfg,
+            ctx.cancel_token.clone(),
+        )
+        .await
+        {
+            Ok(report) => ToolResult::ok(crate::deep_research::format_report(&report)),
+            Err(e) => ToolResult::error(format!("Deep research failed: {}", e)),
         }
     }
 }
@@ -1413,6 +1498,8 @@ impl DynTool for AgentTool {
          - agent(resource: \"profile\", action: \"get\") / update / open_billing\n\n\
          Advisors (internal deliberation):\n\
          - agent(resource: \"advisors\", action: \"deliberate\", task: \"Should we use PostgreSQL or SQLite?\")\n\n\
+         Research (deterministic deep-research harness — fans out searches, fetches sources, adversarially fact-checks claims, returns a cited report):\n\
+         - agent(resource: \"research\", action: \"deep_research\", query: \"How effective is X for Y?\", depth: \"standard\") — Run the full harness; depth: \"quick\"|\"standard\"|\"deep\". Use when the user wants a fact-checked, multi-source report. If the question is underspecified, ask 2-3 clarifying questions first.\n\n\
          Vision:\n\
          - agent(resource: \"vision\", action: \"analyze\", image: \"/path/to/image.png\")\n\n\
          Context:\n\

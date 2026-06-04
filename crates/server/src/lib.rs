@@ -746,15 +746,28 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Build a second provider set for advisor deliberation (includes CLI providers)
     let advisor_providers = build_providers(&store, &cfg, Some(&cli_statuses));
-    let advisor_runner: Option<Arc<dyn tools::AdvisorDeliberator>> = if advisor_providers.is_empty()
+    let shared_providers = Arc::new(advisor_providers);
+    let advisor_runner: Option<Arc<dyn tools::AdvisorDeliberator>> = if shared_providers.is_empty()
     {
         None
     } else {
         Some(Arc::new(agent::advisors::Runner::new(
             advisor_loader,
-            Arc::new(advisor_providers),
+            shared_providers.clone(),
         )))
     };
+
+    // Structured-output sub-agent runner for the deep-research harness. Shares the same
+    // provider set; absent when no provider can force tool calls.
+    let structured_agent: Option<Arc<dyn tools::bot_tool::StructuredAgent>> =
+        if shared_providers.is_empty() {
+            None
+        } else {
+            Some(Arc::new(agent::structured_agent::StructuredRunner::new(
+                shared_providers.clone(),
+                store.clone(),
+            )))
+        };
 
     // Build embedding provider for vector search (memory embedding + transcript indexing)
     let embedding_provider = build_embedding_provider(&store, &cfg);
@@ -831,6 +844,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             Some(skill_loader.clone()),
             advisor_runner,
             Some(hybrid_searcher),
+            structured_agent,
             None, // workflow_manager registered separately after Runner is created
             None,
             Some(plan_tier.clone()),

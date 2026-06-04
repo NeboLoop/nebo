@@ -32,6 +32,7 @@ pub mod session;
 pub mod sidecar;
 pub mod steering;
 pub mod structured;
+pub mod structured_agent;
 pub mod summarizer;
 pub mod task_graph;
 pub mod tool_filter;

@@ -580,6 +580,7 @@ impl Registry {
             skill_loader,
             advisor_runner,
             hybrid_searcher,
+            None, // structured_agent
             None, // workflow_manager
             None, // permissions
             None, // plan_tier
@@ -603,6 +604,7 @@ impl Registry {
         skill_loader: Option<Arc<crate::skills::Loader>>,
         advisor_runner: Option<Arc<dyn crate::bot_tool::AdvisorDeliberator>>,
         hybrid_searcher: Option<Arc<dyn crate::bot_tool::HybridSearcher>>,
+        structured_agent: Option<Arc<dyn crate::bot_tool::StructuredAgent>>,
         workflow_manager: Option<Arc<dyn crate::workflows::WorkflowManager>>,
         permissions: Option<&HashMap<String, bool>>,
         plan_tier: Option<Arc<tokio::sync::RwLock<String>>>,
@@ -658,6 +660,9 @@ impl Registry {
         }
         if let Some(searcher) = hybrid_searcher {
             agent_tool = agent_tool.with_hybrid_searcher(searcher);
+        }
+        if let Some(sa) = structured_agent {
+            agent_tool = agent_tool.with_structured_agent(sa);
         }
         if let Some(rq) = run_querier {
             agent_tool = agent_tool.with_run_querier(rq);
