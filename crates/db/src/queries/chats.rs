@@ -234,13 +234,21 @@ impl Store {
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| NeboError::Database(e.to_string()))?
         };
-        // msgs is newest-first — accumulate budget and truncate
+        // msgs is newest-first — accumulate budget and truncate.
+        // Tool calls/results are collapsed in the UI ("Used N tools"), so their
+        // size must NOT determine how much conversation loads — a single huge
+        // tool_result (e.g. a web-search dump) would otherwise eat the whole
+        // budget, loading a single text-less turn and rendering the chat as
+        // nothing but tool activity. Cap each turn's tool contribution so
+        // conversational turns (user + assistant text) always make the window.
+        const MAX_TOOL_BUDGET_PER_MSG: usize = 1500;
         let mut budget: i64 = 0;
         let mut keep = 0usize;
         for msg in &msgs {
-            let size = msg.content.len() as i64
-                + msg.tool_calls.as_ref().map_or(0, |s| s.len() as i64)
-                + msg.tool_results.as_ref().map_or(0, |s| s.len() as i64);
+            let tool_size = (msg.tool_calls.as_ref().map_or(0, |s| s.len())
+                + msg.tool_results.as_ref().map_or(0, |s| s.len()))
+            .min(MAX_TOOL_BUDGET_PER_MSG) as i64;
+            let size = msg.content.len() as i64 + tool_size;
             budget += size;
             keep += 1;
             if budget >= max_chars && keep > 1 {
