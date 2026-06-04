@@ -149,18 +149,33 @@ pub async fn serve_file(
     Path(file_path): Path<String>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
     let data_dir = config::data_dir().map_err(to_error_response)?;
-    let full_path = data_dir.join("files").join(&file_path);
+    let files_root = data_dir.join("files");
+    let full_path = files_root.join(&file_path);
 
     if !full_path.exists() {
         return Err(to_error_response(types::NeboError::NotFound));
     }
 
-    let bytes = tokio::fs::read(&full_path)
+    // Path-traversal guard: resolve `..` and symlinks, then confirm the target is still
+    // inside the files/ sandbox. Without this, `GET /api/v1/files/../../<anything>` (or a
+    // symlink) escapes the root and serves arbitrary files. 404 (not 403) to avoid leaking
+    // which paths exist.
+    let canonical = tokio::fs::canonicalize(&full_path)
+        .await
+        .map_err(|_| to_error_response(types::NeboError::NotFound))?;
+    let canonical_root = tokio::fs::canonicalize(&files_root)
+        .await
+        .map_err(|_| to_error_response(types::NeboError::NotFound))?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+
+    let bytes = tokio::fs::read(&canonical)
         .await
         .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
 
     // Guess content type from extension
-    let content_type = match full_path.extension().and_then(|e| e.to_str()) {
+    let content_type = match canonical.extension().and_then(|e| e.to_str()) {
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
