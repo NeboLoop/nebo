@@ -322,6 +322,58 @@ const GEMINI_OPERATIONAL_GUIDANCE: &str = r#"
 - **Non-interactive commands:** Use flags like -y, --yes, --non-interactive to prevent CLI tools from hanging on prompts.
 - **Keep going:** Work autonomously until the task is fully resolved. Don't stop with a plan — execute it."#;
 
+/// Channel-stable guidance for the system prompt. The channel is fixed for a run, so
+/// this belongs in the prompt rather than the per-turn message stream (R7: migrated
+/// from the ChannelAdapter / ChannelPluginRouting / LoopFileSharing steering generators).
+///
+/// Exactly one of three forms applies: terse-formatting channels (dm/cli/voice), the
+/// NeboAI loop (file sharing via the `loop` tool), or any other plugin-backed channel
+/// (route I/O + uploads through `plugin(...)`). `neboai` is treated as internal for
+/// plugin routing — it's served by the `loop` tool, not a plugin.
+fn channel_guidance(channel: &str) -> String {
+    // Internal surfaces Nebo owns directly — no plugin layer. `neboai` is internal here
+    // (handled by the loop branch below); the rest format-only or have no channel guidance.
+    const INTERNAL_CHANNELS: &[&str] = &["", "web", "dm", "cli", "voice", "neboai"];
+
+    if let Some(fmt) = match channel {
+        "dm" => Some("Keep responses concise for direct messages. Avoid markdown formatting."),
+        "cli" => Some("Use plain text output suitable for terminal display. No markdown."),
+        "voice" => Some("Keep responses to 1-2 sentences. No formatting or special characters."),
+        _ => None,
+    } {
+        return format!("\n\n## Channel\n{fmt}");
+    }
+
+    if channel == "neboai" {
+        return "\n\n## Channel\nYou're in a shared NeboAI loop. When the user references a local file \
+                or asks you to share/send/upload one, share it by calling \
+                `loop(resource: \"channel\", action: \"share\", path: \"<abs_path>\")` \
+                (or `resource: \"dm\"` for a direct message) — it attaches to your reply \
+                automatically. You do NOT need a plugin for this."
+            .to_string();
+    }
+
+    if INTERNAL_CHANNELS.contains(&channel) {
+        return String::new();
+    }
+
+    // Plugin-backed channel (slack/discord/teams/…). No hardcoded slugs — `{channel}`
+    // is filled from the runtime channel string, so a new channel plugin needs no edit.
+    format!(
+        "\n\n## Channel Routing\nChannel context: `{channel}`. \
+         ALWAYS route channel I/O through `plugin(resource: \"{channel}\", command: \"...\")`. \
+         NEVER use `skill` for channel messaging — channels are plugins, not skills, \
+         and `skill discover` will not find `{channel}`. \
+         When the user references a local file or asks you to grab/share/send/upload one, \
+         the DEFAULT action is to upload it into this channel via \
+         `plugin(resource: \"{channel}\", command: \"upload --path <abs_path>\")` — \
+         the bridge fills in the channel and thread automatically, you only need the path. \
+         Do NOT offer to copy, extract, or link a file unless the user explicitly asks \
+         for that instead. For plain text replies, just write your response — \
+         the channel layer posts it for you."
+    )
+}
+
 /// Build model-specific execution guidance for the dynamic suffix.
 /// Claude follows instructions well and needs no enforcement.
 /// GPT/Gemini/Janus get progressively stronger guidance.
@@ -793,6 +845,9 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     if !model_guidance.is_empty() {
         sb.push_str(&model_guidance);
     }
+
+    // 2c. Channel-stable guidance (formatting / plugin routing / loop file sharing).
+    sb.push_str(&channel_guidance(&dctx.channel));
 
     // 3. Conversation summary
     if !dctx.summary.is_empty() {

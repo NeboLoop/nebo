@@ -3497,6 +3497,8 @@ async fn run_loop(
                     quota_warning: state.quota_warning.as_deref(),
                     consecutive_error_iterations,
                     max_iterations,
+                    agent_name: &agent_name,
+                    agent_soul: active_agent_entry.as_ref().and_then(|r| r.soul.as_deref()),
                 };
                 if let Some(reminder) = steering::select_reminder(&rctx, &mut reminder_cadence) {
                     if let Err(e) = sessions.append_message(

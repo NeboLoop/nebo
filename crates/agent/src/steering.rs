@@ -114,6 +114,11 @@ pub struct ReminderContext<'a> {
     pub consecutive_error_iterations: usize,
     /// The run's iteration budget (budget-warning reminder).
     pub max_iterations: usize,
+    /// The active agent's name (identity-reinforce reminder keeps weak models in character).
+    pub agent_name: &'a str,
+    /// The active agent's soul/persona text, if any — a short essence is re-asserted
+    /// periodically so a long run doesn't drift from its identity (identity-reinforce).
+    pub agent_soul: Option<&'a str>,
 }
 
 impl ReminderContext<'_> {
@@ -162,6 +167,7 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(JanusQuotaWarning),
         Box::new(ErrorRecovery),
         Box::new(ObjectiveReinforce),
+        Box::new(IdentityReinforce),
     ]
 }
 
@@ -359,12 +365,10 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn new() -> Self {
-        let generators: Vec<Box<dyn Generator>> = vec![
-            Box::new(IdentityGuard),
-            Box::new(ChannelAdapter),
-            Box::new(ChannelPluginRouting),
-            Box::new(LoopFileSharing),
-        ];
+        // R7: all behavioral generators have migrated to message-stream reminders or the
+        // static prompt. The pipeline now only carries ProactiveResults (handled inline in
+        // `generate`); it is deleted outright in R8.
+        let generators: Vec<Box<dyn Generator>> = vec![];
 
         Self { generators }
     }
@@ -512,126 +516,11 @@ pub fn should_force_break(ctx: &Context) -> Option<String> {
     None
 }
 
-// --- Generator implementations ---
-
-// 1. Identity Guard
-struct IdentityGuard;
-impl Generator for IdentityGuard {
-    fn name(&self) -> &str {
-        "identity_guard"
-    }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        let turns = count_assistant_turns(&ctx.messages);
-        if turns >= 8 && turns % 8 == 0 {
-            vec![SteeringDirective {
-                label: "Identity".to_string(),
-                content: "You are {agent_name}, a personal AI companion. Stay in character. \
-                          Maintain your established personality and communication style."
-                    .to_string(),
-                priority: 5,
-            }]
-        } else {
-            vec![]
-        }
-    }
-}
-
-// 2. Channel Adapter
-struct ChannelAdapter;
-impl Generator for ChannelAdapter {
-    fn name(&self) -> &str {
-        "channel_adapter"
-    }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        let content = match ctx.channel.as_str() {
-            "dm" => "Keep responses concise for direct messages. Avoid markdown formatting.",
-            "cli" => "Use plain text output suitable for terminal display. No markdown.",
-            "voice" => "Keep responses to 1-2 sentences. No formatting or special characters.",
-            _ => return vec![],
-        };
-        vec![SteeringDirective {
-            label: "Channel".to_string(),
-            content: content.to_string(),
-            priority: 3,
-        }]
-    }
-}
-
-// 2b. Channel Plugin Routing — when the agent is operating inside a
-// channel that's served by a plugin (slack, discord, teams, future ones),
-// steer it toward the right tool and the right default action.
-//
-// Triggers on any non-internal `ctx.channel`. Internal channel types are
-// Nebo-architectural concepts; everything else is plugin-backed by
-// definition. No hardcoded plugin slugs — `{kind}` is filled from the
-// runtime channel string. Adding a new channel plugin requires zero edits
-// here.
-struct ChannelPluginRouting;
-impl Generator for ChannelPluginRouting {
-    fn name(&self) -> &str {
-        "channel_plugin_routing"
-    }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        // Internal channel types Nebo owns directly — no plugin layer.
-        // Keep this list minimal; it's the boundary between built-in
-        // surfaces and plugin-backed surfaces.
-        const INTERNAL_CHANNELS: &[&str] = &["", "web", "dm", "cli", "voice"];
-        if INTERNAL_CHANNELS.contains(&ctx.channel.as_str()) {
-            return vec![];
-        }
-
-        let kind = &ctx.channel;
-        // Imperative dual-reinforcement style — same shape as
-        // claude-code's tool-selection prompts ("ALWAYS use X. NEVER
-        // use Y."). Phrased generically: no `slack` / `discord` baked
-        // in, only the runtime `{kind}`.
-        let content = format!(
-            "Channel context: `{kind}`. \
-             ALWAYS route channel I/O through `plugin(resource: \"{kind}\", command: \"...\")`. \
-             NEVER use `skill` for channel messaging — channels are plugins, not skills, \
-             and `skill discover` will not find `{kind}`. \
-             When the user references a local file or asks you to grab/share/send/upload one, \
-             the DEFAULT action is to upload it into this channel via \
-             `plugin(resource: \"{kind}\", command: \"upload --path <abs_path>\")` — \
-             the bridge fills in the channel and thread automatically, you only need the path. \
-             Do NOT offer to copy, extract, or link a file unless the user explicitly asks \
-             for that instead. For plain text replies, just write your response — \
-             the channel layer posts it for you."
-        );
-        vec![SteeringDirective {
-            label: "Channel Routing".to_string(),
-            content,
-            priority: 2,
-        }]
-    }
-}
-
-// 2c. Loop File Sharing — the NeboAI loop ("neboai" channel) is an internal
-// surface, so ChannelPluginRouting early-returns for it. But loop replies DO
-// support file attachments (chat_dispatch collects tool `image_url` paths and
-// staples them onto the reply). Tell the bot how to use the loop tool's
-// `share` action so it doesn't decline file requests.
-struct LoopFileSharing;
-impl Generator for LoopFileSharing {
-    fn name(&self) -> &str {
-        "loop_file_sharing"
-    }
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.channel != "neboai" {
-            return vec![];
-        }
-        vec![SteeringDirective {
-            label: "Loop File Sharing".to_string(),
-            content: "You're in a shared NeboAI loop. When the user references a local file \
-                      or asks you to share/send/upload one, share it by calling \
-                      `loop(resource: \"channel\", action: \"share\", path: \"<abs_path>\")` \
-                      (or `resource: \"dm\"` for a direct message) — it attaches to your reply \
-                      automatically. You do NOT need a plugin for this."
-                .to_string(),
-            priority: 2,
-        }]
-    }
-}
+// R7: ChannelAdapter, ChannelPluginRouting, and LoopFileSharing moved to the static
+// system prompt (`prompt::channel_guidance`) — channel is fixed per run, so this
+// guidance belongs in the prompt, not the per-turn message stream. IdentityGuard
+// became the IdentityReinforce message-stream reminder (below). The Generator pipeline
+// now holds no behavioral generators; it is retired entirely in R8.
 
 // ToolNudge + PendingTaskAction were CUT in R5: text-only responses always end the
 // loop (runner.rs ~3715), so there is no mid-task tool-less stall to nudge, and the
@@ -1060,6 +949,63 @@ impl Reminder for ObjectiveReinforce {
     }
 }
 
+/// How often (in assistant turns) to re-assert the agent's identity.
+const IDENTITY_REINFORCE_EVERY: usize = 8;
+
+/// IdentityReinforce — over a long run a weak model drifts off its persona (especially
+/// in multi-agent setups where pam/donna/Researcher must stay themselves). The static
+/// prompt establishes Persona/Soul, but periodically re-asserting "You are {name} —
+/// {essence}" in the high-salience stream keeps the model in character. Skipped for
+/// direct Claude (holds identity well) and the default unnamed companion (the static
+/// prompt's identity already saturates). Migrated from the old IdentityGuard generator.
+struct IdentityReinforce;
+impl Reminder for IdentityReinforce {
+    fn name(&self) -> &'static str {
+        "identity_reinforce"
+    }
+    fn priority(&self) -> u8 {
+        4 // gentle — identity drift is low-urgency relative to safety/action reminders
+    }
+    fn min_turns_between(&self) -> usize {
+        IDENTITY_REINFORCE_EVERY
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        // Claude follows the static persona faithfully; the default companion's identity
+        // is already established in SECTION_CORE — only named personas need re-asserting.
+        if ctx.is_claude() || ctx.agent_name.is_empty() || ctx.agent_name == "Nebo" {
+            return None;
+        }
+        let turns = count_assistant_turns(ctx.messages);
+        if turns < IDENTITY_REINFORCE_EVERY || turns % IDENTITY_REINFORCE_EVERY != 0 {
+            return None;
+        }
+        let essence = ctx.agent_soul.map(soul_essence).unwrap_or_default();
+        Some(format!(
+            "You are {name}{essence} Stay in character — keep your established voice, \
+             personality, and boundaries. Don't slip into a generic assistant tone.",
+            name = ctx.agent_name,
+        ))
+    }
+}
+
+/// Condense a (possibly long) SOUL.md into a one-clause essence for the reminder: the
+/// first sentence/line, trimmed and capped, prefixed with " — " so it reads inline.
+fn soul_essence(soul: &str) -> String {
+    let first = soul
+        .trim()
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let clause = first.split(['.', '!', '?']).next().unwrap_or(first).trim();
+    if clause.is_empty() {
+        return ".".to_string();
+    }
+    let mut s: String = clause.chars().take(160).collect();
+    s = s.trim().to_string();
+    format!(" — {s}.")
+}
+
 // 14b. Tool Result Grounding — prevent hallucinating tool failures when tools succeed
 struct ToolResultGrounding;
 impl Reminder for ToolResultGrounding {
@@ -1409,21 +1355,33 @@ mod tests {
     }
 
     #[test]
-    fn test_identity_guard_fires_at_8() {
+    fn test_identity_reinforce_fires_at_8_for_named_agent() {
         let mut messages = Vec::new();
         for i in 0..8 {
             messages.push(make_msg("user", &format!("msg {}", i)));
             messages.push(make_msg("assistant", &format!("reply {}", i)));
         }
-
-        let guard = IdentityGuard;
-        let ctx = Context {
-            messages,
-            ..make_ctx(vec![])
+        // Named, non-Claude agent with a soul → fires at turn 8 with its essence.
+        let ctx = ReminderContext {
+            messages: &messages,
+            agent_name: "Donna",
+            agent_soul: Some("Sharp, loyal, unflappable. You anticipate needs."),
+            ..base_rctx()
         };
-        let result = guard.generate(&ctx);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].label, "Identity");
+        let out = IdentityReinforce.check(&ctx).expect("fires at turn 8");
+        assert!(out.contains("You are Donna"));
+        assert!(out.contains("Sharp, loyal, unflappable"));
+
+        // Default companion ("Nebo") and direct Claude are skipped.
+        let nebo = ReminderContext { messages: &messages, agent_name: "Nebo", ..base_rctx() };
+        assert!(IdentityReinforce.check(&nebo).is_none());
+        let claude = ReminderContext {
+            messages: &messages,
+            agent_name: "Donna",
+            provider_id: "anthropic",
+            ..base_rctx()
+        };
+        assert!(IdentityReinforce.check(&claude).is_none());
     }
 
     fn rctx_presence(presence: &'static str, mode: tools::ExecutionMode) -> ReminderContext<'static> {
@@ -1967,6 +1925,8 @@ mod tests {
             quota_warning: None,
             consecutive_error_iterations: 0,
             max_iterations: 100,
+            agent_name: "Nebo",
+            agent_soul: None,
         }
     }
 
