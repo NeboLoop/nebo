@@ -65,8 +65,6 @@ pub struct DynamicContext {
     /// Cached tool documentation (key → content). Injected into the dynamic
     /// suffix so it survives sliding window eviction.
     pub tool_doc_cache: Vec<(String, String)>,
-    /// Formatted steering directives (from Pipeline::generate + hooks + continuation).
-    pub steering_directives: String,
     /// Background proactive results (actual content, not behavioral guidance).
     pub proactive_context: String,
     /// User-configured IANA timezone (e.g. "America/Denver"). When set, date/time
@@ -913,11 +911,8 @@ Stay on this objective until it is complete or the user changes direction. If an
         sb.push_str("---");
     }
 
-    // 7. Steering directives (behavioral guidance from generators)
-    if !dctx.steering_directives.is_empty() {
-        sb.push_str("\n\n---\n");
-        sb.push_str(&dctx.steering_directives);
-    }
+    // 7. Background results (proactive inbox). Behavioral steering now lives entirely in
+    // the message-stream reminder channel — the `## Agent Directives` suffix was retired (R8).
     if !dctx.proactive_context.is_empty() {
         sb.push_str("\n\n[Background Results]\n");
         sb.push_str(&dctx.proactive_context);
@@ -1050,7 +1045,6 @@ mod tests {
             channel: "web".to_string(),
             work_tasks: vec![],
             tool_doc_cache: vec![],
-            steering_directives: String::new(),
             proactive_context: String::new(),
             user_timezone: None,
         };

@@ -300,7 +300,6 @@ pub struct Runner {
     tools: Arc<Registry>,
     store: Arc<Store>,
     selector: Arc<ModelSelector>,
-    _steering: steering::Pipeline,
     concurrency: Arc<ConcurrencyController>,
     hooks: Arc<napp::HookDispatcher>,
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
@@ -329,7 +328,6 @@ impl Runner {
             store,
             ask_channels: None,
             selector: Arc::new(selector),
-            _steering: steering::Pipeline::new(),
             concurrency,
             hooks,
             mcp_context,
@@ -736,7 +734,6 @@ impl Runner {
                     let fork_session_id = fs.id.clone();
                     let (sub_tx, mut sub_rx) = mpsc::channel::<StreamEvent>(256);
 
-                    let steering = steering::Pipeline::new();
                     let _fork_result = run_loop(
                         &session_mgr,
                         &tools,
@@ -744,7 +741,6 @@ impl Runner {
                         &providers,
                         &concurrency,
                         &selector,
-                        &steering,
                         &hooks,
                         &sub_tx,
                         &fork_session_id,
@@ -817,8 +813,6 @@ impl Runner {
             }
 
             // ── Normal (non-forked) execution ────────────────────────
-            let steering = steering::Pipeline::new();
-
             let result = run_loop(
                 &session_mgr,
                 &tools,
@@ -826,7 +820,6 @@ impl Runner {
                 &providers,
                 &concurrency,
                 &selector,
-                &steering,
                 &hooks,
                 &tx,
                 &session_id,
@@ -1009,7 +1002,6 @@ async fn run_loop(
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     concurrency: &Arc<ConcurrencyController>,
     selector: &ModelSelector,
-    steering_pipeline: &steering::Pipeline,
     hooks: &napp::HookDispatcher,
     tx: &mpsc::Sender<StreamEvent>,
     session_id: &str,
@@ -1082,7 +1074,6 @@ async fn run_loop(
     const MAX_TOOL_DOC_CONTENT: usize = 4_000;
     let mut output_recovery_attempts = 0usize;
     let mut output_escalated = false;
-    let mut continuation_steering: Option<String> = None;
     let mut consecutive_error_iterations = 0usize;
     let mut post_tool_empty_nudges = 0usize;
     let mut empty_content_retries = 0usize;
@@ -1624,25 +1615,10 @@ async fn run_loop(
         // Adaptive iteration limit: extend past default only if making genuine progress.
         if iteration > max_iterations && iteration <= hard_ceiling {
             if consecutive_error_iterations >= 2
-                || steering::should_force_break(&steering::Context {
-                    session_id: session_id.to_string(),
-                    messages: sessions.get_messages(session_id).unwrap_or_default(),
-                    user_prompt: user_prompt.to_string(),
-                    active_task: active_task.clone(),
-                    channel: channel.to_string(),
-                    agent_name: "Nebo".to_string(),
+                || steering::should_force_break(
+                    &sessions.get_messages(session_id).unwrap_or_default(),
                     iteration,
-                    work_tasks: vec![],
-                    quota_warning: None,
-                    consecutive_error_iterations,
-                    recent_tool_result_hashes: recent_tool_result_hashes.clone(),
-                    recent_tool_names: recent_tool_names.clone(),
-                    user_presence: String::new(),
-                    user_just_returned: false,
-                    proactive_items: vec![],
-                    provider_id: String::new(),
-                    execution_mode: origin.into(),
-                })
+                )
                 .is_some()
             {
                 turn_exit_reason = "adaptive_limit_no_progress".to_string();
@@ -2016,29 +1992,9 @@ async fn run_loop(
         };
         last_model_name = selected_model_name.to_string();
 
-        // Generate steering directives (provider_id needed for skip rules)
-        let steering_ctx = steering::Context {
-            session_id: session_id.to_string(),
-            messages: window_messages.clone(),
-            user_prompt: user_prompt.to_string(),
-            active_task: active_task.clone(),
-            channel: channel.to_string(),
-            agent_name: "Nebo".to_string(),
-            iteration,
-            work_tasks: work_tasks.clone(),
-            quota_warning: state.quota_warning.clone(),
-            consecutive_error_iterations,
-            recent_tool_result_hashes: recent_tool_result_hashes.clone(),
-            recent_tool_names: recent_tool_names.clone(),
-            user_presence: user_presence.clone(),
-            user_just_returned,
-            proactive_items,
-            provider_id: selected_provider_id.to_string(),
-            execution_mode: origin.into(),
-        };
-
-        // Circuit-breaker: check if the loop must be force-broken before making the next LLM call
-        if let Some(reason) = steering::should_force_break(&steering_ctx) {
+        // Circuit-breaker: hard-stop only on an explicit user stop command (budget handles
+        // the rest). The behavioral steering moved to the message-stream reminder channel.
+        if let Some(reason) = steering::should_force_break(&window_messages, iteration) {
             warn!(session_id, iteration, reason = %reason, "circuit breaker triggered");
             let _ = tx.send(StreamEvent {
                 event_type: StreamEventType::Text,
@@ -2059,11 +2015,13 @@ async fn run_loop(
             break;
         }
 
-        let t_steering = std::time::Instant::now();
-        let (mut all_directives, proactive_context) = steering_pipeline.generate(&steering_ctx);
-        info!(ms = t_steering.elapsed().as_millis() as u64, iteration, session_id, "[telemetry] steering generated");
+        // Background-results context (the only survivor of the old steering pipeline).
+        let proactive_context = steering::format_proactive_items(&proactive_items);
 
-        // Hook: steering.generate — let apps inject additional directives
+        // Hook: steering.generate — apps inject additional steering. Delivered as
+        // ephemeral <system-reminder> messages in this turn's stream (R8), re-evaluated
+        // each iteration like the old suffix injection (never persisted to the session).
+        let mut hook_reminders: Vec<String> = Vec::new();
         if hooks.has_subscribers("steering.generate") {
             let payload = serde_json::to_vec(&crate::hooks::SteeringGeneratePayload {
                 session_id: session_id.to_string(),
@@ -2075,31 +2033,29 @@ async fn run_loop(
                 serde_json::from_slice::<crate::hooks::SteeringGenerateResponse>(&result)
             {
                 for d in resp.directives {
-                    all_directives.push(steering::SteeringDirective {
-                        label: d.label,
-                        content: d.content,
-                        priority: d.priority,
+                    hook_reminders.push(if d.label.is_empty() {
+                        d.content
+                    } else {
+                        format!("{}: {}", d.label, d.content)
                     });
                 }
             }
         }
 
-        // Append one-shot continuation steering (from auto-continue, never persisted)
-        if let Some(cont) = continuation_steering.take() {
-            all_directives.push(steering::SteeringDirective {
-                label: "Continue".to_string(),
-                content: cont,
-                priority: 8,
+        // Continuation steering, plugin affinity, and the research-mode nudge all moved
+        // to the message-stream reminder channel (R8).
+
+        // Convert ChatMessage to ai::Message, then append any app-injected steering as
+        // ephemeral <system-reminder> turns for this iteration only (R8).
+        let mut ai_messages = convert_messages(&window_messages);
+        for text in hook_reminders {
+            ai_messages.push(Message {
+                role: "user".to_string(),
+                content: steering::wrap_system_reminder(&text),
+                ..Default::default()
             });
         }
 
-        // Plugin affinity + research-mode nudge moved to message-stream reminders (R8).
-
-        // Convert ChatMessage to ai::Message (no steering injection — steering goes in system prompt)
-        let ai_messages = convert_messages(&window_messages);
-
-        // Format steering for system prompt suffix
-        let steering_text = steering::format_directives(&all_directives);
         let proactive_text = if proactive_context.is_empty() {
             String::new()
         } else {
@@ -2116,7 +2072,6 @@ async fn run_loop(
             channel: channel.to_string(),
             work_tasks: work_tasks.clone(),
             tool_doc_cache: tool_doc_cache.clone(),
-            steering_directives: steering_text,
             proactive_context: proactive_text,
             user_timezone: user_timezone.clone(),
         };
@@ -3560,11 +3515,20 @@ async fn run_loop(
                     attempt = output_recovery_attempts,
                     "max output tokens recovery"
                 );
-                continuation_steering = Some(
-                    "<system>Your previous response was cut off by the output token limit. \
-                     Resume directly from where you stopped. No recap, no apology. \
-                     If you had pending tool calls, make them now.</system>"
-                        .to_string(),
+                // Inject the continuation as a hidden stream reminder after the (already
+                // persisted, line ~2740) truncated assistant turn — it lands in the next
+                // iteration's window. Mirrors the post-tool reminder channel (R8).
+                let _ = sessions.append_message(
+                    session_id,
+                    "user",
+                    &steering::wrap_system_reminder(
+                        "Your previous response was cut off by the output token limit. \
+                         Resume directly from where you stopped — no recap, no apology. \
+                         If you had pending tool calls, make them now.",
+                    ),
+                    None,
+                    None,
+                    Some(HIDDEN_META),
                 );
                 continue;
             }
@@ -3593,11 +3557,18 @@ async fn run_loop(
                     min = min_iterations,
                     "budget continuation: forcing next iteration"
                 );
-                continuation_steering = Some(
-                    "<system>You stopped early but your task is not complete. \
-                     Keep working — use your tools to make more progress. \
-                     Do not summarize or ask to continue. Take the next action.</system>"
-                        .to_string(),
+                // Budget continuation as a hidden stream reminder (R8).
+                let _ = sessions.append_message(
+                    session_id,
+                    "user",
+                    &steering::wrap_system_reminder(
+                        "You stopped early but your task is not complete. \
+                         Keep working — use your tools to make more progress. \
+                         Do not summarize or ask to continue. Take the next action.",
+                    ),
+                    None,
+                    None,
+                    Some(HIDDEN_META),
                 );
                 continue;
             }

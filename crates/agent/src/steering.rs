@@ -1,13 +1,5 @@
 use db::models::ChatMessage;
 
-/// A steering directive injected into the system prompt suffix (never as a user message).
-#[derive(Debug, Clone)]
-pub struct SteeringDirective {
-    pub label: String,
-    pub content: String,
-    pub priority: u8,
-}
-
 /// Work task for steering context.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorkTask {
@@ -18,54 +10,14 @@ pub struct WorkTask {
     pub details: Option<String>,
 }
 
-/// Context passed to all steering generators.
-pub struct Context {
-    pub session_id: String,
-    pub messages: Vec<ChatMessage>,
-    pub user_prompt: String,
-    pub active_task: String,
-    pub channel: String,
-    pub agent_name: String,
-    pub iteration: usize,
-    pub work_tasks: Vec<WorkTask>,
-    pub quota_warning: Option<String>,
-    /// Number of consecutive iterations where ALL tool calls returned errors.
-    pub consecutive_error_iterations: usize,
-    /// Rolling hashes of recent tool calls for loop detection (OpenClaw-style).
-    /// Each entry is (tool_name_hash, args_hash, result_hash). Last 10 kept.
-    pub recent_tool_result_hashes: Vec<(u64, u64, u64)>,
-    /// User presence state: "focused", "unfocused", "away", or empty if unknown.
-    pub user_presence: String,
-    /// Whether the user just transitioned from unfocused/away back to focused.
-    pub user_just_returned: bool,
-    /// Proactive items drained from the inbox for this iteration.
-    pub proactive_items: Vec<crate::proactive::ProactiveItem>,
-    /// Provider ID for provider-specific skip rules (e.g. "anthropic", "openai", "janus", "ollama").
-    pub provider_id: String,
-    /// Recent tool names (parallel to recent_tool_result_hashes). Last 10 kept.
-    pub recent_tool_names: Vec<String>,
-    /// Communication personality: Interactive (preamble allowed) vs Autonomous
-    /// (silent). Mode-branches narration/output suppressors. (Wired in Round 1;
-    /// consumed by the suppressors in Round 2.)
-    pub execution_mode: tools::ExecutionMode,
-}
-
-/// A steering directive generator.
-trait Generator: Send + Sync {
-    fn name(&self) -> &str;
-    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective>;
-}
-
-/// Format a list of steering directives into a system prompt section.
-pub fn format_directives(directives: &[SteeringDirective]) -> String {
-    if directives.is_empty() {
-        return String::new();
-    }
-    let mut sb = String::from("## Agent Directives\n");
-    for d in directives {
-        sb.push_str(&format!("[{}] {}\n", d.label, d.content));
-    }
-    sb
+/// Format proactive inbox items into `[Background Results]` lines for the system suffix.
+/// (The behavioral Generator/Pipeline machinery was retired in R8; this is the one piece
+/// of the old pipeline that survives — it surfaces background results, not steering.)
+pub fn format_proactive_items(items: &[crate::proactive::ProactiveItem]) -> Vec<String> {
+    items
+        .iter()
+        .map(|item| format!("[{}] {}: {}", item.priority, item.source, item.summary))
+        .collect()
 }
 
 // ===== Reminder engine: event-driven, message-stream steering (Claude Code style) =====
@@ -362,73 +314,6 @@ impl Reminder for ActionConfirm {
     }
 }
 
-/// Runs all registered generators to produce steering directives.
-pub struct Pipeline {
-    generators: Vec<Box<dyn Generator>>,
-}
-
-impl Pipeline {
-    pub fn new() -> Self {
-        // R7: all behavioral generators have migrated to message-stream reminders or the
-        // static prompt. The pipeline now only carries ProactiveResults (handled inline in
-        // `generate`); it is deleted outright in R8.
-        let generators: Vec<Box<dyn Generator>> = vec![];
-
-        Self { generators }
-    }
-
-    /// Run all generators and collect steering directives.
-    /// ProactiveResults is handled separately — its output goes to proactive_context.
-    pub fn generate(&self, ctx: &Context) -> (Vec<SteeringDirective>, Vec<String>) {
-        let mut directives = Vec::new();
-        let mut proactive_context = Vec::new();
-
-        // ProactiveResults goes to separate output
-        if !ctx.proactive_items.is_empty() {
-            for item in &ctx.proactive_items {
-                proactive_context.push(format!(
-                    "[{}] {}: {}",
-                    item.priority, item.source, item.summary
-                ));
-            }
-        }
-
-        // Provider-specific skip rules. JanusQuotaWarning is Janus-only; skip for Ollama.
-        // (The narration/output/repetition/ask suppressors that were Claude-skipped moved to
-        // message-stream reminders, each carrying its own Claude-skip via ReminderContext.)
-        let is_ollama = ctx.provider_id == "ollama";
-
-        for g in &self.generators {
-            if is_ollama && g.name() == "janus_quota_warning" {
-                continue;
-            }
-
-            // Panic recovery per generator
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.generate(ctx)));
-
-            match result {
-                Ok(dirs) => {
-                    for mut d in dirs {
-                        d.content = d.content.replace("{agent_name}", &ctx.agent_name);
-                        directives.push(d);
-                    }
-                }
-                Err(_) => {
-                    tracing::warn!(generator_name = g.name(), "steering generator panicked");
-                }
-            }
-        }
-
-        (directives, proactive_context)
-    }
-}
-
-impl Default for Pipeline {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 // --- Helper functions ---
 
 fn count_assistant_turns(messages: &[ChatMessage]) -> usize {
@@ -507,24 +392,23 @@ fn user_requested_stop(messages: &[ChatMessage]) -> bool {
 
 /// Check if the loop should be force-broken. Called by the runner BEFORE
 /// making the next LLM call. Returns Some(reason) if the loop must stop.
-pub fn should_force_break(ctx: &Context) -> Option<String> {
+pub fn should_force_break(messages: &[ChatMessage], iteration: usize) -> Option<String> {
     // Only hard-stop on explicit user stop command.
     // Everything else is handled by the iteration budget (100 iterations).
     // Hermes uses budget-only (90 iterations, no error/loop tracking) and it works.
     // The model is smart enough to self-correct — aggressive circuit breakers
     // kill legitimate browser automation (Google Flights, Amazon, etc.).
-    if user_requested_stop(&ctx.messages) && ctx.iteration > 2 {
+    if user_requested_stop(messages) && iteration > 2 {
         return Some("Circuit breaker: user requested stop. Halting agent loop.".to_string());
     }
 
     None
 }
 
-// R7: ChannelAdapter, ChannelPluginRouting, and LoopFileSharing moved to the static
-// system prompt (`prompt::channel_guidance`) — channel is fixed per run, so this
-// guidance belongs in the prompt, not the per-turn message stream. IdentityGuard
-// became the IdentityReinforce message-stream reminder (below). The Generator pipeline
-// now holds no behavioral generators; it is retired entirely in R8.
+// R7/R8: the behavioral steering Generators are gone. ChannelAdapter/ChannelPluginRouting/
+// LoopFileSharing → static prompt (`prompt::channel_guidance`); IdentityGuard, plugin
+// affinity, the research-mode nudge, continuation, and the steering.generate hook → the
+// message-stream reminder channel. The `## Agent Directives` suffix is fully retired.
 
 // ToolNudge + PendingTaskAction were CUT in R5: text-only responses always end the
 // loop (runner.rs ~3715), so there is no mid-task tool-less stall to nudge, and the
@@ -1400,55 +1284,6 @@ mod tests {
         }
     }
 
-    fn make_ctx(messages: Vec<ChatMessage>) -> Context {
-        Context {
-            session_id: String::new(),
-            messages,
-            user_prompt: String::new(),
-            active_task: String::new(),
-            channel: "web".to_string(),
-            agent_name: "Nebo".to_string(),
-            iteration: 1,
-            work_tasks: vec![],
-            quota_warning: None,
-            consecutive_error_iterations: 0,
-            recent_tool_result_hashes: vec![],
-            user_presence: String::new(),
-            user_just_returned: false,
-            proactive_items: vec![],
-            provider_id: "openai".to_string(),
-            recent_tool_names: vec![],
-            // Default to Autonomous: the failure-mode tests (fm2/fm3) exercise the
-            // aggressive non-Claude suppression. Interactive-mode tests opt in explicitly.
-            execution_mode: tools::ExecutionMode::Autonomous,
-        }
-    }
-
-    #[test]
-    fn test_format_directives_empty() {
-        assert_eq!(format_directives(&[]), "");
-    }
-
-    #[test]
-    fn test_format_directives() {
-        let dirs = vec![
-            SteeringDirective {
-                label: "Loop Warning".to_string(),
-                content: "You called web 3 times".to_string(),
-                priority: 9,
-            },
-            SteeringDirective {
-                label: "Action Bias".to_string(),
-                content: "Stop narrating, use tools".to_string(),
-                priority: 8,
-            },
-        ];
-        let result = format_directives(&dirs);
-        assert!(result.contains("## Agent Directives"));
-        assert!(result.contains("[Loop Warning] You called web 3 times"));
-        assert!(result.contains("[Action Bias] Stop narrating, use tools"));
-    }
-
     #[test]
     fn test_identity_reinforce_fires_at_8_for_named_agent() {
         let mut messages = Vec::new();
@@ -1549,18 +1384,17 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_generates_proactive_context() {
-        let pipeline = Pipeline::new();
-        let mut ctx = make_ctx(vec![make_msg("user", "hello")]);
-        ctx.proactive_items = vec![crate::proactive::ProactiveItem {
+    fn test_format_proactive_items() {
+        let items = vec![crate::proactive::ProactiveItem {
             source: "heartbeat:gws-email".to_string(),
             summary: "3 urgent emails from your boss".to_string(),
             priority: crate::proactive::Priority::Urgent,
             created_at: 1000,
         }];
-        let (_, proactive) = pipeline.generate(&ctx);
-        assert_eq!(proactive.len(), 1);
-        assert!(proactive[0].contains("3 urgent emails"));
+        let lines = format_proactive_items(&items);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("3 urgent emails"));
+        assert!(format_proactive_items(&[]).is_empty());
     }
 
     #[test]
@@ -1588,9 +1422,7 @@ mod tests {
             make_msg("assistant", "I'll search for emails."),
             make_msg("user", "stop"),
         ];
-        let mut ctx = make_ctx(messages);
-        ctx.iteration = 3;
-        let result = should_force_break(&ctx);
+        let result = should_force_break(&messages, 3);
         assert!(
             result.is_some(),
             "user stop should force break even with zero errors"
@@ -1601,36 +1433,22 @@ mod tests {
     #[test]
     fn test_user_stop_no_break_at_iteration_2() {
         let messages = vec![make_msg("user", "stop"), make_msg("assistant", "ok")];
-        let mut ctx = make_ctx(messages);
-        ctx.iteration = 2;
-        let result = should_force_break(&ctx);
-        assert!(result.is_none(), "should NOT break at iteration 2");
-    }
-
-    #[test]
-    fn test_no_hard_stop_on_consecutive_errors() {
-        // Hermes approach: no hard stops on errors, only budget.
-        let mut ctx = make_ctx(vec![]);
-        ctx.consecutive_error_iterations = 3;
         assert!(
-            should_force_break(&ctx).is_none(),
-            "should NOT break on errors"
-        );
-        ctx.consecutive_error_iterations = 10;
-        assert!(
-            should_force_break(&ctx).is_none(),
-            "should NOT break even at 10 errors"
+            should_force_break(&messages, 2).is_none(),
+            "should NOT break at iteration 2"
         );
     }
 
     #[test]
-    fn test_no_hard_stop_on_same_tool() {
-        // Hermes approach: no hard stops on same-tool calls, only budget.
-        let mut ctx = make_ctx(vec![]);
-        ctx.recent_tool_result_hashes = vec![(1, 2, 3), (1, 2, 3), (1, 2, 3), (1, 2, 3)];
+    fn test_no_hard_stop_without_user_stop() {
+        // Only an explicit user stop forces a break — errors/loops never do (budget only).
+        let messages = vec![
+            make_msg("user", "keep researching"),
+            make_msg("assistant", "working on it"),
+        ];
         assert!(
-            should_force_break(&ctx).is_none(),
-            "should NOT break on same-tool calls"
+            should_force_break(&messages, 10).is_none(),
+            "should NOT break without an explicit user stop"
         );
     }
 
