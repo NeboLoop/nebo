@@ -324,6 +324,19 @@ export interface ErrorLog {
 	resolved: number
 }
 
+export interface ExtensionInfo {
+	name: string
+	description: string
+	version: string
+	enabled: boolean
+	source: string
+	triggers: string[]
+	capabilities: string[]
+	path?: string
+	secrets: SkillSecretInfo[]
+	needsConfiguration: boolean
+}
+
 export interface HandleAvailableResponse {
 	available: boolean
 }
@@ -352,6 +365,10 @@ export interface Lead {
 	status: string
 	metadata?: string
 	created_at: number
+}
+
+export interface ListExtensionsResponse {
+	extensions: ExtensionInfo[]
 }
 
 export interface LoginResponse {
@@ -592,6 +609,14 @@ export interface Setting {
 	commPlugin: string
 	developerMode: boolean
 	autoUpdate: boolean
+}
+
+export interface SkillSecretInfo {
+	key: string
+	label: string
+	hint: string
+	required: boolean
+	configured: boolean
 }
 
 export interface User {
@@ -1181,10 +1206,6 @@ export interface ListEventSourcesResponse {
 	sources: unknown[]
 }
 
-export interface ListExtensionsResponse {
-	extensions: ExtensionInfo[]
-}
-
 export interface ListIntegrationsResponse {
 	integrations: McpIntegration[]
 }
@@ -1692,15 +1713,6 @@ export interface EnrichedChat {
 	createdAt: number
 	updatedAtEpoch: number
 	sessionName: string
-}
-
-export interface ExtensionInfo {
-	name: string
-	description: string
-	version: string
-	isEnabled: boolean
-	type: string
-	source: string
 }
 
 export interface ToolPermission {

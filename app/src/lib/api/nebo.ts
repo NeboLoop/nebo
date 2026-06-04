@@ -695,7 +695,7 @@ export function deleteEntityConfig(entityType: string, entityId: string) {
  * @description "List extensions"
  */
 export function listExtensions() {
-	return webapi.get<components.ListExtensionsResponse>(`/api/v1/extensions`)
+	return webapi.get<unknown>(`/api/v1/extensions`)
 }
 
 /**

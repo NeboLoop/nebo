@@ -26,9 +26,6 @@ var typeOverrides = map[string]string{
 	"get_commander_org.teams":      "CommanderTeam[]",
 	"get_commander_org.nodePositions": "CommanderNodePosition[]",
 
-	// ── Extensions / skills ──
-	"list_extensions.extensions": "ExtensionInfo[]",
-
 	// ── Chat messages ──
 	"get_chat_messages.messages": "ChatMessage[]",
 	"list_chat_messages.messages": "ChatMessage[]",
@@ -75,15 +72,6 @@ var extraInterfaces = map[string]string{
 	date: string
 	workflowRunId?: string
 	trigger?: string
-}`,
-
-	"ExtensionInfo": `export interface ExtensionInfo {
-	name: string
-	description: string
-	version: string
-	isEnabled: boolean
-	type: string
-	source: string
 }`,
 
 	"AgentStats": `export interface AgentStats {

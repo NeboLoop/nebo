@@ -1,25 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import type { ExtensionInfo } from '$lib/api/nebo';
 
-  let skills = $state<{ name: string; bundled: boolean; enabled: boolean; tools: string[] }[]>([]);
+  let skills = $state<ExtensionInfo[]>([]);
 
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.listExtensions();
-      const skillsList = (resp as unknown as Record<string, Record<string, unknown>[]>).skills;
-      if (skillsList?.length) {
-        skills = skillsList.map((ext) => ({
-          name: String(ext.name),
-          bundled: !!(ext.bundled ?? ext.isBundled ?? false),
-          enabled: !!(ext.enabled ?? ext.isEnabled ?? true),
-          tools: (ext.tools || ext.capabilities || []) as string[],
-        }));
-      }
-    } catch { /* keep mock data */ }
+      skills = resp.extensions;
+    } catch { /* leave list empty on error */ }
   });
 
-  async function toggleSkill(skill: typeof skills[0]) {
+  async function toggleSkill(skill: ExtensionInfo) {
     skill.enabled = !skill.enabled;
     try {
       const api = await import('$lib/api/nebo');
@@ -38,16 +31,12 @@
     <div class="flex items-start gap-3 p-3.5 rounded-lg border border-base-content/5 bg-base-100">
       <div class="flex-1">
         <div class="flex items-center gap-2 mb-1">
-          <span class="text-sm font-semibold">{skill.name}</span>
-          {#if skill.bundled}
-            <span class="px-1.5 py-0.5 rounded text-sm font-mono bg-base-200">bundled</span>
-          {:else}
-            <span class="px-1.5 py-0.5 rounded text-sm font-mono bg-primary/10 text-primary">marketplace</span>
-          {/if}
+          <span class="text-sm font-medium">{skill.name}</span>
+          <span class="px-1.5 py-0.5 rounded text-xs font-mono {skill.source === 'user' ? 'bg-primary/10 text-primary' : 'bg-base-200'}">{skill.source}</span>
         </div>
         <div class="flex flex-wrap gap-1">
-          {#each skill.tools as tool}
-            <span class="px-1.5 py-0.5 rounded bg-base-200 text-sm font-mono">{tool}</span>
+          {#each skill.capabilities as capability}
+            <span class="px-1.5 py-0.5 rounded bg-base-200 text-xs font-mono">{capability}</span>
           {/each}
         </div>
       </div>

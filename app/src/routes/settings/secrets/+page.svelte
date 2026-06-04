@@ -43,15 +43,13 @@
       // 1. Skills (from listExtensions)
       try {
         const extResp = await api.listExtensions();
-        const allSkills = (extResp as any).skills || (extResp as any).extensions || [];
-        for (const skill of allSkills) {
-          const s = skill as any;
-          if (s.secrets && Array.isArray(s.secrets) && s.secrets.length > 0) {
+        for (const skill of extResp.extensions) {
+          if (skill.secrets.length > 0) {
             loaded.push({
               name: skill.name,
               source: 'skill',
               slug: skill.name,
-              secrets: s.secrets,
+              secrets: skill.secrets,
             });
           }
         }

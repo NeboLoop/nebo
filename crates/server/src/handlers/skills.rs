@@ -97,29 +97,58 @@ fn skills_dir()
 }
 
 /// GET /api/v1/extensions
-pub async fn list_extensions(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+/// One entry in the installed-skills list. The generated TS interface is the
+/// single source of truth for the frontend — no override, no `any`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionInfo {
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub enabled: bool,
+    /// "installed" (marketplace / bundled / .napp) or "user" (loose files).
+    pub source: String,
+    pub triggers: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub path: Option<String>,
+    pub secrets: Vec<SkillSecretInfo>,
+    pub needs_configuration: bool,
+}
+
+/// A declared secret for a skill plus whether it has been configured.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSecretInfo {
+    pub key: String,
+    pub label: String,
+    pub hint: String,
+    pub required: bool,
+    pub configured: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct ListExtensionsResponse {
+    pub extensions: Vec<ExtensionInfo>,
+}
+
+/// GET /api/v1/extensions — list all loaded skills with their source,
+/// capabilities, and secret-configuration status.
+pub async fn list_extensions(
+    State(state): State<AppState>,
+) -> HandlerResult<ListExtensionsResponse> {
     let summaries = state.skill_loader.list_summaries().await;
-    let mut skills: Vec<serde_json::Value> = Vec::with_capacity(summaries.len());
+    let mut extensions = Vec::with_capacity(summaries.len());
 
     for s in &summaries {
-        let mut info = serde_json::json!({
-            "name": s.name,
-            "enabled": s.enabled,
-            "source": s.source,
-        });
-        if !s.description.is_empty() {
-            info["description"] = serde_json::json!(s.description);
+        let source = match s.source {
+            tools::skills::SkillSource::User => "user",
+            tools::skills::SkillSource::Installed => "installed",
         }
-        if !s.version.is_empty() {
-            info["version"] = serde_json::json!(s.version);
-        }
-        if !s.triggers.is_empty() {
-            info["triggers"] = serde_json::json!(s.triggers);
-        }
-        if let Some(ref path) = s.source_path {
-            info["path"] = serde_json::json!(path.to_string_lossy());
-        }
-        // Lazy-load full skill only for those that declare secrets
+        .to_string();
+
+        // Lazy-load the full skill only for those that declare secrets.
+        let mut secrets = Vec::new();
+        let mut needs_configuration = false;
         if s.has_secrets {
             if let Some(full) = state.skill_loader.get(&s.name).await {
                 let declarations = full.secrets();
@@ -127,31 +156,41 @@ pub async fn list_extensions(State(state): State<AppState>) -> HandlerResult<ser
                     let stored = state.store.list_skill_secrets(&s.name).unwrap_or_default();
                     let stored_keys: std::collections::HashSet<String> =
                         stored.into_iter().map(|(k, _)| k).collect();
-                    let secrets: Vec<serde_json::Value> = declarations
+                    secrets = declarations
                         .iter()
-                        .map(|d| {
-                            serde_json::json!({
-                                "key": d.key,
-                                "label": d.label,
-                                "hint": d.hint,
-                                "required": d.required,
-                                "configured": stored_keys.contains(&d.key),
-                            })
+                        .map(|d| SkillSecretInfo {
+                            key: d.key.clone(),
+                            label: d.label.clone(),
+                            hint: d.hint.clone(),
+                            required: d.required,
+                            configured: stored_keys.contains(&d.key),
                         })
                         .collect();
-                    info["secrets"] = serde_json::json!(secrets);
-                    info["needsConfiguration"] = serde_json::json!(
-                        declarations
-                            .iter()
-                            .any(|d| d.required && !stored_keys.contains(&d.key))
-                    );
+                    needs_configuration = declarations
+                        .iter()
+                        .any(|d| d.required && !stored_keys.contains(&d.key));
                 }
             }
         }
-        skills.push(info);
+
+        extensions.push(ExtensionInfo {
+            name: s.name.clone(),
+            description: s.description.clone(),
+            version: s.version.clone(),
+            enabled: s.enabled,
+            source,
+            triggers: s.triggers.clone(),
+            capabilities: s.capabilities.clone(),
+            path: s
+                .source_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            secrets,
+            needs_configuration,
+        });
     }
 
-    Ok(Json(serde_json::json!({"extensions": skills})))
+    Ok(Json(ListExtensionsResponse { extensions }))
 }
 
 /// POST /api/v1/skills
