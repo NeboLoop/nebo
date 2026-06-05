@@ -778,7 +778,10 @@ pub async fn update_agent(
     if exposure_changed && id != "assistant" {
         let st = state.clone();
         let agent_name = updated.name.clone();
-        let slug = updated.name.to_lowercase().replace(' ', "-");
+        // Bot-scoped handle (`bot_<id8>_<slug>`) — matches reconcile, so the
+        // immediate toggle and the on-connect reconcile target the same agent.
+        let bot_id = config::read_bot_id().unwrap_or_default();
+        let slug = comm::handle::secondary_handle(&bot_id, &updated.name);
         let now_exposed = updated.loop_exposed != 0;
         tokio::spawn(async move {
             let result = if now_exposed {

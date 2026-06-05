@@ -673,12 +673,34 @@ impl NeboAIApi {
             agent_slug: agent_slug.to_string(),
             description: description.map(|s| s.to_string()),
         };
-        self.do_json(
-            reqwest::Method::POST,
-            &format!("/api/v1/loops/{}/agents", loop_id),
-            Some(&body),
-        )
-        .await
+        tracing::info!(
+            target: "neboai_identity",
+            bot_id = %self.bot_id,
+            loop_id = %loop_id,
+            sending_name = %agent_name,
+            sending_slug = %agent_slug,
+            "register_agent: REQUEST to loop"
+        );
+        let resp = self
+            .do_json::<serde_json::Value>(
+                reqwest::Method::POST,
+                &format!("/api/v1/loops/{}/agents", loop_id),
+                Some(&body),
+            )
+            .await;
+        match &resp {
+            Ok(v) => tracing::info!(
+                target: "neboai_identity",
+                sent_slug = %agent_slug,
+                returned_id = ?v.get("id").and_then(|x| x.as_str()),
+                returned_name = ?v.get("name").and_then(|x| x.as_str()),
+                returned_slug = ?v.get("slug").and_then(|x| x.as_str()),
+                returned_conv = ?v.get("conversationId").and_then(|x| x.as_str()),
+                "register_agent: RESPONSE from loop"
+            ),
+            Err(e) => tracing::warn!(target: "neboai_identity", sent_slug = %agent_slug, error = %e, "register_agent: FAILED"),
+        }
+        resp
     }
 
     /// List agents registered by this bot in a loop.

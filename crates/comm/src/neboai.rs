@@ -357,7 +357,7 @@ impl CommPlugin for NeboAIPlugin {
         // loop agent reflects the local Identity settings. Identity fields are
         // plumbed in via the same config map as bot_id/token (see
         // codes::activate_neboai). Empty values are dropped (None).
-        let connect_payload = serde_json::to_vec(&wire::ConnectPayload {
+        let connect_identity = wire::ConnectPayload {
             bot_id: Some(bot_id.clone()),
             token: Some(token),
             agent_name: config.get("agent_name").filter(|v| !v.is_empty()).cloned(),
@@ -369,8 +369,17 @@ impl CommPlugin for NeboAIPlugin {
                 .get("agent_color")
                 .filter(|v| !v.is_empty())
                 .cloned(),
-        })
-        .map_err(|e| CommError::Other(e.to_string()))?;
+        };
+        tracing::info!(
+            target: "neboai_identity",
+            bot_id = %bot_id,
+            agent_name = ?connect_identity.agent_name,
+            agent_handle = ?connect_identity.agent_handle,
+            agent_color = ?connect_identity.agent_color,
+            "CONNECT: announcing primary identity to loop"
+        );
+        let connect_payload =
+            serde_json::to_vec(&connect_identity).map_err(|e| CommError::Other(e.to_string()))?;
         let connect_frame = frame::encode(
             Header {
                 frame_type: frame::TYPE_CONNECT,
@@ -642,6 +651,22 @@ impl CommPlugin for NeboAIPlugin {
             dl.outbound(stream, &conv_id, &msg.content);
         }
 
+        // Instrument the RESPONSE: what identity (if any) we attach to a reply.
+        // SendPayload has NO agent id/slug field — the only identity hint is
+        // `senderName` inside `content`. The loop attributes by the bot's
+        // connection, so without a real agent id this shows as the primary.
+        tracing::info!(
+            target: "neboai_identity",
+            conv_id = %conv_id,
+            stream = %stream,
+            msg_type = ?msg.msg_type,
+            to = %msg.to,
+            from = %msg.from,
+            sender_name = ?msg.metadata.get("senderName"),
+            meta_keys = ?msg.metadata.keys().collect::<Vec<_>>(),
+            "OUTBOUND send() — what identity we attach to the response"
+        );
+
         let payload = serde_json::to_vec(&wire::SendPayload {
             conversation_id: conv_id,
             stream: stream.to_string(),
@@ -820,6 +845,13 @@ impl CommPlugin for NeboAIPlugin {
         maps.agent_space_convs
             .get(conv_id)
             .map(|meta| meta.agent_slug.clone())
+    }
+
+    async fn agent_id_for_conv(&self, conv_id: &str) -> Option<String> {
+        let maps = self.conv_maps.read().await;
+        maps.agent_space_convs
+            .get(conv_id)
+            .map(|meta| meta.agent_id.clone())
     }
 
     async fn agent_space_loop_id(&self, conv_id: &str) -> Option<String> {

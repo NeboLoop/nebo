@@ -235,6 +235,16 @@ impl PluginManager {
         }
     }
 
+    /// Look up the loop's agent UUID for a conversation (stable identity).
+    pub async fn agent_id_for_conv(&self, conv_id: &str) -> Option<String> {
+        let inner = self.inner.read().await;
+        if let Some(ref active) = inner.active {
+            active.agent_id_for_conv(conv_id).await
+        } else {
+            None
+        }
+    }
+
     /// Look up the loop_id for an agent_space conversation.
     pub async fn agent_space_loop_id(&self, conv_id: &str) -> Option<String> {
         let inner = self.inner.read().await;

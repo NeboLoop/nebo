@@ -54,6 +54,10 @@ pub struct PromptContext {
 pub struct DynamicContext {
     pub provider_name: String,
     pub model_name: String,
+    /// The running agent's name (e.g. "Nebo", "pam", "Chief of Staff"). Used so
+    /// the model-identity line asserts THIS agent's identity, not a hardcoded
+    /// "Nebo" — otherwise weak slug-names lose their identity to the brand.
+    pub agent_name: String,
     pub active_task: String,
     pub summary: String,
     /// Whether this message arrived via NeboAI (comm channel).
@@ -795,11 +799,18 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         std::env::consts::OS
     };
 
-    // Build model identity line — for Janus gateway, use branded name
+    // Build model identity line — assert THIS agent's identity (not a hardcoded
+    // "Nebo"), so every agent — including slug-named ones like "pam"/"donna" —
+    // knows who it is. Falls back to "Nebo" only when no agent name is set.
+    let identity = if dctx.agent_name.is_empty() {
+        "Nebo"
+    } else {
+        dctx.agent_name.as_str()
+    };
     let model_line = if dctx.provider_name == "janus" || dctx.model_name.starts_with("nebo-") {
         format!(
-            "Model: neboai/{} — you are Nebo, NOT Claude, GPT, Gemini, or any other model. Never claim to be a specific LLM.",
-            dctx.model_name
+            "Model: neboai/{} — you are {}, NOT Claude, GPT, Gemini, or any other model. Never claim to be a specific LLM.",
+            dctx.model_name, identity
         )
     } else if dctx.provider_name.is_empty() && dctx.model_name.is_empty() {
         "Model: Nebo AI".to_string()
@@ -1039,6 +1050,7 @@ mod tests {
         let dctx = DynamicContext {
             provider_name: "anthropic".to_string(),
             model_name: "claude-sonnet-4".to_string(),
+            agent_name: "Nebo".to_string(),
             active_task: "Build a website".to_string(),
             summary: "User asked about web development".to_string(),
             neboai_connected: false,

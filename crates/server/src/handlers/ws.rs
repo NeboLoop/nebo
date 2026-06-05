@@ -1616,13 +1616,15 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &C
     // If NeboAI is connected, forward responses so the conversation stays in sync.
     // Works for both custom agents (agent_space by slug) and the companion (default bot).
     let comm_reply = if state.comm_manager.is_connected().await {
+        let bot_id = config::read_bot_id().unwrap_or_default();
         let conv_id = if !agent_id.is_empty() {
-            // Custom agent: look up by slug
+            // Custom (secondary) agent: look up by its bot-scoped handle
+            // (`bot_<id8>_<slug>`), matching how reconcile registers it.
             let slug = {
                 let registry = state.agent_registry.read().await;
                 registry
                     .get(&agent_id)
-                    .map(|r| r.name.to_lowercase().replace(' ', "-"))
+                    .map(|r| comm::handle::secondary_handle(&bot_id, &r.name))
             };
             if let Some(slug) = slug {
                 state.comm_manager.agent_space_conv_for_slug(&slug).await
@@ -1630,16 +1632,12 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &C
                 None
             }
         } else {
-            // Companion (default bot): look up by bot_* slug
-            if let Some(bot_id) = config::read_bot_id() {
-                let bot_slug = format!("bot_{}", &bot_id[..bot_id.len().min(12)]);
-                state
-                    .comm_manager
-                    .agent_space_conv_for_slug(&bot_slug)
-                    .await
-            } else {
-                None
-            }
+            // Companion (primary): look up by bot_<id8>.
+            let bot_slug = comm::handle::default_bot_handle(&bot_id, "");
+            state
+                .comm_manager
+                .agent_space_conv_for_slug(&bot_slug)
+                .await
         };
         conv_id.map(|cid| crate::chat_dispatch::CommReplyConfig {
             provider: "neboai".to_string(),

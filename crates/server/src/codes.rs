@@ -1300,6 +1300,36 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
         config.insert("data_dir".into(), dir.to_string_lossy().to_string());
     }
 
+    // Pin the PRIMARY agent's identity on CONNECT so the loop's default agent is
+    // deterministically "Nebo" (the local `assistant` row) and can never be
+    // overwritten by whichever secondary sorts first. Without this the loop has
+    // no anchored primary and renames it to the alphabetically-first agent.
+    // The handle is sent raw; the loop derives the canonical `bot_<id8>` form
+    // (or `bot_<slug>` for a custom handle) — matching `comm::handle`.
+    if let Ok(Some(primary)) = state.store.get_agent("assistant") {
+        let name = if primary.name.is_empty() { "Nebo".to_string() } else { primary.name };
+        // The stored handle is already canonical (`bot_d486d161`). The loop expects
+        // a RAW handle and adds the `bot_` prefix itself (via `defaultHandle`), so
+        // sending it pre-prefixed makes it re-slugify into garbage (`bot_bot-…`).
+        // Strip our prefix → send raw → loop re-derives the same canonical handle.
+        let stored = primary.handle.clone().unwrap_or_default();
+        let raw_handle = stored.strip_prefix("bot_").unwrap_or(&stored).to_string();
+        info!(
+            target: "neboai_identity",
+            assistant_name = %name,
+            stored_handle = %stored,
+            sending_raw_handle = %raw_handle,
+            assistant_color = ?primary.color,
+            "activate_neboai: plumbing primary identity into CONNECT config"
+        );
+        config.insert("agent_name".into(), name);
+        config.insert("agent_handle".into(), raw_handle);
+        config.insert("agent_color".into(), primary.color.unwrap_or_default());
+    } else {
+        info!(target: "neboai_identity", "activate_neboai: no 'assistant' row — CONNECT agent_name=Nebo only");
+        config.insert("agent_name".into(), "Nebo".to_string());
+    }
+
     state
         .comm_manager
         .set_active("neboai")
@@ -1403,6 +1433,7 @@ pub(crate) async fn sync_bot_identity(state: &AppState) {
 /// Only deregister agents that are truly deleted locally, not just paused.
 async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     let api = build_api_client(state)?;
+    let bot_id = config::read_bot_id().unwrap_or_default();
     let loops = api
         .list_bot_loops()
         .await
@@ -1420,27 +1451,60 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         .await
         .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
 
+    info!(
+        target: "neboai_identity",
+        loop_id = %personal.loop_id,
+        remote_count = remote_agents.len(),
+        remote = ?remote_agents.iter().map(|a| format!("{}#{}", a.slug, &a.id[..a.id.len().min(8)])).collect::<Vec<_>>(),
+        "reconcile_agents: START — remote loop agents"
+    );
+
     // Local agents that should appear on the loop as their OWN identity:
     // "Expose to Loop" is on, excluding the primary ("assistant"). The primary
     // is the bot's canonical "Nebo" identity, auto-created and kept current by
     // the gateway (slug "bot_<id8>") — it always shows and must never be
     // registered as a named secondary, or it would duplicate itself.
-    let exposed: Vec<db::models::Agent> = state
+    // Canonical display name comes from each agent's manifest.json (the source of
+    // truth), resolved via the loader by id — NOT the local DB `name`, which can
+    // drift to the AGENT.md frontmatter slug. The @handle is bot-scoped
+    // (`bot_<id8>_<slug>`) so two bots loading the same agent never collide. We
+    // also heal a drifted DB name here so display/reads are correct end-to-end.
+    let manifest_name_by_id: std::collections::HashMap<String, String> = state
+        .agent_loader
+        .list()
+        .await
+        .into_iter()
+        .filter_map(|l| Some((l.id?, l.agent_def.name)))
+        .collect();
+    let exposed: Vec<(db::models::Agent, String, String)> = state
         .store
         .list_agents(1000, 0)
         .unwrap_or_default()
         .into_iter()
         .filter(|a| a.id != "assistant" && a.loop_exposed != 0)
+        .map(|a| {
+            let name = manifest_name_by_id
+                .get(&a.id)
+                .filter(|n| !n.is_empty())
+                .cloned()
+                .unwrap_or_else(|| a.name.clone());
+            if name != a.name {
+                info!(target: "neboai_identity", id = %a.id, db_name = %a.name, manifest_name = %name, "reconcile: healing drifted local name from manifest");
+                if let Err(e) = state.store.sync_agent_identity(&a.id, &name, &a.description) {
+                    warn!(id = %a.id, error = %e, "reconcile: failed to heal local name (non-fatal)");
+                }
+            }
+            let slug = comm::handle::secondary_handle(&bot_id, &name);
+            (a, name, slug)
+        })
         .collect();
-    let exposed_slugs: std::collections::HashSet<String> = exposed
-        .iter()
-        .map(|a| a.name.to_lowercase().replace(' ', "-"))
-        .collect();
+    let exposed_slugs: std::collections::HashSet<String> =
+        exposed.iter().map(|(_, _, slug)| slug.clone()).collect();
 
     // Deregister remote secondary agents that are no longer exposed locally.
-    // Never touch the primary (its slug carries the "bot_" prefix).
+    // Never touch the primary (its slug is bot_<id8> with no further "_").
     for agent in &remote_agents {
-        if agent.slug.starts_with("bot_") {
+        if comm::handle::is_primary_handle(&agent.slug) {
             continue;
         }
         if !exposed_slugs.contains(&agent.slug) {
@@ -1453,24 +1517,65 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
 
     // Register exposed local agents missing from remote. The server upserts by
     // slug, so this is idempotent (re-registration updates in place).
-    let remote_slugs: std::collections::HashSet<String> =
-        remote_agents.iter().map(|a| a.slug.clone()).collect();
-    for agent in &exposed {
-        let slug = agent.name.to_lowercase().replace(' ', "-");
-        if !remote_slugs.contains(&slug) {
+    // Re-register when the agent is missing OR the loop's stored name differs
+    // from the manifest name — the server upserts by slug, so this updates the
+    // display name in place (otherwise a previously slug-named agent never gets
+    // its real name).
+    let remote_by_slug: std::collections::HashMap<String, String> = remote_agents
+        .iter()
+        .map(|a| (a.slug.clone(), a.name.clone()))
+        .collect();
+    for (agent, name, slug) in &exposed {
+        let needs_register = match remote_by_slug.get(slug) {
+            None => true,
+            Some(remote_name) => remote_name != name,
+        };
+        if needs_register {
             let desc = if agent.description.is_empty() {
                 None
             } else {
                 Some(agent.description.as_str())
             };
-            info!(agent = %agent.name, slug = %slug, "reconcile: registering exposed agent");
+            info!(target: "neboai_identity", name = %name, slug = %slug, remote_name = ?remote_by_slug.get(slug), "reconcile: registering/updating exposed agent (manifest name)");
             if let Err(e) = api
-                .register_agent(&personal.loop_id, &agent.name, &slug, desc)
+                .register_agent(&personal.loop_id, name, slug, desc)
                 .await
             {
                 warn!(slug = %slug, error = %e, "reconcile: failed to register");
             }
         }
+    }
+
+    // Stabilize ids: persist each loop agent's stable UUID onto the matching
+    // local agent (`loop_agent_id`) so routing/attribution key on the stable id,
+    // never on a name-derived slug. Re-fetch so just-registered secondaries are
+    // included with the ids the loop assigned them.
+    let slug_to_local: std::collections::HashMap<String, String> = exposed
+        .iter()
+        .map(|(a, _, slug)| (slug.clone(), a.id.clone()))
+        .collect();
+    match api.list_agents(&personal.loop_id).await {
+        Ok(final_agents) => {
+            info!(target: "neboai_identity", count = final_agents.len(), local_slugs = ?slug_to_local.keys().collect::<Vec<_>>(), "reconcile: stabilize pass — loop agents to map");
+            for remote in &final_agents {
+                // HARD RULE: the primary (slug "bot_<id8>", no further "_") is
+                // ALWAYS the local "assistant". Never map it to a secondary, so
+                // the primary (Nebo) can never be overwritten.
+                let local_id = if comm::handle::is_primary_handle(&remote.slug) {
+                    Some("assistant".to_string())
+                } else {
+                    slug_to_local.get(&remote.slug).cloned()
+                };
+                match local_id {
+                    Some(local_id) => match state.store.set_agent_loop_agent_id(&local_id, Some(remote.id.as_str())) {
+                        Ok(()) => info!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %remote.id, slug = %remote.slug, "reconcile: STABILIZED loop id"),
+                        Err(e) => warn!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %remote.id, error = %e, "reconcile: FAILED to store loop_agent_id"),
+                    },
+                    None => warn!(target: "neboai_identity", slug = %remote.slug, loop_agent_id = %remote.id, "reconcile: remote agent has NO local match — not stabilized"),
+                }
+            }
+        }
+        Err(e) => warn!(target: "neboai_identity", error = %e, "reconcile: stabilize pass — list_agents FAILED"),
     }
 
     info!("agent reconciliation complete");

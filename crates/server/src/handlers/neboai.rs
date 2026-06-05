@@ -416,16 +416,12 @@ pub async fn bot_status(State(state): State<AppState>) -> HandlerResult<serde_js
     let ws_connected = state.comm_manager.is_connected().await;
     let bot_id = config::read_bot_id().unwrap_or_default();
 
-    // The default id-based handle, matching neboloop's `defaultHandle`:
-    // "bot_" + the first 8 chars of the bot UUID with dashes removed. This is
-    // the routing identity used when the user hasn't chosen a custom handle.
+    // The default id-based handle. Canonical formatting lives in one place
+    // (`comm::handle::default_bot_handle`), mirroring neboloop's `defaultHandle`.
     let default_handle = if bot_id.is_empty() {
         String::new()
     } else {
-        format!(
-            "bot_{}",
-            bot_id.chars().filter(|c| *c != '-').take(8).collect::<String>()
-        )
+        comm::handle::default_bot_handle(&bot_id, "")
     };
 
     Ok(Json(serde_json::json!({

@@ -2424,11 +2424,15 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
 /// Handle an incoming NeboAI message with full access to runner/lanes/comm.
 async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     tracing::info!(
+        target: "neboai_identity",
         topic = %msg.topic,
         from = %msg.from,
         conv_id = %msg.conversation_id,
         content_len = msg.content.len(),
-        "handle_comm_message"
+        meta_agent_slug = ?msg.metadata.get("agent_slug"),
+        meta_agent_id = ?msg.metadata.get("agent_id"),
+        human_injected = msg.human_injected,
+        "INBOUND handle_comm_message — what the loop says about the sender"
     );
 
     // Route account stream messages (plan changes, token refresh)
@@ -2528,7 +2532,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // Resolve to a stable local agent id. Never drops: bot_* handles and
         // unresolved slugs both fall back to the primary bot.
         let (agent_id, is_default_bot) =
-            resolve_inbound_agent(&state, &agent_slug, &msg.metadata).await;
+            resolve_inbound_agent(&state, &agent_slug, &msg.conversation_id, &msg.metadata).await;
 
         // Check if this is the owner's personal loop → unify session with local agent chat
         let space_loop_id = state
@@ -2687,7 +2691,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             // Resolve to a stable local agent id. Never drops: bot_* handles and
             // unresolved slugs both fall back to the primary bot.
             let (agent_id, is_default_bot) =
-                resolve_inbound_agent(&state, &agent_slug, &msg.metadata).await;
+                resolve_inbound_agent(&state, &agent_slug, &msg.conversation_id, &msg.metadata).await;
 
             // Check if this is the owner's personal loop → unify session with local agent chat
             let space_loop_id = state
@@ -3308,7 +3312,7 @@ async fn resolve_agent_id_from_slug(state: &AppState, slug: &str) -> String {
     }
     let registry = state.agent_registry.read().await;
     for (id, role) in registry.iter() {
-        if role.name.to_lowercase().replace(' ', "-") == slug {
+        if comm::handle::slugify(&role.name) == slug {
             return id.clone();
         }
     }
@@ -3324,39 +3328,52 @@ async fn resolve_agent_id_from_slug(state: &AppState, slug: &str) -> String {
 /// primary bot rather than being silently dropped.
 ///
 /// Resolution order (most stable first):
-/// 1. `bot_` handle  → primary bot (the handle is stable across renames).
-/// 2. local agent id carried in delivery metadata (`agent_id`) that matches a
-///    registered agent  → that agent (immune to rename / handle suffixing).
-/// 3. slug → local agent name match (legacy fallback for older deliveries).
-/// 4. unresolved        → primary bot (never drop).
+/// 1. PRIMARY handle (`bot_<id8>`, no further `_`) → primary bot.
+/// 2. The loop's agent UUID for this conversation (or the delivery metadata)
+///    → local agent via the stored `loop_agent_id` bridge. This is the stable,
+///    NON-name-based path and is authoritative.
+/// 3. Fallback (pre-stabilization only): secondary handle `bot_<id8>_<slug>` →
+///    `<slug>` → local agent by name. Used only until `loop_agent_id` is stored.
+/// 4. unresolved → primary bot (never drop).
 async fn resolve_inbound_agent(
     state: &AppState,
     agent_slug: &str,
+    conv_id: &str,
     metadata: &std::collections::HashMap<String, String>,
 ) -> (String, bool) {
-    if agent_slug.starts_with("bot_") {
+    // 1. The bot's own (primary) handle.
+    if comm::handle::is_primary_handle(agent_slug) {
         return (String::new(), true);
     }
 
-    // Prefer a stable id carried in the delivery: if the gateway agent_id
-    // happens to be a locally-registered agent id, use it directly.
-    if let Some(id) = metadata.get("agent_id").filter(|v| !v.is_empty()) {
-        let registry = state.agent_registry.read().await;
-        if registry.contains_key(id) {
-            return (id.clone(), false);
+    // 2. STABLE, non-name resolution: the conversation's loop agent UUID (from the
+    // JOIN-populated ConvMaps, or the delivery metadata) → local agent via the
+    // stored `loop_agent_id` bridge.
+    let loop_agent_id = state
+        .comm_manager
+        .agent_id_for_conv(conv_id)
+        .await
+        .filter(|v| !v.is_empty())
+        .or_else(|| metadata.get("agent_id").filter(|v| !v.is_empty()).cloned());
+    if let Some(loop_agent_id) = loop_agent_id {
+        if let Ok(Some(a)) = state.store.get_agent_by_loop_agent_id(&loop_agent_id) {
+            return (a.id, false);
         }
     }
 
-    // Legacy fallback: match the slug against the agent's name-derived slug.
-    let id = resolve_agent_id_from_slug(state, agent_slug).await;
+    // 3. Fallback (until loop_agent_id is stored): for a secondary handle
+    // (`bot_<id8>_<slug>`) strip the bot prefix to the agent slug.
+    let lookup = comm::handle::secondary_agent_slug(agent_slug).unwrap_or(agent_slug);
+    let id = resolve_agent_id_from_slug(state, lookup).await;
     if !id.is_empty() {
         return (id, false);
     }
 
-    // Unresolved: route to the primary bot instead of dropping the message.
+    // 4. Unresolved: route to the primary bot instead of dropping the message.
     tracing::warn!(
         agent_slug = %agent_slug,
-        "inbound: agent slug did not resolve locally, routing to primary bot"
+        conv_id = %conv_id,
+        "inbound: agent did not resolve locally, routing to primary bot"
     );
     (String::new(), true)
 }

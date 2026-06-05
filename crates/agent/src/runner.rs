@@ -2066,6 +2066,7 @@ async fn run_loop(
         let dctx = prompt::DynamicContext {
             provider_name: selected_provider_id.to_string(),
             model_name: selected_model_name.to_string(),
+            agent_name: agent_name.clone(),
             active_task: active_task.clone(),
             summary: summary.clone(),
             neboai_connected: channel == "neboai",

@@ -4,6 +4,7 @@ pub mod compress;
 pub mod dedup;
 pub mod devlog;
 pub mod frame;
+pub mod handle;
 mod loopback;
 mod manager;
 pub mod neboai;
@@ -97,6 +98,13 @@ pub trait CommPlugin: Send + Sync {
     /// Look up the agent slug for a conversation ID (agent_space detection).
     /// Returns the slug if this conversation belongs to a registered agent space.
     async fn agent_slug_for_conv(&self, _conv_id: &str) -> Option<String> {
+        None
+    }
+
+    /// Look up the loop's agent UUID for a conversation ID. This is the stable,
+    /// name-independent identity used to resolve an inbound message to a local
+    /// agent via `loop_agent_id`.
+    async fn agent_id_for_conv(&self, _conv_id: &str) -> Option<String> {
         None
     }
 

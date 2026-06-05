@@ -691,6 +691,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         if !agent_display_name.is_empty() {
                             reply_meta.insert("senderName".to_string(), agent_display_name.clone());
                         }
+                        tracing::info!(
+                            target: "neboai_identity",
+                            agent_id = %agent_id,
+                            agent_display_name = %agent_display_name,
+                            reply_topic = %reply_config.topic,
+                            reply_conv = %reply_config.conversation_id,
+                            response_len = full_response.len(),
+                            "RESPONSE: agent reply — attaching ONLY senderName (no agent id on the wire)"
+                        );
 
                         // Resolve run-produced file artifacts to uploaded attachments
                         // (best-effort: a failed upload is logged and skipped, never
