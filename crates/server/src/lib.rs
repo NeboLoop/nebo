@@ -3032,6 +3032,15 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 if !mentioned_targets.contains(&aid) {
                     mentioned_targets.push(aid);
                 }
+            } else if !id.is_empty() {
+                // A mention that doesn't resolve silently drops the agent from
+                // the run (and can collapse coordination to the primary → "Nebo").
+                // Surface it so a missing loop_agent_id / loop_exposed=0 is visible.
+                tracing::warn!(
+                    mention_id = %id,
+                    conv_id = %msg.conversation_id,
+                    "channel mention did not resolve to an exposed agent (loop_agent_id missing or loop_exposed=0)"
+                );
             }
         }
 
@@ -3323,11 +3332,13 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             let mention_context = if coordinate {
                 Some(format!(
                     "You are the lead for this request. The user asked you to work together with \
-                     {} to produce ONE combined result. They are NOT replying here on their own — \
-                     consult them as needed by calling agent(resource: \"registry\", action: \
-                     \"delegate\", name: \"<their name>\", prompt: \"…\"), then write a single \
-                     integrated answer yourself.",
-                    coordinator_peer_names.join(", "),
+                     {peers} to produce ONE combined result. They are NOT replying here on their \
+                     own — consult a peer when you need their expertise by calling \
+                     bot(resource: \"registry\", action: \"delegate\", name: \"{first}\", \
+                     prompt: \"<what you need from them>\") — then write a single integrated \
+                     answer yourself.",
+                    peers = coordinator_peer_names.join(", "),
+                    first = coordinator_peer_names.first().map(|s| s.as_str()).unwrap_or("the peer"),
                 ))
             } else if is_group {
                 let others: Vec<&str> = all_names

@@ -475,6 +475,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // Mirror the tool event to the loop so it shows live
                                 // activity (and renders "Used N tools"), like the local app.
                                 if let Some(cfg) = &comm_reply {
+                                    let request = tc.input.to_string();
                                     send_comm_tool_activity(
                                         cfg,
                                         &comm_manager,
@@ -485,6 +486,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         &tc.name,
                                         &tc.id,
                                         tool_activity_label(&tc.name).to_string(),
+                                        Some(request.as_str()),
+                                        None,
                                     )
                                     .await;
                                 }
@@ -515,10 +518,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "is_error": event.error.is_some(),
                                 ),
                             );
-                            // Mirror the tool result to the loop (char-safe truncated
-                            // summary) so it completes the "Used N tools" timeline.
+                            // Mirror the tool result to the loop (char-safe, capped
+                            // well under the 32KB frame) so the "Used N tools"
+                            // timeline can show Request/Response like the local app.
                             if let Some(cfg) = &comm_reply {
-                                let summary: String = event.text.trim().chars().take(500).collect();
+                                let response: String = event.text.trim().chars().take(4000).collect();
                                 send_comm_tool_activity(
                                     cfg,
                                     &comm_manager,
@@ -528,7 +532,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "result",
                                     tool_name,
                                     tool_id,
-                                    summary,
+                                    response,
+                                    None,
+                                    Some(event.error.is_some()),
                                 )
                                 .await;
                             }
@@ -1371,12 +1377,22 @@ async fn send_comm_tool_activity(
     tool: &str,
     tool_id: &str,
     content: String,
+    request: Option<&str>,
+    is_error: Option<bool>,
 ) {
     let mut metadata = HashMap::new();
     metadata.insert("phase".to_string(), phase.to_string());
     metadata.insert("tool".to_string(), tool.to_string());
     metadata.insert("tool_id".to_string(), tool_id.to_string());
     metadata.insert("stream_id".to_string(), stream_id.to_string());
+    // start carries the request (tool input); result carries the error flag —
+    // the loop renders these as the local app's Request/Response + Result chip.
+    if let Some(req) = request {
+        metadata.insert("request".to_string(), req.chars().take(2000).collect());
+    }
+    if let Some(err) = is_error {
+        metadata.insert("is_error".to_string(), err.to_string());
+    }
     send_comm_msg(
         cfg,
         comm_manager,
