@@ -177,6 +177,8 @@ pub struct Registry {
     agent_loader: std::sync::RwLock<Option<Arc<napp::AgentLoader>>>,
     /// DB store for MCP proxy tools (OAuth token refresh during tool calls).
     store: std::sync::RwLock<Option<Arc<db::Store>>>,
+    /// Browser manager, for closing a session's tab/page when a sub-agent finishes.
+    browser_manager: std::sync::RwLock<Option<Arc<browser::Manager>>>,
     resource_permits: ResourcePermits,
 }
 
@@ -193,7 +195,20 @@ impl Registry {
             plugin_store: std::sync::RwLock::new(None),
             agent_loader: std::sync::RwLock::new(None),
             store: std::sync::RwLock::new(None),
+            browser_manager: std::sync::RwLock::new(None),
             resource_permits: ResourcePermits::new(),
+        }
+    }
+
+    /// Close the browser tab/page a session opened — the canonical cleanup for a
+    /// finished sub-agent. No-op when no browser manager is wired or the session
+    /// never opened anything. Routes to whichever backend served the calls.
+    pub async fn close_browser_session(&self, session_id: &str) {
+        let mgr = self.browser_manager.read().unwrap().clone();
+        if let Some(mgr) = mgr {
+            if let Some(exec) = mgr.executor() {
+                exec.close_session(session_id).await;
+            }
         }
     }
 
@@ -634,6 +649,10 @@ impl Registry {
                 Some(map) => *map.get(category).unwrap_or(&false),
             }
         };
+
+        // Keep a handle to the browser manager so finished sub-agents can close
+        // their tab/page via `close_browser_session` (the web tool takes ownership below).
+        *self.browser_manager.write().unwrap() = browser_manager.clone();
 
         // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — CORE.
         // The file/shell meta-tool is the agent's primary way to act; it must always be

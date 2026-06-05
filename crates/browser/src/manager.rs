@@ -199,9 +199,9 @@ impl Manager {
         }
         let mut sessions = self.sessions.write().await;
         sessions.clear();
-        // Clean up headless session
+        // Close every open headless session
         if let Some(ref headless) = self.headless {
-            headless.cleanup().await;
+            headless.cleanup_all().await;
         }
     }
 }

@@ -6,6 +6,7 @@
 //!
 //! Ref translation: Nebo uses `ref_N`, agent-browser uses `@eN`.
 
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -56,11 +57,17 @@ struct PageCacheEntry {
     timestamp: Instant,
 }
 
+/// Default agent-browser session used when a call carries no `session_id`
+/// (e.g. top-level web use that isn't scoped to a sub-agent).
+const DEFAULT_SESSION: &str = "nebo_default";
+
 /// Headless browser backend wrapping `agent-browser` CLI.
 pub struct HeadlessBridge {
-    session: String,
     binary: String,
-    page_cache: Mutex<Option<PageCacheEntry>>,
+    /// Per-session read_page cache, keyed by the agent-browser session name.
+    page_cache: Mutex<HashMap<String, PageCacheEntry>>,
+    /// Open session names, so `cleanup_all` can close them on shutdown.
+    sessions: Mutex<HashSet<String>>,
 }
 
 impl HeadlessBridge {
@@ -84,14 +91,39 @@ impl HeadlessBridge {
     pub fn new(binary: String) -> Self {
         info!(binary = %binary, "headless browser backend available (agent-browser)");
         Self {
-            session: "nebo_default".to_string(),
             binary,
-            page_cache: Mutex::new(None),
+            page_cache: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashSet::new()),
         }
     }
 
-    /// Execute a browser tool via agent-browser subprocess.
-    pub async fn execute(&self, tool: &str, args: &Value) -> Result<Value, String> {
+    /// Derive a stable agent-browser `--session` name from a Nebo `session_id`.
+    /// `None`/empty → the shared default; otherwise sanitize to `[A-Za-z0-9_-]`
+    /// so keys like `subagent:research-…:sa-…` are valid and map deterministically.
+    fn session_name(session_id: Option<&str>) -> String {
+        match session_id {
+            Some(s) if !s.is_empty() => s
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect(),
+            _ => DEFAULT_SESSION.to_string(),
+        }
+    }
+
+    /// Execute a browser tool via agent-browser subprocess, scoped to the
+    /// sub-agent's own session (`session_id` → agent-browser `--session`).
+    pub async fn execute(
+        &self,
+        tool: &str,
+        args: &Value,
+        session_id: Option<&str>,
+    ) -> Result<Value, String> {
         // Check unsupported
         if UNSUPPORTED_TOOLS.contains(&tool) {
             return Err(format!(
@@ -101,12 +133,17 @@ impl HeadlessBridge {
             ));
         }
 
-        // Check read_page cache
+        let session = Self::session_name(session_id);
+
+        // Track this session so shutdown can close it.
+        self.sessions.lock().await.insert(session.clone());
+
+        // Check read_page cache (per session)
         if tool == "read_page" {
             let cached = {
                 let guard = self.page_cache.lock().await;
                 guard
-                    .as_ref()
+                    .get(&session)
                     .filter(|e| e.timestamp.elapsed() < Duration::from_millis(2500))
                     .map(|e| e.result.clone())
             };
@@ -116,21 +153,24 @@ impl HeadlessBridge {
             }
         }
 
-        // Invalidate cache before mutation tools
+        // Invalidate cache before mutation tools (per session)
         if MUTATION_TOOLS.contains(&tool) {
-            *self.page_cache.lock().await = None;
+            self.page_cache.lock().await.remove(&session);
         }
 
         let cmd_args = self.map_tool_to_command(tool, args)?;
-        let result = self.run_command(&cmd_args).await?;
+        let result = self.run_command(&session, &cmd_args).await?;
         let normalized = self.normalize_response(tool, result)?;
 
-        // Populate read_page cache on success
+        // Populate read_page cache on success (per session)
         if tool == "read_page" {
-            *self.page_cache.lock().await = Some(PageCacheEntry {
-                result: normalized.clone(),
-                timestamp: Instant::now(),
-            });
+            self.page_cache.lock().await.insert(
+                session.clone(),
+                PageCacheEntry {
+                    result: normalized.clone(),
+                    timestamp: Instant::now(),
+                },
+            );
         }
 
         Ok(normalized)
@@ -141,10 +181,11 @@ impl HeadlessBridge {
         &self,
         actions: Vec<BatchAction>,
         opts: BatchOptions,
+        session_id: Option<&str>,
     ) -> Result<Vec<Result<Value, String>>, String> {
         let mut results = Vec::with_capacity(actions.len());
         for action in &actions {
-            match self.execute(&action.tool, &action.args).await {
+            match self.execute(&action.tool, &action.args, session_id).await {
                 Ok(val) => results.push(Ok(val)),
                 Err(e) => {
                     results.push(Err(e.clone()));
@@ -157,13 +198,29 @@ impl HeadlessBridge {
         Ok(results)
     }
 
-    /// Cleanup the headless session on shutdown.
-    pub async fn cleanup(&self) {
+    /// Close a single headless session (best-effort) and drop its cache entry.
+    /// No-op cost if the session was never opened — agent-browser ignores it.
+    pub async fn close_session(&self, session_id: Option<&str>) {
+        let session = Self::session_name(session_id);
+        self.page_cache.lock().await.remove(&session);
+        self.sessions.lock().await.remove(&session);
         let _ = tokio::process::Command::new(&self.binary)
-            .args(["--session", &self.session, "close"])
+            .args(["--session", &session, "close"])
             .output()
             .await;
-        info!(session = %self.session, "headless browser session cleaned up");
+        info!(session = %session, "headless browser session closed");
+    }
+
+    /// Close every tracked session on shutdown.
+    pub async fn cleanup_all(&self) {
+        let sessions: Vec<String> = {
+            let guard = self.sessions.lock().await;
+            guard.iter().cloned().collect()
+        };
+        for session in sessions {
+            self.close_session(Some(&session)).await;
+        }
+        self.page_cache.lock().await.clear();
     }
 
     /// Map a web_tool action + args to agent-browser CLI arguments.
@@ -306,13 +363,13 @@ impl HeadlessBridge {
     }
 
     /// Run an agent-browser subprocess and return stdout parsed as JSON or text.
-    async fn run_command(&self, cmd_args: &[String]) -> Result<Value, String> {
-        debug!(args = ?cmd_args, "running agent-browser command");
+    async fn run_command(&self, session: &str, cmd_args: &[String]) -> Result<Value, String> {
+        debug!(session = %session, args = ?cmd_args, "running agent-browser command");
 
         let output = match tokio::time::timeout(
             Duration::from_secs(30),
             tokio::process::Command::new(&self.binary)
-                .args(["--session", &self.session, "--json"])
+                .args(["--session", session, "--json"])
                 .args(cmd_args)
                 .output(),
         )

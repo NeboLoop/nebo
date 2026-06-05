@@ -278,7 +278,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
 
     // Spawn periodic cleanup of stale runs in the global registry (10 min expiry).
     let cleanup_registry = state.run_registry.clone();
-    let cleanup_bridge = state.extension_bridge.clone();
+    let cleanup_tools = state.tools.clone();
     let cleanup_store = state.store.clone();
     let cleanup_token = CancellationToken::new();
     let cleanup_token_clone = cleanup_token.clone();
@@ -300,8 +300,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                 .flatten()
                                 .map(|s| s.id);
                             let id = session_uuid.as_deref().unwrap_or(sk.as_str());
-                            cleanup_bridge.send_command("hide_indicators", Some(id)).await;
-                            cleanup_bridge.send_command("close_session_tabs", Some(id)).await;
+                            cleanup_tools.close_browser_session(id).await;
                         }
                     }
                 }

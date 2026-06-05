@@ -77,7 +77,7 @@ impl ActionExecutor {
                 "executing browser action"
             );
             headless
-                .execute(tool, args)
+                .execute(tool, args, session_id)
                 .await
                 .map_err(BrowserError::Other)
         } else {
@@ -99,7 +99,7 @@ impl ActionExecutor {
                 .map_err(BrowserError::Other)
         } else if let Some(ref headless) = self.headless {
             headless
-                .batch_execute(actions, opts)
+                .batch_execute(actions, opts, session_id)
                 .await
                 .map_err(BrowserError::Other)
         } else {
@@ -160,6 +160,22 @@ impl ActionExecutor {
     /// Send a fire-and-forget command to the extension (e.g., show_indicators, hide_indicators).
     pub async fn send_command(&self, command: &str, session_id: Option<&str>) {
         self.bridge.send_command(command, session_id).await;
+    }
+
+    /// Close the browser tab/page a session opened — the canonical cleanup for a
+    /// finished sub-agent. Routes to BOTH backends so it works regardless of which
+    /// one served the calls; each is a no-op if it never opened anything for the
+    /// session, so this is safe to call unconditionally.
+    pub async fn close_session(&self, session_id: &str) {
+        self.bridge
+            .send_command("hide_indicators", Some(session_id))
+            .await;
+        self.bridge
+            .send_command("close_session_tabs", Some(session_id))
+            .await;
+        if let Some(ref headless) = self.headless {
+            headless.close_session(Some(session_id)).await;
+        }
     }
 
     /// Navigate to a URL then read the page — stops on nav error.

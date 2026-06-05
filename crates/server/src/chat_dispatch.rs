@@ -137,7 +137,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let janus_usage = state.janus_usage.clone();
     let presence_tracker = state.presence.clone();
     let proactive_inbox = state.proactive_inbox.clone();
-    let extension_bridge = state.extension_bridge.clone();
+    let cleanup_tools = state.tools.clone();
     let comm_manager = if config.comm_reply.is_some() {
         Some(state.comm_manager.clone())
     } else {
@@ -949,12 +949,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             .flatten()
             .map(|s| s.id);
         let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
-        extension_bridge
-            .send_command("hide_indicators", Some(cleanup_id))
-            .await;
-        extension_bridge
-            .send_command("close_session_tabs", Some(cleanup_id))
-            .await;
+        cleanup_tools.close_browser_session(cleanup_id).await;
 
         // RunHandle unregisters from RunRegistry on drop (including panics)
         drop(_run_handle);
@@ -978,7 +973,7 @@ pub async fn run_chat_events(
     let runner = state.runner.clone();
     let presence_tracker = state.presence.clone();
     let proactive_inbox = state.proactive_inbox.clone();
-    let extension_bridge = state.extension_bridge.clone();
+    let cleanup_tools = state.tools.clone();
 
     let agent_display_name = if !config.entity_name.is_empty() {
         config.entity_name.clone()
@@ -1112,12 +1107,7 @@ pub async fn run_chat_events(
             .flatten()
             .map(|s| s.id);
         let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
-        extension_bridge
-            .send_command("hide_indicators", Some(cleanup_id))
-            .await;
-        extension_bridge
-            .send_command("close_session_tabs", Some(cleanup_id))
-            .await;
+        cleanup_tools.close_browser_session(cleanup_id).await;
         drop(_run_handle);
         Ok(())
     });

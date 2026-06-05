@@ -957,9 +957,18 @@ async fn run_typed<T: for<'de> Deserialize<'de>>(
     task: StructuredTask,
     cancel: &CancellationToken,
 ) -> Result<T, String> {
+    // Close this sub-agent's tab/page as soon as it finishes (1:1 ownership) —
+    // on success, error, or cancellation. Safe no-op if it opened no tab.
+    let tab_key = task.tab_key.clone();
     let value = tokio::select! {
-        r = agent.run(task) => r?,
-        _ = cancel.cancelled() => return Err("cancelled".into()),
+        r = agent.run(task) => {
+            agent.close_tab(tab_key).await;
+            r?
+        }
+        _ = cancel.cancelled() => {
+            agent.close_tab(tab_key).await;
+            return Err("cancelled".into());
+        }
     };
     serde_json::from_value(value).map_err(|e| format!("output deserialize failed: {e}"))
 }
@@ -974,7 +983,9 @@ async fn fetch_text(
     url: &str,
 ) -> Result<(String, Option<u16>), String> {
     let input = json!({ "resource": "http", "action": "sanitize", "url": url, "chunk_size": 6000 });
-    let result = agent.execute_tool(tab, "web".to_string(), input).await;
+    let result = agent.execute_tool(tab.clone(), "web".to_string(), input).await;
+    // Close this fetch sub-agent's tab/page once the fetch completes (1:1 ownership).
+    agent.close_tab(tab).await;
     if result.is_error {
         return Err(result.content);
     }

@@ -101,4 +101,10 @@ impl StructuredAgent for StructuredRunner {
             self.registry.execute(&ctx, &tool, input).await
         })
     }
+
+    fn close_tab<'a>(&'a self, tab_key: String) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.registry.close_browser_session(&tab_key).await;
+        })
+    }
 }

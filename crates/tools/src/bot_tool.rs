@@ -56,6 +56,13 @@ pub trait StructuredAgent: Send + Sync {
         tool: String,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>>;
+
+    /// Close the browser tab/page this sub-agent opened under `tab_key`, once it has
+    /// finished — the 1:1 sub-agent→tab cleanup. No-op if it never opened one.
+    fn close_tab<'a>(
+        &'a self,
+        tab_key: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
 }
 
 /// Trait for hybrid memory search (implemented by agent::search wrapper).

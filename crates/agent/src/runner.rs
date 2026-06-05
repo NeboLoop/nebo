@@ -709,6 +709,16 @@ impl Runner {
         }
 
         tokio::spawn(async move {
+            // Sub-agent runs close their own browser tab/page when the run ends
+            // (normal, error, or cancellation). Top-level runs are cleaned up by
+            // their dispatcher, so gate on the subagent session key.
+            let _tab_cleanup = session_key.starts_with("subagent:").then(|| {
+                SubagentTabCleanup {
+                    tools: tools.clone(),
+                    session_id: session_id.clone(),
+                }
+            });
+
             // ── Forked command execution ──────────────────────────────
             // Heavy commands (e.g. /research, /analyze) run in a sub-agent
             // context so intermediate tool calls don't consume the main
@@ -998,6 +1008,25 @@ impl Runner {
             Ok(lock) => lock.len(),
             Err(_) => 0,
         }
+    }
+}
+
+/// Closes a sub-agent's browser tab/page when its run ends — on normal return,
+/// error, or cancellation (the run future being dropped). Best-effort; mirrors
+/// the top-level cleanup the dispatcher does for non-sub-agent runs, via the one
+/// canonical `Registry::close_browser_session` pathway.
+struct SubagentTabCleanup {
+    tools: Arc<Registry>,
+    session_id: String,
+}
+
+impl Drop for SubagentTabCleanup {
+    fn drop(&mut self) {
+        let tools = self.tools.clone();
+        let session_id = std::mem::take(&mut self.session_id);
+        tokio::spawn(async move {
+            tools.close_browser_session(&session_id).await;
+        });
     }
 }
 
