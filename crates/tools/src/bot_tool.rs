@@ -1459,6 +1459,39 @@ impl AgentTool {
         };
         let run_id = format!("research-{}", uuid::Uuid::new_v4().as_simple());
 
+        // ── Scope checkpoint: decompose the question, then confirm the plan with the user
+        // before the (slow, credit-costly) fan-out. ask_user returns None for sub-agent /
+        // non-interactive runs — in that case we proceed without blocking.
+        let scope = crate::deep_research::scope(&agent, query, &cfg).await;
+        let angle_labels: Vec<&str> = scope.angles.iter().map(|a| a.label.as_str()).collect();
+        let mut plan = format!(
+            "I'll research \"{}\" across {} angles at **{}** depth — a verified multi-source \
+             search that takes a couple of minutes.\n\nAngles: {}.",
+            query,
+            scope.angles.len(),
+            depth,
+            angle_labels.join(", "),
+        );
+        if scope.clarifying_questions.is_empty() {
+            plan.push_str("\n\nStart the research?");
+        } else {
+            plan.push_str("\n\nA few details would sharpen this:");
+            for q in &scope.clarifying_questions {
+                plan.push_str(&format!("\n• {q}"));
+            }
+            plan.push_str("\n\nStart as-is, or cancel and add those details first?");
+        }
+        let widgets = serde_json::json!([{ "type": "buttons", "options": ["Start research", "Cancel"] }]);
+        if let Some(resp) = ctx.ask_user(&plan, widgets).await {
+            if resp.to_lowercase().contains("cancel") {
+                return ToolResult::ok(format!(
+                    "Research not started. I was going to cover: {}. Add any constraints \
+                     (budget, region, use-case, time window) and ask again.",
+                    angle_labels.join(", ")
+                ));
+            }
+        }
+
         // Pre-compute the run's report path + a unique, readable Work-panel filename
         // (the harness writes a generic report.md per run-dir, which would collide in files/).
         let report_src = data_dir.join("research").join(&run_id).join("report.md");
@@ -1478,6 +1511,7 @@ impl AgentTool {
             cfg,
             ctx.cancel_token.clone(),
             ctx.stream_tx.clone(),
+            Some(scope),
         )
         .await
         {
