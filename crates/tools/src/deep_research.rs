@@ -16,9 +16,11 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use futures::future::join_all;
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::{Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -498,27 +500,43 @@ pub struct FetchPlan {
     pub dropped: Vec<DroppedSource>,
 }
 
-/// Dedup search results across angles and apply the fetch budget.
-///
-/// Angles are processed in order; within an angle, results are sorted by relevance
-/// (high → low, stable for ties). The first occurrence of a normalised URL wins; later
-/// duplicates are dropped as [`DropReason::Duplicate`]. Once the budget is spent, only
-/// **medium/low** relevance results are dropped ([`DropReason::Budget`]) — high-relevance
-/// results always pass, matching the reference (`fetchSlots <= 0 && relRank >= 1`).
-pub fn dedup_and_budget(per_angle: &[AngleResults], max_fetch: usize) -> FetchPlan {
-    let mut seen: HashMap<String, String> = HashMap::new();
-    let mut slots: isize = max_fetch as isize;
-    let mut fetch = Vec::new();
-    let mut dropped = Vec::new();
+/// Running dedup + budget state, admitted one angle at a time. Pipelined search
+/// feeds angles in as their searches complete (see `run`); the batch
+/// [`dedup_and_budget`] feeds them all at once. Same logic either way.
+struct DedupState {
+    seen: HashMap<String, String>,
+    slots: isize,
+    dropped: Vec<DroppedSource>,
+    /// Every source admitted so far — for the `fetch_plan.json` artifact.
+    planned: Vec<PlannedFetch>,
+}
 
-    for angle in per_angle {
+impl DedupState {
+    fn new(max_fetch: usize) -> Self {
+        Self {
+            seen: HashMap::new(),
+            slots: max_fetch as isize,
+            dropped: Vec::new(),
+            planned: Vec::new(),
+        }
+    }
+
+    /// Admit one angle against the running state and return the novel sources to
+    /// fetch. Within an angle, results are sorted by relevance (high → low, stable
+    /// for ties). The first occurrence of a normalised URL wins; later duplicates
+    /// are dropped as [`DropReason::Duplicate`]. Once the budget is spent, only
+    /// **medium/low** relevance results are dropped ([`DropReason::Budget`]) —
+    /// high-relevance always passes, matching the reference (`fetchSlots <= 0 &&
+    /// relRank >= 1`).
+    fn admit(&mut self, angle: &AngleResults) -> Vec<PlannedFetch> {
         let mut sorted = angle.results.clone();
         sorted.sort_by_key(|r| r.relevance.rank());
 
+        let mut fetch = Vec::new();
         for r in sorted {
             let key = norm_url(&r.url);
-            if let Some(dup_of) = seen.get(&key) {
-                dropped.push(DroppedSource {
+            if let Some(dup_of) = self.seen.get(&key) {
+                self.dropped.push(DroppedSource {
                     url: r.url,
                     title: r.title,
                     angle: angle.angle.clone(),
@@ -529,8 +547,8 @@ pub fn dedup_and_budget(per_angle: &[AngleResults], max_fetch: usize) -> FetchPl
                 });
                 continue;
             }
-            if slots <= 0 && r.relevance.rank() >= 1 {
-                dropped.push(DroppedSource {
+            if self.slots <= 0 && r.relevance.rank() >= 1 {
+                self.dropped.push(DroppedSource {
                     url: r.url,
                     title: r.title,
                     angle: angle.angle.clone(),
@@ -539,8 +557,8 @@ pub fn dedup_and_budget(per_angle: &[AngleResults], max_fetch: usize) -> FetchPl
                 });
                 continue;
             }
-            seen.insert(key, angle.angle.clone());
-            slots -= 1;
+            self.seen.insert(key, angle.angle.clone());
+            self.slots -= 1;
             fetch.push(PlannedFetch {
                 url: r.url,
                 title: r.title,
@@ -548,9 +566,20 @@ pub fn dedup_and_budget(per_angle: &[AngleResults], max_fetch: usize) -> FetchPl
                 relevance: r.relevance,
             });
         }
+        fetch
     }
+}
 
-    FetchPlan { fetch, dropped }
+/// Dedup search results across angles and apply the fetch budget — batch form,
+/// used by tests and any non-pipelined caller. Angles are processed in input
+/// order; see [`DedupState::admit`] for the per-angle rule.
+pub fn dedup_and_budget(per_angle: &[AngleResults], max_fetch: usize) -> FetchPlan {
+    let mut st = DedupState::new(max_fetch);
+    let fetch = per_angle.iter().flat_map(|a| st.admit(a)).collect();
+    FetchPlan {
+        fetch,
+        dropped: st.dropped,
+    }
 }
 
 // ─── Claim ranking + survival ───
@@ -1066,111 +1095,144 @@ pub async fn run(
     debug!(angles = scope.angles.len(), "deep_research: scoped");
     emit_progress(&progress, format!("Searching {} angles…", scope.angles.len()));
 
-    // ── Phase 1: Search (one sub-agent per angle) ──
-    let mut search_futs: Vec<BoxFut<AngleResults>> = Vec::new();
+    // ── Phases 1+2 pipelined: each angle searches, then its novel sources are
+    //    fetched + extracted immediately — interleaved, no barrier (mirrors the
+    //    reference `pipeline(search → dedup → fetch+extract)`). One shared
+    //    semaphore caps total in-flight search/fetch agents (and thus open tabs)
+    //    at CONCURRENCY, so it stays memory-light and reads like a person browsing.
+    let sources_dir = dir.join("sources");
+    let dedup = Arc::new(Mutex::new(DedupState::new(cfg.max_fetch)));
+    let search_log = Arc::new(Mutex::new(Vec::<AngleResults>::new()));
+    let sem = Arc::new(Semaphore::new(CONCURRENCY));
+
+    let mut angle_futs: Vec<BoxFut<Vec<FetchedSource>>> = Vec::new();
     for (i, angle) in scope.angles.iter().enumerate() {
         let (agent, cancel, q, angle, run_id, progress) =
             (agent.clone(), cancel.clone(), question.clone(), angle.clone(), run_id.clone(), progress.clone());
-        search_futs.push(Box::pin(async move {
+        let (dedup, search_log, sem, sources_dir) =
+            (dedup.clone(), search_log.clone(), sem.clone(), sources_dir.clone());
+        angle_futs.push(Box::pin(async move {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
             let label = angle.label.clone();
+
+            // (a) Search — hold a permit only for the search itself, then release
+            //     so this angle's fetches queue for slots like every other angle's.
             let node = format!("search-{i}");
             let desc = format!("Search: {label}");
             emit_node_start(&progress, &node, &desc);
-            match run_typed::<SearchOut>(&agent, StructuredTask {
-                system: SEARCH_SYS.into(),
-                task: search_task(&q, &angle),
-                schema: search_schema(&cfg),
-                aux_tools: vec!["web".into()],
-                tab_key: tab_key(&run_id, &node),
-            }, &cancel).await {
-                Ok(out) => {
-                    emit_node_done(&progress, &node, &desc, !out.results.is_empty());
-                    AngleResults { angle: label, results: out.results }
+            let results = {
+                let _permit = sem.clone().acquire_owned().await.ok();
+                match run_typed::<SearchOut>(&agent, StructuredTask {
+                    system: SEARCH_SYS.into(),
+                    task: search_task(&q, &angle),
+                    schema: search_schema(&cfg),
+                    aux_tools: vec!["web".into()],
+                    tab_key: tab_key(&run_id, &node),
+                }, &cancel).await {
+                    Ok(out) => {
+                        emit_node_done(&progress, &node, &desc, !out.results.is_empty());
+                        out.results
+                    }
+                    Err(e) => {
+                        warn!(angle = %label, error = %e, "deep_research: search angle failed");
+                        emit_node_done(&progress, &node, &desc, false);
+                        Vec::new()
+                    }
                 }
-                Err(e) => {
-                    warn!(angle = %label, error = %e, "deep_research: search angle failed");
-                    emit_node_done(&progress, &node, &desc, false);
-                    AngleResults { angle: label, results: vec![] }
-                }
+            };
+            let ar = AngleResults { angle: label, results };
+            search_log.lock().await.push(ar.clone());
+
+            // (b) Dedup — admit this angle as soon as it lands (completion order).
+            let novel = dedup.lock().await.admit(&ar);
+            if !novel.is_empty() {
+                emit_progress(&progress, format!("Reading {} sources from “{}”…", novel.len(), ar.angle));
             }
+
+            // (c) Fetch + extract each novel source — each bounded by the same sem.
+            let mut fetch_futs: Vec<BoxFut<FetchedSource>> = Vec::new();
+            for planned in novel {
+                let (agent, cancel, q, cfg, run_id, progress) =
+                    (agent.clone(), cancel.clone(), q.clone(), cfg, run_id.clone(), progress.clone());
+                let (sem, sources_dir) = (sem.clone(), sources_dir.clone());
+                fetch_futs.push(Box::pin(async move {
+                    let _permit = sem.acquire_owned().await.ok();
+                    let hash = source_hash(&planned.url);
+                    let source_ref = format!("sources/src_{hash}.txt");
+                    let node = format!("fetch-{hash}");
+                    let host = norm_url(&planned.url);
+                    let host = host.split('/').next().unwrap_or(&planned.url);
+                    let desc = format!("Fetch: {host}");
+                    emit_node_start(&progress, &node, &desc);
+                    let unreliable = |claims: Vec<Claim>| FetchedSource {
+                        row: SourceRow { url: planned.url.clone(), quality: SourceQuality::Unreliable, angle: planned.angle.clone(), claim_count: claims.len() },
+                        claims,
+                    };
+                    let (body, status) = match fetch_text(&agent, tab_key(&run_id, &node), &planned.url).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(url = %planned.url, error = %e, "deep_research: fetch failed");
+                            emit_node_done(&progress, &node, &desc, false);
+                            return unreliable(vec![]);
+                        }
+                    };
+                    // Rate-limited / forbidden → mark unreliable, do not hammer-retry.
+                    if matches!(status, Some(429) | Some(403)) {
+                        warn!(url = %planned.url, status, "deep_research: rate-limited/forbidden source");
+                        emit_node_done(&progress, &node, &desc, false);
+                        return unreliable(vec![]);
+                    }
+                    let _ = std::fs::write(sources_dir.join(format!("src_{hash}.txt")), format!("URL: {}\n\n{}", planned.url, body));
+
+                    let extracted: ExtractOut = match run_typed(&agent, StructuredTask {
+                        system: EXTRACT_SYS.into(),
+                        task: extract_task(&q, &planned, &body),
+                        schema: extract_schema(&cfg),
+                        aux_tools: vec![],
+                        tab_key: tab_key(&run_id, &format!("extract-{hash}")),
+                    }, &cancel).await {
+                        Ok(e) => e,
+                        Err(e) => {
+                            warn!(url = %planned.url, error = %e, "deep_research: extract failed");
+                            emit_node_done(&progress, &node, &desc, false);
+                            return unreliable(vec![]);
+                        }
+                    };
+                    let claims: Vec<Claim> = extracted.claims.into_iter()
+                        .map(|d| Claim::from_draft(d, planned.url.clone(), extracted.source_quality, source_ref.clone()))
+                        .collect();
+                    emit_node_done(&progress, &node, &desc, !claims.is_empty());
+                    FetchedSource {
+                        row: SourceRow { url: planned.url.clone(), quality: extracted.source_quality, angle: planned.angle.clone(), claim_count: claims.len() },
+                        claims,
+                    }
+                }));
+            }
+            join_all(fetch_futs).await
         }));
     }
-    let per_angle = join_buffered(search_futs).await;
-    persist(&dir, "search.json", &per_angle);
+    let fetched: Vec<FetchedSource> = join_all(angle_futs).await.into_iter().flatten().collect();
 
-    // ── dedup + budget (pure) ──
-    let plan = dedup_and_budget(&per_angle, cfg.max_fetch);
-    persist(&dir, "fetch_plan.json", &plan);
-    let url_dupes = plan.dropped.iter().filter(|d| matches!(d.reason, DropReason::Duplicate { .. })).count();
-    let budget_dropped = plan.dropped.iter().filter(|d| matches!(d.reason, DropReason::Budget)).count();
-    debug!(fetch = plan.fetch.len(), dupes = url_dupes, budget = budget_dropped, "deep_research: fetch plan");
-    emit_progress(&progress, format!("Fetching {} sources…", plan.fetch.len()));
-
+    // Cancellation mid-pipeline → stop here (chains already short-circuited).
     if cancel.is_cancelled() {
         bail(&dir);
         return Err("cancelled".into());
     }
 
-    // ── Phase 2: Fetch + Extract (harness fetches; sub-agent extracts the saved text) ──
-    let sources_dir = dir.join("sources");
-    let mut fetch_futs: Vec<BoxFut<FetchedSource>> = Vec::new();
-    for planned in plan.fetch {
-        let (agent, cancel, q, cfg, run_id, progress) =
-            (agent.clone(), cancel.clone(), question.clone(), cfg, run_id.clone(), progress.clone());
-        let sources_dir = sources_dir.clone();
-        fetch_futs.push(Box::pin(async move {
-            let hash = source_hash(&planned.url);
-            let source_ref = format!("sources/src_{hash}.txt");
-            let node = format!("fetch-{hash}");
-            let host = norm_url(&planned.url);
-            let host = host.split('/').next().unwrap_or(&planned.url);
-            let desc = format!("Fetch: {host}");
-            emit_node_start(&progress, &node, &desc);
-            let unreliable = |claims: Vec<Claim>| FetchedSource {
-                row: SourceRow { url: planned.url.clone(), quality: SourceQuality::Unreliable, angle: planned.angle.clone(), claim_count: claims.len() },
-                claims,
-            };
-            let (body, status) = match fetch_text(&agent, tab_key(&run_id, &node), &planned.url).await {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!(url = %planned.url, error = %e, "deep_research: fetch failed");
-                    emit_node_done(&progress, &node, &desc, false);
-                    return unreliable(vec![]);
-                }
-            };
-            // Rate-limited / forbidden → mark unreliable, do not hammer-retry.
-            if matches!(status, Some(429) | Some(403)) {
-                warn!(url = %planned.url, status, "deep_research: rate-limited/forbidden source");
-                emit_node_done(&progress, &node, &desc, false);
-                return unreliable(vec![]);
-            }
-            let _ = std::fs::write(sources_dir.join(format!("src_{hash}.txt")), format!("URL: {}\n\n{}", planned.url, body));
-
-            let extracted: ExtractOut = match run_typed(&agent, StructuredTask {
-                system: EXTRACT_SYS.into(),
-                task: extract_task(&q, &planned, &body),
-                schema: extract_schema(&cfg),
-                aux_tools: vec![],
-                tab_key: tab_key(&run_id, &format!("extract-{hash}")),
-            }, &cancel).await {
-                Ok(e) => e,
-                Err(e) => {
-                    warn!(url = %planned.url, error = %e, "deep_research: extract failed");
-                    emit_node_done(&progress, &node, &desc, false);
-                    return unreliable(vec![]);
-                }
-            };
-            let claims: Vec<Claim> = extracted.claims.into_iter()
-                .map(|d| Claim::from_draft(d, planned.url.clone(), extracted.source_quality, source_ref.clone()))
-                .collect();
-            emit_node_done(&progress, &node, &desc, !claims.is_empty());
-            FetchedSource {
-                row: SourceRow { url: planned.url.clone(), quality: extracted.source_quality, angle: planned.angle.clone(), claim_count: claims.len() },
-                claims,
-            }
-        }));
-    }
-    let fetched = join_buffered(fetch_futs).await;
+    // Persist the search results and the assembled fetch plan; drop stats come
+    // from the dedup state (same accounting as the batch path, completion-ordered).
+    let per_angle = std::mem::take(&mut *search_log.lock().await);
+    persist(&dir, "search.json", &per_angle);
+    let (plan_fetch, dropped) = {
+        let mut st = dedup.lock().await;
+        (std::mem::take(&mut st.planned), std::mem::take(&mut st.dropped))
+    };
+    let url_dupes = dropped.iter().filter(|d| matches!(d.reason, DropReason::Duplicate { .. })).count();
+    let budget_dropped = dropped.iter().filter(|d| matches!(d.reason, DropReason::Budget)).count();
+    debug!(fetch = plan_fetch.len(), dupes = url_dupes, budget = budget_dropped, "deep_research: fetch plan");
+    persist(&dir, "fetch_plan.json", &FetchPlan { fetch: plan_fetch, dropped });
     let sources: Vec<SourceRow> = fetched.iter().map(|f| f.row.clone()).collect();
     let all_claims: Vec<Claim> = fetched.into_iter().flat_map(|f| f.claims).collect();
     let claims_extracted = all_claims.len();
