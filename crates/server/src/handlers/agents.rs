@@ -778,19 +778,17 @@ pub async fn update_agent(
     if exposure_changed && id != "assistant" {
         let st = state.clone();
         let agent_name = updated.name.clone();
-        // Bot-scoped handle (`bot_<id8>_<slug>`) — matches reconcile, so the
-        // immediate toggle and the on-connect reconcile target the same agent.
-        let bot_id = config::read_bot_id().unwrap_or_default();
-        let slug = comm::handle::secondary_handle(&bot_id, &updated.name);
         let now_exposed = updated.loop_exposed != 0;
         tokio::spawn(async move {
+            // The helpers derive the canonical bot-scoped handle
+            // (`bot_<id8>_<slug>`) internally, matching reconcile.
             let result = if now_exposed {
-                crate::codes::register_agent_in_loop(&st, &agent_name, &slug).await
+                crate::codes::register_agent_in_loop(&st, &agent_name).await
             } else {
-                crate::codes::deregister_agent_from_loop(&st, &slug).await
+                crate::codes::deregister_agent_from_loop(&st, &agent_name).await
             };
             if let Err(e) = result {
-                warn!(slug = %slug, exposed = now_exposed, error = %e, "failed to sync agent loop exposure");
+                warn!(agent = %agent_name, exposed = now_exposed, error = %e, "failed to sync agent loop exposure");
             }
         });
     }
@@ -861,10 +859,10 @@ pub async fn delete_agent(
     // Deregister agent from NeboAI (non-blocking, best-effort)
     {
         let st = state.clone();
-        let agent_slug = slug.clone();
+        let agent_name = agent.name.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::codes::deregister_agent_from_loop(&st, &agent_slug).await {
-                warn!(agent = %agent_slug, error = %e, "failed to deregister agent from loop");
+            if let Err(e) = crate::codes::deregister_agent_from_loop(&st, &agent_name).await {
+                warn!(agent = %agent_name, error = %e, "failed to deregister agent from loop");
             }
         });
     }
@@ -1910,9 +1908,8 @@ pub async fn activate_agent(
     {
         let st = state.clone();
         let name = agent.name.clone();
-        let slug = agent.name.to_lowercase().replace(' ', "-");
         tokio::spawn(async move {
-            if let Err(e) = crate::codes::register_agent_in_loop(&st, &name, &slug).await {
+            if let Err(e) = crate::codes::register_agent_in_loop(&st, &name).await {
                 warn!(agent = %name, error = %e, "failed to register agent in loop");
             }
         });
@@ -1960,10 +1957,10 @@ pub async fn deactivate_agent(
             // Deregister agent from the owner's personal loop (non-blocking)
             {
                 let st = state.clone();
-                let slug = agent.name.to_lowercase().replace(' ', "-");
+                let name = agent.name.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = crate::codes::deregister_agent_from_loop(&st, &slug).await {
-                        warn!(agent = %slug, error = %e, "failed to deregister agent from loop");
+                    if let Err(e) = crate::codes::deregister_agent_from_loop(&st, &name).await {
+                        warn!(agent = %name, error = %e, "failed to deregister agent from loop");
                     }
                 });
             }

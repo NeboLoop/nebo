@@ -394,10 +394,10 @@ pub async fn uninstall_store_product(
         // Deregister agent from NeboAI (non-blocking)
         {
             let st = state.clone();
-            let agent_slug = slug.clone();
+            let agent_name = agent_rec.name.clone();
             tokio::spawn(async move {
-                if let Err(e) = crate::codes::deregister_agent_from_loop(&st, &agent_slug).await {
-                    tracing::warn!(agent = %agent_slug, error = %e, "failed to deregister agent from loop on uninstall");
+                if let Err(e) = crate::codes::deregister_agent_from_loop(&st, &agent_name).await {
+                    tracing::warn!(agent = %agent_name, error = %e, "failed to deregister agent from loop on uninstall");
                 }
             });
         }

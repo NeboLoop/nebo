@@ -510,7 +510,7 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             }
         }
         // Deregister from NeboAI so re-registration doesn't 409
-        let _ = deregister_agent_from_loop(state, &slug).await;
+        let _ = deregister_agent_from_loop(state, &existing.name).await;
     }
 
     // Fetch artifact content from NeboAI and persist to DB + filesystem
@@ -671,9 +671,8 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         {
             let st = state.clone();
             let name = artifact_name.clone();
-            let slug = artifact_name.to_lowercase().replace(' ', "-");
             tokio::spawn(async move {
-                if let Err(e) = register_agent_in_loop(&st, &name, &slug).await {
+                if let Err(e) = register_agent_in_loop(&st, &name).await {
                     warn!(agent = %name, error = %e, "failed to register agent in loop");
                 }
             });
@@ -1702,8 +1701,12 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
 pub(crate) async fn register_agent_in_loop(
     state: &AppState,
     name: &str,
-    slug: &str,
 ) -> Result<(), NeboError> {
+    // Canonical bot-scoped handle — the single source of truth (handle.rs).
+    // Deriving it here keeps every caller from open-coding a divergent slug.
+    let bot_id = config::read_bot_id().unwrap_or_default();
+    let slug = comm::handle::secondary_handle(&bot_id, name);
+
     let api = build_api_client(state)?;
     let loops = api
         .list_bot_loops()
@@ -1716,21 +1719,23 @@ pub(crate) async fn register_agent_in_loop(
     // Store personal loop_id for session unification
     *state.personal_loop_id.write().await = Some(personal.loop_id.clone());
 
-    // Deregister first to make this idempotent (avoids 409 on reinstall)
-    let _ = api.deregister_agent(&personal.loop_id, slug).await;
-
-    api.register_agent(&personal.loop_id, name, slug, None)
+    // register_agent upserts by slug (see reconcile_agents), so this is idempotent.
+    api.register_agent(&personal.loop_id, name, &slug, None)
         .await
         .map_err(|e| NeboError::Internal(format!("register agent: {e}")))?;
-    info!(agent = %name, loop_id = %personal.loop_id, "registered agent in loop");
+    info!(agent = %name, slug = %slug, loop_id = %personal.loop_id, "registered agent in loop");
     Ok(())
 }
 
 /// Deregister an agent from the owner's personal loop.
 pub(crate) async fn deregister_agent_from_loop(
     state: &AppState,
-    agent_slug: &str,
+    name: &str,
 ) -> Result<(), NeboError> {
+    // Same canonical handle as registration — match the remote agent on it.
+    let bot_id = config::read_bot_id().unwrap_or_default();
+    let slug = comm::handle::secondary_handle(&bot_id, name);
+
     let api = build_api_client(state)?;
     let loops = api
         .list_bot_loops()
@@ -1740,21 +1745,21 @@ pub(crate) async fn deregister_agent_from_loop(
         .first()
         .ok_or_else(|| NeboError::Internal("bot not in any loop".into()))?;
     // NeboAI DELETE requires the agent UUID, not the slug.
-    // Look up the remote agent by slug to get its UUID.
+    // Look up the remote agent by its canonical slug to get its UUID.
     let agents = api
         .list_agents(&personal.loop_id)
         .await
         .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
     let remote = agents
         .iter()
-        .find(|a| a.slug == agent_slug)
+        .find(|a| a.slug == slug)
         .ok_or_else(|| {
-            NeboError::Internal(format!("agent '{}' not found on NeboAI", agent_slug))
+            NeboError::Internal(format!("agent '{}' not found on NeboAI", slug))
         })?;
     api.deregister_agent(&personal.loop_id, &remote.id)
         .await
         .map_err(|e| NeboError::Internal(format!("deregister agent: {e}")))?;
-    info!(agent = %agent_slug, remote_id = %remote.id, loop_id = %personal.loop_id, "deregistered agent from loop");
+    info!(agent = %name, slug = %slug, remote_id = %remote.id, loop_id = %personal.loop_id, "deregistered agent from loop");
     Ok(())
 }
 
