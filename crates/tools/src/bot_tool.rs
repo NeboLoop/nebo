@@ -1476,22 +1476,37 @@ impl AgentTool {
             angle_labels.join(", "),
         );
         if scope.clarifying_questions.is_empty() {
-            plan.push_str("\n\nStart the research?");
+            plan.push_str("\n\nStart the research, or refine the plan first?");
         } else {
             plan.push_str("\n\nA few details would sharpen this:");
             for q in &scope.clarifying_questions {
                 plan.push_str(&format!("\n• {q}"));
             }
-            plan.push_str("\n\nStart as-is, or cancel and add those details first?");
+            plan.push_str("\n\nStart as-is, refine the plan, or cancel?");
         }
         if confirm_gate {
-            let widgets = serde_json::json!([{ "type": "buttons", "options": ["Start research", "Cancel"] }]);
+            let widgets = serde_json::json!([{ "type": "buttons", "options": ["Start research", "Refine the plan", "Cancel"] }]);
             if let Some(resp) = ctx.ask_user(&plan, widgets).await {
-                if resp.to_lowercase().contains("cancel") {
+                let r = resp.to_lowercase();
+                if r.contains("cancel") {
                     return ToolResult::ok(format!(
                         "Research not started. I was going to cover: {}. Add any constraints \
                          (budget, region, use-case, time window) and ask again.",
                         angle_labels.join(", ")
+                    ));
+                }
+                if r.contains("refine") {
+                    // Hand control back to the conversation: the agent asks what to change,
+                    // then re-invokes deep_research with the refinement folded into the query.
+                    return ToolResult::ok(format!(
+                        "The user wants to adjust this research plan before running — do NOT start \
+                         the research yet. Ask them what to change: narrow or broaden the topic, \
+                         add or drop an angle, or change depth (quick/standard/deep). Then call \
+                         deep_research again with their changes folded into the query. The current \
+                         plan was {} angles ({}) at {} depth.",
+                        scope.angles.len(),
+                        angle_labels.join(", "),
+                        depth
                     ));
                 }
             }
