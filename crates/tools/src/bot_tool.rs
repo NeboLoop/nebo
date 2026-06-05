@@ -1460,8 +1460,11 @@ impl AgentTool {
         let run_id = format!("research-{}", uuid::Uuid::new_v4().as_simple());
 
         // ── Scope checkpoint: decompose the question, then confirm the plan with the user
-        // before the (slow, credit-costly) fan-out. ask_user returns None for sub-agent /
-        // non-interactive runs — in that case we proceed without blocking.
+        // before the (slow, credit-costly) fan-out. Only gate INTERACTIVE (User-origin) runs:
+        // automations/cron/channels/sub-agents (and an explicit `confirm: false`) proceed
+        // without prompting — an automation must never block on a UI button.
+        let confirm_gate = matches!(ctx.origin, crate::origin::Origin::User)
+            && input["confirm"].as_bool().unwrap_or(true);
         let scope = crate::deep_research::scope(&agent, query, &cfg).await;
         let angle_labels: Vec<&str> = scope.angles.iter().map(|a| a.label.as_str()).collect();
         let mut plan = format!(
@@ -1481,14 +1484,16 @@ impl AgentTool {
             }
             plan.push_str("\n\nStart as-is, or cancel and add those details first?");
         }
-        let widgets = serde_json::json!([{ "type": "buttons", "options": ["Start research", "Cancel"] }]);
-        if let Some(resp) = ctx.ask_user(&plan, widgets).await {
-            if resp.to_lowercase().contains("cancel") {
-                return ToolResult::ok(format!(
-                    "Research not started. I was going to cover: {}. Add any constraints \
-                     (budget, region, use-case, time window) and ask again.",
-                    angle_labels.join(", ")
-                ));
+        if confirm_gate {
+            let widgets = serde_json::json!([{ "type": "buttons", "options": ["Start research", "Cancel"] }]);
+            if let Some(resp) = ctx.ask_user(&plan, widgets).await {
+                if resp.to_lowercase().contains("cancel") {
+                    return ToolResult::ok(format!(
+                        "Research not started. I was going to cover: {}. Add any constraints \
+                         (budget, region, use-case, time window) and ask again.",
+                        angle_labels.join(", ")
+                    ));
+                }
             }
         }
 
@@ -1588,7 +1593,7 @@ impl DynTool for AgentTool {
          Advisors (internal deliberation):\n\
          - agent(resource: \"advisors\", action: \"deliberate\", task: \"Should we use PostgreSQL or SQLite?\")\n\n\
          Research (deterministic deep-research harness — fans out searches, fetches sources, adversarially fact-checks claims, returns a cited report):\n\
-         - agent(resource: \"research\", action: \"deep_research\", query: \"How effective is X for Y?\", depth: \"standard\") — Run the full harness; depth: \"quick\"|\"standard\"|\"deep\". Use when the user wants a fact-checked, multi-source report. If the question is underspecified, ask 2-3 clarifying questions first.\n\n\
+         - agent(resource: \"research\", action: \"deep_research\", query: \"How effective is X for Y?\", depth: \"standard\") — Run the full harness; depth: \"quick\"|\"standard\"|\"deep\". Use when the user wants a fact-checked, multi-source report. Interactive runs confirm the plan first; pass confirm: false to skip that gate (for automations / unattended runs).\n\n\
          Vision:\n\
          - agent(resource: \"vision\", action: \"analyze\", image: \"/path/to/image.png\")\n\n\
          Context:\n\
