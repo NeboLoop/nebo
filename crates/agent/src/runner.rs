@@ -1044,6 +1044,15 @@ async fn run_loop(
     channel_ctx: Option<&tools::ChannelContext>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
+    // External messaging channels (NeboLoop/Slack/etc.) get the full Interactive treatment —
+    // narrating comm-style, progress + action-confirm reminders, smaller streamed chunks — even
+    // though the run itself is Autonomous. The person on the other end is waiting on a reply and
+    // only sees messages, so they should get the same live experience as the local app.
+    let execution_mode = if steering::channel_is_external(channel) {
+        tools::ExecutionMode::Interactive
+    } else {
+        origin.into()
+    };
     let mut transient_retries = 0usize;
     let mut retryable_retries = 0usize;
     // Pre-seed called_tools with preactivated tools so they pass the tool filter
@@ -1543,7 +1552,7 @@ async fn run_loop(
     let static_system = if system_prompt.is_empty() {
         let pctx = prompt::PromptContext {
             mode: prompt_mode,
-            execution_mode: origin.into(),
+            execution_mode,
             agent_name: agent_name.clone(),
             active_skill: active_skill_template,
             agent_catalog,
@@ -3422,7 +3431,7 @@ async fn run_loop(
                 let detected_mode = sessions.get_detected_mode(session_id);
                 let rctx = steering::ReminderContext {
                     iteration,
-                    execution_mode: origin.into(),
+                    execution_mode,
                     messages: &msgs,
                     recent_tool_names: &recent_tool_names,
                     provider_id: selected_provider_id,

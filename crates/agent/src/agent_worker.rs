@@ -1086,7 +1086,10 @@ async fn watch_loop(
             if let Some(stderr) = stderr {
                 let mut stderr_lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = stderr_lines.next_line().await {
-                    warn!(
+                    // Sidecar stderr is its diagnostic/progress stream, not an error
+                    // channel — log at debug. Auth errors are still detected below via
+                    // the collected buffer + is_auth_error().
+                    debug!(
                         agent = %stderr_agent,
                         binding = %stderr_binding,
                         "watch stderr: {}",
@@ -1801,7 +1804,10 @@ async fn channel_loop(
             if let Some(stderr) = stderr {
                 let mut stderr_lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = stderr_lines.next_line().await {
-                    warn!(
+                    // Sidecar stderr is its diagnostic/progress stream, not an error
+                    // channel — log at debug. Auth errors are still detected below via
+                    // the collected buffer + is_auth_error().
+                    debug!(
                         agent = %stderr_agent,
                         channel = %stderr_channel,
                         "channel stderr: {}",
@@ -2381,7 +2387,10 @@ async fn shared_channel_loop(
             if let Some(stderr) = stderr {
                 let mut stderr_lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = stderr_lines.next_line().await {
-                    warn!(
+                    // Sidecar stderr is its diagnostic/progress stream, not an error
+                    // channel — log at debug. Auth errors are still detected below via
+                    // the collected buffer + is_auth_error().
+                    debug!(
                         channel = %stderr_channel,
                         "shared channel stderr: {}",
                         line

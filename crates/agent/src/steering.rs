@@ -82,6 +82,13 @@ pub struct ReminderContext<'a> {
     pub channel: &'a str,
 }
 
+/// An external messaging channel (NeboLoop/Slack/etc.) — NOT the local app's own
+/// surfaces (web/cli/dm/voice). On these the participant only sees messages, so the agent
+/// must narrate + confirm as if interactive even though the run itself is Autonomous.
+pub fn channel_is_external(channel: &str) -> bool {
+    !matches!(channel, "" | "web" | "cli" | "dm" | "voice")
+}
+
 impl ReminderContext<'_> {
     /// Direct Claude follows the system prompt well — suppression-style reminders skip it.
     fn is_claude(&self) -> bool {
@@ -91,7 +98,7 @@ impl ReminderContext<'_> {
     /// An external messaging channel (NeboLoop/Slack/etc.) — NOT the local app's own
     /// surfaces. On these the participant only sees messages, not the live UI/tools.
     fn is_external_channel(&self) -> bool {
-        !matches!(self.channel, "" | "web" | "cli" | "dm" | "voice")
+        channel_is_external(self.channel)
     }
 
     /// Whether the agent should narrate progress + confirm actions to whoever it's serving:

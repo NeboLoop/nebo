@@ -1467,7 +1467,7 @@
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="3" x2="5.5" y2="13" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
   </div>
-  <div class="flex-1 overflow-y-auto py-1">
+  <div class="flex-1 overflow-y-auto overflow-x-hidden py-1">
     {#if agentsLoading && sortedAgents.length === 0}
       <div class="flex-1 flex items-center justify-center">
         <span class="loading loading-spinner loading-sm"></span>
@@ -1510,7 +1510,7 @@
       {#each sortedAgents as a}
         {@const st = agentStatus(a.id)}
         <div
-          class="group/agent w-full flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {agentId === a.id
+          class="group/agent flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {agentId === a.id
             ? 'rounded-box border border-base-300 bg-base-100 shadow-sm'
             : 'rounded-box border border-transparent hover:bg-base-100/70'}"
         >
@@ -1548,7 +1548,7 @@
         {#each sortedAppAgents as a}
           {@const st = agentStatus(a.id)}
           <div
-            class="group/agent w-full flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {agentId === a.id
+            class="group/agent flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {agentId === a.id
               ? 'rounded-box border border-base-300 bg-base-100 shadow-sm'
               : 'rounded-box border border-transparent hover:bg-base-100/70'}"
           >
