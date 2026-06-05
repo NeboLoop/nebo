@@ -62,6 +62,33 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 static MENTION_TOKEN_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"<@([0-9a-fA-F._-]+)>").unwrap());
 
+/// Conservative detection of an explicit "produce one joint result together"
+/// ask. Used by the loop channel branch to choose coordination mode (one lead
+/// synthesizes) over independent fan-out (each agent replies for itself).
+/// Deliberately tight — independent replies are the default; only clear
+/// collaboration phrasing routes to a single lead.
+fn wants_coordination(text: &str) -> bool {
+    let t = text.to_lowercase();
+    const PHRASES: &[&str] = &[
+        "work together",
+        "working together",
+        "work as a team",
+        "collaborate",
+        "collaboration",
+        "as a team",
+        "as a group",
+        "team up",
+        "join forces",
+        "jointly",
+        "one combined",
+        "single combined",
+        "combined answer",
+        "joint plan",
+        "one plan together",
+    ];
+    PHRASES.iter().any(|p| t.contains(p))
+}
+
 /// Seed the provider_models table from the embedded models.yaml catalog.
 /// - New models are inserted with is_active=1
 /// - Existing models get metadata updated (pricing, capabilities, context_window)
@@ -2986,13 +3013,12 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // if multiple agents are mentioned — no fan-out in v1.
         let bot_id = config::read_bot_id().unwrap_or_default();
 
-        // Collect all `<@id>` mention tokens in order of appearance, with the
-        // local agent id each resolves to (empty = primary bot) and the raw
-        // token text so it can be replaced in the transcript later.
-        let mut resolved_tokens: Vec<(String, String)> = Vec::new(); // (raw_token, agent_id)
-        let mut resolved_agent_id: Option<String> = None;
+        // Collect every `<@id>` mention that resolves to a known target — the
+        // primary bot (empty id) or an exposed agent — deduped, in order of
+        // appearance. This is the fan-out target set: each addressed agent runs
+        // and replies for itself.
+        let mut mentioned_targets: Vec<String> = Vec::new();
         for cap in MENTION_TOKEN_RE.captures_iter(&text) {
-            let raw = cap.get(0).map(|m| m.as_str().to_string()).unwrap_or_default();
             let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
             let local_id = if !bot_id.is_empty() && id == bot_id {
                 Some(String::new()) // primary bot
@@ -3003,18 +3029,38 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 }
             };
             if let Some(aid) = local_id {
-                if resolved_agent_id.is_none() {
-                    resolved_agent_id = Some(aid.clone());
+                if !mentioned_targets.contains(&aid) {
+                    mentioned_targets.push(aid);
                 }
-                resolved_tokens.push((raw, aid));
             }
         }
 
-        let mentioned = resolved_agent_id.is_some();
+        let mentioned = !mentioned_targets.is_empty();
 
-        let should_respond = if let Some(aid) = resolved_agent_id.clone() {
-            // Open / refresh the follow-up window for this speaker, bound to the
-            // resolved agent so follow-ups continue with the SAME agent.
+        // Coordination mode: when the user EXPLICITLY asks several addressed
+        // agents to produce one joint result, route to a single lead (the
+        // first mentioned) that consults the others via `delegate` and writes
+        // one combined reply — instead of fanning out N independent answers.
+        // Conservative by design; independent fan-out is the default.
+        let coordinate = mentioned_targets.len() > 1 && wants_coordination(&text);
+        let coordinator_peers: Vec<String> = if coordinate {
+            mentioned_targets[1..].to_vec()
+        } else {
+            Vec::new()
+        };
+        // Who actually runs and replies: just the lead in coordination mode,
+        // otherwise everyone addressed.
+        let responders: Vec<String> = if coordinate {
+            mentioned_targets[..1].to_vec()
+        } else {
+            mentioned_targets.clone()
+        };
+
+        // The agents to dispatch to. On an explicit mention that's everyone
+        // addressed; on a bare follow-up it's the agent(s) the engagement window
+        // is bound to (so a user can keep talking to the same group without
+        // re-mentioning). A single mention is just a one-element set.
+        let targets: Vec<String> = if mentioned {
             let mut eng = state.channel_engagement.lock().await;
             eng.insert(
                 msg.conversation_id.clone(),
@@ -3022,18 +3068,17 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     user: msg.from.clone(),
                     expires: now
                         + std::time::Duration::from_secs(CHANNEL_FOLLOWUP_WINDOW_SECS),
-                    agent_id: aid,
+                    agent_ids: responders.clone(),
                 },
             );
-            true
+            responders.clone()
         } else {
             let mut eng = state.channel_engagement.lock().await;
             match eng.get(&msg.conversation_id) {
                 Some(entry) if entry.user == msg.from && now < entry.expires => {
                     // Same engaged speaker, window still open → extend it and
-                    // continue with the agent the window is bound to.
-                    let aid = entry.agent_id.clone();
-                    resolved_agent_id = Some(aid.clone());
+                    // continue with the agent(s) the window is bound to.
+                    let aids = entry.agent_ids.clone();
                     eng.insert(
                         msg.conversation_id.clone(),
                         state::Engagement {
@@ -3042,10 +3087,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                                 + std::time::Duration::from_secs(
                                     CHANNEL_FOLLOWUP_WINDOW_SECS,
                                 ),
-                            agent_id: aid,
+                            agent_ids: aids.clone(),
                         },
                     );
-                    true
+                    aids
                 }
                 Some(entry) => {
                     // A different speaker (or an expired window) closes it so a
@@ -3053,11 +3098,13 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     if entry.user != msg.from {
                         eng.remove(&msg.conversation_id);
                     }
-                    false
+                    Vec::new()
                 }
-                None => false,
+                None => Vec::new(),
             }
         };
+
+        let should_respond = !targets.is_empty();
 
         tracing::info!(
             conv_id = %msg.conversation_id,
@@ -3108,23 +3155,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             }
         }
 
-        // Respond → route to the resolved agent (primary bot when empty/None).
-        let agent_id = resolved_agent_id.clone().unwrap_or_default();
-        let agent_name = {
-            let registry = state.agent_registry.read().await;
-            if !agent_id.is_empty() {
-                registry
-                    .get(&agent_id)
-                    .map(|r| r.name.clone())
-                    .unwrap_or_else(|| "Nebo".to_string())
-            } else {
-                registry
-                    .get("assistant")
-                    .map(|r| r.name.clone())
-                    .unwrap_or_else(|| "Nebo".to_string())
-            }
-        };
-
+        // Respond → fan out to every addressed agent (resolved into `targets`).
         // DRAIN the un-answered buffer for this channel under the lock, then
         // release it. The drained entries are the conversation since the last
         // reply (including the current message, pushed above) — draining on
@@ -3196,57 +3227,156 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             t
         };
 
-        // Per-channel session so each channel keeps its own context, separate
-        // from DMs and other channels.
-        let session_key =
-            agent::keyparser::build_session_key("neboai", "channel", &msg.conversation_id);
-        let _ = state
-            .store
-            .create_chat(&session_key, &format!("Loop channel ({})", agent_name));
-
-        let preview = if prompt_text.len() > 80 {
-            format!("{}...", truncate_str(&prompt_text, 80))
-        } else {
-            prompt_text.clone()
-        };
-        notify_crate::send(&format!("Loop channel: {}", agent_name), &preview);
-
-        // Use the agent's config (custom agent) or the bot's main persona.
-        let entity_config = if !agent_id.is_empty() {
-            entity_config::resolve_for_chat(&state.store, "agent", &agent_id)
-        } else {
-            entity_config::resolve_for_chat(&state.store, "main", "main")
-        };
-
+        // Shared prompt + attachments — computed once, cloned per agent below.
         let mut prompt = prompt_text;
         let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
 
-        let config = chat_dispatch::ChatConfig {
-            session_key,
-            prompt,
-            system: String::new(),
-            user_id: String::new(),
-            channel: "neboai".to_string(),
-            origin: tools::Origin::Comm,
-            agent_id,
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-            lane: types::constants::lanes::COMM.to_string(),
-            comm_reply: Some(chat_dispatch::CommReplyConfig {
-                provider: "neboai".to_string(),
-                topic: "channel".to_string(),
-                conversation_id: msg.conversation_id.clone(),
-            }),
-            entity_config,
-            images,
-            entity_name: agent_name,
-            origin_agent_id: None,
-            mention_context: None,
-            tool_scope: None,
-            plan_mode: false,
-            channel_ctx: None,
+        // Resolve a display name for every target (one registry read), capped so
+        // a message mentioning a crowd can't fan out unbounded.
+        const MAX_FANOUT: usize = 4;
+        let dispatch: Vec<(String, String)> = {
+            let registry = state.agent_registry.read().await;
+            targets
+                .iter()
+                .map(|agent_id| {
+                    let name = if agent_id.is_empty() {
+                        registry.get("assistant").map(|r| r.name.clone())
+                    } else {
+                        registry.get(agent_id).map(|r| r.name.clone())
+                    }
+                    .unwrap_or_else(|| "Nebo".to_string());
+                    (agent_id.clone(), name)
+                })
+                .collect()
+        };
+        let dispatch = if dispatch.len() > MAX_FANOUT {
+            tracing::warn!(
+                conv_id = %msg.conversation_id,
+                mentioned = dispatch.len(),
+                cap = MAX_FANOUT,
+                "channel fan-out capped — only the first agents respond"
+            );
+            dispatch[..MAX_FANOUT].to_vec()
+        } else {
+            dispatch
         };
 
-        chat_dispatch::run_chat(&state, config).await;
+        // In coordination mode, resolve the peer display names the lead will be
+        // told to consult via `delegate`.
+        let coordinator_peer_names: Vec<String> = if coordinate {
+            let registry = state.agent_registry.read().await;
+            coordinator_peers
+                .iter()
+                .map(|agent_id| {
+                    if agent_id.is_empty() {
+                        registry.get("assistant").map(|r| r.name.clone())
+                    } else {
+                        registry.get(agent_id).map(|r| r.name.clone())
+                    }
+                    .unwrap_or_else(|| "Nebo".to_string())
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let preview = if prompt.len() > 80 {
+            format!("{}...", truncate_str(&prompt, 80))
+        } else {
+            prompt.clone()
+        };
+        // Owned name list — used for the notification AND, when fanning out to
+        // more than one agent, to tell each agent who else was addressed so it
+        // replies only as itself.
+        let all_names: Vec<String> = dispatch.iter().map(|(_, n)| n.clone()).collect();
+        let is_group = all_names.len() > 1;
+        notify_crate::send(&format!("Loop channel: {}", all_names.join(", ")), &preview);
+
+        // Fan out: one independent run per addressed agent. Each gets its OWN
+        // session within the channel (so histories don't collide) and replies
+        // for itself via the existing per-reply senderName attribution. run_chat
+        // enqueues async on the COMM lane, so these runs proceed concurrently.
+        for (agent_id, agent_name) in dispatch {
+            let session_key = if agent_id.is_empty() {
+                agent::keyparser::build_session_key("neboai", "channel", &msg.conversation_id)
+            } else {
+                agent::keyparser::build_session_key(
+                    "neboai",
+                    "channel",
+                    &format!("{}:{}", msg.conversation_id, agent_id),
+                )
+            };
+            let _ = state
+                .store
+                .create_chat(&session_key, &format!("Loop channel ({})", agent_name));
+
+            // Use the agent's config (custom agent) or the bot's main persona.
+            let entity_config = if !agent_id.is_empty() {
+                entity_config::resolve_for_chat(&state.store, "agent", &agent_id)
+            } else {
+                entity_config::resolve_for_chat(&state.store, "main", "main")
+            };
+
+            // Coordination framing: the lead is told to consult the named peers
+            // via `delegate` (bounded by the sub-agent depth cap) and write one
+            // combined answer — the peers do not reply here on their own.
+            let mention_context = if coordinate {
+                Some(format!(
+                    "You are the lead for this request. The user asked you to work together with \
+                     {} to produce ONE combined result. They are NOT replying here on their own — \
+                     consult them as needed by calling agent(resource: \"registry\", action: \
+                     \"delegate\", name: \"<their name>\", prompt: \"…\"), then write a single \
+                     integrated answer yourself.",
+                    coordinator_peer_names.join(", "),
+                ))
+            } else if is_group {
+                let others: Vec<&str> = all_names
+                    .iter()
+                    .map(|s| s.as_str())
+                    .filter(|n| *n != agent_name.as_str())
+                    .collect();
+                Some(format!(
+                    "You are \"{}\". This message was sent to several agents at once ({}), and a \
+                     SEPARATE copy was delivered to each of them — so even if it says \"each of \
+                     you\", \"all of you\", or lists names, answer ONLY about yourself, in the \
+                     first person. The other agents ({}) are replying on their own; do NOT speak \
+                     for them, introduce them, quote them, or describe their roles. The platform \
+                     places your reply next to theirs automatically.",
+                    agent_name,
+                    all_names.join(", "),
+                    others.join(", "),
+                ))
+            } else {
+                None
+            };
+
+            let config = chat_dispatch::ChatConfig {
+                session_key,
+                prompt: prompt.clone(),
+                system: String::new(),
+                user_id: String::new(),
+                channel: "neboai".to_string(),
+                origin: tools::Origin::Comm,
+                agent_id,
+                cancel_token: tokio_util::sync::CancellationToken::new(),
+                lane: types::constants::lanes::COMM.to_string(),
+                comm_reply: Some(chat_dispatch::CommReplyConfig {
+                    provider: "neboai".to_string(),
+                    topic: "channel".to_string(),
+                    conversation_id: msg.conversation_id.clone(),
+                }),
+                entity_config,
+                images: images.clone(),
+                entity_name: agent_name,
+                origin_agent_id: None,
+                mention_context,
+                tool_scope: None,
+                plan_mode: false,
+                channel_ctx: None,
+            };
+
+            chat_dispatch::run_chat(&state, config).await;
+        }
 
         state.event_bus.emit(tools::events::Event {
             source: "neboai.channel".to_string(),

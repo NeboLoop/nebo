@@ -33,6 +33,10 @@ pub enum CommMessageType {
     TaskResult,
     TaskStatus,
     LoopChannel,
+    /// A tool the agent used while producing a reply (start or result), so a
+    /// channel/loop UI can mirror the local app's "Used N tools" timeline.
+    /// Carries `phase`/`tool`/`tool_id`/`stream_id` in `metadata`.
+    ToolActivity,
 }
 
 /// Lifecycle state of an A2A task (per NeboAI A2A spec).

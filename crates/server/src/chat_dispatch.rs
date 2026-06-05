@@ -400,42 +400,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 };
                                 if should_flush {
                                     if let Some(cfg) = &comm_reply {
-                                        let mut chunk_meta = std::collections::HashMap::new();
-                                        if !agent_display_name.is_empty() {
-                                            chunk_meta.insert(
-                                                "senderName".to_string(),
-                                                agent_display_name.clone(),
-                                            );
-                                        }
-                                        let chunk = comm::CommMessage {
-                                            id: comm_stream_id.clone(),
-                                            from: String::new(),
-                                            to: String::new(),
-                                            topic: cfg.topic.clone(),
-                                            conversation_id: cfg.conversation_id.clone(),
-                                            msg_type: comm::CommMessageType::Stream,
-                                            content: comm_buffer.clone(),
-                                            metadata: chunk_meta,
-                                            timestamp: 0,
-                                            human_injected: false,
-                                            human_id: None,
-                                            task_id: None,
-                                            correlation_id: None,
-                                            task_status: None,
-                                            artifacts: vec![],
-                                            error: None,
-                                            attachments: vec![],
-                                        };
-                                        if let Err(e) = send_to_channel(
-                                            &cfg.provider,
+                                        send_comm_msg(
+                                            cfg,
                                             &comm_manager,
                                             &channel_providers,
-                                            chunk,
+                                            comm::CommMessageType::Stream,
+                                            comm_stream_id.clone(),
+                                            comm_buffer.clone(),
+                                            std::collections::HashMap::new(),
+                                            &agent_display_name,
                                         )
-                                        .await
-                                        {
-                                            warn!(error = %e, "failed to send comm stream chunk");
-                                        }
+                                        .await;
                                         comm_streamed = true;
                                         comm_buffer.clear();
                                         last_comm_flush = Some(tokio::time::Instant::now());
@@ -457,7 +432,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                         }
                         StreamEventType::ToolCall => {
-                            // Flush pending text before tool event to prevent fragmentation
+                            // Flush pending text (web + loop) before the tool event so the
+                            // reply text shows BEFORE the tool runs, instead of sticking
+                            // mid-word while a slow tool/delegation executes.
                             if !text_buffer.is_empty() {
                                 hub.broadcast(
                                     "chat_stream",
@@ -468,6 +445,24 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 text_buffer.clear();
                                 last_flush = tokio::time::Instant::now();
                             }
+                            if let Some(cfg) = &comm_reply {
+                                if !comm_buffer.is_empty() {
+                                    send_comm_msg(
+                                        cfg,
+                                        &comm_manager,
+                                        &channel_providers,
+                                        comm::CommMessageType::Stream,
+                                        comm_stream_id.clone(),
+                                        comm_buffer.clone(),
+                                        std::collections::HashMap::new(),
+                                        &agent_display_name,
+                                    )
+                                    .await;
+                                    comm_streamed = true;
+                                    comm_buffer.clear();
+                                    last_comm_flush = Some(tokio::time::Instant::now());
+                                }
+                            }
                             if let Some(ref tc) = event.tool_call {
                                 hub.broadcast(
                                     "tool_start",
@@ -477,6 +472,22 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "input": tc.input,
                                     ),
                                 );
+                                // Mirror the tool event to the loop so it shows live
+                                // activity (and renders "Used N tools"), like the local app.
+                                if let Some(cfg) = &comm_reply {
+                                    send_comm_tool_activity(
+                                        cfg,
+                                        &comm_manager,
+                                        &channel_providers,
+                                        &comm_stream_id,
+                                        &agent_display_name,
+                                        "start",
+                                        &tc.name,
+                                        &tc.id,
+                                        tool_activity_label(&tc.name).to_string(),
+                                    )
+                                    .await;
+                                }
                                 if let Some(ref cm) = comm_manager {
                                     if let Some(ref cr) = comm_reply {
                                         let _ = cm.send_typing(&cr.conversation_id, true, Some(tool_activity_label(&tc.name))).await;
@@ -504,6 +515,23 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "is_error": event.error.is_some(),
                                 ),
                             );
+                            // Mirror the tool result to the loop (char-safe truncated
+                            // summary) so it completes the "Used N tools" timeline.
+                            if let Some(cfg) = &comm_reply {
+                                let summary: String = event.text.trim().chars().take(500).collect();
+                                send_comm_tool_activity(
+                                    cfg,
+                                    &comm_manager,
+                                    &channel_providers,
+                                    &comm_stream_id,
+                                    &agent_display_name,
+                                    "result",
+                                    tool_name,
+                                    tool_id,
+                                    summary,
+                                )
+                                .await;
+                            }
                             // Collect run-produced media: persist to <data_dir>/files and
                             // reference by /api/v1/files/<name> — for the LOCAL app (always,
                             // rendered inline) and comm replies (when replying to a channel;
@@ -1292,6 +1320,84 @@ fn strip_local_image_markdown(text: &mut String) {
             break;
         }
     }
+}
+
+/// Build and send one comm message (stream chunk, tool activity, …) to a reply
+/// channel. The single place outbound comm messages are assembled, so the loop
+/// receives the same kinds of events the local web hub does.
+#[allow(clippy::too_many_arguments)]
+async fn send_comm_msg(
+    cfg: &CommReplyConfig,
+    comm_manager: &Option<Arc<comm::PluginManager>>,
+    channel_providers: &Option<
+        Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn comm::ChannelProvider>>>>,
+    >,
+    msg_type: comm::CommMessageType,
+    id: String,
+    content: String,
+    mut metadata: HashMap<String, String>,
+    sender_name: &str,
+) {
+    if !sender_name.is_empty() {
+        metadata.insert("senderName".to_string(), sender_name.to_string());
+    }
+    let msg = comm::CommMessage {
+        id,
+        from: String::new(),
+        to: String::new(),
+        topic: cfg.topic.clone(),
+        conversation_id: cfg.conversation_id.clone(),
+        msg_type,
+        content,
+        metadata,
+        timestamp: 0,
+        human_injected: false,
+        human_id: None,
+        task_id: None,
+        correlation_id: None,
+        task_status: None,
+        artifacts: vec![],
+        error: None,
+        attachments: vec![],
+    };
+    if let Err(e) = send_to_channel(&cfg.provider, comm_manager, channel_providers, msg).await {
+        warn!(error = %e, "failed to send comm message");
+    }
+}
+
+/// Forward a tool event (`phase` = "start" | "result") to a reply channel,
+/// tagged with the response's `stream_id` so the loop can group it under the
+/// reply as a "Used N tools" timeline — mirroring the local app.
+#[allow(clippy::too_many_arguments)]
+async fn send_comm_tool_activity(
+    cfg: &CommReplyConfig,
+    comm_manager: &Option<Arc<comm::PluginManager>>,
+    channel_providers: &Option<
+        Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn comm::ChannelProvider>>>>,
+    >,
+    stream_id: &str,
+    sender_name: &str,
+    phase: &str,
+    tool: &str,
+    tool_id: &str,
+    content: String,
+) {
+    let mut metadata = HashMap::new();
+    metadata.insert("phase".to_string(), phase.to_string());
+    metadata.insert("tool".to_string(), tool.to_string());
+    metadata.insert("tool_id".to_string(), tool_id.to_string());
+    metadata.insert("stream_id".to_string(), stream_id.to_string());
+    send_comm_msg(
+        cfg,
+        comm_manager,
+        channel_providers,
+        comm::CommMessageType::ToolActivity,
+        uuid::Uuid::new_v4().to_string(),
+        content,
+        metadata,
+        sender_name,
+    )
+    .await;
 }
 
 /// Send a comm message through the appropriate channel provider.

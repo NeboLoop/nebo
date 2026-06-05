@@ -11,6 +11,20 @@ use tracing::{debug, info, warn};
 /// Per-worker wall-clock timeout for parallel spawns.
 const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Max sub-agent nesting depth. Without this, a weak model told to "work
+/// together" delegates, and each spawned agent re-delegates — nesting
+/// `subagent:subagent:subagent:…` with no bound, where every node is a full
+/// provider run. Beyond this depth a spawn is refused so the agent does the
+/// work itself. Tunable.
+const MAX_SUBAGENT_DEPTH: usize = 2;
+
+/// How deeply a session sits in the sub-agent tree — the number of `subagent:`
+/// prefixes on its key. Top-level (user/channel) agents are depth 0; their
+/// direct sub-agents are depth 1, and so on.
+fn subagent_depth(parent_session_key: &str) -> usize {
+    parent_session_key.matches("subagent:").count()
+}
+
 use ai::{StreamEventType, ToolCall};
 use db::Store;
 use tools::{SpawnRequest, SpawnResult, SubAgentOrchestrator};
@@ -95,6 +109,15 @@ impl Orchestrator {
 
     /// Spawn a single sub-agent.
     async fn spawn_internal(&self, req: SpawnRequest) -> Result<SpawnResult, String> {
+        // Recursion guard: stop a "work together" prompt from exploding into an
+        // unbounded subagent:subagent:subagent… tree (each node a full run).
+        if subagent_depth(&req.parent_session_key) >= MAX_SUBAGENT_DEPTH {
+            return Err(format!(
+                "Sub-agent depth limit reached ({MAX_SUBAGENT_DEPTH} levels). Do this work \
+                 yourself with your own tools and report the result — do not spawn another \
+                 sub-agent."
+            ));
+        }
         let task_id = format!("sa-{}", uuid::Uuid::new_v4());
         let session_key = format!("subagent:{}:{}", req.parent_session_key, task_id);
         // Derive a child token from the parent so cancelling the parent cascades.
@@ -527,6 +550,18 @@ impl Orchestrator {
         progress_tx: mpsc::Sender<ai::StreamEvent>,
     ) -> Result<SpawnResult, String> {
         use ai::StreamEvent;
+
+        // Recursion guard (siblings share a parent): a parallel batch spawned
+        // from too deep in the tree is refused, same as single spawns.
+        if requests
+            .first()
+            .is_some_and(|r| subagent_depth(&r.parent_session_key) >= MAX_SUBAGENT_DEPTH)
+        {
+            return Err(format!(
+                "Sub-agent depth limit reached ({MAX_SUBAGENT_DEPTH} levels). Do this work \
+                 yourself instead of spawning more sub-agents."
+            ));
+        }
 
         let parent_task_id = format!("batch-{}", uuid::Uuid::new_v4());
         let total = requests.len();

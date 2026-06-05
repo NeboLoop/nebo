@@ -609,11 +609,19 @@ impl Runner {
 
             info!(ms = t_msg_save.elapsed().as_millis() as u64, session_id = %session_id, "[telemetry] user message saved");
 
-            // Inject @mention routing context as an invisible system message
+            // Inject @mention routing context as a hidden <system-reminder> in
+            // the live stream. Weak models heed a stream reminder where they
+            // skim a plain system message — important for fan-out, where the
+            // "answer as yourself" framing has to fight an "each of you" prompt.
             if let Some(ref ctx) = req.mention_context {
-                let _ = self
-                    .sessions
-                    .append_message(&session_id, "system", ctx, None, None, None);
+                let _ = self.sessions.append_message(
+                    &session_id,
+                    "user",
+                    &steering::wrap_system_reminder(ctx),
+                    None,
+                    None,
+                    Some(HIDDEN_META),
+                );
             }
         }
 
