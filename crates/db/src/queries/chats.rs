@@ -518,6 +518,38 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Chats that were mid-turn when the server stopped: the last message is the user's (or a
+    /// tool result) with no assistant reply, and recent enough (`since_epoch`) to be a live
+    /// interruption rather than an abandoned thread. Returns (chat_id, session_name). Used at
+    /// startup to notify the user that an in-flight run was lost (runs aren't resumed).
+    pub fn find_interrupted_chats(
+        &self,
+        since_epoch: i64,
+    ) -> Result<Vec<(String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.id, COALESCE(c.session_name, '')
+                 FROM chats c
+                 WHERE (SELECT m.role FROM chat_messages m
+                        WHERE m.chat_id = c.id
+                        ORDER BY m.created_at DESC, m.id DESC LIMIT 1) IN ('user', 'tool')
+                   AND (SELECT m2.created_at FROM chat_messages m2
+                        WHERE m2.chat_id = c.id
+                        ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1) >= ?1
+                 ORDER BY c.updated_at DESC
+                 LIMIT 20",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![since_epoch], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// List all chats belonging to a session, newest first.
     pub fn list_chats_by_session(&self, session_name: &str) -> Result<Vec<Chat>, NeboError> {
         let conn = self.conn()?;

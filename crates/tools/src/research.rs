@@ -232,6 +232,39 @@ pub fn find_active_run_dir(research_dir: &Path) -> Option<PathBuf> {
     best.map(|(p, _)| p)
 }
 
+/// Mark research runs left in an active state (planning/running/synthesizing) — orphaned by a
+/// server restart, since runs are never resumed — as failed, so they don't linger as
+/// "running" forever or get re-picked by `find_active_run_dir`. Returns the count cleaned.
+/// Called once at startup.
+pub fn mark_orphaned_runs(research_dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(research_dir) else {
+        return 0;
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let meta_path = entry.path().join("meta.json");
+        let Ok(content) = std::fs::read_to_string(&meta_path) else {
+            continue;
+        };
+        let Ok(mut meta) = serde_json::from_str::<RunMeta>(&content) else {
+            continue;
+        };
+        if matches!(
+            meta.status,
+            RunStatus::Planning | RunStatus::Running | RunStatus::Synthesizing
+        ) {
+            meta.status = RunStatus::Failed;
+            meta.completed_at = Some(chrono::Utc::now().timestamp());
+            if let Ok(json) = serde_json::to_string_pretty(&meta) {
+                if std::fs::write(&meta_path, json).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

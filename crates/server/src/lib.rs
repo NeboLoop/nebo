@@ -566,6 +566,32 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     let data_dir = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
+    // Restart recovery: in-flight runs aren't resumed (the agent loop's state is in memory and
+    // research runs aren't checkpointed-to-resume). So on startup, mark orphaned research runs
+    // as failed and leave a one-line note in any chat that was mid-turn when we stopped, so it
+    // doesn't hang silently. The note is persisted; the user sees it on next chat open.
+    {
+        let n = tools::research::mark_orphaned_runs(&data_dir.join("research"));
+        if n > 0 {
+            info!(count = n, "restart recovery: marked orphaned research runs failed");
+        }
+        let cutoff = chrono::Utc::now().timestamp() - 30 * 60;
+        match store.find_interrupted_chats(cutoff) {
+            Ok(chats) => {
+                for (chat_id, _session_name) in &chats {
+                    let msg_id = uuid::Uuid::new_v4().to_string();
+                    let text = "I was interrupted by a restart before I could finish — want me to \
+                                pick up where I left off? Just say \"continue\".";
+                    let _ = store.create_chat_message(&msg_id, chat_id, "assistant", text, None);
+                }
+                if !chats.is_empty() {
+                    info!(count = chats.len(), "restart recovery: noted interrupted chats");
+                }
+            }
+            Err(e) => warn!(error = %e, "restart recovery: failed to scan for interrupted chats"),
+        }
+    }
+
     let tool_registry = Arc::new(tools::Registry::new(policy));
 
     // Create empty orchestrator handle (filled after Runner is built)
