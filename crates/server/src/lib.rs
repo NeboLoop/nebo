@@ -1312,6 +1312,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     None,
                 ) {
                     Ok(_) => {
+                        // The primary agent ("Nebo") is exposed to the loop by
+                        // default. Set it once at row creation — the migration
+                        // only covers installs that predate this row, so fresh
+                        // installs (where the row is created after migrations
+                        // run) need it here. The user can still turn it off.
+                        if agent_id == "assistant" {
+                            let _ = store.set_loop_exposed(&agent_id, true);
+                        }
                         agent_id_for_bindings = agent_id;
                         created += 1;
                         // Queue for dependency cascade if agent has frontmatter

@@ -218,6 +218,7 @@ pub async fn list_agents(
             "isEnabled": db_row.map(|r| r.is_enabled != 0).unwrap_or(true),
             "inputValues": db_row.map(|r| r.input_values.as_str()).unwrap_or("{}"),
             "installedAt": db_row.map(|r| r.installed_at),
+            "loopExposed": db_row.map(|r| r.loop_exposed != 0).unwrap_or(false),
         });
         // Derive needsSetup from config inputs vs stored input_values
         let needs_setup = if let Some(ref cfg) = loaded.config {
@@ -771,7 +772,10 @@ pub async fn update_agent(
     );
 
     // When loop exposure changed, sync this agent's loop presence live.
-    if exposure_changed {
+    // The primary ("assistant") is always present on the loop and is managed by
+    // the gateway, never as a named secondary — so skip the register/deregister
+    // call for it (the saved flag is harmless).
+    if exposure_changed && id != "assistant" {
         let st = state.clone();
         let agent_name = updated.name.clone();
         let slug = updated.name.to_lowercase().replace(' ', "-");

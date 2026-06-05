@@ -113,6 +113,18 @@ impl Store {
         Ok(())
     }
 
+    /// Set an agent's "Expose to Loop" flag. Used to seed the primary agent's
+    /// default (ON) at row creation; the toggle save path uses `update_agent`.
+    pub fn set_loop_exposed(&self, id: &str, exposed: bool) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agents SET loop_exposed = ?2, updated_at = unixepoch() WHERE id = ?1",
+            params![id, exposed as i32],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// Sync filesystem-owned columns: content (agent_md, frontmatter) and
     /// manifest identity (name, description). The manifest is the source of
     /// truth for display name — without this, agents get stuck with slug names.

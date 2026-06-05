@@ -1420,54 +1420,55 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         .await
         .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
 
-    // Build map of ALL local roles (enabled + disabled) by slug
-    let local_agents: std::collections::HashMap<String, bool> =
-        if let Ok(roles) = state.store.list_agents(1000, 0) {
-            roles
-                .iter()
-                .map(|r| {
-                    let slug = r.name.to_lowercase().replace(' ', "-");
-                    let enabled = r.is_enabled != 0;
-                    (slug, enabled)
-                })
-                .collect()
-        } else {
-            std::collections::HashMap::new()
-        };
+    // Local agents that should appear on the loop as their OWN identity:
+    // "Expose to Loop" is on, excluding the primary ("assistant"). The primary
+    // is the bot's canonical "Nebo" identity, auto-created and kept current by
+    // the gateway (slug "bot_<id8>") — it always shows and must never be
+    // registered as a named secondary, or it would duplicate itself.
+    let exposed: Vec<db::models::Agent> = state
+        .store
+        .list_agents(1000, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.id != "assistant" && a.loop_exposed != 0)
+        .collect();
+    let exposed_slugs: std::collections::HashSet<String> = exposed
+        .iter()
+        .map(|a| a.name.to_lowercase().replace(' ', "-"))
+        .collect();
 
-    // Deregister remote agents that are truly deleted locally (not in DB at all)
+    // Deregister remote secondary agents that are no longer exposed locally.
+    // Never touch the primary (its slug carries the "bot_" prefix).
     for agent in &remote_agents {
-        // Skip the default bot agent (slug starts with "bot_")
         if agent.slug.starts_with("bot_") {
             continue;
         }
-        if !local_agents.contains_key(&agent.slug) {
-            info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering deleted agent");
+        if !exposed_slugs.contains(&agent.slug) {
+            info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering un-exposed agent");
             if let Err(e) = api.deregister_agent(&personal.loop_id, &agent.id).await {
                 warn!(agent_slug = %agent.slug, agent_id = %agent.id, error = %e, "reconcile: failed to deregister");
             }
         }
     }
 
-    // Register local roles missing from remote (both enabled and disabled)
+    // Register exposed local agents missing from remote. The server upserts by
+    // slug, so this is idempotent (re-registration updates in place).
     let remote_slugs: std::collections::HashSet<String> =
         remote_agents.iter().map(|a| a.slug.clone()).collect();
-    if let Ok(agents) = state.store.list_agents(1000, 0) {
-        for agent in &agents {
-            let slug = agent.name.to_lowercase().replace(' ', "-");
-            if !remote_slugs.contains(&slug) {
-                let status = if agent.is_enabled != 0 {
-                    "active"
-                } else {
-                    "paused"
-                };
-                info!(agent = %agent.name, slug = %slug, status = %status, "reconcile: registering missing agent");
-                if let Err(e) = api
-                    .register_agent(&personal.loop_id, &agent.name, &slug, None)
-                    .await
-                {
-                    warn!(slug = %slug, error = %e, "reconcile: failed to register");
-                }
+    for agent in &exposed {
+        let slug = agent.name.to_lowercase().replace(' ', "-");
+        if !remote_slugs.contains(&slug) {
+            let desc = if agent.description.is_empty() {
+                None
+            } else {
+                Some(agent.description.as_str())
+            };
+            info!(agent = %agent.name, slug = %slug, "reconcile: registering exposed agent");
+            if let Err(e) = api
+                .register_agent(&personal.loop_id, &agent.name, &slug, desc)
+                .await
+            {
+                warn!(slug = %slug, error = %e, "reconcile: failed to register");
             }
         }
     }
