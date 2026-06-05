@@ -56,6 +56,29 @@ fn tool_activity_label(tool_name: &str) -> &str {
     }
 }
 
+/// True when a streamed text chunk is an orchestrator progress heartbeat —
+/// the transient `"\n_Working on: ..._\n"` / `"\n_Working..._\n"` status the
+/// sub-agent runner emits every 30s (`orchestrator.rs`). It's a "still alive"
+/// signal for the live activity indicator, never real content, so it must not
+/// land in a comm reply or a channel's final response.
+pub(crate) fn is_progress_heartbeat(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with("_Working") && trimmed.ends_with('_')
+}
+
+/// Remove orchestrator progress-heartbeat lines from a finalized response so
+/// the noise never appears in the message that replaces the streamed bubble.
+/// Operates line-wise; all non-heartbeat content (including blank lines) is
+/// preserved.
+pub(crate) fn strip_progress_heartbeats(s: &str) -> String {
+    s.lines()
+        .filter(|line| !is_progress_heartbeat(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 /// Configuration for a chat run — decorators that customize behavior
 /// without changing the underlying execution flow.
 pub struct ChatConfig {
@@ -280,7 +303,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 let mut full_response = String::new();
                 let mut text_buffer = String::new();
                 let mut last_flush = tokio::time::Instant::now();
-                const COALESCE_MS: u64 = 50;
+                // Tight coalesce window so text streams in small, token-smooth chunks
+                // (ChatGPT/Claude feel) rather than arriving a sentence at a time. Applies
+                // to both the local app and the loop/comm channel so they stream identically.
+                const COALESCE_MS: u64 = 25;
 
                 // Comm streaming: send chunks to NeboAI as they arrive.
                 // Timer starts on first token, not loop init (LLM latency would
@@ -358,8 +384,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 text_buffer.clear();
                                 last_flush = tokio::time::Instant::now();
                             }
-                            // Stream chunks to comm channel via provider
-                            if comm_reply.is_some() {
+                            // Stream chunks to comm channel via provider.
+                            // Skip orchestrator progress heartbeats — the loop
+                            // gets a live activity signal via send_typing()
+                            // instead, without the "_Working on:_" spam.
+                            if comm_reply.is_some() && !is_progress_heartbeat(&event.text) {
                                 comm_buffer.push_str(&event.text);
                                 // Flush the FIRST chunk immediately so the loop
                                 // paints the opening text the instant the model
@@ -766,7 +795,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             topic: reply_config.topic.clone(),
                             conversation_id: reply_config.conversation_id.clone(),
                             msg_type: comm::CommMessageType::Message,
-                            content: full_response,
+                            content: strip_progress_heartbeats(&full_response),
                             metadata: reply_meta,
                             timestamp: 0,
                             human_injected: false,
@@ -1411,4 +1440,34 @@ async fn generate_chat_title_if_needed(
     info!(chat_id = %chat_id, title = %new_title, "auto-generated chat title");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_progress_heartbeat, strip_progress_heartbeats};
+
+    #[test]
+    fn detects_orchestrator_heartbeats() {
+        // The exact shapes orchestrator.rs emits (wrapped in surrounding newlines).
+        assert!(is_progress_heartbeat("\n_Working on: agent_\n"));
+        assert!(is_progress_heartbeat("\n_Working on: task: spawn_\n"));
+        assert!(is_progress_heartbeat("_Working..._"));
+    }
+
+    #[test]
+    fn leaves_real_content_alone() {
+        assert!(!is_progress_heartbeat("Working on the report now."));
+        assert!(!is_progress_heartbeat("_emphasis_ in the reply"));
+        assert!(!is_progress_heartbeat("Here are the diligence scores: 85/90."));
+    }
+
+    #[test]
+    fn strips_only_heartbeat_lines_preserving_content() {
+        let input =
+            "Here are the results.\n\n_Working on: agent_\nComposite score: 87.22\n_Working..._";
+        assert_eq!(
+            strip_progress_heartbeats(input),
+            "Here are the results.\n\nComposite score: 87.22"
+        );
+    }
 }

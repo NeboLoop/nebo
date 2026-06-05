@@ -86,13 +86,13 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
             while let Some(event) = rx.recv().await {
                 match event.event_type {
                     StreamEventType::Text => {
-                        // Skip orchestrator progress notifications
-                        // (formatted as "\n_Working on: ..._\n" or "\n_Working..._\n")
-                        let trimmed = event.text.trim();
-                        if trimmed.starts_with("_Working") && trimmed.ends_with('_') {
+                        // Skip orchestrator progress notifications — the
+                        // "_Working on: ..._" heartbeat (shared predicate) and
+                        // the background-task notice are status, not content.
+                        if crate::chat_dispatch::is_progress_heartbeat(&event.text) {
                             continue;
                         }
-                        if trimmed == "Working on this in the background..." {
+                        if event.text.trim() == "Working on this in the background..." {
                             continue;
                         }
                         full_response.push_str(&event.text);

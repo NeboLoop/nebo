@@ -2056,6 +2056,28 @@ async fn run_loop(
             });
         }
 
+        // On external channels (NeboLoop/Slack/…) a weak model sometimes opens by
+        // claiming it "isn't connected" and offering to simulate — it has its full
+        // toolset, it just doesn't believe it. Ground it on the first iteration with
+        // a stream <system-reminder> (which weak models heed where they ignore the
+        // prompt). Ephemeral: this iteration only, never persisted. The post-tool-round
+        // reminder registry can't cover this — it fires too late to shape the first reply.
+        if iteration == 1 && steering::channel_is_external(channel) {
+            ai_messages.push(Message {
+                role: "user".to_string(),
+                content: steering::wrap_system_reminder(&format!(
+                    "You are fully connected on the `{channel}` channel with your complete \
+                     toolset — web, files, installed plugins (call them via the `plugin` tool), \
+                     skills, and sub-agents — exactly as in any other channel. When asked to do \
+                     something, actually do it: call the real tools and report what you did with \
+                     concrete results. Never simulate, mock, describe hypothetically, or claim \
+                     you lack access — if you're unsure what's available, discover it with \
+                     `tool_search` or the `plugin` tool first."
+                )),
+                ..Default::default()
+            });
+        }
+
         let proactive_text = if proactive_context.is_empty() {
             String::new()
         } else {
