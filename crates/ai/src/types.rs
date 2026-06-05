@@ -165,6 +165,50 @@ impl StreamEvent {
         }
     }
 
+    /// A sub-agent (or harness node) started. `id` is a stable node id; `description` is the
+    /// human label the UI renders. Callers (e.g. the orchestrator) may add extra `widgets`
+    /// fields (agent_type, total_count) after construction.
+    pub fn subagent_start(id: impl Into<String>, description: impl Into<String>) -> Self {
+        let id = id.into();
+        let description = description.into();
+        Self {
+            event_type: StreamEventType::SubagentStart,
+            text: description.clone(),
+            tool_call: None,
+            error: Some(id.clone()),
+            usage: None,
+            rate_limit: None,
+            widgets: Some(serde_json::json!({ "task_id": id, "description": description })),
+            provider_metadata: None,
+            stop_reason: None,
+            image_url: None,
+        }
+    }
+
+    /// A sub-agent (or harness node) finished. `success` flags whether it produced a result.
+    pub fn subagent_complete(
+        id: impl Into<String>,
+        description: impl Into<String>,
+        success: bool,
+    ) -> Self {
+        let id = id.into();
+        let description = description.into();
+        Self {
+            event_type: StreamEventType::SubagentComplete,
+            text: description.clone(),
+            tool_call: None,
+            error: Some(id.clone()),
+            usage: None,
+            rate_limit: None,
+            widgets: Some(
+                serde_json::json!({ "task_id": id, "description": description, "success": success }),
+            ),
+            provider_metadata: None,
+            stop_reason: None,
+            image_url: None,
+        }
+    }
+
     pub fn done_with_reason(reason: impl Into<String>) -> Self {
         Self {
             event_type: StreamEventType::Done,

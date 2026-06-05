@@ -892,6 +892,21 @@ fn emit_progress(tx: &ProgressTx, text: impl Into<String>) {
     }
 }
 
+/// Announce a harness node (search/fetch/verify/scope/synth) starting — the UI renders it
+/// as a visible sub-agent in the fan-out. `id` is a stable node id; `label` is human text.
+fn emit_node_start(tx: &ProgressTx, id: &str, label: &str) {
+    if let Some(tx) = tx {
+        let _ = tx.try_send(ai::StreamEvent::subagent_start(id, label));
+    }
+}
+
+/// Announce a harness node finishing (`ok` = it produced a usable result).
+fn emit_node_done(tx: &ProgressTx, id: &str, label: &str, ok: bool) {
+    if let Some(tx) = tx {
+        let _ = tx.try_send(ai::StreamEvent::subagent_complete(id, label, ok));
+    }
+}
+
 fn source_hash(url: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -980,6 +995,7 @@ pub async fn run(
     }
 
     // ── Phase 0: Scope ──
+    emit_node_start(&progress, "scope", "Scope: decomposing the question");
     let scope: ScopeOut = match run_typed(&agent, StructuredTask {
         system: SCOPE_SYS.into(),
         task: scope_task(&question),
@@ -987,10 +1003,14 @@ pub async fn run(
         aux_tools: vec![],
         tab_key: tab_key(&run_id, "scope"),
     }, &cancel).await {
-        Ok(s) => s,
+        Ok(s) => {
+            emit_node_done(&progress, "scope", "Scope: decomposing the question", true);
+            s
+        }
         Err(e) => {
             // Salvage: scope failed → one angle that is the raw question.
             warn!(error = %e, "deep_research: scope failed, salvaging with raw query");
+            emit_node_done(&progress, "scope", "Scope: decomposing the question", false);
             ScopeOut {
                 question: question.clone(),
                 summary: "Scope step failed; searching the raw question directly.".into(),
@@ -1005,20 +1025,27 @@ pub async fn run(
     // ── Phase 1: Search (one sub-agent per angle) ──
     let mut search_futs: Vec<BoxFut<AngleResults>> = Vec::new();
     for (i, angle) in scope.angles.iter().enumerate() {
-        let (agent, cancel, q, angle, run_id) =
-            (agent.clone(), cancel.clone(), question.clone(), angle.clone(), run_id.clone());
+        let (agent, cancel, q, angle, run_id, progress) =
+            (agent.clone(), cancel.clone(), question.clone(), angle.clone(), run_id.clone(), progress.clone());
         search_futs.push(Box::pin(async move {
             let label = angle.label.clone();
+            let node = format!("search-{i}");
+            let desc = format!("Search: {label}");
+            emit_node_start(&progress, &node, &desc);
             match run_typed::<SearchOut>(&agent, StructuredTask {
                 system: SEARCH_SYS.into(),
                 task: search_task(&q, &angle),
                 schema: search_schema(&cfg),
                 aux_tools: vec!["web".into()],
-                tab_key: tab_key(&run_id, &format!("search-{i}")),
+                tab_key: tab_key(&run_id, &node),
             }, &cancel).await {
-                Ok(out) => AngleResults { angle: label, results: out.results },
+                Ok(out) => {
+                    emit_node_done(&progress, &node, &desc, !out.results.is_empty());
+                    AngleResults { angle: label, results: out.results }
+                }
                 Err(e) => {
                     warn!(angle = %label, error = %e, "deep_research: search angle failed");
+                    emit_node_done(&progress, &node, &desc, false);
                     AngleResults { angle: label, results: vec![] }
                 }
             }
@@ -1044,26 +1071,33 @@ pub async fn run(
     let sources_dir = dir.join("sources");
     let mut fetch_futs: Vec<BoxFut<FetchedSource>> = Vec::new();
     for planned in plan.fetch {
-        let (agent, cancel, q, cfg, run_id) =
-            (agent.clone(), cancel.clone(), question.clone(), cfg, run_id.clone());
+        let (agent, cancel, q, cfg, run_id, progress) =
+            (agent.clone(), cancel.clone(), question.clone(), cfg, run_id.clone(), progress.clone());
         let sources_dir = sources_dir.clone();
         fetch_futs.push(Box::pin(async move {
             let hash = source_hash(&planned.url);
             let source_ref = format!("sources/src_{hash}.txt");
+            let node = format!("fetch-{hash}");
+            let host = norm_url(&planned.url);
+            let host = host.split('/').next().unwrap_or(&planned.url);
+            let desc = format!("Fetch: {host}");
+            emit_node_start(&progress, &node, &desc);
             let unreliable = |claims: Vec<Claim>| FetchedSource {
                 row: SourceRow { url: planned.url.clone(), quality: SourceQuality::Unreliable, angle: planned.angle.clone(), claim_count: claims.len() },
                 claims,
             };
-            let (body, status) = match fetch_text(&agent, tab_key(&run_id, &format!("fetch-{hash}")), &planned.url).await {
+            let (body, status) = match fetch_text(&agent, tab_key(&run_id, &node), &planned.url).await {
                 Ok(v) => v,
                 Err(e) => {
                     warn!(url = %planned.url, error = %e, "deep_research: fetch failed");
+                    emit_node_done(&progress, &node, &desc, false);
                     return unreliable(vec![]);
                 }
             };
             // Rate-limited / forbidden → mark unreliable, do not hammer-retry.
             if matches!(status, Some(429) | Some(403)) {
                 warn!(url = %planned.url, status, "deep_research: rate-limited/forbidden source");
+                emit_node_done(&progress, &node, &desc, false);
                 return unreliable(vec![]);
             }
             let _ = std::fs::write(sources_dir.join(format!("src_{hash}.txt")), format!("URL: {}\n\n{}", planned.url, body));
@@ -1078,12 +1112,14 @@ pub async fn run(
                 Ok(e) => e,
                 Err(e) => {
                     warn!(url = %planned.url, error = %e, "deep_research: extract failed");
+                    emit_node_done(&progress, &node, &desc, false);
                     return unreliable(vec![]);
                 }
             };
             let claims: Vec<Claim> = extracted.claims.into_iter()
                 .map(|d| Claim::from_draft(d, planned.url.clone(), extracted.source_quality, source_ref.clone()))
                 .collect();
+            emit_node_done(&progress, &node, &desc, !claims.is_empty());
             FetchedSource {
                 row: SourceRow { url: planned.url.clone(), quality: extracted.source_quality, angle: planned.angle.clone(), claim_count: claims.len() },
                 claims,
@@ -1132,17 +1168,21 @@ pub async fn run(
     let mut verify_futs: Vec<BoxFut<(usize, Vote)>> = Vec::new();
     for (ci, claim) in ranked.iter().enumerate() {
         for v in 0..votes_per {
-            let (agent, cancel, q, claim, run_id) =
-                (agent.clone(), cancel.clone(), question.clone(), claim.clone(), run_id.clone());
+            let (agent, cancel, q, claim, run_id, progress) =
+                (agent.clone(), cancel.clone(), question.clone(), claim.clone(), run_id.clone(), progress.clone());
             let required = cfg.refutations_required;
             verify_futs.push(Box::pin(async move {
+                let node = format!("verify-{ci}-{v}");
+                let desc = format!("Verify claim {} (vote {}/{votes_per})", ci + 1, v + 1);
+                emit_node_start(&progress, &node, &desc);
                 let vote: Vote = run_typed::<Verdict>(&agent, StructuredTask {
                     system: VERIFY_SYS.into(),
                     task: verify_task(&q, &claim, v, votes_per, required),
                     schema: verdict_schema(),
                     aux_tools: vec!["web".into()],
-                    tab_key: tab_key(&run_id, &format!("verify-{ci}-{v}")),
+                    tab_key: tab_key(&run_id, &node),
                 }, &cancel).await.ok();
+                emit_node_done(&progress, &node, &desc, vote.is_some());
                 (ci, vote)
             }));
         }
@@ -1187,6 +1227,7 @@ pub async fn run(
 
     // ── Phase 4: Synthesize ──
     emit_progress(&progress, format!("Synthesizing {} confirmed claims…", confirmed.len()));
+    emit_node_start(&progress, "synth", "Synthesize: writing the report");
     let stats = base_stats(confirmed.len(), killed.len(), verified);
     let report = match run_typed::<ReportOut>(&agent, StructuredTask {
         system: SYNTH_SYS.into(),
@@ -1195,9 +1236,13 @@ pub async fn run(
         aux_tools: vec![],
         tab_key: tab_key(&run_id, "synth"),
     }, &cancel).await {
-        Ok(out) => build_report(&question, out, killed_rows, sources, stats),
+        Ok(out) => {
+            emit_node_done(&progress, "synth", "Synthesize: writing the report", true);
+            build_report(&question, out, killed_rows, sources, stats)
+        }
         Err(e) => {
             warn!(error = %e, "deep_research: synthesis failed, salvaging survivors");
+            emit_node_done(&progress, "synth", "Synthesize: writing the report", false);
             let confirmed_rows: Vec<RefutedRow> = confirmed.iter().map(|c| c.to_row()).collect();
             salvage_synth_failed(&question, confirmed_rows, killed_rows, sources, stats)
         }

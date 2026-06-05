@@ -585,26 +585,13 @@ impl Orchestrator {
                 );
             }
 
-            // Send SubagentStart event
-            let _ = progress_tx
-                .send(StreamEvent {
-                    event_type: StreamEventType::SubagentStart,
-                    text: description.clone(),
-                    tool_call: None,
-                    error: Some(task_id.clone()),
-                    usage: None,
-                    rate_limit: None,
-                    widgets: Some(serde_json::json!({
-                        "task_id": task_id,
-                        "description": description,
-                        "agent_type": req.agent_type,
-                        "total_count": total,
-                    })),
-                    provider_metadata: None,
-                    stop_reason: None,
-                    image_url: None,
-                })
-                .await;
+            // Send SubagentStart event (canonical constructor + spawn-batch metrics).
+            let mut start_ev = StreamEvent::subagent_start(task_id.as_str(), description.as_str());
+            if let Some(serde_json::Value::Object(w)) = start_ev.widgets.as_mut() {
+                w.insert("agent_type".to_string(), serde_json::json!(req.agent_type));
+                w.insert("total_count".to_string(), serde_json::json!(total));
+            }
+            let _ = progress_tx.send(start_ev).await;
 
             let runner = self.runner.clone();
             let store = self.store.clone();
@@ -694,23 +681,13 @@ impl Orchestrator {
                         Some((tid, desc, result, _, _)) => {
                             let (tool_count, token_count) = agent_metrics.get(&tid).copied().unwrap_or((0, 0));
                             let success = result.is_ok();
-                            let _ = progress_tx.send(StreamEvent {
-                                event_type: StreamEventType::SubagentComplete,
-                                text: desc.clone(),
-                                tool_call: None,
-                                error: Some(tid.clone()),
-                                usage: None,
-                                rate_limit: None,
-                                widgets: Some(serde_json::json!({
-                                    "task_id": tid,
-                                    "success": success,
-                                    "tool_count": tool_count,
-                                    "token_count": token_count,
-                                })),
-                                provider_metadata: None,
-                                stop_reason: None,
-                                image_url: None,
-                            }).await;
+                            let mut done_ev =
+                                StreamEvent::subagent_complete(tid.as_str(), desc.as_str(), success);
+                            if let Some(serde_json::Value::Object(w)) = done_ev.widgets.as_mut() {
+                                w.insert("tool_count".to_string(), serde_json::json!(tool_count));
+                                w.insert("token_count".to_string(), serde_json::json!(token_count));
+                            }
+                            let _ = progress_tx.send(done_ev).await;
                             results.push((tid, desc, result));
                         }
                         None => break, // All done

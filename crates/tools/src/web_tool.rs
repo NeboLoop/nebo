@@ -370,21 +370,50 @@ impl WebTool {
             }
         }
 
-        // 2. DuckDuckGo HTTP scraping — returns clean structured results (title/url/snippet)
-        tracing::info!(query, "no search API configured — trying DDG HTTP scraping");
-        let result = self.search_duckduckgo_html(query).await;
-        if !result.is_error {
-            self.record_visited(group_key, &search_key, &result.content, false, session_id);
-            return result;
+        // 2. Prefer the connected browser/extension — it uses the user's real Chrome (handles
+        //    JS, bot-detection, and auth), whereas DDG HTTP scraping is unreliable and can stall.
+        if self.browser_search_available() {
+            tracing::info!(query, "browser available — searching via browser/extension");
+            let browser_result = self.search_via_browser(query, session_id).await;
+            if !browser_result.is_error {
+                self.record_visited(group_key, &search_key, &browser_result.content, false, session_id);
+                return browser_result;
+            }
+            tracing::warn!(query, "browser search failed — falling back to DDG scraping");
         }
 
-        // 3. Final fallback: browser-based search (raw accessibility tree, noisier)
-        tracing::info!(query, "DDG scraping failed — trying browser search");
-        let browser_result = self.search_via_browser(query, session_id).await;
-        if !browser_result.is_error {
-            self.record_visited(group_key, &search_key, &browser_result.content, false, session_id);
+        // 3. DuckDuckGo HTTP scraping (fail-fast: cap at 8s so a hung/blocked request can't
+        //    stall the whole turn — see docs/bugs/web-search-slow-fallback.md). It internally
+        //    chains to Brave scraping if DDG returns nothing.
+        tracing::info!(query, "trying DDG HTTP scraping");
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            self.search_duckduckgo_html(query),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                tracing::warn!(query, "DDG scraping timed out after 8s");
+                ToolResult::error(
+                    "Web search timed out and no browser is connected. Connect the Nebo Chrome \
+                     extension or configure a search API key for reliable results.",
+                )
+            }
+        };
+        if !result.is_error {
+            self.record_visited(group_key, &search_key, &result.content, false, session_id);
         }
-        browser_result
+        result
+    }
+
+    /// Whether a browser backend (connected extension or headless agent-browser) is available
+    /// to run a search — used to prefer it over DDG HTTP scraping.
+    fn browser_search_available(&self) -> bool {
+        match &self.browser {
+            Some(m) => m.extension_connected() || m.headless_available(),
+            None => false,
+        }
     }
 
     /// Search via the user's browser — navigate to DuckDuckGo and read the results page.
