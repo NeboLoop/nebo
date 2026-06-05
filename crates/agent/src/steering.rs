@@ -76,12 +76,30 @@ pub struct ReminderContext<'a> {
     /// HTTP status if a tool this iteration was rate-limited/forbidden (429/403), so the
     /// model backs off instead of hammer-retrying the same host.
     pub rate_limited: Option<u16>,
+    /// The channel this run is on ("web"/"cli"/"" for the local app, "neboai"/"slack"/… for
+    /// external messaging). Lets comm-discipline reminders fire on channels even though
+    /// channel runs are Autonomous — a channel participant only sees the final message.
+    pub channel: &'a str,
 }
 
 impl ReminderContext<'_> {
     /// Direct Claude follows the system prompt well — suppression-style reminders skip it.
     fn is_claude(&self) -> bool {
         self.provider_id == "anthropic"
+    }
+
+    /// An external messaging channel (NeboLoop/Slack/etc.) — NOT the local app's own
+    /// surfaces. On these the participant only sees messages, not the live UI/tools.
+    fn is_external_channel(&self) -> bool {
+        !matches!(self.channel, "" | "web" | "cli" | "dm" | "voice")
+    }
+
+    /// Whether the agent should narrate progress + confirm actions to whoever it's serving:
+    /// interactive app runs OR external channels. Channel runs are Autonomous (silent by
+    /// default), but the person on the other end is still waiting on a reply, so the
+    /// comm-discipline reminders must fire there too — just as messages, not live narration.
+    fn wants_comm_discipline(&self) -> bool {
+        self.execution_mode == tools::ExecutionMode::Interactive || self.is_external_channel()
     }
 }
 
@@ -254,19 +272,28 @@ impl Reminder for SilenceBreaker {
         3
     }
     fn check(&self, ctx: &ReminderContext) -> Option<String> {
-        if ctx.execution_mode != tools::ExecutionMode::Interactive {
+        if !ctx.wants_comm_discipline() {
             return None;
         }
         let streak = silent_tool_streak(ctx.messages);
-        if streak >= SILENCE_BREAKER_THRESHOLD {
+        if streak < SILENCE_BREAKER_THRESHOLD {
+            return None;
+        }
+        if ctx.is_external_channel() {
+            Some(format!(
+                "You've taken {streak} actions without sending anything to the `{}` channel — \
+                 the person on the other end only sees your messages, not your tools, so to \
+                 them nothing is happening. Post one short line now: what you've found and \
+                 what you're checking next.",
+                ctx.channel
+            ))
+        } else {
             Some(format!(
                 "You've taken {streak} actions in a row without telling the user anything — \
                  they're watching a spinner with no idea what you're doing. Before your next \
                  tool call, write one short line: what you've found so far and what you're \
                  checking next."
             ))
-        } else {
-            None
         }
     }
 }
@@ -291,8 +318,9 @@ fn state_changing_action(tool_calls_json: &str) -> Option<String> {
 
 /// ActionConfirm — when the model just ran a state-changing tool (create/send/...),
 /// remind it that its reply must tell the user what it did. Fixes the observed
-/// "created a calendar event but only said 'Done'" failure. Interactive only;
-/// autonomous mode delivers a structured report at the end.
+/// "created a calendar event but only said 'Done'" failure. Fires for interactive runs AND
+/// external channels (where the participant only sees the final message). Pure-autonomous
+/// app runs deliver a structured report at the end instead.
 struct ActionConfirm;
 impl Reminder for ActionConfirm {
     fn name(&self) -> &'static str {
@@ -305,7 +333,7 @@ impl Reminder for ActionConfirm {
         2
     }
     fn check(&self, ctx: &ReminderContext) -> Option<String> {
-        if ctx.execution_mode != tools::ExecutionMode::Interactive {
+        if !ctx.wants_comm_discipline() {
             return None;
         }
         let last = ctx.messages.iter().rev().find(|m| m.role == "assistant")?;
@@ -1366,6 +1394,29 @@ mod tests {
     }
 
     #[test]
+    fn test_comm_discipline_fires_on_external_channel_even_autonomous() {
+        let tc = r#"[{"name":"event","input":{"action":"create"}}]"#;
+        let msgs = vec![make_msg("user", "schedule it"), make_assistant_with_tools("", tc)];
+        // Autonomous run on an external channel (the loop) → ActionConfirm STILL fires: the
+        // participant only sees messages, so the agent must confirm what it did.
+        let loop_ctx = ReminderContext {
+            messages: &msgs,
+            execution_mode: tools::ExecutionMode::Autonomous,
+            channel: "neboai",
+            ..base_rctx()
+        };
+        assert!(ActionConfirm.check(&loop_ctx).is_some());
+        // Autonomous run on a LOCAL app surface → suppressed (delivers a report at the end).
+        let local = ReminderContext {
+            messages: &msgs,
+            execution_mode: tools::ExecutionMode::Autonomous,
+            channel: "web",
+            ..base_rctx()
+        };
+        assert!(ActionConfirm.check(&local).is_none());
+    }
+
+    #[test]
     fn test_plugin_affinity_fires_after_plugin_use() {
         let tc = r#"[{"name":"plugin","input":{"resource":"slack","command":"post"}}]"#;
         let msgs = vec![
@@ -1911,6 +1962,7 @@ mod tests {
             agent_soul: None,
             detected_mode: "",
             rate_limited: None,
+            channel: "web",
         }
     }
 

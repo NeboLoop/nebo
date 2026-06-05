@@ -3408,6 +3408,7 @@ async fn run_loop(
                     agent_soul: active_agent_entry.as_ref().and_then(|r| r.soul.as_deref()),
                     detected_mode: &detected_mode,
                     rate_limited: iteration_rate_limited,
+                    channel,
                 };
                 if let Some(reminder) = steering::select_reminder(&rctx, &mut reminder_cadence) {
                     if let Err(e) = sessions.append_message(
