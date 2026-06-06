@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { AGENT_COLORS, AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { AGENTS } from '$lib/data.js';
   import { getScheduleAgents, runsPerWeek as storeRunsPerWeek, userScheduleItems } from '$lib/stores/schedule.js';
@@ -15,24 +15,43 @@
   let chats = $state<{ id: string; title: string; agent: string; agentColor: string; updatedAt: string; lastMessage?: string }[]>([]);
   let chatGroups = $state<{ label: string; chats: string[] }[]>([]);
 
+  async function loadAgents() {
+    const api = await import('$lib/api/nebo');
+    const agentResp = await api.listAgents().catch(() => null);
+    if (agentResp?.agents?.length) {
+      agents = (agentResp.agents as Agent[]).filter(a => !a.isApp).map(a => ({
+        id: a.id,
+        name: a.name,
+        role: a.description || '',
+        initial: a.name.charAt(0).toUpperCase(),
+        status: a.isEnabled ? 'online' : 'paused',
+        color: 'teal',
+      }));
+    }
+  }
+
+  // Agent roster changes arrive over the WebSocket (install/uninstall/activate/deactivate)
+  // and are re-dispatched as window events by lib/websocket/listeners.ts. Refresh the roster
+  // live — event-driven, never poll.
+  const AGENT_EVENTS = [
+    'nebo:agent_installed',
+    'nebo:agent_uninstalled',
+    'nebo:agent_activated',
+    'nebo:agent_deactivated',
+  ];
+  function onAgentsChanged() {
+    loadAgents();
+  }
+  onDestroy(() => {
+    AGENT_EVENTS.forEach((e) => window.removeEventListener(e, onAgentsChanged));
+  });
+
   onMount(async () => {
     try {
+      await loadAgents();
+      AGENT_EVENTS.forEach((e) => window.addEventListener(e, onAgentsChanged));
       const api = await import('$lib/api/nebo');
-      const [agentResp, chatResp] = await Promise.all([
-        api.listAgents().catch(() => null),
-        api.listChats().catch(() => null)
-      ]);
-
-      if (agentResp?.agents?.length) {
-        agents = (agentResp.agents as Agent[]).filter(a => !a.isApp).map(a => ({
-          id: a.id,
-          name: a.name,
-          role: a.description || '',
-          initial: a.name.charAt(0).toUpperCase(),
-          status: a.isEnabled ? 'online' : 'paused',
-          color: 'teal',
-        }));
-      }
+      const chatResp = await api.listChats().catch(() => null);
 
       if (chatResp?.chats?.length) {
         chats = chatResp.chats.map(c => ({
