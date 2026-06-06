@@ -273,7 +273,7 @@ impl PersonaTool {
             return ToolResult::error(crate::errors::missing_param(
                 "activate",
                 "name",
-                "bot(resource: \"registry\", action: \"activate\", name: \"chief-of-staff\")",
+                "agent(resource: \"registry\", action: \"activate\", name: \"chief-of-staff\")",
             ));
         }
 
@@ -364,7 +364,7 @@ impl PersonaTool {
                 ToolResult::ok(result)
             }
             None => ToolResult::error(format!(
-                "Agent '{}' not found. Use agents(action: \"list\") to see available agents.",
+                "Agent '{}' not found. Use agent(resource: \"registry\", action: \"list\") to see available agents.",
                 name
             )),
         }
@@ -533,7 +533,7 @@ impl PersonaTool {
             return ToolResult::error(crate::errors::missing_param(
                 "create",
                 "name",
-                "bot(resource: \"registry\", action: \"create\", name: \"my-agent\", description: \"An agent that...\")",
+                "agent(resource: \"registry\", action: \"create\", name: \"my-agent\", description: \"An agent that...\")",
             ));
         }
 
@@ -723,7 +723,7 @@ impl PersonaTool {
             return ToolResult::error(crate::errors::missing_param(
                 "update",
                 "name",
-                "bot(resource: \"registry\", action: \"update\", name: \"my-agent\", description: \"Updated description\")",
+                "agent(resource: \"registry\", action: \"update\", name: \"my-agent\", description: \"Updated description\")",
             ));
         }
 
@@ -741,7 +741,7 @@ impl PersonaTool {
             Some(r) => r,
             None => {
                 return ToolResult::error(format!(
-                    "Agent '{}' not found. Use agents(action: \"list\") to see available agents.",
+                    "Agent '{}' not found. Use agent(resource: \"registry\", action: \"list\") to see available agents.",
                     name
                 ));
             }
@@ -1105,7 +1105,7 @@ impl PersonaTool {
             return ToolResult::error(crate::errors::missing_param(
                 "delete",
                 "name",
-                "bot(resource: \"registry\", action: \"delete\", name: \"my-agent\")",
+                "agent(resource: \"registry\", action: \"delete\", name: \"my-agent\")",
             ));
         }
 
@@ -1213,7 +1213,7 @@ impl PersonaTool {
             return ToolResult::error(crate::errors::missing_param(
                 "reload",
                 "name",
-                "bot(resource: \"registry\", action: \"reload\", name: \"my-agent\")",
+                "agent(resource: \"registry\", action: \"reload\", name: \"my-agent\")",
             ));
         }
         let check_update = input["check_update"].as_bool().unwrap_or(false);
@@ -2031,7 +2031,7 @@ impl PersonaTool {
             return ToolResult::error(crate::errors::missing_param(
                 "stats",
                 "name",
-                "bot(resource: \"registry\", action: \"stats\", name: \"my-agent\")",
+                "agent(resource: \"registry\", action: \"stats\", name: \"my-agent\")",
             ));
         }
 
@@ -2049,7 +2049,7 @@ impl PersonaTool {
             Some(r) => r,
             None => {
                 return ToolResult::error(format!(
-                    "Agent '{}' not found. Use agents(action: \"list\") to see available agents.",
+                    "Agent '{}' not found. Use agent(resource: \"registry\", action: \"list\") to see available agents.",
                     name
                 ));
             }
@@ -2149,7 +2149,7 @@ impl PersonaTool {
             return ToolResult::error(crate::errors::missing_param(
                 "setup",
                 "name",
-                "bot(resource: \"registry\", action: \"setup\", name: \"my-agent\")",
+                "agent(resource: \"registry\", action: \"setup\", name: \"my-agent\")",
             ));
         }
 
@@ -2184,14 +2184,14 @@ impl PersonaTool {
             return ToolResult::error(crate::errors::missing_param(
                 "delegate",
                 "prompt",
-                "bot(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\")",
+                "agent(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\")",
             ));
         }
         if name.is_empty() && id.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
                 "delegate",
                 "name",
-                "bot(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\")",
+                "agent(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\")",
             ));
         }
 
@@ -2262,7 +2262,7 @@ impl PersonaTool {
                         }
                         None => {
                             return ToolResult::error(format!(
-                                "Agent '{}' not found. Use agents(action: \"list\") to see available agents.",
+                                "Agent '{}' not found. Use agent(resource: \"registry\", action: \"list\") to see available agents.",
                                 name
                             ));
                         }
@@ -2449,41 +2449,41 @@ impl DynTool for PersonaTool {
            {\"name\": \"x\", \"trigger\": \"manual\", \"steps\": [...]}\n\n\
          Optional fields: emit (event name on completion), description (human label).\n\n\
          EXAMPLES:\n  \
-         agents(action: \"create\", name: \"morning-briefing\", description: \"Daily executive briefing\",\n    \
+         agent(resource: \"registry\", action: \"create\", name: \"morning-briefing\", description: \"Daily executive briefing\",\n    \
            automations: [{\"name\": \"daily-brief\", \"schedule\": \"0 7 * * *\",\n    \
              \"steps\": [\"Gather top news headlines\", \"Check calendar for today\", \"Compose briefing\"],\n    \
              \"emit\": \"briefing.ready\", \"description\": \"7am daily briefing\"}])\n  \
-         agents(action: \"create\", name: \"email-monitor\", description: \"Checks email\",\n    \
+         agent(resource: \"registry\", action: \"create\", name: \"email-monitor\", description: \"Checks email\",\n    \
            automations: [{\"name\": \"check\", \"interval\": \"15m\", \"window\": \"08:00-18:00\",\n    \
              \"steps\": [\"Check inbox for urgent emails and flag them\"]}])\n  \
-         agents(action: \"update\", name: \"morning-briefing\", description: \"Updated description\")\n  \
-         agents(action: \"update\", name: \"morning-briefing\",\n    \
+         agent(resource: \"registry\", action: \"update\", name: \"morning-briefing\", description: \"Updated description\")\n  \
+         agent(resource: \"registry\", action: \"update\", name: \"morning-briefing\",\n    \
            add_automations: [{\"name\": \"evening-recap\", \"schedule\": \"daily at 6pm\",\n    \
              \"steps\": [\"Summarize the day\"]}])\n  \
-         agents(action: \"create\", name: \"inbox-watcher\", description: \"Watches for new emails\",\n    \
+         agent(resource: \"registry\", action: \"create\", name: \"inbox-watcher\", description: \"Watches for new emails\",\n    \
            automations: [{\"name\": \"watch-email\", \"plugin\": \"gws\", \"event\": \"email.new\",\n    \
              \"steps\": [\"Triage the incoming email\", \"Flag if urgent\"]}])\n  \
-         agents(action: \"create\", name: \"email-relay\", description: \"Relays email events\",\n    \
+         agent(resource: \"registry\", action: \"create\", name: \"email-relay\", description: \"Relays email events\",\n    \
            automations: [{\"name\": \"relay\", \"plugin\": \"gws\", \"event\": \"email.new\",\n    \
              \"description\": \"Event-only watch — no steps, just relays into EventBus\"}])\n  \
-         agents(action: \"update\", name: \"morning-briefing\", remove_automations: [\"evening-recap\"])\n  \
-         agents(action: \"delete\", name: \"morning-briefing\")\n  \
-         agents(action: \"repair\")  — fix all agents\n  \
-         agents(action: \"repair\", name: \"trading-bot\")  — fix one agent\n  \
-         agents(action: \"install\", code: \"AGNT-ABCD-1234\")\n\n\
+         agent(resource: \"registry\", action: \"update\", name: \"morning-briefing\", remove_automations: [\"evening-recap\"])\n  \
+         agent(resource: \"registry\", action: \"delete\", name: \"morning-briefing\")\n  \
+         agent(resource: \"registry\", action: \"repair\")  — fix all agents\n  \
+         agent(resource: \"registry\", action: \"repair\", name: \"trading-bot\")  — fix one agent\n  \
+         agent(resource: \"registry\", action: \"install\", code: \"AGNT-ABCD-1234\")\n\n\
          GRANULAR UPDATE (non-destructive — change one thing without affecting the rest):\n\n\
          Update a SINGLE automation (change only what you specify):\n  \
-         agents(action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
+         agent(resource: \"registry\", action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
            \"name\": \"weekly-audit\", \"schedule\": \"0 8 * * 1\", \"description\": \"New label\"})\n  \
-         agents(action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
+         agent(resource: \"registry\", action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
            \"name\": \"weekly-audit\", \"steps\": [\"Step 1\", \"Step 2\", \"Step 3\"]})\n\n\
          Toggle a single automation on/off:\n  \
-         agents(action: \"update\", name: \"seo-auditor\", toggle_automation: \"weekly-audit\")\n\n\
+         agent(resource: \"registry\", action: \"update\", name: \"seo-auditor\", toggle_automation: \"weekly-audit\")\n\n\
          Set user-supplied input values (feeds into every workflow run):\n  \
-         agents(action: \"update\", name: \"seo-auditor\", input_values: {\n    \
+         agent(resource: \"registry\", action: \"update\", name: \"seo-auditor\", input_values: {\n    \
            \"site_url\": \"https://example.com\", \"report_frequency\": \"weekly\"})\n\n\
          Update input field schema (dynamic form shown on Settings tab):\n  \
-         agents(action: \"update\", name: \"seo-auditor\", inputs: [\n    \
+         agent(resource: \"registry\", action: \"update\", name: \"seo-auditor\", inputs: [\n    \
            {\"key\": \"site_url\", \"label\": \"Your website\", \"type\": \"text\", \"required\": true},\n    \
            {\"key\": \"frequency\", \"label\": \"Report frequency\", \"type\": \"select\",\n     \
              \"options\": [{\"value\": \"daily\", \"label\": \"Daily\"}, {\"value\": \"weekly\", \"label\": \"Weekly\"}]}])"

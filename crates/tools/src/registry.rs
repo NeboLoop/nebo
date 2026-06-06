@@ -608,6 +608,7 @@ impl Registry {
             orchestrator,
             skill_loader,
             advisor_runner,
+            None, // vision_analyzer
             hybrid_searcher,
             None, // structured_agent
             None, // workflow_manager
@@ -632,6 +633,7 @@ impl Registry {
         orchestrator: crate::OrchestratorHandle,
         skill_loader: Option<Arc<crate::skills::Loader>>,
         advisor_runner: Option<Arc<dyn crate::bot_tool::AdvisorDeliberator>>,
+        vision_analyzer: Option<Arc<dyn crate::bot_tool::VisionAnalyzer>>,
         hybrid_searcher: Option<Arc<dyn crate::bot_tool::HybridSearcher>>,
         structured_agent: Option<Arc<dyn crate::bot_tool::StructuredAgent>>,
         workflow_manager: Option<Arc<dyn crate::workflows::WorkflowManager>>,
@@ -690,6 +692,9 @@ impl Registry {
         let runner_for_events = advisor_runner.clone();
         if let Some(runner) = advisor_runner {
             agent_tool = agent_tool.with_advisor_runner(runner);
+        }
+        if let Some(vision) = vision_analyzer {
+            agent_tool = agent_tool.with_vision_analyzer(vision);
         }
         if let Some(searcher) = hybrid_searcher {
             agent_tool = agent_tool.with_hybrid_searcher(searcher);

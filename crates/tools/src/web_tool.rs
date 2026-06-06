@@ -8,7 +8,7 @@ use crate::registry::{DynTool, ResourceKind, ToolResult};
 /// Max chars for auto-snapshot appended after mutation actions.
 const AUTO_SNAPSHOT_MAX_CHARS: usize = 6_000;
 
-/// Max chars for inline read_page/evaluate/get_page_text results.
+/// Max chars for inline read_page/evaluate results.
 /// Results beyond this are truncated with a hint, never spilled to files.
 const MAX_INLINE_CHARS: usize = 15_000;
 
@@ -121,19 +121,14 @@ impl WebTool {
 
     fn infer_resource(&self, action: &str) -> &str {
         match action {
-            "fetch" | "get" | "post" | "put" | "delete" | "head" | "sanitize" => "http",
-            "search" | "query" => "search",
-            "navigate" | "snapshot" | "read_page" | "click" | "double_click"
-            | "triple_click" | "right_click" | "fill" | "form_input" | "type"
-            | "screenshot" | "evaluate" | "close" | "list_tabs" | "new_tab" | "close_tab"
-            | "back" | "go_back" | "forward" | "go_forward" | "history"
-            | "scroll" | "scroll_to" | "hover" | "select" | "press" | "key"
-            | "wait" | "drag" | "status" | "zoom" | "get_page_text"
-            | "read_console_messages" | "console_messages"
-            | "read_network_requests" | "network_requests"
-            | "resize_window" | "resize" | "file_upload" | "upload_file"
-            | "find" | "find_elements" | "fill_form" | "browser_batch" => "browser",
-            "console" | "source" | "storage" | "dom" | "cookies" | "performance" => "devtools",
+            "fetch" | "sanitize" => "http",
+            "search" => "search",
+            "navigate" | "read_page" | "click" | "fill" | "type" | "screenshot"
+            | "evaluate" | "list_tabs" | "new_tab" | "close_tab" | "history"
+            | "scroll" | "hover" | "select" | "press" | "wait" | "drag" | "status"
+            | "read_console_messages" | "read_network_requests" | "resize_window"
+            | "file_upload" | "find" | "fill_form" | "browser_batch" => "browser",
+            "console" => "devtools",
             _ => "",
         }
     }
@@ -208,14 +203,10 @@ impl WebTool {
             .with_http_status(status);
         }
 
-        // Infer HTTP method from action name (get/post/put/delete/head) or explicit method param
+        // HTTP method comes from the `method` param (the one way); defaults to GET.
         let method = input
             .get("method")
             .and_then(|v| v.as_str())
-            .or_else(|| match action {
-                "get" | "post" | "put" | "delete" | "head" => Some(action),
-                _ => None,
-            })
             .unwrap_or("GET")
             .to_uppercase();
 
@@ -306,7 +297,7 @@ impl WebTool {
     }
 
     async fn handle_search(&self, input: &serde_json::Value, session_id: &str, group_key: &str) -> ToolResult {
-        let query = match input.get("query").and_then(|v| v.as_str()) {
+        let raw_query = match input.get("query").and_then(|v| v.as_str()) {
             Some(q) => q,
             None => {
                 return ToolResult::error(crate::errors::missing_param(
@@ -316,24 +307,30 @@ impl WebTool {
                 ))
             }
         };
+        // Weak models stuff queries with stacked `site:` filters and run them hundreds of chars
+        // long; keyword engines (DuckDuckGo) reject those and return nothing. Normalize to a clean
+        // keyword query the engine will actually accept.
+        let query_owned = normalize_search_query(raw_query);
+        if query_owned != raw_query.trim() {
+            tracing::info!(original = %raw_query, normalized = %query_owned, "rewrote search query");
+        }
+        let query = query_owned.as_str();
 
-        // Check if a sibling already searched this query
+        // Skip re-running a query already searched recently (by a sibling OR earlier this session).
         let search_key = format!("search:{}", query.to_lowercase().trim());
         if let Some(cached) = self.check_visited(group_key, &search_key) {
-            if cached.visited_by != session_id {
-                tracing::info!(
-                    session_id = %session_id,
-                    visited_by = %cached.visited_by,
-                    query = %query,
-                    "search cache hit from sibling"
-                );
-                return ToolResult {
-                    content: format!("[Cached from sibling agent]\n\n{}", cached.content),
-                    is_error: cached.is_error,
-                    image_url: None,
-                    http_status: None,
-                };
-            }
+            tracing::info!(
+                session_id = %session_id,
+                visited_by = %cached.visited_by,
+                query = %query,
+                "search cache hit — returning cached results instead of re-searching"
+            );
+            return ToolResult {
+                content: format!("[Already searched this recently — cached results]\n\n{}", cached.content),
+                is_error: cached.is_error,
+                image_url: None,
+                http_status: None,
+            };
         }
 
         // 1. Try BYOK API providers (check auth_profiles for search-* providers)
@@ -426,6 +423,12 @@ impl WebTool {
             }
         };
 
+        // Nudge the user to install the extension whenever it isn't connected — even if the
+        // built-in CDP browser is carrying the work. The extension is the intended path.
+        if !manager.extension_connected() {
+            self.broadcast_extension_disconnected("not_connected", session_id);
+        }
+
         let executor = match manager.executor() {
             Some(e) => e,
             None => {
@@ -457,32 +460,29 @@ impl WebTool {
             return self.search_duckduckgo_html(query).await;
         }
 
-        // Read the search results page
-        let read_args = serde_json::json!({});
-        match executor
-            .execute("read_page", &read_args, Some(session_id))
-            .await
-        {
-            Ok(result) => {
-                let text = result
-                    .get("pageContent")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if text.is_empty() {
-                    // DuckDuckGo HTML version failed too — try HTTP scraping as final fallback
-                    tracing::warn!(
-                        "browser read_page returned empty for DuckDuckGo, trying DDG HTTP scraping"
-                    );
-                    self.search_duckduckgo_html(query).await
-                } else {
-                    ToolResult::ok(format!("Search results for: {}\n\n{}", query, text))
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "read_page failed after DuckDuckGo search");
-                self.search_duckduckgo_html(query).await
+        // Pull the rendered page HTML and parse result links generically. Reading the real
+        // browser's DOM (vs a direct scrape) uses the user's IP/cookies + JS, sidestepping the
+        // bot-block that hits direct scraping. `read_page` returns the accessibility tree (the
+        // search FORM, not the results), so we evaluate the raw HTML and run the same generic
+        // link extractor. If the page yields nothing usable (bot-check, or a results-less form
+        // page), fall through to the direct scrape chain (DDG → Brave) so we never return chrome
+        // as if it were results.
+        let html_expr = serde_json::json!({ "expression": "document.documentElement.outerHTML" });
+        if let Ok(v) = executor.execute("evaluate", &html_expr, Some(session_id)).await {
+            let html = v
+                .get("text")
+                .or_else(|| v.get("result"))
+                .or_else(|| v.get("value"))
+                .or_else(|| v.get("pageContent"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            let results = extract_search_links(html, "duckduckgo.com");
+            if !results.is_empty() {
+                return format_search_results(query, &results);
             }
         }
+        tracing::warn!("browser search yielded no parseable results — falling back to direct scrape chain");
+        self.search_duckduckgo_html(query).await
     }
 
     /// Dispatch to the correct BYOK search API provider.
@@ -608,7 +608,7 @@ impl WebTool {
         match self.client.get(&search_url).send().await {
             Ok(resp) => match resp.text().await {
                 Ok(html) => {
-                    let results = parse_brave_results(&html);
+                    let results = extract_search_links(&html, "search.brave.com");
                     if results.is_empty() {
                         ToolResult::ok(format!("No results found for: {}", query))
                     } else {
@@ -631,7 +631,7 @@ impl WebTool {
         match self.client.get(&search_url).send().await {
             Ok(resp) => match resp.text().await {
                 Ok(html) => {
-                    let results = parse_duckduckgo_results(&html);
+                    let results = extract_search_links(&html, "duckduckgo.com");
                     if results.is_empty() {
                         // Final fallback: try Brave
                         self.search_brave_html(query).await
@@ -696,6 +696,12 @@ impl WebTool {
             }
         };
 
+        // Nudge to install the extension whenever it isn't connected — even if the built-in
+        // CDP browser is handling this action. The extension is the intended path.
+        if !manager.extension_connected() {
+            self.broadcast_extension_disconnected("not_connected", session_id);
+        }
+
         if !executor.is_connected() {
             let grace = std::time::Duration::from_secs(3);
             if executor.was_recently_connected(grace).await {
@@ -713,25 +719,35 @@ impl WebTool {
             }
         }
 
-        // Check if a sibling already navigated to this URL
         if action == "navigate" {
             if let Some(url) = input.get("url").and_then(|v| v.as_str()) {
+                // Don't navigate the real browser to a binary/file URL (PDF, docx, zip, …): it
+                // can't render it, so it triggers a download + OS save dialog that derails the
+                // run. Tell the agent to find the info on an HTML page instead.
+                if let Some(ext) = file_download_ext(url) {
+                    tracing::info!(url = %url, ext = %ext, "skipping navigate to binary file URL (would trigger download)");
+                    return ToolResult::ok(format!(
+                        "Skipped: {url} is a .{ext} file the browser can't display (opening it only \
+                         triggers a download). Find the information on an HTML page instead — e.g. \
+                         the article's abstract/landing page rather than the file itself."
+                    ));
+                }
+                // Skip re-navigating to a URL visited recently (by a sibling OR earlier this
+                // session) — return the cached page instead of re-loading it.
                 let nav_key = format!("nav:{}", url);
                 if let Some(cached) = self.check_visited(group_key, &nav_key) {
-                    if cached.visited_by != session_id {
-                        tracing::info!(
-                            session_id = %session_id,
-                            visited_by = %cached.visited_by,
-                            url = %url,
-                            "navigate cache hit from sibling"
-                        );
-                        return ToolResult {
-                            content: format!("[Already visited by sibling agent]\n\n{}", cached.content),
-                            is_error: cached.is_error,
-                            image_url: None,
-                            http_status: None,
-                        };
-                    }
+                    tracing::info!(
+                        session_id = %session_id,
+                        visited_by = %cached.visited_by,
+                        url = %url,
+                        "navigate cache hit — returning cached page instead of re-visiting"
+                    );
+                    return ToolResult {
+                        content: format!("[Already visited this page recently — cached content]\n\n{}", cached.content),
+                        is_error: cached.is_error,
+                        image_url: None,
+                        http_status: None,
+                    };
                 }
             }
         }
@@ -778,13 +794,6 @@ impl WebTool {
         // Forward devtools actions to the extension's actual tool names
         let tool_name = match action {
             "console" => "read_console_messages",
-            "source" | "storage" | "dom" | "cookies" | "performance" => {
-                return ToolResult::error(format!(
-                    "DevTools action '{}' is not yet available. Use web(action: \"console\") for console logs, \
-                     or web(action: \"read_network_requests\") for network activity.",
-                    action
-                ));
-            }
             _ => {
                 return ToolResult::error(format!(
                     "Unknown devtools action '{}'. Available: console",
@@ -1030,7 +1039,7 @@ impl WebTool {
                 return ToolResult::error(format!(
                     "Browser action '{}' is not supported. Available: navigate, read_page, click, \
                      hover, fill, type, select, screenshot, scroll, press, drag, wait, evaluate, \
-                     list_tabs, new_tab, close_tab, history, get_page_text, find, file_upload, \
+                     list_tabs, new_tab, close_tab, history, find, file_upload, \
                      fill_form, browser_batch",
                     action
                 ));
@@ -1234,7 +1243,7 @@ impl WebTool {
                 }
 
                 // Truncate large results inline — never spill to files.
-                if matches!(action, "evaluate" | "snapshot" | "read_page" | "get_page_text") {
+                if matches!(action, "evaluate" | "snapshot" | "read_page") {
                     if text_result.len() > MAX_INLINE_CHARS {
                         text_result = truncate_snapshot(&text_result, MAX_INLINE_CHARS);
                     }
@@ -1264,7 +1273,7 @@ impl DynTool for WebTool {
          Every mutation action (click, type, fill, press, scroll, etc.) returns a page snapshot automatically — \
          you do NOT need to call read_page after actions. The snapshot shows interactive elements with refs.\n\n\
          Actions: navigate, read_page, click, hover, fill, type, select, screenshot, scroll, press, drag, \
-         wait, evaluate, history, get_page_text, find, file_upload, fill_form, browser_batch\n\n\
+         wait, evaluate, history, find, file_upload, fill_form, browser_batch\n\n\
          Batching: browser_batch chains 2+ predictable steps in one round trip. fill_form fills multiple \
          form fields at once. USE THESE for multi-step sequences.\n\n\
          ## Rules\n\
@@ -1290,16 +1299,16 @@ impl DynTool for WebTool {
                 "action": {
                     "type": "string",
                     "description": "The operation to perform on the selected resource.",
-                    "enum": ["fetch", "get", "post", "put", "delete", "head", "sanitize",
+                    "enum": ["fetch", "sanitize",
                              "search",
                              "navigate", "read_page", "click", "hover", "fill",
                              "type", "select", "screenshot", "scroll", "press",
                              "drag", "wait", "evaluate",
                              "list_tabs", "new_tab", "close_tab",
-                             "history", "get_page_text", "find", "file_upload",
+                             "history", "find", "file_upload",
                              "fill_form", "browser_batch",
                              "read_console_messages", "read_network_requests", "resize_window",
-                             "console", "source", "storage", "dom", "cookies", "performance"]
+                             "status", "console"]
                 },
                 "url": {
                     "type": "string",
@@ -1319,7 +1328,10 @@ impl DynTool for WebTool {
                 },
                 "query": {
                     "type": "string",
-                    "description": "Search query"
+                    "description": "For search: write ONE short keyword query (≤ ~10 words). Do NOT chain \
+                        `site:` operators or paste lists of domains — search engines reject long queries and \
+                        return nothing. To dig deeper, run a NEW query with different keywords, not more filters. \
+                        For find: a natural-language description of the element(s) to locate."
                 },
                 "offset": {
                     "type": "integer",
@@ -1418,17 +1430,9 @@ impl DynTool for WebTool {
                     "items": { "type": "number" },
                     "description": "[x, y] start coordinates for drag action"
                 },
-                "duration": {
-                    "type": "number",
-                    "description": "Seconds to wait (for wait action, max 30)"
-                },
                 "chunk_size": {
                     "type": "integer",
                     "description": "Max characters per chunk for sanitize (default 4000)"
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "Max output characters for get_page_text (default 50000)"
                 },
                 "onlyErrors": {
                     "type": "boolean",
@@ -1462,10 +1466,6 @@ impl DynTool for WebTool {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "For file_upload: absolute file paths to upload"
-                },
-                "query": {
-                    "type": "string",
-                    "description": "For find: natural language description of elements to find"
                 },
                 "force": {
                     "type": "boolean",
@@ -1596,33 +1596,31 @@ async fn auto_snapshot(
 /// Map a web tool action name to the corresponding extension tool name.
 /// Returns None for actions that don't map (status, new_tab validation, etc.)
 fn map_action_to_tool(action: &str) -> Option<&'static str> {
+    // Canonical model actions only → extension tool name. Variants (double/right click,
+    // scroll-to-element) are resolved from params by the caller, not accepted as aliases here.
     match action {
-        "snapshot" | "read_page" => Some("read_page"),
+        "read_page" => Some("read_page"),
         "navigate" => Some("navigate"),
-        "click" | "double_click" | "triple_click" | "right_click" => Some("click"),
+        "click" => Some("click"),
         "hover" => Some("hover"),
-        "fill" | "form_input" => Some("form_input"),
+        "fill" => Some("form_input"),
         "type" => Some("type"),
         "select" => Some("select"),
         "screenshot" => Some("screenshot"),
-        "scroll" | "scroll_to" => Some("scroll"),
-        "press" | "key" => Some("press"),
+        "scroll" => Some("scroll"),
+        "press" => Some("press"),
         "drag" => Some("drag"),
-        "back" | "go_back" => Some("go_back"),
-        "forward" | "go_forward" => Some("go_forward"),
-        "history" => None, // handled specially in handle_browser_via_extension
+        "history" => None, // handled specially in handle_browser_via_extension (direction → go_back/go_forward)
         "wait" => Some("wait"),
         "evaluate" => Some("evaluate"),
         "list_tabs" => Some("list_tabs"),
         "new_tab" => Some("new_tab"),
-        "close_tab" | "close" => Some("close_tab"),
-        "zoom" => Some("zoom"),
-        "get_page_text" => Some("get_page_text"),
-        "read_console_messages" | "console_messages" => Some("read_console_messages"),
-        "read_network_requests" | "network_requests" => Some("read_network_requests"),
-        "resize_window" | "resize" => Some("resize_window"),
-        "file_upload" | "upload_file" => Some("file_upload"),
-        "find" | "find_elements" => Some("find"),
+        "close_tab" => Some("close_tab"),
+        "read_console_messages" => Some("read_console_messages"),
+        "read_network_requests" => Some("read_network_requests"),
+        "resize_window" => Some("resize_window"),
+        "file_upload" => Some("file_upload"),
+        "find" => Some("find"),
         _ => None,
     }
 }
@@ -1635,35 +1633,23 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
     let forward_keys = match action {
         "navigate" => vec!["url", "force"],
         "new_tab" => vec!["url"],
-        "click" | "double_click" | "triple_click" | "right_click" => {
-            vec!["ref", "selector", "coordinate", "x", "y", "modifiers", "click_count", "button"]
-        }
-        "hover" => vec!["ref", "coordinate", "x", "y"],
-        "fill" | "form_input" => vec!["ref", "selector", "value"],
+        "click" => vec!["ref", "selector", "coordinate", "modifiers", "click_count", "button"],
+        "hover" => vec!["ref", "coordinate"],
+        "fill" => vec!["ref", "selector", "value"],
         "type" => vec!["text"],
         "select" => vec!["ref", "selector", "value"],
-        "scroll" | "scroll_to" => vec![
-            "direction", "amount", "scroll_direction", "scroll_amount",
-            "coordinate", "ref",
-        ],
-        "press" | "key" => vec!["key", "text", "repeat"],
+        "scroll" => vec!["direction", "amount", "coordinate", "ref"],
+        "press" => vec!["key", "text", "repeat"],
         "drag" => vec!["start_coordinate", "coordinate"],
-        "wait" => vec!["ms", "duration"],
+        "wait" => vec!["ms"],
         "evaluate" => vec!["expression", "text"],
-        "snapshot" | "read_page" => vec!["filter", "depth", "maxChars", "refId"],
-        "close_tab" | "close" => vec!["tabId", "tabIds"],
-        "zoom" => vec!["region"],
-        "get_page_text" => vec!["max_chars"],
-        "read_console_messages" | "console_messages" => {
-            vec!["onlyErrors", "clear", "pattern", "limit"]
-        }
-        "read_network_requests" | "network_requests" => vec!["urlPattern", "clear", "limit"],
-        "resize_window" | "resize" => vec!["width", "height"],
-        "file_upload" | "upload_file" => vec!["paths", "ref"],
-        "find" | "find_elements" => vec!["query"],
-        "console" | "source" | "storage" | "dom" | "cookies" | "performance" => {
-            vec!["url", "selector", "expression", "filter"]
-        }
+        "read_page" => vec!["filter", "depth", "maxChars", "refId"],
+        "close_tab" => vec!["tabId", "tabIds"],
+        "read_console_messages" => vec!["onlyErrors", "clear", "pattern", "limit"],
+        "read_network_requests" => vec!["urlPattern", "clear", "limit"],
+        "resize_window" => vec!["width", "height"],
+        "file_upload" => vec!["paths", "ref"],
+        "find" => vec!["query"],
         _ => vec![],
     };
 
@@ -2012,151 +1998,166 @@ fn parse_serpapi_results(body: &serde_json::Value) -> Vec<SearchResult> {
 }
 
 /// Parse Brave Search HTML results.
-fn parse_brave_results(html: &str) -> Vec<SearchResult> {
+/// Generic search-results extractor. Works on ANY engine's results page by harvesting external
+/// result links + their anchor text — there are NO per-engine class selectors to rot when a site
+/// changes its markup (every organic result is fundamentally `<a href="external">title</a>`).
+/// Decodes DuckDuckGo's `uddg=` redirect wrapper, drops the engine's own + social/nav links, and
+/// dedups by normalized URL. This mirrors the reference harness's "generic extraction, no
+/// hardcoded selectors" approach (its WebFetch returns clean text the same way).
+fn extract_search_links(html: &str, engine_host: &str) -> Vec<SearchResult> {
+    const JUNK_HOSTS: &[&str] = &[
+        "duckduckgo.com",
+        "brave.com",
+        "bing.com",
+        "google.com",
+        "microsoft.com",
+        "facebook.com",
+        "twitter.com",
+        "x.com",
+        "instagram.com",
+        "youtube.com",
+        "pinterest.com",
+        "tiktok.com",
+    ];
     let mut results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
 
-    // Brave wraps each result in a div with id="N-web" or similar data attributes.
-    // Titles are in <div class="title search-snippet-title ...">
-    // URLs are in <cite class="snippet-url ...">
-    // Descriptions are in <div class="snippet-description ...">
-    // We split by snippet-url to isolate each result block.
-    let chunks: Vec<&str> = html.split("snippet-url").collect();
+    for piece in html.split("<a ").skip(1) {
+        let Some(tag_end) = piece.find('>') else {
+            continue;
+        };
+        let tag = &piece[..tag_end];
+        let inner = &piece[tag_end + 1..];
 
-    for (i, chunk) in chunks.iter().enumerate() {
-        if i == 0 || results.len() >= 10 {
+        // Raw href value.
+        let Some(h0) = tag.find("href=\"") else {
+            continue;
+        };
+        let after = &tag[h0 + 6..];
+        let Some(h1) = after.find('"') else {
+            continue;
+        };
+        let mut url = after[..h1].replace("&amp;", "&");
+
+        // Decode DuckDuckGo's redirect wrapper: //duckduckgo.com/l/?uddg=ENCODED&...
+        if let Some(i) = url.find("uddg=") {
+            let enc = &url[i + 5..];
+            let end = enc.find('&').unwrap_or(enc.len());
+            if let Ok(dec) = urlencoding::decode(&enc[..end]) {
+                url = dec.into_owned();
+            }
+        }
+        if let Some(rest) = url.strip_prefix("//") {
+            url = format!("https://{rest}");
+        }
+        if !url.starts_with("http") {
             continue;
         }
 
-        // Extract URL from the cite tag content (e.g., "neboai.com › blog")
-        // But we need the actual href — look for href in the nearby anchor.
-        // The cite contains display URL; the actual link is in the title's parent <a>.
-        let display_url = extract_between(chunk, ">", "<")
-            .map(|s| strip_html(&s).trim().to_string())
-            .unwrap_or_default();
+        // Host: drop the engine's own links + obvious social/nav junk.
+        let host = url
+            .split("://")
+            .nth(1)
+            .unwrap_or("")
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches("www.")
+            .to_ascii_lowercase();
+        if host.is_empty()
+            || host == engine_host
+            || host.ends_with(&format!(".{engine_host}"))
+            || JUNK_HOSTS
+                .iter()
+                .any(|j| host == *j || host.ends_with(&format!(".{j}")))
+        {
+            continue;
+        }
 
-        // Look for the title in the next chunk section (search-snippet-title)
-        let title = if let Some(title_chunk) = chunk.split("search-snippet-title").nth(1) {
-            extract_between(title_chunk, ">", "</div>")
-                .map(|s| strip_html(&s).trim().to_string())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
+        // Title = the anchor's inner text, tags stripped + whitespace collapsed.
+        let raw_title = inner.split("</a>").next().unwrap_or("");
+        let title = strip_html(raw_title)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if title.len() < 3 || title.len() > 300 {
+            continue;
+        }
 
-        // Look for description (snippet-description)
-        let snippet = if let Some(desc_chunk) = chunk.split("snippet-description").nth(1) {
-            extract_between(desc_chunk, ">", "</div>")
-                .map(|s| strip_html(&s).trim().to_string())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
+        // Dedup by URL without query/fragment/trailing slash.
+        let key = url
+            .split(['?', '#'])
+            .next()
+            .unwrap_or(&url)
+            .trim_end_matches('/')
+            .to_ascii_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
 
-        // Extract actual href from nearby anchor tag
-        let url = extract_attr_forward(chunk, "href")
-            .or_else(|| {
-                // Try to reconstruct URL from display URL
-                let clean = display_url.replace(" › ", "/");
-                if !clean.is_empty() && !clean.contains(' ') {
-                    Some(format!("https://{}", clean))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_default();
-
-        if !title.is_empty() && !url.is_empty() {
-            results.push(SearchResult {
-                title,
-                url,
-                snippet,
-            });
+        results.push(SearchResult {
+            title,
+            url,
+            snippet: String::new(),
+        });
+        if results.len() >= 10 {
+            break;
         }
     }
 
     results
 }
 
-/// Parse DuckDuckGo HTML lite results.
-/// DDG HTML lite page has results in <a class="result__a" href="...">title</a>
-/// and snippets in <a class="result__snippet" ...>description</a>.
-fn parse_duckduckgo_results(html: &str) -> Vec<SearchResult> {
-    let mut results = Vec::new();
-
-    // Split by "result__a" class which marks each result link
-    let chunks: Vec<&str> = html.split("result__a").collect();
-
-    for (i, chunk) in chunks.iter().enumerate() {
-        if i == 0 || results.len() >= 10 {
-            continue;
-        }
-
-        // Extract href from the result link
-        let url = extract_attr_forward(chunk, "href")
-            .map(|u| {
-                // DDG wraps URLs in redirect: //duckduckgo.com/l/?uddg=ENCODED_URL
-                if let Some(uddg_idx) = u.find("uddg=") {
-                    let encoded = &u[uddg_idx + 5..];
-                    let end = encoded.find('&').unwrap_or(encoded.len());
-                    urlencoding::decode(&encoded[..end])
-                        .map(|s| s.into_owned())
-                        .unwrap_or(u)
-                } else {
-                    u
-                }
+/// Normalize a model-written search query into something a keyword engine accepts.
+/// Weak models stuff queries with stacked `site:` operators and run them hundreds of chars
+/// long; DuckDuckGo rejects those ("Search query entered was too long") and returns nothing.
+/// We strip excessive `site:` filters (2+ is the spam pattern, not a real intent) and clamp
+/// the length at a word boundary.
+fn normalize_search_query(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let cleaned = if trimmed.matches("site:").count() >= 2 {
+        trimmed
+            .split_whitespace()
+            .filter(|tok| {
+                let t = tok.trim_matches(|c| c == '(' || c == ')' || c == '"');
+                !t.starts_with("site:") && !t.eq_ignore_ascii_case("OR")
             })
-            .unwrap_or_default();
-
-        // Title is the text content of the <a> tag
-        let title = extract_between(chunk, ">", "</a>")
-            .map(|s| strip_html(&s).trim().to_string())
-            .unwrap_or_default();
-
-        // Snippet is in the nearby result__snippet
-        let snippet = if let Some(snip_chunk) = chunk.split("result__snippet").nth(1) {
-            extract_between(snip_chunk, ">", "</a>")
-                .or_else(|| extract_between(snip_chunk, ">", "</"))
-                .map(|s| strip_html(&s).trim().to_string())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        if !title.is_empty() && !url.is_empty() && url.starts_with("http") {
-            results.push(SearchResult {
-                title,
-                url,
-                snippet,
-            });
-        }
-    }
-
-    results
-}
-
-/// Extract the first href="..." value found in a chunk.
-fn extract_attr_forward(html: &str, attr: &str) -> Option<String> {
-    let pattern = format!("{}=\"", attr);
-    let idx = html.find(&pattern)?;
-    let after = &html[idx + pattern.len()..];
-    let end = after.find('"')?;
-    let val = &after[..end];
-    // Skip javascript: and # links
-    if val.starts_with("http") {
-        Some(val.to_string())
+            .collect::<Vec<&str>>()
+            .join(" ")
     } else {
-        None
+        trimmed.to_string()
+    };
+
+    const MAX_CHARS: usize = 400;
+    if cleaned.chars().count() <= MAX_CHARS {
+        return cleaned;
     }
+    let mut out = String::new();
+    for word in cleaned.split_whitespace() {
+        if out.chars().count() + word.chars().count() + 1 > MAX_CHARS {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
-fn extract_between(html: &str, start_marker: &str, end_marker: &str) -> Option<String> {
-    let start_idx = html.find(start_marker)?;
-    let after_start = &html[start_idx + start_marker.len()..];
-    // Skip to first >
-    let gt_idx = after_start.find('>')?;
-    let content_start = &after_start[gt_idx + 1..];
-    let end_idx = content_start.find(end_marker)?;
-    Some(content_start[..end_idx].to_string())
+/// If a URL clearly points to a downloadable binary file (by path extension), return that
+/// extension. Navigating the user's real browser to such a URL only triggers a download + OS
+/// save dialog (it can't render it), so callers skip the navigation instead.
+fn file_download_ext(url: &str) -> Option<&'static str> {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let lower = path.to_ascii_lowercase();
+    const EXTS: &[&str] = &[
+        "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "zip", "rar", "7z", "tar", "gz",
+        "dmg", "exe", "csv", "epub", "mp4", "mp3", "wav", "mov",
+    ];
+    EXTS.iter()
+        .find(|ext| lower.ends_with(format!(".{ext}").as_str()))
+        .copied()
 }
 
 /// Extract visible text from HTML, stripping tags, scripts, styles,

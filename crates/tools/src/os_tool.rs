@@ -194,7 +194,7 @@ impl DynTool for OsTool {
          - tts: speak\n\
          - dock: badges, recent, is_running (macOS)\n\
          - app: list, launch, quit, quit_all, activate, hide, info, frontmost\n\
-         - settings: volume, brightness, wifi, bluetooth, battery, darkmode, sleep, lock, info, mute, unmute\n\
+         - settings: volume, brightness, wifi, bluetooth, battery, darkmode, sleep, lock, info, mute (value: true|false)\n\
          - music: play, pause, next, previous, status, search, volume, playlists, shuffle\n\
          - keychain: get, find, add, delete\n\
          - search: search (file search via OS index)\n\
@@ -305,6 +305,18 @@ impl DynTool for OsTool {
         props.insert(
             "background".into(),
             prop("boolean", "Run command in background"),
+        );
+        props.insert(
+            "cwd".into(),
+            prop("string", "Working directory to run the command in"),
+        );
+        props.insert(
+            "data".into(),
+            prop("string", "stdin to write to a background session (shell write)"),
+        );
+        props.insert(
+            "filter".into(),
+            prop("string", "Substring filter for shell process/session list"),
         );
         // Desktop
         props.insert("app".into(), prop("string", "Application name"));
@@ -583,7 +595,7 @@ impl DynTool for OsTool {
                     // The OsTool action IS the setting name (volume, wifi, etc.)
                     // Infer the SettingsTool action from the setting type + context
                     let settings_action = match action {
-                        "sleep" | "lock" | "mute" | "unmute" => "trigger",
+                        "sleep" | "lock" | "mute" => "trigger",
                         "volume" | "brightness" => {
                             if has_value {
                                 "set"
@@ -601,7 +613,7 @@ impl DynTool for OsTool {
                         "battery" | "info" => "get",
                         other => {
                             return ToolResult::error(format!(
-                                "Unknown setting '{}'. Use: volume, brightness, wifi, bluetooth, battery, darkmode, sleep, lock, info, mute, unmute",
+                                "Unknown setting '{}'. Use: volume, brightness, wifi, bluetooth, battery, darkmode, sleep, lock, info, mute (value: true|false)",
                                 other
                             ));
                         }

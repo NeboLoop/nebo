@@ -1317,7 +1317,7 @@ fn build_op_json(
             if let Some(v) = opt("thread_ts") {
                 obj.insert("thread_ts".into(), serde_json::Value::String(v));
             }
-            if let Some(v) = opt("caption").or_else(|| opt("title")) {
+            if let Some(v) = opt("caption") {
                 obj.insert("caption".into(), serde_json::Value::String(v));
             }
         }

@@ -24,7 +24,7 @@ impl PublisherTool {
             return ToolResult::error(crate::errors::missing_param(
                 "publish",
                 "name",
-                "publish(name: \"my-agent\", type: \"agent\", version: \"1.0.0\")",
+                "publisher(action: \"publish\", name: \"my-agent\", type: \"agent\", version: \"1.0.0\")",
             ));
         }
 
@@ -228,7 +228,7 @@ impl PublisherTool {
             return ToolResult::error(crate::errors::missing_param(
                 "status",
                 "id",
-                "publish(action: \"status\", id: \"artifact-uuid-here\")",
+                "publisher(action: \"status\", id: \"artifact-uuid-here\")",
             ));
         }
 

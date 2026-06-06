@@ -56,7 +56,7 @@ impl DynTool for DesktopTool {
          UI accessibility, menus, dialogs, virtual desktops, shortcuts, TTS, and dock.\n\n\
          Resources:\n\
          - window: list, focus, minimize, maximize, resize, close, move\n\
-         - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste\n\
+         - input: click (click_count/button), type, press, move, scroll (direction/amount), drag, paste\n\
          - clipboard: read, write, clear\n\
          - notification: send, alert\n\
          - capture: screenshot, see\n\
@@ -70,8 +70,8 @@ impl DynTool for DesktopTool {
          Workflow: Use capture(action: see) to get a snapshot with element IDs, then reference them in input actions.\n\n\
          Examples:\n  \
          desktop(resource: \"capture\", action: \"see\", app: \"Safari\") — snapshot + element IDs\n  \
-         desktop(resource: \"input\", action: \"click\", element_id: \"B3\") — click element from snapshot\n  \
-         desktop(resource: \"input\", action: \"type\", element_id: \"T1\", text: \"hello\") — focus + type\n  \
+         desktop(resource: \"input\", action: \"click\", ref: \"B3\") — click element from snapshot\n  \
+         desktop(resource: \"input\", action: \"type\", ref: \"T1\", text: \"hello\") — focus + type\n  \
          desktop(resource: \"clipboard\", action: \"read\")\n  \
          desktop(resource: \"window\", action: \"list\")\n  \
          desktop(resource: \"capture\", action: \"screenshot\", app: \"Safari\")\n  \
@@ -98,14 +98,15 @@ impl DynTool for DesktopTool {
                 "title": { "type": "string", "description": "Window or notification title" },
                 "message": { "type": "string", "description": "Notification message" },
                 "text": { "type": "string", "description": "Text to type, write to clipboard, or speak" },
-                "key": { "type": "string", "description": "Key to press (e.g. 'return', 'tab')" },
-                "keys": { "type": "string", "description": "Key combination for hotkey (e.g. 'command+shift+s')" },
-                "x": { "type": "integer", "description": "X coordinate" },
-                "y": { "type": "integer", "description": "Y coordinate" },
-                "x2": { "type": "integer", "description": "End X coordinate (for drag)" },
-                "y2": { "type": "integer", "description": "End Y coordinate (for drag)" },
-                "dx": { "type": "integer", "description": "Scroll delta X" },
-                "dy": { "type": "integer", "description": "Scroll delta Y" },
+                "key": { "type": "string", "description": "Key or combo to press (e.g. 'return', 'tab', 'cmd+shift+s')" },
+                "x": { "type": "integer", "description": "X coordinate (window move)" },
+                "y": { "type": "integer", "description": "Y coordinate (window move)" },
+                "coordinate": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] target for input click/move (alternative to ref)" },
+                "start_coordinate": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] drag start point" },
+                "click_count": { "type": "integer", "description": "For input click: 1=single, 2=double. Default 1." },
+                "button": { "type": "string", "description": "For input click: mouse button. Default left.", "enum": ["left", "right"] },
+                "direction": { "type": "string", "description": "For input scroll: up/down/left/right", "enum": ["up", "down", "left", "right"] },
+                "amount": { "type": "integer", "description": "For input scroll: ticks (~100px each, default 3)" },
                 "width": { "type": "integer", "description": "Width for resize/move" },
                 "height": { "type": "integer", "description": "Height for resize/move" },
                 "region": { "type": "string", "description": "Region for screenshot: 'x,y,w,h'" },
@@ -117,7 +118,7 @@ impl DynTool for DesktopTool {
                 "index": { "type": "integer", "description": "Index for space/menu item" },
                 "voice": { "type": "string", "description": "TTS voice name" },
                 "rate": { "type": "integer", "description": "TTS speaking rate (words per minute)" },
-                "element_id": { "type": "string", "description": "Element ID from a snapshot (e.g. B1, T2). Use capture(action: see) first" },
+                "ref": { "type": "string", "description": "Element ref from capture(action: see) (e.g. B1, T2)" },
                 "snapshot_id": { "type": "string", "description": "Snapshot ID from a previous see action" },
                 "max_elements": { "type": "integer", "description": "Max elements returned by see (default: 100)" }
             },
@@ -585,113 +586,43 @@ if ($p) {{ $r = New-Object Win+RECT; [Win]::GetWindowRect($p.MainWindowHandle, [
 
 // --- Input simulation ---
 
+/// Parse a `[x, y]` coordinate array param.
+fn coord(input: &serde_json::Value, key: &str) -> Option<(i64, i64)> {
+    let arr = input.get(key)?.as_array()?;
+    if arr.len() >= 2 {
+        Some((arr[0].as_i64()?, arr[1].as_i64()?))
+    } else {
+        None
+    }
+}
+
 async fn handle_input(
     action: &str,
     input: &serde_json::Value,
     snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
 ) -> ToolResult {
-    // Resolve element_id → coordinates if provided
-    let element_id = input["element_id"].as_str().unwrap_or("");
+    // Resolve the target point — same shape as the web browser tool: a `ref` (element from
+    // capture(see)) or an explicit `coordinate: [x, y]`. Returns (x, y, label).
+    let element_ref = input["ref"].as_str().unwrap_or("");
     let snapshot_id = input["snapshot_id"].as_str().unwrap_or("");
-
-    if !element_id.is_empty() {
+    let target: Option<(i64, i64, String)> = if !element_ref.is_empty() {
         let store = snapshot_store.lock().await;
         let element = if !snapshot_id.is_empty() {
-            store.get_element(snapshot_id, element_id)
+            store.get_element(snapshot_id, element_ref)
         } else {
             store
                 .latest()
-                .and_then(|snap| snap.elements.iter().find(|e| e.id == element_id))
+                .and_then(|snap| snap.elements.iter().find(|e| e.id == element_ref))
         };
-
         match element {
             Some(elem) => {
                 let (cx, cy) = elem.bounds.center();
-                let label = elem.label.clone();
-                drop(store);
-
-                // For type action with element_id: click to focus first, then type
-                if action == "type" {
-                    let text = input["text"].as_str().unwrap_or("");
-                    if text.is_empty() {
-                        return ToolResult::error(errors::missing_param("type", "text", "desktop(resource: \"input\", action: \"type\", element_id: \"T1\", text: \"hello\")"));
-                    }
-                    let click_result = input_click(cx, cy).await;
-                    if click_result.is_error {
-                        return click_result;
-                    }
-                    // Small delay for focus
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    let type_result = input_type(text).await;
-                    return ToolResult {
-                        content: format!("Clicked '{}' at ({},{}) and typed text", label, cx, cy),
-                        is_error: type_result.is_error,
-                        image_url: None,
-                        http_status: None,
-                    };
-                }
-
-                // For click-family actions: use resolved coordinates
-                return match action {
-                    "click" => {
-                        let r = input_click(cx, cy).await;
-                        ToolResult {
-                            content: format!(
-                                "Clicked '{}' ({}) at ({},{})",
-                                label, element_id, cx, cy
-                            ),
-                            is_error: r.is_error,
-                            image_url: None,
-                            http_status: None,
-                        }
-                    }
-                    "double_click" => {
-                        let r = input_double_click(cx, cy).await;
-                        ToolResult {
-                            content: format!(
-                                "Double-clicked '{}' ({}) at ({},{})",
-                                label, element_id, cx, cy
-                            ),
-                            is_error: r.is_error,
-                            image_url: None,
-                            http_status: None,
-                        }
-                    }
-                    "right_click" => {
-                        let r = input_right_click(cx, cy).await;
-                        ToolResult {
-                            content: format!(
-                                "Right-clicked '{}' ({}) at ({},{})",
-                                label, element_id, cx, cy
-                            ),
-                            is_error: r.is_error,
-                            image_url: None,
-                            http_status: None,
-                        }
-                    }
-                    "move" => {
-                        let r = input_move(cx, cy).await;
-                        ToolResult {
-                            content: format!(
-                                "Moved cursor to '{}' ({}) at ({},{})",
-                                label, element_id, cx, cy
-                            ),
-                            is_error: r.is_error,
-                            image_url: None,
-                            http_status: None,
-                        }
-                    }
-                    _ => ToolResult::error(format!(
-                        "element_id not supported for action '{}'. Use: click, double_click, right_click, type, move",
-                        action
-                    )),
-                };
+                Some((cx, cy, elem.label.clone()))
             }
             None => {
-                drop(store);
                 return ToolResult::error(format!(
                     "Element '{}' not found{}. Use capture(action: \"see\") first to detect elements.",
-                    element_id,
+                    element_ref,
                     if !snapshot_id.is_empty() {
                         format!(" in snapshot '{}'", snapshot_id)
                     } else {
@@ -700,14 +631,30 @@ async fn handle_input(
                 ));
             }
         }
-    }
+    } else {
+        coord(input, "coordinate").map(|(x, y)| (x, y, String::new()))
+    };
 
-    // Standard coordinate-based input (no element_id)
     match action {
         "type" => {
             let text = input["text"].as_str().unwrap_or("");
             if text.is_empty() {
-                return ToolResult::error(errors::missing_param("type", "text", "desktop(resource: \"input\", action: \"type\", text: \"hello world\")"));
+                return ToolResult::error(errors::missing_param("type", "text", "desktop(resource: \"input\", action: \"type\", text: \"hello\")"));
+            }
+            // If a target was given, click it to focus first, then type.
+            if let Some((x, y, label)) = target {
+                let click_result = input_click(x, y).await;
+                if click_result.is_error {
+                    return click_result;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let type_result = input_type(text).await;
+                return ToolResult {
+                    content: format!("Clicked '{}' at ({},{}) and typed text", label, x, y),
+                    is_error: type_result.is_error,
+                    image_url: None,
+                    http_status: None,
+                };
             }
             input_type(text).await
         }
@@ -716,50 +663,69 @@ async fn handle_input(
             if key.is_empty() {
                 return ToolResult::error(errors::missing_param("press", "key", "desktop(resource: \"input\", action: \"press\", key: \"return\")"));
             }
-            input_press(key).await
+            // A combo (contains '+', e.g. "cmd+shift+s") uses the hotkey path; else a single key.
+            if key.contains('+') {
+                input_hotkey(key).await
+            } else {
+                input_press(key).await
+            }
         }
         "click" => {
-            let x = input["x"].as_i64().unwrap_or(0);
-            let y = input["y"].as_i64().unwrap_or(0);
-            input_click(x, y).await
-        }
-        "double_click" => {
-            let x = input["x"].as_i64().unwrap_or(0);
-            let y = input["y"].as_i64().unwrap_or(0);
-            input_double_click(x, y).await
-        }
-        "right_click" => {
-            let x = input["x"].as_i64().unwrap_or(0);
-            let y = input["y"].as_i64().unwrap_or(0);
-            input_right_click(x, y).await
-        }
-        "hotkey" => {
-            let keys = input["keys"].as_str().unwrap_or("");
-            if keys.is_empty() {
-                return ToolResult::error(errors::missing_param("hotkey", "keys", "desktop(resource: \"input\", action: \"hotkey\", keys: \"command+shift+s\")"));
+            let Some((x, y, label)) = target else {
+                return ToolResult::error(
+                    "click requires `ref` (from capture see) or `coordinate: [x, y]`.",
+                );
+            };
+            let click_count = input["click_count"].as_u64().unwrap_or(1);
+            let button = input["button"].as_str().unwrap_or("left");
+            let (r, how) = match (click_count, button) {
+                (_, "right") => (input_right_click(x, y).await, "Right-clicked"),
+                (2, _) => (input_double_click(x, y).await, "Double-clicked"),
+                _ => (input_click(x, y).await, "Clicked"),
+            };
+            let where_ = if label.is_empty() {
+                format!("({},{})", x, y)
+            } else {
+                format!("'{}' at ({},{})", label, x, y)
+            };
+            ToolResult {
+                content: format!("{} {}", how, where_),
+                is_error: r.is_error,
+                image_url: None,
+                http_status: None,
             }
-            input_hotkey(keys).await
         }
         "move" => {
-            let x = input["x"].as_i64().unwrap_or(0);
-            let y = input["y"].as_i64().unwrap_or(0);
+            let Some((x, y, _)) = target else {
+                return ToolResult::error("move requires `ref` or `coordinate: [x, y]`.");
+            };
             input_move(x, y).await
         }
         "scroll" => {
-            let dx = input["dx"].as_i64().unwrap_or(0);
-            let dy = input["dy"].as_i64().unwrap_or(0);
+            // Web-parity shape: direction + amount (ticks, ~100px each).
+            let amount = input["amount"].as_i64().unwrap_or(3).max(1);
+            let step = 100;
+            let (dx, dy) = match input["direction"].as_str().unwrap_or("down") {
+                "up" => (0, -amount * step),
+                "left" => (-amount * step, 0),
+                "right" => (amount * step, 0),
+                _ => (0, amount * step),
+            };
             input_scroll(dx, dy).await
         }
         "drag" => {
-            let x = input["x"].as_i64().unwrap_or(0);
-            let y = input["y"].as_i64().unwrap_or(0);
-            let x2 = input["x2"].as_i64().unwrap_or(0);
-            let y2 = input["y2"].as_i64().unwrap_or(0);
+            let (Some((x, y)), Some((x2, y2))) =
+                (coord(input, "start_coordinate"), coord(input, "coordinate"))
+            else {
+                return ToolResult::error(
+                    "drag requires `start_coordinate: [x, y]` and `coordinate: [x, y]` (end point).",
+                );
+            };
             input_drag(x, y, x2, y2).await
         }
         "paste" => input_paste().await,
         _ => ToolResult::error(format!(
-            "Unknown input action '{}'. Use: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste",
+            "Unknown input action '{}'. Use: click, type, press, move, scroll, drag, paste",
             action
         )),
     }
@@ -1422,7 +1388,7 @@ async fn handle_capture(
     ax_cache: &std::sync::Mutex<HashMap<String, (Vec<UIElement>, Instant)>>,
 ) -> ToolResult {
     match action {
-        "screenshot" | "capture" => capture_screenshot(input).await,
+        "screenshot" => capture_screenshot(input).await,
         "see" => capture_see(input, snapshot_store, ax_cache).await,
         _ => ToolResult::error(format!(
             "Unknown capture action '{}'. Use: screenshot, see",
@@ -3333,12 +3299,14 @@ mod tests {
     fn test_schema_params() {
         let tool = DesktopTool::new();
         let schema = tool.schema();
-        // New params should exist
-        assert!(schema["properties"]["keys"].is_object());
-        assert!(schema["properties"]["x2"].is_object());
-        assert!(schema["properties"]["y2"].is_object());
-        assert!(schema["properties"]["dx"].is_object());
-        assert!(schema["properties"]["dy"].is_object());
+        // Unified input params (web-parity shape)
+        assert!(schema["properties"]["coordinate"].is_object());
+        assert!(schema["properties"]["start_coordinate"].is_object());
+        assert!(schema["properties"]["click_count"].is_object());
+        assert!(schema["properties"]["button"].is_object());
+        assert!(schema["properties"]["direction"].is_object());
+        assert!(schema["properties"]["amount"].is_object());
+        assert!(schema["properties"]["ref"].is_object());
         assert!(schema["properties"]["name"].is_object());
         assert!(schema["properties"]["value"].is_object());
         assert!(schema["properties"]["voice"].is_object());
@@ -3410,10 +3378,10 @@ mod tests {
         assert!(result.is_error);
         assert!(result.content.contains("key"));
 
-        // hotkey without keys
-        let result = handle_input("hotkey", &serde_json::json!({}), &store).await;
+        // click with neither ref nor coordinate → explicit error (no silent click at 0,0)
+        let result = handle_input("click", &serde_json::json!({}), &store).await;
         assert!(result.is_error);
-        assert!(result.content.contains("keys"));
+        assert!(result.content.contains("coordinate"));
     }
 
     #[tokio::test]

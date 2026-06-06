@@ -136,17 +136,17 @@ impl VmTool {
         let path = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error(crate::errors::missing_param(
-                "writeFile",
+                "write_file",
                 "path",
-                "vm(action: \"writeFile\", path: \"/tmp/hello.txt\", content: \"hello world\")",
+                "vm(action: \"write_file\", path: \"/tmp/hello.txt\", content: \"hello world\")",
             )),
         };
         let content = match input.get("content").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return ToolResult::error(crate::errors::missing_param(
-                "writeFile",
+                "write_file",
                 "content",
-                "vm(action: \"writeFile\", path: \"/tmp/hello.txt\", content: \"hello world\")",
+                "vm(action: \"write_file\", path: \"/tmp/hello.txt\", content: \"hello world\")",
             )),
         };
 
@@ -164,7 +164,7 @@ impl VmTool {
         };
         match mgr.client().write_file(params).await {
             Ok(_) => ToolResult::ok(format!("wrote {} bytes to {path}", content.len())),
-            Err(e) => ToolResult::error(format!("writeFile failed: {e}")),
+            Err(e) => ToolResult::error(format!("write_file failed: {e}")),
         }
     }
 
@@ -172,9 +172,9 @@ impl VmTool {
         let path = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolResult::error(crate::errors::missing_param(
-                "readFile",
+                "read_file",
                 "path",
-                "vm(action: \"readFile\", path: \"/tmp/hello.txt\")",
+                "vm(action: \"read_file\", path: \"/tmp/hello.txt\")",
             )),
         };
 
@@ -187,7 +187,7 @@ impl VmTool {
 
         match vm::FileTransfer::read_from_vm(mgr.client(), path).await {
             Ok(content) => ToolResult::ok(content),
-            Err(e) => ToolResult::error(format!("readFile failed: {e}")),
+            Err(e) => ToolResult::error(format!("read_file failed: {e}")),
         }
     }
 
@@ -198,25 +198,25 @@ impl VmTool {
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect(),
             _ => return ToolResult::error(crate::errors::missing_param(
-                "copyOut",
+                "copy_out",
                 "paths",
-                "vm(action: \"copyOut\", paths: [\"/tmp/output.txt\"], dest: \"~/Downloads/\")",
+                "vm(action: \"copy_out\", paths: [\"/tmp/output.txt\"], dest: \"~/Downloads/\")",
             )),
         };
 
         let dest = match input.get("dest").and_then(|v| v.as_str()) {
             Some(d) => d,
             None => return ToolResult::error(crate::errors::missing_param(
-                "copyOut",
+                "copy_out",
                 "dest",
-                "vm(action: \"copyOut\", paths: [\"/tmp/output.txt\"], dest: \"~/Downloads/\")",
+                "vm(action: \"copy_out\", paths: [\"/tmp/output.txt\"], dest: \"~/Downloads/\")",
             )),
         };
 
         if vm_paths.is_empty() {
             return ToolResult::error(
-                "copyOut `paths` array is empty. Provide at least one VM file path to copy.\n\
-                 Example: vm(action: \"copyOut\", paths: [\"/tmp/output.txt\"], dest: \"~/Downloads/\")",
+                "copy_out `paths` array is empty. Provide at least one VM file path to copy.\n\
+                 Example: vm(action: \"copy_out\", paths: [\"/tmp/output.txt\"], dest: \"~/Downloads/\")",
             );
         }
 
@@ -232,7 +232,7 @@ impl VmTool {
                 let count = result.copied.len();
                 ToolResult::ok(format!("copied {count} file(s) to {dest}"))
             }
-            Err(e) => ToolResult::error(format!("copyOut failed: {e}")),
+            Err(e) => ToolResult::error(format!("copy_out failed: {e}")),
         }
     }
 
@@ -298,17 +298,17 @@ impl DynTool for VmTool {
          desktop automation, browser, plugins, and skills all run on the host directly.\n\n\
          Resources and actions:\n\
          - exec: Run a shell command in the VM (e.g. `go build`, `gcc`, `make`)\n\
-         - writeFile: Write content to a file inside the VM\n\
-         - readFile: Read a file from the VM\n\
-         - copyOut: Copy files from VM to a host directory\n\
+         - write_file: Write content to a file inside the VM\n\
+         - read_file: Read a file from the VM\n\
+         - copy_out: Copy files from VM to a host directory\n\
          - list: List files in a VM directory\n\
          - status: Check VM state\n\
          - stop: Shut down the VM\n\n\
          The VM boots on first use. Rootfs is downloaded from CDN on first launch.\n\n\
          Examples:\n  \
          vm(action: \"exec\", command: \"go build -o myapp ./cmd/server\")\n  \
-         vm(action: \"writeFile\", path: \"/sessions/work/main.go\", content: \"package main...\")\n  \
-         vm(action: \"copyOut\", paths: [\"/sessions/work/myapp\"], dest: \"~/projects/myapp/\")\n  \
+         vm(action: \"write_file\", path: \"/sessions/work/main.go\", content: \"package main...\")\n  \
+         vm(action: \"copy_out\", paths: [\"/sessions/work/myapp\"], dest: \"~/projects/myapp/\")\n  \
          vm(action: \"exec\", command: \"python3 -m pytest\", timeout: 300)"
             .to_string()
     }
@@ -319,7 +319,7 @@ impl DynTool for VmTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["exec", "writeFile", "readFile", "copyOut", "list", "status", "stop"],
+                    "enum": ["exec", "write_file", "read_file", "copy_out", "list", "status", "stop"],
                     "description": "REQUIRED. The VM operation to perform."
                 },
                 "command": {
@@ -328,20 +328,20 @@ impl DynTool for VmTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "File path inside the VM (for readFile, writeFile, list)."
+                    "description": "File path inside the VM (for read_file, write_file, list)."
                 },
                 "content": {
                     "type": "string",
-                    "description": "File content to write (for action: writeFile)."
+                    "description": "File content to write (for action: write_file)."
                 },
                 "paths": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "VM paths to copy out (for action: copyOut)."
+                    "description": "VM paths to copy out (for action: copy_out)."
                 },
                 "dest": {
                     "type": "string",
-                    "description": "Host destination directory (for action: copyOut)."
+                    "description": "Host destination directory (for action: copy_out)."
                 },
                 "timeout": {
                     "type": "integer",
@@ -367,20 +367,20 @@ impl DynTool for VmTool {
                 None => return ToolResult::error(crate::errors::missing_param(
                     "vm",
                     "action",
-                    "vm(action: \"exec\", command: \"ls -la\")\nAvailable actions: exec, writeFile, readFile, copyOut, list, status, stop",
+                    "vm(action: \"exec\", command: \"ls -la\")\nAvailable actions: exec, write_file, read_file, copy_out, list, status, stop",
                 )),
             };
 
             match action.as_str() {
                 "exec" => self.handle_exec(&input).await,
-                "writeFile" => self.handle_write_file(&input).await,
-                "readFile" => self.handle_read_file(&input).await,
-                "copyOut" => self.handle_copy_out(&input).await,
+                "write_file" => self.handle_write_file(&input).await,
+                "read_file" => self.handle_read_file(&input).await,
+                "copy_out" => self.handle_copy_out(&input).await,
                 "list" => self.handle_list(&input).await,
                 "status" => self.handle_status().await,
                 "stop" => self.handle_stop().await,
                 other => ToolResult::error(format!(
-                    "Unknown vm action: `{other}`. Use: exec, writeFile, readFile, copyOut, list, status, stop"
+                    "Unknown vm action: `{other}`. Use: exec, write_file, read_file, copy_out, list, status, stop"
                 )),
             }
         })

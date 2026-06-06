@@ -27,7 +27,7 @@ impl DynTool for MusicTool {
          - search: search music library (query required)\n\
          - volume: get or set player volume (value 0-100)\n\
          - playlists: list available playlists\n\
-         - shuffle: get or toggle shuffle mode\n\n\
+         - shuffle: report shuffle state, or set it with value: true|false\n\n\
          Examples:\n  \
          music(action: \"play\")\n  \
          music(action: \"status\")\n  \
@@ -51,8 +51,8 @@ impl DynTool for MusicTool {
                     "description": "Search query (for search action)"
                 },
                 "value": {
-                    "type": "integer",
-                    "description": "Volume level 0-100 (for volume set action)"
+                    "type": ["integer", "boolean"],
+                    "description": "For volume: level 0-100. For shuffle: true|false to set (omit to report current state)."
                 }
             },
             "required": ["action"]
@@ -83,7 +83,7 @@ impl DynTool for MusicTool {
                         return ToolResult::error(crate::errors::missing_param(
                             "search",
                             "query",
-                            "desktop(resource: \"music\", action: \"search\", query: \"beethoven symphony\")",
+                            "os(resource: \"music\", action: \"search\", query: \"beethoven symphony\")",
                         ));
                     }
                     handle_search(query).await

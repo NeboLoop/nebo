@@ -43,8 +43,6 @@ struct FileInput {
     #[serde(default)]
     pattern: String,
     #[serde(default)]
-    regex: String,
-    #[serde(default)]
     glob: String,
     #[serde(default)]
     case_insensitive: bool,
@@ -421,7 +419,9 @@ impl FileTool {
     }
 
     fn handle_glob(&self, input: &FileInput) -> ToolResult {
-        let pattern = if input.pattern.is_empty() { &input.glob } else { &input.pattern };
+        // The `glob` action takes its expression in `pattern` (the one way). The separate `glob`
+        // field is reserved for grep's file-filter.
+        let pattern = &input.pattern;
 
         // If pattern/glob are empty but path contains glob metacharacters,
         // treat path as the full glob expression (e.g. "/Users/x/Desktop/*.{png,jpg}").
@@ -512,11 +512,7 @@ impl FileTool {
     }
 
     fn handle_grep(&self, input: &FileInput) -> ToolResult {
-        let pattern = if !input.pattern.is_empty() {
-            &input.pattern
-        } else {
-            &input.regex
-        };
+        let pattern = &input.pattern;
         if pattern.is_empty() {
             return ToolResult::error(errors::missing_param("grep", "pattern", "os(resource: \"file\", action: \"grep\", pattern: \"TODO\", path: \".\")"));
         }

@@ -83,7 +83,7 @@ impl DynTool for SkillTool {
          1. If a skill clearly applies → load it with skill(name: \"...\") to get detailed instructions, then follow them\n\
          2. If multiple skills could apply → choose the most specific one\n\
          3. If no skill applies → proceed with your built-in tools\n\n\
-         - skill(action: \"catalog\") — Browse all available skills and apps\n\
+         - skill(action: \"list\") — Browse all available skills and apps\n\
          - skill(action: \"help\", name: \"calendar\") — Show full content of a skill\n\
          - skill(name: \"calendar\", resource: \"events\", action: \"list\") — Execute a skill action directly\n\
          - skill(action: \"browse\", name: \"xlsx-processor\") — List resource files in a skill's directory\n\
@@ -92,11 +92,11 @@ impl DynTool for SkillTool {
          - skill(action: \"install\", code: \"SKIL-XXXX-XXXX\") — Install from marketplace\n\
          - skill(action: \"configure\", name: \"brave-search\", key: \"BRAVE_API_KEY\", value: \"...\") — Set a secret\n\
          - skill(action: \"discover\", query: \"email management\") — Search for skills matching a description\n\
-         - skill(action: \"featured\") / skill(action: \"popular\") / skill(action: \"reviews\", name: \"...\")\n\
+         - skill(action: \"reviews\", name: \"...\") — read reviews for a skill\n\
          - skill(action: \"rate\", name: \"...\", rating: 5, review: \"It saved me a ton of time\") — Leave a 1–5 ★ review on a marketplace skill\n\n\
          If you're about to do something and aren't sure if a skill exists for it, call skill(action: \"discover\", query: \"what you're trying to do\") to check.\n\
          If a skill returns an auth error, guide the user to Settings → Apps to reconnect.\n\n\
-         GUARDRAILS: Only invoke skills that appear in the catalog or discover results. Do not guess skill names."
+         GUARDRAILS: Only invoke skills that appear in the list or discover results. Do not guess skill names."
             .to_string()
     }
 
@@ -107,7 +107,7 @@ impl DynTool for SkillTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["catalog", "discover", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "featured", "popular", "reviews", "rate"]
+                    "enum": ["list", "discover", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "reviews", "rate"]
                 },
                 "name": {
                     "type": "string",
@@ -158,7 +158,7 @@ impl DynTool for SkillTool {
 
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        matches!(action, "catalog" | "discover" | "help" | "browse" | "read_resource" | "featured" | "popular" | "reviews" | "secrets")
+        matches!(action, "list" | "discover" | "help" | "browse" | "read_resource" | "reviews" | "secrets")
         // `rate` is intentionally excluded — it mutates marketplace state.
     }
 
@@ -174,7 +174,7 @@ impl DynTool for SkillTool {
             };
 
             match domain_input.action.as_str() {
-                "catalog" | "list" => {
+                "list" => {
                     // Budget-constrained catalog (Claude Code pattern): show count +
                     // capped entries with truncated descriptions. Never dump the full
                     // catalog — use discover(query) for targeted search.
@@ -499,7 +499,7 @@ impl DynTool for SkillTool {
                         }
                     } else {
                         ToolResult::error(format!(
-                            "Skill '{}' not found. Use skill(action: \"catalog\") to list available skills.",
+                            "Skill '{}' not found. Use skill(action: \"list\") to list available skills.",
                             name
                         ))
                     }
@@ -656,45 +656,6 @@ impl DynTool for SkillTool {
                     }
 
                     ToolResult::ok(format!("Deleted skill '{}'", name))
-                }
-                "featured" => {
-                    let skills = self.loader.list_summaries().await;
-                    let featured: Vec<_> = skills
-                        .iter()
-                        .filter(|s| s.enabled && !s.capabilities.is_empty())
-                        .take(10)
-                        .collect();
-                    if featured.is_empty() {
-                        ToolResult::ok("No featured skills available.")
-                    } else {
-                        let lines: Vec<String> = featured
-                            .iter()
-                            .map(|s| {
-                                format!(
-                                    "- {} — {} [caps: {}]",
-                                    s.name,
-                                    s.description,
-                                    s.capabilities.join(", ")
-                                )
-                            })
-                            .collect();
-                        ToolResult::ok(format!("Featured skills:\n{}", lines.join("\n")))
-                    }
-                }
-                "popular" => {
-                    let skills = self.loader.list_summaries().await;
-                    let mut popular: Vec<_> = skills.iter().filter(|s| s.enabled).collect();
-                    popular.sort_by(|a, b| b.capabilities.len().cmp(&a.capabilities.len()));
-                    let top: Vec<_> = popular.into_iter().take(10).collect();
-                    if top.is_empty() {
-                        ToolResult::ok("No skills installed.")
-                    } else {
-                        let lines: Vec<String> = top
-                            .iter()
-                            .map(|s| format!("- {} — {}", s.name, s.description))
-                            .collect();
-                        ToolResult::ok(format!("Popular skills:\n{}", lines.join("\n")))
-                    }
                 }
                 "configure" => {
                     let name = input["name"].as_str().unwrap_or("");
@@ -939,7 +900,7 @@ impl DynTool for SkillTool {
                     let name = input["name"].as_str().unwrap_or("");
                     let rating = input["rating"].as_i64().unwrap_or(0);
                     let review_body =
-                        input["review"].as_str().or_else(|| input["body"].as_str()).unwrap_or("");
+                        input["review"].as_str().unwrap_or("");
                     if name.is_empty() {
                         return ToolResult::error(errors::missing_param(
                             "rate",
@@ -979,7 +940,7 @@ impl DynTool for SkillTool {
                     }
                 }
                 other => ToolResult::error(format!(
-                    "Unknown action: {}. Available: catalog, help, browse, read_resource, load, unload, create, update, delete, install, featured, popular, reviews, rate",
+                    "Unknown action: {}. Available: list, discover, help, browse, read_resource, load, unload, create, update, delete, install, configure, secrets, reviews, rate",
                     other
                 )),
             }

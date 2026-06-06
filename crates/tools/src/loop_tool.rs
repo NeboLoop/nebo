@@ -411,7 +411,7 @@ impl LoopTool {
                     Err(e) => ToolResult::error(format!("Failed to unsubscribe: {}. Do not retry — this is a communication error.", e)),
                 }
             }
-            "list" | "status" => {
+            "status" => {
                 let connected = self.comm.is_connected();
                 let plugin_name = self.comm.name();
                 let plugin_version = self.comm.version();
@@ -422,7 +422,7 @@ impl LoopTool {
                 ))
             }
             _ => ToolResult::error(format!(
-                "Unknown topic action: {}. Available: subscribe, unsubscribe, list, status",
+                "Unknown topic action: {}. Available: subscribe, unsubscribe, status",
                 action
             )),
         }
@@ -441,11 +441,12 @@ impl DynTool for LoopTool {
          - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\") — Send to a loop channel\n\
          - loop(resource: \"channel\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file into the channel reply\n\
          - loop(resource: \"dm\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file in a direct message\n\
+         - loop(resource: \"channel\", action: \"ensure\", name: \"daily-briefing\", description: \"...\") — Create (or get) a channel\n\
          - loop(resource: \"channel\", action: \"list\") — List available channels\n\
          - loop(resource: \"channel\", action: \"messages\", channel_id: \"...\", limit: 20) — Read channel messages\n\
          - loop(resource: \"channel\", action: \"members\", channel_id: \"...\") — List channel members\n\
          - loop(resource: \"group\", action: \"list\") / get / members — Manage loops\n\
-         - loop(resource: \"topic\", action: \"subscribe\", topic: \"news\") / unsubscribe / list / status\n\n\
+         - loop(resource: \"topic\", action: \"subscribe\", topic: \"news\") / unsubscribe / status\n\n\
          Use loop for bot-to-bot communication and NeboAI infrastructure."
             .to_string()
     }
@@ -462,7 +463,7 @@ impl DynTool for LoopTool {
                 "action": {
                     "type": "string",
                     "description": "The operation to perform on the selected resource. Never put a resource name here.",
-                    "enum": ["send", "share", "messages", "members", "list", "get", "subscribe", "unsubscribe", "status"]
+                    "enum": ["send", "share", "ensure", "messages", "members", "list", "get", "subscribe", "unsubscribe", "status"]
                 },
                 "text": { "type": "string", "description": "Message text" },
                 "path": { "type": "string", "description": "Absolute path of a local file to share (for channel/dm share)" },

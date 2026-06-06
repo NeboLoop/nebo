@@ -28,8 +28,7 @@ impl DynTool for SettingsTool {
          - sleep: trigger\n\
          - lock: trigger\n\
          - info: get\n\
-         - mute: trigger\n\
-         - unmute: trigger\n\n\
+         - mute: value true|false\n\n\
          Examples:\n  \
          settings(resource: \"volume\", action: \"set\", value: 50)\n  \
          settings(resource: \"brightness\", action: \"get\")\n  \
@@ -47,7 +46,7 @@ impl DynTool for SettingsTool {
                     "type": "string",
                     "description": "System setting resource",
                     "enum": ["volume", "brightness", "wifi", "bluetooth", "battery",
-                             "darkmode", "sleep", "lock", "info", "mute", "unmute"]
+                             "darkmode", "sleep", "lock", "info", "mute"]
                 },
                 "action": {
                     "type": "string",
@@ -86,10 +85,9 @@ impl DynTool for SettingsTool {
                 "sleep" => handle_sleep().await,
                 "lock" => handle_lock().await,
                 "info" => handle_info().await,
-                "mute" => handle_mute(true).await,
-                "unmute" => handle_mute(false).await,
+                "mute" => handle_mute(input["value"].as_bool().unwrap_or(true)).await,
                 _ => ToolResult::error(format!(
-                    "Unknown resource '{}'. Use: volume, brightness, wifi, bluetooth, battery, darkmode, sleep, lock, info, mute, unmute",
+                    "Unknown resource '{}'. Use: volume, brightness, wifi, bluetooth, battery, darkmode, sleep, lock, info, mute",
                     resource
                 )),
             }
