@@ -4,7 +4,7 @@ Comprehensive Subject Matter Expert document covering the Nebo communication
 plugin framework: plugin architecture, wire protocol, NeboAI gateway integration,
 message routing, conversation management, and cross-system interactions.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-05-15
+**Status:** Current (Rust implementation) | **Last updated:** 2026-06-05
 
 ---
 
@@ -861,25 +861,110 @@ NeboAI Gateway
 ### CommReplyConfig
 
 When chat_dispatch processes a comm-originated message, it receives a
-`CommReplyConfig`:
+`CommReplyConfig` (`chat_dispatch.rs:121`):
 
 ```rust
 pub struct CommReplyConfig {
     pub provider: String,        // "neboai"
-    pub topic: String,           // stream name (e.g., "agent_space", "dm")
+    pub topic: String,           // stream name (e.g., "agent_space", "dm", "channel")
     pub conversation_id: String, // target conversation
-    pub from: String,            // bot_id
 }
 ```
 
 This config tells chat_dispatch where to send the response after the agent
 runner completes.
 
+`comm_reply` is set for **all** inbound comm paths — the four `CommReplyConfig`
+sites in `server/src/lib.rs` (~2678, 2835, 2927, 3401):
+
+- **DM** (`topic: "agent_space"` for a DM rerouted to an agent space, else
+  `msg.topic`)
+- **agent_space** (`topic: msg.topic`)
+- **channel** (`topic: "channel"`)
+
+Because every path carries a `comm_reply`, tool-activity mirroring and clean
+streaming (below) work identically in DMs, agent spaces, and channels.
+
 ### Stream Coalescing
 
 Streaming LLM responses are coalesced before sending via comm to reduce
 gateway traffic. A ~500ms coalesce window batches token chunks into larger
 messages, with `metadata.stream = "true"` to indicate partial responses.
+
+### Wire Type Tagging
+
+`NeboAIPlugin::send()` (`neboai.rs:640`) tags `content["type"]` on the wire with
+the serde-serialized `CommMessageType` for **every** message type **except**
+`Message`. `Message` stays typeless on purpose: the frontend uses the absent
+type as the signal to *finalize* the streamed bubble in place (replace the
+accumulated streaming fragments with the full text) rather than appending a new
+bubble.
+
+The `FLAG_EPHEMERAL` flag is set for `Stream | ToolActivity`
+(`neboai.rs:631-634`) — both are transient signals the frontend assembles live
+and the gateway fans out without persisting, so a history replay shows one clean
+final `Message` instead of intermediate fragments and tool chatter.
+
+### Tool-Activity Mirroring
+
+To make a loop reply render exactly like the local app — a collapsed
+"Used N tools" timeline instead of raw tool dumps or endless "working" messages —
+chat_dispatch mirrors tool events to the reply channel as a new comm message
+type, `CommMessageType::ToolActivity` (serde `tool_activity`, defined in
+`comm/src/types.rs:39`).
+
+`send_comm_tool_activity()` (`chat_dispatch.rs:1368`) emits two frames per tool,
+both carrying a `stream_id` (`metadata.stream_id`) that ties the tool frames to
+the reply bubble they belong to:
+
+- On `StreamEventType::ToolCall` (`chat_dispatch.rs:434`) — a `start` frame
+  carrying `phase`, `tool`, `tool_id`, the human label (e.g. "reading a file"),
+  and the tool input as `request` metadata (capped to 2000 chars).
+- On `StreamEventType::ToolResult` (`chat_dispatch.rs:501`) — a `result` frame
+  carrying the tool output text (trimmed and capped to 4000 chars, well under
+  the 32 KB frame limit) plus an `is_error` flag.
+
+`tool_activity_label()` (`chat_dispatch.rs:38`) maps a tool name to a human label
+("running a command", "searching files", "reading a file", "searching the web",
+"reading a page", …); the default is "working". The same label also drives a
+live `send_typing()` activity signal alongside the mirrored frame.
+
+### Heartbeat Suppression
+
+Orchestrator progress heartbeats — the transient `_Working on: ..._` /
+`_Working..._` status the sub-agent runner emits every 30s — are **not** streamed
+to the loop. `is_progress_heartbeat()` (`chat_dispatch.rs:64`) detects them
+(trimmed text starting with `_Working` and ending with `_`); the stream path
+skips them and the loop instead gets a live `send_typing()` signal
+(`chat_dispatch.rs:391`). `strip_progress_heartbeats()` (`chat_dispatch.rs:73`)
+removes any heartbeat lines from the finalized response so the noise never lands
+in the message that replaces the streamed bubble.
+
+### Reply Attribution & Persona
+
+`SendPayload` has no agent id/slug field, so the only identity hint a reply
+carries is `senderName` inside `content.metadata` (set from
+`agent_display_name`, `chat_dispatch.rs:754`). The responding agent's display
+name resolves via the fallback chain `registry.get(agent_id).name →
+store.get_agent(agent_id).name → "Nebo"` — the `store.get_agent` step is needed
+because an agent that is *exposed* to the loop but not *enabled* locally is not
+in the in-memory registry (channel path: `lib.rs:3275-3280`; agent_space path:
+`lib.rs:2615-2624`).
+
+Persona is resolved with `entity_config::resolve_for_chat("agent", agent_id)`
+for any resolved agent, in **both** the DM/agent_space path (`lib.rs:2658`,
+`2815`) and the channel path (`lib.rs:3351`). This makes a secondary agent answer
+with **its** persona rather than the primary "Nebo" persona.
+
+### Frontend Rendering (NeboLoop, brief)
+
+On the NeboLoop side, the loop frontend turns the `tool_activity` start/result
+frames into a "Used N tools" details element for both channels and DMs
+(`attachToolActivity` in `app/src/lib/stores/chat.ts`, consumed for `type ===
+"tool_activity"` on both the channel and agent-space paths), and renders
+`#channel` references as clickable chips
+(`app/src/lib/components/chat/MessageArea.svelte`). (Repo:
+`neboloop`, separate from this desktop repo.)
 
 ---
 
@@ -1106,7 +1191,6 @@ ChatConfig {
         provider: "neboai".to_string(),
         topic: msg.topic,
         conversation_id: msg.conversation_id,
-        from: bot_id,
     }),
     source: format!("neboai.{}", msg.topic),
     origin: "neboai".to_string(),
@@ -1429,7 +1513,7 @@ pub struct CommMessage {
     pub to: String,                              // Recipient ID
     pub topic: String,                           // Stream name (dm, chat, agent_space, etc.)
     pub conversation_id: String,                 // NeboAI conversation UUID
-    pub msg_type: CommMessageType,               // Message, Stream, Mention, etc.
+    pub msg_type: CommMessageType,               // Message, Stream, Mention, ToolActivity, etc.
     pub content: String,                         // JSON or plain text content
     pub metadata: HashMap<String, String>,       // agent_id, agent_slug, senderName, etc.
     pub timestamp: i64,                          // ULID-derived millisecond timestamp

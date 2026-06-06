@@ -5,7 +5,7 @@ frontend WebSocket through agent runner and back, including all data structures,
 streaming events, session management, lane concurrency, DB schema, codes system,
 NeboAI comm integration, and frontend rendering.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-05-15
+**Status:** Current (Rust implementation) | **Last updated:** 2026-06-05
 
 ---
 
@@ -1208,8 +1208,41 @@ NeboAI Gateway ──WS──> NeboAIPlugin ──> PluginManager.message_handle
 ### Reply Path
 
 When `comm_reply` is set in `ChatConfig`, `run_chat()` accumulates `full_response`
-and streams chunks during reception (500ms coalesced). Final send via `send_to_channel()`
+and streams chunks during reception. Final send via `send_to_channel()`
 with dedup: skips final complete message if chunks were already streamed.
+
+### Loop/Comm Dispatch Rendering
+
+**File:** `crates/server/src/chat_dispatch.rs`
+
+When `comm_reply` is set, the `run_chat()` event loop mirrors the run to the loop so a
+reply renders the same collapsed "Used N tools" timeline as the local app — not just a
+flat text blob.
+
+**Text streaming** (chat_dispatch.rs:391–418): each `Text` event is appended to
+`comm_buffer` and sent via `send_comm_msg()` as a `CommMessageType::Stream` chunk. The
+FIRST chunk flushes immediately (so the loop paints opening text the instant the model
+produces it); subsequent chunks coalesce at `COMM_COALESCE_MS` (chat_dispatch.rs:330,
+aliased to `COALESCE_MS` = 25ms — the same cadence as the local-chat WS coalescing). All
+comm messages carry `senderName` metadata for per-agent attribution.
+
+**Tool activity** (chat_dispatch.rs:466–540): `send_comm_tool_activity()` mirrors tool
+events to the loop as `CommMessageType::ToolActivity` messages tagged with the response's
+`stream_id` so the loop groups them under the reply:
+- `ToolCall` → `phase: "start"`, carries the tool input as `request` (capped 2000 chars)
+- `ToolResult` → `phase: "result"`, carries the trimmed output (capped 4000 chars) + `is_error`
+
+**Heartbeat filtering** (chat_dispatch.rs:64–67, 391): orchestrator `_Working on: ..._`
+progress lines (the 30s "still alive" signal sub-agent runs emit, see §23) are detected by
+`is_progress_heartbeat()` (`starts_with("_Working")` && `ends_with('_')`) and excluded from
+the streamed comm chunks — the loop instead gets a live `send_typing()` activity signal
+(chat_dispatch.rs:430, 496). Thinking blocks and tool starts also emit `send_typing()` with
+a phase label.
+
+**Finalized response** (chat_dispatch.rs:832): the final `CommMessageType::Message` runs
+`full_response` through `strip_progress_heartbeats()` (chat_dispatch.rs:73) so any heartbeat
+lines that slipped into the accumulated text never land in the reply that replaces the
+streamed bubble.
 
 ---
 
@@ -2155,13 +2188,64 @@ in `Runner::run()`. Visible to LLM, invisible to frontend.
 - **Loading state**: `isLoading` only clears when PRIMARY agent completes, not delegates
 - **Page reload**: Delegate messages are in their own sessions — only primary agent's messages load. Full persistence is future work
 
+### Channel Multi-Mention (Loop Fan-Out)
+
+**File:** `crates/server/src/lib.rs` (`handle_comm_message` channel branch, ~lines 3015–3417)
+
+The companion-thread @mention path above (`fork_mention_chat`) is distinct from how a
+**loop channel** message resolves multiple mentions. When a channel message `@mentions`
+several agents, each addressed agent receives a SEPARATE dispatch and replies independently
+("fan-out").
+
+**Mention resolution (non-name-based)** — `MENTION_TOKEN_RE` (`<@([0-9a-fA-F._-]+)>`,
+lib.rs:62) captures every token; each `<@id>` resolves to a target (lib.rs:3030–3063):
+- `id == bot_id` (`config::read_bot_id`) → the primary agent (empty-string agent id, "Nebo")
+- otherwise → `state.store.get_agent_by_loop_agent_id(id)`, accepted only if `loop_exposed != 0`
+- unresolved tokens are dropped with a warning (missing `loop_agent_id` or `loop_exposed=0`)
+
+These are loop UUIDs, not agent names: `loop_agent_id` is stamped onto each exposed local
+agent by `reconcile_agents()` via `set_agent_loop_agent_id()`
+(`crates/server/src/codes.rs:1569`), so routing and attribution key on the stable id rather
+than a display name. Resolved targets are deduped in order of appearance into
+`mentioned_targets`.
+
+**Fan-out (default)** — each resolved target gets its OWN channel session
+(`neboai:channel:<convId>` for the primary, `neboai:channel:<convId>:<agentId>` for custom
+agents) so histories don't collide, and runs concurrently on the `COMM` lane
+(lib.rs:3335–3417). The fan-out set is capped at `MAX_FANOUT = 4` (lib.rs:3263). When more
+than one agent is addressed (`is_group`), each receives a `mention_context` system note
+instructing it to answer ONLY about itself in the first person and not speak for, introduce,
+or quote the others — because a separate copy was delivered to each, and the platform places
+the replies side by side (lib.rs:3370–3389).
+
+**Coordination mode** — when the message also asks the agents to work together,
+`coordinate = mentioned_targets.len() > 1 && wants_coordination(&text)` (lib.rs:3072).
+`wants_coordination()` (lib.rs:70) is a conservative phrase match ("work together",
+"collaborate", "as a team", "team up", "joint plan", "one combined", etc.) — independent
+fan-out is the default; only explicit collaboration phrasing flips the mode. In coordination
+mode the FIRST-mentioned agent is the LEAD and the only responder (`responders =
+mentioned_targets[..1]`); the rest become `coordinator_peers` (lib.rs:3073–3084). The lead's
+`mention_context` (lib.rs:3359–3369) tells it to consult each peer via
+`bot(resource: "registry", action: "delegate", name: "<peer>", prompt: "...")` and write one
+combined answer itself — peers do not reply on their own. Result: one reply attributed to
+the lead instead of N independent answers.
+
+**Attribution** — every dispatch and the delegate-peer name list resolve a display name via
+the fallback chain `registry.get(agent_id).name → store.get_agent(agent_id).name → "Nebo"`
+(lib.rs:3269–3280, 3299–3314). The primary agent uses `registry.get("assistant")`. This
+ensures a custom agent's reply is attributed to its real name (e.g. "Researcher", "Chief of
+Staff"), even when the agent is loop-exposed but not loaded in the local registry — never
+mislabeled as the primary "Nebo". The resolved name flows into `ChatConfig.entity_name` and
+the per-reply `senderName` metadata (see Loop/Comm Dispatch Rendering, §12).
+
 ### Not a Competing Pathway
 
 @Mention routing is distinct from other inter-agent communication:
 
 | Mechanism | Trigger | Target | Response Path |
 |-----------|---------|--------|---------------|
-| **@Mention** | `<@id>` in user message | Named local agent | Same thread (via `originAgentId`) |
+| **@Mention (thread)** | `<@id>` in companion-thread message | Named local agent | Same thread (via `originAgentId`) |
+| **@Mention (channel)** | `<@loop_id>` in loop channel message | Loop-exposed agent(s) | Each replies to the channel (fan-out), or one lead reply (coordination) |
 | **Spawn/Orchestrate** | Tool call `bot(resource: "task")` | Anonymous sub-agent | Parent's tool result |
 | **Loop DM** | Tool call `loop(resource: "dm")` | Remote agent via NeboAI | Separate conversation |
 

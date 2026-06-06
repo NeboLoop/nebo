@@ -305,10 +305,18 @@ After the agent completes:
 ```rust
 CommReplyConfig {
     provider: String,        // "neboai", or future: "slack", "discord"
-    topic: String,           // "agent_space", "chat", or "dm"
+    topic: String,           // "agent_space", "channel", "chat", or "dm"
     conversation_id: String, // NeboAI conversation ID
 }
 ```
+
+**Reply-config sites (`lib.rs`):** four call sites build a `CommReplyConfig`, and all four get identical treatment — coalesced streaming **and** tool-activity frames (§7b):
+- `lib.rs:2678` — agent space (`topic: "agent_space"`)
+- `lib.rs:2835` — DM / chat (`topic: msg.topic`, e.g. `"dm"`/`"chat"`)
+- `lib.rs:2927` — DM / chat reroute (`topic: msg.topic`)
+- `lib.rs:3401` — channel (`topic: "channel"`)
+
+So tool-activity + streaming render the same way for DMs, agent spaces, and channels alike. The responding agent's name rides as `content.metadata.senderName` (the only identity hint on the wire — `SendPayload` has no agent id/slug field; injected by `send_comm_msg()`, `chat_dispatch.rs:1338`).
 
 ---
 
@@ -359,6 +367,23 @@ Agents can also send messages proactively using the "loop" tool:
 - `dm.send(to, text)` — DM another agent
 - `channel.send(channel_id, text)` — Post to channel
 - Requires "loop" permission enabled
+
+### 7b. Outbound Tool-Activity Frames (`chat_dispatch.rs`)
+
+While an agent executes a comm reply, each tool call/result is mirrored to the reply channel as a `tool_activity` frame, letting the loop render a collapsed "Used N tools" timeline (Request/Response) instead of raw tool output — parity with the local app's chat rendering. Emitted via `send_comm_tool_activity()` (`chat_dispatch.rs:1368`), one `start` frame on `ToolCall` (`:479`) and one `result` frame on `ToolResult` (`:526`):
+
+```
+start  → ToolActivity { metadata: { phase: "start", tool, tool_id, stream_id, request } }
+result → ToolActivity { metadata: { phase: "result", tool, tool_id, stream_id, is_error } }
+```
+
+- `stream_id` is the reply's `comm_stream_id` — the frontend matches frames to the in-progress reply by it (`chat_dispatch.rs:332`).
+- `request` (tool input) is capped at 2000 chars; result `content` (tool output) is capped at ~4000 chars (`event.text.trim().chars().take(4000)`, `:525`) — both stay well under the 32KB frame cap.
+- Orchestrator `_Working on:_` progress heartbeats are **not** streamed to the loop (filtered by `is_progress_heartbeat()`, `:391`). The loop gets a live activity signal via a `send_typing` signal instead (`:496`), avoiding heartbeat spam in the reply.
+
+These frames are `ToolActivity`, so they ride `FLAG_EPHEMERAL` (fanout-only, never persisted/backfilled) and carry `content["type"] = "tool_activity"` (see §12).
+
+**Frontend ingestion (NeboLoop web):** the NeboLoop client (`neboloop/app/src/lib/stores/chat.ts` `attachToolActivity`) matches `tool_activity` frames by `metadata.stream_id` and attaches them to the in-progress reply as a tools timeline — for **both** channels (`:411`) and DMs / agent spaces (`:523`) — rather than rendering them as their own bubbles.
 
 ---
 
@@ -456,7 +481,7 @@ CommMessage {
     to: String,
     topic: String,
     conversation_id: String,
-    msg_type: CommMessageType,   // Message, Stream, Mention, Proposal, Command, Info, Task, TaskResult, TaskStatus, LoopChannel
+    msg_type: CommMessageType,   // Message, Stream, Mention, Proposal, Command, Info, Task, TaskResult, TaskStatus, LoopChannel, ToolActivity
     content: String,
     metadata: HashMap<String, String>,
     timestamp: i64,
@@ -475,7 +500,11 @@ CommMessage {
 }
 ```
 
-The `Stream` message type is used for real-time response streaming (500ms coalesced chunks). `Task`/`TaskResult`/`TaskStatus` types support the A2A protocol for inter-agent task delegation. `attachments` carries file/image/video metadata — actual file bytes are uploaded/downloaded via the REST API, only metadata (~200 bytes each) travels over the WebSocket.
+The `Stream` message type is used for real-time response streaming (500ms coalesced chunks). `ToolActivity` (serde `tool_activity`) mirrors a tool the agent used while producing a reply so a channel/loop UI can render the local app's "Used N tools" timeline (see §7b). `Task`/`TaskResult`/`TaskStatus` types support the A2A protocol for inter-agent task delegation. `attachments` carries file/image/video metadata — actual file bytes are uploaded/downloaded via the REST API, only metadata (~200 bytes each) travels over the WebSocket.
+
+### Wire `content["type"]` tagging & ephemerality (`neboai.rs:628-687`)
+
+`send()` tags the message type into the content JSON so the frontend can route it — `content["type"]` is set for **all** comm types **except `Message`**. `Message` is left **typeless** on purpose: it is the durable closer, so the frontend finalizes the streamed bubble in place (replaces the accumulated `stream`/`tool_activity` rendering with the full text) rather than appending a new bubble. The ephemeral set carries `FLAG_EPHEMERAL` (gateway fans out without persisting): `ephemeral = matches!(msg_type, Stream | ToolActivity)`.
 
 ---
 
@@ -572,6 +601,7 @@ The frontend uploads through the local server (`POST /api/v1/files/upload`) whic
 17. **Attachment upload-then-reference**: Files are uploaded via REST (`POST /api/v1/files/upload` multipart), returning an `Attachment` metadata struct. Only the metadata (~200 bytes/attachment) is embedded in `content.attachments[]` inside the WebSocket payload — file bytes never travel over the 32KB-limited wire protocol. The local server proxies uploads through `POST /api/v1/files/upload` (handlers/files.rs) to the NeboAI API.
 18. **Image vision from attachments**: `process_comm_attachments()` in `lib.rs` downloads image attachments (`mime_type.starts_with("image/")`) via `NeboAIApi.download_file()`, base64-encodes them, and populates `ChatConfig.images` for the AI provider's vision pipeline. Non-image attachments (PDF, video, etc.) are appended as text descriptions to the prompt.
 19. **Attachment backward compatibility**: `CommMessage.attachments` uses `#[serde(default, skip_serializing_if = "Vec::is_empty")]` — old clients that don't understand attachments still see the `text` field, and old messages without attachments deserialize with an empty vec.
+20. **Outbound loop rendering parity**: tool calls/results during a comm reply are mirrored as `CommMessageType::ToolActivity` frames (`tool_activity`) so the loop renders a collapsed "Used N tools" timeline rather than raw tool output — for DMs, agent spaces, and channels alike (see §7b). `tool_activity` + `stream` chunks are ephemeral (`FLAG_EPHEMERAL`); the closing `Message` stays typeless so the frontend finalizes the streamed bubble in place. Orchestrator `_Working on:_` heartbeats are filtered from the stream — the loop is signaled via `send_typing` instead.
 
 ---
 

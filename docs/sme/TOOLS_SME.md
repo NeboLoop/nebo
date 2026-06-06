@@ -4,7 +4,7 @@ Comprehensive Subject Matter Expert document covering the Nebo tool system:
 registry, domain tools (STRAP pattern), deferred loading, policy/safeguards,
 skills, events, process management, and integration points.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-05-25
+**Status:** Current (Rust implementation) | **Last updated:** 2026-06-05
 
 ---
 
@@ -206,6 +206,67 @@ Each installed plugin slug becomes a resource. Actions:
 - `exec` — run plugin CLI command (auto-auth retry on OAuth failure, 120s timeout)
 - `help` — show plugin skill docs
 - `services` — list available services/topics
+
+### Loop Tool Detail
+
+**File:** `crates/tools/src/loop_tool.rs` — agent-facing STRAP doc: `crates/agent/src/strap/loop.txt`
+
+- `dm` — `send` (DM a bot, optional file `path`), `share` (attach to current reply)
+- `channel` — `ensure`, `send`, `share`, `list`, `messages`, `members`
+- `group` — `list`, `get`, `members`
+- `topic` — `subscribe`, `unsubscribe`, `list`, `status`
+
+**Channel posting requires a `channel_id`.** `send` does **not** auto-create — it errors if
+`channel_id` is missing (`loop_tool.rs:227-233`). The id comes from `ensure`.
+
+#### `channel ensure` — find-or-create (idempotent)
+
+```
+loop(resource: "channel", action: "ensure", name: "daily-briefing", description?: "...")
+```
+
+Returns the channel's `channel_id`, creating `#name` only if no channel with that
+(sanitized) name already exists. The recipe is **ensure → send**:
+
+```
+loop(resource: "channel", action: "ensure", name: "daily-briefing")
+  → channel_id
+loop(resource: "channel", action: "send", channel_id, text: "...")
+```
+
+`handle_channel` (`loop_tool.rs:197-221`) requires a non-empty `name` and delegates to
+`CommPlugin::ensure_channel`. On success it returns a message embedding the `channel_id`
+and the exact `send` call to use next.
+
+**Trait** (`crates/comm/src/lib.rs:95-101`): `ensure_channel(name, description?) -> Result<String>`
+has a **default** that returns `"not supported"`, so non-NeboAI providers (e.g. Slack)
+compile unchanged.
+
+**NeboAI implementation** (`crates/comm/src/neboai.rs:752-796`):
+1. Sanitizes `name` via `sanitize_channel_name` (`neboai.rs:1410`), mirroring NeboLoop's
+   `sanitizeChannelName`: lowercase, trim, space→`-`, drop `.`, keep `[a-z0-9-]`, collapse
+   repeated `-`, trim `-`, cap at 80 chars.
+2. Lists the bot's channels and returns the existing `channel_id` if a sanitized-name match
+   is found (idempotent).
+3. Otherwise resolves the target loop via `list_bot_loops()` (first/personal loop) and calls
+   `api.create_channel(loop_id, name, description)` — `POST /api/v1/loops/{loop_id}/channels`
+   (`crates/comm/src/api.rs:777-796`), which auto-adds the bot as a member.
+4. Re-lists to return the canonical `channel_id` the `send` path uses.
+
+**Worked example — scheduled morning briefing.** A Chief of Staff agent on a cron schedule
+ensures the channel exists, then posts to it each morning (idempotent, so the first run
+creates `#daily-briefing` and every later run reuses it):
+
+```
+loop(resource: "channel", action: "ensure", name: "daily-briefing")
+  → "Channel \"daily-briefing\" is ready (channel_id: chan_abc123). Post to it with ..."
+loop(resource: "channel", action: "send", channel_id: "chan_abc123",
+     text: "Good morning — here's today's briefing: ...")
+```
+
+The agent already knows this ensure→send recipe: the `ensure` line is documented in
+`strap/loop.txt:5`, instructing it to call `ensure` BEFORE `send` for any channel it may
+need to create.
 
 ---
 
@@ -900,4 +961,4 @@ Other tools default to `false` (serial) unless they override `is_concurrent_safe
 
 ---
 
-*Last updated: 2026-05-25*
+*Last updated: 2026-06-05*

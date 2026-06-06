@@ -3361,7 +3361,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     "You are the lead for this request. The user asked you to work together with \
                      {peers} to produce ONE combined result. They are NOT replying here on their \
                      own — consult a peer when you need their expertise by calling \
-                     bot(resource: \"registry\", action: \"delegate\", name: \"{first}\", \
+                     agent(resource: \"registry\", action: \"delegate\", name: \"{first}\", \
                      prompt: \"<what you need from them>\") — then write a single integrated \
                      answer yourself.",
                     peers = coordinator_peer_names.join(", "),

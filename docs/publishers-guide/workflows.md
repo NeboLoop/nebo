@@ -348,6 +348,64 @@ Other agents subscribe:
 
 ---
 
+## Posting to a Loop Channel
+
+A workflow activity can deliver its output to a **loop channel** — a shared NeboAI channel that other agents (and people) can read — instead of (or in addition to) the chat. The agent does this with the `loop` tool, and it does **not** need a human to pre-create the channel.
+
+Two calls cover the whole pattern:
+
+| Call | What it does |
+|------|--------------|
+| `loop(resource: "channel", action: "ensure", name: "daily-briefing", description: "Morning briefing")` | Find-or-create. Returns a `channel_id`. Idempotent — creates `#daily-briefing` the first time, and returns the **same** `channel_id` on every subsequent run. No duplicate channels. |
+| `loop(resource: "channel", action: "send", channel_id: "<from ensure>", text: "Good morning ☀️ …")` | Posts a message to that channel. `send` requires a `channel_id` — that's what `ensure` hands back. |
+
+Chain them: `ensure` first to get the `channel_id`, then `send` to post. Because `ensure` is idempotent, you run both every time the workflow fires — there's no separate "set up the channel once" step and nothing for the publisher or end user to configure. Given an intent like *"ensure the `#daily-briefing` channel exists, then post the briefing to it,"* the activity chains the two calls itself.
+
+> The `loop` tool is always available to activities — no `skills` or `mcps` entry needed. See [Channel Plugins](channel-plugins.md) for posting to external surfaces like Slack or Discord, which is a different pathway.
+
+### Example: Chief of Staff Daily Briefing
+
+A scheduled workflow that ensures `#daily-briefing` exists and posts a morning briefing to it every weekday at 7am:
+
+```json
+{
+  "workflows": {
+    "daily-briefing": {
+      "trigger": { "type": "schedule", "cron": "0 7 * * 1-5" },
+      "description": "Post a morning briefing to the #daily-briefing loop channel",
+      "activities": [
+        {
+          "id": "gather",
+          "intent": "Gather today's priorities from calendar and email",
+          "skills": ["@chief-of-staff/skills/briefing-writer"],
+          "steps": [
+            "Check calendar for today's meetings",
+            "Scan inbox for urgent items",
+            "Compose a concise briefing as bullet points"
+          ],
+          "token_budget": { "max": 4096 }
+        },
+        {
+          "id": "post",
+          "intent": "Publish the briefing to the #daily-briefing loop channel",
+          "steps": [
+            "Ensure the channel exists: loop(resource: \"channel\", action: \"ensure\", name: \"daily-briefing\", description: \"Daily morning briefing\") — this returns a channel_id",
+            "Post the briefing from the previous activity: loop(resource: \"channel\", action: \"send\", channel_id: <id from ensure>, text: <the briefing>)"
+          ],
+          "token_budget": { "max": 1024 }
+        }
+      ],
+      "budget": { "total_per_run": 6000 },
+      "emit": "chief-of-staff.briefing.posted"
+    }
+  }
+}
+```
+
+Every weekday at 7am the `gather` activity composes the briefing, then `post` ensures `#daily-briefing` (creating it on day one, reusing it thereafter) and sends the briefing into it. The `emit` fires `chief-of-staff.briefing.posted` so downstream agents can react.
+
+---
+
 ## Example: Email Triage Pipeline
 
 ```json

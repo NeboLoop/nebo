@@ -6,7 +6,7 @@
 > automation platform.
 
 **Created:** 2026-03-29
-**Last verified against source:** 2026-05-15
+**Last verified against source:** 2026-06-05
 **Status:** Design — Phase 1 ready to implement (ROLE → AGENT rename complete, A2UI Phase 1 shipped)
 
 ---
@@ -27,8 +27,11 @@
 12. [Progress Heartbeat Monitoring](#12-progress-heartbeat-monitoring)
 13. [SubagentProgress Tracking](#13-subagentprogress-tracking)
 14. [Orchestrator Task Prefix](#14-orchestrator-task-prefix)
-15. [Build Order](#15-build-order)
-16. [Key Files Reference](#16-key-files-reference)
+15. [Sub-Agent Recursion Cap](#15-sub-agent-recursion-cap)
+16. [Channel Multi-Mention — Fan-Out vs Coordination](#16-channel-multi-mention--fan-out-vs-coordination)
+17. [Agent-to-Agent Messaging](#17-agent-to-agent-messaging)
+18. [Build Order](#18-build-order)
+19. [Key Files Reference](#19-key-files-reference)
 
 ---
 
@@ -609,7 +612,137 @@ All sub-agents use `build_subagent_request()` which enforces:
 
 ---
 
-## 15. Build Order
+## 15. Sub-Agent Recursion Cap
+
+### What It Is
+
+A bound on how deeply sub-agents may nest. Without it, a weak model told to
+"work together" delegates, each spawned sub-agent re-delegates, and the tree
+grows `subagent:subagent:subagent:…` unbounded — every node a full provider
+run. Past the cap a spawn is refused, forcing the agent to do the work itself
+with its own tools.
+
+### Depth Computation
+
+Depth is the number of `subagent:` prefixes on the parent session key:
+
+```rust
+fn subagent_depth(parent_session_key: &str) -> usize {
+    parent_session_key.matches("subagent:").count()
+}
+```
+
+Top-level (user/channel) agents are depth 0; their direct sub-agents are depth
+1, and so on. (`crates/agent/src/orchestrator.rs:24`)
+
+### The Constant and Where It's Guarded
+
+`const MAX_SUBAGENT_DEPTH: usize = 2;` (`crates/agent/src/orchestrator.rs:19`)
+
+The cap is enforced in **both** spawn paths — a sub-agent at or past the cap is
+refused with an error directing it to do the work itself:
+
+| Guard site | Source |
+|---|---|
+| `spawn_internal` (single spawn) | `crates/agent/src/orchestrator.rs:114` |
+| `spawn_parallel_internal` (parallel batch — checks the first request, since siblings share a parent) | `crates/agent/src/orchestrator.rs:558` |
+
+Because session keys are built as `subagent:{parent_session_key}:{task_id}`,
+each nesting level adds one `subagent:` token, so the depth check sees the
+accumulated prefixes on every descendant.
+
+---
+
+## 16. Channel Multi-Mention — Fan-Out vs Coordination
+
+### What It Is
+
+When several agents are `@mentioned` in a single loop-channel message,
+`handle_comm_message` chooses one of two behaviors. The dispatch mechanics
+(session keys, `mention_context` injection, forked runs) are owned by
+**`CHAT_SYSTEM.md` §24 (@Mention Routing)** — this section documents only the
+channel-specific fan-out-vs-coordination decision.
+
+**Source:** `handle_comm_message()` in `crates/server/src/lib.rs:2452`
+
+### Fan-Out (default)
+
+Multiple addressed agents each reply independently. The decision and target set
+are computed at `crates/server/src/lib.rs:3065-3084` (`mentioned_targets` →
+`responders`). Each agent dispatches separately and receives a `mention_context`
+that tells it to answer **only about itself**, in the first person, because a
+SEPARATE copy of the message was delivered to each addressed agent
+(`crates/server/src/lib.rs:3370-3389`). The platform places the replies next to
+one another automatically.
+
+### Coordination (opt-in)
+
+When the message EXPLICITLY asks the agents to produce one joint result, the
+FIRST-mentioned agent becomes the LEAD and the rest are peers; only the lead
+runs and writes one combined reply.
+
+- Detection: `wants_coordination(text)` — a deliberately tight phrase match
+  ("work together", "as a team", "collaborate", "one combined", "joint plan",
+  etc.). (`crates/server/src/lib.rs:70-89`)
+- Mode select: `coordinate = mentioned_targets.len() > 1 && wants_coordination(&text)`.
+  In coordination mode `responders = mentioned_targets[..1]` (just the lead) and
+  `coordinator_peers = mentioned_targets[1..]`.
+  (`crates/server/src/lib.rs:3072-3084`)
+- Lead framing: the lead's `mention_context` tells it the peers are NOT replying
+  on their own and to consult them via `delegate` (see §17), then write a single
+  integrated answer. (`crates/server/src/lib.rs:3359-3369`)
+
+Independent fan-out is the default; only clear collaboration phrasing routes to
+a single lead. Peer consultation within coordination mode is bounded by the
+sub-agent depth cap (§15).
+
+---
+
+## 17. Agent-to-Agent Messaging
+
+Two distinct pathways, depending on whether the target is one of this bot's own
+agents (in-process) or a separate bot reachable over the loop.
+
+### In-Process Delegation (same bot's agents)
+
+`agent(resource: "registry", action: "delegate", name: "...", prompt: "...")`
+
+This runs another of the same bot's named agents and returns its result inline.
+The STRAP tool's canonical registered name is **`agent`** (the struct is
+`AgentTool` in `crates/tools/src/bot_tool.rs:1582`). `registry` is one of its
+resources; `delegate` is mapped to the `registry` resource at
+`crates/tools/src/bot_tool.rs:149-150` and handled at
+`crates/tools/src/bot_tool.rs:1744` (delegating to the persona/agent registry).
+
+> **Naming note:** `agent` is the canonical tool (`AgentTool::name()` →
+> `"agent"`, `crates/tools/src/bot_tool.rs:1582`); the old `bot` name is
+> deprecated and not registered — calling `bot(...)` returns a correction and
+> forces the model to retry (`crates/tools/src/registry.rs:1028`: "bot is now
+> agent"), costing a wasted round-trip. The coordination `mention_context` in
+> `handle_comm_message` (`crates/server/src/lib.rs:3364`) now uses the canonical
+> `agent(resource: "registry", action: "delegate", ...)`. (Some unrelated prompt
+> strings in `crates/agent/src/steering.rs` still spell `bot(resource: "task"/…)`
+> and would hit the same correction; tracked separately.)
+
+### Cross-Bot Loop DM (separate bot over NeboLoop)
+
+`loop(resource: "dm", action: "send", to: "agent-uuid", text: "...")`
+
+This sends a direct message to a *different bot* over the NeboLoop broker — not
+an in-process sub-agent run. The tool's name is `loop`
+(`crates/tools/src/loop_tool.rs:434`); `dm`/`send` is documented at
+`crates/tools/src/loop_tool.rs:440` and routed at `crates/tools/src/loop_tool.rs:526`.
+Incoming loop DMs land back through the unified chat pipeline as inbound comm
+messages (see the NeboLoop connection SME reference).
+
+| Pathway | Tool call | Target | Result |
+|---|---|---|---|
+| In-process delegation | `agent(resource: "registry", action: "delegate", name, prompt)` | This bot's own named agent | Inline, returned to caller |
+| Cross-bot loop DM | `loop(resource: "dm", action: "send", to, text)` | A separate bot over NeboLoop | Async; reply arrives as inbound comm |
+
+---
+
+## 18. Build Order
 
 ### Phase 1 — Commander + Isolation (enables the core multi-agent vision)
 
@@ -669,7 +802,7 @@ All sub-agents use `build_subagent_request()` which enforces:
 
 ---
 
-## 16. Key Files Reference
+## 19. Key Files Reference
 
 | File | Relevance |
 |---|---|
@@ -680,6 +813,9 @@ All sub-agents use `build_subagent_request()` which enforces:
 | `crates/agent/src/decompose.rs` | LLM task decomposition — dormant, needs entry point |
 | `crates/tools/src/persona_tool.rs` | ActiveAgent, AgentRegistry (renamed from role_tool.rs) |
 | `crates/tools/src/orchestrator.rs` | SubAgentOrchestrator trait, SpawnRequest/SpawnResult |
+| `crates/tools/src/bot_tool.rs` | `AgentTool` (tool name `agent`); `registry`/`delegate` in-process delegation (§17) |
+| `crates/tools/src/loop_tool.rs` | `loop` tool — cross-bot `dm`/`send` over NeboLoop (§17) |
+| `crates/server/src/lib.rs` | `handle_comm_message`, `wants_coordination`, channel fan-out vs coordination (§16) |
 | `crates/workflow/src/events.rs` | EventBus, EventDispatcher — pipeline stage routing, production-ready |
 | `crates/comm/src/types.rs` | A2A types: TaskStatus, AgentCard, TaskArtifact — production-ready |
 | `crates/db/migrations/0066_commander.sql` | commander_teams, commander_edges schema |
@@ -695,4 +831,4 @@ All sub-agents use `build_subagent_request()` which enforces:
 
 ---
 
-*Last updated: 2026-05-15 — reflects actual codebase state including A2UI Phase 1, filesystem watcher events, ROLE→AGENT rename completion, task recovery, progress heartbeat, subagent progress tracking, task prefixes*
+*Last updated: 2026-06-05 — reflects actual codebase state including A2UI Phase 1, filesystem watcher events, ROLE→AGENT rename completion, task recovery, progress heartbeat, subagent progress tracking, task prefixes, sub-agent recursion cap, channel multi-mention fan-out vs coordination, and agent-to-agent messaging pathways*
