@@ -823,6 +823,13 @@ impl Orchestrator {
             // Re-spawn viable tasks
             info!(task_id = %task.id, task_type = %task.task_type, "Re-spawning recovered task");
 
+            // Count this recovery as an attempt (sets status='running', attempts += 1). Without
+            // this, a task interrupted mid-run (e.g. a restart killing it) stays attempts=1
+            // forever, so the `attempts >= max_attempts` guard above never fires and the task
+            // re-runs the SAME work on every restart indefinitely. Bumping it here makes the
+            // retry bounded: after max_attempts interruptions the next pass marks it failed.
+            let _ = self.store.update_task_running(&task.id);
+
             let runner = self.runner.clone();
             let store = self.store.clone();
             let task_id = task.id.clone();
