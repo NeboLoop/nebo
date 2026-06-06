@@ -525,6 +525,15 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             }
         };
 
+    // Reload the in-memory AgentLoader so the newly-installed agent appears immediately.
+    // list_agents() enumerates the loader (filesystem source of truth) and only supplements
+    // with DB rows — a DB row with no loaded agent is never emitted. Without this reload the
+    // agent doesn't surface until a server restart, so even a frontend hard-reload shows
+    // nothing. (Apps already reload via handle_app_code; do it for plain agents too.)
+    if persist_result.is_some() {
+        state.agent_loader.load_all().await;
+    }
+
     // Notify frontend immediately so sidebar refreshes
     state.hub.broadcast(
         "agent_installed",
