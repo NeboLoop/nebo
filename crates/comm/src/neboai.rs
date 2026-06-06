@@ -749,6 +749,52 @@ impl CommPlugin for NeboAIPlugin {
             .collect())
     }
 
+    async fn ensure_channel(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<String, CommError> {
+        let api = self
+            .inner
+            .read()
+            .await
+            .api
+            .clone()
+            .ok_or(CommError::NotConnected)?;
+
+        let want = sanitize_channel_name(name);
+
+        // Idempotent: reuse an existing channel with the same (sanitized) name.
+        let channels = api.list_bot_channels().await?;
+        if let Some(ch) = channels
+            .iter()
+            .find(|c| sanitize_channel_name(&c.channel_name) == want)
+        {
+            return Ok(ch.channel_id.clone());
+        }
+
+        // Create it in the bot's personal (first) loop — NeboLoop auto-adds the
+        // bot as a member, so it can post right after.
+        let loops = api.list_bot_loops().await?;
+        let loop_id = loops
+            .first()
+            .map(|l| l.loop_id.clone())
+            .ok_or_else(|| {
+                CommError::Other("no loop available to create a channel in".to_string())
+            })?;
+        api.create_channel(&loop_id, name, description).await?;
+
+        // Re-list to return the canonical channel_id the send path uses.
+        let channels = api.list_bot_channels().await?;
+        channels
+            .iter()
+            .find(|c| sanitize_channel_name(&c.channel_name) == want)
+            .map(|c| c.channel_id.clone())
+            .ok_or_else(|| {
+                CommError::Other("channel created but not found in listing".to_string())
+            })
+    }
+
     async fn list_loops(&self) -> Result<Vec<LoopInfo>, CommError> {
         let api = self
             .inner
@@ -1357,6 +1403,23 @@ async fn write_loop(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/// Mirror of NeboLoop's `sanitizeChannelName` so find-by-name matches what the
+/// server stores: lowercase, trim, spaces→'-', drop '.', keep [a-z0-9-],
+/// collapse repeated '-', trim '-', cap at 80.
+fn sanitize_channel_name(name: &str) -> String {
+    let mut s: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c == ' ' { '-' } else { c })
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    while s.contains("--") {
+        s = s.replace("--", "-");
+    }
+    s.trim_matches('-').chars().take(80).collect()
+}
 
 /// Format 16 bytes as a UUID string.
 fn uuid_from_bytes(b: &[u8; 16]) -> String {

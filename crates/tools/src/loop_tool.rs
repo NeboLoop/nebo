@@ -198,6 +198,27 @@ impl LoopTool {
         let action = input["action"].as_str().unwrap_or("");
 
         match action {
+            "ensure" => {
+                let name = input["name"].as_str().unwrap_or("");
+                if name.is_empty() {
+                    return ToolResult::error(errors::missing_param(
+                        "channel ensure",
+                        "name",
+                        "loop(resource: \"channel\", action: \"ensure\", name: \"daily-briefing\")",
+                    ));
+                }
+                let description = input["description"].as_str().filter(|s| !s.is_empty());
+                match self.comm.ensure_channel(name, description).await {
+                    Ok(channel_id) => ToolResult::ok(format!(
+                        "Channel \"{}\" is ready (channel_id: {}). Post to it with \
+                         loop(resource: \"channel\", action: \"send\", channel_id: \"{}\", text: \"...\").",
+                        name, channel_id, channel_id
+                    )),
+                    Err(e) => {
+                        ToolResult::error(format!("Failed to ensure channel \"{}\": {}", name, e))
+                    }
+                }
+            }
             "send" => {
                 let channel_id = input["channel_id"].as_str().unwrap_or("");
                 let text = input["text"].as_str().unwrap_or("");

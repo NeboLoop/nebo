@@ -89,6 +89,17 @@ pub trait CommPlugin: Send + Sync {
         Err(CommError::Other("not supported".into()))
     }
 
+    /// Find-or-create a channel by name; returns its channel_id. Idempotent —
+    /// re-calling with the same name returns the existing channel. Lets a
+    /// workflow self-create a channel (e.g. #daily-briefing) before posting.
+    async fn ensure_channel(
+        &self,
+        _name: &str,
+        _description: Option<&str>,
+    ) -> Result<String, CommError> {
+        Err(CommError::Other("not supported".into()))
+    }
+
     /// Retrieve and consume a rotated auth token (if the gateway issued one).
     /// Returns `None` for plugins that don't support token rotation.
     async fn take_rotated_token(&self) -> Option<String> {

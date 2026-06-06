@@ -772,6 +772,29 @@ impl NeboAIApi {
         Ok(resp.channels)
     }
 
+    /// Create a channel in a loop. NeboLoop sanitizes the name and auto-adds the
+    /// bot's agents as members, so the bot can post immediately after.
+    pub async fn create_channel(
+        &self,
+        loop_id: &str,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<(), CommError> {
+        #[derive(serde::Serialize)]
+        struct CreateChannelBody<'a> {
+            name: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: Option<&'a str>,
+        }
+        self.do_json::<serde_json::Value>(
+            reqwest::Method::POST,
+            &format!("/api/v1/loops/{}/channels", loop_id),
+            Some(&CreateChannelBody { name, description }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// List members of a channel.
     pub async fn list_channel_members(
         &self,
