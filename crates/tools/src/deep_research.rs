@@ -1011,6 +1011,31 @@ async fn fetch_text(
     tab: String,
     url: &str,
 ) -> Result<(String, Option<u16>), String> {
+    // Tier 1/2 — fetch through the real (or built-in) browser, so logged-in / JS-rendered
+    // pages come back authenticated. The `browser` resource routes extension → CDP via the
+    // executor; a substantial read means it worked.
+    let nav = agent
+        .execute_tool(
+            tab.clone(),
+            "web".to_string(),
+            json!({ "resource": "browser", "action": "navigate", "url": url }),
+        )
+        .await;
+    if !nav.is_error {
+        let read = agent
+            .execute_tool(
+                tab.clone(),
+                "web".to_string(),
+                json!({ "resource": "browser", "action": "read_page" }),
+            )
+            .await;
+        if !read.is_error && read.content.trim().len() >= 400 {
+            agent.close_tab(tab).await;
+            return Ok((read.content, read.http_status));
+        }
+    }
+
+    // Tier 3 — direct server-side HTTP sanitize (clean text + status), the floor.
     let input = json!({ "resource": "http", "action": "sanitize", "url": url, "chunk_size": 6000 });
     let result = agent.execute_tool(tab.clone(), "web".to_string(), input).await;
     // Close this fetch sub-agent's tab/page once the fetch completes (1:1 ownership).

@@ -45,6 +45,11 @@ tower-http = { version = "0.6", features = ["cors", "compression-gzip", "fs", "s
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 hyper = { version = "1" }
 
+# Browser automation (Chrome DevTools Protocol) — tier-2 built-in browser backend.
+# No features: drops the optional Chromium fetcher (we launch Chrome ourselves via
+# RunningChrome) and its TLS — local CDP is ws:// (no TLS needed). It's tokio-based.
+chromiumoxide = { version = "0.9", default-features = false }
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

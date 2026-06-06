@@ -5,11 +5,11 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::BrowserError;
+use crate::cdp_bridge::{CdpBridge, CdpLaunchConfig};
 use crate::chrome::RunningChrome;
 use crate::config::BrowserConfig;
 use crate::executor::ActionExecutor;
 use crate::extension_bridge::ExtensionBridge;
-use crate::headless_bridge::HeadlessBridge;
 use crate::session::Session;
 
 /// Manages browser instances and sessions.
@@ -19,7 +19,8 @@ pub struct Manager {
     browsers: RwLock<HashMap<String, RunningChrome>>,
     sessions: RwLock<HashMap<String, Arc<Session>>>,
     bridge: Arc<ExtensionBridge>,
-    headless: Option<Arc<HeadlessBridge>>,
+    /// Tier-2 built-in Chrome (CDP), launched lazily on first fallback use.
+    cdp: Option<Arc<CdpBridge>>,
 }
 
 /// Status info for a browser profile.
@@ -33,15 +34,24 @@ pub struct ProfileStatus {
 
 impl Manager {
     pub fn new(config: BrowserConfig, data_dir: String) -> Self {
-        let headless =
-            HeadlessBridge::detect_binary().map(|bin| Arc::new(HeadlessBridge::new(bin)));
+        // Built-in Chrome (CDP tier-2) — launch config from the managed "nebo" profile (its own
+        // persistent user-data dir + debug port). Launched lazily on first fallback use.
+        let cdp = config.resolve_profile("nebo", &data_dir).map(|p| {
+            Arc::new(CdpBridge::new(CdpLaunchConfig {
+                executable: config.executable_path.clone(),
+                user_data_dir: p.user_data_dir,
+                cdp_port: p.cdp_port,
+                headless: config.headless,
+                no_sandbox: config.no_sandbox,
+            }))
+        });
         Self {
             config,
             data_dir,
             browsers: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
             bridge: Arc::new(ExtensionBridge::new()),
-            headless,
+            cdp,
         }
     }
 
@@ -50,12 +60,9 @@ impl Manager {
         self.bridge.clone()
     }
 
-    /// Get an ActionExecutor that routes to extension or headless backend.
+    /// Get an ActionExecutor: tier 1 extension → tier 2 built-in Chrome (CDP).
     pub fn executor(&self) -> Option<ActionExecutor> {
-        Some(ActionExecutor::new(
-            self.bridge.clone(),
-            self.headless.clone(),
-        ))
+        Some(ActionExecutor::new(self.bridge.clone(), self.cdp.clone()))
     }
 
     /// Check if the Chrome extension is connected via the bridge.
@@ -63,9 +70,9 @@ impl Manager {
         self.bridge.is_connected()
     }
 
-    /// Check if headless agent-browser is available.
-    pub fn headless_available(&self) -> bool {
-        self.headless.is_some()
+    /// Check if the built-in Rust Chrome (CDP tier-2) backend is configured.
+    pub fn cdp_available(&self) -> bool {
+        self.cdp.is_some()
     }
 
     /// Launch a managed Chrome instance for a profile.
@@ -199,9 +206,6 @@ impl Manager {
         }
         let mut sessions = self.sessions.write().await;
         sessions.clear();
-        // Close every open headless session
-        if let Some(ref headless) = self.headless {
-            headless.cleanup_all().await;
-        }
+        // The built-in CDP Chrome (if launched) is killed when its RunningChrome drops.
     }
 }

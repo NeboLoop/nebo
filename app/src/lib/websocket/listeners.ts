@@ -5,6 +5,8 @@
  * Call `attachWebSocketListeners()` once after the WebSocket connects.
  */
 
+import { get } from 'svelte/store';
+import { t } from 'svelte-i18n';
 import { getWebSocketClient } from './client';
 import { notifications, pushNotification, loadNotifications } from '$lib/stores/notifications';
 import { addToast } from '$lib/stores/toast';
@@ -40,6 +42,22 @@ export function attachWebSocketListeners(): void {
       };
       notifications.update(list => [n, ...list]);
       addToast(n.title || n.message, n.type === 'error' ? 'error' : 'info');
+    })
+  );
+
+  // --- Browser extension: nudge the user to install it when it's missing ---
+  // The user's authenticated browser (the extension) is tier 1; when it's absent
+  // research falls back to the built-in Chrome, but we prompt so they get the best
+  // (logged-in) experience. Research fan-out can fire this many times, so rate-limit.
+  let lastExtPrompt = 0;
+  unsubs.push(
+    ws.on('browser_extension_disconnected', (data: any) => {
+      if (data?.reason === 'reconnecting') return; // transient — don't nag
+      const now = Date.now();
+      if (now - lastExtPrompt < 10 * 60 * 1000) return; // at most once per 10 min
+      lastExtPrompt = now;
+      const msg = `${get(t)('browser.notConnected')} ${get(t)('browser.instructions')}`;
+      addToast(msg, 'warning', 12000);
     })
   );
 

@@ -1,10 +1,10 @@
 pub mod actions;
 pub mod audit;
+pub mod cdp_bridge;
 pub mod chrome;
 pub mod config;
 pub mod executor;
 pub mod extension_bridge;
-pub mod headless_bridge;
 pub mod manager;
 pub mod native_host;
 pub mod native_types;
@@ -13,10 +13,10 @@ pub mod snapshot;
 pub mod snapshot_store;
 pub mod storage;
 
+pub use cdp_bridge::{CdpBridge, CdpLaunchConfig};
 pub use config::{BrowserConfig, ProfileConfig, ResolvedProfile};
 pub use executor::ActionExecutor;
 pub use extension_bridge::{BatchAction, BatchOptions, ExtensionBridge};
-pub use headless_bridge::HeadlessBridge;
 pub use manager::Manager;
 pub use native_host::NativeHost;
 pub use session::{Page, PageState, Session};

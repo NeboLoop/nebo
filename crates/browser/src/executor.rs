@@ -1,59 +1,62 @@
 //! Action Executor — bridges agent tool calls to browser backends.
 //!
-//! Routes to the Chrome extension (via ExtensionBridge) when connected,
-//! or falls back to headless agent-browser (via HeadlessBridge) when available.
+//! ONE entry point, an ordered fallback inside it:
+//!   tier 1 — the user's Chrome extension (authenticated, human session),
+//!   tier 2 — the built-in Rust Chrome driven over CDP (via `CdpBridge`).
+//! Tier 3 (direct HTTP) lives in the caller (`web_tool`). Failover is per-call: if the extension
+//! errors or times out (e.g. the native-host relay dropped), the same action is retried on CDP.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::BrowserError;
+use crate::cdp_bridge::CdpBridge;
 use crate::extension_bridge::{BatchAction, BatchOptions, ExtensionBridge};
-use crate::headless_bridge::HeadlessBridge;
 
 /// Executes browser actions, routing to the best available backend.
 pub struct ActionExecutor {
     bridge: Arc<ExtensionBridge>,
-    headless: Option<Arc<HeadlessBridge>>,
+    cdp: Option<Arc<CdpBridge>>,
 }
 
 impl ActionExecutor {
-    pub fn new(bridge: Arc<ExtensionBridge>, headless: Option<Arc<HeadlessBridge>>) -> Self {
-        Self { bridge, headless }
+    pub fn new(bridge: Arc<ExtensionBridge>, cdp: Option<Arc<CdpBridge>>) -> Self {
+        Self { bridge, cdp }
     }
 
     /// Check if any browser backend is available.
     pub fn is_connected(&self) -> bool {
-        self.bridge.is_connected() || self.headless.is_some()
+        self.bridge.is_connected() || self.cdp.is_some()
     }
 
     /// Check if the extension was recently connected (within the given duration).
     pub async fn was_recently_connected(&self, within: Duration) -> bool {
-        self.bridge.was_recently_connected(within).await || self.headless.is_some()
+        self.bridge.was_recently_connected(within).await || self.cdp.is_some()
     }
 
     /// Wait for the extension to reconnect within a timeout.
-    /// Returns true immediately if headless is available.
+    /// Returns true immediately if the built-in CDP browser is available.
     pub async fn wait_for_connection(&self, timeout: Duration) -> bool {
-        if self.headless.is_some() {
+        if self.cdp.is_some() {
             return true;
         }
         self.bridge.wait_for_connection(timeout).await
     }
 
-    /// True if the Chrome extension is connected (not headless fallback).
+    /// True if the Chrome extension is connected (tier 1, not the CDP fallback).
     pub fn extension_connected(&self) -> bool {
         self.bridge.is_connected()
     }
 
-    /// True if headless agent-browser is available.
-    pub fn headless_available(&self) -> bool {
-        self.headless.is_some()
+    /// True if the built-in Rust Chrome (CDP tier-2) backend is available.
+    pub fn cdp_available(&self) -> bool {
+        self.cdp.is_some()
     }
 
-    /// Execute a named browser tool, routing to extension or headless.
-    /// `session_id` scopes the tab group in the extension (each agent gets its own tabs).
+    /// Execute a named browser tool: tier 1 (extension) → tier 2 (CDP), failing over on
+    /// error/timeout. `session_id` scopes the tab (each sub-agent gets its own).
     pub async fn execute(
         &self,
         tool: &str,
@@ -61,31 +64,26 @@ impl ActionExecutor {
         session_id: Option<&str>,
     ) -> Result<serde_json::Value, BrowserError> {
         if self.bridge.is_connected() {
-            info!(
-                tool = tool,
-                backend = "extension",
-                "executing browser action"
-            );
-            self.bridge
-                .execute(tool, args, session_id)
-                .await
-                .map_err(BrowserError::Other)
-        } else if let Some(ref headless) = self.headless {
-            info!(
-                tool = tool,
-                backend = "headless",
-                "executing browser action"
-            );
-            headless
-                .execute(tool, args, session_id)
-                .await
-                .map_err(BrowserError::Other)
-        } else {
-            Err(BrowserError::ExtensionNotConnected)
+            info!(tool = tool, backend = "extension", "executing browser action");
+            match self.bridge.execute(tool, args, session_id).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    if self.cdp.is_none() {
+                        return Err(BrowserError::Other(e));
+                    }
+                    warn!(tool, error = %e, "extension failed — falling back to built-in Chrome (CDP)");
+                }
+            }
         }
+        if let Some(ref cdp) = self.cdp {
+            info!(tool = tool, backend = "cdp", "executing browser action");
+            return cdp.execute(tool, args, session_id.unwrap_or("_default")).await;
+        }
+        Err(BrowserError::ExtensionNotConnected)
     }
 
-    /// Execute multiple actions in a single round-trip (extension) or sequentially (headless).
+    /// Execute multiple actions: extension batch (one round-trip) → CDP (sequential), failing
+    /// over on error.
     pub async fn batch_execute(
         &self,
         actions: Vec<BatchAction>,
@@ -93,18 +91,48 @@ impl ActionExecutor {
         session_id: Option<&str>,
     ) -> Result<Vec<Result<serde_json::Value, String>>, BrowserError> {
         if self.bridge.is_connected() {
-            self.bridge
-                .batch_execute(actions, opts, session_id)
+            match self
+                .bridge
+                .batch_execute(actions.clone(), opts.clone(), session_id)
                 .await
-                .map_err(BrowserError::Other)
-        } else if let Some(ref headless) = self.headless {
-            headless
-                .batch_execute(actions, opts, session_id)
-                .await
-                .map_err(BrowserError::Other)
-        } else {
-            Err(BrowserError::ExtensionNotConnected)
+            {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    if self.cdp.is_none() {
+                        return Err(BrowserError::Other(e));
+                    }
+                    warn!(error = %e, "extension batch failed — falling back to built-in Chrome (CDP)");
+                }
+            }
         }
+        if self.cdp.is_some() {
+            return self.cdp_batch(actions, opts, session_id).await;
+        }
+        Err(BrowserError::ExtensionNotConnected)
+    }
+
+    /// Run a batch sequentially on the CDP backend (no native batching over CDP).
+    async fn cdp_batch(
+        &self,
+        actions: Vec<BatchAction>,
+        opts: BatchOptions,
+        session_id: Option<&str>,
+    ) -> Result<Vec<Result<serde_json::Value, String>>, BrowserError> {
+        let cdp = self.cdp.as_ref().ok_or(BrowserError::ExtensionNotConnected)?;
+        let sid = session_id.unwrap_or("_default");
+        let mut out = Vec::with_capacity(actions.len());
+        for a in &actions {
+            match cdp.execute(&a.tool, &a.args, sid).await {
+                Ok(v) => out.push(Ok(v)),
+                Err(e) => {
+                    out.push(Err(e.to_string()));
+                    if opts.stop_on_error {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Click an element then immediately read the page — one round-trip.
@@ -173,8 +201,8 @@ impl ActionExecutor {
         self.bridge
             .send_command("close_session_tabs", Some(session_id))
             .await;
-        if let Some(ref headless) = self.headless {
-            headless.close_session(Some(session_id)).await;
+        if let Some(ref cdp) = self.cdp {
+            cdp.close_session(session_id).await;
         }
     }
 

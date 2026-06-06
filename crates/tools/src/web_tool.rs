@@ -411,7 +411,7 @@ impl WebTool {
     /// to run a search — used to prefer it over DDG HTTP scraping.
     fn browser_search_available(&self) -> bool {
         match &self.browser {
-            Some(m) => m.extension_connected() || m.headless_available(),
+            Some(m) => m.extension_connected() || m.cdp_available(),
             None => false,
         }
     }
@@ -675,18 +675,17 @@ impl WebTool {
         // Status works even when disconnected
         if action == "status" {
             let ext_connected = manager.extension_connected();
-            let headless = manager.headless_available();
+            let cdp = manager.cdp_available();
             let status = if ext_connected {
                 "Browser extension connected. Ready. Use read_page to see the current page."
-            } else if headless {
-                "Headless browser available (agent-browser). Use read_page to see the current page."
+            } else if cdp {
+                "Built-in Chrome (CDP) available as a fallback. Use read_page to see the current page."
             } else {
-                "No browser backend available. Connect the Nebo Chrome/Brave extension \
-                 or install agent-browser (`npm i -g agent-browser && agent-browser install`)."
+                "No browser backend available. Connect the Nebo Chrome/Brave extension."
             };
             return ToolResult::ok(format!(
-                "Extension: {}, Headless: {}\n{}",
-                ext_connected, headless, status
+                "Extension: {}, Built-in Chrome: {}\n{}",
+                ext_connected, cdp, status
             ));
         }
 
@@ -709,8 +708,7 @@ impl WebTool {
             } else {
                 self.broadcast_extension_disconnected("not_connected", session_id);
                 return ToolResult::error(
-                    "No browser backend available. Connect the Nebo Chrome/Brave extension \
-                     or install agent-browser (`npm i -g agent-browser && agent-browser install`).",
+                    "No browser backend available. Connect the Nebo Chrome/Brave extension.",
                 );
             }
         }
