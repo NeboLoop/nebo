@@ -258,6 +258,9 @@ pub fn micro_compact(
             None
         };
 
+        // Read-type results keep a bounded slice of real content, so their
+        // new size varies; estimate from the trimmed length rather than a flat 10.
+        let new_tokens = (trimmed_content.len() / CHARS_PER_TOKEN).max(10);
         result[*idx] = ChatMessage {
             id: msg.id.clone(),
             chat_id: msg.chat_id.clone(),
@@ -268,10 +271,10 @@ pub fn micro_compact(
             day_marker: msg.day_marker.clone(),
             tool_calls: msg.tool_calls.clone(),
             tool_results: compacted_results,
-            token_estimate: Some(10),
+            token_estimate: Some(new_tokens as i64),
             html: None,
         };
-        tokens_saved += old_tokens.saturating_sub(10);
+        tokens_saved += old_tokens.saturating_sub(new_tokens);
     }
 
     if tokens_saved < MICRO_COMPACT_MIN_SAVINGS {
@@ -346,7 +349,19 @@ pub fn time_based_micro_compact(
             continue; // already small
         }
 
-        let cleared = "[cleared]".to_string();
+        // Read-type results are deliverables (calendar/mail/file/search). Even
+        // when stale, keep a bounded slice of the real content rather than
+        // wiping it to "[cleared]" — the model must still be able to report
+        // what was fetched. Side-effecting results clear as before.
+        let (call_name, call_input) = find_tool_call_for_result(messages, idx);
+        let input = call_input.unwrap_or(serde_json::Value::Null);
+        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let cleared = if is_read_type(call_name.as_str(), resource, action) {
+            bounded_content(&msg.content)
+        } else {
+            "[cleared]".to_string()
+        };
 
         // Preserve tool_call_ids in tool_results JSON
         let compacted_results = if let Some(ref tr_json) = msg.tool_results {
@@ -378,6 +393,7 @@ pub fn time_based_micro_compact(
             None
         };
 
+        let new_tokens = (cleared.len() / CHARS_PER_TOKEN).max(2);
         result[idx] = ChatMessage {
             id: msg.id.clone(),
             chat_id: msg.chat_id.clone(),
@@ -388,10 +404,10 @@ pub fn time_based_micro_compact(
             day_marker: msg.day_marker.clone(),
             tool_calls: msg.tool_calls.clone(),
             tool_results: compacted_results,
-            token_estimate: Some(2),
+            token_estimate: Some(new_tokens as i64),
             html: None,
         };
-        tokens_saved += old_tokens.saturating_sub(2);
+        tokens_saved += old_tokens.saturating_sub(new_tokens);
     }
 
     debug!(
@@ -448,6 +464,62 @@ fn find_tool_name_for_result(messages: &[ChatMessage], result_idx: usize) -> Str
     find_tool_call_for_result(messages, result_idx).0
 }
 
+/// Max chars of real content preserved for a read-type tool result during
+/// micro-compaction. Read-type results ARE the deliverable (calendar entries,
+/// file contents, search hits) — collapsing them to a line count makes the
+/// model report "empty"/"0 lines" for data it actually fetched. We keep a
+/// bounded slice (token-budget intent preserved: a few KB, not unbounded).
+const READ_RESULT_KEEP_CHARS: usize = 3500;
+
+/// Whether a tool result's CONTENT is the deliverable (vs. a side-effect
+/// confirmation). Read-type results must keep their actual content through
+/// compaction, not be reduced to a line count.
+///
+/// Read-type:
+///   - `os` PIM resources: calendar, mail, contacts, reminders
+///   - `os` file reads: read, grep, glob, search
+///   - `web` content fetches: search, fetch, sanitize, read_page, get
+///
+/// Everything else (shell exec, file write/edit, browser click/type/navigate
+/// mutations, etc.) is side-effecting and keeps the line-count summary.
+fn is_read_type(tool_name: &str, resource: &str, action: &str) -> bool {
+    match tool_name {
+        // `system` is the deprecated alias for `os`; honor it for historical
+        // tool calls still present in the conversation window.
+        "os" | "system" => match resource {
+            "calendar" | "mail" | "contacts" | "reminders" => true,
+            "file" => matches!(action, "read" | "grep" | "glob" | "search"),
+            _ => false,
+        },
+        "web" => matches!(
+            action,
+            "search" | "fetch" | "sanitize" | "read_page" | "get"
+        ),
+        _ => false,
+    }
+}
+
+/// Keep a bounded slice of real content, truncated at a line boundary near
+/// the cap, with an explicit truncation marker. Preserves the answer while
+/// honoring the token budget.
+fn bounded_content(content: &str) -> String {
+    if content.len() <= READ_RESULT_KEEP_CHARS {
+        return content.to_string();
+    }
+    // Truncate at a char boundary, then back up to the last newline so we
+    // don't cut mid-line.
+    let mut cut = READ_RESULT_KEEP_CHARS;
+    while cut > 0 && !content.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let slice = &content[..cut];
+    let slice = match slice.rfind('\n') {
+        Some(nl) if nl > READ_RESULT_KEEP_CHARS / 2 => &slice[..nl],
+        _ => slice,
+    };
+    format!("{}\n…(truncated)", slice.trim_end())
+}
+
 /// Build an informative one-line summary of a tool call + result.
 /// Pure string ops — no LLM.
 fn build_tool_summary(
@@ -460,6 +532,12 @@ fn build_tool_summary(
     let input = tool_input.unwrap_or(&serde_json::Value::Null);
     let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Read-type results: the content IS the deliverable. Keep a bounded slice
+    // of the real content instead of discarding it for a line count.
+    if is_read_type(tool_name, resource, action) {
+        return bounded_content(tool_result);
+    }
 
     match tool_name {
         "system" if resource == "shell" => {
@@ -1033,6 +1111,43 @@ mod tests {
     }
 
     #[test]
+    fn test_time_based_micro_compact_preserves_read_type_content() {
+        // Stale session, but the older tool result is a read-type deliverable
+        // (calendar). It must NOT be wiped to "[cleared]" — its content (bounded)
+        // must survive so the model can still report what was fetched.
+        let old_ts = 1000;
+        let mut cal_call = make_assistant_msg("checking calendar", old_ts);
+        cal_call.tool_calls = Some(
+            serde_json::json!([{
+                "name": "os",
+                "id": "call_cal",
+                "input": { "resource": "calendar", "action": "today" }
+            }])
+            .to_string(),
+        );
+        let cal_result = make_tool_result_msg("9:00 Standup\n13:00 Lunch with client", old_ts);
+
+        let big = "x".repeat(4000);
+        let messages = vec![
+            make_msg("user", "what's on my calendar"),
+            cal_call,
+            cal_result,
+            make_assistant_msg("now searching", old_ts),
+            make_tool_result_msg(&big, old_ts), // most recent (kept anyway)
+        ];
+
+        let (result, _) = time_based_micro_compact(&messages, 1, 1);
+        let tool_results: Vec<&ChatMessage> = result.iter().filter(|m| m.role == "tool").collect();
+        // Older calendar result kept content despite being stale + not most-recent
+        assert!(
+            tool_results[0].content.contains("Lunch with client"),
+            "stale read-type result must keep content, got: {}",
+            tool_results[0].content
+        );
+        assert_ne!(tool_results[0].content, "[cleared]");
+    }
+
+    #[test]
     fn test_time_based_micro_compact_active_session() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1105,29 +1220,57 @@ mod tests {
     }
 
     #[test]
-    fn test_build_tool_summary_file_read() {
+    fn test_build_tool_summary_file_read_preserves_content() {
+        // File reads are read-type: the content IS the deliverable, so the
+        // summary keeps the actual content rather than a line count.
         let input = serde_json::json!({
             "resource": "file",
             "action": "read",
             "path": "/home/user/code.rs"
         });
         let result = "line1\nline2\n";
-        let summary = build_tool_summary("system", Some(&input), result);
-        assert!(summary.contains("[system:file:read]"));
-        assert!(summary.contains("/home/user/code.rs"));
+        let summary = build_tool_summary("os", Some(&input), result);
+        assert_eq!(summary, result, "read-type result content must survive");
+        assert!(!summary.contains("lines"));
     }
 
     #[test]
-    fn test_build_tool_summary_web_search() {
+    fn test_build_tool_summary_calendar_preserves_content() {
+        // Calendar reads were collapsing to "[os:calendar] 0 lines" — the bug.
+        // Now the real content must be preserved.
         let input = serde_json::json!({
+            "resource": "calendar",
+            "action": "today"
+        });
+        let result = "9:00 Standup\n13:00 Lunch with client\n15:30 Design review";
+        let summary = build_tool_summary("os", Some(&input), result);
+        assert_eq!(summary, result);
+        assert!(summary.contains("Lunch with client"));
+    }
+
+    #[test]
+    fn test_build_tool_summary_read_type_bounded() {
+        // Large read-type content is bounded with a truncation marker.
+        let input = serde_json::json!({ "resource": "mail", "action": "unread" });
+        let result = "x".repeat(10_000);
+        let summary = build_tool_summary("os", Some(&input), &result);
+        assert!(summary.len() < result.len(), "should be bounded");
+        assert!(summary.len() <= READ_RESULT_KEEP_CHARS + 32);
+        assert!(summary.ends_with("…(truncated)"));
+    }
+
+    #[test]
+    fn test_build_tool_summary_web_search_preserves_content() {
+        // web search is read-type — keep the result payload, not a count.
+        let input = serde_json::json!({
+            "resource": "search",
             "action": "search",
             "query": "rust async tutorial"
         });
         let result = r#"{"title": "Async Rust", "url": "..."}, {"title": "Tokio Guide", "url": "..."}"#;
         let summary = build_tool_summary("web", Some(&input), result);
-        assert!(summary.contains("[web:search]"));
-        assert!(summary.contains("rust async tutorial"));
-        assert!(summary.contains("2 results"));
+        assert_eq!(summary, result);
+        assert!(summary.contains("Tokio Guide"));
     }
 
     #[test]
