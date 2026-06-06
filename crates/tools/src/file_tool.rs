@@ -188,6 +188,39 @@ impl FileTool {
             let mut sample = [0u8; 8192];
             if let Ok(n) = file.read(&mut sample) {
                 if n > 0 && is_binary_content(&sample[..n], n) {
+                    // Images: return them INLINE as a viewable image (data URL) so the model
+                    // actually sees the pixels — like Claude Code's Read. The runner renders
+                    // image_url inline for multimodal providers and routes it through the vision
+                    // sidecar otherwise. One canonical "read an image" path; never make the model
+                    // guess the contents.
+                    let mime = match std::path::Path::new(&path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_ascii_lowercase())
+                        .as_deref()
+                    {
+                        Some("png") => Some("image/png"),
+                        Some("jpg") | Some("jpeg") => Some("image/jpeg"),
+                        Some("gif") => Some("image/gif"),
+                        Some("webp") => Some("image/webp"),
+                        Some("bmp") => Some("image/bmp"),
+                        Some("heic") => Some("image/heic"),
+                        Some("tiff") | Some("tif") => Some("image/tiff"),
+                        _ => None,
+                    };
+                    if let Some(mime) = mime {
+                        use base64::Engine;
+                        return match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                                ToolResult::ok(format!("[image: {}]", path))
+                                    .with_image_url(format!("data:{};base64,{}", mime, b64))
+                            }
+                            Err(e) => {
+                                ToolResult::error(format!("Error reading image {}: {}", path, e))
+                            }
+                        };
+                    }
                     return ToolResult::ok("[Binary file detected — content not shown]");
                 }
             }

@@ -213,53 +213,6 @@ impl tools::bot_tool::AdvisorDeliberator for Runner {
     }
 }
 
-/// Implement the VisionAnalyzer trait from the tools crate so AgentTool can analyze images
-/// without a circular dependency. Reuses the same provider-stream pattern as deliberation.
-impl tools::bot_tool::VisionAnalyzer for Runner {
-    fn analyze_image<'a>(
-        &'a self,
-        image_b64: &'a str,
-        media_type: &'a str,
-        prompt: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
-    {
-        Box::pin(async move {
-            let provider = self
-                .providers
-                .first()
-                .ok_or_else(|| "no AI providers configured".to_string())?;
-            let req = ChatRequest {
-                messages: vec![Message {
-                    role: "user".to_string(),
-                    content: prompt.to_string(),
-                    images: Some(vec![ai::ImageContent {
-                        media_type: media_type.to_string(),
-                        data: image_b64.to_string(),
-                    }]),
-                    ..Default::default()
-                }],
-                max_tokens: 1024,
-                temperature: 0.2,
-                ..Default::default()
-            };
-            let mut rx = provider.stream(&req).await.map_err(|e| e.to_string())?;
-            let mut text = String::new();
-            while let Some(event) = rx.recv().await {
-                match event.event_type {
-                    StreamEventType::Text => text.push_str(&event.text),
-                    StreamEventType::Done | StreamEventType::Error => break,
-                    _ => {}
-                }
-            }
-            if text.is_empty() {
-                Err("vision provider returned no text".to_string())
-            } else {
-                Ok(text)
-            }
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

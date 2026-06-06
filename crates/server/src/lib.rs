@@ -800,21 +800,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Build a second provider set for advisor deliberation (includes CLI providers)
     let advisor_providers = build_providers(&store, &cfg, Some(&cli_statuses));
     let shared_providers = Arc::new(advisor_providers);
-    // One concrete Runner backs BOTH advisor deliberation and vision analysis.
-    let advisor_runner_concrete: Option<Arc<agent::advisors::Runner>> =
-        if shared_providers.is_empty() {
-            None
-        } else {
-            Some(Arc::new(agent::advisors::Runner::new(
-                advisor_loader,
-                shared_providers.clone(),
-            )))
-        };
-    let advisor_runner: Option<Arc<dyn tools::AdvisorDeliberator>> = advisor_runner_concrete
-        .clone()
-        .map(|r| r as Arc<dyn tools::AdvisorDeliberator>);
-    let vision_analyzer: Option<Arc<dyn tools::bot_tool::VisionAnalyzer>> = advisor_runner_concrete
-        .map(|r| r as Arc<dyn tools::bot_tool::VisionAnalyzer>);
+    let advisor_runner: Option<Arc<dyn tools::AdvisorDeliberator>> = if shared_providers.is_empty() {
+        None
+    } else {
+        Some(Arc::new(agent::advisors::Runner::new(
+            advisor_loader,
+            shared_providers.clone(),
+        )))
+    };
 
     // Structured-output sub-agent runner for the deep-research harness. Shares the same
     // provider set; absent when no provider can force tool calls.
@@ -902,7 +895,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             orch_handle.clone(),
             Some(skill_loader.clone()),
             advisor_runner,
-            vision_analyzer,
             Some(hybrid_searcher),
             structured_agent,
             None, // workflow_manager registered separately after Runner is created

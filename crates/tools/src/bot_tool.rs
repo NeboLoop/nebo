@@ -18,18 +18,6 @@ pub trait AdvisorDeliberator: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>;
 }
 
-/// Trait for image analysis via a vision-capable provider (implemented by
-/// `agent::advisors::Runner`). Takes base64 image data + media type + a prompt, returns text.
-/// Defined here to avoid a circular dependency on the agent crate (which owns the providers).
-pub trait VisionAnalyzer: Send + Sync {
-    fn analyze_image<'a>(
-        &'a self,
-        image_b64: &'a str,
-        media_type: &'a str,
-        prompt: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>;
-}
-
 /// One structured sub-agent request for the deep-research harness. The agent does free
 /// tool work with the named `aux_tools`, then is FORCED through a schema-validated
 /// `StructuredOutput` call (see `agent::structured::agent_structured`).
@@ -103,7 +91,6 @@ pub struct AgentTool {
     store: Arc<Store>,
     orchestrator: OrchestratorHandle,
     advisor_runner: Option<Arc<dyn AdvisorDeliberator>>,
-    vision_analyzer: Option<Arc<dyn VisionAnalyzer>>,
     hybrid_searcher: Option<Arc<dyn HybridSearcher>>,
     structured_agent: Option<Arc<dyn StructuredAgent>>,
     run_querier: RunQuerierHandle,
@@ -116,17 +103,11 @@ impl AgentTool {
             store,
             orchestrator,
             advisor_runner: None,
-            vision_analyzer: None,
             hybrid_searcher: None,
             structured_agent: None,
             run_querier: crate::run_querier::new_handle(),
             persona: None,
         }
-    }
-
-    pub fn with_vision_analyzer(mut self, analyzer: Arc<dyn VisionAnalyzer>) -> Self {
-        self.vision_analyzer = Some(analyzer);
-        self
     }
 
     pub fn with_persona(mut self, persona: crate::agent_tool::PersonaTool) -> Self {
@@ -160,7 +141,6 @@ impl AgentTool {
             "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create"
             | "update" | "delete" => "task",
             "research" | "deep_research" | "submit_findings" => "research",
-            "analyze" => "vision",
             "open_billing" => "profile",
             "history" | "query" => "session",
             "reset" | "compact" | "summary" => "context",
@@ -1325,37 +1305,6 @@ impl AgentTool {
         }
     }
 
-    /// Analyze an image with a vision-capable provider.
-    async fn handle_vision(&self, input: &serde_json::Value) -> ToolResult {
-        let analyzer = match &self.vision_analyzer {
-            Some(a) => a,
-            None => {
-                return ToolResult::error(
-                    "Vision analysis is not available — no vision-capable AI provider is configured.",
-                )
-            }
-        };
-        let image = input["image"].as_str().unwrap_or("");
-        if image.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "analyze",
-                "image",
-                "agent(resource: \"vision\", action: \"analyze\", image: \"/path/to/image.png\")",
-            ));
-        }
-        let prompt = input["prompt"].as_str().unwrap_or(
-            "Describe this image in detail. Note any text, UI elements, charts, or notable content.",
-        );
-        let (data, media_type) = match load_image(image).await {
-            Ok(v) => v,
-            Err(e) => return ToolResult::error(e),
-        };
-        match analyzer.analyze_image(&data, &media_type, prompt).await {
-            Ok(text) => ToolResult::ok(text),
-            Err(e) => ToolResult::error(format!("Vision analysis failed: {}", e)),
-        }
-    }
-
     /// Owner/account profile: read account info, update the bot's identity, or open billing.
     async fn handle_profile(&self, input: &serde_json::Value) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("get");
@@ -1722,8 +1671,6 @@ impl DynTool for AgentTool {
          - agent(resource: \"advisors\", action: \"deliberate\", task: \"Should we use PostgreSQL or SQLite?\")\n\n\
          Research (deterministic deep-research harness — fans out searches, fetches sources, adversarially fact-checks claims, returns a cited report):\n\
          - agent(resource: \"research\", action: \"deep_research\", query: \"How effective is X for Y?\", depth: \"standard\") — Run the full harness; depth: \"quick\"|\"standard\"|\"deep\". Use when the user wants a fact-checked, multi-source report. Interactive runs confirm the plan first; pass confirm: false to skip that gate (for automations / unattended runs).\n\n\
-         Vision:\n\
-         - agent(resource: \"vision\", action: \"analyze\", image: \"/path/to/image.png\")\n\n\
          Context:\n\
          - agent(resource: \"context\", action: \"summary\") / compact / reset\n\n\
          Ask (user input):\n\
@@ -1748,7 +1695,7 @@ impl DynTool for AgentTool {
                 "resource": {
                     "type": "string",
                     "description": "REQUIRED. The agent resource category — determines which actions are available.",
-                    "enum": ["memory", "task", "session", "context", "advisors", "ask", "research", "registry", "runs", "vision", "profile"]
+                    "enum": ["memory", "task", "session", "context", "advisors", "ask", "research", "registry", "runs", "profile"]
                 },
                 "action": {
                     "type": "string",
@@ -1779,7 +1726,6 @@ impl DynTool for AgentTool {
                 "gaps": { "type": "array", "items": { "type": "string" }, "description": "Array of gaps (unanswered questions) from research worker" },
                 "max_iterations": { "type": "integer", "description": "Max iterations for sub-agent (default: 100)" },
                 "tasks": { "type": "array", "items": { "type": "object", "properties": { "prompt": { "type": "string" }, "description": { "type": "string" }, "tools": { "type": "array", "items": { "type": "string" } }, "plugins": { "type": "array", "items": { "type": "string" } }, "skills": { "type": "array", "items": { "type": "string" } } }, "required": ["prompt"] }, "description": "Array of tasks for spawn_parallel — each runs as a concurrent sub-agent" },
-                "image": { "type": "string", "description": "For vision analyze: image as a local file path, http(s) URL, data: URI, or raw base64" },
                 "name": { "type": "string", "description": "Name (registry agent name, or profile update bot name)" },
                 "role": { "type": "string", "description": "For profile update: the bot's role/description" }
             },
@@ -1826,7 +1772,7 @@ impl DynTool for AgentTool {
                 let corrected = crate::domain::auto_correct_resource(
                     &domain_input,
                     &mut input,
-                    &["memory", "task", "session", "context", "advisors", "ask", "research", "registry", "runs", "vision", "profile"],
+                    &["memory", "task", "session", "context", "advisors", "ask", "research", "registry", "runs", "profile"],
                 );
                 if corrected.is_empty() {
                     self.infer_resource(&domain_input.action).to_string()
@@ -1850,7 +1796,6 @@ impl DynTool for AgentTool {
                 "ask" => self.handle_ask(&input, ctx).await,
                 "runs" => self.handle_runs(&input, ctx).await,
                 "research" => self.handle_research(&input, ctx).await,
-                "vision" => self.handle_vision(&input).await,
                 "profile" => self.handle_profile(&input).await,
                 "registry" => {
                     if let Some(ref persona) = self.persona {
@@ -1860,61 +1805,12 @@ impl DynTool for AgentTool {
                     }
                 }
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: memory, task, session, context, advisors, ask, runs, research, vision, profile, registry",
+                    "Resource {:?} not available. Available: memory, task, session, context, advisors, ask, runs, research, profile, registry",
                     other
                 )),
             }
         })
     }
-}
-
-/// Resolve an `image` param (local path, `data:` URI, http(s) URL, or raw base64) to
-/// `(base64_data, media_type)` for the vision pipeline.
-async fn load_image(image: &str) -> Result<(String, String), String> {
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD;
-
-    if let Some(rest) = image.strip_prefix("data:") {
-        // data:image/png;base64,XXXX
-        let (meta, payload) = rest
-            .split_once(',')
-            .ok_or_else(|| "malformed data URI".to_string())?;
-        let media = meta.split(';').next().unwrap_or("image/png").to_string();
-        return Ok((payload.to_string(), media));
-    }
-    if image.starts_with("http://") || image.starts_with("https://") {
-        let resp = reqwest::get(image)
-            .await
-            .map_err(|e| format!("failed to fetch image: {e}"))?;
-        let media = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("image/png")
-            .to_string();
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("failed to read image: {e}"))?;
-        return Ok((b64.encode(&bytes), media));
-    }
-    // Local file path.
-    let bytes = tokio::fs::read(image)
-        .await
-        .map_err(|e| format!("failed to read image file '{}': {e}", image))?;
-    let media = match std::path::Path::new(image)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        _ => "image/png",
-    }
-    .to_string();
-    Ok((b64.encode(&bytes), media))
 }
 
 /// Open a URL in the system browser (best-effort, cross-platform).
