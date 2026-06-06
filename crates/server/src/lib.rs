@@ -3028,6 +3028,15 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     _ => None,
                 }
             };
+            // Diagnostic: what the composer put on the wire for each chip — the
+            // bot_id (→ routes to primary "Nebo") or an agent's loop UUID. Debug
+            // level so it's available when investigating routing but quiet in prod.
+            tracing::debug!(
+                mention_id = %id,
+                is_bot_id = (!bot_id.is_empty() && id == bot_id),
+                resolved = ?local_id.as_deref(),
+                "channel mention token"
+            );
             if let Some(aid) = local_id {
                 if !mentioned_targets.contains(&aid) {
                     mentioned_targets.push(aid);
@@ -3251,7 +3260,13 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     let name = if agent_id.is_empty() {
                         registry.get("assistant").map(|r| r.name.clone())
                     } else {
-                        registry.get(agent_id).map(|r| r.name.clone())
+                        // A loop-exposed agent may be resolved (its loop_agent_id)
+                        // yet NOT loaded in the registry (not enabled locally) — fall
+                        // back to its stored name, never the primary's "Nebo".
+                        registry
+                            .get(agent_id)
+                            .map(|r| r.name.clone())
+                            .or_else(|| state.store.get_agent(agent_id).ok().flatten().map(|a| a.name))
                     }
                     .unwrap_or_else(|| "Nebo".to_string());
                     (agent_id.clone(), name)
@@ -3280,7 +3295,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     if agent_id.is_empty() {
                         registry.get("assistant").map(|r| r.name.clone())
                     } else {
-                        registry.get(agent_id).map(|r| r.name.clone())
+                        registry
+                            .get(agent_id)
+                            .map(|r| r.name.clone())
+                            .or_else(|| state.store.get_agent(agent_id).ok().flatten().map(|a| a.name))
                     }
                     .unwrap_or_else(|| "Nebo".to_string())
                 })
