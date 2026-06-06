@@ -2619,6 +2619,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             registry
                 .get(&agent_id)
                 .map(|r| r.name.clone())
+                // Exposed-but-not-enabled agents aren't in the registry — use the
+                // stored display name, never the raw slug.
+                .or_else(|| state.store.get_agent(&agent_id).ok().flatten().map(|a| a.name))
                 .unwrap_or_else(|| agent_slug.clone())
         };
         if !is_default_bot {
@@ -2647,9 +2650,11 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             );
         }
 
-        // Use entity config matching the session: agent config for custom agents,
-        // main config for the default bot, channel config for external loops
-        let entity_config = if is_personal && !agent_id.is_empty() {
+        // A resolved agent always uses ITS persona/config — otherwise a DM to a
+        // secondary agent answers with the primary "Nebo" persona. (Mirrors the
+        // channel branch; the is_personal gate dropped the agent config when the
+        // agent_space loop_id didn't match the personal loop.)
+        let entity_config = if !agent_id.is_empty() {
             entity_config::resolve_for_chat(&state.store, "agent", &agent_id)
         } else if is_personal {
             entity_config::resolve_for_chat(&state.store, "main", "main")
@@ -2773,6 +2778,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 registry
                     .get(&agent_id)
                     .map(|r| r.name.clone())
+                    // Exposed-but-not-enabled agents aren't in the registry — use
+                    // the stored display name, never the raw slug.
+                    .or_else(|| state.store.get_agent(&agent_id).ok().flatten().map(|a| a.name))
                     .unwrap_or_else(|| agent_slug.clone())
             };
             if !is_default_bot {
@@ -2801,8 +2809,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 );
             }
 
-            // Use entity config matching the session
-            let entity_config = if is_personal && !agent_id.is_empty() {
+            // A resolved agent always uses ITS persona/config (mirrors the channel
+            // branch) — otherwise a DM to a secondary agent answers as primary "Nebo".
+            let entity_config = if !agent_id.is_empty() {
                 entity_config::resolve_for_chat(&state.store, "agent", &agent_id)
             } else if is_personal {
                 entity_config::resolve_for_chat(&state.store, "main", "main")
