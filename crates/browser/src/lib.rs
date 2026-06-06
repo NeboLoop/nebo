@@ -13,7 +13,7 @@ pub mod snapshot;
 pub mod snapshot_store;
 pub mod storage;
 
-pub use cdp_bridge::{CdpBridge, CdpLaunchConfig};
+pub use cdp_bridge::{CdpBridge, ObscuraConfig, find_obscura};
 pub use config::{BrowserConfig, ProfileConfig, ResolvedProfile};
 pub use executor::ActionExecutor;
 pub use extension_bridge::{BatchAction, BatchOptions, ExtensionBridge};

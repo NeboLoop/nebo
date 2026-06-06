@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::BrowserError;
-use crate::cdp_bridge::{CdpBridge, CdpLaunchConfig};
+use crate::cdp_bridge::{CdpBridge, ObscuraConfig, find_obscura};
 use crate::chrome::RunningChrome;
 use crate::config::BrowserConfig;
 use crate::executor::ActionExecutor;
@@ -34,15 +35,13 @@ pub struct ProfileStatus {
 
 impl Manager {
     pub fn new(config: BrowserConfig, data_dir: String) -> Self {
-        // Built-in Chrome (CDP tier-2) — launch config from the managed "nebo" profile (its own
-        // persistent user-data dir + debug port). Launched lazily on first fallback use.
-        let cdp = config.resolve_profile("nebo", &data_dir).map(|p| {
-            Arc::new(CdpBridge::new(CdpLaunchConfig {
-                executable: config.executable_path.clone(),
-                user_data_dir: p.user_data_dir,
-                cdp_port: p.cdp_port,
-                headless: config.headless,
-                no_sandbox: config.no_sandbox,
+        // Tier-2 built-in browser: the bundled Obscura headless browser, driven over CDP.
+        // Launched lazily on first fallback use; None if the binary isn't found (→ tier-3 direct).
+        let cdp = find_obscura(&data_dir).map(|binary| {
+            Arc::new(CdpBridge::new(ObscuraConfig {
+                binary,
+                storage_dir: Some(PathBuf::from(&data_dir).join("obscura-profile")),
+                stealth: true,
             }))
         });
         Self {

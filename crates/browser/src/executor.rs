@@ -21,6 +21,19 @@ pub struct ActionExecutor {
     cdp: Option<Arc<CdpBridge>>,
 }
 
+/// True when an extension error is a TRANSPORT failure (disconnect / timeout / not connected)
+/// — the only case where falling back to the built-in CDP browser helps. Tool-level errors
+/// (page too big, frame error, element not found, unsupported tool) mean the extension is
+/// working fine and CDP can't do better, so we surface them instead of spawning a blank CDP page.
+fn is_transport_failure(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("disconnected")
+        || e.contains("timed out")
+        || e.contains("not connected")
+        || e.contains("native host")
+        || e.contains("no browser")
+}
+
 impl ActionExecutor {
     pub fn new(bridge: Arc<ExtensionBridge>, cdp: Option<Arc<CdpBridge>>) -> Self {
         Self { bridge, cdp }
@@ -68,10 +81,13 @@ impl ActionExecutor {
             match self.bridge.execute(tool, args, session_id).await {
                 Ok(v) => return Ok(v),
                 Err(e) => {
-                    if self.cdp.is_none() {
+                    // Only fail over on a TRANSPORT failure (disconnect/timeout). Tool-level
+                    // errors (page too big, frame error, element not found) mean the extension
+                    // is working fine — surface them so the agent adapts; don't spin up CDP.
+                    if self.cdp.is_none() || !is_transport_failure(&e) {
                         return Err(BrowserError::Other(e));
                     }
-                    warn!(tool, error = %e, "extension failed — falling back to built-in Chrome (CDP)");
+                    warn!(tool, error = %e, "extension transport failed — falling back to built-in Chrome (CDP)");
                 }
             }
         }
@@ -98,10 +114,10 @@ impl ActionExecutor {
             {
                 Ok(v) => return Ok(v),
                 Err(e) => {
-                    if self.cdp.is_none() {
+                    if self.cdp.is_none() || !is_transport_failure(&e) {
                         return Err(BrowserError::Other(e));
                     }
-                    warn!(error = %e, "extension batch failed — falling back to built-in Chrome (CDP)");
+                    warn!(error = %e, "extension transport failed — falling back to built-in Chrome (CDP)");
                 }
             }
         }
