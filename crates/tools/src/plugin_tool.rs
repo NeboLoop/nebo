@@ -301,7 +301,11 @@ impl DynTool for PluginTool {
                       NEVER use `skill discover` or `skill help` to look up channel operations — channels are plugins, \
                       not skills, and the skill catalog does not contain them.\n\n");
         out.push_str("Usage: plugin(resource: \"<plugin-slug>\", action: \"exec\", command: \"<subcommand and flags>\")\n");
-        out.push_str("       plugin(resource: \"<plugin-slug>\", action: \"events\") — list declared NDJSON watch events\n\n");
+        out.push_str("       plugin(resource: \"<plugin-slug>\", action: \"events\") — list declared NDJSON watch events\n");
+        out.push_str("       plugin(resource: \"<plugin-slug>\", action: \"help\" [, command: \"<service>\"]) — read the plugin's command grammar / a service's usage\n");
+        out.push_str("`command` is passed straight to the plugin binary — the FIRST token is a service (e.g. calendar, gmail, drive), NOT the plugin name. \
+                      Grammar: `<service> <resource> <method> [flags]` (e.g. `calendar events list`).\n");
+        out.push_str("For Google Calendar/Gmail/Drive use plugin(resource: \"gws\", ...); for the local Mac calendar use os(resource: \"calendar\").\n\n");
         out.push_str("Installed plugins:\n\n");
 
         const PER_PLUGIN_BUDGET: usize = 4096;
@@ -404,8 +408,8 @@ impl DynTool for PluginTool {
             "action".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "Action: 'list' (installed plugins), 'discover' (search the marketplace by query), 'exec' (default — run a plugin command), or 'events' (the plugin's declared NDJSON watch events)",
-                "enum": ["list", "discover", "exec", "events"],
+                "description": "Action: 'list' (installed plugins), 'discover' (search the marketplace by query), 'exec' (default — run a plugin command), 'help' (read a plugin's command grammar / a service's usage), or 'events' (the plugin's declared NDJSON watch events)",
+                "enum": ["list", "discover", "exec", "help", "events"],
                 "default": "exec"
             }),
         );
@@ -464,7 +468,7 @@ impl DynTool for PluginTool {
             .get("action")
             .and_then(|v| v.as_str())
             .unwrap_or("exec");
-        matches!(action, "list" | "discover" | "events")
+        matches!(action, "list" | "discover" | "events" | "help")
     }
 
     fn execute_dyn<'a>(
@@ -500,7 +504,17 @@ impl DynTool for PluginTool {
                     }
                     self.handle_events(&pi.resource)
                 }
-                "search" | "skills" | "services" | "help" => ToolResult::error(format!(
+                "help" => {
+                    if pi.resource.is_empty() {
+                        return ToolResult::error(
+                            "resource is required (the plugin slug) for action: \"help\". \
+                             Example: plugin(resource: \"gws\", action: \"help\")"
+                                .to_string(),
+                        );
+                    }
+                    self.handle_help(&pi.resource, &pi.command)
+                }
+                "search" | "skills" | "services" => ToolResult::error(format!(
                     "action '{}' was removed in v0.10.0. Use action: \"list\" to see installed plugins, \"discover\" to search the marketplace, or call commands directly with action: \"exec\".",
                     pi.action
                 )),
@@ -514,6 +528,69 @@ impl DynTool for PluginTool {
 }
 
 impl PluginTool {
+    /// Read-only usage lookup for a plugin's command grammar.
+    ///
+    /// `plugin(action: "help", resource: "gws")` returns the service list plus
+    /// the shared grammar (gws-shared/SKILL.md). An optional `command` narrows
+    /// to a single service: `plugin(action: "help", resource: "gws", command:
+    /// "calendar")` returns gws-calendar/SKILL.md. Lenient: if no skill matches,
+    /// fall back to the service list + shared grammar.
+    fn handle_help(&self, slug: &str, command: &str) -> ToolResult {
+        let skills_dir = match self.skills_dir(slug) {
+            Some(d) => d,
+            None => {
+                return ToolResult::error(format!(
+                    "Plugin '{}' has no bundled skills/ documentation. Try plugin(action: \"list\") \
+                     or call commands directly with action: \"exec\".",
+                    slug
+                ));
+            }
+        };
+
+        // A specific service was requested — return that service's SKILL.md.
+        let service = command.split_whitespace().next().unwrap_or("").trim();
+        if !service.is_empty() {
+            let candidate = skills_dir.join(format!("{}-{}", slug, service)).join("SKILL.md");
+            if let Ok(body) = std::fs::read_to_string(&candidate) {
+                return ToolResult::ok(format!("# {} {} usage\n\n{}", slug, service, body));
+            }
+            // No exact match — fall through to the overview below.
+        }
+
+        let mut out = format!("# {} usage\n\n", slug);
+
+        // Lead with the shared grammar reference if the plugin ships one.
+        let shared = skills_dir.join(format!("{}-shared", slug)).join("SKILL.md");
+        if let Ok(body) = std::fs::read_to_string(&shared) {
+            out.push_str(&body);
+            out.push_str("\n\n");
+        } else {
+            out.push_str(
+                "Grammar: `<service> <resource> <method> [flags]` (the first token is a service, \
+                 NOT the plugin name).\n\n",
+            );
+        }
+
+        let services = self.list_services(slug);
+        if !services.is_empty() {
+            out.push_str("## Available services / commands\n\n");
+            for (name, desc) in &services {
+                let label = display_command_for_skill(slug, name);
+                if desc.is_empty() {
+                    out.push_str(&format!("- {}\n", label));
+                } else {
+                    out.push_str(&format!("- {} — {}\n", label, desc));
+                }
+            }
+            out.push_str(&format!(
+                "\nFor a specific service's full usage: plugin(resource: \"{}\", action: \"help\", command: \"<service>\").",
+                slug
+            ));
+        }
+
+        ToolResult::ok(out)
+    }
+
     fn handle_events(&self, slug: &str) -> ToolResult {
         let events = self.plugin_store.get_events(slug);
         match events {
@@ -677,6 +754,14 @@ impl PluginTool {
         } else {
             Vec::new()
         };
+
+        // Forgive a leading plugin-name token. Models often prefix the plugin
+        // slug (e.g. `gws calendar events list`); the binary expects a service
+        // first (`calendar events list`), so a leading `gws` makes it see
+        // service "gws" → "Unknown service 'gws'". Drop it so both forms work.
+        if args.first().map(|a| a.eq_ignore_ascii_case(&pi.resource)) == Some(true) {
+            args.remove(0);
+        }
 
         // Append named args directly — no shell parsing, special characters preserved.
         for (key, value) in &pi.args {

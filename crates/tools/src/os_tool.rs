@@ -200,7 +200,7 @@ impl DynTool for OsTool {
          - search: search (file search via OS index)\n\
          - mail: accounts, unread, read, send, search\n\
          - contacts: search, get, create, groups\n\
-         - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure\n\
+         - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure — the LOCAL Apple/Mac calendar (for Google Calendar use plugin(resource: \"gws\", ...))\n\
          - reminders: lists, list, create, complete, delete\n\n\
          Examples:\n  \
          os(resource: \"file\", action: \"read\", path: \"/path/to/file.txt\")\n  \
