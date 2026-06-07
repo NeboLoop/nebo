@@ -58,6 +58,10 @@ pub struct UsageInfo {
     pub cache_creation_input_tokens: i32,
     #[serde(default)]
     pub cache_read_input_tokens: i32,
+    /// System prompt + tool-schema tokens (estimate). Populated by the runner so the
+    /// UI can subtract fixed overhead and show conversation-only input tokens.
+    #[serde(default)]
+    pub overhead_tokens: i32,
 }
 
 /// A tool invocation from the AI.

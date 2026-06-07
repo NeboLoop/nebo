@@ -264,6 +264,8 @@ pub struct RunProgress {
 /// Per-run mutable state (prevents data races across concurrent runs).
 struct RunState {
     prompt_overhead: usize,
+    /// System prompt + tool-schema tokens (display estimate, no threshold fudge).
+    system_overhead_tokens: usize,
     last_input_tokens: usize,
     /// Cumulative input tokens across all iterations in this run.
     total_input_tokens: i32,
@@ -280,6 +282,7 @@ impl RunState {
     fn new() -> Self {
         Self {
             prompt_overhead: 0,
+            system_overhead_tokens: 0,
             last_input_tokens: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
@@ -1766,6 +1769,7 @@ async fn run_loop(
                 .map(|t| (t.description.len() + t.input_schema.to_string().len()) / 4)
                 .sum();
             state.prompt_overhead = system_tokens + schema_tokens + 4000;
+            state.system_overhead_tokens = system_tokens + schema_tokens;
         }
 
         // Compute context thresholds — use model's actual context window when
@@ -2417,7 +2421,7 @@ async fn run_loop(
         let cli_incremental = provider.handles_tools();
 
         loop {
-            let event = tokio::select! {
+            let mut event = tokio::select! {
                 _ = cancel_token.cancelled() => {
                     info!(session_id, "run cancelled during LLM stream");
                     // Best-effort: save whatever content we accumulated before cancellation
@@ -2509,10 +2513,11 @@ async fn run_loop(
                     // Don't forward to user yet — classify after stream ends
                 }
                 StreamEventType::Usage => {
-                    if let Some(ref usage) = event.usage {
+                    if let Some(ref mut usage) = event.usage {
                         state.last_input_tokens = usage.input_tokens as usize;
                         state.total_input_tokens += usage.input_tokens;
                         state.total_output_tokens += usage.output_tokens;
+                        usage.overhead_tokens = state.system_overhead_tokens as i32;
                     }
                     let _ = tx.send(event).await;
                 }

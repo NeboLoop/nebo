@@ -250,6 +250,7 @@ impl AnthropicProvider {
                                             cache_read_input_tokens: usage
                                                 .cache_read_input_tokens
                                                 .unwrap_or(0),
+                                            overhead_tokens: 0,
                                         }))
                                         .await;
                                 }
@@ -271,6 +272,7 @@ impl AnthropicProvider {
                                             cache_read_input_tokens: usage
                                                 .cache_read_input_tokens
                                                 .unwrap_or(0),
+                                            overhead_tokens: 0,
                                         }))
                                         .await;
                                 }

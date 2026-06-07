@@ -186,6 +186,7 @@ fn parse_ndjson_event(line: &str) -> Option<StreamEvent> {
                         as i32,
                     cache_creation_input_tokens: 0,
                     cache_read_input_tokens: 0,
+                    overhead_tokens: 0,
                 })
             });
             Some(ev)

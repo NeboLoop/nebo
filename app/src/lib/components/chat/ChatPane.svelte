@@ -65,7 +65,7 @@
     allAgents?: AgentInfo[];
     followupSuggestions?: string[];
     activityStatus?: string;
-    tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number } | null;
+    tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number; overhead?: number } | null;
     quotaWarning?: string;
     onsend?: (text: string, files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[]) => void;
     onstop?: () => void;
@@ -855,10 +855,11 @@
 
   <!-- Token usage badge -->
   {#if tokenUsage}
-    {@const uncachedInput = Math.max(0, tokenUsage.input - (tokenUsage.cacheRead ?? 0) - (tokenUsage.cacheCreation ?? 0))}
+    {@const totalPrompt = tokenUsage.input + (tokenUsage.cacheRead ?? 0) + (tokenUsage.cacheCreation ?? 0)}
+    {@const conversationIn = Math.max(0, totalPrompt - (tokenUsage.overhead ?? 0))}
     <div class="max-w-3xl mx-auto w-full shrink-0 px-6 pb-1">
-      <span class="text-xs text-base-content/50 font-mono" title="{tokenUsage.input.toLocaleString()} total · {(tokenUsage.cacheRead ?? 0).toLocaleString()} cache read · {(tokenUsage.cacheCreation ?? 0).toLocaleString()} cache write">
-        {uncachedInput.toLocaleString()} in · {tokenUsage.output.toLocaleString()} out
+      <span class="text-xs text-base-content/50 font-mono" title="{totalPrompt.toLocaleString()} total prompt · {(tokenUsage.overhead ?? 0).toLocaleString()} system+tools · {(tokenUsage.cacheRead ?? 0).toLocaleString()} cache read">
+        {conversationIn.toLocaleString()} in · {tokenUsage.output.toLocaleString()} out
       </span>
     </div>
   {/if}

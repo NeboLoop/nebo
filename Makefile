@@ -21,7 +21,7 @@ else
     ARCH = $(UNAME_M)
 endif
 
-.PHONY: help dev run build build-desktop test clean seed-plugins bundle-napps plugin-status release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test clean clean-cache seed-plugins bundle-napps plugin-status release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -36,7 +36,8 @@ help:
 	@echo "  make build          - Build headless CLI binary"
 	@echo "  make build-desktop  - Build Tauri desktop app"
 	@echo "  make test           - Run all tests"
-	@echo "  make clean          - Clean build artifacts"
+	@echo "  make clean          - Clean build artifacts (target/, dist/) — stop the watcher first"
+	@echo "  make clean-cache    - Clear global cargo download cache (~/.cargo) — safe while building"
 	@echo "  make seed-plugins   - Copy plugin binaries from sibling repos"
 	@echo "  make plugin-status  - Show build/bundle status of all 14 plugins"
 	@echo ""
@@ -105,6 +106,14 @@ test:
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf target/ dist/ vm/build/
+
+# Clear the GLOBAL cargo download cache (~/.cargo). Safe to run while a build or
+# `cargo watch` is active — these are re-fetched/re-extracted on the next build.
+# (Does NOT touch this project's target/ — use `make clean` for that, with the watcher stopped.)
+clean-cache:
+	@echo "Clearing cargo registry cache (~/.cargo/registry/{src,cache}, ~/.cargo/git/checkouts)..."
+	rm -rf ~/.cargo/registry/src ~/.cargo/registry/cache ~/.cargo/git/checkouts
+	@echo "Done. Crate sources will be re-extracted/re-downloaded on the next build."
 
 # ── VM Sandbox ─────────────────────────────────────────────────────
 

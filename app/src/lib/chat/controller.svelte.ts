@@ -19,6 +19,7 @@ export interface TokenUsage {
   output: number;
   cacheRead?: number;
   cacheCreation?: number;
+  overhead?: number;
 }
 
 export interface AgentInfo {
@@ -417,6 +418,7 @@ export function createChatController(config: ChatControllerConfig) {
       output: data.output_tokens || 0,
       cacheRead: data.cache_read_input_tokens || 0,
       cacheCreation: data.cache_creation_input_tokens || 0,
+      overhead: data.overhead_tokens || 0,
     };
     if (usageClearTimer) clearTimeout(usageClearTimer);
   }

@@ -400,6 +400,7 @@ async fn handle_gemini_stream(response: reqwest::Response, tx: mpsc::Sender<Stre
                                 output_tokens: usage.candidates_token_count.unwrap_or(0),
                                 cache_creation_input_tokens: 0,
                                 cache_read_input_tokens: 0,
+                                overhead_tokens: 0,
                             }))
                             .await;
                     }

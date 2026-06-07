@@ -575,6 +575,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "output_tokens": usage.output_tokens,
                                         "cache_read_input_tokens": usage.cache_read_input_tokens,
                                         "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+                                        "overhead_tokens": usage.overhead_tokens,
                                     ),
                                 );
                             }
