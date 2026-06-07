@@ -12,12 +12,11 @@ env:
   RUST_VERSION: "1.95"
   NODE_VERSION: "20"
   # Obscura tier-2 browser ships as a Tauri externalBin sidecar (NOT a marketplace
-  # .napp). Binaries come from OUR fork (upstream lacks the CDP fixes new_page needs),
-  # published as release assets named "<name>-<triple>" (+ .exe on Windows), e.g.
-  # obscura-aarch64-apple-darwin, obscura-worker-x86_64-pc-windows-msvc.exe.
-  # Bump OBSCURA_TAG when republishing fork binaries.
-  OBSCURA_FORK: "localrivet/obscura"
-  OBSCURA_TAG: "cdp-compat-v1"
+  # .napp). It is BUILT FROM OUR FORK in CI on each platform's runner (upstream lacks
+  # the CDP fixes new_page needs), so no pre-published per-platform assets are required.
+  # Pin OBSCURA_REF to a tag for reproducibility once cut; a branch is fine meanwhile.
+  OBSCURA_FORK: "https://github.com/localrivet/obscura"
+  OBSCURA_REF: "chromiumoxide-cdp-compat"
 
 jobs:
   # ─── Build frontend (shared by all platform builds) ───────────────────
@@ -140,19 +139,14 @@ jobs:
           echo "Bundled .napp files:"
           find src-tauri/bundled-napps -name "*.napp" -type f | sort
 
-      - name: Stage Obscura sidecars
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build & stage Obscura sidecars (from fork)
         run: |
           TRIPLE="${{ matrix.target }}"
+          git clone --depth 1 --branch "$OBSCURA_REF" "$OBSCURA_FORK" obscura-src
+          ( cd obscura-src && cargo build --release -p obscura-cli )
           mkdir -p src-tauri/binaries
           for bin in obscura obscura-worker; do
-            gh release download "$OBSCURA_TAG" --repo "$OBSCURA_FORK" \
-              --pattern "${bin}-${TRIPLE}" --dir src-tauri/binaries --clobber || {
-                echo "::error::Could not fetch ${bin}-${TRIPLE} from ${OBSCURA_FORK}@${OBSCURA_TAG}."
-                echo "::error::Publish the fork-built Obscura binaries as release assets named '<name>-<triple>' before releasing."
-                exit 1
-              }
+            cp "obscura-src/target/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
             chmod +x "src-tauri/binaries/${bin}-${TRIPLE}"
           done
           ls -la src-tauri/binaries
@@ -349,19 +343,14 @@ jobs:
             done < "src-tauri/bundled-napps/plugins/.manifest"
           fi
 
-      - name: Stage Obscura sidecars
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build & stage Obscura sidecars (from fork)
         run: |
           TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+          git clone --depth 1 --branch "$OBSCURA_REF" "$OBSCURA_FORK" obscura-src
+          ( cd obscura-src && cargo build --release -p obscura-cli )
           mkdir -p src-tauri/binaries
           for bin in obscura obscura-worker; do
-            gh release download "$OBSCURA_TAG" --repo "$OBSCURA_FORK" \
-              --pattern "${bin}-${TRIPLE}" --dir src-tauri/binaries --clobber || {
-                echo "::error::Could not fetch ${bin}-${TRIPLE} from ${OBSCURA_FORK}@${OBSCURA_TAG}."
-                echo "::error::Publish the fork-built Obscura binaries as release assets named '<name>-<triple>' before releasing."
-                exit 1
-              }
+            cp "obscura-src/target/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
             chmod +x "src-tauri/binaries/${bin}-${TRIPLE}"
           done
           ls -la src-tauri/binaries
@@ -464,20 +453,15 @@ jobs:
             done < "src-tauri/bundled-napps/plugins/.manifest"
           fi
 
-      - name: Stage Obscura sidecars
+      - name: Build & stage Obscura sidecars (from fork)
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+          git clone --depth 1 --branch "$OBSCURA_REF" "$OBSCURA_FORK" obscura-src
+          ( cd obscura-src && cargo build --release -p obscura-cli )
           mkdir -p src-tauri/binaries
           for bin in obscura obscura-worker; do
-            gh release download "$OBSCURA_TAG" --repo "$OBSCURA_FORK" \
-              --pattern "${bin}-${TRIPLE}.exe" --dir src-tauri/binaries --clobber || {
-                echo "::error::Could not fetch ${bin}-${TRIPLE}.exe from ${OBSCURA_FORK}@${OBSCURA_TAG}."
-                echo "::error::Publish the fork-built Obscura binaries as release assets named '<name>-<triple>.exe' before releasing."
-                exit 1
-              }
+            cp "obscura-src/target/release/${bin}.exe" "src-tauri/binaries/${bin}-${TRIPLE}.exe"
           done
           ls -la src-tauri/binaries
 
