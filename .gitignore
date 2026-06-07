@@ -19,3 +19,6 @@ overrides/
 
 # Playwright MCP screenshot scratch output
 .playwright-mcp/
+
+# Bundled plugin binaries are CDN-fetched at CI, never committed (can be 100s of MB)
+src-tauri/bundled-napps/plugins/*/
