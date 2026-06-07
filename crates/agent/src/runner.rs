@@ -3223,11 +3223,24 @@ async fn run_loop(
                             }
                             next = sidecar_futures.next() => next
                         } {
-                            if let Some(text) = verification {
-                                if let Some((_, ref mut result)) = results[idx] {
-                                    result.content.push_str(&format!("\n\n[Page Visual]\n{}", text));
-                                    result.image_url = None;
+                            if let Some((_, ref mut result)) = results[idx] {
+                                match verification {
+                                    Some(text) => result
+                                        .content
+                                        .push_str(&format!("\n\n[Screen Visual]\n{}", text)),
+                                    // Sidecar couldn't describe it — still tell the model an
+                                    // image exists, so it never claims "no image was returned."
+                                    None => result.content.push_str(
+                                        "\n\n[Screen Visual] A screenshot was captured (saved and \
+                                         available to the user), but automatic description was \
+                                         unavailable. Acknowledge the capture — do NOT say the tool \
+                                         returned no image.",
+                                    ),
                                 }
+                                // The main model is non-vision, so the raw image is useless to it;
+                                // always drop it (otherwise the provider silently strips it and the
+                                // model is left blind with no signal).
+                                result.image_url = None;
                             }
                         }
                     }

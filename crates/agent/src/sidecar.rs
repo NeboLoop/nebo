@@ -1,23 +1,17 @@
 use ai::{ChatRequest, ImageContent, Message, Provider, StreamEventType};
 use tracing::debug;
 
-const SIDECAR_SYSTEM: &str = "You analyze browser screenshots to help an AI agent make browsing decisions. \
-Return a compact structured assessment in this exact format:\n\
-PAGE: <type> (search-results | article | form | login | dashboard | error | landing | list | map | media | other)\n\
-STATUS: <what happened> (1 short sentence)\n\
-BLOCKER: <none | auth-required | captcha | paywall | cookie-banner | age-gate | geo-blocked | rate-limited>\n\
-CONTENT: <available | partial | gated | empty | error> — is the main content visible or hidden behind a wall?\n\
-ACTION: <continue | stop | try-different-source> — should the agent keep working on this page?\n\n\
-Rules:\n\
-- If you see a login form, sign-in prompt, or 'Join to see' overlay → BLOCKER: auth-required, CONTENT: gated\n\
-- If content is visible but truncated with 'sign in to see more' → CONTENT: partial\n\
-- If a CAPTCHA or challenge page appears → BLOCKER: captcha\n\
-- Keep STATUS under 15 words.\n\
-After the structured fields, list up to 5 KEY ELEMENTS with approximate positions:\n\
-ELEMENTS:\n\
-- <description> @ (<x>,<y>)\n\
-Only list elements the agent would need to interact with (search boxes, submit buttons, login forms, main navigation). \
-Coordinates are approximate center points relative to viewport. No other text.";
+const SIDECAR_SYSTEM: &str = "You are the eyes of an AI agent whose own model cannot see images. \
+Describe this screenshot — it may be the user's whole desktop, an app window, or a web page — \
+so the agent can answer the user and decide what to do next. Be concrete and concise.\n\n\
+WHAT: 2-4 sentences on what is actually visible — the app(s)/window(s) in focus, what the user \
+appears to be looking at, and any prominent text, titles, files, or UI you can read. If it is a \
+desktop, name the visible apps and any notable windows or files.\n\
+BLOCKER: <none | auth-required | captcha | paywall | cookie-banner | age-gate | rate-limited> \
+— only relevant for web pages; use 'none' otherwise.\n\
+ELEMENTS: up to 5 things the agent might act on, each as '<description> @ (<x>,<y>)' (approximate \
+center points). Omit this section entirely if nothing is interactive.\n\n\
+Report only what you can actually see. Do not invent content. No preamble.";
 
 /// Resolve the sidecar model — empty string lets Janus pick the model.
 fn sidecar_model() -> String {
