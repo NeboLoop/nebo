@@ -20,7 +20,11 @@
     ],
     "resources": {
       "bundled-napps/**/*": "bundled-napps/"
-    }
+    },
+    "externalBin": [
+      "binaries/obscura",
+      "binaries/obscura-worker"
+    ]
   },
   "app": {
     "security": {

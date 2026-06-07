@@ -22,3 +22,7 @@ overrides/
 
 # Bundled plugin binaries are CDN-fetched at CI, never committed (can be 100s of MB)
 src-tauri/bundled-napps/plugins/*/
+
+# Obscura (and other) Tauri externalBin sidecars: staged from the localrivet fork
+# build (make stage-obscura) or fetched from fork release assets at CI. Never committed.
+src-tauri/binaries/

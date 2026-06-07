@@ -21,7 +21,7 @@ else
     ARCH = $(UNAME_M)
 endif
 
-.PHONY: help dev run build build-desktop test clean clean-cache seed-plugins bundle-napps plugin-status release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test clean clean-cache seed-plugins stage-obscura bundle-napps plugin-status release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -39,6 +39,7 @@ help:
 	@echo "  make clean          - Clean build artifacts (target/, dist/) — stop the watcher first"
 	@echo "  make clean-cache    - Clear global cargo download cache (~/.cargo) — safe while building"
 	@echo "  make seed-plugins   - Copy plugin binaries from sibling repos"
+	@echo "  make stage-obscura  - Stage Obscura sidecars from the fork for bundling"
 	@echo "  make plugin-status  - Show build/bundle status of all 14 plugins"
 	@echo ""
 	@echo "Desktop (macOS):"
@@ -61,7 +62,7 @@ gen:
 
 # ─── Development ─────────────────────────────────────────────────────────────
 
-dev:
+dev: stage-obscura
 	@echo "Starting Nebo (Tauri + Vite)..."
 	@echo "  Vite HMR for frontend, Tauri watch for backend"
 	@echo "  Proxy errors during Rust build are normal — Tauri window waits for build."
@@ -77,7 +78,7 @@ dev:
 		true
 
 # Full Tauri app + Vite HMR, but NO Rust file watching — safe for workflow testing
-run:
+run: stage-obscura
 	@echo "Starting Nebo (Tauri + Vite, no Rust hot-reload)..."
 	@echo "  Frontend HMR works. Rust backend won't restart on file changes."
 	@echo "  Use this when testing workflows/agents."
@@ -94,7 +95,7 @@ build:
 	@echo "Building headless CLI binary..."
 	cargo build --release -p nebo-cli
 
-build-desktop: bundle-napps
+build-desktop: bundle-napps stage-obscura
 	@echo "Building Tauri desktop app..."
 	@cd app && pnpm build
 	cargo tauri build
@@ -206,6 +207,36 @@ seed-plugins:
 # Show build/bundle status of all 14 bundled plugins.
 plugin-status:
 	@scripts/publish-plugins.sh status
+
+# ─── Bundled Core Binaries (Obscura tier-2 browser) ──────────────────────────
+# Obscura is bundled CORE software, NOT a marketplace .napp. It ships as a Tauri
+# externalBin sidecar (signed/notarized with the app, placed next to the exe where
+# find_obscura's current_exe() tier resolves it). Source binaries come from OUR fork
+# (localrivet/obscura) — upstream lacks the CDP fixes new_page() needs. Locally we
+# stage from the sibling fork's release build; CI fetches prebuilt fork release assets.
+
+# Sibling Obscura fork checkout (default: ~/workspaces/nebo/obscura).
+OBSCURA_REPO ?= $(shell cd .. && pwd)/obscura
+# Target triple Tauri expects in the externalBin filename (host triple by default;
+# release-* targets that cross-build pass an explicit OBSCURA_TRIPLE).
+OBSCURA_TRIPLE ?= $(shell rustc -vV | sed -n 's/^host: //p')
+
+stage-obscura:
+	@echo "Staging Obscura sidecars for $(OBSCURA_TRIPLE)..."
+	@mkdir -p src-tauri/binaries
+	@for bin in obscura obscura-worker; do \
+		src="$(OBSCURA_REPO)/target/release/$$bin"; \
+		dst="src-tauri/binaries/$$bin-$(OBSCURA_TRIPLE)"; \
+		if [ -f "$$src" ]; then \
+			cp "$$src" "$$dst"; chmod +x "$$dst"; echo "  staged $$bin (fork build)"; \
+		elif [ -f "$$dst" ]; then \
+			echo "  keeping existing $$bin (fork build not found at $$src)"; \
+		else \
+			echo "  ERROR: no $$bin fork build at $$src and none staged. Build the fork first:"; \
+			echo "    (cd $(OBSCURA_REPO) && cargo build --release -p obscura-cli)"; \
+			exit 1; \
+		fi; \
+	done
 
 # ─── Bundled .napp Files ─────────────────────────────────────────────────────
 
