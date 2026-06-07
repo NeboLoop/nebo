@@ -24,7 +24,11 @@
     "externalBin": [
       "binaries/obscura",
       "binaries/obscura-worker"
-    ]
+    ],
+    "macOS": {
+      "entitlements": "../assets/macos/nebo.entitlements",
+      "hardenedRuntime": true
+    }
   },
   "app": {
     "security": {

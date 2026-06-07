@@ -658,7 +658,11 @@ fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String
             Err(_) => continue,
         };
 
-        if entry.file_type().is_dir() {
+        // Skip only the walk root itself (depth 0). Include both files AND
+        // directories that match the pattern — `glob "*"` must list folders too.
+        // Previously this `continue`d on every directory, so "list the files and
+        // folders" returned files only (all subdirectories silently vanished).
+        if entry.depth() == 0 {
             continue;
         }
 
@@ -863,6 +867,30 @@ mod tests {
         assert!(res.content.contains("a.rs"), "missing a.rs");
         assert!(res.content.contains("b.toml"), "missing b.toml");
         assert!(!res.content.contains("c.md"), "c.md should be excluded");
+    }
+
+    // ── Glob lists directories too, not just files (regression) ─────
+    // `glob "*"` must return BOTH files AND folders. A prior version skipped every
+    // directory entry, so "list the files and folders" returned files only and all
+    // subdirectories silently vanished.
+    #[test]
+    fn glob_includes_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = glob_dir(tmp.path());
+        fs::write(base.join("file1.txt"), "").unwrap();
+        fs::create_dir_all(base.join("subdir")).unwrap();
+        fs::create_dir_all(base.join("📁 Projects")).unwrap(); // emoji dir name (Desktop case)
+
+        let tool = FileTool::new();
+        let res = tool.execute(
+            &ctx(),
+            json!({"action":"glob","path": base.to_str().unwrap(), "pattern":"*"}),
+        );
+
+        assert!(!res.is_error, "glob failed: {}", res.content);
+        assert!(res.content.contains("file1.txt"), "missing file");
+        assert!(res.content.contains("subdir"), "directory was dropped from glob results");
+        assert!(res.content.contains("📁 Projects"), "emoji-named directory was dropped");
     }
 
     // ── Glob path-as-pattern (no pattern field) ─────────────────────

@@ -2,30 +2,31 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Allow accessing user-selected files (file open/save dialogs) -->
-	<key>com.apple.security.files.user-selected.read-write</key>
+	<!--
+	  Nebo ships as a NON-sandboxed, Developer-ID-signed, notarized app with the
+	  Hardened Runtime (NOT the Mac App Store sandbox — its core capabilities, arbitrary
+	  shell/file/app access, are incompatible with the sandbox). Under the Hardened
+	  Runtime the only entitlements that matter are the `cs.*` code-signing exceptions
+	  and `automation.apple-events`; access to Desktop/Documents/Downloads/Camera/Mic/
+	  Contacts/Calendars/Reminders/Screen-Recording is governed by TCC at runtime
+	  (prompts backed by the Info.plist usage strings), not by these entitlements. The
+	  previous sandbox entitlements (files.*, network.*, device.*, personal-information.*)
+	  were inert without `com.apple.security.app-sandbox` and have been removed.
+	-->
+
+	<!-- Spawn bundled helper binaries (Obscura tier-2 browser, plugins) and load their
+	     dynamic libraries even when signed by a different identity than the host app. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>
-	<!-- Allow reading/writing within the user's home directory -->
-	<key>com.apple.security.files.downloads.read-write</key>
+
+	<!-- Pass environment variables (OBSCURA_BIN, <SLUG>_BIN, RUST_LOG, …) through to
+	     spawned child processes; the Hardened Runtime strips them otherwise. -->
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
 	<true/>
-	<!-- Network access (server, API calls) -->
-	<key>com.apple.security.network.client</key>
-	<true/>
-	<key>com.apple.security.network.server</key>
-	<true/>
-	<!-- Microphone for voice input -->
-	<key>com.apple.security.device.audio-input</key>
-	<true/>
-	<!-- Camera for video capture -->
-	<key>com.apple.security.device.camera</key>
-	<true/>
-	<!-- AppleEvents for controlling Music, Calendar, Reminders, etc. -->
+
+	<!-- Drive other apps (Music, Calendar, Reminders, Finder, …) via AppleEvents.
+	     Required even outside the sandbox; pairs with NSAppleEventsUsageDescription. -->
 	<key>com.apple.security.automation.apple-events</key>
-	<true/>
-	<!-- Accessibility for UI automation -->
-	<key>com.apple.security.personal-information.addressbook</key>
-	<true/>
-	<key>com.apple.security.personal-information.calendars</key>
 	<true/>
 </dict>
 </plist>

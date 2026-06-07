@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated Info.plist by Tauri. These TCC usage strings are what make
+  macOS show a permission PROMPT (and list Nebo in System Settings → Privacy & Security)
+  instead of silently returning empty results when Nebo touches a protected resource.
+  Without them the shipped app gets empty ~/Desktop listings and blank screenshots — the
+  exact symptom seen over the loop. (Screen Recording has no usage-string key; macOS
+  prompts automatically the first time Nebo calls a screen-capture API.)
+-->
+<plist version="1.0">
+<dict>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Nebo reads and organizes files on your Desktop when you ask it to.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Nebo reads and organizes files in your Documents when you ask it to.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Nebo reads and organizes files in your Downloads when you ask it to.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Nebo controls apps like Calendar, Reminders, Music, and Finder on your behalf.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Nebo reads and manages your calendar events when you ask it to.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Nebo reads and manages your reminders when you ask it to.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Nebo looks up and manages your contacts when you ask it to.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Nebo uses the camera when you ask it to capture or analyze video.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Nebo uses the microphone for voice input.</string>
+</dict>
+</plist>
