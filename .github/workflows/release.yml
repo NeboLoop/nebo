@@ -11,6 +11,13 @@ permissions:
 env:
   RUST_VERSION: "1.95"
   NODE_VERSION: "20"
+  # Obscura tier-2 browser ships as a Tauri externalBin sidecar (NOT a marketplace
+  # .napp). Binaries come from OUR fork (upstream lacks the CDP fixes new_page needs),
+  # published as release assets named "<name>-<triple>" (+ .exe on Windows), e.g.
+  # obscura-aarch64-apple-darwin, obscura-worker-x86_64-pc-windows-msvc.exe.
+  # Bump OBSCURA_TAG when republishing fork binaries.
+  OBSCURA_FORK: "localrivet/obscura"
+  OBSCURA_TAG: "cdp-compat-v1"
 
 jobs:
   # ─── Build frontend (shared by all platform builds) ───────────────────
@@ -132,6 +139,23 @@ jobs:
           fi
           echo "Bundled .napp files:"
           find src-tauri/bundled-napps -name "*.napp" -type f | sort
+
+      - name: Stage Obscura sidecars
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TRIPLE="${{ matrix.target }}"
+          mkdir -p src-tauri/binaries
+          for bin in obscura obscura-worker; do
+            gh release download "$OBSCURA_TAG" --repo "$OBSCURA_FORK" \
+              --pattern "${bin}-${TRIPLE}" --dir src-tauri/binaries --clobber || {
+                echo "::error::Could not fetch ${bin}-${TRIPLE} from ${OBSCURA_FORK}@${OBSCURA_TAG}."
+                echo "::error::Publish the fork-built Obscura binaries as release assets named '<name>-<triple>' before releasing."
+                exit 1
+              }
+            chmod +x "src-tauri/binaries/${bin}-${TRIPLE}"
+          done
+          ls -la src-tauri/binaries
 
       - name: Build Tauri desktop app
         env:
@@ -325,6 +349,23 @@ jobs:
             done < "src-tauri/bundled-napps/plugins/.manifest"
           fi
 
+      - name: Stage Obscura sidecars
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p src-tauri/binaries
+          for bin in obscura obscura-worker; do
+            gh release download "$OBSCURA_TAG" --repo "$OBSCURA_FORK" \
+              --pattern "${bin}-${TRIPLE}" --dir src-tauri/binaries --clobber || {
+                echo "::error::Could not fetch ${bin}-${TRIPLE} from ${OBSCURA_FORK}@${OBSCURA_TAG}."
+                echo "::error::Publish the fork-built Obscura binaries as release assets named '<name>-<triple>' before releasing."
+                exit 1
+              }
+            chmod +x "src-tauri/binaries/${bin}-${TRIPLE}"
+          done
+          ls -la src-tauri/binaries
+
       - name: Build Tauri desktop app
         # APPIMAGE_EXTRACT_AND_RUN lets the bundler's linuxdeploy/appimagetool run
         # without a working FUSE mount on the runner; NO_STRIP avoids strip failures
@@ -422,6 +463,23 @@ jobs:
               curl -sSfL -o "src-tauri/bundled-napps/plugins/${slug}.napp" "$url" || echo "  SKIP $slug"
             done < "src-tauri/bundled-napps/plugins/.manifest"
           fi
+
+      - name: Stage Obscura sidecars
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p src-tauri/binaries
+          for bin in obscura obscura-worker; do
+            gh release download "$OBSCURA_TAG" --repo "$OBSCURA_FORK" \
+              --pattern "${bin}-${TRIPLE}.exe" --dir src-tauri/binaries --clobber || {
+                echo "::error::Could not fetch ${bin}-${TRIPLE}.exe from ${OBSCURA_FORK}@${OBSCURA_TAG}."
+                echo "::error::Publish the fork-built Obscura binaries as release assets named '<name>-<triple>.exe' before releasing."
+                exit 1
+              }
+          done
+          ls -la src-tauri/binaries
 
       - name: Build Tauri desktop app
         run: cargo tauri build --bundles nsis

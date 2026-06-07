@@ -225,15 +225,19 @@ stage-obscura:
 	@echo "Staging Obscura sidecars for $(OBSCURA_TRIPLE)..."
 	@mkdir -p src-tauri/binaries
 	@for bin in obscura obscura-worker; do \
-		src="$(OBSCURA_REPO)/target/release/$$bin"; \
 		dst="src-tauri/binaries/$$bin-$(OBSCURA_TRIPLE)"; \
-		if [ -f "$$src" ]; then \
-			cp "$$src" "$$dst"; chmod +x "$$dst"; echo "  staged $$bin (fork build)"; \
+		cross="$(OBSCURA_REPO)/target/$(OBSCURA_TRIPLE)/release/$$bin"; \
+		host="$(OBSCURA_REPO)/target/release/$$bin"; \
+		if [ -f "$$cross" ]; then \
+			cp "$$cross" "$$dst"; chmod +x "$$dst"; echo "  staged $$bin (fork cross build)"; \
+		elif [ -f "$$host" ]; then \
+			cp "$$host" "$$dst"; chmod +x "$$dst"; echo "  staged $$bin (fork host build)"; \
 		elif [ -f "$$dst" ]; then \
-			echo "  keeping existing $$bin (fork build not found at $$src)"; \
+			echo "  keeping existing $$bin (no fork build found)"; \
 		else \
-			echo "  ERROR: no $$bin fork build at $$src and none staged. Build the fork first:"; \
-			echo "    (cd $(OBSCURA_REPO) && cargo build --release -p obscura-cli)"; \
+			echo "  ERROR: no $$bin fork build for $(OBSCURA_TRIPLE) and none staged. Build the fork first:"; \
+			echo "    (cd $(OBSCURA_REPO) && cargo build --release -p obscura-cli)            # host"; \
+			echo "    (cd $(OBSCURA_REPO) && cargo build --release -p obscura-cli --target $(OBSCURA_TRIPLE))  # cross"; \
 			exit 1; \
 		fi; \
 	done
@@ -270,14 +274,16 @@ release-darwin:
 	@mkdir -p dist
 	@cd app && pnpm build
 	# arm64
+	$(MAKE) stage-obscura OBSCURA_TRIPLE=aarch64-apple-darwin
 	cargo tauri build --target aarch64-apple-darwin
 	cp $(TAURI_TARGET)/aarch64-apple-darwin/release/nebo dist/nebo-darwin-arm64
 	# amd64
+	$(MAKE) stage-obscura OBSCURA_TRIPLE=x86_64-apple-darwin
 	cargo tauri build --target x86_64-apple-darwin
 	cp $(TAURI_TARGET)/x86_64-apple-darwin/release/nebo dist/nebo-darwin-amd64
 
 # Linux: Tauri desktop + headless CLI
-release-linux:
+release-linux: stage-obscura
 	@echo "Building for Linux..."
 	@mkdir -p dist
 	cargo tauri build
@@ -287,7 +293,7 @@ release-linux:
 	cp target/release/nebo-cli dist/nebo-linux-$(ARCH)-headless
 
 # Windows: Tauri desktop app
-release-windows:
+release-windows: stage-obscura
 	@echo "Building for Windows..."
 	@mkdir -p dist
 	cargo tauri build
