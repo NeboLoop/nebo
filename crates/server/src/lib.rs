@@ -624,9 +624,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Create empty orchestrator handle (filled after Runner is built)
     let orch_handle = tools::new_handle();
 
-    // Initialize browser manager (with built-in ExtensionBridge for Chrome extension relay)
+    // Initialize browser manager (with built-in ExtensionBridge for Chrome extension relay).
+    // Pass the Nebo data root: the Manager appends `browser/<profile>` for managed-Chrome
+    // profiles itself (config.rs `resolve_profile`) and resolves the bundled Obscura binary at
+    // `<root>/bin/obscura` (cdp_bridge `find_obscura`). Passing `data_dir/browser` here would
+    // double-nest profiles AND hide the Obscura binary, disabling the tier-2 CDP fallback.
     let browser_config = browser::BrowserConfig::default();
-    let browser_data_dir = data_dir.join("browser").to_string_lossy().to_string();
+    let browser_data_dir = data_dir.to_string_lossy().to_string();
     let browser_manager = Arc::new(browser::Manager::new(browser_config, browser_data_dir));
     let extension_bridge = browser_manager.bridge();
 

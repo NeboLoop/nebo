@@ -408,7 +408,7 @@ impl WebTool {
     /// to run a search — used to prefer it over DDG HTTP scraping.
     fn browser_search_available(&self) -> bool {
         match &self.browser {
-            Some(m) => m.extension_connected() || m.cdp_available(),
+            Some(m) => m.executor().map(|e| e.is_connected()).unwrap_or(false),
             None => false,
         }
     }
@@ -423,18 +423,18 @@ impl WebTool {
             }
         };
 
-        // Nudge the user to install the extension whenever it isn't connected — even if the
-        // built-in CDP browser is carrying the work. The extension is the intended path.
-        if !manager.extension_connected() {
-            self.broadcast_extension_disconnected("not_connected", session_id);
-        }
-
         let executor = match manager.executor() {
             Some(e) => e,
             None => {
                 return self.search_duckduckgo_html(query).await;
             }
         };
+
+        // Nudge the user to install the extension whenever it isn't connected — even if the
+        // built-in CDP browser is carrying the work. The extension is the intended path.
+        if !executor.extension_connected() {
+            self.broadcast_extension_disconnected("not_connected", session_id);
+        }
 
         if !executor.is_connected() {
             let grace = std::time::Duration::from_secs(3);
@@ -672,10 +672,19 @@ impl WebTool {
             }
         };
 
+        // The executor is the single source of truth for backend state — both the `status`
+        // report and the connection gate below read it, so they can never disagree.
+        let executor = match manager.executor() {
+            Some(e) => e,
+            None => {
+                return ToolResult::error("Browser automation not configured.");
+            }
+        };
+
         // Status works even when disconnected
         if action == "status" {
-            let ext_connected = manager.extension_connected();
-            let cdp = manager.cdp_available();
+            let ext_connected = executor.extension_connected();
+            let cdp = executor.cdp_available();
             let status = if ext_connected {
                 "Browser extension connected. Ready. Use read_page to see the current page."
             } else if cdp {
@@ -689,16 +698,9 @@ impl WebTool {
             ));
         }
 
-        let executor = match manager.executor() {
-            Some(e) => e,
-            None => {
-                return ToolResult::error("Browser automation not configured.");
-            }
-        };
-
         // Nudge to install the extension whenever it isn't connected — even if the built-in
         // CDP browser is handling this action. The extension is the intended path.
-        if !manager.extension_connected() {
+        if !executor.extension_connected() {
             self.broadcast_extension_disconnected("not_connected", session_id);
         }
 

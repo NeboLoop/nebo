@@ -42,6 +42,7 @@ impl Manager {
                 binary,
                 storage_dir: Some(PathBuf::from(&data_dir).join("obscura-profile")),
                 stealth: true,
+                log_path: Some(PathBuf::from(&data_dir).join("logs").join("obscura.log")),
             }))
         });
         Self {
@@ -60,18 +61,14 @@ impl Manager {
     }
 
     /// Get an ActionExecutor: tier 1 extension → tier 2 built-in Chrome (CDP).
+    ///
+    /// This is the ONE place to ask about browser-backend state. Connection checks
+    /// (`extension_connected`, `cdp_available`, `is_connected`) live on the returned
+    /// executor so the status the caller reports and the backend it actually drives can
+    /// never disagree. Do not re-expose those checks on `Manager` — a second facade over
+    /// the same `bridge`/`cdp` state is what lets the two drift and hide bugs.
     pub fn executor(&self) -> Option<ActionExecutor> {
         Some(ActionExecutor::new(self.bridge.clone(), self.cdp.clone()))
-    }
-
-    /// Check if the Chrome extension is connected via the bridge.
-    pub fn extension_connected(&self) -> bool {
-        self.bridge.is_connected()
-    }
-
-    /// Check if the built-in Rust Chrome (CDP tier-2) backend is configured.
-    pub fn cdp_available(&self) -> bool {
-        self.cdp.is_some()
     }
 
     /// Launch a managed Chrome instance for a profile.

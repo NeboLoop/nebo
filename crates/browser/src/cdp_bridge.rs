@@ -32,6 +32,9 @@ pub struct ObscuraConfig {
     pub storage_dir: Option<PathBuf>,
     /// Anti-detection + tracker blocking.
     pub stealth: bool,
+    /// Where to capture Obscura's own log (navigations + CDP errors) so a misbehaving
+    /// tier-2 browse leaves a durable trail. None = discard. Appended to.
+    pub log_path: Option<PathBuf>,
 }
 
 /// The launched Obscura process + browser + its open pages. Created once via [`CdpBridge::core`].
@@ -78,9 +81,23 @@ impl CdpBridge {
                 if let Some(dir) = &self.config.storage_dir {
                     cmd.arg("--storage-dir").arg(dir);
                 }
+                // Capture Obscura's own log (navigations + CDP errors) to a file so a
+                // misbehaving tier-2 browse leaves a durable trail. `info` keeps it useful
+                // without the per-command `debug` firehose. Falls back to discarding if the
+                // log file can't be opened.
+                let log_file = self.config.log_path.as_ref().and_then(|p| {
+                    if let Some(dir) = p.parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    std::fs::OpenOptions::new().create(true).append(true).open(p).ok()
+                });
+                cmd.env("RUST_LOG", "obscura=info,obscura_cdp=info");
                 cmd.stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
+                    .stderr(match log_file {
+                        Some(f) => std::process::Stdio::from(f),
+                        None => std::process::Stdio::null(),
+                    })
                     .kill_on_drop(true);
                 let child = cmd
                     .spawn()
@@ -223,12 +240,28 @@ async fn wait_for_cdp(port: u16, timeout: Duration) -> Result<(), BrowserError> 
     }
 }
 
-/// Resolve the bundled `obscura` binary: `OBSCURA_BIN` env → `<data_dir>/bin/obscura` → `$PATH`.
+/// Resolve the bundled `obscura` binary, deployment-agnostic so the same resolver works for
+/// the Tauri desktop app and a headless server build alike:
+///   1. `OBSCURA_BIN` env          — explicit override (Docker/k8s/CI/dev)
+///   2. `current_exe()` sibling dir — bundled next to the running binary. Covers BOTH a Tauri
+///      `externalBin` sidecar (placed in `Contents/MacOS/` next to `nebo-desktop`, signed +
+///      notarized) AND a server image that `COPY`s obscura beside the server binary. Mirrors
+///      how the `nebo` relay binary is resolved.
+///   3. `<data_dir>/bin/obscura`    — downloaded-update path
+///   4. `$PATH`                     — system install (e.g. `/usr/local/bin`)
 pub fn find_obscura(data_dir: &str) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("OBSCURA_BIN") {
         let p = PathBuf::from(p);
         if p.exists() {
             return Some(p);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("obscura");
+            if sibling.exists() {
+                return Some(sibling);
+            }
         }
     }
     let bundled = PathBuf::from(data_dir).join("bin").join("obscura");
