@@ -104,15 +104,28 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
 
 /// Strict CSP for API routes only. Blocks all content loading since API responses
 /// should never render HTML/scripts. Matches Go's APISecurityHeaders().
+///
+/// The one exception is the OAuth callback (`/api/v1/integrations/oauth/callback`),
+/// a self-contained HTML page the browser navigates to directly. HTML responses get
+/// a page-appropriate CSP that permits their inline styles/script; everything else
+/// keeps the lockdown.
 pub async fn api_security_headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
-    let headers = response.headers_mut();
-    headers.insert(
-        "content-security-policy",
+
+    let is_html = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/html"));
+
+    let csp = if is_html {
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+    } else {
         "default-src 'none'; frame-ancestors 'none'"
-            .parse()
-            .unwrap(),
-    );
+    };
+
+    let headers = response.headers_mut();
+    headers.insert("content-security-policy", csp.parse().unwrap());
     headers.insert(
         "cache-control",
         "no-store, no-cache, must-revalidate, private"

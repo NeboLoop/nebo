@@ -3,6 +3,7 @@ pub mod agents;
 pub mod apps;
 pub mod artifact_updates;
 pub mod auth;
+pub mod auth_page;
 pub mod chat;
 pub mod commander;
 pub mod entity_config;

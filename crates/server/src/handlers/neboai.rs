@@ -1174,29 +1174,14 @@ pub async fn connect_handler(
 }
 
 fn callback_html(_email: &str, err_msg: &str) -> Html<String> {
-    let message = if !err_msg.is_empty() {
-        format!("Sign-in failed: {err_msg}")
+    let success = err_msg.is_empty();
+    let heading = if success { "Signed in" } else { "Sign-in failed" };
+    let message = if success {
+        "You're connected to your NeboAI account."
     } else {
-        "Connected! You can close this window.".into()
+        err_msg
     };
-
-    Html(format!(
-        r#"<!DOCTYPE html>
-<html><head><title>NeboAI</title>
-<style>
-body {{ font-family: -apple-system, sans-serif; display: flex; align-items: center;
-  justify-content: center; min-height: 100vh; margin: 0; background: #f5f5f5; }}
-p {{ font-size: 16px; color: #333; }}
-</style>
-</head>
-<body>
-<p>{message}</p>
-<script>
-// Try to close this window/tab automatically
-setTimeout(function() {{ window.close(); }}, 1500);
-</script>
-</body></html>"#,
-    ))
+    super::auth_page::auth_result_page(success, heading, message)
 }
 
 // ── Force reconnect (sleep/wake recovery) ─────────────────────────────
