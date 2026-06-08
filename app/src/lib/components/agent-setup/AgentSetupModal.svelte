@@ -15,6 +15,7 @@
 		existingAgentId,
 		onComplete,
 		onCancel,
+		onUninstall,
 	}: {
 		appId: string;
 		agentName: string;
@@ -25,7 +26,12 @@
 		existingAgentId?: string;
 		onComplete: (agentId: string) => void;
 		onCancel: () => void;
+		/** Configure mode only (existingAgentId set): remove the installed agent. */
+		onUninstall?: () => void;
 	} = $props();
+
+	// Configure mode = reconfiguring an already-installed agent (no fresh install).
+	const configuring = $derived(Boolean(existingAgentId));
 
 	type Step = 'inputs' | 'auth' | 'schedule' | 'installing' | 'installing-deps' | 'done';
 	let step = $state<Step>('inputs');
@@ -257,7 +263,8 @@
 			}
 
 			// Show per-dependency install progress, driven by dep_* WS events.
-			depRows = normalizeDeps();
+			// Configure mode: deps are already installed — skip straight to setup.
+			depRows = configuring ? [] : normalizeDeps();
 			if (depRows.length > 0) {
 				depsAdvanced = false;
 				depsForced = false;
@@ -543,7 +550,7 @@
 
 			<div class="px-6 pb-6 overflow-y-auto">
 				<div class="text-center mb-6">
-					<h2 class="font-display text-xl font-bold">Set up {agentName}</h2>
+					<h2 class="font-display text-xl font-bold">{configuring ? 'Configure' : 'Set up'} {agentName}</h2>
 					{#if agentDescription}
 						<p class="text-sm text-base-content/70 mt-1 line-clamp-2">{agentDescription}</p>
 					{/if}
@@ -597,9 +604,14 @@
 						Cancel
 					</button>
 					<button type="button" class="flex-1 h-11 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all" onclick={handleInstall}>
-						{hasInputFields || Object.keys(inputs).length > 0 ? 'Next' : 'Install & Start'}
+						{configuring ? 'Save changes' : (hasInputFields || Object.keys(inputs).length > 0 ? 'Next' : 'Install & Start')}
 					</button>
 				</div>
+				{#if configuring && onUninstall}
+					<button type="button" onclick={onUninstall} class="w-full mt-3 h-9 text-sm font-medium text-error/80 hover:text-error transition-colors">
+						Uninstall {agentName}
+					</button>
+				{/if}
 			</div>
 		{/if}
 	</div>

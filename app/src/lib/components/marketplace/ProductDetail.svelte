@@ -14,7 +14,7 @@
 	import { onMount } from 'svelte';
 	import { marked } from 'marked';
 	import webapi from '$lib/api/gocliRequest';
-	import { installStoreProduct, listAgents, activateAgent } from '$lib/api/nebo';
+	import { installStoreProduct, uninstallStoreProduct } from '$lib/api/nebo';
 	import { type AppItem, toAppItem, itemHref, gradients } from '$lib/types/marketplace';
 	import MediaGallery from '$lib/components/marketplace/MediaGallery.svelte';
 	import SimilarGrid from '$lib/components/marketplace/SimilarGrid.svelte';
@@ -58,6 +58,8 @@
 	let installedLocal = $state(false);
 	let showSetupModal = $state(false);
 	let setupInputs = $state<Record<string, unknown>>({});
+	// Configure mode reuses the setup modal against the already-installed agent.
+	let configureExisting = $state(false);
 
 	const itemId = $derived($page.params.id ?? '');
 	const installed = $derived(Boolean(skill?.installed) || installedLocal);
@@ -163,33 +165,40 @@
 	});
 
 	async function installProduct() {
+		// Agents always go through the setup modal — it handles inputs, plugin
+		// auth, dependency install, scheduling, and activation (and shows a
+		// "ready to go" step when there's nothing to configure). Non-agents
+		// install directly.
+		if (artifactType === 'agent') {
+			setupInputs = skill?.typeConfig?.inputs || skill?.inputs || {};
+			configureExisting = false;
+			showSetupModal = true;
+			return;
+		}
 		installing = true;
 		try {
-			// Agents may declare setup inputs — collect them before installing.
-			if (artifactType === 'agent') {
-				const inputs = skill?.typeConfig?.inputs || skill?.inputs || {};
-				if (Object.keys(inputs).length > 0) {
-					setupInputs = inputs;
-					showSetupModal = true;
-					installing = false;
-					return;
-				}
-				await installStoreProduct(itemId);
-				const agentsRes = await listAgents();
-				const allAgents = (agentsRes?.agents || []) as Array<{ id: string; name?: string }>;
-				const matched = allAgents.find((r) => r.name?.toLowerCase() === skill?.name?.toLowerCase());
-				if (matched) {
-					await activateAgent(matched.id);
-					goto(`/${matched.id}/threads`);
-					return;
-				}
-				installedLocal = true;
-			} else {
-				await installStoreProduct(itemId);
-				installedLocal = true;
-			}
+			await installStoreProduct(itemId);
+			installedLocal = true;
 		} catch { /* ignore */ }
 		installing = false;
+	}
+
+	// Re-open the setup modal against the installed agent (the installed agent id
+	// equals the product id), so users can edit inputs / reschedule / uninstall.
+	function configureAgent() {
+		setupInputs = skill?.typeConfig?.inputs || skill?.inputs || {};
+		configureExisting = true;
+		showSetupModal = true;
+	}
+
+	async function uninstallProduct() {
+		try {
+			await uninstallStoreProduct(itemId);
+		} catch { /* ignore */ }
+		installedLocal = false;
+		if (skill) skill = { ...skill, installed: false };
+		showSetupModal = false;
+		configureExisting = false;
 	}
 
 	async function updateProduct() {
@@ -347,6 +356,11 @@
 							<Check class="w-4 h-4" />
 							Installed
 						</span>
+						{#if artifactType === 'agent'}
+							<button type="button" onclick={configureAgent} class="btn btn-outline rounded-xl h-11">
+								Configure
+							</button>
+						{/if}
 					{:else}
 						<button type="button" onclick={installProduct} disabled={installing} class="btn btn-primary rounded-xl h-11 disabled:opacity-50">
 							<Download class="w-4 h-4" />
@@ -540,7 +554,9 @@
 		agentDescription={skill.description || ''}
 		inputs={setupInputs}
 		dependencies={skill?.dependencies ?? skill?.typeConfig?.dependencies}
+		existingAgentId={configureExisting ? itemId : undefined}
 		onComplete={handleSetupComplete}
 		onCancel={() => (showSetupModal = false)}
+		onUninstall={configureExisting ? uninstallProduct : undefined}
 	/>
 {/if}
