@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Entitlements for the bundled Obscura tier-2 browser sidecars (obscura,
+	  obscura-worker). They embed V8 via deno_core, which JIT-compiles JavaScript
+	  into executable memory at runtime — forbidden under the Hardened Runtime
+	  unless these exceptions are granted. Without them the sidecars crash on the
+	  first script execution even when correctly Developer-ID-signed + notarized.
+	  These are signed with the Hardened Runtime so they pass notarization as
+	  nested Mach-O executables of the .app.
+	-->
+
+	<!-- V8 maps writable+executable pages (the JIT code cache). -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+
+	<!-- V8's code generation writes to executable memory it did not sign. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!-- Obscura loads its own dynamic libraries (prebuilt V8, CDP transport). -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

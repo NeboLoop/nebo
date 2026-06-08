@@ -175,6 +175,23 @@ jobs:
             codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime "$f"
           done
 
+          # Sign the bundled Obscura sidecars BEFORE the main executable (inside-out).
+          # `cargo tauri build` leaves them adhoc/linker-signed (no identity is passed
+          # at build time), which passes `codesign --verify` but is REJECTED by
+          # notarization — nested Mach-O executables must be Developer-ID-signed with
+          # the Hardened Runtime. They embed V8 (deno_core) JIT, so they need the
+          # obscura.entitlements (allow-jit / allow-unsigned-executable-memory).
+          for sidecar in obscura obscura-worker; do
+            SIDECAR_PATH="$APP_PATH/Contents/MacOS/$sidecar"
+            if [ -f "$SIDECAR_PATH" ]; then
+              codesign --force --sign "$SIGN_IDENTITY" \
+                --entitlements assets/macos/obscura.entitlements \
+                --timestamp \
+                --options runtime \
+                "$SIDECAR_PATH"
+            fi
+          done
+
           # Sign the main executable explicitly
           codesign --force --sign "$SIGN_IDENTITY" \
             --identifier dev.neboai.nebo \
@@ -232,9 +249,14 @@ jobs:
             echo "dmg_path=$DEST" >> "$GITHUB_OUTPUT"
           fi
 
+      # Notarization is MANDATORY. Any failure (rejected, agreement renewal,
+      # submit/network error, staple failure) hard-fails this job — we never
+      # continue and ship an un-notarized DMG. (No `continue-on-error`.) A real
+      # release tag always has the creds; the gate only skips notarization in
+      # contexts that have no Apple secrets at all (forks/PRs), which also have
+      # no signing cert and produce no shippable artifact.
       - name: Notarize .dmg
         if: ${{ env.HAS_NOTARIZE_CREDS == 'true' && steps.dmg.outputs.dmg_path != '' }}
-        continue-on-error: true
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
@@ -242,27 +264,34 @@ jobs:
         run: |
           DMG_FILE="${{ steps.dmg.outputs.dmg_path }}"
           echo "Submitting $DMG_FILE for notarization..."
+          # Capture output without aborting (default shell is `bash -eo pipefail`)
+          # so we can print the result + fetch the detailed log before deciding.
+          set +e
           SUBMIT_OUT=$(xcrun notarytool submit "$DMG_FILE" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait 2>&1) || true
+            --wait 2>&1)
+          set -e
           echo "$SUBMIT_OUT"
-          SUB_ID=$(echo "$SUBMIT_OUT" | grep "id:" | head -1 | awk '{print $2}')
-          if echo "$SUBMIT_OUT" | grep -q "status: Invalid"; then
-            echo "::warning::Notarization rejected — fetching detailed log..."
+          SUB_ID=$(echo "$SUBMIT_OUT" | grep -m1 "id:" | awk '{print $2}')
+          if [ -n "$SUB_ID" ]; then
+            echo "--- notarization log ($SUB_ID) ---"
             xcrun notarytool log "$SUB_ID" \
               --apple-id "$APPLE_ID" \
               --password "$APPLE_APP_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" 2>&1 || true
-            exit 1
           fi
-          if echo "$SUBMIT_OUT" | grep -q "403\|expired\|agreement"; then
-            echo "::warning::Notarization skipped — Apple developer agreement needs renewal"
+          # Only an explicit "Accepted" verdict may proceed. Invalid, agreement
+          # renewal, 403, network/auth errors — all leave SUBMIT_OUT without
+          # "status: Accepted" and therefore fail the release here.
+          if ! echo "$SUBMIT_OUT" | grep -q "status: Accepted"; then
+            echo "::error::Notarization did NOT succeed — refusing to ship an un-notarized build."
             exit 1
           fi
           xcrun stapler staple "$DMG_FILE"
-          echo "Notarization complete"
+          xcrun stapler validate "$DMG_FILE"
+          echo "Notarization complete and stapled."
 
       - uses: actions/cache/save@v4
         if: ${{ steps.dmg.outputs.dmg_path != '' }}
@@ -465,6 +494,28 @@ jobs:
           done
           ls -la src-tauri/binaries
 
+      # Sign the Obscura sidecars BEFORE bundling — they get compressed INTO the
+      # NSIS installer, so they cannot be signed afterward (the sign-windows job
+      # only reaches the top-level installer + nebo.exe). Unsigned sidecars trip
+      # SmartScreen/Defender when extracted and run. This mirrors the macOS
+      # inside-out signing of the nested obscura/obscura-worker Mach-O executables.
+      - name: Sign Obscura sidecars (Authenticode)
+        if: vars.AZURE_SIGNING_ENABLED == 'true'
+        uses: azure/trusted-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}/src-tauri/binaries
+          files-folder-filter: exe
+          files-folder-depth: 1
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       - name: Build Tauri desktop app
         run: cargo tauri build --bundles nsis
 
@@ -547,7 +598,12 @@ jobs:
   # step gracefully omits Windows assets when the cache restore misses.
   release:
     needs: [build-macos, build-linux]
-    if: ${{ !cancelled() }}
+    # MUST require both desktop builds to fully succeed. build-macos now hard-fails
+    # if notarization doesn't pass, so this gate is what stops a failed notarization
+    # from publishing a release (and the version.json bump) anyway. Windows is
+    # intentionally absent from `needs` and remains optional. `success()` runs only
+    # when every job in `needs` succeeded.
+    if: ${{ success() }}
     runs-on: ubuntu-latest
     env:
       DO_SPACES_KEY_SET: ${{ secrets.DO_SPACES_ACCESS_KEY != '' && 'true' || 'false' }}
