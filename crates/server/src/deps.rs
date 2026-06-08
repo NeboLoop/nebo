@@ -258,32 +258,42 @@ fn is_agent_installed(state: &AppState, reference: &str) -> bool {
 
 fn is_skill_installed(reference: &str) -> bool {
     let simple_name = extract_simple_name(reference);
-    if let (Ok(user_dir), Ok(nebo_dir)) = (config::user_dir(), config::nebo_dir()) {
-        let user_skills = user_dir.join("skills");
-        let nebo_skills = nebo_dir.join("skills");
+    let (Ok(user_dir), Ok(nebo_dir)) = (config::user_dir(), config::nebo_dir()) else {
+        return false;
+    };
+    skill_present_in_root(&user_dir.join("skills"), simple_name, reference)
+        || skill_present_in_root(&nebo_dir.join("skills"), simple_name, reference)
+}
 
-        // Check user dir: name/SKILL.md
-        if user_skills.join(simple_name).join("SKILL.md").exists() {
-            return true;
-        }
+/// True only if THIS skill is installed under `skills_root`.
+///
+/// Detection is scoped to the skill's own directory (`<root>/<slug>`). An
+/// unscoped "does any skill exist here" check is wrong: once the bundled skills
+/// are present (they always are), every skill dependency looks installed and the
+/// cascade silently skips it. Skills are stored at `<root>/<slug>/` as a loose
+/// SKILL.md, an extracted version subdir (`<slug>/<version>/SKILL.md`), or a
+/// sealed `<version>.napp`. `has_extracted_skill`/`has_napp_files` return false
+/// for a non-existent dir, so no separate existence guard is needed.
+fn skill_present_in_root(skills_root: &std::path::Path, simple_name: &str, reference: &str) -> bool {
+    let dir = skills_root.join(simple_name);
+    if dir.join("SKILL.md").exists() || has_extracted_skill(&dir) || has_napp_files(&dir) {
+        return true;
+    }
 
-        // Check nebo dir: look for extracted directories or .napp files
-        if nebo_skills.exists() {
-            // For qualified refs, check the specific path
-            if reference.starts_with('@') {
-                let ref_no_version = reference.split('@').take(2).collect::<Vec<_>>().join("@");
-                let ref_path = ref_no_version.trim_start_matches('@');
-                if nebo_dir.join(ref_path).exists() {
-                    return true;
+    // Install-code refs (SKIL-XXXX) are stored under the server-assigned slug,
+    // not the code, so the path check above can't match — fall back to matching
+    // the `code` recorded in each installed skill's manifest.json.
+    if reference.starts_with("SKIL-") {
+        if let Ok(entries) = std::fs::read_dir(skills_root) {
+            for entry in entries.flatten() {
+                let manifest = entry.path().join("manifest.json");
+                if let Ok(text) = std::fs::read_to_string(&manifest) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if v.get("code").and_then(|c| c.as_str()) == Some(reference) {
+                            return true;
+                        }
+                    }
                 }
-            }
-            // Check for extracted version directories containing SKILL.md
-            if has_extracted_skill(&nebo_skills) {
-                return true;
-            }
-            // Fallback: check for .napp files (pre-migration)
-            if has_napp_files(&nebo_skills) {
-                return true;
             }
         }
     }
@@ -786,4 +796,45 @@ pub async fn approve_deps(
     let mut visited = HashSet::new();
     let result = resolve_cascade_force(&state, body.deps, &mut visited).await;
     Ok(Json(serde_json::json!(result)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: skill-presence detection must be scoped to the specific skill.
+    /// The old unscoped check returned `true` for ANY skill ref whenever the
+    /// skills dir held even one skill (e.g. the bundled set), so the cascade
+    /// marked every skill dependency `AlreadyInstalled` and never installed it.
+    #[test]
+    fn skill_presence_is_scoped_to_the_skill() {
+        let tmp = std::env::temp_dir().join(format!("nebo-skill-scope-{}", std::process::id()));
+        let root = tmp.join("skills");
+        let alpha = root.join("alpha");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::write(alpha.join("SKILL.md"), "---\nname: alpha\n---\n").unwrap();
+
+        // The installed skill IS detected.
+        assert!(skill_present_in_root(&root, "alpha", "@org/skills/alpha"));
+        // A different, not-installed skill must NOT be — even though `alpha` exists.
+        assert!(!skill_present_in_root(&root, "beta", "@org/skills/beta"));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Install-code refs are stored under the server slug, not the code, so
+    /// presence is matched via the `code` recorded in manifest.json.
+    #[test]
+    fn skill_code_matches_via_manifest() {
+        let tmp = std::env::temp_dir().join(format!("nebo-skill-code-{}", std::process::id()));
+        let root = tmp.join("skills");
+        let dir = root.join("real-slug");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), r#"{"code":"SKIL-AAAA-BBBB"}"#).unwrap();
+
+        assert!(skill_present_in_root(&root, "SKIL-AAAA-BBBB", "SKIL-AAAA-BBBB"));
+        assert!(!skill_present_in_root(&root, "SKIL-ZZZZ-ZZZZ", "SKIL-ZZZZ-ZZZZ"));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }
