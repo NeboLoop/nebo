@@ -74,18 +74,20 @@ draft an outbound email, follow these steps:
 
 ### Optional (Nebo Extensions)
 
-These fields are Nebo-specific extensions. Other platforms ignore fields they don't recognize, so skills remain portable.
+These fields are Nebo-specific extensions. Other platforms ignore fields they don't recognize, so skills remain portable. The parser also recognizes the standard Agent Skills fields `license`, `compatibility`, and `allowed-tools` (alias `allowed_tools`).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `version` | string | `1.0.0` | Semantic version |
+| `author` | string | `""` | Skill author |
+| `tags` | string[] | `[]` | Free-form tags for categorization and search |
 | `capabilities` | string[] | `[]` | Platform capabilities the skill needs (see [Platform Capabilities](platform-capabilities.md)) |
 | `triggers` | string[] | `[]` | Phrases that activate the skill (case-insensitive substring matching) |
 | `platform` | string[] | `[]` (all) | OS filter: `macos`, `linux`, `windows` |
 | `priority` | int | `0` | Higher = matched first when multiple skills match |
 | `max_turns` | int | `0` | Max agent turns (0 = unlimited) |
-| `dependencies` | string[] | `[]` | Other skill qualified names this depends on. Verified at load time. |
-| `requires` | object[] | `[]` | Skill-to-skill dependencies with version ranges. Each entry has `name` (qualified name) and `version` (semver range). |
+| `dependencies` | string[] | `[]` | Other skills' local `name` values this depends on (not qualified names). Verified at load time; if a dependency is missing, the skill is marked degraded (kept loaded but flagged via a warning); the skill still activates. |
+| `requires` | object[] | `[]` | Skill-to-skill dependencies with version ranges. Each entry has `name` (the other skill's local `name`, not the qualified name) and `version` (semver range). |
 | `plugins` | object[] | `[]` | Plugin dependencies (see [Plugin Dependencies](#plugin-dependencies)) |
 | `metadata` | map | `{}` | Arbitrary key-value metadata |
 
@@ -197,12 +199,16 @@ If `platform` is empty, the skill loads on all platforms. If specified, it only 
 
 ## Loading Order
 
-Skills load in priority order — later sources override earlier ones by name:
+Skills load in layered order — later sources override earlier ones by name:
 
 1. **Embedded bundled skills** — compiled into the Nebo binary
 2. **Installed skills** — extracted from `.napp` archives in `nebo/skills/`
-3. **User skills** — loose files in `user/skills/`
-4. **App skills** — loaded dynamically from an agent's `skills/` directory when the app activates (overrides by name)
+   - **2.1 Sealed `.napp` skills** — a distinct sub-step that reads encrypted paid skills in memory only (never extracted to disk)
+3. **Plugin-embedded skills** — skills bundled inside a plugin directory, loaded between the installed and user sources. The parent plugin slug is auto-injected as a required dependency.
+   - **3.1 Marketplace-plugin-embedded skills** — from active marketplace plugins
+   - **3.2 User-plugin-embedded skills** — from active user plugins (override marketplace-plugin skills)
+4. **User skills** — loose files in `user/skills/`
+5. **App skills** — loaded separately at app activation from an agent's `skills/` directory (overrides by name)
 
 Skills are loaded from subdirectories — each skill lives in its own folder containing a `SKILL.md` file (case-insensitive filename matching).
 
@@ -339,7 +345,7 @@ plugins:
 | `version` | string | `"*"` | Semver version range (e.g. `">=1.2.0"`, `"^2.0.0"`) |
 | `optional` | bool | `false` | If `true`, the skill loads without the plugin but features may be degraded |
 
-When `optional` is `false` and the plugin is missing or doesn't satisfy the version range, the skill is dropped during dependency verification. When `optional` is `true`, the skill loads but operates in a degraded mode.
+When `optional` is `false` and the plugin is missing or doesn't satisfy the version range, the skill is marked degraded (kept loaded but flagged via a warning); the skill still activates. When `optional` is `true`, the skill loads but operates in a degraded mode.
 
 Skills embedded inside a plugin directory automatically inherit the parent plugin as a required dependency.
 
@@ -391,20 +397,21 @@ Store databases, caches, generated files, and any persistent state here — neve
 
 ## Concurrency Safety
 
-Read-only skill tool actions run in parallel: `catalog`, `discover`, `help`, `browse`, `read_resource`, `featured`, `popular`, `reviews`, `secrets`.
+Read-only skill tool actions run in parallel: `list`, `discover`, `help`, `browse`, `read_resource`, `reviews`, `secrets`. These are the actions allowlisted by the per-action `is_concurrent_safe()` check.
 
-Write operations (`install`, `uninstall`, `create`, `update`, `delete`) run serially to prevent conflicts. Serialization of writes is enforced by the internal `RwLock` — readers acquire shared locks while writers acquire exclusive locks.
+Write actions (`install`, `create`, `update`, `delete`, `configure`, `load`, `unload`, `rate`) are simply excluded from the concurrent-safe allowlist, so they run non-concurrently. The loader's internal `RwLock` guards the in-memory skills map; it does not serialize write actions.
 
 ---
 
 ## Skill Tool Actions Reference
 
-In addition to the actions documented above (`catalog`, `discover`, `help`, `browse`, `read_resource`, `load`, `unload`, `create`, `update`, `delete`, `install`, `configure`, `featured`, `popular`):
+In addition to the actions documented above (`list`, `discover`, `help`, `browse`, `read_resource`, `load`, `unload`, `create`, `update`, `delete`, `install`, `configure`):
 
 | Action | Description |
 |--------|-------------|
 | `secrets` | Shows configured vs missing secrets for a skill. Lists each declared secret with its status (configured, MISSING, or not set). |
-| `reviews` | Marketplace reviews for a skill (synced from NeboAI; placeholder). |
+| `reviews` | Fetches live marketplace reviews for a skill from the NeboAI API. |
+| `rate` | Submits a 1–5★ review for a skill (mutating — posts to the marketplace). |
 
 ---
 

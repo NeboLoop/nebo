@@ -44,11 +44,10 @@ Each entry in the `workflows` map binds activities to a trigger:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `ref` | string | no | — | External workflow qualified name (`@org/workflows/name@version`). Optional when using inline `activities`. |
 | `trigger` | object | yes | — | When this workflow runs (see [Trigger Types](#trigger-types)) |
 | `description` | string | no | `""` | Human-readable description |
 | `inputs` | map | no | `{}` | Default inputs passed to the workflow on trigger |
-| `activities` | array | no | `[]` | Inline activity definitions. When present, the workflow runs inline — no external `ref` needed. |
+| `activities` | array | yes* | `[]` | Inline activity definitions. Bindings are always inline — there is no external-workflow reference mechanism. (\*Optional only for event-only watches, see below.) |
 | `budget` | object | no | `{}` | Token budget constraints (`total_per_run`) |
 | `emit` | string | no | — | Event name to emit on completion. By convention, prefix with the agent slug (e.g., `chief-of-staff.briefing.ready`) to avoid cross-agent collisions. |
 
@@ -86,12 +85,14 @@ Each completed activity records:
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `run_id` | string | The workflow run this result belongs to |
+| `activity_id` | string | The activity ID within the binding |
+| `status` | string | Activity outcome (e.g., completed, failed) |
+| `tokens_used` | number | Combined token usage for the activity |
+| `attempts` | number | Number of execution attempts |
+| `error` | string | Error message (if failed) |
 | `started_at` | timestamp | When the activity began executing |
 | `completed_at` | timestamp | When the activity finished |
-| `input_tokens` | number | Token usage for input (prompt) |
-| `output_tokens` | number | Token usage for output (completion) |
-| `error_pattern` | string | Error pattern tracked for circuit breaker (if failed) |
-| `failure_reason` | string | Human-readable failure reason (if failed) |
 
 Activity results are stored per run and available in system events and the workflow run API response.
 
@@ -123,13 +124,13 @@ Workflows support graceful cancellation via a cancellation token. When cancelled
 2. No subsequent activities are started
 3. The workflow run is marked as cancelled, not failed
 
-Cancel a running workflow via `POST /agents/{id}/workflows/{binding}/cancel`.
+Cancel a running workflow via `POST /workflows/{id}/runs/{runId}/cancel`.
 
 ---
 
 ## Budget Math
 
-When using inline activities with a `budget.total_per_run`, the sum of all activity `token_budget.max` values **must not exceed** `total_per_run`. This is validated at parse time — a mismatch prevents the agent from loading.
+When using inline activities with a `budget.total_per_run`, the sum of all activity `token_budget.max` values should not exceed `total_per_run`. This sum-vs-total check is enforced at parse time for standalone `workflow.json` files; for inline activity bindings in `agent.json` it is **not** validated at load time, so keep the budgets consistent yourself. Both per-activity and global budgets are enforced independently at runtime regardless.
 
 ```
 Activity 1: gather  → 4,096 tokens
@@ -151,6 +152,7 @@ Both per-activity and global budgets are enforced independently at runtime.
 | `heartbeat` | `interval`, `window` (optional) | Fires at a recurring interval, optionally limited to a time window |
 | `event` | `sources` | Fires when a matching event occurs |
 | `watch` | `plugin`, `event`, `command`, `restart_delay_secs` | Long-running plugin process that emits NDJSON events |
+| `folder` | `path`, `extensions`, `recursive`, `debounce_secs` | Fires when files change in a watched directory |
 | `manual` | — | Only fires by explicit user request or API call |
 
 ### Schedule
@@ -224,15 +226,15 @@ The placeholder name must exactly match an input `key`. Unmatched placeholders a
 
 ### Input Values & Template Substitution in Triggers
 
-All trigger configs — not just watch commands — support `{{key}}` template substitution. Values are resolved from `agents.input_values`, which users set via the Settings UI or the API.
+`{{key}}` template substitution applies only to the watch trigger `command` and the folder trigger `path`. Values are resolved from `agents.input_values`, which users set via the Settings UI or the API. Schedule/cron and other trigger configs receive the raw value with no substitution.
 
 ```json
 {
-  "trigger": { "type": "schedule", "cron": "{{sync_time}}" }
+  "trigger": { "type": "folder", "path": "{{watch_dir}}/inbox" }
 }
 ```
 
-If the agent's `input_values` contains `{ "sync_time": "0 9 * * 1-5" }`, the cron expression resolves to `0 9 * * 1-5` at trigger evaluation time. This lets end users customize workflow timing and parameters without editing the agent package.
+If the agent's `input_values` contains `{ "watch_dir": "/Users/me/Documents" }`, the folder path resolves to `/Users/me/Documents/inbox` at runtime. This lets end users customize the watched command or path without editing the agent package.
 
 ### Manual
 
@@ -263,12 +265,12 @@ Event triggers let workflows react to things that happen — emails arriving, wo
 {
   "source": "email.customer-service",
   "payload": { "from": "j@example.com", "subject": "Order issue" },
-  "origin": "workflow:email-triage:run-550e8400",
+  "origin": "agent-42-run-550e8400",
   "timestamp": 1709740800
 }
 ```
 
-The `payload` becomes the triggered workflow's inputs (available as `_event_payload`).
+The `payload` becomes the triggered workflow's inputs (available as `_event_payload`). The `origin` format varies by source — activity `emit` calls use the emitting session key (e.g., `agent-{id}-{run_id}`), while folder events use `folder:{binding_name}`.
 
 ### Source Matching
 
@@ -470,7 +472,7 @@ Read top to bottom: watcher monitors Gmail. For each email, triage classifies an
 ## Validation Rules
 
 - Each binding must have a `trigger` (required)
-- Either `ref` or `activities` must be present (one defines what runs)
+- `activities` must be present (defines what runs) — bindings are always inline
 - Trigger `type` must be one of: `schedule`, `heartbeat`, `event`, `watch`, `folder`, `manual`
 - **Lenient parsing:** Individual workflow bindings that fail to parse (e.g., invalid trigger format) are skipped with a warning — they do not prevent the agent from loading. The agent still appears in the UI with its remaining valid workflows.
 - Schedule triggers must have a valid 5-field `cron` expression

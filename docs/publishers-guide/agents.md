@@ -358,7 +358,7 @@ agents(action: "delegate", name: "Deal Tracker", prompt: "List all open deals cl
 
 ### Session Isolation
 
-Each delegation creates a separate session keyed as `subagent:<parent_id>:<child_id>`. The delegated agent:
+Each delegation creates a separate session keyed as `subagent:<parent_session_key>:<task_id>` (chains nest as `subagent:subagent:...`). The delegated agent:
 
 - Loads its own AGENT.md persona and skills
 - Runs with its own plugin set (from `requires.plugins` in its `agent.json`)
@@ -425,15 +425,17 @@ Changes are debounced at 1 second. No restart needed. Symlinks are fully support
 
 ## Validation Rules
 
-- Each workflow binding must have a `trigger`
-- Trigger type must be one of: `schedule`, `heartbeat`, `event`, `watch`, `folder`, `manual`
-- Workflow bindings with invalid triggers are skipped with a warning — they do not prevent the agent from loading
-- Schedule triggers must have a valid `cron` expression
-- Heartbeat triggers must have a valid `interval` (e.g., `"30m"`, `"1h"`)
-- Event triggers should have at least one entry in `sources` — an empty array is accepted but the trigger will never fire
-- Skill refs must be qualified names (`@org/skills/name`)
-- Watch triggers must have a `plugin` and either `event` or `command` (both recommended — `command` as fallback for when `event` resolution fails)
+**Enforced at parse time** (a violation prevents the agent from loading):
+
+- Event triggers must have at least one entry in `sources`
 - Activity IDs must be unique within each binding
-- If `budget.total_per_run > 0`, the sum of all activity `token_budget.max` values must not exceed it
-- All `{{key}}` placeholders in watch trigger commands must match an input `key` exactly
+- Watch triggers must have a `plugin` (no default — parsing fails without it)
+
+**Runtime / best-effort behaviors** (not parse-time validation):
+
+- `cron`, `interval`, `command`, and `event` fields default to empty when omitted — they are not validated at parse time
+- An invalid heartbeat `interval` is handled at runtime by skipping the heartbeat, not by rejecting the config
+- Skill refs should be qualified names (`@org/skills/name`); an unresolvable ref only emits a `tracing::warn` and the agent still loads
+- Watch triggers should also provide `event` or `command` (both recommended — `command` as a fallback for when `event` resolution fails)
+- All `{{key}}` placeholders in watch trigger commands should match an input `key` exactly; an unmatched placeholder is left as literal text at runtime
 - An Agent with no workflows is valid — it provides only a persona and skill declarations

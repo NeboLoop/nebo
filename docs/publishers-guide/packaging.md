@@ -94,7 +94,9 @@ Format: `PREFIX-XXXX-XXXX` — Crockford Base32 (`0123456789ABCDEFGHJKMNPQRSTVWX
 | `SKIL` | Install a skill | `SKIL-R7KP-2M9V` |
 | `WORK` | Install a workflow | `WORK-5TG2-XBJK` |
 | `AGNT` | Install an agent | `AGNT-9DCE-4MPA` |
-| `APPX` | Install an app | `APPX-3FKT-7WNP` |
+| `APPX` | Install an app | `APPX-3FKT-7WNP` |[^appx]
+
+[^appx]: The Nebo client detects the `APPX` prefix when resolving app install codes. Note a known mismatch: the marketplace backend currently mints app codes with an `APPS` prefix, which the client does not recognize. `APPX` is the value to rely on until the two are reconciled.
 | `LOOP` | Join bot to a Loop | `LOOP-7YSR-6WN3` |
 | `PLUG` | Install a plugin | `PLUG-4HVT-8KRP` |
 
@@ -170,7 +172,7 @@ Apps use the `@neboai/app-sdk` for storage, agent invocation, identity, embedded
 
 **User/development path:** Place app directories in `~/.nebo/user/agents/` and iterate. Hot-reload picks up changes.
 
-**Marketplace distribution:** Apps are packaged as sealed `.napp` archives like agents. The `ui/` directory contents are included in the archive (max 5MB per file).
+**Marketplace distribution:** Apps are packaged as sealed `.napp` archives like agents. The `.napp` assembler emits the agent payload (`manifest.json`, `agent.json`, `AGENT.md`, `signatures.json`) — the `ui/` directory is **not** bundled into the `.napp` via this path. App frontend and sidecar binaries are delivered through the separate per-platform binary upload (sidecar) path; the exact UI delivery mechanism for marketplace apps is handled outside the agent `.napp` assembly.
 
 ### Workflows and Agents — .napp Archive
 
@@ -213,7 +215,7 @@ For workflows and agents, the `.napp` is **never extracted**. Nebo reads files d
 | Skill | Directory on disk (marketplace: sealed `.napp`) | Frontmatter is source of truth; marketplace archives are signed |
 | Workflow | `.napp` sealed | Archive is the signed artifact — continuous integrity |
 | Agent | `.napp` sealed | Archive is the signed artifact — continuous integrity |
-| App | Directory (dev) / `.napp` sealed (marketplace) | Same as agent — includes `ui/` directory contents |
+| App | Directory (dev) / `.napp` sealed (marketplace) | Same as agent — the `.napp` carries the agent payload; `ui/` is not bundled into it |
 
 ### License-Key Sealed Archives
 
@@ -336,7 +338,7 @@ Workflows, agents, and apps ship a `manifest.json` as their marketplace identity
   "description": "Qualifies inbound leads through research, scoring, and routing",
   "signature": {
     "algorithm": "ed25519",
-    "key_id": "nebo-prod-2026"
+    "key_id": "a3f9c1e07b2d4865"
   }
 }
 ```
@@ -349,7 +351,7 @@ Workflows, agents, and apps ship a `manifest.json` as their marketplace identity
 | `version` | string | yes | — | Semantic version |
 | `description` | string | no | `""` | Short description |
 | `tags` | string[] | no | `[]` | Categorization tags |
-| `signature` | object | no | — | ED25519 signing metadata |
+| `signature` | object | no | — | ED25519 signing metadata. `key_id` is a hex key fingerprint — the first 8 bytes of `SHA256(public key)`, rendered as a 16-character hex string (e.g. `a3f9c1e07b2d4865`). |
 
 The `name` field is the canonical identifier. The org, type, and artifact name are all parsed from it. There is no separate `id`, `type`, or `author` field — the qualified name carries all of that.
 
@@ -362,6 +364,8 @@ The `name` field is the canonical identifier. The org, type, and artifact name a
 | `window` | object | Default window config (`title`, `width`, `height`, `resizable`) |
 
 > **Install codes** are not part of the package. They are assigned by NeboAI when the manifest is submitted and are stored server-side as an alias that resolves to the qualified name. The publisher never sets the code — they submit their package and NeboAI assigns one.
+
+> **Manifest permission validation** during scanning currently runs for **skills and plugins only**. Agents and apps skip manifest permission validation at this stage.
 
 ### Manifest Examples
 
@@ -600,3 +604,5 @@ Each artifact type has a clear split between identity, domain logic, and prose:
 `PREFIX-XXXX-XXXX` — Crockford Base32, case-insensitive. Always resolves to `@latest`.
 
 Prefixes: `NEBO`, `SKIL`, `WORK`, `AGNT`, `APPX`, `LOOP`, `PLUG`
+
+> **App prefix mismatch:** The Nebo client recognizes `APPX` for app install codes, but the marketplace backend currently mints them with an `APPS` prefix. Rely on `APPX` until this is reconciled.

@@ -42,7 +42,11 @@ When a user installs a skill (or an Agent that includes it), Nebo shows which ca
 
 ### `storage` — Persistent Key-Value Store
 
-Provides per-skill persistent storage at `${NEBO_DATA_DIR}`. This directory is physically separated from the skill's code — it lives at `~/.nebo/appdata/skills/<name>/` and survives upgrades, reinstalls, and Nebo updates.
+Provides per-skill persistent storage at `${NEBO_DATA_DIR}`. This directory is physically separated from the skill's code — it lives at `<platform data dir>/appdata/skills/<name>/` and survives upgrades, reinstalls, and Nebo updates. The platform data dir is OS-native:
+
+- **macOS:** `~/Library/Application Support/Nebo`
+- **Linux:** `~/.local/share/nebo`
+- **Windows:** `%APPDATA%\Nebo`
 
 **What you can store:**
 - JSON files, SQLite databases, cached API responses
@@ -72,7 +76,7 @@ python scripts/analyze.py --output ${NEBO_DATA_DIR}/report.json
 
 ### `network` — Outbound HTTP Access
 
-Allows skills to make HTTP requests to external APIs. Without this capability, all outbound network access is blocked.
+Allows skills to make HTTP requests to external APIs. Without this capability, all outbound network access is blocked. When granted, Nebo auto-allows the common package registries (`pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org`, `npm.pkg.github.com`) plus any domains the skill declares in its `allowed_domains` metadata.
 
 **What it provides:**
 - HTTP GET/POST/PUT/DELETE to external APIs
@@ -92,7 +96,7 @@ capabilities: [network]
 ```
 
 **Constraints:**
-- Governed by domain allowlists configured by the user
+- Governed by a domain allowlist: package registries are allowed automatically, and the skill extends it via the `allowed_domains` metadata field
 - No raw socket access — HTTP/HTTPS only
 - Rate limiting may apply per domain
 
@@ -121,7 +125,7 @@ capabilities: [vision, storage]
 ```
 
 **Constraints:**
-- Supported formats: PNG, JPG, GIF, WebP, SVG
+- Supported formats: PNG, JPG, GIF, WebP, BMP, HEIC, TIFF
 - Processing uses the configured LLM's vision capabilities
 
 ---
@@ -216,7 +220,7 @@ capabilities: [browser, network]
 Execute Python scripts bundled with the skill in a sandboxed environment.
 
 **What it provides:**
-- Python 3.x interpreter
+- Python 3.x interpreter via `uv` (bundled), falling back to system `python3`
 - Access to the skill's `scripts/` directory
 - Standard library modules
 
@@ -246,10 +250,10 @@ python scripts/create_workbook.py --output ${NEBO_DATA_DIR}/report.xlsx
 
 | Constraint | Policy |
 |------------|--------|
-| **Filesystem read** | Skill's own directory (`${NEBO_SKILL_DIR}`) + temp workspace |
+| **Filesystem read** | Broadly allowed, except a denylist of sensitive paths (SSH/cloud credentials, keychains, browser profiles, password managers, crypto wallets, and Nebo internals) |
 | **Filesystem write** | Data directory (`${NEBO_DATA_DIR}`) + temp workspace only |
 | **Network** | Denied unless skill also declares `network` capability |
-| **Process spawning** | Blocked — no `subprocess`, no shell access |
+| **Process spawning** | Permitted — scripts may run subprocesses (e.g. invoke a packaged toolchain) |
 
 ---
 
@@ -258,7 +262,7 @@ python scripts/create_workbook.py --output ${NEBO_DATA_DIR}/report.xlsx
 Execute TypeScript or JavaScript scripts bundled with the skill.
 
 **What it provides:**
-- Node.js/Deno runtime
+- `bun` (bundled) for running TS/JS, falling back to system Node.js (with `tsx` for TypeScript)
 - Access to the skill's `scripts/` directory
 - Standard modules
 
@@ -286,7 +290,7 @@ Send notifications to the user through desktop or mobile channels.
 - Actionable notifications (buttons, quick replies)
 
 **How to use it:**
-- The agent sends notifications through the `message` domain tool
+- The agent sends notifications through the desktop/os tool's `notification` resource
 - Skills declare `notification` to indicate they may alert the user
 
 ```yaml
@@ -305,8 +309,12 @@ Capabilities follow a declare-and-enforce model:
 
 1. A skill declares `capabilities: [vision, storage]` in its frontmatter
 2. At install time, Nebo shows the user which capabilities the skill requires
-3. At runtime, declared capabilities translate into sandbox configuration — a skill with `storage` gets write access to `${NEBO_DATA_DIR}`, a skill with `network` gets outbound HTTP access, etc.
-4. Undeclared capabilities are not available (e.g., a skill without `network` cannot make outbound HTTP requests from scripts)
+3. At runtime, the `storage` and `network` capabilities translate directly into sandbox configuration — a skill with `storage` gets write access to `${NEBO_DATA_DIR}`, a skill with `network` gets outbound HTTP access, etc. The `python` and `typescript` capabilities trigger sandboxed script execution.
+4. Undeclared, sandbox-backed capabilities are not available (e.g., a skill without `network` cannot make outbound HTTP requests from scripts)
+
+The remaining capabilities (`vision`, `calendar`, `email`, `browser`, `notification`) are declarative metadata — they document intent and drive the install-time permission prompt, but are not currently read from the `capabilities` field to gate the underlying tools.
+
+**Sandboxing is best-effort.** When the OS sandbox is available, script execution is wrapped in it. If the sandbox is unavailable on the host, Nebo falls back to bare execution rather than blocking the script.
 
 Skills should be written to handle missing capabilities gracefully — if a required capability's underlying service is unavailable, the skill should inform the user rather than failing silently.
 
@@ -327,9 +335,9 @@ Skills frequently need multiple capabilities. Common combinations:
 
 ---
 
-## VM Sandbox
+## VM
 
-Nebo can run agent tasks inside a lightweight VM sandbox for additional isolation. This is transparent to publishers — the agent decides when to use it based on the task context. Publishers do not configure or opt into VM execution.
+Nebo can run agent tasks inside a lightweight Linux VM. This is **not** a security boundary — Nebo's existing safeguards handle security. The VM is an opt-in capability extension: it provides Linux toolchains and build environments (Go, gcc, Docker, a clean build sandbox) that a macOS or Windows host may lack. The agent invokes it explicitly via `vm()`; it is never used implicitly or transparently.
 
 If your skill or agent requires specific tools or runtimes (e.g., Python packages, CLI tools), document those requirements in your SKILL.md or AGENT.md instructions so the agent can set up the environment correctly.
 

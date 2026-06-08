@@ -70,7 +70,7 @@ nebo mcp serve --exclude-tools desktop,organizer
 
 MCP chat sessions are persistent. Each `nebo(resource: "chat", action: "send")` call can specify a `session_id` for conversation continuity:
 
-- Default session: `mcp-default`
+- Default session: `session_id` defaults to `mcp-default`, so the internal key becomes `mcp-mcp-default`
 - Custom session: any string (prefixed with `mcp-` internally)
 - Sessions survive server restarts (stored in SQLite)
 - Reset a session: `nebo(resource: "<id>", action: "reset")`
@@ -108,17 +108,17 @@ For the stdio bridge, the key is handled internally (bridge connects to localhos
 
 ### Remote Access
 
-Nebo refuses to bind to non-localhost addresses unless explicitly opted in:
+The bind host comes from config (`host`, default `127.0.0.1`), not a CLI flag — set it to `0.0.0.0` to expose Nebo on the network. Nebo refuses to bind to non-localhost addresses unless explicitly opted in:
 
 ```bash
-# This will fail:
-nebo serve --host 0.0.0.0
+# With host = "0.0.0.0" in config, this will fail:
+nebo serve
 
 # This works (but warns if no API key set):
-NEBO_ALLOW_REMOTE=true nebo serve --host 0.0.0.0
+NEBO_ALLOW_REMOTE=true nebo serve
 
 # Recommended for remote access:
-NEBO_ALLOW_REMOTE=true NEBO_MCP_API_KEY=my-secret-key nebo serve --host 0.0.0.0
+NEBO_ALLOW_REMOTE=true NEBO_MCP_API_KEY=my-secret-key nebo serve
 ```
 
 ### Security Model
@@ -130,7 +130,7 @@ NEBO_ALLOW_REMOTE=true NEBO_MCP_API_KEY=my-secret-key nebo serve --host 0.0.0.0
 | Remote, no API key | Blocked | Server refuses to start |
 | Remote, API key set | Yes | Full protection |
 
-MCP tool calls are auto-approved (no interactive prompts). The MCP context currently uses `Origin::User` for tool access, with the same permissions as a direct user.
+MCP tool calls are auto-approved (no interactive prompts). Direct tool calls run as `Origin::Mcp`. The `nebo` chat service tool runs the agent as `Origin::User`, with the same permissions as a direct user.
 
 ---
 
@@ -173,15 +173,20 @@ curl -X POST http://localhost:27895/api/v1/integrations/{id}/connect
 
 ### How Connected Tools Appear
 
-External MCP tools are namespaced and available via the `mcp()` STRAP tool:
+The `mcp()` STRAP tool only supports `action: "list"` — it enumerates connected MCP servers and cannot call a tool:
 
 ```
-mcp(server: "monument.sh", resource: "project", action: "list")
-mcp(server: "monument.sh", resource: "todo", action: "create", title: "Ship v2")
+mcp(action: "list")
 ```
 
-Tool naming convention: `mcp__{server_slug}__{tool_name}`
-Example: `mcp__monument_sh__project`, `mcp__brave_search__web_search`
+Each external tool is exposed as its own proxy tool named `mcp__{server_slug}__{tool_name}`, and you call that proxy directly:
+
+```
+mcp__monument_sh__project(resource: "project", action: "list")
+mcp__monument_sh__todo(resource: "todo", action: "create", title: "Ship v2")
+```
+
+Example proxy tools: `mcp__monument_sh__project`, `mcp__brave_search__web_search`
 
 ### OAuth Flow
 

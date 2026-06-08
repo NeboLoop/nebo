@@ -64,14 +64,15 @@ Skills that bundle scripts or executables need binary uploads per platform.
    ```
    Returns a curl command template.
 
-3. **Upload binary + SKILL.md:**
+3. **Upload binary:**
    ```bash
    curl --http1.1 -X POST https://neboai.com/api/v1/developer/apps/<SKILL_ID>/binaries \
      -H "Authorization: Bearer <TOKEN>" \
      -F "file=@/path/to/binary" \
-     -F "platform=darwin-arm64" \
-     -F "skill=@/path/to/SKILL.md"
+     -F "platform=darwin-arm64"
    ```
+
+   The SKILL.md manifest is **not** uploaded here — set it via the `manifestContent` argument on `skill(action: create)` / `skill(action: update)`. The upload endpoint ignores any `skill` form field.
 
 4. **Repeat for each platform.** Valid platforms:
    - `darwin-arm64`
@@ -122,7 +123,6 @@ Plugins are native binaries with a PLUGIN.md manifest. They require a developer 
      -H "Authorization: Bearer <TOKEN>" \
      -F "file=@dist/darwin-arm64/my-plugin" \
      -F "platform=darwin-arm64" \
-     -F "skill=@PLUGIN.md" \
      -F "config=@plugin.json" \
      -F "skills=@/tmp/skills.tar.gz"
    ```
@@ -131,17 +131,17 @@ Plugins are native binaries with a PLUGIN.md manifest. They require a developer 
    |------------|----------|-------------|
    | `file`     | yes      | The binary for this platform |
    | `platform` | yes      | Target platform (e.g., `darwin-arm64`) |
-   | `skill`    | yes      | The PLUGIN.md manifest |
    | `config`   | no       | The plugin.json configuration |
    | `skills`   | no       | A `.tar.gz` of bundled SKILL.md files |
 
-5. **Upload remaining platforms** (binary + platform + skill only):
+   The PLUGIN.md manifest is **not** uploaded here — set it via the `manifestContent` argument on `plugin(action: create)` / `plugin(action: update)`. The upload endpoint ignores any `skill` form field.
+
+5. **Upload remaining platforms** (binary + platform only):
    ```bash
    curl --http1.1 -X POST https://neboai.com/api/v1/developer/apps/<PLUGIN_ID>/binaries \
      -H "Authorization: Bearer <TOKEN>" \
      -F "file=@dist/linux-amd64/my-plugin" \
-     -F "platform=linux-amd64" \
-     -F "skill=@PLUGIN.md"
+     -F "platform=linux-amd64"
    ```
 
    The `config` and `skills` fields only need to be sent once — they are not platform-specific.
@@ -278,10 +278,13 @@ The response should include the full agent.json structure (`inputs`, `workflows`
 |----------|--------|---------|--------|-------------|
 | `file`   | yes    | yes     | no     | Binary file |
 | `platform` | yes  | yes     | no     | Target platform |
-| `skill`  | yes    | yes     | no     | Markdown manifest (SKILL.md / PLUGIN.md) |
 | `config` | no     | optional | yes   | JSON config (plugin.json / agent.json) |
 | `skills` | no     | optional | no    | Skills tarball (.tar.gz) |
+
+> The SKILL.md / PLUGIN.md manifest is set via the `manifestContent` argument on the `skill()` / `plugin()` create/update tools, **not** uploaded as a form field. The upload endpoint ignores any `skill` field.
 
 ### Valid Platforms
 
 `darwin-arm64`, `darwin-amd64`, `linux-arm64`, `linux-amd64`, `windows-arm64`, `windows-amd64`
+
+`macos-*` values are auto-normalized to `darwin-*` on upload.

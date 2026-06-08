@@ -255,9 +255,25 @@ This is the *only* place real-time channel ops live. Plugin authors don't intera
 
 ## Multi-Agent Support
 
+Channel plugins support two models, selected by the `channel.shared` flag in `plugin.json`. The default is **one bridge per agent**; setting `shared: true` switches to **one shared bridge for all agents**.
+
+### Default — one bridge per agent (`shared: false`)
+
 Each agent that enables your plugin gets its own bridge process with its own env (its own `SLACK_BOT_TOKEN`, etc.). Nebo's `channel_loop` spawns one bridge per `(agent_id, plugin_slug)` and registers it in `AppState.channel_bridges` under the matching key. Two agents using the same Slack workspace get two distinct bridges — that's by design, since they may have different bot identities, different scopes, or different rate-limit budgets.
 
 There's no plugin-side multiplexing required. Your bridge reads `SLACK_BOT_TOKEN` from env on startup; if Nebo spawns multiple bridges for multiple agents, each instance gets its own token.
+
+### Shared — one bridge, route by name (`shared: true`)
+
+When the manifest declares `channel.shared: true`, Nebo spawns a **single** bridge process shared across every agent that has the plugin enabled, rather than one per agent. This fits platforms where a single connection/identity serves all agents (a single bot token, a shared workspace). Nebo's `shared_channel_loop` manages this bridge through a `SharedBridgeRegistry` (`crates/agent/src/agent_worker.rs`).
+
+In this model:
+
+- Inbound platform events carry the target agent's **name**, and Nebo routes each message to the matching agent rather than to a per-agent bridge.
+- Each agent's replies are posted with its own display identity, even though they flow through the one shared bridge process.
+- Your bridge still uses the same NDJSON stdin/stdout protocol — the difference is on Nebo's side (one process, name-based routing) rather than in the op shapes.
+
+Use the default per-agent model unless your platform genuinely has one connection for all agents; set `shared: true` only then.
 
 ---
 

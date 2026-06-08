@@ -511,7 +511,7 @@ Frontend                  Nebo Server                    Sidecar
 nebo.fetch('/projects')
   │
   ├─ SDK builds URL:
-  │  {base}/api/v1/apps/{id}/api/projects
+  │  {base}/apps/{id}/api/projects
   │
   └──── HTTP GET ────────►  proxy_to_sidecar()
                               │
@@ -578,7 +578,7 @@ const resp = await nebo.fetch('/documents?project_id=abc&format=pdf');
 `nebo.fetch()` returns a standard `Response` object — use `.json()`, `.text()`, `.blob()`, check `.ok`, `.status`, etc. exactly as you would with `fetch()`.
 
 **URL routing rules:**
-- Relative URLs (no scheme) → routed to your sidecar via `{base}/api/v1/apps/{id}/api{path}`
+- Relative URLs (no scheme) → routed to your sidecar via the proxy route `{base}/apps/{id}/api{path}`
 - Absolute URLs (`https://...`) → routed through Nebo's CORS-free HTTP proxy
 
 ### Handling Requests in the Sidecar
@@ -735,7 +735,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Environment Variables
 
-Your sidecar runs in a sandboxed environment with only these variables:
+Your sidecar runs in a sandboxed environment. The injected variables are:
 
 | Variable | Example | Description |
 |----------|---------|-------------|
@@ -745,10 +745,16 @@ Your sidecar runs in a sandboxed environment with only these variables:
 | `NEBO_APP_DIR` | `/Users/me/.nebo/user/agents/deal-tracker` | App root directory |
 | `NEBO_APP_SOCK` | `...deal-tracker/deal-tracker.sock` | Unix socket path |
 | `NEBO_APP_DATA` | `~/.nebo/appdata/agents/deal-tracker` | Writable data directory (separate from code — survives upgrades) |
-| `PATH` | system path | Standard path |
-| `HOME` | user home | Home directory |
+| `NEBO_API_URL` | `http://127.0.0.1:8420` | Local Nebo API base URL |
+| `NEBO_APP_TOKEN` | (per-launch token) | Per-launch auth token for calling the Nebo API |
+| `PATH` | system path | Allowlisted system var |
+| `HOME` | user home | Allowlisted system var |
+| `TMPDIR` | system temp dir | Allowlisted system var |
+| `LANG` | `en_US.UTF-8` | Allowlisted system var |
+| `LC_ALL` | `en_US.UTF-8` | Allowlisted system var |
+| `TZ` | `America/New_York` | Allowlisted system var |
 
-API keys, database URLs, and secrets are **never** passed to sidecars.
+The environment is sanitized — only the variables above are passed through. API keys, database URLs, and secrets are **never** passed to sidecars.
 
 ### Data Persistence
 
@@ -766,8 +772,9 @@ Place your compiled binary in one of these locations (checked in order):
 
 1. `{app_dir}/binary` — single named file
 2. `{app_dir}/app` — single named file
-3. `{app_dir}/bin/` — first file in directory
-4. `{app_dir}/sidecar/target/release/` — first executable (Rust dev builds)
+3. `{app_dir}/tmp/` — first file in directory
+4. `{app_dir}/bin/` — first file in directory
+5. `{app_dir}/sidecar/target/release/` — first executable (Rust dev builds)
 
 For production distribution, use `bin/`. For development, `sidecar/target/release/` is detected automatically.
 
@@ -780,7 +787,7 @@ The sidecar must create the Unix socket within the `startup_timeout` (default 10
 Nebo checks your sidecar every 15 seconds:
 
 - **Crash recovery** — if the process dies, Nebo broadcasts `app_crashed` and auto-restarts with exponential backoff (10s, 20s, 40s, 80s, 160s, max 5min). Maximum 5 crash restarts per hour.
-- **Binary hot-reload** — if the binary on disk changes (e.g. you rebuild), Nebo gracefully stops the running process, unregisters old tools, restarts the process, and re-discovers tools from the new binary. This is not a crash — no backoff, no limit, immediate restart. Symlinks are followed, so `bin/my-app → sidecar/target/release/my-app` works. Dev workflow: rebuild your binary and the server auto-detects the change for a seamless tool update.
+- **Binary hot-reload** — if the binary on disk changes (e.g. you rebuild), Nebo gracefully stops the running process, unregisters old tools, restarts the process, and re-discovers tools from the new binary. This is not a crash — no backoff, no limit, immediate restart. The hot-reload change watcher resolves through symlinks, so a dev setup like `bin/my-app → sidecar/target/release/my-app` is detected when the underlying target is rebuilt. Note that the binary that actually launches must be a **regular file** — validation rejects a symlinked binary at launch. Dev workflow: rebuild your binary and the server auto-detects the change for a seamless tool update.
 - Broadcasts `app_restarted` after recovery (includes `reason: "binary_changed"` for hot-reloads).
 
 ### Lifecycle
@@ -1053,7 +1060,7 @@ When a scope is active, the runner limits available tools, skills, and plugins t
 
 ### Logging
 
-Sidecar stdout and stderr are captured to `{app_dir}/data/sidecar.log` (append mode). Check this file when debugging startup issues.
+Sidecar stdout and stderr are captured to the app's data directory in `appdata` — `<appdata>/agents/{id}/sidecar.log` (e.g. `~/Library/Application Support/Nebo/appdata/agents/{id}/sidecar.log`), in append mode. `{app_dir}/data/sidecar.log` is only used as a fallback when the appdata directory can't be resolved. Check this file when debugging startup issues.
 
 ### App Agent Redaction
 
@@ -1227,21 +1234,14 @@ Navigate to the Apps tab in Nebo and click your app. The sidecar launches on fir
 1. developer(resource: account, action: select, id: "your-dev-account-id")
 2. agent(action: create, name: "deal-tracker", manifestContent: "# Deal Tracker\n...")
 3. agent(action: binary-token, id: "AGENT_ID")
-4. Upload binary via returned curl command (per platform)
+4. Upload agent.json via the returned curl command (config=@agent.json)
 5. agent(action: submit, id: "AGENT_ID", version: "1.0.0")
 ```
 
-### Platforms
+The `agent(action: binary-token)` upload accepts the agent definition only — it uploads `agent.json` as `config` (`config=@agent.json`) with no platform field, stored as the agent's type config.
 
-Upload a binary for each platform you support:
+### App Sidecar Binaries
 
-| Platform | Architecture |
-|----------|-------------|
-| `darwin-arm64` | macOS Apple Silicon |
-| `darwin-amd64` | macOS Intel |
-| `linux-arm64` | Linux ARM |
-| `linux-amd64` | Linux x86_64 |
-| `windows-arm64` | Windows ARM |
-| `windows-amd64` | Windows x86_64 |
+> **Per-platform app sidecar binaries are not uploaded through the agent tool.** The agent `binary-token` path uploads `agent.json` only — there is no platform/file field on it. The per-platform binary upload (with `platform` and `file` fields) exists for **plugins**, not for the app/agent path. App sidecar binary distribution either goes through the plugin path or is currently unsupported via the agent tool.
 
-Apps without a sidecar (pure frontend) don't need binary uploads — just the manifest and UI files.
+Apps without a sidecar (pure frontend) only need the manifest, UI files, and `agent.json` — no binary upload.

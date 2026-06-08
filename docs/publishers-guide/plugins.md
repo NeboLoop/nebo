@@ -126,12 +126,8 @@ Plugins can subscribe to these lifecycle hooks. Filter hooks can modify payloads
 | `tool.post_execute` | filter | After a tool completes — can modify output |
 | `message.pre_send` | filter | Before user message is sent to the agent |
 | `message.post_receive` | filter | After agent message is received |
-| `memory.pre_store` | filter | Before a memory is persisted |
-| `memory.pre_recall` | filter | Before memories are retrieved |
 | `session.message_append` | action | When a message is added to the session |
-| `prompt.system_sections` | filter | During system prompt generation — can inject sections |
 | `steering.generate` | filter | During steering signal generation |
-| `response.stream` | action | During response streaming |
 | `agent.turn` | action | When an agent turn completes |
 | `agent.should_continue` | filter | Decision point to continue or halt a turn |
 
@@ -146,10 +142,12 @@ Hook circuit breaker: 3 consecutive failures disables the hook, auto-recovery af
 3. User installs the skill or plugin (via marketplace or install code)
 4. Nebo detects the plugin dependency and downloads the binary silently
 5. If the plugin declares its own `dependencies[]`, those are installed recursively
-6. Binary is stored locally at `~/.nebo/nebo/plugins/<slug>/<version>/`
-7. Plugin runtime data (databases, caches, logs) is stored at `~/.nebo/appdata/plugins/<slug>/` — physically separate from the binary, survives upgrades
+6. Binary is stored locally at `<data_dir>/nebo/plugins/<slug>/<version>/`
+7. Plugin runtime data (databases, caches, logs) is stored at `<data_dir>/appdata/plugins/<slug>/` — physically separate from the binary, survives upgrades
 8. Skill scripts access the binary via `${plugin.SLUG_BIN}` template variable (e.g. `${plugin.GWS_BIN}`)
 8. If the plugin declares `capabilities.tools[]`, typed tools are registered for the agent
+
+`<data_dir>` is platform-specific — `~/Library/Application Support/Nebo` on macOS, `%APPDATA%\Nebo` on Windows, `~/.local/share/nebo` on Linux. Override it with the `NEBO_DATA_DIR` environment variable.
 
 ```
 User installs skill → SKILL.md declares plugins: [{name: "gws", version: ">=1.2.0"}]
@@ -237,9 +235,9 @@ Use `${plugin.SLUG_BIN}` syntax. Nebo expands these at skill activation time.
 
 | Plugin Slug | Template Variable | Expands To |
 |-------------|-------------------|------------|
-| `gws` | `${plugin.GWS_BIN}` | `/Users/me/.nebo/nebo/plugins/gws/1.2.3/gws` |
-| `ffmpeg` | `${plugin.FFMPEG_BIN}` | `/Users/me/.nebo/nebo/plugins/ffmpeg/2.0.0/ffmpeg` |
-| `my-tool` | `${plugin.MY_TOOL_BIN}` | `/Users/me/.nebo/nebo/plugins/my-tool/1.0.0/my-tool` |
+| `gws` | `${plugin.GWS_BIN}` | `<data_dir>/nebo/plugins/gws/1.2.3/gws` |
+| `ffmpeg` | `${plugin.FFMPEG_BIN}` | `<data_dir>/nebo/plugins/ffmpeg/2.0.0/ffmpeg` |
+| `my-tool` | `${plugin.MY_TOOL_BIN}` | `<data_dir>/nebo/plugins/my-tool/1.0.0/my-tool` |
 
 The slug is uppercased with hyphens replaced by underscores.
 
@@ -253,7 +251,7 @@ When a script runs, plugin binaries are injected as environment variables using 
 | `ffmpeg` | `FFMPEG_BIN` |
 | `my-tool` | `MY_TOOL_BIN` |
 
-Additionally, `NEBO_PLUGIN_DATA` is set to `~/.nebo/appdata/plugins/<slug>/` — the persistent data directory for this plugin. Use this for caches, databases, and any state that should survive plugin upgrades.
+Additionally, `NEBO_PLUGIN_DATA` (and the slug-specific `{SLUG}_DATA`) is set to `<data_dir>/appdata/plugins/<slug>/` — the persistent data directory for this plugin. Use this for caches, databases, and any state that should survive plugin upgrades.
 
 ### Python Example
 
@@ -340,6 +338,10 @@ Every plugin has a `plugin.json` manifest that describes the binary, its platfor
 | `events` | array | No | Event declarations. See [Plugin Events](#plugin-events) |
 | `dependencies` | array | No | Plugin-to-plugin dependencies. See [Plugin Dependencies](#plugin-to-plugin-dependencies) |
 | `capabilities` | object | No | Structured capability declarations. See [Structured Capabilities](#structured-capabilities) |
+| `category` | string | No | Category for discovery routing (e.g., `"payments"`, `"communication"`, `"developer"`) |
+| `triggers` | string[] | No | Trigger keywords for search matching (e.g., `["payment", "invoice", "billing"]`) |
+| `channel` | object | No | Channel bridge declaration. Its presence is what makes a plugin a **channel plugin** (Slack, Discord, etc.). See [Channel Plugins](channel-plugins.md) |
+| `setup` | object | No | Optional multi-step setup wizard rendered by the frontend (e.g., generate a Slack app manifest) before the plugin can be used |
 
 > **Important:** The `id` field is required for all plugins. Without it, `PluginManifest` deserialization fails and the plugin cannot be resolved. Use the slug as the id (e.g., `"id": "gws"`).
 
@@ -690,7 +692,7 @@ What this means for plugin authors:
 
 #### Removed in v0.10.0
 
-The `search`, `skills`, `services`, and `help` actions on the `plugin` tool were removed — they were a competing pathway with the new upfront catalog. The only supported actions are now `exec` (run a command) and `events` (list declared NDJSON watch events). Calls to the removed actions return a clear error pointing the agent at the catalog.
+The `search`, `skills`, and `services` actions on the `plugin` tool were removed — they were a competing pathway with the new upfront catalog. The supported actions are now `list` (installed plugins), `discover` (search the marketplace), `exec` (run a command), `events` (list declared NDJSON watch events), and `help` (command help for a plugin). Calls to the removed actions return a clear error pointing the agent at the catalog.
 
 ### Hooks
 
@@ -918,12 +920,14 @@ Nebo validates `plugin.json` during installation. Invalid manifests are rejected
 
 ```
 "slug is required"
-"slug 'My Plugin!' contains invalid characters — use lowercase alphanumeric and hyphens"
+"slug must contain only lowercase letters, digits, and hyphens"
+"slug exceeds 64 characters: 80"
 "slug must not start or end with a hyphen"
-"version 'latest' is not valid semver"
-"platforms must have at least one entry"
-"binary_name '../evil' contains path separator"
-"auth.commands.login must be non-empty when auth is present"
+"slug must not contain consecutive hyphens"
+"invalid semver version: 'latest'"
+"at least one platform entry is required"
+"binary_name contains path traversal for platform 'darwin-arm64': '../evil'"
+"auth.commands.login is required when auth is declared (unless auth type is 'env')"
 ```
 
 ---
@@ -932,29 +936,27 @@ Nebo validates `plugin.json` during installation. Invalid manifests are rejected
 
 Plugins are **spawned on-demand** — each tool call, hook invocation, or command execution spawns a fresh process with the CLI arguments from the capability definition. There is no persistent plugin process between invocations. The exception is **watch triggers**, which spawn a long-running process that emits NDJSON events continuously.
 
-Each invocation runs in a sandboxed environment with a controlled set of environment variables.
+Each invocation inherits the user's environment, sanitized of dangerous loader/shell variables, plus a set of plugin-specific variables injected by the runtime (`PluginRuntime::build_env`).
 
 ### Environment Variables
 
+The runtime starts from the user's environment, strips dangerous loader/shell variables (see [Sanitized Variables](#sanitized-variables) below), and then injects:
+
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `NEBO_APP_ID` | `gws` | Plugin identifier (from manifest) |
-| `NEBO_APP_NAME` | `Google Workspace CLI` | Display name |
-| `NEBO_APP_VERSION` | `1.2.3` | Manifest version |
-| `NEBO_APP_DIR` | `~/.nebo/nebo/plugins/gws/1.2.3` | Plugin binary directory (code — replaceable) |
-| `NEBO_APP_SOCK` | `~/.nebo/nebo/plugins/gws/1.2.3/gws.sock` | Unix socket path for gRPC |
-| `NEBO_APP_DATA` | `~/.nebo/appdata/plugins/gws` | Persistent data directory (separate from code — survives upgrades) |
-| `PATH` | system path | Standard path |
-| `HOME` | user home | Home directory |
-| `TMPDIR` | temp directory | Temporary files |
-| `LANG` | locale | System locale |
-| `TZ` | timezone | System timezone |
+| `{SLUG}_BIN` | `GWS_BIN=<data_dir>/nebo/plugins/gws/1.2.3/gws` | Path to this plugin's own binary (slug uppercased, hyphens → underscores) |
+| `NEBO_PLUGIN_DATA` | `<data_dir>/appdata/plugins/gws` | Persistent data directory (separate from code — survives upgrades) |
+| `{SLUG}_DATA` | `GWS_DATA=<data_dir>/appdata/plugins/gws` | Slug-specific alias for the same data directory |
+| `{DEP_SLUG}_BIN` | `FFMPEG_BIN=<data_dir>/nebo/plugins/ffmpeg/2.0.0/ffmpeg` | Binary path for each declared dependency plugin |
+| `PATH` | augmented path | System `PATH` with installed plugin directories prepended |
+| auth env | `GOOGLE_CLIENT_ID=…` | Resolved auth env vars from the manifest's `auth.env` |
+| `HOME` | user home | Preserved for credential lookups (when enabled) |
 
-All other environment variables (API keys, secrets, database URLs) are **stripped** — your plugin must not depend on the user's shell environment.
+> **Important:** The plugin runtime does **not** clear the environment and does **not** auto-strip API keys or secrets. Secret stripping is **opt-in** — declare `permissions.env_deny` (a blocklist) or `permissions.env_allow` (an allowlist) in your manifest, and run with permission enforcement on. See [Permissions](#permissions). Without it, the plugin inherits whatever non-dangerous variables are in the user's environment.
 
 ### Data Persistence
 
-Store all persistent data in `$NEBO_APP_DATA`. This directory is physically separated from the code directory — it lives at `~/.nebo/appdata/plugins/<slug>/`, not inside the version directory. This means:
+Store all persistent data in `$NEBO_PLUGIN_DATA` (or the equivalent `${SLUG}_DATA`). This directory is physically separated from the code directory — it lives at `<data_dir>/appdata/plugins/<slug>/`, not inside the version directory. This means:
 
 - Upgrading the plugin binary never touches your data
 - Your plugin is responsible for its own schema migrations across versions
@@ -965,11 +967,16 @@ Common storage patterns:
 - **JSON files** — for simple configuration state
 - **File store** — for cached downloads, processed outputs
 
-### Blocked Variables
+### Sanitized Variables
 
-These environment variables are always stripped for security:
+The runtime always strips a small set of dangerous loader/shell variables that could be used to hijack the plugin process — regardless of permissions. These are removed before the plugin runs:
 
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `JWT_SECRET`, `DATABASE_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `STRIPE_SECRET_KEY`
+- Any variable prefixed `LD_` (e.g. `LD_PRELOAD`, `LD_LIBRARY_PATH`)
+- Any variable prefixed `DYLD_` (e.g. `DYLD_INSERT_LIBRARIES`)
+- Any variable prefixed `BASH_FUNC_` (exported shell functions)
+- `NODE_OPTIONS` and similar loader-injection vectors
+
+This is **not** secret stripping. API keys, database URLs, and other secrets are left intact unless you opt in via `permissions.env_deny` / `permissions.env_allow`. See [Permissions](#permissions).
 
 ---
 
@@ -1021,11 +1028,15 @@ Publish for as many platforms as you support. At minimum, target `darwin-arm64` 
    Use the returned curl command via the command line, replacing the file path and platform:
 
    ```bash
-   curl -X PUT "<upload-url>" \
-     -F "binary=@./build/gws-darwin-arm64" \
+   curl -X POST "https://neboai.com/api/v1/developer/apps/<PLUGIN_ID>/binaries" \
+     -H "Authorization: Bearer <TOKEN>" \
+     -F "file=@./build/gws-darwin-arm64" \
      -F "platform=darwin-arm64" \
-     -F "manifest=@./PLUGIN.md"
+     -F "config=@./plugin.json" \
+     -F "skills=@./skills.tar.gz"
    ```
+
+   `file` and `platform` are required; `config` (the `plugin.json` manifest) and `skills` (a `skills.tar.gz` bundle) are optional.
 
    Repeat for each platform you support.
 
