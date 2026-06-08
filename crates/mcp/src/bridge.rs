@@ -37,6 +37,47 @@ pub struct IntegrationInfo {
     pub auth_type: String,
     pub is_enabled: bool,
     pub connection_status: Option<String>,
+    /// JSON `metadata` column — carries the stdio launch spec (command/args/env)
+    /// for `server_type == "stdio"`. None / absent for remote HTTP servers.
+    pub metadata: Option<String>,
+}
+
+/// Launch spec for a local stdio MCP server, parsed from an integration's
+/// `metadata` JSON (`{ "command": "...", "args": [...], "env": { } }`) — the
+/// stdio half of the standard MCP server config block.
+struct StdioConfig {
+    command: String,
+    args: Vec<String>,
+    env: HashMap<String, String>,
+}
+
+/// Parse the stdio launch spec from an integration's `metadata` JSON. Returns
+/// None when there's no usable `command`.
+fn parse_stdio_config(metadata: Option<&str>) -> Option<StdioConfig> {
+    let v: serde_json::Value = serde_json::from_str(metadata?).ok()?;
+    let command = v.get("command")?.as_str()?.to_string();
+    if command.is_empty() {
+        return None;
+    }
+    let args = v
+        .get("args")
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let env = v
+        .get("env")
+        .and_then(|e| e.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(StdioConfig { command, args, env })
 }
 
 /// Bridge manages connections to external MCP servers and registers their tools
@@ -85,10 +126,13 @@ impl Bridge {
         // Connect new/updated
         let mut last_err = None;
         for info in integrations.iter().filter(|i| i.is_enabled) {
-            let server_url = match &info.server_url {
-                Some(url) if !url.is_empty() => url.clone(),
-                _ => continue,
-            };
+            // stdio servers carry their launch spec in metadata (no URL); remote
+            // servers must have a non-empty URL.
+            let has_stdio = parse_stdio_config(info.metadata.as_deref()).is_some();
+            let server_url = info.server_url.clone().unwrap_or_default();
+            if !has_stdio && server_url.is_empty() {
+                continue;
+            }
 
             // Skip OAuth integrations without completed auth
             if info.auth_type == "oauth" && info.connection_status.is_none() {
@@ -96,7 +140,13 @@ impl Bridge {
             }
 
             if let Err(e) = self
-                .connect(&info.id, &info.server_type, &server_url, None)
+                .connect(
+                    &info.id,
+                    &info.server_type,
+                    &server_url,
+                    None,
+                    info.metadata.as_deref(),
+                )
                 .await
             {
                 error!(name = info.name.as_str(), id = info.id.as_str(), error = %e, "failed to connect integration");
@@ -117,15 +167,24 @@ impl Bridge {
         server_type: &str,
         server_url: &str,
         access_token: Option<&str>,
+        metadata: Option<&str>,
     ) -> Result<Vec<McpToolDef>, McpError> {
         // Disconnect existing
         self.disconnect(integration_id).await;
 
-        // List tools from external server
-        let tools = self
-            .client
-            .list_tools(integration_id, server_url, access_token)
-            .await?;
+        // Dispatch by transport. A stdio server carries a launch spec (command/
+        // args/env) in metadata; a remote server has none and connects at
+        // server_url. (`server_type` here is the tool-name prefix, not the
+        // transport, so presence of a stdio spec is the authoritative signal.)
+        let tools = if let Some(cfg) = parse_stdio_config(metadata) {
+            self.client
+                .connect_stdio(integration_id, &cfg.command, &cfg.args, &cfg.env)
+                .await?
+        } else {
+            self.client
+                .list_tools(integration_id, server_url, access_token)
+                .await?
+        };
 
         // Expose each external tool as its own proxy tool (`mcp__<server>__<tool>`)
         // carrying the server's real input schema, so the model calls it with correct

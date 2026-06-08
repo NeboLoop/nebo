@@ -7,14 +7,21 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::crypto::Encryptor;
+use crate::stdio::StdioSession;
 use crate::{McpError, McpToolDef, McpToolResult, OAuthMetadata, OAuthTokens, RefreshResult};
 
 /// MCP client for connecting to external MCP servers.
 /// Handles OAuth 2.0 flows, token management, and tool invocation.
+///
+/// Two transports, one canonical surface: `sessions` holds remote HTTP/SSE
+/// servers (stateless POSTs), `stdio_sessions` holds local stdio servers
+/// (a long-lived child process each). `call_tool`/`close_session` route by
+/// which map an integration lives in.
 pub struct McpClient {
     http: reqwest::Client,
     encryptor: Arc<Encryptor>,
     sessions: RwLock<HashMap<String, Session>>,
+    stdio_sessions: RwLock<HashMap<String, Arc<StdioSession>>>,
 }
 
 struct Session {
@@ -33,7 +40,27 @@ impl McpClient {
                 .unwrap_or_default(),
             encryptor,
             sessions: RwLock::new(HashMap::new()),
+            stdio_sessions: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Connect to a local stdio MCP server: spawn the process, handshake, and
+    /// return its tools. The session is held for the lifetime of the connection
+    /// so `call_tool` can reuse the same process.
+    pub async fn connect_stdio(
+        &self,
+        integration_id: &str,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> Result<Vec<McpToolDef>, McpError> {
+        let session = StdioSession::spawn(command, args, env).await?;
+        let tools = session.list_tools().await?;
+        self.stdio_sessions
+            .write()
+            .await
+            .insert(integration_id.to_string(), session);
+        Ok(tools)
     }
 
     /// Discover OAuth metadata from a server's well-known endpoint.
@@ -168,6 +195,11 @@ impl McpClient {
         tool_name: &str,
         input: serde_json::Value,
     ) -> Result<McpToolResult, McpError> {
+        // Stdio servers route over their live child process.
+        if let Some(session) = self.stdio_sessions.read().await.get(integration_id).cloned() {
+            return session.call_tool(tool_name, input).await;
+        }
+
         let sessions = self.sessions.read().await;
         let session = sessions
             .get(integration_id)
@@ -288,8 +320,11 @@ impl McpClient {
 
     /// Close a session for an integration.
     pub async fn close_session(&self, integration_id: &str) {
-        let mut sessions = self.sessions.write().await;
-        sessions.remove(integration_id);
+        self.sessions.write().await.remove(integration_id);
+        // Stdio servers own a child process — kill it on close.
+        if let Some(session) = self.stdio_sessions.write().await.remove(integration_id) {
+            session.shutdown().await;
+        }
     }
 
     /// Encrypt a token for storage.

@@ -18,6 +18,117 @@ fn slugify_name(name: &str) -> String {
         .to_string()
 }
 
+/// True if an integration's `metadata` carries a stdio launch spec (a non-empty
+/// `command`). The one predicate for "is this a stdio server" — used by every
+/// connect path so stdio integrations (which have no `server_url`) aren't skipped.
+pub(crate) fn metadata_is_stdio(metadata: Option<&str>) -> bool {
+    metadata
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| {
+            v.get("command")
+                .and_then(|c| c.as_str())
+                .map(|s| !s.is_empty())
+        })
+        .unwrap_or(false)
+}
+
+/// One MCP server parsed from a standard config block, normalized to our
+/// `mcp_integrations` columns.
+pub(crate) struct ParsedMcpServer {
+    pub name: String,
+    pub server_type: String,    // "http" | "sse" | "stdio"
+    pub server_url: Option<String>,
+    pub auth_type: String,      // "none" | "oauth" | "api_key"
+    pub metadata: Option<String>, // JSON: {command,args,env} for stdio, {headers} for remote
+}
+
+/// Parse a standard MCP server config block (Claude Desktop `mcpServers`,
+/// VS Code `servers`) into one `ParsedMcpServer` per entry. This is the single
+/// parser for the standard format — shared by the settings "paste config" path
+/// and by connector (CONN-) code redemption, so the two can't drift.
+///
+/// Each entry is either stdio (`{command, args?, env?}`) or remote
+/// (`{type?: "http"|"sse", url, headers?}`). Unknown shapes are skipped.
+pub(crate) fn parse_mcp_servers_block(v: &serde_json::Value) -> Vec<ParsedMcpServer> {
+    let Some(map) = v
+        .get("mcpServers")
+        .or_else(|| v.get("servers"))
+        .and_then(|m| m.as_object())
+    else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for (name, block) in map {
+        if let Some(command) = block.get("command").and_then(|c| c.as_str()) {
+            // stdio server — store the launch spec in metadata.
+            let metadata = serde_json::json!({
+                "command": command,
+                "args": block.get("args").cloned().unwrap_or_else(|| serde_json::json!([])),
+                "env": block.get("env").cloned().unwrap_or_else(|| serde_json::json!({})),
+            })
+            .to_string();
+            out.push(ParsedMcpServer {
+                name: name.clone(),
+                server_type: "stdio".to_string(),
+                server_url: None,
+                auth_type: "none".to_string(),
+                metadata: Some(metadata),
+            });
+        } else if let Some(url) = block.get("url").and_then(|u| u.as_str()) {
+            // remote server — `type` defaults to http; carry any headers in metadata.
+            let server_type = block
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("http")
+                .to_string();
+            let auth_type = block
+                .get("authType")
+                .and_then(|a| a.as_str())
+                .unwrap_or("none")
+                .to_string();
+            let metadata = block
+                .get("headers")
+                .map(|h| serde_json::json!({ "headers": h }).to_string());
+            out.push(ParsedMcpServer {
+                name: name.clone(),
+                server_type,
+                server_url: Some(url.to_string()),
+                auth_type,
+                metadata,
+            });
+        }
+    }
+    out
+}
+
+/// Create local `mcp_integrations` from a standard config block, then connect
+/// the ones that can connect without user interaction (stdio + no-auth remote;
+/// OAuth servers wait for the user to authorize). Returns the created rows.
+/// Used by both the settings paste-import and connector code redemption.
+pub(crate) async fn create_integrations_from_block(
+    state: &AppState,
+    block: &serde_json::Value,
+) -> Result<Vec<db::models::McpIntegration>, types::NeboError> {
+    let servers = parse_mcp_servers_block(block);
+    let mut created = Vec::new();
+    for s in servers {
+        let id = uuid::Uuid::new_v4().to_string();
+        let integration = state.store.create_mcp_integration(
+            &id,
+            &s.name,
+            &s.server_type,
+            s.server_url.as_deref(),
+            &s.auth_type,
+            s.metadata.as_deref(),
+        )?;
+        created.push(integration);
+    }
+    // Connect everything that doesn't need an OAuth round-trip.
+    sync_bridge(state).await;
+    Ok(created)
+}
+
 /// Fix legacy integrations that were saved as "stdio" but have HTTP URLs.
 fn fix_server_type(state: &AppState) {
     if let Ok(integrations) = state.store.list_mcp_integrations() {
@@ -66,10 +177,11 @@ async fn sync_bridge(state: &AppState) {
         if i.is_enabled.unwrap_or(0) == 0 {
             continue;
         }
-        let server_url = match &i.server_url {
-            Some(u) if !u.is_empty() => u.clone(),
-            _ => continue,
-        };
+        // Remote servers need a URL; stdio servers carry a command in metadata.
+        let server_url = i.server_url.clone().unwrap_or_default();
+        if server_url.is_empty() && !metadata_is_stdio(i.metadata.as_deref()) {
+            continue;
+        }
         if i.auth_type == "oauth" && i.connection_status.is_none() {
             continue;
         }
@@ -112,7 +224,13 @@ async fn sync_bridge(state: &AppState) {
         let tool_prefix = slugify_name(&i.name);
         match state
             .bridge
-            .connect(&i.id, &tool_prefix, &server_url, access_token.as_deref())
+            .connect(
+                &i.id,
+                &tool_prefix,
+                &server_url,
+                access_token.as_deref(),
+                i.metadata.as_deref(),
+            )
             .await
         {
             Ok(tools_list) => {
@@ -146,6 +264,19 @@ pub async fn create_integration(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
+    // Standard MCP config block (Claude Desktop `mcpServers` / VS Code `servers`):
+    // create one integration per server entry and connect them. Same parser the
+    // connector (CONN-) code path uses.
+    if body.get("mcpServers").is_some() || body.get("servers").is_some() {
+        let created = create_integrations_from_block(&state, &body)
+            .await
+            .map_err(to_error_response)?;
+        return Ok(Json(serde_json::json!({
+            "integrations": created,
+            "total": created.len(),
+        })));
+    }
+
     let name = body["name"]
         .as_str()
         .ok_or_else(|| to_error_response(types::NeboError::Validation("name required".into())))?;
@@ -291,9 +422,11 @@ pub async fn connect_integration(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     let server_url = integration.server_url.as_deref().unwrap_or("");
-    if server_url.is_empty() {
+    // Remote servers need a URL; stdio servers instead carry a command in metadata.
+    let is_stdio = metadata_is_stdio(integration.metadata.as_deref());
+    if server_url.is_empty() && !is_stdio {
         return Err(to_error_response(types::NeboError::Validation(
-            "No server URL configured".into(),
+            "No server URL or stdio command configured".into(),
         )));
     }
 
@@ -345,7 +478,13 @@ pub async fn connect_integration(
     // Try to connect and list tools
     match state
         .bridge
-        .connect(&id, &tool_prefix, server_url, access_token.as_deref())
+        .connect(
+            &id,
+            &tool_prefix,
+            server_url,
+            access_token.as_deref(),
+            integration.metadata.as_deref(),
+        )
         .await
     {
         Ok(tools) => {
@@ -815,6 +954,8 @@ pub async fn oauth_callback(
                 &tool_prefix,
                 server_url,
                 Some(&tokens.access_token),
+                // OAuth servers are always remote HTTP — no stdio launch spec.
+                None,
             )
             .await
         {
@@ -847,21 +988,66 @@ pub async fn oauth_callback(
     oauth_result_page(true, "Authorized — click Connect in Nebo to finish setup")
 }
 
-/// Render a simple HTML page that auto-closes the browser tab.
+/// Render a polished, theme-adaptive HTML page shown after the OAuth redirect.
+/// Self-contained (no external assets) since the browser navigates here directly.
 fn oauth_result_page(success: bool, message: &str) -> axum::response::Html<String> {
-    let (icon, color) = if success {
-        ("✓", "#22c55e")
+    // Brand palette (matches app.css): teal primary, green success, red error.
+    let accent = if success { "#138a4a" } else { "#cc2222" };
+    let heading = if success { "All set" } else { "Couldn't connect" };
+    // Animated status glyph drawn with SVG strokes.
+    let glyph = if success {
+        r#"<path class="draw" d="M14 27 l8 8 l16 -18" />"#
     } else {
-        ("✗", "#ef4444")
+        r#"<path class="draw" d="M18 18 l20 20 M38 18 l-20 20" />"#
     };
+    // Escape the dynamic message — it can carry provider error text.
+    let safe_message = message
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+
     axum::response::Html(format!(
         r#"<!DOCTYPE html>
-<html><head><title>Nebo — OAuth</title>
-<style>body{{font-family:system-ui;background:#1e1e2e;color:#cdd6f4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}
-.box{{text-align:center;padding:2rem}}.icon{{font-size:3rem;color:{color}}}.msg{{margin-top:1rem;font-size:1.1rem;opacity:0.8}}.hint{{margin-top:1.5rem;font-size:0.85rem;opacity:0.5}}</style>
-</head><body><div class="box"><div class="icon">{icon}</div><div class="msg">{message}</div>
-<div class="hint">You can close this tab and return to Nebo.</div></div>
-<script>setTimeout(function(){{window.close()}},3000)</script></body></html>"#
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nebo</title>
+<style>
+:root{{--accent:{accent};--bg:#f7fbfc;--card:#ffffff;--ink:#0e1c26;--muted:#5b6b75;--line:#e2ebef}}
+@media (prefers-color-scheme: dark){{:root{{--bg:#0b1014;--card:#121a20;--ink:#e6eef2;--muted:#8a9aa4;--line:#22303a}}}}
+*{{box-sizing:border-box}}
+html,body{{height:100%}}
+body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  background:radial-gradient(1200px 600px at 50% -10%,color-mix(in srgb,var(--accent) 9%,var(--bg)),var(--bg));
+  color:var(--ink);display:flex;align-items:center;justify-content:center;padding:24px}}
+.card{{width:100%;max-width:380px;background:var(--card);border:1px solid var(--line);border-radius:20px;
+  padding:40px 32px 32px;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.04),0 20px 50px -20px rgba(0,0,0,.25);
+  animation:rise .5s cubic-bezier(.16,1,.3,1) both}}
+@keyframes rise{{from{{opacity:0;transform:translateY(12px)}}to{{opacity:1;transform:none}}}}
+.ring{{width:76px;height:76px;margin:0 auto 22px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  background:color-mix(in srgb,var(--accent) 12%,transparent)}}
+.ring svg{{width:42px;height:42px}}
+.ring path{{fill:none;stroke:var(--accent);stroke-width:5;stroke-linecap:round;stroke-linejoin:round}}
+.draw{{stroke-dasharray:80;stroke-dashoffset:80;animation:draw .55s .2s ease forwards}}
+@keyframes draw{{to{{stroke-dashoffset:0}}}}
+h1{{margin:0 0 8px;font-size:22px;font-weight:650;letter-spacing:-.01em}}
+.msg{{margin:0;font-size:15px;line-height:1.5;color:var(--muted)}}
+.hint{{margin:24px 0 0;font-size:13px;color:var(--muted);opacity:.8}}
+.btn{{display:inline-block;margin-top:20px;padding:10px 22px;border:0;border-radius:10px;cursor:pointer;
+  font-size:14px;font-weight:600;color:#fff;background:var(--accent);transition:opacity .15s}}
+.btn:hover{{opacity:.9}}
+.wordmark{{margin-top:28px;font-size:12px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);opacity:.7}}
+</style></head>
+<body>
+<div class="card">
+  <div class="ring"><svg viewBox="0 0 52 52">{glyph}</svg></div>
+  <h1>{heading}</h1>
+  <p class="msg">{safe_message}</p>
+  <button class="btn" onclick="window.close()">Close window</button>
+  <p class="hint">You can close this tab and return to Nebo.</p>
+  <div class="wordmark">Nebo</div>
+</div>
+<script>setTimeout(function(){{window.close()}},4000)</script>
+</body></html>"#
     ))
 }
 
@@ -916,47 +1102,15 @@ async fn exchange_mcp_code(
 }
 
 /// GET /api/v1/integrations/registry
+///
+/// The catalog of installable MCP servers. It is intentionally empty here:
+/// servers are published as `connector` artifacts in the loop (NeboLoop) and
+/// installed via the connector (CONN-) path, so the desktop never ships a
+/// hardcoded list. (The previous built-in list pointed at server URLs that
+/// don't exist — fake entries, removed.) Until the loop catalog is wired in,
+/// users add servers via "Custom Server" (a real URL) or a pasted config block.
 pub async fn list_registry() -> HandlerResult<serde_json::Value> {
-    // Built-in list of known MCP servers that users can install
-    Ok(Json(serde_json::json!({
-        "registry": [
-            {
-                "name": "filesystem",
-                "description": "Read, write, and manage files on the local filesystem",
-                "serverType": "stdio",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem"]
-            },
-            {
-                "name": "brave-search",
-                "description": "Web search via Brave Search API",
-                "serverType": "stdio",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-brave-search"]
-            },
-            {
-                "name": "github",
-                "description": "GitHub repository management",
-                "serverType": "stdio",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-github"]
-            },
-            {
-                "name": "sqlite",
-                "description": "SQLite database operations",
-                "serverType": "stdio",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-sqlite"]
-            },
-            {
-                "name": "memory",
-                "description": "Knowledge graph-based persistent memory",
-                "serverType": "stdio",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-memory"]
-            }
-        ]
-    })))
+    Ok(Json(serde_json::json!({ "registry": [] })))
 }
 
 /// GET /api/v1/integrations/tools

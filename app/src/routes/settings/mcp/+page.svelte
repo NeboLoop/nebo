@@ -12,18 +12,13 @@
   import type { McpIntegration } from '$lib/api/nebo';
 
   interface MCPIntegration { id: string; name: string; serverUrl: string; authType: 'oauth' | 'api_key' | 'none'; isEnabled: boolean; connectionStatus: 'connected' | 'disconnected' | 'error'; toolCount: number; lastConnectedAt: string; lastError: string | null }
-  interface MCPRegistryEntry { id: string; name: string; description: string; authType: string; isBuiltin: boolean }
 
   let integrations = $state<MCPIntegration[]>([]);
-  let registry = $state<MCPRegistryEntry[]>([]);
 
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
-      const [intResp, regResp] = await Promise.all([
-        api.listIntegrations(),
-        api.listRegistry(),
-      ]);
+      const intResp = await api.listIntegrations();
       if (intResp?.integrations?.length) {
         integrations = intResp.integrations.map((i: McpIntegration) => ({
           id: i.id,
@@ -37,75 +32,39 @@
           lastError: i.lastError || null,
         }));
       }
-      const regItems = Array.isArray(regResp?.registry) ? regResp.registry : [];
-      if (regItems.length) {
-        registry = regItems.map((r) => ({
-          id: String(r.id ?? ''),
-          name: String(r.name ?? ''),
-          description: String(r.description ?? ''),
-          authType: String(r.authType ?? 'oauth'),
-          isBuiltin: Boolean(r.isBuiltin ?? false),
-        }));
-      }
-    } catch { /* keep mock data */ }
+    } catch { /* leave list empty on error */ }
   });
+  // "Add MCP Server" is for adding ONE custom server (URL + auth). Discovery of
+  // published MCP servers lives in the Marketplace (connectors), not here — we
+  // expect thousands, so this is never a catalog/search surface.
   let showAddModal = $state(false);
-  let addStep = $state<'pick' | 'auth' | 'configure'>('pick');
-  let selectedRegistry = $state<MCPRegistryEntry | null>(null);
+  let addStep = $state<'auth' | 'configure'>('auth');
   let newServerUrl = $state('');
   let newServerName = $state('');
   let newApiKey = $state('');
   let newAuthType = $state<'oauth' | 'api_key' | 'none'>('oauth');
-  let registrySearch = $state('');
 
-  const isCustom = $derived(selectedRegistry?.id === 'custom');
-  const currentStep = $derived(addStep === 'pick' ? 1 : addStep === 'auth' ? 2 : 3);
-  const totalSteps = $derived(isCustom ? 3 : 2);
-
-  const filteredRegistry = $derived(
-    registry.filter(r =>
-      !integrations.some(i => i.name === r.name) &&
-      (r.name.toLowerCase().includes(registrySearch.toLowerCase()) || r.description.toLowerCase().includes(registrySearch.toLowerCase()))
-    )
-  );
+  const currentStep = $derived(addStep === 'auth' ? 1 : 2);
+  const totalSteps = 2;
 
   function openAddModal() {
     showAddModal = true;
-    addStep = 'pick';
-    selectedRegistry = null;
+    addStep = 'auth';
     newServerUrl = '';
     newServerName = '';
     newApiKey = '';
     newAuthType = 'oauth';
-    registrySearch = '';
   }
 
   function closeAddModal() {
     showAddModal = false;
   }
 
-  function selectServer(reg: MCPRegistryEntry) {
-    selectedRegistry = reg;
-    newServerUrl = `https://mcp.neboai.com/${reg.name.toLowerCase().replace(/\s+/g, '-')}`;
-    newServerName = reg.name;
-    newAuthType = reg.authType as 'oauth' | 'api_key' | 'none';
-    addStep = 'configure';
-  }
-
-  function selectCustom() {
-    selectedRegistry = { id: 'custom', name: '', description: '', authType: 'oauth', isBuiltin: false };
-    newServerUrl = '';
-    newServerName = '';
-    newApiKey = '';
-    newAuthType = 'oauth';
-    addStep = 'auth';
-  }
-
   function goBack() {
-    if (addStep === 'configure' && isCustom) {
+    if (addStep === 'configure') {
       addStep = 'auth';
     } else {
-      addStep = 'pick';
+      closeAddModal();
     }
   }
 
@@ -175,8 +134,7 @@
   }
 
   async function addIntegration() {
-    if (!selectedRegistry) return;
-    const name = isCustom ? newServerName : selectedRegistry.name;
+    const name = newServerName;
     if (!name.trim() || !newServerUrl.trim()) return;
     const newItem: MCPIntegration = {
       id: `int_${Date.now()}`,
@@ -293,7 +251,7 @@
 
   const configureDisabled = $derived(() => {
     if (!newServerUrl.trim()) return true;
-    if (isCustom && !newServerName.trim()) return true;
+    if (!newServerName.trim()) return true;
     if (newAuthType === 'api_key' && !newApiKey.trim()) return true;
     return false;
   });
@@ -411,17 +369,13 @@
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-3.5 border-b border-base-300 shrink-0">
         <div class="flex items-center gap-2">
-          {#if addStep !== 'pick'}
-            <span class="text-xs text-base-content/50 font-mono">Step {currentStep} of {totalSteps}</span>
-            <span class="text-base-content/30">—</span>
-          {/if}
+          <span class="text-xs text-base-content/50 font-mono">Step {currentStep} of {totalSteps}</span>
+          <span class="text-base-content/30">—</span>
           <span class="text-base font-semibold">
-            {#if addStep === 'pick'}
+            {#if addStep === 'auth'}
               Add MCP Server
-            {:else if addStep === 'auth'}
-              Authentication
             {:else}
-              Connect {isCustom ? newServerName || 'Server' : selectedRegistry?.name}
+              Connect {newServerName || 'Server'}
             {/if}
           </span>
         </div>
@@ -432,49 +386,7 @@
 
       <!-- Body -->
       <div class="flex-1 overflow-y-auto p-5">
-        {#if addStep === 'pick'}
-          <input
-            type="text"
-            bind:value={registrySearch}
-            placeholder="Search servers..."
-            class="w-full py-[7px] px-2.5 rounded-field border border-base-300 text-sm bg-base-100 outline-none focus:border-primary/50 transition-colors mb-3"
-          />
-          <div class="flex flex-col gap-1">
-            {#each filteredRegistry as reg}
-              <button
-                class="w-full flex items-center gap-3 p-3 rounded-lg border border-base-300 bg-base-100 cursor-pointer hover:border-base-content/30 transition-colors text-left"
-                onclick={() => selectServer(reg)}
-              >
-                <div class="w-8 h-8 rounded-md bg-base-200 flex items-center justify-center text-xs font-mono font-bold shrink-0">MCP</div>
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm font-medium">{reg.name}</div>
-                  <div class="text-xs text-base-content/70">{reg.description}</div>
-                </div>
-                <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70 shrink-0">{reg.authType === 'oauth' ? 'OAuth' : 'API Key'}</span>
-              </button>
-            {/each}
-            {#if filteredRegistry.length === 0}
-              <div class="text-center py-6 text-xs text-base-content/50">No matching servers found.</div>
-            {/if}
-          </div>
-
-          <div class="border-t border-base-300 mt-4 pt-4">
-            <button
-              class="w-full flex items-center gap-3 p-3 rounded-lg border border-dashed border-base-300 cursor-pointer hover:border-base-content/30 transition-colors text-left bg-transparent"
-              onclick={selectCustom}
-            >
-              <div class="w-8 h-8 rounded-md bg-base-200 flex items-center justify-center shrink-0">
-                <Plus class="w-4 h-4 text-base-content/50" />
-              </div>
-              <div class="flex-1">
-                <div class="text-sm font-medium">Custom Server</div>
-                <div class="text-xs text-base-content/70">Connect to any remote MCP server URL</div>
-              </div>
-            </button>
-          </div>
-
-        {:else if addStep === 'auth'}
-          <!-- Step 2 (custom only): Auth method selection -->
+        {#if addStep === 'auth'}
           <div class="mb-3">
             <div class="text-sm font-medium mb-1">Choose authentication method</div>
             <div class="text-xs text-base-content/70">How does this server authenticate requests?</div>
@@ -499,14 +411,12 @@
           </div>
 
         {:else if addStep === 'configure'}
-          <!-- Step 3 (or 2 for registry): Configure connection -->
+          <!-- Step 2: Configure connection (name + URL + auth-specific fields) -->
           <div class="flex flex-col gap-4">
-            {#if isCustom}
-              <label class="block">
-                <span class="block text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Server Name</span>
-                <input type="text" bind:value={newServerName} placeholder="My MCP Server" class="w-full py-[7px] px-2.5 rounded-field border border-base-300 text-sm bg-base-100 outline-none focus:border-primary/50 transition-colors" />
-              </label>
-            {/if}
+            <label class="block">
+              <span class="block text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Server Name</span>
+              <input type="text" bind:value={newServerName} placeholder="My MCP Server" class="w-full py-[7px] px-2.5 rounded-field border border-base-300 text-sm bg-base-100 outline-none focus:border-primary/50 transition-colors" />
+            </label>
 
             <label class="block">
               <span class="block text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Server URL</span>

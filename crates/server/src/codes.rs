@@ -24,6 +24,8 @@ pub enum CodeType {
     Loop,
     Plugin,
     App,
+    Collection,
+    Connection,
 }
 
 /// Crockford Base32 charset (no I, L, O, U).
@@ -53,8 +55,12 @@ pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
         ("LOOP-", CodeType::Loop)
     } else if upper.starts_with("PLUG-") {
         ("PLUG-", CodeType::Plugin)
-    } else if upper.starts_with("APPX-") {
-        ("APPX-", CodeType::App)
+    } else if upper.starts_with("APPS-") {
+        ("APPS-", CodeType::App)
+    } else if upper.starts_with("CONN-") {
+        ("CONN-", CodeType::Connection)
+    } else if upper.starts_with("COLL-") {
+        ("COLL-", CodeType::Collection)
     } else {
         return None;
     };
@@ -102,6 +108,8 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         CodeType::Loop => ("loop", "Joining loop..."),
         CodeType::Plugin => ("plugin", "Installing plugin..."),
         CodeType::App => ("app", "Installing app..."),
+        CodeType::Collection => ("collection", "Installing collection..."),
+        CodeType::Connection => ("connection", "Adding MCP connection..."),
     };
 
     state.hub.broadcast(
@@ -122,6 +130,8 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         CodeType::Loop => handle_loop_code(state, code).await,
         CodeType::Plugin => handle_plugin_code(state, code).await,
         CodeType::App => handle_app_code(state, code).await,
+        CodeType::Collection => handle_collection_code(state, code).await,
+        CodeType::Connection => handle_connection_code(state, code).await,
     };
 
     match result {
@@ -180,6 +190,8 @@ pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str)
         CodeType::Loop => "loop",
         CodeType::Plugin => "plugin",
         CodeType::App => "app",
+        CodeType::Collection => "collection",
+        CodeType::Connection => "connection",
     };
 
     // Also broadcast for the frontend UI
@@ -200,6 +212,8 @@ pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str)
         CodeType::Loop => handle_loop_code(state, code).await,
         CodeType::Plugin => handle_plugin_code(state, code).await,
         CodeType::App => handle_app_code(state, code).await,
+        CodeType::Collection => handle_collection_code(state, code).await,
+        CodeType::Connection => handle_connection_code(state, code).await,
     };
 
     match result {
@@ -432,6 +446,171 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     Ok(CodeHandlerResult {
         message: format!("Installed workflow: {}", artifact_name),
         artifact_name: Some(artifact_name),
+        ..Default::default()
+    })
+}
+
+/// Install a collection (COLL-): redeem the code to resolve the collection, then
+/// install EVERY item through the one canonical multi-artifact installer
+/// (`deps::resolve_cascade_force`), which redeems, persists, reloads, and cascades
+/// each item's transitive dependencies. There is intentionally no separate
+/// collection installer — a collection is just a named list of artifact codes, so
+/// it flows through the same path a single pasted code would.
+///
+/// Items are FORCE-installed: pasting a collection code is an explicit request for
+/// the whole bundle, so every item must install regardless of `autonomous_mode`
+/// (which only gates implicit dependency auto-install).
+async fn handle_collection_code(
+    state: &AppState,
+    code: &str,
+) -> Result<CodeHandlerResult, NeboError> {
+    let api = build_api_client(state)?;
+
+    // Redeem resolves the collection artifact (and records the collection install
+    // for this bot). Payment-gated collections surface a checkout URL like any code.
+    let resp = api
+        .redeem_code(code)
+        .await
+        .map_err(|e| NeboError::Internal(format!("redeem collection code: {e}")))?;
+
+    let artifact_id = resp.artifact.id.clone();
+    let artifact_name = resp.artifact.name.clone();
+
+    if resp.status == "payment_required" {
+        return Ok(CodeHandlerResult {
+            message: format!("Collection requires payment: {artifact_name}"),
+            artifact_name: Some(artifact_name),
+            artifact_type: Some("collection".to_string()),
+            checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+            tier: resp.tier.clone(),
+            ..Default::default()
+        });
+    }
+
+    // Fetch the collection's resolved items — each carries its own install code + type.
+    let coll = api
+        .get_collection(&artifact_id)
+        .await
+        .map_err(|e| NeboError::Internal(format!("get collection {artifact_id}: {e}")))?;
+    let items = coll
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    // Map each item to a DepRef keyed by its install code. Items without a usable
+    // code or with an unrecognized type are logged and skipped — never silently
+    // dropped (Rule 6.1: log and continue).
+    let mut deps = Vec::new();
+    for item in &items {
+        let item_code = item.get("code").and_then(|c| c.as_str()).unwrap_or("");
+        let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if item_code.is_empty() {
+            warn!(collection = %artifact_id, item_type, "collection item has no install code — skipping");
+            continue;
+        }
+        let dep_type = match item_type {
+            "skill" => crate::deps::DepType::Skill,
+            "agent" => crate::deps::DepType::Agent,
+            "plugin" => crate::deps::DepType::Plugin,
+            "workflow" => crate::deps::DepType::Workflow,
+            other => {
+                warn!(collection = %artifact_id, item_type = other, code = item_code, "unrecognized collection item type — skipping");
+                continue;
+            }
+        };
+        deps.push(crate::deps::DepRef {
+            dep_type,
+            reference: item_code.to_string(),
+        });
+    }
+    let total = deps.len();
+
+    // Install every item via the canonical installer (force — see fn doc).
+    let mut visited = std::collections::HashSet::new();
+    let result = crate::deps::resolve_cascade_force(state, deps, &mut visited).await;
+
+    let mut message = format!(
+        "Installed collection \"{}\": {} of {} items installed",
+        artifact_name, result.installed_count, total
+    );
+    if result.failed_count > 0 {
+        message.push_str(&format!(", {} failed", result.failed_count));
+    }
+
+    Ok(CodeHandlerResult {
+        message,
+        artifact_name: Some(artifact_name),
+        artifact_id: Some(artifact_id),
+        artifact_type: Some("collection".to_string()),
+        ..Default::default()
+    })
+}
+
+/// Install an MCP connection (CONN-): the connector's manifest is a standard MCP
+/// server config block (`{ "mcpServers": { ... } }`). Redeem resolves the
+/// connector, then we hand the block to the SAME parser + local-integration
+/// creation the settings "paste a config" path uses — no separate installer.
+/// stdio servers connect immediately; OAuth servers surface in Settings → MCP
+/// for the user to authorize, exactly like a manually added one.
+async fn handle_connection_code(
+    state: &AppState,
+    code: &str,
+) -> Result<CodeHandlerResult, NeboError> {
+    let api = build_api_client(state)?;
+
+    let resp = api
+        .redeem_code(code)
+        .await
+        .map_err(|e| NeboError::Internal(format!("redeem connection code: {e}")))?;
+    let artifact_id = resp.artifact.id.clone();
+    let artifact_name = resp.artifact.name.clone();
+
+    if resp.status == "payment_required" {
+        return Ok(CodeHandlerResult {
+            message: format!("Connection requires payment: {artifact_name}"),
+            artifact_name: Some(artifact_name),
+            artifact_type: Some("connection".to_string()),
+            checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+            tier: resp.tier.clone(),
+            ..Default::default()
+        });
+    }
+
+    // The MCP config travels as the connector's manifest. It may be a JSON object
+    // or a JSON-encoded string (how some artifacts store manifest content).
+    let detail = api
+        .get_skill(&artifact_id)
+        .await
+        .map_err(|e| NeboError::Internal(format!("fetch connector {artifact_id}: {e}")))?;
+    let raw = detail.manifest.ok_or_else(|| {
+        NeboError::Internal(format!("connector '{artifact_name}' has no MCP config"))
+    })?;
+    let block = match raw {
+        serde_json::Value::String(s) => serde_json::from_str(&s)
+            .map_err(|e| NeboError::Internal(format!("connector config is not valid JSON: {e}")))?,
+        other => other,
+    };
+
+    let created = crate::handlers::integrations::create_integrations_from_block(state, &block)
+        .await
+        .map_err(|e| NeboError::Internal(format!("create MCP integration(s): {e}")))?;
+
+    if created.is_empty() {
+        return Err(NeboError::Internal(format!(
+            "connector '{artifact_name}' has no valid MCP servers in its config"
+        )));
+    }
+
+    Ok(CodeHandlerResult {
+        message: format!(
+            "Added MCP connection \"{}\": {} server(s)",
+            artifact_name,
+            created.len()
+        ),
+        artifact_name: Some(artifact_name),
+        artifact_id: Some(artifact_id),
+        artifact_type: Some("connection".to_string()),
         ..Default::default()
     })
 }
@@ -1059,6 +1238,8 @@ pub async fn submit_code(
         CodeType::Loop => handle_loop_code(&state, validated_code).await,
         CodeType::Plugin => handle_plugin_code(&state, validated_code).await,
         CodeType::App => handle_app_code(&state, validated_code).await,
+        CodeType::Collection => handle_collection_code(&state, validated_code).await,
+        CodeType::Connection => handle_connection_code(&state, validated_code).await,
     };
 
     match result {
@@ -1854,6 +2035,14 @@ mod tests {
         assert!(matches!(
             detect_code("PLUG-A1B2-C3D4"),
             Some((CodeType::Plugin, _))
+        ));
+        assert!(matches!(
+            detect_code("COLL-A1B2-C3D4"),
+            Some((CodeType::Collection, _))
+        ));
+        assert!(matches!(
+            detect_code("CONN-A1B2-C3D4"),
+            Some((CodeType::Connection, _))
         ));
     }
 

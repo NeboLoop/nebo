@@ -972,10 +972,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     if i.is_enabled.unwrap_or(0) == 0 {
                         continue;
                     }
-                    let server_url = match &i.server_url {
-                        Some(u) if !u.is_empty() => u.clone(),
-                        _ => continue,
-                    };
+                    // Remote servers need a URL; stdio servers carry a command in metadata.
+                    let server_url = i.server_url.clone().unwrap_or_default();
+                    let is_stdio =
+                        crate::handlers::integrations::metadata_is_stdio(i.metadata.as_deref());
+                    if server_url.is_empty() && !is_stdio {
+                        continue;
+                    }
                     // Skip OAuth integrations that haven't completed auth yet
                     if i.auth_type == "oauth" && i.connection_status.is_none() {
                         continue;
@@ -1025,7 +1028,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         .trim_matches('_')
                         .to_string();
                     match bridge_init
-                        .connect(&i.id, &tool_prefix, &server_url, access_token.as_deref())
+                        .connect(
+                            &i.id,
+                            &tool_prefix,
+                            &server_url,
+                            access_token.as_deref(),
+                            i.metadata.as_deref(),
+                        )
                         .await
                     {
                         Ok(tools) => {

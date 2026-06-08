@@ -1,6 +1,7 @@
 pub mod bridge;
 pub mod client;
 pub mod crypto;
+pub mod stdio;
 pub mod types;
 
 pub use bridge::Bridge;
