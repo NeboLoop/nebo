@@ -85,21 +85,39 @@ fn is_writable(dir: &Path) -> bool {
     }
 }
 
-/// Write a POSIX helper script to a temp file and spawn it fully detached so it
-/// outlives this process. The caller `exit(0)`s immediately after, reparenting the
-/// helper to launchd/init.
+/// Write a POSIX helper script to a temp file and spawn it in its OWN SESSION so
+/// it survives this process exiting.
+///
+/// `setsid()` (via `pre_exec`) is load-bearing, not cosmetic: macOS launchd
+/// terminates the remaining child processes of a GUI app's job when that app
+/// exits. A plain `spawn()` child is still part of our job, so it is killed the
+/// instant the caller `exit(0)`s — before it can swap the bundle or relaunch,
+/// producing the "app quits on update but never comes back" bug. Making the
+/// helper a session leader detaches it from our job so it runs to completion.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn spawn_detached_sh(script: &str) -> Result<(), UpdateError> {
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
     let path = std::env::temp_dir().join(format!("nebo-update-helper-{}.sh", uuid::Uuid::new_v4()));
     std::fs::write(&path, script)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
-    std::process::Command::new("sh")
-        .arg(&path)
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg(&path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        .stderr(std::process::Stdio::null());
+    // SAFETY: setsid() is async-signal-safe and the only call made in the child
+    // between fork and exec. It places the helper in a new session (new process
+    // group, no controlling terminal), detaching it from this app's launchd job.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
         .map_err(|e| UpdateError::Other(format!("spawn update helper: {}", e)))?;
     Ok(())
 }
