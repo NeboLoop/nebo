@@ -597,21 +597,29 @@ async fn install_plugin(
         ));
     }
     let slug = resp.artifact.slug.clone();
-    let download_url = resp
-        .download_url
-        .ok_or_else(|| format!("plugin {} has no download URL in redeem response", name))?;
 
-    // The redeem response hands back a URL TEMPLATE: /api/v1/apps/<id>/download/{platform}.
-    // The literal "{platform}" 404s ("binary not found") — the cascade must resolve the
-    // running platform's URL, exactly like the code-redemption path (codes.rs) does via
-    // get_plugin. Substitute here so we download the real per-platform .napp (which
-    // contains the compiled binary), not a 404 body.
+    // Resolve the real per-platform download URL via get_plugin — the SAME canonical
+    // path the standalone plugin install (codes.rs) uses. The redeem response's
+    // `download_url` is empty for code-redeemed plugins, so trusting it failed the
+    // cascade for plugins (e.g. stadium-ops) that install fine when redeemed directly.
     let platform = napp::plugin::current_platform_key();
-    let download_url = download_url.replace("{platform}", &platform);
+    let detail = api
+        .get_plugin(&slug, &platform)
+        .await
+        .map_err(|e| format!("fetch plugin detail for {slug}: {e}"))?;
+    let version = if detail.version.is_empty() {
+        "1.0.0".to_string()
+    } else {
+        detail.version.clone()
+    };
+    let platform_binary = detail
+        .platforms
+        .get(&platform)
+        .ok_or_else(|| format!("plugin {slug} has no binary for platform {platform}"))?;
 
-    // Download .napp directly from the resolved per-platform URL
+    // Download .napp from the resolved per-platform URL
     let napp_data = api
-        .download_napp(&download_url)
+        .download_napp(&platform_binary.download_url)
         .await
         .map_err(|e| format!("download .napp for {}: {}", slug, e))?;
 
@@ -626,7 +634,7 @@ async fn install_plugin(
     // Install from .napp archive (extracts binary, plugin.json, embedded skills)
     let install_result = state
         .plugin_store
-        .install_from_napp(&slug, "latest", &napp_data)
+        .install_from_napp(&slug, &version, &napp_data)
         .await;
 
     match install_result {
