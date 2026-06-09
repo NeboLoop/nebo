@@ -140,15 +140,30 @@ impl Registry {
                 continue;
             }
 
-            // Check that extracted binary exists
-            let binary_path = version_dir.join("binary");
-            let app_path = version_dir.join("app");
-            if !binary_path.exists() && !app_path.exists() {
+            // Check that an extracted binary exists. Plugins keep it at the root
+            // (`binary`/`app`); app sidecars live under `bin/`.
+            let has_root_binary =
+                version_dir.join("binary").exists() || version_dir.join("app").exists();
+            let has_bin_dir = version_dir.join("bin").is_dir();
+            if !has_root_binary && !has_bin_dir {
                 warn!(
                     path = %napp_path.display(),
                     "installed tool missing extracted binary — run install again"
                 );
                 continue;
+            }
+
+            // Heal older installs that predate signatures.json extraction: if the
+            // file isn't on disk but is present in the sealed .napp, extract it so
+            // verification can run without a reinstall.
+            let sigs_dest = version_dir.join("signatures.json");
+            if !sigs_dest.exists() {
+                match crate::reader::extract_napp_entry(&napp_path, "signatures.json", &sigs_dest) {
+                    Ok(()) | Err(NappError::NotFound(_)) => {}
+                    Err(e) => {
+                        warn!(path = %napp_path.display(), error = %e, "failed to extract signatures.json");
+                    }
+                }
             }
 
             // Verify binary integrity against sealed archive
@@ -556,21 +571,36 @@ impl Registry {
         }
         std::fs::create_dir_all(&version_dir)?;
 
-        // Extract binary
+        // Extract binary. Plugins keep it at the root (`binary`/`app`); app
+        // sidecars live under `bin/<name>` (see NeboLoop buildBinaryNappFiles).
+        let mut extracted_root_binary = false;
         for binary_name in &["binary", "app"] {
             let dest = version_dir.join(binary_name);
             match crate::reader::extract_napp_entry(&napp_dest, binary_name, &dest) {
                 Ok(()) => {
                     info!(binary = binary_name, "extracted binary from .napp");
+                    extracted_root_binary = true;
                     break;
                 }
                 Err(NappError::NotFound(_)) => continue,
                 Err(e) => return Err(e),
             }
         }
+        // App sidecars: extract the whole bin/ tree.
+        if !extracted_root_binary {
+            let _ = crate::reader::extract_napp_prefix(&napp_dest, "bin/", &version_dir);
+        }
 
         // Extract ui/ assets if present
         let _ = crate::reader::extract_napp_prefix(&napp_dest, "ui/", &version_dir);
+
+        // Extract signatures.json so installed-tool verification can find it on
+        // disk (verify_signatures reads <version_dir>/signatures.json).
+        let sigs_dest = version_dir.join("signatures.json");
+        match crate::reader::extract_napp_entry(&napp_dest, "signatures.json", &sigs_dest) {
+            Ok(()) | Err(NappError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
 
         // Also write manifest.json to the version dir so Runtime can find it
         std::fs::write(version_dir.join("manifest.json"), &manifest_data)?;

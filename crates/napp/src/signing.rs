@@ -95,14 +95,34 @@ impl SigningKeyProvider {
 }
 
 /// Signatures file (signatures.json in .napp).
+///
+/// This is the exact shape NeboLoop emits (see `internal/packaging/napp.go`
+/// `Signatures`). Binary artifacts (plugins, app sidecars) carry
+/// `binarySha256` + `binarySignature` + `manifestSignature`; non-binary
+/// artifacts (skills, agents, UI-only apps) carry only the `files` map of
+/// path → hex SHA256. All fields are optional so one struct covers both.
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignaturesFile {
-    pub manifest_signature: String, // base64-encoded ED25519 signature
-    pub binary_hash: String,        // hex SHA256 of binary
-    pub binary_signature: String,   // base64-encoded ED25519 signature
+    #[serde(default)]
+    pub manifest_signature: Option<String>, // base64-encoded ED25519 signature
+    #[serde(default, rename = "binarySha256")]
+    pub binary_hash: Option<String>, // hex SHA256 of binary
+    #[serde(default)]
+    pub binary_signature: Option<String>, // base64-encoded ED25519 signature
+    #[serde(default)]
+    pub files: std::collections::HashMap<String, String>, // path → hex SHA256
 }
 
-/// Verify .napp signatures.
+/// Verify .napp signatures against NeboAI's signing key.
+///
+/// NeboLoop emits two shapes (see `internal/marketplace/binary.go`):
+/// - Binary artifacts (plugins, app sidecars) carry `manifestSignature` +
+///   `binarySha256` + `binarySignature` — full ED25519 verification.
+/// - Non-binary artifacts (skills, agents, UI-only apps) carry only the
+///   `files` integrity map; their origin is proven by the `.napp` envelope
+///   signature, so here we integrity-check each extracted file against its
+///   recorded hash.
 pub fn verify_signatures(key: &VerifyingKey, app_dir: &std::path::Path) -> Result<(), NappError> {
     let sigs_path = app_dir.join("signatures.json");
     let sigs_data = std::fs::read_to_string(&sigs_path)
@@ -112,47 +132,72 @@ pub fn verify_signatures(key: &VerifyingKey, app_dir: &std::path::Path) -> Resul
 
     use base64::Engine;
 
-    // 1. Verify manifest signature
-    let manifest_data = std::fs::read(app_dir.join("manifest.json"))
-        .map_err(|e| NappError::Signing(format!("read manifest: {}", e)))?;
-    let manifest_sig_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&sigs.manifest_signature)
-        .map_err(|e| NappError::Signing(format!("decode manifest sig: {}", e)))?;
-    let manifest_sig = Signature::from_slice(&manifest_sig_bytes)
-        .map_err(|e| NappError::Signing(format!("invalid manifest sig: {}", e)))?;
-    key.verify(&manifest_data, &manifest_sig)
-        .map_err(|_| NappError::Signing("manifest signature verification failed".into()))?;
-
-    // 2. Find and verify binary
-    let binary_path = find_binary(app_dir)?;
-    let binary_data = std::fs::read(&binary_path)
-        .map_err(|e| NappError::Signing(format!("read binary: {}", e)))?;
-
-    // Verify hash
-    let mut hasher = Sha256::new();
-    hasher.update(&binary_data);
-    let actual_hash = hex::encode(hasher.finalize());
-    if actual_hash != sigs.binary_hash {
-        return Err(NappError::Signing(format!(
-            "binary hash mismatch: expected {}, got {}",
-            sigs.binary_hash, actual_hash
-        )));
+    // 1. Manifest signature — present only for binary artifacts.
+    if let Some(manifest_sig_b64) = &sigs.manifest_signature {
+        let manifest_data = std::fs::read(app_dir.join("manifest.json"))
+            .map_err(|e| NappError::Signing(format!("read manifest: {}", e)))?;
+        let manifest_sig_bytes = base64::engine::general_purpose::STANDARD
+            .decode(manifest_sig_b64)
+            .map_err(|e| NappError::Signing(format!("decode manifest sig: {}", e)))?;
+        let manifest_sig = Signature::from_slice(&manifest_sig_bytes)
+            .map_err(|e| NappError::Signing(format!("invalid manifest sig: {}", e)))?;
+        key.verify(&manifest_data, &manifest_sig)
+            .map_err(|_| NappError::Signing("manifest signature verification failed".into()))?;
     }
 
-    // Verify binary signature
-    let binary_sig_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&sigs.binary_signature)
-        .map_err(|e| NappError::Signing(format!("decode binary sig: {}", e)))?;
-    let binary_sig = Signature::from_slice(&binary_sig_bytes)
-        .map_err(|e| NappError::Signing(format!("invalid binary sig: {}", e)))?;
-    key.verify(&binary_data, &binary_sig)
-        .map_err(|_| NappError::Signing("binary signature verification failed".into()))?;
+    // 2. Binary artifact — verify the binary's hash and ED25519 signature.
+    if let (Some(expected_hash), Some(binary_sig_b64)) =
+        (sigs.binary_hash.as_ref(), sigs.binary_signature.as_ref())
+    {
+        let binary_path = find_binary(app_dir)?;
+        let binary_data = std::fs::read(&binary_path)
+            .map_err(|e| NappError::Signing(format!("read binary: {}", e)))?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&binary_data);
+        let actual_hash = hex::encode(hasher.finalize());
+        if actual_hash != *expected_hash {
+            return Err(NappError::Signing(format!(
+                "binary hash mismatch: expected {}, got {}",
+                expected_hash, actual_hash
+            )));
+        }
+
+        let binary_sig_bytes = base64::engine::general_purpose::STANDARD
+            .decode(binary_sig_b64)
+            .map_err(|e| NappError::Signing(format!("decode binary sig: {}", e)))?;
+        let binary_sig = Signature::from_slice(&binary_sig_bytes)
+            .map_err(|e| NappError::Signing(format!("invalid binary sig: {}", e)))?;
+        key.verify(&binary_data, &binary_sig)
+            .map_err(|_| NappError::Signing("binary signature verification failed".into()))?;
+    } else if !sigs.files.is_empty() {
+        // 3. Non-binary artifact — integrity-check each recorded file. Origin
+        // authenticity is established by the .napp envelope signature.
+        for (rel, expected) in &sigs.files {
+            let path = app_dir.join(rel);
+            let data = std::fs::read(&path)
+                .map_err(|e| NappError::Signing(format!("read {}: {}", rel, e)))?;
+            let mut hasher = Sha256::new();
+            hasher.update(&data);
+            let actual = hex::encode(hasher.finalize());
+            if actual != *expected {
+                return Err(NappError::Signing(format!(
+                    "file hash mismatch for {}: expected {}, got {}",
+                    rel, expected, actual
+                )));
+            }
+        }
+    }
 
     info!("signatures verified");
     Ok(())
 }
 
 /// Find the binary in an app directory.
+///
+/// Plugins keep the binary at the root (`binary`/`app`); app sidecars live
+/// under `bin/<name>` (see NeboLoop `buildBinaryNappFiles`). The legacy `tmp/`
+/// location is still scanned for older installs.
 fn find_binary(app_dir: &std::path::Path) -> Result<std::path::PathBuf, NappError> {
     for name in &["binary", "app"] {
         let path = app_dir.join(name);
@@ -160,31 +205,42 @@ fn find_binary(app_dir: &std::path::Path) -> Result<std::path::PathBuf, NappErro
             return Ok(path);
         }
     }
-    // Check tmp/ directory
-    let tmp = app_dir.join("tmp");
-    if tmp.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&tmp) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        if let Ok(meta) = path.metadata() {
-                            if meta.permissions().mode() & 0o111 != 0 {
-                                return Ok(path);
-                            }
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    return Ok(path);
-                }
-            }
+    // App sidecars: bin/<name>. Legacy installs: tmp/<name>.
+    for sub in &["bin", "tmp"] {
+        let dir = app_dir.join(sub);
+        if let Some(found) = first_executable_in(&dir) {
+            return Ok(found);
         }
     }
     Err(NappError::NotFound(
         "no binary found in app directory".into(),
     ))
+}
+
+/// Return the first regular, executable file directly inside `dir`, if any.
+fn first_executable_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = path.metadata() {
+                if meta.permissions().mode() & 0o111 != 0 {
+                    return Some(path);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        return Some(path);
+    }
+    None
 }
 
 /// Checks NeboAI's revocation list with caching.
@@ -256,5 +312,73 @@ impl RevocationChecker {
                 Ok(false) // Fail open
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The exact shape NeboLoop emits for a binary artifact (plugin / app
+    // sidecar) — camelCase keys, see internal/marketplace/binary.go.
+    #[test]
+    fn parses_neboloop_binary_signatures_shape() {
+        let json = r#"{
+            "keyId": "abc123",
+            "algorithm": "ed25519",
+            "binarySha256": "deadbeef",
+            "binarySignature": "c2ln",
+            "manifestSignature": "bXNpZw=="
+        }"#;
+        let sigs: SignaturesFile = serde_json::from_str(json).expect("must parse camelCase");
+        assert_eq!(sigs.binary_hash.as_deref(), Some("deadbeef"));
+        assert_eq!(sigs.binary_signature.as_deref(), Some("c2ln"));
+        assert_eq!(sigs.manifest_signature.as_deref(), Some("bXNpZw=="));
+        assert!(sigs.files.is_empty());
+    }
+
+    // The shape NeboLoop emits for a non-binary artifact (skill / agent /
+    // UI-only app) — only the per-file integrity map, no signatures.
+    #[test]
+    fn parses_neboloop_files_map_shape() {
+        let json = r#"{
+            "keyId": "abc123",
+            "algorithm": "ed25519",
+            "files": { "SKILL.md": "aa", "scripts/run.py": "bb" }
+        }"#;
+        let sigs: SignaturesFile = serde_json::from_str(json).expect("must parse files map");
+        assert!(sigs.manifest_signature.is_none());
+        assert!(sigs.binary_hash.is_none());
+        assert_eq!(sigs.files.get("SKILL.md").map(String::as_str), Some("aa"));
+        assert_eq!(sigs.files.len(), 2);
+    }
+
+    // A non-binary artifact verifies via the files integrity map: matching
+    // hashes pass, a tampered file fails. (Origin is proven by the envelope.)
+    #[test]
+    fn files_map_integrity_check_detects_tampering() {
+        let dir = std::env::temp_dir().join(format!("nebo-sig-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let body = b"hello world";
+        let mut hasher = Sha256::new();
+        hasher.update(body);
+        let hash = hex::encode(hasher.finalize());
+        std::fs::write(dir.join("SKILL.md"), body).unwrap();
+
+        let sigs = format!(
+            r#"{{ "keyId": "k", "algorithm": "ed25519", "files": {{ "SKILL.md": "{hash}" }} }}"#
+        );
+        std::fs::write(dir.join("signatures.json"), &sigs).unwrap();
+
+        // Key is unused on the files-map path, but the API requires one.
+        let key = builtin_verifying_key().expect("embedded key");
+        assert!(verify_signatures(&key, &dir).is_ok(), "matching hash must pass");
+
+        // Tamper with the file → hash mismatch → failure.
+        std::fs::write(dir.join("SKILL.md"), b"tampered").unwrap();
+        assert!(verify_signatures(&key, &dir).is_err(), "tampered file must fail");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
