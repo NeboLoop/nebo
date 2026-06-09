@@ -1132,10 +1132,11 @@ async fn watch_loop(
                             // Skip error payloads — plugins may output errors (e.g. DNS
                             // failures, auth errors) as JSON on stdout. These should NOT
                             // be emitted as events that trigger workflows.
-                            if payload.get("error").is_some() {
+                            if let Some(err) = payload.get("error") {
                                 warn!(
                                     agent = %agent_id,
                                     binding = %binding_name,
+                                    error = %err,
                                     "skipping error payload from watch process (not an event)"
                                 );
                                 continue;
