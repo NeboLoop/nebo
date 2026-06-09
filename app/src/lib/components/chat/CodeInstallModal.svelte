@@ -6,7 +6,8 @@
 
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { authLogin, neboAIBillingPaymentMethods } from '$lib/api/nebo';
+  import { goto } from '$app/navigation';
+  import { approveDeps, authLogin, neboAIBillingPaymentMethods } from '$lib/api/nebo';
   import { createMarketplaceSubscription } from '$lib/api/index';
   import type { PaymentMethodInfo } from '$lib/api/neboComponents';
 
@@ -15,6 +16,8 @@
   type DepItem = {
     reference: string;
     type: string;
+    name?: string;
+    artifactId?: string;
     status: 'pending' | 'installing' | 'installed' | 'failed';
     error?: string;
   };
@@ -46,6 +49,13 @@
   let errorMessage = $state('');
   let checkoutUrl = $state('');
   let deps = $state<DepItem[]>([]);
+  // Total top-level deps the backend announced (dep_cascade_start) — lets the
+  // progress bar be determinate. 0 until announced; falls back to deps.length.
+  let depTotal = $state(0);
+  // Reference of the code most recently copied, for transient "Copied" feedback.
+  let copiedRef = $state('');
+  // Installed items that still need credentials/config before they work.
+  let needsSetup = $state<Array<{ slug: string; label: string; description: string }>>([]);
   let authLabel = $state('');
   let authDescription = $state('');
   let authInProgress = $state(false);
@@ -53,6 +63,10 @@
   let authQueue = $state<Array<{ slug: string; label: string; description: string }>>([]);
   let authIndex = $state(0);
   let pendingAgentId = $state('');
+  // True when the user kicked off the install from the desktop UI: the modal
+  // stays open until they dismiss it. False for channel/loop-triggered installs
+  // (no human waiting), which auto-dismiss. Defaults true (safer: never flash away).
+  let interactive = $state(true);
 
   // Purchase confirmation state
   let tier = $state<TierInfo | null>(null);
@@ -79,6 +93,12 @@
                 : `Installing ${typeLabel}`
   );
   const installedCount = $derived(deps.filter((d) => d.status === 'installed').length);
+  const failedCount = $derived(deps.filter((d) => d.status === 'failed').length);
+  const settledCount = $derived(installedCount + failedCount);
+  // Determinate progress denominator: the announced total, or what we've seen.
+  const progressTotal = $derived(Math.max(depTotal, deps.length));
+  const progressPct = $derived(progressTotal > 0 ? Math.round((settledCount / progressTotal) * 100) : 0);
+  const installing = $derived(deps.some((d) => d.status === 'installing'));
 
   function formatPrice(cents: number, interval?: string): string {
     const amount = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'usd', minimumFractionDigits: 0 }).format(cents / 100);
@@ -98,6 +118,8 @@
     errorMessage = '';
     checkoutUrl = '';
     deps = [];
+    depTotal = 0;
+    needsSetup = [];
     authLabel = '';
     authDescription = '';
     authInProgress = false;
@@ -105,6 +127,7 @@
     authQueue = [];
     authIndex = 0;
     pendingAgentId = '';
+    interactive = true;
     tier = null;
     paymentMethod = null;
     paymentMethodLoading = false;
@@ -112,10 +135,16 @@
     if (stripeCheckout) { stripeCheckout.destroy(); stripeCheckout = null; }
   }
 
-  function findOrAddDep(reference: string, type: string): number {
+  function findOrAddDep(reference: string, type: string, name?: string, artifactId?: string): number {
     const idx = deps.findIndex((d) => d.reference === reference);
-    if (idx >= 0) return idx;
-    deps = [...deps, { reference, type, status: 'pending' }];
+    if (idx >= 0) {
+      // Backfill name/id if a later event carries them.
+      if ((name && !deps[idx].name) || (artifactId && !deps[idx].artifactId)) {
+        deps[idx] = { ...deps[idx], name: deps[idx].name ?? name, artifactId: deps[idx].artifactId ?? artifactId };
+      }
+      return idx;
+    }
+    deps = [...deps, { reference, type, name, artifactId, status: 'pending' }];
     return deps.length - 1;
   }
 
@@ -135,6 +164,11 @@
     onclose?.();
   }
 
+  /** Auto-close only for channel/loop-triggered installs; interactive ones wait for the user. */
+  function autoCloseIfRemote(delay = 1500) {
+    if (!interactive) setTimeout(close, delay);
+  }
+
   // --- WS event handlers ---
 
   function handleCodeProcessing(e: Event) {
@@ -143,6 +177,7 @@
     code = (data?.code as string) || '';
     codeType = (data?.code_type as string) || '';
     statusMessage = (data?.status_message as string) || 'Processing...';
+    interactive = data?.interactive !== false;
     show = true;
 
     // Safety net: if no code_result arrives within 30s, show soft completion
@@ -152,7 +187,7 @@
         statusMessage = `${typeLabel} installed — finalizing dependencies...`;
         phase = 'done';
         notifySidebarRefresh();
-        setTimeout(close, 2000);
+        autoCloseIfRemote(2000);
       }
     }, 30_000);
   }
@@ -189,7 +224,7 @@
         notifySidebarRefresh();
         statusMessage = message || `${artifactName || typeLabel} installed`;
         phase = 'done';
-        setTimeout(close, 1500);
+        autoCloseIfRemote();
         return;
       }
       if (phase === 'auth') return;
@@ -203,7 +238,7 @@
       }
       statusMessage = message || `${artifactName || typeLabel} installed`;
       phase = 'done';
-      setTimeout(close, 1500);
+      autoCloseIfRemote();
     } else {
       errorMessage = error || 'Installation failed';
       phase = 'error';
@@ -276,20 +311,58 @@
     deps = deps;
   }
 
+  /** Total announced before the cascade starts — drives the determinate bar.
+   *  Only trusted during the live install (ignored on retry from the done view). */
+  function handleDepCascadeStart(e: Event) {
+    if (phase !== 'installing') return;
+    const total = Number((e as CustomEvent).detail?.total ?? 0);
+    if (total > 0) depTotal = total;
+  }
+
+  function handleDepNeedsSetup(e: Event) {
+    const items = ((e as CustomEvent).detail?.items as typeof needsSetup) || [];
+    if (Array.isArray(items) && items.length > 0) needsSetup = items;
+  }
+
+  /** Open the canonical plugin config UI (Settings → Plugins), then close. */
+  function openPluginSettings() {
+    close();
+    goto('/settings/plugins');
+  }
+
+  function handleDepStarted(e: Event) {
+    const data = (e as CustomEvent).detail;
+    const reference = (data?.reference as string) || '';
+    const depType = ((data?.depType as string) || 'skill').toLowerCase();
+    const name = (data?.name as string) || undefined;
+    const artifactId = (data?.artifactId as string) || undefined;
+    if (!reference) return;
+    const idx = findOrAddDep(reference, depType, name, artifactId);
+    // Don't downgrade a settled row if events arrive out of order.
+    if (deps[idx].status === 'pending') {
+      deps[idx] = { ...deps[idx], status: 'installing' };
+      deps = deps;
+    }
+  }
+
   function handleDepPending(e: Event) {
     const data = (e as CustomEvent).detail;
     const reference = (data?.reference as string) || '';
     const depType = ((data?.depType as string) || 'skill').toLowerCase();
-    if (reference) findOrAddDep(reference, depType);
+    const name = (data?.name as string) || undefined;
+    const artifactId = (data?.artifactId as string) || undefined;
+    if (reference) findOrAddDep(reference, depType, name, artifactId);
   }
 
   function handleDepInstalled(e: Event) {
     const data = (e as CustomEvent).detail;
     const reference = (data?.reference as string) || '';
     const depType = ((data?.depType as string) || 'skill').toLowerCase();
+    const name = (data?.name as string) || undefined;
+    const artifactId = (data?.artifactId as string) || undefined;
     if (!reference) return;
-    const idx = findOrAddDep(reference, depType);
-    deps[idx] = { ...deps[idx], status: 'installed' };
+    const idx = findOrAddDep(reference, depType, name, artifactId);
+    deps[idx] = { ...deps[idx], status: 'installed', error: undefined };
     deps = deps;
   }
 
@@ -297,11 +370,32 @@
     const data = (e as CustomEvent).detail;
     const reference = (data?.reference as string) || '';
     const depType = ((data?.depType as string) || 'skill').toLowerCase();
+    const name = (data?.name as string) || undefined;
+    const artifactId = (data?.artifactId as string) || undefined;
     const error = (data?.error as string) || 'Unknown error';
     if (!reference) return;
-    const idx = findOrAddDep(reference, depType);
+    const idx = findOrAddDep(reference, depType, name, artifactId);
     deps[idx] = { ...deps[idx], status: 'failed', error };
     deps = deps;
+  }
+
+  /** Retry a single failed dependency in place via the cascade-approve endpoint.
+   *  The row flips to a spinner; dep_installed/dep_failed events settle it.
+   *  The artifact id lets the backend recognise an already-installed plugin. */
+  async function retryDep(dep: DepItem) {
+    const idx = deps.findIndex((d) => d.reference === dep.reference);
+    if (idx < 0) return;
+    deps[idx] = { ...deps[idx], status: 'installing', error: undefined };
+    deps = deps;
+    try {
+      // DepType deserializes as snake_case — dep.type is already lowercase.
+      await approveDeps({
+        deps: [{ depType: dep.type, reference: dep.reference, name: dep.name, artifactId: dep.artifactId }],
+      });
+    } catch {
+      deps[idx] = { ...deps[idx], status: 'failed', error: 'Retry failed to start' };
+      deps = deps;
+    }
   }
 
   function handleAgentAuthRequired(e: Event) {
@@ -345,7 +439,7 @@
     }
 
     phase = 'done';
-    setTimeout(close, 1500);
+    autoCloseIfRemote();
   }
 
   function handlePluginAuthError(e: Event) {
@@ -385,11 +479,23 @@
       }
     }
     phase = 'done';
-    setTimeout(close, 1500);
+    autoCloseIfRemote();
   }
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') close();
+  }
+
+  let copyTimeout: ReturnType<typeof setTimeout> | null = null;
+  async function copyCode(reference: string) {
+    try {
+      await navigator.clipboard.writeText(reference);
+      copiedRef = reference;
+      if (copyTimeout) clearTimeout(copyTimeout);
+      copyTimeout = setTimeout(() => { copiedRef = ''; }, 1500);
+    } catch {
+      // Clipboard unavailable (e.g. insecure context) — nothing actionable.
+    }
   }
 
   // Subscribe to WS-dispatched DOM events
@@ -398,6 +504,9 @@
     window.addEventListener('nebo:code_result', handleCodeResult);
     window.addEventListener('nebo:plugin_installing', handlePluginInstalling);
     window.addEventListener('nebo:plugin_installed', handlePluginInstalled);
+    window.addEventListener('nebo:dep_cascade_start', handleDepCascadeStart);
+    window.addEventListener('nebo:dep_needs_setup', handleDepNeedsSetup);
+    window.addEventListener('nebo:dep_started', handleDepStarted);
     window.addEventListener('nebo:dep_pending', handleDepPending);
     window.addEventListener('nebo:dep_installed', handleDepInstalled);
     window.addEventListener('nebo:dep_failed', handleDepFailed);
@@ -412,6 +521,9 @@
     window.removeEventListener('nebo:code_result', handleCodeResult);
     window.removeEventListener('nebo:plugin_installing', handlePluginInstalling);
     window.removeEventListener('nebo:plugin_installed', handlePluginInstalled);
+    window.removeEventListener('nebo:dep_cascade_start', handleDepCascadeStart);
+    window.removeEventListener('nebo:dep_needs_setup', handleDepNeedsSetup);
+    window.removeEventListener('nebo:dep_started', handleDepStarted);
     window.removeEventListener('nebo:dep_pending', handleDepPending);
     window.removeEventListener('nebo:dep_installed', handleDepInstalled);
     window.removeEventListener('nebo:dep_failed', handleDepFailed);
@@ -426,9 +538,9 @@
   <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true" data-modal-open>
     <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="presentation" onclick={close} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); close(); } }}></div>
 
-    <div class="relative w-full max-w-sm rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden" role="presentation" onkeydown={handleKeydown}>
+    <div class="relative w-full max-w-sm max-h-[85vh] flex flex-col rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden" role="presentation" onkeydown={handleKeydown}>
       <!-- Header -->
-      <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
+      <div class="shrink-0 flex items-center justify-between px-5 py-4 border-b border-base-content/10">
         <h3 class="text-sm font-semibold">{title}</h3>
         <button
           class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/50 hover:text-base-content transition-colors"
@@ -439,17 +551,29 @@
         </button>
       </div>
 
-      <!-- Body -->
-      <div class="px-5 py-6">
+      <!-- Body (scrolls; header + footer stay pinned) -->
+      <div class="px-5 py-6 overflow-y-auto">
         {#if phase === 'installing'}
           <div class="flex flex-col items-center gap-4">
-            <span class="loading loading-spinner loading-lg text-primary"></span>
-            <div class="text-center">
-              <p class="text-sm font-medium">{statusMessage}</p>
-              {#if code}
-                <p class="text-xs text-base-content/50 mt-1.5 font-mono">{code}</p>
-              {/if}
-            </div>
+            {#if progressTotal > 1}
+              <!-- Multi-dependency install (e.g. a collection): determinate bar. -->
+              <div class="w-full">
+                <div class="flex items-baseline justify-between mb-2">
+                  <p class="text-sm font-medium">{statusMessage}</p>
+                  <span class="text-xs text-base-content/50 font-mono">{settledCount}/{progressTotal}</span>
+                </div>
+                <progress class="progress progress-primary w-full" value={settledCount} max={progressTotal}></progress>
+              </div>
+            {:else}
+              <!-- Single artifact: nothing to count, so an honest spinner. -->
+              <span class="loading loading-spinner loading-lg text-primary"></span>
+              <div class="text-center">
+                <p class="text-sm font-medium">{statusMessage}</p>
+                {#if code}
+                  <p class="text-xs text-base-content/50 mt-1.5 font-mono">{code}</p>
+                {/if}
+              </div>
+            {/if}
             <button type="button" class="btn btn-sm btn-ghost" onclick={close}>Cancel</button>
           </div>
 
@@ -584,8 +708,8 @@
         {#if deps.length > 0}
           <div class="border-t border-base-content/10 pt-4 mt-5">
             <p class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">
-              Dependencies
-              {#if phase === 'done'}({installedCount}/{deps.length}){/if}
+              Dependencies ({installedCount}/{progressTotal})
+              {#if failedCount > 0}<span class="text-error/70 normal-case font-medium"> · {failedCount} failed</span>{/if}
             </p>
             <ul class="flex flex-col gap-2">
               {#each deps as dep}
@@ -599,19 +723,65 @@
                   {:else}
                     <div class="w-4 h-4 rounded-full border-2 border-base-content/20 shrink-0"></div>
                   {/if}
-                  <span class="truncate {dep.status === 'failed' ? 'text-error/80' : ''}">{dep.reference}</span>
+
+                  <div class="flex-1 min-w-0">
+                    {#if dep.name}
+                      <div class="truncate font-medium {dep.status === 'failed' ? 'text-error/90' : ''}">{dep.name}</div>
+                      <button
+                        type="button"
+                        class="font-mono text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none p-0"
+                        title="Copy install code"
+                        onclick={() => copyCode(dep.reference)}
+                      >{copiedRef === dep.reference ? 'Copied ✓' : dep.reference}</button>
+                    {:else}
+                      <button
+                        type="button"
+                        class="truncate font-mono hover:text-base-content/70 cursor-pointer bg-transparent border-none p-0 {dep.status === 'failed' ? 'text-error/90' : ''}"
+                        title="Copy install code"
+                        onclick={() => copyCode(dep.reference)}
+                      >{copiedRef === dep.reference ? 'Copied ✓' : dep.reference}</button>
+                    {/if}
+                  </div>
+
                   <span class="text-xs text-base-content/40 shrink-0">{dep.type}</span>
+
+                  {#if dep.status === 'failed'}
+                    <button type="button" class="btn btn-xs btn-primary shrink-0" onclick={() => retryDep(dep)} title={dep.error}>Install</button>
+                  {/if}
                 </li>
               {/each}
             </ul>
+          </div>
+        {/if}
+
+        <!-- Needs setup: installed items still missing credentials/config -->
+        {#if needsSetup.length > 0}
+          <div class="border-t border-base-content/10 pt-4 mt-5">
+            <p class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">Needs setup</p>
+            <ul class="flex flex-col gap-2">
+              {#each needsSetup as item}
+                <li class="flex items-center gap-2.5 text-xs">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-warning shrink-0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  <div class="flex-1 min-w-0">
+                    <div class="truncate font-medium">{item.label || item.slug}</div>
+                    {#if item.description}<div class="text-base-content/50 truncate">{item.description}</div>{/if}
+                  </div>
+                </li>
+              {/each}
+            </ul>
+            <button type="button" class="btn btn-xs btn-outline mt-3" onclick={openPluginSettings}>Configure in Settings</button>
           </div>
         {/if}
       </div>
 
       <!-- Footer -->
       {#if phase === 'error'}
-        <div class="flex justify-end px-5 py-3 border-t border-base-content/10">
+        <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
           <button type="button" class="btn btn-sm btn-ghost" onclick={close}>Close</button>
+        </div>
+      {:else if phase === 'done' && interactive}
+        <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
+          <button type="button" class="btn btn-sm btn-primary" onclick={close}>Done</button>
         </div>
       {/if}
     </div>

@@ -13,6 +13,7 @@
 import { getWebSocketClient } from '$lib/websocket/client';
 import type { AskWidgetDef } from '$lib/components/chat/AskWidget.svelte';
 import type { UploadedAttachment } from '$lib/types/attachment';
+import { dispatchInstallStart } from '$lib/marketplace/installCodes';
 
 export interface TokenUsage {
   input: number;
@@ -494,18 +495,6 @@ export function createChatController(config: ChatControllerConfig) {
 
   // --- Actions ---
 
-  // Marketplace code pattern: PREFIX-XXXX-XXXX (Crockford Base32)
-  const CODE_RE = /^(NEBO|SKIL|WORK|AGNT|LOOP|PLUG|APPX)-[0-9A-Z]{4}-[0-9A-Z]{4}$/i;
-  const CODE_TYPE_MAP: Record<string, string> = {
-    NEBO: 'nebo', SKIL: 'skill', WORK: 'workflow', AGNT: 'agent',
-    LOOP: 'loop', PLUG: 'plugin', APPX: 'app',
-  };
-  const CODE_STATUS_MAP: Record<string, string> = {
-    nebo: 'Connecting to NeboAI...', skill: 'Installing skill...',
-    workflow: 'Installing workflow...', agent: 'Installing agent...',
-    loop: 'Joining loop...', plugin: 'Installing plugin...', app: 'Installing app...',
-  };
-
   function send(text: string, options?: SendOptions & { attachments?: UploadedAttachment[] }) {
     if (!options?.silent) {
       messages = [...messages, {
@@ -516,24 +505,20 @@ export function createChatController(config: ChatControllerConfig) {
         ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
       }];
     }
+
+    // Marketplace install code: the install modal owns all feedback. Open it
+    // immediately and send the code to the backend, but DON'T engage the chat
+    // "working" spinner — no agent reply streams back, so the spinner would hang
+    // for the entire install and never clear.
+    if (dispatchInstallStart(text)) {
+      ws.send('chat', { prompt: text.trim(), agent_id: agentId, ...(activeSessionKey ? { session_id: activeSessionKey } : {}) });
+      return;
+    }
+
     isLoading = true;
     followupSuggestions = [];
     phaseStartTime = Date.now();
     pendingTools.clear();
-
-    // Detect marketplace code — show install modal immediately (before WS round-trip)
-    const codeMatch = text.trim().match(CODE_RE);
-    if (codeMatch && typeof window !== 'undefined') {
-      const prefix = codeMatch[1].toUpperCase();
-      const codeTypeStr = CODE_TYPE_MAP[prefix] || 'code';
-      window.dispatchEvent(new CustomEvent('nebo:code_processing', {
-        detail: {
-          code: text.trim().toUpperCase(),
-          code_type: codeTypeStr,
-          status_message: CODE_STATUS_MAP[codeTypeStr] || 'Processing...',
-        },
-      }));
-    }
 
     const payload: Record<string, unknown> = {
       prompt: text,

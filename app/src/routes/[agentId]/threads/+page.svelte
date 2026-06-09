@@ -4,6 +4,7 @@
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext } from '$lib/types/agentPage';
   import { currentUser } from '$lib/stores/auth';
+  import { dispatchInstallStart } from '$lib/marketplace/installCodes';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -54,31 +55,19 @@
     cleanupQuotaWarning?.();
   });
 
-  // Marketplace code pattern for instant modal feedback
-  const CODE_RE = /^(NEBO|SKIL|WORK|AGNT|LOOP|PLUG|APPX)-[0-9A-Z]{4}-[0-9A-Z]{4}$/i;
-  const CODE_TYPE_MAP: Record<string, string> = {
-    NEBO: 'nebo', SKIL: 'skill', WORK: 'workflow', AGNT: 'agent',
-    LOOP: 'loop', PLUG: 'plugin', APPX: 'app',
-  };
-  const CODE_STATUS_MAP: Record<string, string> = {
-    nebo: 'Connecting to NeboAI...', skill: 'Installing skill...',
-    workflow: 'Installing workflow...', agent: 'Installing agent...',
-    loop: 'Joining loop...', plugin: 'Installing plugin...', app: 'Installing app...',
-  };
-
   async function handleSend(text: string) {
-    // Detect marketplace code — show install modal immediately
-    const codeMatch = text.trim().match(CODE_RE);
-    if (codeMatch) {
-      const prefix = codeMatch[1].toUpperCase();
-      const codeTypeStr = CODE_TYPE_MAP[prefix] || 'code';
-      window.dispatchEvent(new CustomEvent('nebo:code_processing', {
-        detail: {
-          code: text.trim().toUpperCase(),
-          code_type: codeTypeStr,
-          status_message: CODE_STATUS_MAP[codeTypeStr] || 'Processing...',
-        },
-      }));
+    // Detect marketplace code — the install modal owns all feedback, so open it
+    // immediately and skip the chat "working" spinner (no agent reply is coming).
+    if (dispatchInstallStart(text)) {
+      const { getWebSocketClient } = await import('$lib/websocket/client');
+      const ws = getWebSocketClient();
+      if (ws.isConnected()) {
+        ws.send('chat', { prompt: text.trim(), agent_id: agentId });
+      } else {
+        const api = await import('$lib/api/nebo');
+        await api.chatWithAgent(agentId, { prompt: text.trim() });
+      }
+      return;
     }
 
     messages = [{ id: 'msg-' + Date.now(), type: 'user' as const, content: text, time: 'now' }];

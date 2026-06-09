@@ -6,6 +6,7 @@
   import { collections } from '$lib/stores/collections.js';
   import { installItem } from '$lib/stores/marketplace.js';
   import { getWebSocketClient } from '$lib/websocket/client';
+  import { dispatchInstallStart } from '$lib/marketplace/installCodes';
   import CodeInstallModal from '$lib/components/chat/CodeInstallModal.svelte';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
@@ -160,38 +161,14 @@
   let codeStatus = $state('idle'); // idle | processing | error
   let codeMessage = $state('');
   let showInstallModal = $state(false);
-  const CODE_RE = /^(NEBO|SKIL|AGNT|PLUG|LOOP|WORK|APPX)-[0-9A-Z]{4}-[0-9A-Z]{4}$/i;
-  const CODE_TYPE_MAP: Record<string, string> = {
-    NEBO: 'nebo', SKIL: 'skill', WORK: 'workflow', AGNT: 'agent',
-    LOOP: 'loop', PLUG: 'plugin', APPX: 'app',
-  };
-  const CODE_STATUS_MAP: Record<string, string> = {
-    nebo: 'Connecting to NeboAI...', skill: 'Installing skill...',
-    workflow: 'Installing workflow...', agent: 'Installing agent...',
-    loop: 'Joining loop...', plugin: 'Installing plugin...', app: 'Installing app...',
-  };
-
   function redeemCode() {
     const code = codeInput.trim().toUpperCase();
-    if (!CODE_RE.test(code)) {
+    // dispatchInstallStart opens the modal instantly AND validates the format.
+    if (!dispatchInstallStart(code)) {
       codeStatus = 'error';
       codeMessage = 'Invalid code format';
       setTimeout(() => { codeStatus = 'idle'; codeMessage = ''; }, 2500);
       return;
-    }
-
-    // Dispatch code_processing for instant modal feedback
-    const match = code.match(CODE_RE);
-    if (match) {
-      const prefix = match[1].toUpperCase();
-      const codeTypeStr = CODE_TYPE_MAP[prefix] || 'code';
-      window.dispatchEvent(new CustomEvent('nebo:code_processing', {
-        detail: {
-          code,
-          code_type: codeTypeStr,
-          status_message: CODE_STATUS_MAP[codeTypeStr] || 'Processing...',
-        },
-      }));
     }
 
     // Send via WebSocket — backend intercepts and handles
