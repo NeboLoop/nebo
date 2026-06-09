@@ -15,6 +15,10 @@ import { logger } from '$lib/monitoring';
 
 const log = logger.child({ component: 'WSListeners' });
 
+/** Chrome Web Store listing for the Nebo Browser Relay extension. */
+const CHROME_EXTENSION_URL =
+  'https://chromewebstore.google.com/detail/nebo-browser-relay/heaeiepdllbncnnlfniglgmbfmmemkcg';
+
 let attached = false;
 const unsubs: (() => void)[] = [];
 
@@ -57,7 +61,10 @@ export function attachWebSocketListeners(): void {
       if (now - lastExtPrompt < 10 * 60 * 1000) return; // at most once per 10 min
       lastExtPrompt = now;
       const msg = `${get(t)('browserExtension.notConnected')} ${get(t)('browserExtension.instructions')}`;
-      addToast(msg, 'warning', 12000);
+      addToast(msg, 'warning', 12000, {
+        label: get(t)('browserExtension.install'),
+        url: CHROME_EXTENSION_URL,
+      });
     })
   );
 

@@ -22,6 +22,14 @@
       <div class="pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl border shadow-lg backdrop-blur-sm {colorMap[toast.type]}">
         <Icon class="w-4 h-4 shrink-0" />
         <span class="text-sm font-medium text-base-content flex-1">{toast.message}</span>
+        {#if toast.action}
+          <a
+            href={toast.action.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="btn btn-xs btn-primary shrink-0"
+          >{toast.action.label}</a>
+        {/if}
         <button
           onclick={() => removeToast(toast.id)}
           class="p-0.5 rounded hover:bg-base-content/10 transition-colors cursor-pointer bg-transparent border-none"
