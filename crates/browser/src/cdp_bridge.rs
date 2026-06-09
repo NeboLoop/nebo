@@ -11,6 +11,8 @@
 use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chromiumoxide::{Browser, Page};
@@ -18,10 +20,18 @@ use futures::StreamExt;
 use rand::Rng;
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, OnceCell};
-use tracing::info;
+use tokio::sync::Mutex;
+use tracing::{info, warn};
 
 use crate::BrowserError;
+
+/// Bound for a single CDP operation. Obscura ops are normally sub-second; a hang
+/// past this means the browser/connection is wedged, so we fail fast (and, for
+/// `new_page`, recycle the whole connection) instead of trapping the tool for
+/// minutes — the long-session wedge this module previously suffered.
+const NEW_PAGE_TIMEOUT: Duration = Duration::from_secs(30);
+const NAV_TIMEOUT: Duration = Duration::from_secs(45);
+const EVAL_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How to launch the bundled Obscura browser (resolved once, used on lazy init).
 #[derive(Clone)]
@@ -37,7 +47,8 @@ pub struct ObscuraConfig {
     pub log_path: Option<PathBuf>,
 }
 
-/// The launched Obscura process + browser + its open pages. Created once via [`CdpBridge::core`].
+/// The launched Obscura process + browser + its open pages. Recreated on demand
+/// via [`CdpBridge::get_core`] whenever the previous connection dies.
 struct CdpCore {
     /// The `obscura serve` process — killed on drop (`Command::kill_on_drop`).
     _obscura: Child,
@@ -45,102 +56,153 @@ struct CdpCore {
     /// One tab per `session_id` (1:1 sub-agent→tab). Locked only to get/insert, never across a
     /// page operation, so sessions navigate/read concurrently.
     pages: Mutex<HashMap<String, Page>>,
+    /// Flipped to `false` by the CDP event-loop task when the connection ends. A
+    /// dead core is dropped + relaunched on the next [`CdpBridge::get_core`] call —
+    /// this is what stops a wedged Obscura from being trapped forever.
+    alive: Arc<AtomicBool>,
 }
 
-/// Tier-2 backend: the bundled Obscura headless browser driven over CDP. Launches lazily.
+/// Tier-2 backend: the bundled Obscura headless browser driven over CDP. Launches
+/// lazily, and **relaunches** if the connection dies or wedges (so a long session
+/// can't permanently lose the built-in browser).
 pub struct CdpBridge {
     config: ObscuraConfig,
-    core: OnceCell<CdpCore>,
+    core: Mutex<Option<Arc<CdpCore>>>,
+    /// True once tier-2 has been launched at least once (sync status, no lock).
+    launched: AtomicBool,
 }
 
 impl CdpBridge {
     pub fn new(config: ObscuraConfig) -> Self {
         Self {
             config,
-            core: OnceCell::new(),
+            core: Mutex::new(None),
+            launched: AtomicBool::new(false),
         }
     }
 
-    /// Launch (once) Obscura's CDP server and connect; subsequent calls reuse it.
-    async fn core(&self) -> Result<&CdpCore, BrowserError> {
-        self.core
-            .get_or_try_init(|| async {
-                // Random high loopback port — zero collisions across concurrent instances.
-                let port = random_high_port()?;
-                info!(port, binary = %self.config.binary.display(), "launching Obscura (CDP tier-2)");
+    /// Return a live Obscura core, launching (or relaunching, if the previous one
+    /// died) as needed. The lock is held across launch so two callers can't spawn
+    /// two Obscura processes.
+    async fn get_core(&self) -> Result<Arc<CdpCore>, BrowserError> {
+        let mut guard = self.core.lock().await;
+        if let Some(core) = guard.as_ref() {
+            if core.alive.load(Ordering::Relaxed) {
+                return Ok(core.clone());
+            }
+            // Connection died — drop it (kill_on_drop terminates the old process) and relaunch.
+            warn!("Obscura CDP connection dead — relaunching tier-2 browser");
+            *guard = None;
+        }
+        let core = Arc::new(self.launch().await?);
+        *guard = Some(core.clone());
+        self.launched.store(true, Ordering::Relaxed);
+        Ok(core)
+    }
 
-                let mut cmd = Command::new(&self.config.binary);
-                cmd.arg("serve")
-                    .arg("--host")
-                    .arg("127.0.0.1")
-                    .arg("--port")
-                    .arg(port.to_string());
-                if self.config.stealth {
-                    cmd.arg("--stealth");
-                }
-                if let Some(dir) = &self.config.storage_dir {
-                    cmd.arg("--storage-dir").arg(dir);
-                }
-                // Capture Obscura's own log (navigations + CDP errors) to a file so a
-                // misbehaving tier-2 browse leaves a durable trail. `info` keeps it useful
-                // without the per-command `debug` firehose. Falls back to discarding if the
-                // log file can't be opened.
-                let log_file = self.config.log_path.as_ref().and_then(|p| {
-                    if let Some(dir) = p.parent() {
-                        let _ = std::fs::create_dir_all(dir);
-                    }
-                    std::fs::OpenOptions::new().create(true).append(true).open(p).ok()
-                });
-                cmd.env("RUST_LOG", "obscura=info,obscura_cdp=info");
-                cmd.stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(match log_file {
-                        Some(f) => std::process::Stdio::from(f),
-                        None => std::process::Stdio::null(),
-                    })
-                    .kill_on_drop(true);
-                let child = cmd
-                    .spawn()
-                    .map_err(|e| BrowserError::Other(format!("failed to launch obscura: {e}")))?;
+    /// Drop the current core so the next [`get_core`] relaunches. Called when an
+    /// operation wedges (e.g. `new_page` times out) — the browser is unhealthy.
+    async fn recycle(&self) {
+        *self.core.lock().await = None;
+    }
 
-                // Wait for Obscura's CDP endpoint to come up before connecting.
-                wait_for_cdp(port, Duration::from_secs(15)).await?;
+    /// Spawn a fresh Obscura process and connect over CDP.
+    async fn launch(&self) -> Result<CdpCore, BrowserError> {
+        // Random high loopback port — zero collisions across concurrent instances.
+        let port = random_high_port()?;
+        info!(port, binary = %self.config.binary.display(), "launching Obscura (CDP tier-2)");
 
-                let (browser, mut handler) = Browser::connect(format!("http://127.0.0.1:{port}"))
-                    .await
-                    .map_err(|e| BrowserError::CdpConnection(e.to_string()))?;
-                // Drive the CDP event loop for the life of the browser.
-                tokio::spawn(async move {
-                    while let Some(ev) = handler.next().await {
-                        if ev.is_err() {
-                            break;
-                        }
-                    }
-                });
-                info!("Obscura connected over CDP");
-                Ok(CdpCore {
-                    _obscura: child,
-                    browser,
-                    pages: Mutex::new(HashMap::new()),
-                })
+        let mut cmd = Command::new(&self.config.binary);
+        cmd.arg("serve")
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(port.to_string());
+        if self.config.stealth {
+            cmd.arg("--stealth");
+        }
+        if let Some(dir) = &self.config.storage_dir {
+            cmd.arg("--storage-dir").arg(dir);
+        }
+        // Capture Obscura's own log (navigations + CDP errors) to a file so a
+        // misbehaving tier-2 browse leaves a durable trail. `info` keeps it useful
+        // without the per-command `debug` firehose. Falls back to discarding if the
+        // log file can't be opened.
+        let log_file = self.config.log_path.as_ref().and_then(|p| {
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            std::fs::OpenOptions::new().create(true).append(true).open(p).ok()
+        });
+        cmd.env("RUST_LOG", "obscura=info,obscura_cdp=info");
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(match log_file {
+                Some(f) => std::process::Stdio::from(f),
+                None => std::process::Stdio::null(),
             })
+            .kill_on_drop(true);
+        let child = cmd
+            .spawn()
+            .map_err(|e| BrowserError::Other(format!("failed to launch obscura: {e}")))?;
+
+        // Wait for Obscura's CDP endpoint to come up before connecting.
+        wait_for_cdp(port, Duration::from_secs(15)).await?;
+
+        let (browser, mut handler) = Browser::connect(format!("http://127.0.0.1:{port}"))
             .await
+            .map_err(|e| BrowserError::CdpConnection(e.to_string()))?;
+        // Drive the CDP event loop for the life of the browser; mark the core dead
+        // when it ends so the next caller relaunches instead of hanging on a corpse.
+        let alive = Arc::new(AtomicBool::new(true));
+        let alive_task = alive.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = handler.next().await {
+                if ev.is_err() {
+                    break;
+                }
+            }
+            alive_task.store(false, Ordering::Relaxed);
+        });
+        info!("Obscura connected over CDP");
+        Ok(CdpCore {
+            _obscura: child,
+            browser,
+            pages: Mutex::new(HashMap::new()),
+            alive,
+        })
     }
 
     /// Get (or open) the tab for a session — one page per `session_id`.
     async fn page_for(&self, session_id: &str) -> Result<Page, BrowserError> {
-        let core = self.core().await?;
+        let core = self.get_core().await?;
         {
             let map = core.pages.lock().await;
             if let Some(p) = map.get(session_id) {
                 return Ok(p.clone());
             }
         }
-        let page = core
-            .browser
-            .new_page("about:blank")
-            .await
-            .map_err(|e| BrowserError::Other(format!("cdp new_page: {e}")))?;
+        // Bound `new_page` — a wedged Obscura otherwise hangs the tool for minutes.
+        // On timeout or error, recycle the connection so the NEXT call relaunches
+        // into a fresh browser (self-healing) instead of staying stuck.
+        let page = match tokio::time::timeout(
+            NEW_PAGE_TIMEOUT,
+            core.browser.new_page("about:blank"),
+        )
+        .await
+        {
+            Ok(Ok(p)) => p,
+            Ok(Err(e)) => {
+                self.recycle().await;
+                return Err(BrowserError::Other(format!("cdp new_page: {e}")));
+            }
+            Err(_) => {
+                self.recycle().await;
+                return Err(BrowserError::Timeout(
+                    "cdp new_page timed out — recycled the built-in browser, retry".into(),
+                ));
+            }
+        };
         core.pages
             .lock()
             .await
@@ -162,22 +224,39 @@ impl CdpBridge {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| BrowserError::Other("navigate requires 'url'".into()))?;
                 let page = self.page_for(session_id).await?;
-                page.goto(url)
-                    .await
-                    .map_err(|e| BrowserError::Other(format!("cdp navigate: {e}")))?;
+                match tokio::time::timeout(NAV_TIMEOUT, page.goto(url)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        return Err(BrowserError::Other(format!("cdp navigate: {e}")));
+                    }
+                    Err(_) => {
+                        return Err(BrowserError::Timeout(format!(
+                            "cdp navigate timed out: {url}"
+                        )));
+                    }
+                }
                 Ok(json!({ "ok": true, "url": url }))
             }
             "read_page" => {
                 let page = self.page_for(session_id).await?;
                 // Visible text — enough for reading search results and article content. The
                 // interactive accessibility/ref surface (click/fill targets) is Phase 2.
-                let text: String = page
-                    .evaluate(
+                let eval = match tokio::time::timeout(
+                    EVAL_TIMEOUT,
+                    page.evaluate(
                         "document.body && document.body.innerText ? document.body.innerText \
                          : (document.documentElement ? document.documentElement.innerText : '')",
-                    )
-                    .await
-                    .map_err(|e| BrowserError::Other(format!("cdp read_page: {e}")))?
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(e)) => e,
+                    Ok(Err(e)) => return Err(BrowserError::Other(format!("cdp read_page: {e}"))),
+                    Err(_) => {
+                        return Err(BrowserError::Timeout("cdp read_page timed out".into()));
+                    }
+                };
+                let text: String = eval
                     .into_value()
                     .map_err(|e| BrowserError::Other(format!("cdp read_page decode: {e}")))?;
                 Ok(json!({ "pageContent": text }))
@@ -188,14 +267,16 @@ impl CdpBridge {
         }
     }
 
-    /// True once the managed Chrome has been launched + connected (i.e. tier-2 is in use).
+    /// True once the managed Chrome has been launched (i.e. tier-2 is in use).
     pub fn is_active(&self) -> bool {
-        self.core.get().is_some()
+        self.launched.load(Ordering::Relaxed)
     }
 
     /// Close the tab a session opened (best-effort) — mirrors the extension's `close_session_tabs`.
     pub async fn close_session(&self, session_id: &str) {
-        if let Some(core) = self.core.get() {
+        // Snapshot the core out of the lock, then close the page without holding it.
+        let core = self.core.lock().await.clone();
+        if let Some(core) = core {
             let page = core.pages.lock().await.remove(session_id);
             if let Some(page) = page {
                 let _ = page.close().await;
@@ -277,4 +358,82 @@ pub fn find_obscura(data_dir: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    //! Live tier-2 tests. They spawn the real Obscura binary, so they're
+    //! `#[ignore]`d (run with `cargo test -p nebo-browser -- --ignored`) and
+    //! skip cleanly when the binary isn't present. They guard the wedge fix:
+    //! many fresh tabs + concurrent agents must not hang or trap the backend.
+    use super::*;
+
+    fn try_bridge() -> Option<CdpBridge> {
+        let bin = find_obscura(".")?;
+        Some(CdpBridge::new(ObscuraConfig {
+            binary: bin,
+            storage_dir: None,
+            stealth: true,
+            log_path: None,
+        }))
+    }
+
+    /// Opening a fresh tab + navigate + read across many sessions must keep
+    /// working — the leaked-target wedge made new_page hang after a while.
+    #[tokio::test]
+    #[ignore = "requires the obscura binary; run with --ignored"]
+    async fn many_sessions_do_not_wedge() {
+        let Some(bridge) = try_bridge() else {
+            eprintln!("obscura binary not found — skipping");
+            return;
+        };
+        for i in 0..25 {
+            let sid = format!("sess-{i}");
+            let url = format!("data:text/html,<body>page-{i}</body>");
+            bridge
+                .execute("navigate", &json!({ "url": url }), &sid)
+                .await
+                .unwrap_or_else(|e| panic!("navigate iter {i} failed: {e}"));
+            let res = bridge
+                .execute("read_page", &json!({}), &sid)
+                .await
+                .unwrap_or_else(|e| panic!("read_page iter {i} failed: {e}"));
+            assert!(
+                res.get("pageContent").is_some(),
+                "iter {i}: read_page returned no pageContent"
+            );
+            bridge.close_session(&sid).await;
+        }
+    }
+
+    /// Concurrent sub-agents each drive their own tab on the shared browser.
+    #[tokio::test]
+    #[ignore = "requires the obscura binary; run with --ignored"]
+    async fn concurrent_agents_share_the_browser() {
+        let Some(bridge) = try_bridge() else {
+            eprintln!("obscura binary not found — skipping");
+            return;
+        };
+        let bridge = Arc::new(bridge);
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let b = bridge.clone();
+            handles.push(tokio::spawn(async move {
+                let sid = format!("agent-{i}");
+                let url = format!("data:text/html,<body>agent-{i}</body>");
+                b.execute("navigate", &json!({ "url": url }), &sid)
+                    .await
+                    .expect("navigate");
+                let res = b
+                    .execute("read_page", &json!({}), &sid)
+                    .await
+                    .expect("read_page");
+                b.close_session(&sid).await;
+                res.get("pageContent").is_some()
+            }));
+        }
+        for (i, h) in handles.into_iter().enumerate() {
+            assert!(h.await.expect("task panicked"), "agent {i} got no content");
+        }
+    }
 }
