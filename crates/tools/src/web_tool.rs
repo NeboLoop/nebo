@@ -8,8 +8,9 @@ use crate::registry::{DynTool, ResourceKind, ToolResult};
 /// Max chars for auto-snapshot appended after mutation actions.
 const AUTO_SNAPSHOT_MAX_CHARS: usize = 6_000;
 
-/// Max chars for inline read_page/evaluate results.
-/// Results beyond this are truncated with a hint, never spilled to files.
+/// Preview size for inline read_page/evaluate/fetch results. Results beyond this
+/// return this many chars inline and spill the FULL text to a file the model can
+/// page through (see `spill_large_result`) — never a silent cut.
 const MAX_INLINE_CHARS: usize = 15_000;
 
 /// Callback type for broadcasting events to connected WebSocket clients.
@@ -133,7 +134,7 @@ impl WebTool {
         }
     }
 
-    async fn handle_http(&self, input: &serde_json::Value) -> ToolResult {
+    async fn handle_http(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
         let url = match input.get("url").and_then(|v| v.as_str()) {
             Some(u) => u,
             None => {
@@ -257,20 +258,9 @@ impl WebTool {
                             // noise (same extractor the `sanitize` action uses). For the full
                             // page use read_page after navigate; for structured data fetch a
                             // JSON/API endpoint (which stays raw below).
-                            let text = sanitize_html(&body);
-                            if text.len() > MAX_INLINE_CHARS {
-                                let end =
-                                    types::strutil::floor_char_boundary(&text, MAX_INLINE_CHARS);
-                                format!(
-                                    "{}\n\n[Truncated to {} chars — this is a rendered web page. \
-                                     For the full page use web(action: \"read_page\") after \
-                                     navigate; for structured data fetch a JSON/API endpoint.]",
-                                    &text[..end],
-                                    MAX_INLINE_CHARS
-                                )
-                            } else {
-                                text
-                            }
+                            // Full visible text inline if small; otherwise preview +
+                            // the full text spilled to a file the model can page.
+                            spill_large_result(&sanitize_html(&body), session_id)
                         } else if body.len() > 50_000 {
                             // Non-HTML (e.g. JSON/API) — keep RAW so it stays parseable,
                             // paginated by `offset` for very large responses.
@@ -1152,11 +1142,10 @@ impl WebTool {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             if !page_content.is_empty() {
-                                let content = if page_content.len() > MAX_INLINE_CHARS {
-                                    truncate_snapshot(page_content, MAX_INLINE_CHARS)
-                                } else {
-                                    page_content.to_string()
-                                };
+                                let content = spill_large_result(
+                                    page_content,
+                                    session_id.unwrap_or("read_page"),
+                                );
                                 return ToolResult {
                                     content,
                                     is_error: false,
@@ -1261,10 +1250,12 @@ impl WebTool {
                     }
                 }
 
-                // Truncate large results inline — never spill to files.
+                // Large reads: preview inline + full text spilled to a file the model
+                // can page through (os read), instead of a silent cut.
                 if matches!(action, "evaluate" | "snapshot" | "read_page") {
                     if text_result.len() > MAX_INLINE_CHARS {
-                        text_result = truncate_snapshot(&text_result, MAX_INLINE_CHARS);
+                        let hint = session_id.unwrap_or("read_page");
+                        text_result = spill_large_result(&text_result, hint);
                     }
                 }
 
@@ -1574,7 +1565,7 @@ impl DynTool for WebTool {
             }
 
             match resource.as_str() {
-                "http" => self.handle_http(&input).await,
+                "http" => self.handle_http(&input, session_id).await,
                 "search" => self.handle_search(&input, session_id, &group_key).await,
                 "browser" => self.handle_browser(&input, session_id, &group_key).await,
                 "devtools" => self.handle_devtools(&input, session_id).await,
@@ -1683,6 +1674,46 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
 
 /// Truncate a snapshot at a line boundary, appending an omission note.
 /// Used by auto-snapshot after navigate to keep output compact.
+/// Bound an inline tool result WITHOUT losing data. Short results pass through;
+/// large ones return a preview plus the FULL text written to a temp file the model
+/// can page through with `os(action: "read", path, offset, limit)`. This mirrors how
+/// Claude Code handles oversized output (preview + spill-to-file) — the model gets
+/// the whole result on demand instead of a silent hard cut.
+fn spill_large_result(full: &str, name_hint: &str) -> String {
+    if full.len() <= MAX_INLINE_CHARS {
+        return full.to_string();
+    }
+    let end = types::strutil::floor_char_boundary(full, MAX_INLINE_CHARS);
+    let preview = &full[..end];
+
+    let dir = config::data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("tmp")
+        .join("web");
+    let _ = std::fs::create_dir_all(&dir);
+    let slug: String = name_hint
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .take(40)
+        .collect();
+    let path = dir.join(format!("{}-{}.txt", slug, uuid::Uuid::new_v4()));
+
+    match std::fs::write(&path, full) {
+        Ok(()) => format!(
+            "{preview}\n\n[showing first {} of {} chars — full text saved to {}]",
+            preview.len(),
+            full.len(),
+            path.display()
+        ),
+        // Spill failed — still state the total rather than cut silently.
+        Err(_) => format!(
+            "{preview}\n\n[showing first {} of {} chars]",
+            preview.len(),
+            full.len()
+        ),
+    }
+}
+
 fn truncate_snapshot(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_string();
@@ -2277,5 +2308,31 @@ button "Next" [ref_4]
 link "Create account" [ref_5]"#;
         let result = detect_auth_page(url, content);
         assert!(result.is_some(), "should detect Google OAuth login");
+    }
+
+    #[test]
+    fn spill_passes_small_results_through_unchanged() {
+        let small = "just a little content";
+        assert_eq!(spill_large_result(small, "t"), small);
+    }
+
+    #[test]
+    fn spill_large_result_previews_and_saves_full_text() {
+        let big = "x".repeat(MAX_INLINE_CHARS + 5_000);
+        let out = spill_large_result(&big, "test-spill");
+        // Inline output is bounded, states the true total, and points at a file.
+        assert!(out.len() < big.len(), "inline output should be a preview");
+        assert!(out.contains(&format!("of {} chars", big.len())));
+        assert!(out.contains("full text saved to"));
+        // The spilled file holds the FULL text (nothing lost).
+        let path = out
+            .rsplit("saved to ")
+            .next()
+            .unwrap()
+            .trim_end_matches(']')
+            .trim();
+        let saved = std::fs::read_to_string(path).expect("spill file should exist");
+        assert_eq!(saved, big);
+        let _ = std::fs::remove_file(path);
     }
 }
