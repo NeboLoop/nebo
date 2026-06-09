@@ -60,7 +60,7 @@
   let authDescription = $state('');
   let authInProgress = $state(false);
   let pluginSlug = $state('');
-  let authQueue = $state<Array<{ slug: string; label: string; description: string }>>([]);
+  let authQueue = $state<Array<{ slug: string; label: string; description: string; authType?: string }>>([]);
   let authIndex = $state(0);
   let pendingAgentId = $state('');
   // True when the user kicked off the install from the desktop UI: the modal
@@ -99,6 +99,9 @@
   const progressTotal = $derived(Math.max(depTotal, deps.length));
   const progressPct = $derived(progressTotal > 0 ? Math.round((settledCount / progressTotal) * 100) : 0);
   const installing = $derived(deps.some((d) => d.status === 'installing'));
+  // The current auth step uses user-supplied API keys (configured via the form in
+  // Settings → Plugins) rather than an interactive OAuth login.
+  const currentAuthNeedsKeys = $derived(authQueue[authIndex]?.authType === 'env');
 
   function formatPrice(cents: number, interval?: string): string {
     const amount = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'usd', minimumFractionDigits: 0 }).format(cents / 100);
@@ -400,7 +403,7 @@
 
   function handleAgentAuthRequired(e: Event) {
     const data = (e as CustomEvent).detail;
-    const plugins = (data?.plugins as Array<{ slug: string; label: string; description: string }>) || [];
+    const plugins = (data?.plugins as Array<{ slug: string; label: string; description: string; authType?: string }>) || [];
     if (plugins.length === 0) return;
     authQueue = plugins;
     authIndex = 0;
@@ -484,6 +487,16 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') close();
+  }
+
+  /** Display label for a dependency: the explicit name, else the last segment of a
+   *  qualified ref (@org/type/name → name) so qualified refs read like the clean
+   *  slug-style names instead of the raw "@dc/skills/dc-intake-parser". */
+  function depLabel(dep: DepItem): string {
+    if (dep.name) return dep.name;
+    const ref = dep.reference;
+    if (ref.startsWith('@') && ref.includes('/')) return ref.split('/').pop() || ref;
+    return ref;
   }
 
   let copyTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -598,9 +611,17 @@
                   <p class="text-xs text-base-content/70 mt-1">{authDescription}</p>
                 {/if}
               </div>
-              <button type="button" class="btn btn-primary btn-sm mt-2" onclick={startAuth}>
-                Connect {authLabel || 'Account'}
-              </button>
+              {#if currentAuthNeedsKeys}
+                <!-- API-key plugin (e.g. Slack): the inline OAuth login doesn't apply.
+                     Route to the canonical key form + setup wizard in Settings. -->
+                <button type="button" class="btn btn-primary btn-sm mt-2" onclick={openPluginSettings}>
+                  Set up {authLabel || 'plugin'} in Settings
+                </button>
+              {:else}
+                <button type="button" class="btn btn-primary btn-sm mt-2" onclick={startAuth}>
+                  Connect {authLabel || 'Account'}
+                </button>
+              {/if}
               <button type="button" class="btn btn-sm btn-ghost" onclick={skipAuth}>Skip</button>
             {/if}
           </div>
@@ -713,6 +734,7 @@
             </p>
             <ul class="flex flex-col gap-2">
               {#each deps as dep}
+                {@const label = depLabel(dep)}
                 <li class="flex items-center gap-2.5 text-xs">
                   {#if dep.status === 'installed'}
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-success shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
@@ -725,18 +747,11 @@
                   {/if}
 
                   <div class="flex-1 min-w-0">
-                    {#if dep.name}
-                      <div class="truncate font-medium {dep.status === 'failed' ? 'text-error/90' : ''}">{dep.name}</div>
+                    <div class="truncate font-medium {dep.status === 'failed' ? 'text-error/90' : ''}">{label}</div>
+                    {#if dep.reference !== label}
                       <button
                         type="button"
                         class="font-mono text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none p-0"
-                        title="Copy install code"
-                        onclick={() => copyCode(dep.reference)}
-                      >{copiedRef === dep.reference ? 'Copied ✓' : dep.reference}</button>
-                    {:else}
-                      <button
-                        type="button"
-                        class="truncate font-mono hover:text-base-content/70 cursor-pointer bg-transparent border-none p-0 {dep.status === 'failed' ? 'text-error/90' : ''}"
                         title="Copy install code"
                         onclick={() => copyCode(dep.reference)}
                       >{copiedRef === dep.reference ? 'Copied ✓' : dep.reference}</button>

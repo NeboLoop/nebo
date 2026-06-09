@@ -519,8 +519,9 @@ async fn handle_collection_code(
             .and_then(|n| n.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
+        // NeboLoop serializes the resolved artifact id as `targetId` (not `id`).
         let item_id = item
-            .get("id")
+            .get("targetId")
             .and_then(|i| i.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
@@ -1301,6 +1302,9 @@ async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
                             "slug": slug,
                             "label": auth.label,
                             "description": auth.description,
+                            // "env" = user-supplied API keys (configured via a form in
+                            // Settings → Plugins), anything else = interactive OAuth login.
+                            "authType": auth.auth_type,
                         }));
                     }
                 }
