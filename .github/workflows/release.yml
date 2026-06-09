@@ -63,7 +63,6 @@ jobs:
     runs-on: macos-latest
     env:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
-      HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
       HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
       # NOTE: CMAKE_OSX_ARCHITECTURES, CFLAGS, CXXFLAGS for cross-build are
@@ -84,6 +83,14 @@ jobs:
 
       - name: Ensure target is installed
         run: rustup target add ${{ matrix.target }}
+
+      # Cache the Rust dependency build so re-runs (and every release) don't
+      # recompile the whole dep tree from scratch — the bulk of the ~hour.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          cache-on-failure: true
 
       - name: Download frontend build
         uses: actions/cache/restore@v4
@@ -249,20 +256,52 @@ jobs:
             echo "dmg_path=$DEST" >> "$GITHUB_OUTPUT"
           fi
 
-      # Notarization is MANDATORY. Any failure (rejected, agreement renewal,
-      # submit/network error, staple failure) hard-fails this job — we never
-      # continue and ship an un-notarized DMG. (No `continue-on-error`.) A real
-      # release tag always has the creds; the gate only skips notarization in
-      # contexts that have no Apple secrets at all (forks/PRs), which also have
-      # no signing cert and produce no shippable artifact.
-      - name: Notarize .dmg
-        if: ${{ env.HAS_NOTARIZE_CREDS == 'true' && steps.dmg.outputs.dmg_path != '' }}
+      # Hand the signed (not-yet-notarized) DMG to the separate notarize-macos
+      # job. Notarization is split out so a notarization failure — mandatory, and
+      # the most likely failure — re-runs in minutes against this artifact instead
+      # of rebuilding the whole app.
+      - uses: actions/cache/save@v4
+        if: ${{ steps.dmg.outputs.dmg_path != '' }}
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-${{ matrix.arch }}-dmg-signed
+          path: dist/
+
+  # ─── Notarize macOS DMG (separate job, cheap to re-run) ──────────────
+  # Notarization is MANDATORY but split from the build: a notarization failure
+  # (rejected, agreement renewal, network/notary outage) re-runs in ~3 min
+  # against the already-built+signed DMG instead of forcing a full rebuild.
+  # If it doesn't return "Accepted" + staple cleanly, this job fails and the
+  # release job (gated on success()) publishes nothing — un-notarized never ships.
+  notarize-macos:
+    needs: build-macos
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+    runs-on: macos-latest
+    env:
+      HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
+    steps:
+      - name: Restore signed DMG
+        uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-${{ matrix.arch }}-dmg-signed
+          path: dist/
+          fail-on-cache-miss: true
+
+      - name: Notarize + staple
+        if: ${{ env.HAS_NOTARIZE_CREDS == 'true' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          DMG_FILE="${{ steps.dmg.outputs.dmg_path }}"
+          DMG_FILE=$(ls dist/Nebo-*.dmg 2>/dev/null | head -n1)
+          if [ -z "$DMG_FILE" ]; then
+            echo "::error::no signed DMG found from build-macos"
+            exit 1
+          fi
           echo "Submitting $DMG_FILE for notarization..."
           # Capture output without aborting (default shell is `bash -eo pipefail`)
           # so we can print the result + fetch the detailed log before deciding.
@@ -282,9 +321,7 @@ jobs:
               --password "$APPLE_APP_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" 2>&1 || true
           fi
-          # Only an explicit "Accepted" verdict may proceed. Invalid, agreement
-          # renewal, 403, network/auth errors — all leave SUBMIT_OUT without
-          # "status: Accepted" and therefore fail the release here.
+          # Only an explicit "Accepted" verdict may proceed.
           if ! echo "$SUBMIT_OUT" | grep -q "status: Accepted"; then
             echo "::error::Notarization did NOT succeed — refusing to ship an un-notarized build."
             exit 1
@@ -293,8 +330,8 @@ jobs:
           xcrun stapler validate "$DMG_FILE"
           echo "Notarization complete and stapled."
 
-      - uses: actions/cache/save@v4
-        if: ${{ steps.dmg.outputs.dmg_path != '' }}
+      - name: Save notarized DMG for the release job
+        uses: actions/cache/save@v4
         with:
           key: release-${{ github.run_id }}-nebo-darwin-${{ matrix.arch }}-dmg
           path: dist/
@@ -321,6 +358,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+          cache-on-failure: true
 
       - name: Install Tauri Linux dependencies
         run: |
@@ -446,6 +489,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+          cache-on-failure: true
 
       - uses: actions/setup-node@v4
         with:
@@ -597,7 +646,7 @@ jobs:
   # `needs:` — they're gated by `WINDOWS_BUILD_ENABLED` and the release
   # step gracefully omits Windows assets when the cache restore misses.
   release:
-    needs: [build-macos, build-linux]
+    needs: [notarize-macos, build-linux]
     # MUST require both desktop builds to fully succeed. build-macos now hard-fails
     # if notarization doesn't pass, so this gate is what stops a failed notarization
     # from publishing a release (and the version.json bump) anyway. Windows is
