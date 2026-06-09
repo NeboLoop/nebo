@@ -510,6 +510,13 @@ export function verifyEmail(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Browser status"
+ */
+export function browserStatus() {
+	return webapi.get<components.BrowserStatusResponse>(`/api/v1/browser/status`)
+}
+
+/**
  * @description "List chats"
  */
 export function listChats(limit?: number, offset?: number) {

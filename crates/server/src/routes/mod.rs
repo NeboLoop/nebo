@@ -8,6 +8,7 @@ mod agent;
 mod apps;
 mod artifact_updates;
 mod auth;
+mod browser;
 mod chat;
 mod commander;
 mod entity_config;
@@ -52,6 +53,7 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .merge(skills::routes())
         .merge(tasks::routes())
         .merge(integrations::routes())
+        .merge(browser::routes())
         .merge(update::routes())
         .merge(files::routes())
         .merge(neboai::routes())

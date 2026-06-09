@@ -12,6 +12,7 @@
   import Cpu from 'lucide-svelte/icons/cpu';
   import Lock from 'lucide-svelte/icons/lock';
   import Cable from 'lucide-svelte/icons/cable';
+  import Globe from 'lucide-svelte/icons/globe';
   import Shield from 'lucide-svelte/icons/shield';
   import Code from 'lucide-svelte/icons/code';
   import BarChart3 from 'lucide-svelte/icons/bar-chart-3';
@@ -47,6 +48,7 @@
     { id: 'skills', path: '/settings/skills', label: 'Skills', icon: Zap },
     { id: 'plugins', path: '/settings/plugins', label: 'Plugins', icon: Puzzle },
     { id: 'mcp', path: '/settings/mcp', label: 'MCP', icon: Cable },
+    { id: 'browser', path: '/settings/browser', label: 'Browser', icon: Globe },
     null,
     { id: 'providers', path: '/settings/providers', label: 'Providers', icon: Key, devOnly: true },
     { id: 'routing', path: '/settings/routing', label: 'Routing', icon: Cpu, devOnly: true },

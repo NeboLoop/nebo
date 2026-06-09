@@ -783,6 +783,11 @@ export interface BrowseResponse {
 	entries: unknown[]
 }
 
+export interface BrowserStatusResponse {
+	extensionConnected: boolean
+	builtInAvailable: unknown
+}
+
 export interface CancelRunResponse {
 	cancelled: boolean
 	runId: string
