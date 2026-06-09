@@ -995,6 +995,25 @@ impl PluginStore {
         self.resolve_in_dir(&self.installed_dir, slug, version_range)
     }
 
+    /// The installed slug whose manifest `id` (NeboAI artifact id) matches `artifact_id`.
+    ///
+    /// Plugins are stored by slug, but collections reference them by install code,
+    /// which doesn't resolve to a slug. The artifact id, however, is recorded in
+    /// every plugin.json — so a collection item (which carries the same id) can be
+    /// matched to an already-installed plugin without re-installing it.
+    pub fn slug_for_artifact_id(&self, artifact_id: &str) -> Option<String> {
+        if artifact_id.is_empty() {
+            return None;
+        }
+        self.list_installed()
+            .into_iter()
+            .map(|(slug, ..)| slug)
+            .find(|slug| {
+                self.get_manifest(slug)
+                    .is_some_and(|m| m.id == artifact_id)
+            })
+    }
+
     /// Returns the persistent data directory for a plugin: `<data_dir>/plugins/data/<slug>/`.
     ///
     /// This directory is NOT inside the versioned plugin cache, so it survives plugin

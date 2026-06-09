@@ -31,6 +31,30 @@ pub struct DepRef {
     #[serde(rename = "depType")]
     pub dep_type: DepType,
     pub reference: String,
+    /// Human-readable display name, when the source knows it (e.g. collection
+    /// items carry a `name`). The UI shows this instead of the opaque install
+    /// code; falls back to `reference` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// NeboAI artifact id, when known (collection items carry it). Used to detect
+    /// an already-installed plugin referenced by code — plugin.json records this
+    /// id, but not the install code, so the code alone can't resolve to a slug.
+    /// camelCase on the wire so the modal's retry body (`artifactId`) round-trips.
+    #[serde(rename = "artifactId", default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+}
+
+impl DepRef {
+    /// A dependency with no known display name (the common case for refs
+    /// extracted from manifests/frontmatter, which only carry codes).
+    pub fn new(dep_type: DepType, reference: impl Into<String>) -> Self {
+        Self {
+            dep_type,
+            reference: reference.into(),
+            name: None,
+            artifact_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,7 +91,17 @@ pub async fn resolve_cascade(
     deps: Vec<DepRef>,
     visited: &mut HashSet<String>,
 ) -> CascadeResult {
+    announce_cascade_start(state, &deps);
     resolve_cascade_inner(state, deps, visited, false).await
+}
+
+/// Tell the UI how many top-level dependencies are about to be processed, so the
+/// install modal can render a determinate progress bar instead of a spinner.
+fn announce_cascade_start(state: &AppState, deps: &[DepRef]) {
+    state.hub.broadcast(
+        "dep_cascade_start",
+        serde_json::json!({ "total": deps.len() }),
+    );
 }
 
 /// Force-install variant — called when user explicitly approves pending deps.
@@ -76,6 +110,7 @@ pub async fn resolve_cascade_force(
     deps: Vec<DepRef>,
     visited: &mut HashSet<String>,
 ) -> CascadeResult {
+    announce_cascade_start(state, &deps);
     resolve_cascade_inner(state, deps, visited, true).await
 }
 
@@ -101,6 +136,18 @@ fn resolve_cascade_inner<'a>(
 
             // Check if already installed
             if is_installed(state, &dep).await {
+                // Tell the UI it's present so a row shows installed (e.g. when the
+                // user retries a previously-failed item that's actually installed).
+                state.hub.broadcast(
+                    "dep_installed",
+                    serde_json::json!({
+                        "depType": format!("{:?}", dep.dep_type),
+                        "reference": dep.reference,
+                        "name": dep.name,
+                        "artifactId": dep.artifact_id,
+                    }),
+                );
+                installed_count += 1;
                 results.push(DepResult {
                     dep,
                     status: DepStatus::AlreadyInstalled,
@@ -131,6 +178,8 @@ fn resolve_cascade_inner<'a>(
                     serde_json::json!({
                         "depType": format!("{:?}", dep.dep_type),
                         "reference": dep.reference,
+                        "name": dep.name,
+                        "artifactId": dep.artifact_id,
                     }),
                 );
                 match install_dep(state, &dep).await {
@@ -140,6 +189,8 @@ fn resolve_cascade_inner<'a>(
                             serde_json::json!({
                                 "depType": format!("{:?}", dep.dep_type),
                                 "reference": dep.reference,
+                                "name": dep.name,
+                                "artifactId": dep.artifact_id,
                             }),
                         );
                         installed_count += 1;
@@ -163,6 +214,8 @@ fn resolve_cascade_inner<'a>(
                             serde_json::json!({
                                 "depType": format!("{:?}", dep.dep_type),
                                 "reference": dep.reference,
+                                "name": dep.name,
+                                "artifactId": dep.artifact_id,
                                 "error": e,
                             }),
                         );
@@ -180,6 +233,8 @@ fn resolve_cascade_inner<'a>(
                     serde_json::json!({
                         "depType": format!("{:?}", dep.dep_type),
                         "reference": dep.reference,
+                        "name": dep.name,
+                        "artifactId": dep.artifact_id,
                     }),
                 );
                 pending_count += 1;
@@ -238,9 +293,28 @@ async fn is_installed(state: &AppState, dep: &DepRef) -> bool {
     match dep.dep_type {
         DepType::Skill => is_skill_installed(&dep.reference),
         DepType::Workflow => is_workflow_installed(state, &dep.reference),
-        DepType::Plugin => state.plugin_store.resolve(&dep.reference, "*").is_some(),
+        DepType::Plugin => is_plugin_installed(state, dep),
         DepType::Agent => is_agent_installed(state, &dep.reference),
     }
+}
+
+/// Plugins are stored by slug. Manifest deps reference them by slug (direct
+/// resolve), but collection items reference them by install code, which doesn't
+/// resolve to a slug — so fall back to matching the artifact id (recorded in
+/// every plugin.json). Without this, a code-referenced plugin always looks "not
+/// installed", and the cascade re-installs it, surfacing a spurious failure for
+/// one that's already present.
+fn is_plugin_installed(state: &AppState, dep: &DepRef) -> bool {
+    if state.plugin_store.resolve(&dep.reference, "*").is_some() {
+        return true;
+    }
+    let Some(artifact_id) = dep.artifact_id.as_deref() else {
+        return false;
+    };
+    state
+        .plugin_store
+        .slug_for_artifact_id(artifact_id)
+        .is_some_and(|slug| state.plugin_store.resolve(&slug, "*").is_some())
 }
 
 fn is_agent_installed(state: &AppState, reference: &str) -> bool {
@@ -590,10 +664,7 @@ async fn install_plugin(
         .get_dependencies(&slug)
         .into_iter()
         .filter(|d| !d.optional)
-        .map(|d| DepRef {
-            dep_type: DepType::Plugin,
-            reference: d.name,
-        })
+        .map(|d| DepRef::new(DepType::Plugin, d.name))
         .collect();
     Ok(child_deps)
 }
@@ -613,10 +684,7 @@ pub fn extract_agent_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef
         }
         let key = format!("{:?}:{}", dep_type, reference);
         if seen.insert(key) {
-            deps.push(DepRef {
-                dep_type,
-                reference,
-            });
+            deps.push(DepRef::new(dep_type, reference));
         }
     };
 
@@ -687,26 +755,17 @@ pub fn extract_agent_deps(config: &napp::agent::AgentConfig) -> Vec<DepRef> {
 
     // Plugin dependencies from requires block — installed before skills
     for plugin_ref in &config.requires.plugins {
-        deps.push(DepRef {
-            dep_type: DepType::Plugin,
-            reference: plugin_ref.clone(),
-        });
+        deps.push(DepRef::new(DepType::Plugin, plugin_ref.clone()));
     }
 
     for skill_ref in &config.skills {
-        deps.push(DepRef {
-            dep_type: DepType::Skill,
-            reference: skill_ref.clone(),
-        });
+        deps.push(DepRef::new(DepType::Skill, skill_ref.clone()));
     }
     // Also extract skill refs from inline activities
     for binding in config.workflows.values() {
         for activity in &binding.activities {
             for skill_name in &activity.skills {
-                deps.push(DepRef {
-                    dep_type: DepType::Skill,
-                    reference: skill_name.clone(),
-                });
+                deps.push(DepRef::new(DepType::Skill, skill_name.clone()));
             }
         }
     }
@@ -721,18 +780,12 @@ pub fn extract_workflow_deps(def: &workflow::parser::WorkflowDef) -> Vec<DepRef>
     // From dependencies block
     for s in &def.dependencies.skills {
         if seen.insert(format!("skill:{}", s)) {
-            deps.push(DepRef {
-                dep_type: DepType::Skill,
-                reference: s.clone(),
-            });
+            deps.push(DepRef::new(DepType::Skill, s.clone()));
         }
     }
     for w in &def.dependencies.workflows {
         if seen.insert(format!("workflow:{}", w)) {
-            deps.push(DepRef {
-                dep_type: DepType::Workflow,
-                reference: w.clone(),
-            });
+            deps.push(DepRef::new(DepType::Workflow, w.clone()));
         }
     }
 
@@ -740,10 +793,7 @@ pub fn extract_workflow_deps(def: &workflow::parser::WorkflowDef) -> Vec<DepRef>
     for activity in &def.activities {
         for skill_name in &activity.skills {
             if seen.insert(format!("skill:{}", skill_name)) {
-                deps.push(DepRef {
-                    dep_type: DepType::Skill,
-                    reference: skill_name.clone(),
-                });
+                deps.push(DepRef::new(DepType::Skill, skill_name.clone()));
             }
         }
     }
@@ -756,19 +806,13 @@ pub fn extract_skill_deps(skill: &tools::skills::Skill) -> Vec<DepRef> {
     let mut deps = Vec::new();
 
     for dep_name in &skill.dependencies {
-        deps.push(DepRef {
-            dep_type: DepType::Skill,
-            reference: dep_name.clone(),
-        });
+        deps.push(DepRef::new(DepType::Skill, dep_name.clone()));
     }
 
     // Extract plugin dependencies (non-optional only)
     for plugin in &skill.plugins {
         if !plugin.optional {
-            deps.push(DepRef {
-                dep_type: DepType::Plugin,
-                reference: plugin.name.clone(),
-            });
+            deps.push(DepRef::new(DepType::Plugin, plugin.name.clone()));
         }
     }
 

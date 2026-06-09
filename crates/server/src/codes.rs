@@ -119,6 +119,9 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
             "code": code,
             "code_type": code_type_str,
             "status_message": status_message,
+            // User-initiated from the desktop UI: the modal stays open for the
+            // user to read until they dismiss it.
+            "interactive": true,
         }),
     );
 
@@ -152,6 +155,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
                     "checkout_url": r.checkout_url,
                     "needsAuth": r.needs_auth,
                     "tier": r.tier,
+                    "interactive": true,
                 }),
             );
         }
@@ -165,6 +169,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
                     "code_type": code_type_str,
                     "success": false,
                     "error": e.to_string(),
+                    "interactive": true,
                 }),
             );
         }
@@ -194,13 +199,16 @@ pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str)
         CodeType::Connection => "connection",
     };
 
-    // Also broadcast for the frontend UI
+    // Also broadcast for the frontend UI. Triggered remotely via a channel
+    // (loop, Slack, etc.) — no human is waiting on the desktop modal, so it
+    // auto-dismisses rather than blocking until manually closed.
     state.hub.broadcast(
         "code_processing",
         serde_json::json!({
             "code": code,
             "code_type": code_type_str,
             "status_message": format!("Installing {code_type_str}..."),
+            "interactive": false,
         }),
     );
 
@@ -228,6 +236,7 @@ pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str)
                     "message": r.message,
                     "artifact_name": r.artifact_name,
                     "artifact_id": r.artifact_id,
+                    "interactive": false,
                 }),
             );
 
@@ -505,6 +514,16 @@ async fn handle_collection_code(
     for item in &items {
         let item_code = item.get("code").and_then(|c| c.as_str()).unwrap_or("");
         let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let item_name = item
+            .get("name")
+            .and_then(|n| n.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let item_id = item
+            .get("id")
+            .and_then(|i| i.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
         if item_code.is_empty() {
             warn!(collection = %artifact_id, item_type, "collection item has no install code — skipping");
             continue;
@@ -522,6 +541,8 @@ async fn handle_collection_code(
         deps.push(crate::deps::DepRef {
             dep_type,
             reference: item_code.to_string(),
+            name: item_name,
+            artifact_id: item_id,
         });
     }
     let total = deps.len();
@@ -536,6 +557,16 @@ async fn handle_collection_code(
     );
     if result.failed_count > 0 {
         message.push_str(&format!(", {} failed", result.failed_count));
+    }
+
+    // Surface installed plugins that still need credentials/config so the modal
+    // can show a "Needs setup" section. Same source as the agent-install wizard.
+    let needs_setup = sweep_plugin_auth(state).await;
+    if !needs_setup.is_empty() {
+        state.hub.broadcast(
+            "dep_needs_setup",
+            serde_json::json!({ "items": needs_setup }),
+        );
     }
 
     Ok(CodeHandlerResult {

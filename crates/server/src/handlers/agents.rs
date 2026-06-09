@@ -424,10 +424,7 @@ pub async fn create_agent(
     // Cascade: resolve skill dependencies
     let mut deps = Vec::new();
     for s in &fm.skills {
-        deps.push(crate::deps::DepRef {
-            dep_type: crate::deps::DepType::Skill,
-            reference: s.clone(),
-        });
+        deps.push(crate::deps::DepRef::new(crate::deps::DepType::Skill, s.clone()));
     }
     // Also pull skill deps from agent.json if provided
     if let Some(agent_json_str) = extract_agent_json_str(&body) {
