@@ -998,180 +998,78 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         )));
     }
     let slug = slug_hint;
-    let detail = api
-        .get_plugin(&slug, &platform)
-        .await
-        .map_err(|e| NeboError::Internal(format!("fetch plugin detail: {e}")))?;
 
-    let version = if detail.version.is_empty() {
-        "1.0.0".to_string()
-    } else {
-        detail.version.clone()
-    };
+    // ONE plugin installer — resolve binary, download, install, register.
+    if let Err(e) = fetch_and_install_plugin(state, &api, &slug, &name).await {
+        state.hub.broadcast(
+            "plugin_error",
+            serde_json::json!({ "plugin": name, "error": e.to_string() }),
+        );
+        return Err(e);
+    }
+    state
+        .hub
+        .broadcast("plugin_installed", serde_json::json!({ "plugin": name }));
+    info!(code, plugin = %name, artifact_id = %artifact_id, "installed plugin");
 
-    let plugin_store = state.plugin_store.clone();
-
-    // Get platform-specific download URL from the manifest
-    let platform_binary = detail.platforms.get(&platform).ok_or_else(|| {
-        NeboError::Internal(format!(
-            "plugin {} has no binary for platform {}",
-            slug, platform
-        ))
-    })?;
-    let download_url = &platform_binary.download_url;
-
-    info!(plugin = %name, url = %download_url, "downloading plugin .napp");
-
-    let napp_data = api
-        .download_napp(download_url)
-        .await
-        .map_err(|e| NeboError::Internal(format!("download .napp for {}: {}", name, e)))?;
-
-    info!(plugin = %name, size = napp_data.len(), "downloaded .napp archive");
-
-    // Pause skill watcher during extraction to prevent premature reloads
-    state.skill_loader.pause_watcher();
-
-    // Remove existing version AFTER download completes — avoids killing active watch processes
-    let _ = plugin_store.remove(&slug);
-
-    let install_result = plugin_store
-        .install_from_napp(&slug, &version, &napp_data)
-        .await;
-
-    match install_result {
-        Ok(path) => {
-            state.hub.broadcast(
-                "plugin_installed",
-                serde_json::json!({
-                    "plugin": name,
-                }),
-            );
-            info!(code, plugin = %name, artifact_id = %artifact_id, path = %path.display(), "installed plugin");
-
-            // Persist plugin to DB registry for querying, enable/disable, diagnostics.
-            let manifest_hash = platform_binary.sha256.clone();
-            let sig_status = if platform_binary.signature.is_empty() {
-                "unverified"
-            } else {
-                "verified"
-            };
-            if let Err(e) = state.store.upsert_installed_plugin(
-                &slug,
-                &name,
-                &version,
-                &detail.author,
-                &path.display().to_string(),
-                &manifest_hash,
-                sig_status,
-            ) {
-                warn!(plugin = %slug, error = %e, "failed to upsert plugin into DB registry");
-            }
-
-            // Seed artifact update tracking with installed version
-            let _ = state.store.upsert_artifact_update_pref(&slug, "plugin", &version);
-
-            // Cascade plugin-to-plugin dependencies (e.g., digest → ffmpeg).
-            if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
-                if !manifest.dependencies.is_empty() {
-                    let ps = plugin_store.clone();
-                    if let Ok(api2) = build_api_client(state) {
-                        let api2 = std::sync::Arc::new(api2);
-                        match ps
-                            .ensure_deps(&manifest, |dep_slug, _dep_version| {
-                                let api_inner = api2.clone();
-                                async move {
-                                    let platform = napp::plugin::current_platform_key();
-                                    let m = api_inner
-                                        .get_plugin(&dep_slug, &platform)
-                                        .await
-                                        .map_err(|e| {
-                                            napp::NappError::PluginDownloadFailed(e.to_string())
-                                        })?;
-                                    let url = m
-                                        .platforms
-                                        .get(&platform)
-                                        .map(|pb| pb.download_url.clone())
-                                        .ok_or_else(|| {
-                                            napp::NappError::PluginDownloadFailed(format!(
-                                                "dep {} has no binary for {}",
-                                                dep_slug, platform
-                                            ))
-                                        })?;
-                                    let data =
-                                        api_inner.download_napp(&url).await.map_err(|e| {
-                                            napp::NappError::PluginDownloadFailed(e.to_string())
-                                        })?;
-                                    Ok((m, data))
-                                }
-                            })
-                            .await
-                        {
-                            Ok(installed) => {
-                                for dep_slug in &installed {
-                                    info!(plugin = %slug, dep = %dep_slug, "installed dependency plugin");
-                                }
-                            }
-                            Err(e) => {
-                                warn!(plugin = %slug, error = %e, "failed to install plugin dependencies");
-                            }
+    // Cascade plugin-to-plugin dependencies (e.g., digest → ffmpeg).
+    if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
+        if !manifest.dependencies.is_empty() {
+            let ps = state.plugin_store.clone();
+            if let Ok(api2) = build_api_client(state) {
+                let api2 = std::sync::Arc::new(api2);
+                match ps
+                    .ensure_deps(&manifest, |dep_slug, _dep_version| {
+                        let api_inner = api2.clone();
+                        async move {
+                            let platform = napp::plugin::current_platform_key();
+                            let m = api_inner
+                                .get_plugin(&dep_slug, &platform)
+                                .await
+                                .map_err(|e| {
+                                    napp::NappError::PluginDownloadFailed(e.to_string())
+                                })?;
+                            let url = m
+                                .platforms
+                                .get(&platform)
+                                .map(|pb| pb.download_url.clone())
+                                .ok_or_else(|| {
+                                    napp::NappError::PluginDownloadFailed(format!(
+                                        "dep {} has no binary for {}",
+                                        dep_slug, platform
+                                    ))
+                                })?;
+                            let data = api_inner.download_napp(&url).await.map_err(|e| {
+                                napp::NappError::PluginDownloadFailed(e.to_string())
+                            })?;
+                            Ok((m, data))
                         }
+                    })
+                    .await
+                {
+                    Ok(installed) => {
+                        for dep_slug in &installed {
+                            info!(plugin = %slug, dep = %dep_slug, "installed dependency plugin");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(plugin = %slug, error = %e, "failed to install plugin dependencies");
                     }
                 }
             }
-
-            // Check if plugin requires authentication
-            if let Some(auth) = state.plugin_store.get_manifest(&slug).and_then(|m| m.auth) {
-                state.hub.broadcast(
-                    "plugin_auth_required",
-                    serde_json::json!({
-                        "plugin": name,
-                        "label": auth.label,
-                        "description": auth.description,
-                    }),
-                );
-            }
-        }
-        Err(e) => {
-            state.hub.broadcast(
-                "plugin_error",
-                serde_json::json!({
-                    "plugin": name,
-                    "error": e.to_string(),
-                }),
-            );
-            state.skill_loader.resume_watcher();
-            return Err(NeboError::Internal(format!("plugin install failed: {e}")));
         }
     }
 
-    // Resume watcher and reload skills now that extraction is complete
-    state.skill_loader.load_all().await;
-    state.skill_loader.resume_watcher();
-
-    // Re-register the plugin tool so the new plugin appears as a resource. Always
-    // register (never gate on list_installed) — the tool must stay present in the
-    // prompt regardless of how many plugins are installed.
-    state.tools.unregister("plugin").await;
-    state
-        .tools
-        .register(Box::new(tools::plugin_tool::PluginTool::new(
-            plugin_store.clone(),
-            state.store.clone(),
-        )))
-        .await;
-
-    // Plugin command tools are discovered via the `plugin` STRAP tool (lookup),
-    // not registered individually (13K+ tools overwhelm the LLM context).
-
-    // Register plugin hooks with the hook dispatcher
-    if let Some(manifest) = plugin_store.get_manifest(&slug) {
-        if let Some(binary) = plugin_store.resolve(&slug, "*") {
-            let count = napp::register_plugin_hooks(&manifest, &binary, &state.hooks, plugin_store.clone());
-            if count > 0 {
-                info!(plugin = %slug, hooks = count, "registered plugin hooks");
-            }
-        }
+    // Check if plugin requires authentication
+    if let Some(auth) = state.plugin_store.get_manifest(&slug).and_then(|m| m.auth) {
+        state.hub.broadcast(
+            "plugin_auth_required",
+            serde_json::json!({
+                "plugin": name,
+                "label": auth.label,
+                "description": auth.description,
+            }),
+        );
     }
 
     Ok(CodeHandlerResult {
@@ -1179,6 +1077,94 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         artifact_name: Some(name),
         ..Default::default()
     })
+}
+
+/// Download a marketplace plugin's per-platform `.napp` by slug, install it,
+/// register it in the DB, and wire up its tool + hooks.
+///
+/// The ONE plugin-install core — shared by the standalone code redeemer
+/// (`handle_plugin_code`) and the dependency cascade (`deps::install_plugin`) so
+/// their binary resolution and DB registration can't drift. Callers own their
+/// own surrounding concerns (progress broadcasts, child-dep handling, auth).
+pub(crate) async fn fetch_and_install_plugin(
+    state: &AppState,
+    api: &NeboAIApi,
+    slug: &str,
+    name: &str,
+) -> Result<(), NeboError> {
+    let platform = napp::plugin::current_platform_key();
+    let detail = api
+        .get_plugin(slug, &platform)
+        .await
+        .map_err(|e| NeboError::Internal(format!("fetch plugin detail for {slug}: {e}")))?;
+    let version = if detail.version.is_empty() {
+        "1.0.0".to_string()
+    } else {
+        detail.version.clone()
+    };
+    // Resolve the real per-platform download URL from the manifest — NOT the redeem
+    // response's `download_url`, which is empty for code-redeemed plugins.
+    let platform_binary = detail.platforms.get(&platform).ok_or_else(|| {
+        NeboError::Internal(format!("plugin {slug} has no binary for platform {platform}"))
+    })?;
+
+    info!(plugin = %name, url = %platform_binary.download_url, "downloading plugin .napp");
+    let napp_data = api
+        .download_napp(&platform_binary.download_url)
+        .await
+        .map_err(|e| NeboError::Internal(format!("download .napp for {name}: {e}")))?;
+
+    // Pause the skill watcher during extraction to prevent premature reloads.
+    state.skill_loader.pause_watcher();
+    let _ = state.plugin_store.remove(slug);
+    let install = state
+        .plugin_store
+        .install_from_napp(slug, &version, &napp_data)
+        .await;
+    state.skill_loader.load_all().await;
+    state.skill_loader.resume_watcher();
+    let path = install.map_err(|e| NeboError::Internal(format!("install plugin {slug}: {e}")))?;
+    info!(plugin = %name, path = %path.display(), "installed plugin");
+
+    // Persist to the DB registry (Settings → Plugins reads this) + update tracking.
+    let sig_status = if platform_binary.signature.is_empty() {
+        "unverified"
+    } else {
+        "verified"
+    };
+    if let Err(e) = state.store.upsert_installed_plugin(
+        slug,
+        name,
+        &version,
+        &detail.author,
+        &path.display().to_string(),
+        &platform_binary.sha256,
+        sig_status,
+    ) {
+        warn!(plugin = %slug, error = %e, "failed to upsert plugin into DB registry");
+    }
+    let _ = state.store.upsert_artifact_update_pref(slug, "plugin", &version);
+
+    // Re-register the plugin tool + hooks so the new plugin is usable immediately.
+    // Always register (never gate on count) — the tool must stay present in the prompt.
+    state.tools.unregister("plugin").await;
+    state
+        .tools
+        .register(Box::new(tools::plugin_tool::PluginTool::new(
+            state.plugin_store.clone(),
+            state.store.clone(),
+        )))
+        .await;
+    if let Some(manifest) = state.plugin_store.get_manifest(slug) {
+        if let Some(binary) = state.plugin_store.resolve(slug, "*") {
+            let count =
+                napp::register_plugin_hooks(&manifest, &binary, &state.hooks, state.plugin_store.clone());
+            if count > 0 {
+                info!(plugin = %slug, hooks = count, "registered plugin hooks");
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn handle_app_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {

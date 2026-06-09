@@ -598,73 +598,12 @@ async fn install_plugin(
     }
     let slug = resp.artifact.slug.clone();
 
-    // Resolve the real per-platform download URL via get_plugin — the SAME canonical
-    // path the standalone plugin install (codes.rs) uses. The redeem response's
-    // `download_url` is empty for code-redeemed plugins, so trusting it failed the
-    // cascade for plugins (e.g. stadium-ops) that install fine when redeemed directly.
-    let platform = napp::plugin::current_platform_key();
-    let detail = api
-        .get_plugin(&slug, &platform)
+    // Install via the ONE shared plugin installer (resolves the binary via get_plugin,
+    // downloads, installs, registers in the DB + tool/hooks). Same code path as the
+    // standalone install, so the two can't drift on binary resolution again.
+    crate::codes::fetch_and_install_plugin(state, api, &slug, &name)
         .await
-        .map_err(|e| format!("fetch plugin detail for {slug}: {e}"))?;
-    let version = if detail.version.is_empty() {
-        "1.0.0".to_string()
-    } else {
-        detail.version.clone()
-    };
-    let platform_binary = detail
-        .platforms
-        .get(&platform)
-        .ok_or_else(|| format!("plugin {slug} has no binary for platform {platform}"))?;
-
-    // Download .napp from the resolved per-platform URL
-    let napp_data = api
-        .download_napp(&platform_binary.download_url)
-        .await
-        .map_err(|e| format!("download .napp for {}: {}", slug, e))?;
-
-    tracing::info!(plugin = %name, slug = %slug, size = napp_data.len(), "cascade: downloaded plugin .napp");
-
-    // Pause skill watcher during extraction to prevent premature reloads
-    state.skill_loader.pause_watcher();
-
-    // Remove existing version AFTER download completes
-    let _ = state.plugin_store.remove(&slug);
-
-    // Install from .napp archive (extracts binary, plugin.json, embedded skills)
-    let install_result = state
-        .plugin_store
-        .install_from_napp(&slug, &version, &napp_data)
-        .await;
-
-    match install_result {
-        Ok(path) => {
-            tracing::info!(plugin = %name, path = %path.display(), "cascade: installed plugin");
-
-            // Reload skills (picks up embedded skills from plugin .napp)
-            state.skill_loader.load_all().await;
-            state.skill_loader.resume_watcher();
-
-            // Re-register the plugin tool to refresh its state after install. Always
-            // register (never gate on list_installed) — the tool must stay present in
-            // the prompt regardless of how many plugins are installed.
-            state.tools.unregister("plugin").await;
-            state
-                .tools
-                .register(Box::new(tools::plugin_tool::PluginTool::new(
-                    state.plugin_store.clone(),
-                    state.store.clone(),
-                )))
-                .await;
-
-            // Plugin command tools are discovered via the `plugin` STRAP tool (lookup),
-            // not registered individually (13K+ tools overwhelm the LLM context).
-        }
-        Err(e) => {
-            state.skill_loader.resume_watcher();
-            return Err(format!("plugin install failed: {e}"));
-        }
-    }
+        .map_err(|e| e.to_string())?;
 
     // Extract child plugin dependencies from manifest
     let child_deps = state
