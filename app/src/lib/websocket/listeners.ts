@@ -56,7 +56,7 @@ export function attachWebSocketListeners(): void {
       const now = Date.now();
       if (now - lastExtPrompt < 10 * 60 * 1000) return; // at most once per 10 min
       lastExtPrompt = now;
-      const msg = `${get(t)('browser.notConnected')} ${get(t)('browser.instructions')}`;
+      const msg = `${get(t)('browserExtension.notConnected')} ${get(t)('browserExtension.instructions')}`;
       addToast(msg, 'warning', 12000);
     })
   );
