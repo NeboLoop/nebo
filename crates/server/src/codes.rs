@@ -511,6 +511,7 @@ async fn handle_collection_code(
     // code or with an unrecognized type are logged and skipped — never silently
     // dropped (Rule 6.1: log and continue).
     let mut deps = Vec::new();
+    let mut has_app = false;
     for item in &items {
         let item_code = item.get("code").and_then(|c| c.as_str()).unwrap_or("");
         let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -532,7 +533,9 @@ async fn handle_collection_code(
         }
         let dep_type = match item_type {
             "skill" => crate::deps::DepType::Skill,
-            "agent" => crate::deps::DepType::Agent,
+            // Apps ARE agents (artifact_type="app") — install via the agent path,
+            // then reconcile app fields below so they're recognised as apps.
+            "agent" | "app" => crate::deps::DepType::Agent,
             "plugin" => crate::deps::DepType::Plugin,
             "workflow" => crate::deps::DepType::Workflow,
             other => {
@@ -540,6 +543,9 @@ async fn handle_collection_code(
                 continue;
             }
         };
+        if item_type == "app" {
+            has_app = true;
+        }
         deps.push(crate::deps::DepRef {
             dep_type,
             reference: item_code.to_string(),
@@ -552,6 +558,12 @@ async fn handle_collection_code(
     // Install every item via the canonical installer (force — see fn doc).
     let mut visited = std::collections::HashSet::new();
     let result = crate::deps::resolve_cascade_force(state, deps, &mut visited).await;
+
+    // Apps install through the agent path; detect & persist their app-specific
+    // paths so they show up and launch as apps (the cascade only does the agent part).
+    if has_app {
+        reconcile_app_fields(state).await;
+    }
 
     let mut message = format!(
         "Installed collection \"{}\": {} of {} items installed",
@@ -1169,40 +1181,39 @@ pub(crate) async fn fetch_and_install_plugin(
     Ok(())
 }
 
+/// Detect and persist app-specific fields (ui/, bin/, window config) for every
+/// installed app agent. Apps install through the agent path (standalone code or
+/// collection cascade) but only become recognised/launchable as apps once these
+/// DB fields are set. Idempotent — safe to call after any agent/app install.
+pub(crate) async fn reconcile_app_fields(state: &AppState) {
+    state.agent_loader.load_all().await;
+    for loaded in state.agent_loader.list().await {
+        if !loaded.is_app {
+            continue;
+        }
+        let Some(id) = loaded.id.as_deref() else {
+            continue;
+        };
+        let _ = state.store.set_agent_app_fields(
+            id,
+            true,
+            loaded.app_ui_path.as_ref().and_then(|p| p.to_str()),
+            loaded.app_binary_path.as_ref().and_then(|p| p.to_str()),
+            loaded
+                .app_window_config
+                .as_ref()
+                .and_then(|w| serde_json::to_string(w).ok())
+                .as_deref(),
+        );
+    }
+}
+
 async fn handle_app_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     // Apps use the same install flow as agents — they ARE agents with artifact_type="app"
     let result = handle_agent_code(state, code).await?;
 
-    // After agent install, mark it as an app and reload to detect UI/binary paths
-    if let Some(ref artifact_id) = result.artifact_id {
-        // The agent was installed by handle_agent_code; now reload from filesystem
-        // to detect app-specific paths (ui/, bin/)
-        state.agent_loader.load_all().await;
-        if let Some(loaded) = state
-            .agent_loader
-            .get_by_name(result.artifact_name.as_deref().unwrap_or(""))
-            .await
-        {
-            if loaded.is_app {
-                let ui_path = loaded.app_ui_path.as_ref().map(|p| p.display().to_string());
-                let bin_path = loaded
-                    .app_binary_path
-                    .as_ref()
-                    .map(|p| p.display().to_string());
-                let window_cfg = loaded
-                    .app_window_config
-                    .as_ref()
-                    .and_then(|w| serde_json::to_string(w).ok());
-                let _ = state.store.set_agent_app_fields(
-                    artifact_id,
-                    true,
-                    ui_path.as_deref(),
-                    bin_path.as_deref(),
-                    window_cfg.as_deref(),
-                );
-            }
-        }
-    }
+    // Detect & persist app-specific paths (ui/, bin/) so it's recognised as an app.
+    reconcile_app_fields(state).await;
 
     Ok(CodeHandlerResult {
         message: format!(
