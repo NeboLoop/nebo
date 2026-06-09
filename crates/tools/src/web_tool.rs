@@ -251,7 +251,29 @@ impl WebTool {
 
                 match resp.text().await {
                     Ok(body) => {
-                        let display_body = if body.len() > 50_000 {
+                        let display_body = if content_type.contains("html") {
+                            // Rendered page: return capped VISIBLE TEXT, not a wall of raw
+                            // HTML/markup/scripts. `sanitize_html` drops script/style/nav
+                            // noise (same extractor the `sanitize` action uses). For the full
+                            // page use read_page after navigate; for structured data fetch a
+                            // JSON/API endpoint (which stays raw below).
+                            let text = sanitize_html(&body);
+                            if text.len() > MAX_INLINE_CHARS {
+                                let end =
+                                    types::strutil::floor_char_boundary(&text, MAX_INLINE_CHARS);
+                                format!(
+                                    "{}\n\n[Truncated to {} chars — this is a rendered web page. \
+                                     For the full page use web(action: \"read_page\") after \
+                                     navigate; for structured data fetch a JSON/API endpoint.]",
+                                    &text[..end],
+                                    MAX_INLINE_CHARS
+                                )
+                            } else {
+                                text
+                            }
+                        } else if body.len() > 50_000 {
+                            // Non-HTML (e.g. JSON/API) — keep RAW so it stays parseable,
+                            // paginated by `offset` for very large responses.
                             let raw_offset =
                                 input.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                             let chunk_size = 20_000;
@@ -269,12 +291,7 @@ impl WebTool {
                                 chunk
                             )
                         } else {
-                            // Strip HTML tags for readability if HTML
-                            if content_type.contains("html") {
-                                strip_html(&body)
-                            } else {
-                                body
-                            }
+                            body
                         };
 
                         ToolResult::ok(format!(
