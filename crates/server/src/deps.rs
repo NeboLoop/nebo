@@ -36,12 +36,13 @@ pub struct DepRef {
     /// code; falls back to `reference` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// NeboAI artifact id, when known (collection items carry it). Used to detect
-    /// an already-installed plugin referenced by code — plugin.json records this
-    /// id, but not the install code, so the code alone can't resolve to a slug.
-    /// camelCase on the wire so the modal's retry body (`artifactId`) round-trips.
-    #[serde(rename = "artifactId", default, skip_serializing_if = "Option::is_none")]
-    pub artifact_id: Option<String>,
+    /// Canonical plugin slug, when known (collection items carry it). Plugins are
+    /// stored by slug, but collections reference them by install code — which can't
+    /// resolve to a slug — so this lets the cascade detect an already-installed
+    /// plugin instead of re-installing it. (The artifact id can't be used: a
+    /// plugin.json's `id` is publisher-supplied, not the marketplace artifact id.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
 }
 
 impl DepRef {
@@ -52,7 +53,7 @@ impl DepRef {
             dep_type,
             reference: reference.into(),
             name: None,
-            artifact_id: None,
+            slug: None,
         }
     }
 }
@@ -144,7 +145,7 @@ fn resolve_cascade_inner<'a>(
                         "depType": format!("{:?}", dep.dep_type),
                         "reference": dep.reference,
                         "name": dep.name,
-                        "artifactId": dep.artifact_id,
+                        "slug": dep.slug,
                     }),
                 );
                 installed_count += 1;
@@ -179,7 +180,7 @@ fn resolve_cascade_inner<'a>(
                         "depType": format!("{:?}", dep.dep_type),
                         "reference": dep.reference,
                         "name": dep.name,
-                        "artifactId": dep.artifact_id,
+                        "slug": dep.slug,
                     }),
                 );
                 match install_dep(state, &dep).await {
@@ -190,7 +191,7 @@ fn resolve_cascade_inner<'a>(
                                 "depType": format!("{:?}", dep.dep_type),
                                 "reference": dep.reference,
                                 "name": dep.name,
-                                "artifactId": dep.artifact_id,
+                                "slug": dep.slug,
                             }),
                         );
                         installed_count += 1;
@@ -215,7 +216,7 @@ fn resolve_cascade_inner<'a>(
                                 "depType": format!("{:?}", dep.dep_type),
                                 "reference": dep.reference,
                                 "name": dep.name,
-                                "artifactId": dep.artifact_id,
+                                "slug": dep.slug,
                                 "error": e,
                             }),
                         );
@@ -234,7 +235,7 @@ fn resolve_cascade_inner<'a>(
                         "depType": format!("{:?}", dep.dep_type),
                         "reference": dep.reference,
                         "name": dep.name,
-                        "artifactId": dep.artifact_id,
+                        "slug": dep.slug,
                     }),
                 );
                 pending_count += 1;
@@ -300,21 +301,16 @@ async fn is_installed(state: &AppState, dep: &DepRef) -> bool {
 
 /// Plugins are stored by slug. Manifest deps reference them by slug (direct
 /// resolve), but collection items reference them by install code, which doesn't
-/// resolve to a slug — so fall back to matching the artifact id (recorded in
-/// every plugin.json). Without this, a code-referenced plugin always looks "not
-/// installed", and the cascade re-installs it, surfacing a spurious failure for
-/// one that's already present.
+/// resolve to a slug — so fall back to the slug the collection item carries.
+/// Without this, a code-referenced plugin always looks "not installed", and the
+/// cascade re-installs it, surfacing a spurious failure for one already present.
 fn is_plugin_installed(state: &AppState, dep: &DepRef) -> bool {
     if state.plugin_store.resolve(&dep.reference, "*").is_some() {
         return true;
     }
-    let Some(artifact_id) = dep.artifact_id.as_deref() else {
-        return false;
-    };
-    state
-        .plugin_store
-        .slug_for_artifact_id(artifact_id)
-        .is_some_and(|slug| state.plugin_store.resolve(&slug, "*").is_some())
+    dep.slug
+        .as_deref()
+        .is_some_and(|slug| state.plugin_store.resolve(slug, "*").is_some())
 }
 
 fn is_agent_installed(state: &AppState, reference: &str) -> bool {

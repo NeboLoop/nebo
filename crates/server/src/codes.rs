@@ -519,9 +519,10 @@ async fn handle_collection_code(
             .and_then(|n| n.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
-        // NeboLoop serializes the resolved artifact id as `targetId` (not `id`).
-        let item_id = item
-            .get("targetId")
+        // Canonical plugin slug — lets the cascade detect an already-installed
+        // plugin that's referenced here by code.
+        let item_slug = item
+            .get("slug")
             .and_then(|i| i.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
@@ -543,7 +544,7 @@ async fn handle_collection_code(
             dep_type,
             reference: item_code.to_string(),
             name: item_name,
-            artifact_id: item_id,
+            slug: item_slug,
         });
     }
     let total = deps.len();

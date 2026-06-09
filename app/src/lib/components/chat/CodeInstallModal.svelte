@@ -17,7 +17,7 @@
     reference: string;
     type: string;
     name?: string;
-    artifactId?: string;
+    slug?: string;
     status: 'pending' | 'installing' | 'installed' | 'failed';
     error?: string;
   };
@@ -138,16 +138,16 @@
     if (stripeCheckout) { stripeCheckout.destroy(); stripeCheckout = null; }
   }
 
-  function findOrAddDep(reference: string, type: string, name?: string, artifactId?: string): number {
+  function findOrAddDep(reference: string, type: string, name?: string, slug?: string): number {
     const idx = deps.findIndex((d) => d.reference === reference);
     if (idx >= 0) {
-      // Backfill name/id if a later event carries them.
-      if ((name && !deps[idx].name) || (artifactId && !deps[idx].artifactId)) {
-        deps[idx] = { ...deps[idx], name: deps[idx].name ?? name, artifactId: deps[idx].artifactId ?? artifactId };
+      // Backfill name/slug if a later event carries them.
+      if ((name && !deps[idx].name) || (slug && !deps[idx].slug)) {
+        deps[idx] = { ...deps[idx], name: deps[idx].name ?? name, slug: deps[idx].slug ?? slug };
       }
       return idx;
     }
-    deps = [...deps, { reference, type, name, artifactId, status: 'pending' }];
+    deps = [...deps, { reference, type, name, slug, status: 'pending' }];
     return deps.length - 1;
   }
 
@@ -338,9 +338,9 @@
     const reference = (data?.reference as string) || '';
     const depType = ((data?.depType as string) || 'skill').toLowerCase();
     const name = (data?.name as string) || undefined;
-    const artifactId = (data?.artifactId as string) || undefined;
+    const slug = (data?.slug as string) || undefined;
     if (!reference) return;
-    const idx = findOrAddDep(reference, depType, name, artifactId);
+    const idx = findOrAddDep(reference, depType, name, slug);
     // Don't downgrade a settled row if events arrive out of order.
     if (deps[idx].status === 'pending') {
       deps[idx] = { ...deps[idx], status: 'installing' };
@@ -353,8 +353,8 @@
     const reference = (data?.reference as string) || '';
     const depType = ((data?.depType as string) || 'skill').toLowerCase();
     const name = (data?.name as string) || undefined;
-    const artifactId = (data?.artifactId as string) || undefined;
-    if (reference) findOrAddDep(reference, depType, name, artifactId);
+    const slug = (data?.slug as string) || undefined;
+    if (reference) findOrAddDep(reference, depType, name, slug);
   }
 
   function handleDepInstalled(e: Event) {
@@ -362,9 +362,9 @@
     const reference = (data?.reference as string) || '';
     const depType = ((data?.depType as string) || 'skill').toLowerCase();
     const name = (data?.name as string) || undefined;
-    const artifactId = (data?.artifactId as string) || undefined;
+    const slug = (data?.slug as string) || undefined;
     if (!reference) return;
-    const idx = findOrAddDep(reference, depType, name, artifactId);
+    const idx = findOrAddDep(reference, depType, name, slug);
     deps[idx] = { ...deps[idx], status: 'installed', error: undefined };
     deps = deps;
   }
@@ -374,10 +374,10 @@
     const reference = (data?.reference as string) || '';
     const depType = ((data?.depType as string) || 'skill').toLowerCase();
     const name = (data?.name as string) || undefined;
-    const artifactId = (data?.artifactId as string) || undefined;
+    const slug = (data?.slug as string) || undefined;
     const error = (data?.error as string) || 'Unknown error';
     if (!reference) return;
-    const idx = findOrAddDep(reference, depType, name, artifactId);
+    const idx = findOrAddDep(reference, depType, name, slug);
     deps[idx] = { ...deps[idx], status: 'failed', error };
     deps = deps;
   }
@@ -393,7 +393,7 @@
     try {
       // DepType deserializes as snake_case — dep.type is already lowercase.
       await approveDeps({
-        deps: [{ depType: dep.type, reference: dep.reference, name: dep.name, artifactId: dep.artifactId }],
+        deps: [{ depType: dep.type, reference: dep.reference, name: dep.name, slug: dep.slug }],
       });
     } catch {
       deps[idx] = { ...deps[idx], status: 'failed', error: 'Retry failed to start' };
