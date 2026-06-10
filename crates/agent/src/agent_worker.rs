@@ -359,12 +359,26 @@ impl AgentWorker {
                         .and_then(|s| serde_json::from_str(s).ok())
                         .unwrap_or_else(|| serde_json::json!({}));
 
-                    // Substitute agent input values into the command template
+                    // Substitute agent input values (declared defaults overlaid by
+                    // user-set values) into the command template.
                     let input_values: serde_json::Value = match store.get_agent(&agent_id) {
-                        Ok(Some(r)) => serde_json::from_str(&r.input_values).unwrap_or_else(|_| serde_json::json!({})),
+                        Ok(Some(r)) => effective_input_values(&r.frontmatter, &r.input_values),
                         _ => serde_json::json!({}),
                     };
                     let command = substitute_inputs(&watch_cfg.command, &input_values);
+
+                    // An unresolved placeholder means a required input has no value
+                    // and no default — the process would crashloop against the API
+                    // forever. Skip the binding and say exactly what's missing.
+                    if command.contains("{{") {
+                        warn!(
+                            agent = %agent_id,
+                            binding = %binding.binding_name,
+                            command = %command,
+                            "watch command has unresolved {{input}} placeholders — set the agent's inputs; skipping this binding"
+                        );
+                        continue;
+                    }
 
                     let emit_source = wf_binding.and_then(|wb| wb.emit.as_ref()).map(|emit_name| {
                         let slug = name.to_lowercase().replace(' ', "-");
@@ -442,14 +456,24 @@ impl AgentWorker {
                         .and_then(|s| serde_json::from_str(s).ok())
                         .unwrap_or_else(|| serde_json::json!({}));
 
-                    // Substitute agent input values into the path template
+                    // Substitute agent input values (declared defaults overlaid by
+                    // user-set values) into the path template.
                     let input_values: serde_json::Value = match store.get_agent(&agent_id) {
-                        Ok(Some(r)) => serde_json::from_str(&r.input_values)
-                            .unwrap_or_else(|_| serde_json::json!({})),
+                        Ok(Some(r)) => effective_input_values(&r.frontmatter, &r.input_values),
                         _ => serde_json::json!({}),
                     };
                     let watch_path =
                         substitute_inputs(&folder_cfg.path, &input_values);
+
+                    if watch_path.contains("{{") {
+                        warn!(
+                            agent = %agent_id,
+                            binding = %binding.binding_name,
+                            path = %watch_path,
+                            "folder path has unresolved {{input}} placeholders — set the agent's inputs; skipping this binding"
+                        );
+                        continue;
+                    }
 
                     let emit_source =
                         wf_binding
@@ -947,6 +971,38 @@ fn substitute_inputs(template: &str, inputs: &serde_json::Value) -> String {
         }
     }
     result
+}
+
+/// Effective input values for template substitution: the input defaults the
+/// agent declares in its frontmatter (`inputs: [{key, default}]`), overlaid by
+/// any user-set values. Without the defaults layer, an agent whose user never
+/// opened the inputs form ships literal `{{placeholders}}` into watch commands
+/// (observed: Gmail rejecting `--label-ids {{deals_label}}`).
+fn effective_input_values(frontmatter: &str, input_values: &str) -> serde_json::Value {
+    let mut merged = serde_json::Map::new();
+    if let Ok(fm) = serde_json::from_str::<serde_json::Value>(frontmatter) {
+        if let Some(decls) = fm.get("inputs").and_then(|v| v.as_array()) {
+            for decl in decls {
+                if let (Some(key), Some(default)) = (
+                    decl.get("key").and_then(|v| v.as_str()),
+                    decl.get("default").and_then(|v| v.as_str()),
+                ) {
+                    merged.insert(key.to_string(), serde_json::json!(default));
+                }
+            }
+        }
+    }
+    if let Ok(serde_json::Value::Object(set)) = serde_json::from_str(input_values) {
+        for (k, v) in set {
+            // A user-set value wins over the declared default; ignore blanks so
+            // an emptied form field falls back to the default rather than
+            // substituting an empty string into a command.
+            if v.as_str().is_none_or(|s| !s.is_empty()) {
+                merged.insert(k, v);
+            }
+        }
+    }
+    serde_json::Value::Object(merged)
 }
 
 /// Long-running loop that spawns a plugin watcher process, reads NDJSON lines
@@ -2742,6 +2798,31 @@ mod tests {
         let template = "gmail +watch --project {{gcp_project}}";
         let result = substitute_inputs(template, &inputs);
         assert_eq!(result, template); // unchanged
+    }
+
+    #[test]
+    fn test_effective_input_values_defaults_and_overrides() {
+        let frontmatter = r#"{"inputs":[
+            {"key":"deals_label","type":"text","default":"sites"},
+            {"key":"region","type":"text","default":"us"},
+            {"key":"no_default","type":"text"}
+        ]}"#;
+        // User set region, left deals_label untouched, blanked out nothing.
+        let input_values = r#"{"region":"eu","blank":""}"#;
+
+        let vals = effective_input_values(frontmatter, input_values);
+        // Declared default applies when the user never set a value.
+        assert_eq!(vals["deals_label"], "sites");
+        // User-set value wins over the default.
+        assert_eq!(vals["region"], "eu");
+        // Blank user values don't shadow defaults / don't substitute empties.
+        assert!(vals.get("blank").is_none());
+        // No default + no value → absent, so the placeholder stays and the
+        // spawn guard skips the binding with a clear warning.
+        assert!(vals.get("no_default").is_none());
+
+        let cmd = substitute_inputs("gmail +watch --label-ids {{deals_label}}", &vals);
+        assert_eq!(cmd, "gmail +watch --label-ids sites");
     }
 
     #[test]
