@@ -212,10 +212,19 @@ async fn handle_info(app: &str) -> ToolResult {
 
 #[cfg(target_os = "macos")]
 async fn handle_frontmost() -> ToolResult {
-    run_osascript(
+    let result = run_osascript(
         "tell application \"System Events\" to return name of first process whose frontmost is true",
     )
-    .await
+    .await;
+
+    // No GUI session (headless, locked screen, fast-user-switched, or a
+    // sandboxed test runner) means there genuinely is no frontmost process —
+    // System Events reports "Invalid index" (-1719). That's a valid state to
+    // report, not a tool failure: answer it cleanly instead of erroring.
+    if result.is_error && (result.content.contains("-1719") || result.content.contains("Invalid index")) {
+        return ToolResult::ok("No frontmost application (no active GUI session).".to_string());
+    }
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -684,12 +693,17 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn test_frontmost_app() {
+        // Must not hard-error regardless of GUI state: a real frontmost app
+        // name when a session is active, or a clean "no frontmost" message
+        // when there isn't one (headless/locked/CI). Never a raw AppleScript
+        // error surfaced to the model.
         let result = handle_frontmost().await;
         assert!(
             !result.is_error,
-            "frontmost should succeed: {}",
+            "frontmost must degrade gracefully, not error: {}",
             result.content
         );
+        assert!(!result.content.is_empty());
     }
 
     #[cfg(target_os = "macos")]
