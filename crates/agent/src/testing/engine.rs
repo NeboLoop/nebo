@@ -196,7 +196,7 @@ async fn run_single(
         .filter(|t| t.role == "user")
         .collect();
 
-    for turn in &user_turns {
+    for (turn_idx, turn) in user_turns.iter().enumerate() {
         let mut msg_data = json!({
             "session_id": session_id,
             "prompt": turn.content,
@@ -211,9 +211,12 @@ async fn run_single(
             msg_data["system"] = json!(sys);
         }
 
+        // message_id must be unique per turn — the server's idempotency check
+        // silently drops duplicates, which killed every multi-turn fixture
+        // (turn 2 reused turn 1's id and the run timed out waiting).
         let msg = json!({
             "type": "chat",
-            "message_id": format!("eval-{}-{}", fixture.id, run_id),
+            "message_id": format!("eval-{}-{}-t{}", fixture.id, run_id, turn_idx),
             "data": msg_data,
         });
 
@@ -221,8 +224,11 @@ async fn run_single(
             .await
             .map_err(|e| format!("WS send: {}", e))?;
 
-        // Collect events until done
-        let turn_timeout = Duration::from_secs(60);
+        // Collect events until done. This is an inter-event silence cap, not a
+        // run cap: it resets on every WS event. It must outlast the slowest
+        // single tool execution (web navigation, plugin exec) — efficiency is
+        // judged by cost assertions, not by killing the run mid-tool.
+        let turn_timeout = Duration::from_secs(180);
         let mut pending_tool: Option<(String, Value, Instant)> = None;
 
         loop {

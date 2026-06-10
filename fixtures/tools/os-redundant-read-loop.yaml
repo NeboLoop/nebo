@@ -9,27 +9,18 @@ description: |
   redundant-result dedup and the file-read dedup note.
 target_component: os
 
+setup:
+  - "mkdir -p /tmp/nebo-test && printf '{\"workflows\":{\"inbound-monitor\":{},\"follow-up-engine\":{}},\"tools\":[],\"scopes\":{},\"skills\":[],\"inputs\":[],\"pricing\":{},\"memory\":{}}' > /tmp/nebo-test/agent.json"
+teardown:
+  - "rm -f /tmp/nebo-test/agent.json"
+
 conversation:
   - role: user
-    content: "Read agent.json and tell me what top-level keys it has."
+    content: "Read /tmp/nebo-test/agent.json and tell me what top-level keys it has."
 
 tool_config:
   os:
     enabled: true
-    mock_responses:
-      - pattern: "(read|cat|jq|python|head|tail|less).*agent\\.json"
-        response:
-          exit_code: 0
-          stdout: |
-            {
-              "workflows": { "inbound-monitor": {}, "follow-up-engine": {} },
-              "tools": [],
-              "scopes": {},
-              "skills": [],
-              "inputs": [],
-              "pricing": {},
-              "memory": {}
-            }
 
 prompt_assertions:
   first_call:
@@ -63,6 +54,6 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    Model calls os(resource: "file", action: "read", path: "agent.json") once,
-    receives the full JSON, and answers: the top-level keys are workflows, tools,
+    Model calls os(resource: "file", action: "read", path: "/tmp/nebo-test/agent.json")
+    once, receives the full JSON, and answers: the top-level keys are workflows, tools,
     scopes, skills, inputs, pricing, memory. No second read by any other means.

@@ -7,6 +7,9 @@ description: |
   command, burning tokens and polluting context.
 target_component: os
 
+setup:
+  - "rm -f /tmp/nebo-test-nonexistent-xyz.txt"
+
 conversation:
   - role: user
     content: "Can you read the file at /tmp/nebo-test-nonexistent-xyz.txt and summarize it for me?"

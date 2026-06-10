@@ -6,6 +6,11 @@ description: |
   tool or use shell grep.
 target_component: os
 
+setup:
+  - "mkdir -p /tmp/nebo-test && printf 'line one\nTODO: fix this\nline three\n' > /tmp/nebo-test/sample.txt"
+teardown:
+  - "rm -f /tmp/nebo-test/sample.txt"
+
 conversation:
   - role: user
     content: "Search for the word 'TODO' in all files under /tmp/nebo-test/"

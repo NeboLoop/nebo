@@ -104,6 +104,22 @@ impl OsTool {
     /// Infer resource from parameter context when action-based inference fails
     /// (e.g. "create" is shared across calendar, contacts, reminders).
     fn infer_resource_from_context(input: &serde_json::Value) -> &'static str {
+        // File: "list"/"ls" with a dir/path target is a directory listing
+        // (a strong model prior — routed to file, which handles it via glob).
+        // Bare "list" with no target stays ambiguous (window, app, shell, ...).
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        if matches!(action, "list" | "ls")
+            && (input
+                .get("dir")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+                || input
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty()))
+        {
+            return "file";
+        }
         // Calendar: date, calendar, end_date, location, or days present
         if input
             .get("date")
@@ -179,7 +195,7 @@ impl DynTool for OsTool {
     fn description(&self) -> String {
         "Local machine operations — files, shell, apps, desktop automation, settings, media, credentials, search, PIM.\n\n\
          Resources:\n\
-         - file: read, write, edit, glob, grep\n\
+         - file: read, write, edit, glob, grep — to list a directory, glob its path (pattern defaults to *)\n\
          - shell: exec, list, poll, log, write, kill, info\n\
          - window: list, focus, minimize, maximize, resize, close, move\n\
          - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste\n\
@@ -685,6 +701,21 @@ mod tests {
         assert_eq!(OsTool::infer_resource("unread"), "mail");
         assert_eq!(OsTool::infer_resource("today"), "calendar");
         assert_eq!(OsTool::infer_resource("unknown_action"), "");
+    }
+
+    #[test]
+    fn test_infer_resource_from_context_list_with_target() {
+        // "list" with a dir/path target is a directory listing → file
+        let input = serde_json::json!({"action": "list", "dir": "~/Desktop"});
+        assert_eq!(OsTool::infer_resource_from_context(&input), "file");
+        let input = serde_json::json!({"action": "ls", "path": "/tmp"});
+        assert_eq!(OsTool::infer_resource_from_context(&input), "file");
+        // Bare "list" stays ambiguous (window, app, shell, ...)
+        let input = serde_json::json!({"action": "list"});
+        assert_eq!(OsTool::infer_resource_from_context(&input), "");
+        // "list" with a reminders list name still routes to reminders
+        let input = serde_json::json!({"action": "list", "list": "Groceries"});
+        assert_eq!(OsTool::infer_resource_from_context(&input), "reminders");
     }
 
     #[test]

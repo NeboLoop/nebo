@@ -6,6 +6,11 @@ description: |
   as a standalone tool or use shell echo/redirect.
 target_component: os
 
+setup:
+  - "rm -f /tmp/nebo-test-output.txt"
+teardown:
+  - "rm -f /tmp/nebo-test-output.txt"
+
 conversation:
   - role: user
     content: "Create a file at /tmp/nebo-test-output.txt with the content 'hello world'."

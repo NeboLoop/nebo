@@ -6,6 +6,11 @@ description: |
   "bash", or "shell cat". This is the highest-volume tool call in the system.
 target_component: os
 
+setup:
+  - "echo 'hello from nebo config' > /tmp/nebo-config.txt"
+teardown:
+  - "rm -f /tmp/nebo-config.txt"
+
 conversation:
   - role: user
     content: "Read the file at /tmp/nebo-config.txt and tell me what it says."

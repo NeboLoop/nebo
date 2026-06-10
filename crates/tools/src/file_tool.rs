@@ -44,6 +44,10 @@ struct FileInput {
     pattern: String,
     #[serde(default)]
     glob: String,
+    /// Prior-redirect only: `dir` belongs to the search resource's schema, but
+    /// models reuse it for directory listings. Folded into `path` at dispatch.
+    #[serde(default)]
+    dir: String,
     #[serde(default)]
     case_insensitive: bool,
     #[serde(default)]
@@ -67,10 +71,16 @@ impl FileTool {
     }
 
     pub fn execute(&self, ctx: &ToolContext, input: serde_json::Value) -> ToolResult {
-        let fi: FileInput = match serde_json::from_value(input) {
+        let mut fi: FileInput = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
         };
+
+        // Prior-redirect: models name the listing target `dir` (ls prior).
+        // `path` is the one canonical field; fold, don't reject.
+        if fi.path.is_empty() && !fi.dir.is_empty() {
+            fi.path = std::mem::take(&mut fi.dir);
+        }
 
         let session = ctx.session_key.as_str();
         match fi.action.as_str() {
@@ -79,6 +89,10 @@ impl FileTool {
             "edit" => self.handle_edit(session, &fi),
             "glob" => self.handle_glob(&fi),
             "grep" => self.handle_grep(&fi),
+            // Prior-redirect ("ls ~/Desktop"): a directory listing IS glob with
+            // its defaulted "*" pattern — route to the one implementation. Not
+            // advertised in the schema; glob stays the single documented way.
+            "list" | "ls" => self.handle_glob(&fi),
             other => ToolResult::error(format!(
                 "Unknown action: {} (valid: read, write, edit, glob, grep)",
                 other
@@ -891,6 +905,27 @@ mod tests {
         assert!(res.content.contains("file1.txt"), "missing file");
         assert!(res.content.contains("subdir"), "directory was dropped from glob results");
         assert!(res.content.contains("📁 Projects"), "emoji-named directory was dropped");
+    }
+
+    // ── "list"/"ls"/dir prior-redirects land on glob and succeed ────
+    // First-call success: the ls prior (action "list", target in `dir`) must
+    // execute the one glob implementation, not bounce with a correction.
+    #[test]
+    fn list_prior_redirects_to_glob() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = glob_dir(tmp.path());
+        fs::write(base.join("hello.txt"), "").unwrap();
+
+        let tool = FileTool::new();
+        for (action, key) in [("list", "path"), ("ls", "path"), ("list", "dir")] {
+            let res = tool.execute(&ctx(), json!({"action": action, key: base.to_str().unwrap()}));
+            assert!(!res.is_error, "{action}+{key} failed: {}", res.content);
+            assert!(
+                res.content.contains("hello.txt"),
+                "{action}+{key} did not list the directory: {}",
+                res.content
+            );
+        }
     }
 
     // ── Glob path-as-pattern (no pattern field) ─────────────────────
