@@ -162,35 +162,61 @@ fn open_external(url: &str) {
 fn resolve_app_ui_dir(agent_id: &str) -> Option<PathBuf> {
     let data_dir = config::data_dir().ok()?;
 
+    // Installs are keyed by SLUG and the UI is nested under a VERSION dir
+    // (`agents/<slug>/<version>/ui`); `agent_id` is the artifact UUID. So match
+    // the UUID against the `id` in each candidate's manifest.json rather than the
+    // directory name. Among matches, prefer the newest version dir. (The
+    // directory-name == agent_id case is still handled, for loose/user agents
+    // stored by id without a manifest.)
+    let mut best: Option<(String, PathBuf)> = None; // (version-key, ui_dir)
     for sub in &["user/agents", "nebo/agents"] {
         let agents_dir = data_dir.join(sub);
         if !agents_dir.is_dir() {
             continue;
         }
+        let Ok(slug_dirs) = std::fs::read_dir(&agents_dir) else {
+            continue;
+        };
+        for slug_entry in slug_dirs.flatten() {
+            let slug_dir = slug_entry.path();
+            if !slug_dir.is_dir() {
+                continue;
+            }
+            let name_match = slug_entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(agent_id);
 
-        // Try exact directory name match
-        let exact = agents_dir.join(agent_id).join("ui");
-        if exact.is_dir() {
-            return Some(exact);
-        }
-
-        // Try case-insensitive directory name match
-        if let Ok(entries) = std::fs::read_dir(&agents_dir) {
-            for entry in entries.flatten() {
-                if entry
-                    .file_name()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(agent_id)
-                {
-                    let ui = entry.path().join("ui");
-                    if ui.is_dir() {
-                        return Some(ui);
-                    }
+            // Candidate dirs holding a ui/: the slug dir itself (loose agents)
+            // and each version subdir (marketplace installs).
+            let mut candidates: Vec<PathBuf> = vec![slug_dir.clone()];
+            if let Ok(versions) = std::fs::read_dir(&slug_dir) {
+                candidates.extend(versions.flatten().map(|v| v.path()).filter(|p| p.is_dir()));
+            }
+            for cand in candidates {
+                let ui = cand.join("ui");
+                if !ui.is_dir() {
+                    continue;
+                }
+                let id_match = cand
+                    .join("manifest.json")
+                    .to_str()
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+                    .is_some_and(|id| id.eq_ignore_ascii_case(agent_id));
+                if !(id_match || name_match) {
+                    continue;
+                }
+                // Prefer the newest version dir among matches.
+                let ver_key = cand.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if best.as_ref().is_none_or(|(k, _)| ver_key > *k) {
+                    best = Some((ver_key, ui));
                 }
             }
         }
     }
-    None
+    best.map(|(_, ui)| ui)
 }
 
 /// Generate the bridge script + meta tags injected into every HTML page served
