@@ -956,7 +956,7 @@ pub fn data_dir() -> PathBuf {
     // macOS:   ~/Library/Application Support/Nebo/
     // Windows: %AppData%\Nebo\
     // Linux:   ~/.config/nebo/
-    // Override: NEBO_DATA_DIR environment variable
+    // Override: NEBO_HOME environment variable (root)
 }
 ```
 

@@ -167,7 +167,7 @@ overrides earlier):
 +---------------------------v---------------------------------------+
 | Layer 4: Environment variable overrides (in apply_defaults)       |
 |   NEBOAI_API_URL, NEBOAI_JANUS_URL, NEBOAI_COMMS_URL       |
-|   NEBO_DATA_DIR (checked in defaults::data_dir())                 |
+|   NEBO_HOME (checked in defaults::data_dir(); NEBO_DATA_DIR=deprecated)|
 +---------------------------+---------------------------------------+
                             |
 +---------------------------v---------------------------------------+
@@ -439,7 +439,7 @@ ModelsConfig
 | `NEBOAI_API_URL` | `Config::apply_defaults()` | NeboAI API server URL | `https://api.neboai.com` |
 | `NEBOAI_JANUS_URL` | `Config::apply_defaults()` | Janus AI gateway URL | `https://janus.neboai.com` |
 | `NEBOAI_COMMS_URL` | `Config::apply_defaults()` | NeboAI WebSocket URL | `wss://comms.neboai.com/ws` |
-| `NEBO_DATA_DIR` | `defaults::data_dir()` | Override data directory path | `~/.nebo/` |
+| `NEBO_HOME` | `defaults::data_dir()` | Override the Nebo root dir (`NEBO_DATA_DIR` = deprecated alias, one release) | `~/.nebo/` |
 | `APP_BASE_URL` | `nebo.yaml` shell expansion | App base URL | `http://localhost:27895` |
 | `APP_DOMAIN` | `nebo.yaml` shell expansion | App domain | `localhost` |
 | `ANTHROPIC_API_KEY` | `models.yaml` credentials | Anthropic API key | (none) |
@@ -485,7 +485,7 @@ The Tauri desktop entry point does NOT call dotenvy.
 
 ```
 data_dir() resolution:
-  1. $NEBO_DATA_DIR environment variable (if set)
+  1. $NEBO_HOME environment variable (if set; else deprecated $NEBO_DATA_DIR)
   2. ~/.nebo/ (HOME via dirs::home_dir())
 ```
 
@@ -531,7 +531,7 @@ section 20).
 
 | Function | Returns | Description |
 |---|---|---|
-| `data_dir()` | `Result<PathBuf>` | Root dir (`~/.nebo/` or `$NEBO_DATA_DIR`) |
+| `data_dir()` | `Result<PathBuf>` | Root dir (`~/.nebo/` or `$NEBO_HOME`) |
 | `ensure_data_dir()` | `Result<PathBuf>` | Creates root + data/ subdirs |
 | `nebo_dir()` | `Result<PathBuf>` | `~/.nebo/nebo/` marketplace namespace |
 | `user_dir()` | `Result<PathBuf>` | `~/.nebo/user/` user namespace |
@@ -1131,7 +1131,7 @@ Old locations:
 New location: ~/.nebo/
 
 Migration logic:
-  1. If $NEBO_DATA_DIR set: use that, no migration
+  1. If $NEBO_HOME set: use that, no migration (deprecated $NEBO_DATA_DIR still honored)
   2. If ~/.nebo/.migrated-datadir-v5 exists: already done
   3. If old dir does not exist: fresh install, write marker
   4. If both old and new exist with content: skip (user set up manually)
@@ -1180,8 +1180,8 @@ The MVP readiness test in `crates/server/tests/mvp_readiness.rs` demonstrates
 how to override config for testing:
 
 ```rust
-// Set NEBO_DATA_DIR so config::data_dir() resolves to our temp dir
-std::env::set_var("NEBO_DATA_DIR", &data_dir);
+// Set NEBO_HOME so config::data_dir() resolves to our temp dir
+std::env::set_var("NEBO_HOME", &data_dir);
 
 let mut cfg = config::Config::default();
 cfg.database.sqlite_path = db_path.to_string_lossy().to_string();

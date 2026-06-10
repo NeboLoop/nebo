@@ -40,10 +40,10 @@ impl TestServer {
         std::fs::create_dir_all(data_dir.join("user").join("tools")).unwrap();
         std::fs::create_dir_all(data_dir.join("user").join("workflows")).unwrap();
         std::fs::create_dir_all(data_dir.join("user").join("agents")).unwrap();
-        // Set NEBO_DATA_DIR so config::data_dir() resolves to our temp dir
+        // Set NEBO_HOME so config::data_dir() resolves to our temp dir
         // SAFETY: single-threaded at this point (before server spawn)
         unsafe {
-            std::env::set_var("NEBO_DATA_DIR", &data_dir);
+            std::env::set_var("NEBO_HOME", &data_dir);
         }
 
         let port = find_free_port();

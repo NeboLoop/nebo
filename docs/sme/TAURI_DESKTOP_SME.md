@@ -1147,8 +1147,9 @@ if the tracing subscriber is in a broken state.
 | `~/.nebo/logs/nebo-crash.log` | Panic crash log |
 | `~/.nebo/settings.json` | User auth, API keys |
 
-The data directory can be overridden via `NEBO_DATA_DIR` environment
-variable.
+The Nebo root directory can be overridden via the `NEBO_HOME` environment
+variable (`NEBO_DATA_DIR` is the deprecated spelling). Note: `NEBO_DATA_DIR`
+now names a *per-artifact* data dir passed to each plugin/app/skill process.
 
 ---
 
