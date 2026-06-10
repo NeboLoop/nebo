@@ -459,7 +459,13 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
                     v["id"].as_str().map(String::from),
                     v["name"].as_str().map(String::from),
                     v["description"].as_str().map(String::from),
-                    v["artifact_type"].as_str().map(String::from),
+                    // manifest.json carries the artifact type as "type"
+                    // (NeboLoop buildManifest); "artifact_type" is the older
+                    // AGENT.md-frontmatter spelling. Accept either.
+                    v["artifact_type"]
+                        .as_str()
+                        .or_else(|| v["type"].as_str())
+                        .map(String::from),
                     manifest_full.and_then(|m| m.window),
                 ),
                 None => (None, None, None, None, None, None),
@@ -772,4 +778,56 @@ pub fn scan_user_agents(dir: &Path) -> Vec<LoadedAgent> {
     }
 
     agents
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // An app is an agent with a UI and sidecar. The loader must recognize it
+    // from manifest.json "type":"app" (NeboLoop buildManifest spelling) — not
+    // only the older "artifact_type" — and resolve its ui/ + bin/ paths, or it
+    // never gets is_app=true and never surfaces in the apps section.
+    #[test]
+    fn loads_app_from_manifest_type_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("AGENT.md"), "---\nname: Deal Tracker\n---\n# Deal Tracker").unwrap();
+        std::fs::write(dir.join("agent.json"), r#"{"tools":[]}"#).unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            r#"{"id":"abc","name":"Deal Tracker","slug":"deal-tracker","version":"1.0.2","type":"app"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("ui")).unwrap();
+        std::fs::write(dir.join("ui/index.html"), "<html></html>").unwrap();
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("bin/binary"), "ELF").unwrap();
+
+        let loaded = load_from_dir(dir, AgentSource::Installed).expect("load app");
+        assert!(loaded.is_app, "manifest type:app must set is_app");
+        assert!(loaded.app_ui_path.is_some(), "ui/ path must resolve");
+        assert_eq!(
+            loaded.app_binary_path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
+            Some("binary"),
+            "bin/ sidecar must resolve"
+        );
+    }
+
+    // A plain agent (no type) stays a non-app: no is_app, no ui/bin probing.
+    #[test]
+    fn plain_agent_is_not_an_app() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("AGENT.md"), "---\nname: Jim\n---\n# Jim").unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            r#"{"id":"xyz","name":"Jim","slug":"jim","version":"1.0.0","type":"agent"}"#,
+        )
+        .unwrap();
+        let loaded = load_from_dir(dir, AgentSource::Installed).expect("load agent");
+        assert!(!loaded.is_app);
+        assert!(loaded.app_ui_path.is_none());
+        assert!(loaded.app_binary_path.is_none());
+    }
 }
