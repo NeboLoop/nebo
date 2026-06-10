@@ -102,6 +102,28 @@ pub fn tracked_pids() -> Vec<u32> {
 ///
 /// Safe to call repeatedly. Won't kill children we currently track
 /// (children of the running Nebo). Returns the count of processes killed.
+/// Parse one `ps -o pid=,command=` line into `(pid, command)`. The command is
+/// the FULL remainder after the pid — it must NOT be tokenized, because argv[0]
+/// (the binary path) can contain spaces, e.g. the macOS path
+/// `~/Library/Application Support/Nebo/...`. Tokenizing here is what made the
+/// reaper silently match nothing on macOS and leak every watch process.
+#[cfg(unix)]
+fn parse_ps_line(line: &str) -> Option<(u32, &str)> {
+    let line = line.trim_start();
+    let (pid_str, rest) = line.split_once(char::is_whitespace)?;
+    Some((pid_str.parse().ok()?, rest.trim_start()))
+}
+
+/// True if a `ps` command line was launched from `target` — argv[0] is exactly
+/// the binary path, with or without trailing args (`<target>` or `<target> …`).
+#[cfg(unix)]
+fn command_is_for(command: &str, target: &str) -> bool {
+    command == target
+        || command
+            .strip_prefix(target)
+            .is_some_and(|r| r.starts_with(char::is_whitespace))
+}
+
 #[cfg(unix)]
 pub fn reap_existing_for(binary_path: &std::path::Path) -> usize {
     use std::process::Command;
@@ -130,24 +152,17 @@ pub fn reap_existing_for(binary_path: &std::path::Path) -> usize {
 
     let mut killed = 0usize;
     for line in text.lines() {
-        let mut parts = line.split_whitespace();
-        let pid: u32 = match parts.next().and_then(|s| s.parse().ok()) {
-            Some(p) => p,
-            None => continue,
+        let Some((pid, command)) = parse_ps_line(line) else {
+            continue;
         };
         // Don't kill our own currently-tracked children.
         if tracked.contains(&pid) {
             continue;
         }
-        let exe = match parts.next() {
-            Some(e) => e,
-            None => continue,
-        };
-        if exe == target.as_ref() {
+        if command_is_for(command, target.as_ref()) {
             info!(
                 pid,
-                exe = exe,
-                "reap_existing_for: killing pre-existing process for binary"
+                command, "reap_existing_for: killing pre-existing process for binary"
             );
             unsafe {
                 libc::kill(pid as i32, libc::SIGTERM);
@@ -165,19 +180,13 @@ pub fn reap_existing_for(binary_path: &std::path::Path) -> usize {
         if let Ok(o2) = out2 {
             let text2 = String::from_utf8_lossy(&o2.stdout);
             for line in text2.lines() {
-                let mut parts = line.split_whitespace();
-                let pid: u32 = match parts.next().and_then(|s| s.parse().ok()) {
-                    Some(p) => p,
-                    None => continue,
+                let Some((pid, command)) = parse_ps_line(line) else {
+                    continue;
                 };
                 if tracked.contains(&pid) {
                     continue;
                 }
-                let exe = match parts.next() {
-                    Some(e) => e,
-                    None => continue,
-                };
-                if exe == target.as_ref() {
+                if command_is_for(command, target.as_ref()) {
                     unsafe {
                         libc::kill(pid as i32, libc::SIGKILL);
                     }
@@ -361,5 +370,36 @@ pub fn cleanup_orphans_at_startup() -> usize {
     #[cfg(not(unix))]
     {
         0
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{command_is_for, parse_ps_line};
+
+    #[test]
+    fn parses_pid_and_full_command_with_spaces() {
+        // macOS path contains a space ("Application Support") — the command must
+        // come back whole, not tokenized.
+        let line = "  4242 /Users/x/Library/Application Support/Nebo/nebo/plugins/stadium-ops/0.1.0/stadium-ops watch --events";
+        let (pid, cmd) = parse_ps_line(line).expect("parse");
+        assert_eq!(pid, 4242);
+        assert_eq!(
+            cmd,
+            "/Users/x/Library/Application Support/Nebo/nebo/plugins/stadium-ops/0.1.0/stadium-ops watch --events"
+        );
+    }
+
+    #[test]
+    fn matches_binary_with_space_in_path_and_args() {
+        let target = "/Users/x/Library/Application Support/Nebo/nebo/plugins/stadium-ops/0.1.0/stadium-ops";
+        // argv0 == target, with trailing args → match (the leak case)
+        assert!(command_is_for(&format!("{target} watch --events"), target));
+        // exact, no args → match
+        assert!(command_is_for(target, target));
+        // a different binary whose path starts with the same prefix → no match
+        assert!(!command_is_for(&format!("{target}-helper run"), target));
+        // unrelated → no match
+        assert!(!command_is_for("/usr/bin/ssh -N", target));
     }
 }
