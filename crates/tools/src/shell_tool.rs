@@ -102,6 +102,20 @@ impl ShellTool {
             ));
         }
 
+        // Privilege escalation is never a legitimate automation step: Nebo runs
+        // unattended, so sudo either hangs on a password prompt or silently
+        // escalates. Refuse before anything executes (covers background too).
+        if crate::policy::is_privilege_escalation(&input.command) {
+            return ToolResult::error(
+                "Privilege escalation (sudo/doas/su) is not available — Nebo runs \
+                 unattended and cannot enter passwords or hold admin rights. Do not \
+                 retry with sudo. Instead: use a user-writable location, or tell the \
+                 user this operation requires administrator privileges and they need \
+                 to perform it themselves."
+                    .to_string(),
+            );
+        }
+
         // Handle background execution
         if input.background {
             return self.execute_background(input).await;
@@ -686,5 +700,50 @@ fn interpret_exit_code(command: &str, exit_code: i32, _output: &str) -> (bool, O
             }
         }
         _ => (true, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::origin::Origin;
+    use serde_json::json;
+
+    fn tool() -> ShellTool {
+        ShellTool::new(Policy::default(), Arc::new(ProcessRegistry::new()))
+    }
+
+    fn ctx() -> ToolContext {
+        ToolContext::new(Origin::User)
+    }
+
+    // Privilege escalation never executes — foreground or background — and the
+    // refusal steers toward reporting to the user, not retrying.
+    #[tokio::test]
+    async fn privilege_escalation_is_refused() {
+        let t = tool();
+        for input in [
+            json!({"action": "exec", "command": "sudo whoami"}),
+            json!({"action": "exec", "command": "echo hi | sudo tee /var/root/f"}),
+            json!({"action": "exec", "command": "doas id", "background": true}),
+        ] {
+            let res = t.execute(&ctx(), input.clone()).await;
+            assert!(res.is_error, "must refuse: {}", input);
+            assert!(
+                res.content.contains("not available"),
+                "refusal must explain: {}",
+                res.content
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn plain_commands_still_execute() {
+        let t = tool();
+        let res = t
+            .execute(&ctx(), json!({"action": "exec", "command": "echo nebo-ok"}))
+            .await;
+        assert!(!res.is_error, "plain echo failed: {}", res.content);
+        assert!(res.content.contains("nebo-ok"));
     }
 }

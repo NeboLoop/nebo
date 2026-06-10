@@ -142,6 +142,7 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(TaskTrackingNudge),
         Box::new(TaskCompletionNudge),
         Box::new(UntrustedContent),
+        Box::new(CapabilityUnavailable),
         Box::new(BudgetWarning),
         Box::new(DuplicateToolCall),
         Box::new(PresenceAwareness),
@@ -1111,6 +1112,52 @@ impl Reminder for ToolResultGrounding {
     }
 }
 
+/// Capability-unavailable verdict — when discovery (skill/plugin) reports that a
+/// requested capability does not exist, the verdict is final. Without this, models
+/// intermittently keep hunting: trial-executing plugins, spawning sub-agents, or
+/// opening the browser to do the task by hand. Prompt text alone doesn't hold;
+/// this fires in-stream right after the discovery result, where models attend.
+struct CapabilityUnavailable;
+impl Reminder for CapabilityUnavailable {
+    fn name(&self) -> &'static str {
+        "capability_unavailable"
+    }
+    fn priority(&self) -> u8 {
+        10
+    }
+    fn min_turns_between(&self) -> usize {
+        3
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        // Markers emitted by skill/plugin discover when nothing provides the capability.
+        const MARKERS: &[&str] = &[
+            "This capability is not available",
+            "No plugins found in the marketplace",
+        ];
+        let tripped = ctx.messages.iter().rev().take(4).any(|msg| {
+            if msg.role != "tool" {
+                return false;
+            }
+            MARKERS.iter().any(|m| msg.content.contains(m))
+                || msg
+                    .tool_results
+                    .as_deref()
+                    .is_some_and(|tr| MARKERS.iter().any(|m| tr.contains(m)))
+        });
+        if !tripped {
+            return None;
+        }
+        Some(
+            "Discovery just reported that a requested capability is NOT available — no \
+             installed skill or plugin provides it. That verdict is final: do NOT attempt \
+             the task through the browser, shell, sub-agents, or unrelated plugins, and do \
+             not keep rephrasing discovery queries. Tell the user the capability isn't \
+             installed and suggest installing it from the marketplace, then stop."
+                .to_string(),
+        )
+    }
+}
+
 // 15. Task Tracking Nudge — steer the LLM to break complex requests into tracked tasks
 struct TaskTrackingNudge;
 impl Reminder for TaskTrackingNudge {
@@ -1390,6 +1437,27 @@ mod tests {
             user_presence: presence,
             ..base_rctx()
         }
+    }
+
+    #[test]
+    fn test_capability_unavailable_fires_on_discovery_verdict() {
+        let msgs = vec![
+            make_msg("user", "post a tweet"),
+            make_msg(
+                "tool",
+                "No skills or plugins found for \"twitter\". This capability is not available. \
+                 Report this to the user and suggest they install a skill from the marketplace.",
+            ),
+        ];
+        let ctx = ReminderContext { messages: &msgs, iteration: 2, ..base_rctx() };
+        let out = CapabilityUnavailable.check(&ctx).expect("fires on verdict");
+        assert!(out.contains("verdict is final"));
+        assert!(out.contains("browser"));
+
+        // Unrelated tool output does not trip it.
+        let ok_msgs = vec![make_msg("tool", "Found 3 files matching \"*.md\"")];
+        let ok_ctx = ReminderContext { messages: &ok_msgs, iteration: 2, ..base_rctx() };
+        assert!(CapabilityUnavailable.check(&ok_ctx).is_none());
     }
 
     #[test]

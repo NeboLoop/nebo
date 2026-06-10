@@ -320,6 +320,18 @@ async fn run_single(
     }
 
     let final_text = all_text.join("");
+
+    // An empty run — no text, no tool calls — is a failure, not a pass. Silent
+    // empties (transient provider errors that still emit chat_complete) used to
+    // produce valid-looking zero-call traces that skewed results.
+    if final_text.trim().is_empty() && all_tool_calls.is_empty() {
+        return Err(
+            "Empty run: chat completed with no response text and no tool calls \
+             (likely a transient provider error) — treat as failed and re-run"
+                .to_string(),
+        );
+    }
+
     let total_latency = start.elapsed().as_millis() as u64;
     let total_tokens = total_input_tokens + total_output_tokens;
 

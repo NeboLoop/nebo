@@ -3328,17 +3328,38 @@ async fn run_loop(
                 // (e.g. the same file read via os(read), then cat, then jq) — tell the
                 // model it already has this instead of letting it re-fetch in a loop.
                 // Hash is taken pre-truncation so it reflects the full original content.
+                let mut flagged_redundant = false;
                 if !result.is_error && result.content.len() > 200 {
                     let content_hash = simple_hash(result.content.as_bytes());
                     if recent_result_content_hashes.contains(&content_hash) {
                         result.content.push_str(
                             "\n\n(Note: this is identical to a result you already received earlier in this session. You already have this content — use it instead of fetching it again.)",
                         );
+                        flagged_redundant = true;
                     } else {
                         recent_result_content_hashes.push(content_hash);
                         if recent_result_content_hashes.len() > 20 {
                             recent_result_content_hashes.remove(0);
                         }
+                    }
+                }
+
+                // Arg-identity dedup (complements the content check above, which only
+                // fires on byte-identical output): the model repeated a call it already
+                // made this turn — same tool, identical arguments. Results that drift
+                // slightly (mtime ordering, timestamps) slip past the content hash, so
+                // flag the repeated CALL itself. The 3+ hard guard still blocks loops;
+                // this annotates the second call so it never gets that far.
+                if !flagged_redundant {
+                    let nh = simple_hash(tc.name.as_bytes());
+                    let ah = simple_hash(tc.input.to_string().as_bytes());
+                    if recent_tool_result_hashes
+                        .iter()
+                        .any(|&(n, a, _)| n == nh && a == ah)
+                    {
+                        result.content.push_str(
+                            "\n\n(Note: you already made this exact call — same tool, same arguments — earlier this turn. Reuse results you already have instead of repeating calls.)",
+                        );
                     }
                 }
 
