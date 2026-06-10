@@ -401,10 +401,6 @@ pub async fn uninstall_store_product(
                 }
             });
         }
-        state.hub.broadcast(
-            "agent_uninstalled",
-            serde_json::json!({ "agentId": agent_id, "name": agent_rec.name }),
-        );
     }
 
     // Clean up filesystem
@@ -418,8 +414,22 @@ pub async fn uninstall_store_product(
         }
     }
 
-    // Reload skill loader in case a skill was removed
-    state.skill_loader.load_all().await;
+    // Reload the loader for the removed artifact BEFORE notifying the frontend,
+    // then broadcast. list_agents()/list_skills() enumerate the loaders
+    // (filesystem source of truth); reloading here keeps the broadcast's refetch
+    // consistent instead of racing the loader's own filesystem-watch reload —
+    // the "requires a hard refresh" bug. Mirrors the install path (codes.rs).
+    if is_agent {
+        state.agent_loader.load_all().await;
+        if let Some(ref agent_rec) = local_agent {
+            state.hub.broadcast(
+                "agent_uninstalled",
+                serde_json::json!({ "agentId": agent_rec.id, "name": agent_rec.name }),
+            );
+        }
+    } else {
+        state.skill_loader.load_all().await;
+    }
 
     Ok(Json(serde_json::json!({ "success": true })))
 }

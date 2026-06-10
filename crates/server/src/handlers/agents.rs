@@ -821,12 +821,6 @@ pub async fn delete_agent(
     // agent_workflows are cascade-deleted via FK when agent is deleted
     state.store.delete_agent(&id).map_err(to_error_response)?;
 
-    // Notify frontend immediately — cleanup runs after
-    state.hub.broadcast(
-        "agent_uninstalled",
-        serde_json::json!({ "agentId": id, "name": agent.name }),
-    );
-
     // Clean up agent-scoped data (chats before sessions — chats reference session names)
     let _ = state.store.delete_agent_chats(&id);
     let _ = state.store.delete_agent_sessions(&id);
@@ -852,6 +846,20 @@ pub async fn delete_agent(
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
+
+    // Reload the in-memory AgentLoader so the removal is reflected BEFORE the
+    // frontend refreshes. list_agents() enumerates the loader (filesystem source
+    // of truth); without this, the broadcast races ahead of the loader's own
+    // filesystem-watch reload and the frontend refetches a stale roster that
+    // still lists the just-deleted agent — the "requires a hard refresh" bug.
+    // Mirrors the install path (codes.rs), which reloads before broadcasting.
+    state.agent_loader.load_all().await;
+
+    // Notify frontend — the roster is now consistent, so the refetch is correct.
+    state.hub.broadcast(
+        "agent_uninstalled",
+        serde_json::json!({ "agentId": id, "name": agent.name }),
+    );
 
     // Deregister agent from NeboAI (non-blocking, best-effort)
     {
