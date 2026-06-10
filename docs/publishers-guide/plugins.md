@@ -251,7 +251,7 @@ When a script runs, plugin binaries are injected as environment variables using 
 | `ffmpeg` | `FFMPEG_BIN` |
 | `my-tool` | `MY_TOOL_BIN` |
 
-Additionally, `NEBO_PLUGIN_DATA` (and the slug-specific `{SLUG}_DATA`) is set to `<data_dir>/appdata/plugins/<slug>/` — the persistent data directory for this plugin. Use this for caches, databases, and any state that should survive plugin upgrades.
+Additionally, `NEBO_DATA_DIR` is set to `<NEBO_HOME>/appdata/plugins/<slug>/` — the persistent data directory for this plugin, and the process's working directory. Use it for caches, databases, and any state that should survive plugin upgrades. (It is the one canonical name across plugins, apps, and skills.)
 
 ### Python Example
 
@@ -945,9 +945,8 @@ The runtime starts from the user's environment, strips dangerous loader/shell va
 | Variable | Example | Description |
 |----------|---------|-------------|
 | `{SLUG}_BIN` | `GWS_BIN=<data_dir>/nebo/plugins/gws/1.2.3/gws` | Path to this plugin's own binary (slug uppercased, hyphens → underscores) |
-| `NEBO_PLUGIN_DATA` | `<data_dir>/appdata/plugins/gws` | Persistent data directory (separate from code — survives upgrades) |
-| `{SLUG}_DATA` | `GWS_DATA=<data_dir>/appdata/plugins/gws` | Slug-specific alias for the same data directory |
-| `{DEP_SLUG}_BIN` | `FFMPEG_BIN=<data_dir>/nebo/plugins/ffmpeg/2.0.0/ffmpeg` | Binary path for each declared dependency plugin |
+| `NEBO_DATA_DIR` | `<NEBO_HOME>/appdata/plugins/gws` | Persistent data directory — separate from code, survives upgrades. Also the process working dir. One canonical name across plugins/apps/skills. |
+| `{DEP_SLUG}_BIN` | `FFMPEG_BIN=<NEBO_HOME>/nebo/plugins/ffmpeg/2.0.0/ffmpeg` | Binary path for each declared dependency plugin |
 | `PATH` | augmented path | System `PATH` with installed plugin directories prepended |
 | auth env | `GOOGLE_CLIENT_ID=…` | Resolved auth env vars from the manifest's `auth.env` |
 | `HOME` | user home | Preserved for credential lookups (when enabled) |
@@ -956,7 +955,7 @@ The runtime starts from the user's environment, strips dangerous loader/shell va
 
 ### Data Persistence
 
-Store all persistent data in `$NEBO_PLUGIN_DATA` (or the equivalent `${SLUG}_DATA`). This directory is physically separated from the code directory — it lives at `<data_dir>/appdata/plugins/<slug>/`, not inside the version directory. This means:
+Store all persistent data in `$NEBO_DATA_DIR`. This directory is physically separated from the code directory — it lives at `<NEBO_HOME>/appdata/plugins/<slug>/`, not inside the version directory. This means:
 
 - Upgrading the plugin binary never touches your data
 - Your plugin is responsible for its own schema migrations across versions

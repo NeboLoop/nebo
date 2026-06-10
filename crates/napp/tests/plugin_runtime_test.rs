@@ -287,8 +287,11 @@ async fn plugin_binary_env_var_injected() {
         Some(&resolved.to_string_lossy().into_owned()),
         "MYPLUGIN_BIN should point to the binary"
     );
-    assert!(env.contains_key("NEBO_PLUGIN_DATA"), "NEBO_PLUGIN_DATA should be set");
-    assert!(env.contains_key("MYPLUGIN_DATA"), "MYPLUGIN_DATA should be set");
+    // One canonical per-artifact data var (NEBO_DATA_DIR); the old
+    // NEBO_PLUGIN_DATA + {SLUG}_DATA competing names are gone.
+    assert!(env.contains_key("NEBO_DATA_DIR"), "NEBO_DATA_DIR should be set");
+    assert!(!env.contains_key("NEBO_PLUGIN_DATA"), "NEBO_PLUGIN_DATA must be removed");
+    assert!(!env.contains_key("MYPLUGIN_DATA"), "{{SLUG}}_DATA must be removed");
 }
 
 #[tokio::test]

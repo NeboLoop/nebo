@@ -157,7 +157,11 @@ impl Runtime {
         for (k, v) in &env {
             cmd.env(k, v);
         }
-        cmd.current_dir(tool_dir);
+        // Run in the non-versioned data dir, not the versioned code dir: a
+        // sidecar that writes a DB to a relative path (./app.db) then lands in
+        // persistent storage that survives updates, instead of the install dir
+        // that gets wiped. Bundled code/resources are reached via NEBO_APP_DIR.
+        cmd.current_dir(&data_dir);
         // SIGKILL the sidecar when its Child handle is dropped (nebo exit,
         // hot-reload restart, panic unwind, task cancellation). Without this,
         // sidecars stay alive after nebo dies, holding sockets and ports.

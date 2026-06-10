@@ -4,15 +4,26 @@ use std::path::PathBuf;
 use types::NeboError;
 use types::constants::files;
 
-/// Returns the platform-native data directory:
+/// Returns the platform-native data directory (the Nebo root):
 ///
 /// - macOS:   `~/Library/Application Support/Nebo`
 /// - Windows: `%APPDATA%\Nebo`
 /// - Linux:   `~/.local/share/nebo`
 ///
-/// Set `NEBO_DATA_DIR` to override.
+/// Set `NEBO_HOME` to override the root. (`NEBO_DATA_DIR` is the deprecated
+/// spelling — still honored for one release — but that name now belongs to a
+/// different concept: a per-artifact persistent data directory passed to each
+/// plugin/app/skill process. Keeping both meanings under one name was the
+/// source of artifacts writing their DB to the wrong place.)
 pub fn data_dir() -> Result<PathBuf, NeboError> {
+    if let Ok(dir) = std::env::var("NEBO_HOME") {
+        return Ok(PathBuf::from(dir));
+    }
     if let Ok(dir) = std::env::var("NEBO_DATA_DIR") {
+        tracing::warn!(
+            "NEBO_DATA_DIR is deprecated as the Nebo root override and will be removed; \
+             use NEBO_HOME instead (NEBO_DATA_DIR now means a per-artifact data directory)"
+        );
         return Ok(PathBuf::from(dir));
     }
 

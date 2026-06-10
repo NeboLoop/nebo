@@ -36,7 +36,10 @@ pub fn sanitize_env(
     env.push(("NEBO_APP_VERSION".into(), app_version.into()));
     env.push(("NEBO_APP_DIR".into(), app_dir.into()));
     env.push(("NEBO_APP_SOCK".into(), sock_path.into()));
-    env.push(("NEBO_APP_DATA".into(), data_dir.into()));
+    // Per-artifact persistent data dir (non-versioned, slug-keyed). NEBO_APP_DIR
+    // is the versioned code dir; NEBO_DATA_DIR is the one place to write a DB so
+    // it survives updates. Single canonical name across apps, plugins, skills.
+    env.push(("NEBO_DATA_DIR".into(), data_dir.into()));
     env.push(("NEBO_API_URL".into(), format!("http://127.0.0.1:{api_port}")));
 
     // Allowlisted system vars

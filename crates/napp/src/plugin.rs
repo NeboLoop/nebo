@@ -2342,13 +2342,6 @@ pub fn plugin_env_var(slug: &str) -> String {
     format!("{}_BIN", slug.to_uppercase().replace('-', "_"))
 }
 
-/// Returns the `{SLUG}_DATA` environment variable name for a plugin's persistent data directory.
-///
-/// Example: `nebo-office` → `NEBO_OFFICE_DATA`.
-pub fn plugin_data_env_var(slug: &str) -> String {
-    format!("{}_DATA", slug.to_uppercase().replace('-', "_"))
-}
-
 /// Run a single plugin's auth status command. Returns `true` if authenticated.
 async fn run_auth_status_check(store: &PluginStore, slug: &str, path_env: &str) -> bool {
     let Some((binary_path, auth)) = store.get_auth_info(slug) else {

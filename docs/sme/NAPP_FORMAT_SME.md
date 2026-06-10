@@ -1441,7 +1441,7 @@ Process environment is `env_clear()`'d, then populated with:
 | `NEBO_APP_VERSION` | manifest version |
 | `NEBO_APP_DIR`     | tool directory   |
 | `NEBO_APP_SOCK`    | socket path      |
-| `NEBO_APP_DATA`    | data directory   |
+| `NEBO_DATA_DIR`    | data directory   |
 
 **Allowlisted system variables:**
 `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ`

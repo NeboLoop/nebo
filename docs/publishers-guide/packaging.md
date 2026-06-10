@@ -300,9 +300,17 @@ appdata/                                 # Runtime data — NEVER touched by upd
 
 This follows the iOS model: code and data live in physically separate containers. The update system operates on `nebo/` and `user/` but **never touches `appdata/`**. Artifacts own their data and are responsible for their own schema migrations across versions.
 
-Environment variables point to the data directory:
-- **Plugins/apps:** `NEBO_APP_DATA` → `~/.nebo/appdata/plugins/<slug>/` or `~/.nebo/appdata/agents/<id>/`
-- **Skills:** `${NEBO_DATA_DIR}` template variable → `~/.nebo/appdata/skills/<name>/`
+One environment variable points to the data directory, the same name for every
+artifact type — **`NEBO_DATA_DIR`**:
+- **Plugins:** `NEBO_DATA_DIR` → `<NEBO_HOME>/appdata/plugins/<slug>/`
+- **Apps:** `NEBO_DATA_DIR` → `<NEBO_HOME>/appdata/agents/<slug>/`
+- **Skills:** `${NEBO_DATA_DIR}` template variable → `<NEBO_HOME>/appdata/skills/<name>/`
+
+The artifact process's working directory is also set to this dir, so a relative
+write (`./app.db`) lands in persistent storage too. `NEBO_HOME` is the Nebo root
+(macOS `~/Library/Application Support/Nebo`, Windows `%APPDATA%\Nebo`, Linux
+`~/.local/share/nebo`); `NEBO_APP_DIR` is the artifact's **versioned code** dir —
+never write data there.
 
 ### Version Resolution
 

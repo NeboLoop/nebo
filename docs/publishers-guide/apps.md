@@ -702,7 +702,7 @@ message HttpResponse {
 
 Your sidecar binary must:
 1. Read `$NEBO_APP_SOCK` for the socket path
-2. Read `$NEBO_APP_DATA` for the writable data directory
+2. Read `$NEBO_DATA_DIR` for the writable data directory
 3. Bind a Unix socket at the `$NEBO_APP_SOCK` path
 4. Serve the `UIService` gRPC service on that socket
 
@@ -713,7 +713,7 @@ Minimal Rust example:
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sock_path = std::env::var("NEBO_APP_SOCK")
         .unwrap_or_else(|_| "/tmp/my-app.sock".into());
-    let data_dir = std::env::var("NEBO_APP_DATA")
+    let data_dir = std::env::var("NEBO_DATA_DIR")
         .unwrap_or_else(|_| "data".into());
 
     // Clean stale socket
@@ -744,7 +744,7 @@ Your sidecar runs in a sandboxed environment. The injected variables are:
 | `NEBO_APP_VERSION` | `1.0.0` | Manifest version |
 | `NEBO_APP_DIR` | `/Users/me/.nebo/user/agents/deal-tracker` | App root directory |
 | `NEBO_APP_SOCK` | `...deal-tracker/deal-tracker.sock` | Unix socket path |
-| `NEBO_APP_DATA` | `~/.nebo/appdata/agents/deal-tracker` | Writable data directory (separate from code — survives upgrades) |
+| `NEBO_DATA_DIR` | `~/.nebo/appdata/agents/deal-tracker` | Writable data directory (separate from code — survives upgrades) |
 | `NEBO_API_URL` | `http://127.0.0.1:8420` | Local Nebo API base URL |
 | `NEBO_APP_TOKEN` | (per-launch token) | Per-launch auth token for calling the Nebo API |
 | `PATH` | system path | Allowlisted system var |
@@ -758,7 +758,7 @@ The environment is sanitized — only the variables above are passed through. AP
 
 ### Data Persistence
 
-The sidecar owns its own data in `$NEBO_APP_DATA`. Common approaches:
+The sidecar owns its own data in `$NEBO_DATA_DIR`. Common approaches:
 
 - **JSON file** — simplest. Load at startup, save after mutations. Works well for small datasets (< 10MB).
 - **SQLite** — use for structured data, queries, or anything beyond trivial CRUD.

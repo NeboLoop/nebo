@@ -252,7 +252,7 @@ load manifest.json → validate → find_binary → validate_binary
 3. **Validate binary**: regular file, not symlink, executable, valid magic bytes (ELF, Mach-O 64, Mach-O 32, Mach-O 32 swapped, Universal/fat binary, PE), ≤ 500MB
 4. **Sanitize environment**: clear all env vars, set only:
    - `NEBO_APP_ID`, `NEBO_APP_NAME`, `NEBO_APP_VERSION`
-   - `NEBO_APP_DIR`, `NEBO_APP_SOCK`, `NEBO_APP_DATA`
+   - `NEBO_APP_DIR`, `NEBO_APP_SOCK`, `NEBO_DATA_DIR`
    - `NEBO_API_URL` (callback URL: `http://127.0.0.1:{port}` — sidecar uses this to call Nebo's SDK endpoints)
    - `NEBO_APP_TOKEN` (injected post-sanitize for authenticated sidecar requests)
    - System: `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ`
@@ -982,7 +982,7 @@ Sidecar processes start with a cleared environment. Only these variables are set
 - `NEBO_APP_VERSION` — manifest version
 - `NEBO_APP_DIR` — tool directory path
 - `NEBO_APP_SOCK` — Unix socket path
-- `NEBO_APP_DATA` — data directory path
+- `NEBO_DATA_DIR` — data directory path
 - `NEBO_API_URL` — callback URL (`http://127.0.0.1:{port}`) for calling Nebo's SDK endpoints (storage, invoke, janus, http_proxy)
 - `NEBO_APP_TOKEN` — authentication token (injected post-sanitize, used as `Authorization: Bearer` for SDK endpoint calls)
 

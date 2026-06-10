@@ -129,16 +129,18 @@ impl PluginRuntime {
             self.binary_path.to_string_lossy().into_owned(),
         ));
 
-        // Plugin data directory
+        // Per-artifact persistent data directory (non-versioned, slug-keyed).
+        // ONE canonical name across plugins, apps, and skills: NEBO_DATA_DIR.
+        // Pushed after the permission-filter pass above so it's never stripped,
+        // and after sanitized_env so it overrides any inherited NEBO_DATA_DIR
+        // (the deprecated root override) with this plugin's own data dir.
         let plugin_data = self.plugin_store.plugin_data_dir(&self.slug);
         if let Err(e) = std::fs::create_dir_all(&plugin_data) {
             tracing::warn!(plugin = %self.slug, error = %e, "failed to create plugin data directory");
         }
-        let data_str = plugin_data.to_string_lossy().into_owned();
-        env.push(("NEBO_PLUGIN_DATA".into(), data_str.clone()));
         env.push((
-            crate::plugin::plugin_data_env_var(&self.slug),
-            data_str,
+            "NEBO_DATA_DIR".into(),
+            plugin_data.to_string_lossy().into_owned(),
         ));
 
         // Dependency plugin binary vars
@@ -191,6 +193,13 @@ impl PluginRuntime {
         for (k, v) in self.build_env() {
             cmd.env(k, v);
         }
+        // Run in the plugin's non-versioned data dir so a relative-path write
+        // (e.g. a DB at ./plugin.sqlite) lands in persistent storage that
+        // survives upgrades, not the version dir that gets wiped. Same data dir
+        // exported as NEBO_DATA_DIR; the binary is resolved by absolute path.
+        let data_dir = self.plugin_store.plugin_data_dir(&self.slug);
+        let _ = std::fs::create_dir_all(&data_dir);
+        cmd.current_dir(&data_dir);
         cmd.kill_on_drop(true);
         cmd
     }
