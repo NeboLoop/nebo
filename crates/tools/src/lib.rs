@@ -170,21 +170,41 @@ pub async fn persist_skill_from_api(
         &detail.item.version
     };
 
-    // Try sealed .napp download — use API-provided URL or construct from artifact ID.
-    // Include platform so the server can serve the right binary for this OS/arch.
+    // Skills can bundle a per-platform binary (bin/<name>), exactly like a
+    // plugin or a sidecar app. The per-platform .napp carries that binary; the
+    // generic `/download` serves the universal (binary-less) package. Prefer the
+    // per-platform URL and fall back to the resolved generic URL for binary-less
+    // skills (which 404 on the per-platform path).
     let platform = napp::plugin::current_platform_key();
-    let download_url = detail.download_url.clone().or_else(|| {
-        Some(format!(
-            "/api/v1/apps/{}/download/{}",
-            artifact_id, platform
-        ))
-    });
-    if let Some(ref download_url) = download_url {
+    let platform_url = format!("/api/v1/apps/{}/download/{}.napp", artifact_id, platform);
+    let download_candidates: Vec<String> = detail
+        .download_url
+        .iter()
+        .cloned()
+        .fold(vec![platform_url], |mut acc, u| {
+            if !acc.contains(&u) {
+                acc.push(u);
+            }
+            acc
+        });
+    if !download_candidates.is_empty() {
         let napp_dir = nebo_dir.join("skills").join(dir_name);
         std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create skill dir: {e}"))?;
         let napp_path = napp_dir.join(format!("{}.napp", version));
 
-        match api.download_napp(download_url).await {
+        let mut downloaded: Option<Vec<u8>> = None;
+        for candidate in &download_candidates {
+            match api.download_napp(candidate).await {
+                Ok(data) => {
+                    downloaded = Some(data);
+                    break;
+                }
+                Err(e) => {
+                    tracing::debug!(skill = name, url = %candidate, error = %e, "napp download candidate failed, trying next");
+                }
+            }
+        }
+        match downloaded.ok_or_else(|| "all napp download candidates failed".to_string()) {
             Ok(data) => {
                 std::fs::write(&napp_path, &data).map_err(|e| format!("write .napp: {e}"))?;
                 tracing::info!(skill = name, path = %napp_path.display(), size = data.len(), "stored .napp");
@@ -508,10 +528,44 @@ pub async fn persist_agent_from_api(
     // encrypted payload: leave the .napp sealed on disk — the loader decrypts it in
     // memory using the license key — and seed that license key now so the agent
     // can load immediately after install.
+    // Apps are agents with a UI AND a native sidecar binary, so their package is
+    // per-platform (bin/<name> + AGENT.md + agent.json), exactly like a plugin.
+    // The generic `/download` endpoint serves the universal (UI-only / binary-less)
+    // .napp, which for a sidecar app is missing the binary and the agent files —
+    // that's why app installs landed incomplete. Prefer the per-platform URL and
+    // fall back to the resolved generic URL for binary-less agents (which 404 on
+    // the per-platform path).
+    let platform_url = format!(
+        "/api/v1/apps/{}/download/{}.napp",
+        artifact_id,
+        napp::plugin::current_platform_key()
+    );
+    let download_candidates: Vec<String> = download_url
+        .iter()
+        .cloned()
+        .fold(vec![platform_url], |mut acc, u| {
+            if !acc.contains(&u) {
+                acc.push(u);
+            }
+            acc
+        });
+
     let mut sealed = false;
-    if let Some(ref download_url) = download_url {
+    if !download_candidates.is_empty() {
         let napp_path = napp_dir.join(format!("{}.napp", version));
-        match api.download_napp(download_url).await {
+        let mut downloaded: Option<Vec<u8>> = None;
+        for candidate in &download_candidates {
+            match api.download_napp(candidate).await {
+                Ok(data) => {
+                    downloaded = Some(data);
+                    break;
+                }
+                Err(e) => {
+                    tracing::debug!(agent = name, url = %candidate, error = %e, "napp download candidate failed, trying next");
+                }
+            }
+        }
+        match downloaded.ok_or_else(|| "all napp download candidates failed".to_string()) {
             Ok(data) => {
                 std::fs::write(&napp_path, &data).map_err(|e| format!("write .napp: {e}"))?;
                 tracing::info!(agent = name, path = %napp_path.display(), size = data.len(), "stored .napp");
