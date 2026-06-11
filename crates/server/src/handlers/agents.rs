@@ -389,6 +389,7 @@ pub async fn create_agent(
             let manifest_path = agent_dir.join("manifest.json");
             if !manifest_path.exists() {
                 let manifest = serde_json::json!({
+                    "id": id,
                     "name": name,
                     "version": "1.0.0",
                     "type": "agent",

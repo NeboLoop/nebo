@@ -489,13 +489,17 @@ pub async fn connect_integration(
     {
         Ok(tools) => {
             let tool_count = tools.len();
-            // Update connection status in DB
+            // Update connection status in DB. Also re-enable the integration: a
+            // successful connect is an explicit user action, and the connect_all
+            // sync disconnects (and refuses to reconnect) any is_enabled=0 server.
+            // Without this, reconnecting a deactivated server has no lasting
+            // effect — it drops again on the next sync.
             let _ = state.store.update_mcp_integration(
                 &id,
                 None,
                 None,
                 None,
-                None,
+                Some(true),
                 Some(&serde_json::json!({"connection_status": "connected", "tool_count": tool_count}).to_string()),
             );
             // Also update connection_status column directly

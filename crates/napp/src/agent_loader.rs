@@ -412,6 +412,25 @@ fn load_from_embedded(
 }
 
 /// Load an agent from a directory (loose files or extracted .napp).
+/// Persist a generated `id` into a loose agent's `manifest.json`, preserving any
+/// existing fields. User-created agents are often written with only name/version
+/// (no `id`); without a stable id the roster falls back to using the agent NAME
+/// as its id, which breaks enable/disable (runtime state is keyed by id in the
+/// DB) and lets a rename orphan the agent. We mint the id once and write it back
+/// so it survives reloads.
+fn persist_manifest_id(dir: &Path, id: &str) {
+    let manifest_path = dir.join("manifest.json");
+    let mut obj = std::fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    obj.insert("id".to_string(), serde_json::Value::String(id.to_string()));
+    if let Ok(s) = serde_json::to_string_pretty(&serde_json::Value::Object(obj)) {
+        let _ = std::fs::write(&manifest_path, s);
+    }
+}
+
 pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, NappError> {
     let agent_md_path = dir.join("AGENT.md");
     if !agent_md_path.exists() {
@@ -489,6 +508,19 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
             agent_def.description = d.clone();
         }
     }
+
+    // User-created agents must carry a stable UUID. When the manifest has no
+    // `id`, mint one and persist it so the roster never falls back to the agent
+    // name as its id (which breaks enable/disable and survives renames poorly).
+    let id = match id {
+        Some(existing) => Some(existing),
+        None if matches!(source, AgentSource::User) => {
+            let new_id = uuid::Uuid::new_v4().to_string();
+            persist_manifest_id(dir, &new_id);
+            Some(new_id)
+        }
+        None => None,
+    };
 
     let description = agent_def.description.clone();
 
