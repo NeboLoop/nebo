@@ -325,3 +325,14 @@
   user-select: none;
 }
 
+
+/* docx-preview (WorkViewer): blend the Word page chrome into the theme.
+   The library injects its own stylesheet after ours, so !important is needed. */
+.docx-wrapper {
+  background: transparent !important;
+  padding: 0 !important;
+}
+.docx-wrapper > section.docx {
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.18) !important;
+  margin-bottom: 1rem !important;
+}

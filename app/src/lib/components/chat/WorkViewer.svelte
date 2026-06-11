@@ -2,15 +2,15 @@
   /**
    * WorkViewer — the ONE renderer for Work-panel artifacts, routed by file
    * extension (Claude's renderer-matrix model). Heavy libraries (pdfjs-dist,
-   * mammoth, xlsx, shiki) load on demand via dynamic import so the main
+   * docx-preview, xlsx, shiki) load on demand via dynamic import so the main
    * bundle stays lean. Fetching lives here too: text formats fetch as text,
    * binary formats as ArrayBuffer, media not at all (the browser streams it).
    *
    * Security model (mirrors Claude's): HTML artifacts run in a sandboxed
    * iframe WITHOUT allow-same-origin (opaque origin — scripts may run but
-   * can't reach the app, its API, or its storage). DOCX is converted by
-   * mammoth to structural HTML (no scripts/macros). Spreadsheet formulas are
-   * never evaluated — values only.
+   * can't reach the app, its API, or its storage). DOCX renders via
+   * docx-preview to styled DOM (no scripts/macros execute). Spreadsheet
+   * formulas are never evaluated — values only.
    */
   import { onMount } from 'svelte';
 
@@ -64,6 +64,7 @@
   /** Parsed sheet data: per sheet, name + rows. */
   let sheets = $state<{ name: string; rows: string[][]; total: number }[]>([]);
   let pdfContainer = $state<HTMLDivElement | null>(null);
+  let docxContainer = $state<HTMLDivElement | null>(null);
 
   const SHEET_ROW_CAP = 500;
 
@@ -165,10 +166,20 @@
         }
         case 'docx': {
           const data = await fetchBinary();
-          const mammoth = await import('mammoth');
-          const result = await mammoth.convertToHtml({ arrayBuffer: data });
-          renderedHtml = result.value;
-          break;
+          const { renderAsync } = await import('docx-preview');
+          loading = false; // container must render before pages attach
+          await new Promise((r) => requestAnimationFrame(r));
+          if (!docxContainer) return;
+          docxContainer.replaceChildren();
+          // Faithful paginated Word rendering: real pages with margins,
+          // colors, shaded tables, headers/footers — not flattened HTML.
+          await renderAsync(data, docxContainer, undefined, {
+            inWrapper: true,
+            ignoreWidth: false,
+            ignoreHeight: false,
+          });
+          fitDocxPages();
+          return;
         }
         case 'pdf': {
           const data = await fetchBinary();
@@ -191,6 +202,28 @@
       loading = false;
     }
   }
+
+  // Word pages render at true page size (e.g. 8.5in) — scale them down to the
+  // panel width with CSS zoom (zoom keeps text crisp, unlike transform).
+  function fitDocxPages() {
+    if (!docxContainer) return;
+    const pages = Array.from(docxContainer.querySelectorAll<HTMLElement>('section.docx'));
+    if (!pages.length) return;
+    pages.forEach((p) => { p.style.zoom = '1'; });
+    const available = docxContainer.clientWidth;
+    if (available <= 0) return;
+    pages.forEach((p) => {
+      const w = p.offsetWidth;
+      if (w) p.style.zoom = String(Math.min(1, available / w));
+    });
+  }
+
+  $effect(() => {
+    if (!docxContainer) return;
+    const ro = new ResizeObserver(() => fitDocxPages());
+    ro.observe(docxContainer);
+    return () => ro.disconnect();
+  });
 
   async function renderPdfPages(_pdfjs: unknown, doc: { numPages: number; getPage: (n: number) => Promise<any> }) {
     // Wait a tick for the container to mount after `loading` flips.
@@ -222,9 +255,11 @@
       <div class="text-xs text-error">{error}</div>
       <a href={url} download={title} class="btn btn-sm btn-outline">Download {title}</a>
     </div>
-  {:else if mode === 'markdown' || mode === 'docx'}
+  {:else if mode === 'markdown'}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="prose prose-sm max-w-none" onclick={oncontentclick}>{@html renderedHtml}</div>
+  {:else if mode === 'docx'}
+    <div bind:this={docxContainer}></div>
   {:else if mode === 'code'}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="text-xs leading-relaxed rounded-lg overflow-x-auto [&_pre]:p-4 [&_pre]:rounded-lg" onclick={oncontentclick}>{@html renderedHtml}</div>

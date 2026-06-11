@@ -2,11 +2,15 @@
 //!
 //! Same doctrine as the PDF path: documents generate in-process, identically
 //! on every platform, never via host binaries. Covers the report subset —
-//! headings, paragraphs, bold/italic/code runs, nested lists, tables, quotes.
+//! headings, paragraphs, bold/italic/code runs, nested lists, tables, quotes —
+//! with a styled treatment (colored headings, shaded table headers, banded
+//! rows, modern line spacing) so the output presents like a designed document,
+//! not typewriter text.
 
 use docx_rs::{
-    AlignmentType, Docx, IndentLevel, NumberingId, Paragraph, Run, RunFonts, Table, TableCell,
-    TableRow,
+    AlignmentType, BorderType, Docx, IndentLevel, LineSpacing, LineSpacingType, NumberingId,
+    Paragraph, Run, RunFonts, Shading, ShdType, Table, TableBorder, TableBorderPosition,
+    TableBorders, TableCell, TableRow, WidthType,
 };
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -15,12 +19,18 @@ use crate::RenderError;
 /// Heading font sizes in half-points (docx unit), h1..h6.
 const HEADING_SIZES: [usize; 6] = [48, 38, 32, 28, 26, 24];
 const BODY_SIZE: usize = 22;
+/// Brand accent for headings and table headers (Nebo teal).
+const ACCENT: &str = "0077A8";
+/// Banded table rows + subtle borders.
+const BAND_FILL: &str = "EFF5F9";
+const BORDER_GRAY: &str = "D7DDE3";
 
 #[derive(Default, Clone, Copy)]
 struct RunStyle {
     bold: bool,
     italic: bool,
     code: bool,
+    color: Option<&'static str>,
 }
 
 /// Convert Markdown to a .docx file (bytes).
@@ -56,13 +66,26 @@ pub fn markdown_to_docx(markdown: &str) -> Result<Vec<u8>, RenderError> {
         if style.code {
             run = run.fonts(RunFonts::new().ascii("Courier New"));
         }
+        if let Some(color) = style.color {
+            run = run.color(color);
+        }
         run
     }
 
+    // Headings get air above and a little below; body gets 1.15 line spacing
+    // with space after — the modern document rhythm instead of typewriter walls.
     macro_rules! flush_para {
         () => {
             if para_has_content {
-                docx = docx.add_paragraph(para);
+                let spacing = if heading.is_some() {
+                    LineSpacing::new().before(280).after(120)
+                } else {
+                    LineSpacing::new()
+                        .after(140)
+                        .line(276)
+                        .line_rule(LineSpacingType::Auto)
+                };
+                docx = docx.add_paragraph(para.line_spacing(spacing));
                 para = Paragraph::new();
                 para_has_content = false;
             } else {
@@ -85,6 +108,7 @@ pub fn markdown_to_docx(markdown: &str) -> Result<Vec<u8>, RenderError> {
                         HeadingLevel::H6 => 5,
                     });
                     style.bold = true;
+                    style.color = Some(ACCENT);
                 }
                 Tag::Paragraph => {
                     if !in_table {
@@ -130,6 +154,7 @@ pub fn markdown_to_docx(markdown: &str) -> Result<Vec<u8>, RenderError> {
                     flush_para!();
                     heading = None;
                     style.bold = false;
+                    style.color = None;
                 }
                 TagEnd::Paragraph => {
                     if !in_table {
@@ -159,25 +184,13 @@ pub fn markdown_to_docx(markdown: &str) -> Result<Vec<u8>, RenderError> {
                 TagEnd::Table => {
                     in_table = false;
                     if !table_rows.is_empty() {
-                        let rows: Vec<TableRow> = table_rows
-                            .drain(..)
-                            .enumerate()
-                            .map(|(i, cells)| {
-                                TableRow::new(
-                                    cells
-                                        .into_iter()
-                                        .map(|c| {
-                                            let s = RunStyle { bold: i == 0, ..Default::default() };
-                                            TableCell::new().add_paragraph(
-                                                Paragraph::new()
-                                                    .add_run(styled_run(&c, s, BODY_SIZE)),
-                                            )
-                                        })
-                                        .collect(),
-                                )
-                            })
-                            .collect();
-                        docx = docx.add_table(Table::new(rows));
+                        docx = docx.add_table(build_table(std::mem::take(&mut table_rows)));
+                        // Breathing room below the table.
+                        docx = docx.add_paragraph(
+                            Paragraph::new()
+                                .line_spacing(LineSpacing::new().after(120))
+                                .add_run(Run::new().add_text("").size(2)),
+                        );
                     }
                 }
                 _ => {}
@@ -213,7 +226,7 @@ pub fn markdown_to_docx(markdown: &str) -> Result<Vec<u8>, RenderError> {
                 docx = docx.add_paragraph(
                     Paragraph::new()
                         .align(AlignmentType::Center)
-                        .add_run(Run::new().add_text("— · —").size(BODY_SIZE)),
+                        .add_run(Run::new().add_text("— · —").size(BODY_SIZE).color(BORDER_GRAY)),
                 );
             }
             _ => {}
@@ -230,6 +243,58 @@ pub fn markdown_to_docx(markdown: &str) -> Result<Vec<u8>, RenderError> {
     Ok(buf.into_inner())
 }
 
+/// Full-width table: accent-filled header row with white bold text, banded
+/// data rows, hairline gray borders.
+fn build_table(rows: Vec<Vec<String>>) -> Table {
+    let table_rows: Vec<TableRow> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, cells)| {
+            TableRow::new(
+                cells
+                    .into_iter()
+                    .map(|c| {
+                        let mut run = Run::new().add_text(c).size(BODY_SIZE);
+                        let mut cell = TableCell::new();
+                        if i == 0 {
+                            run = run.bold().color("FFFFFF");
+                            cell = cell.shading(Shading::new().shd_type(ShdType::Clear).fill(ACCENT));
+                        } else if i % 2 == 0 {
+                            cell = cell.shading(Shading::new().shd_type(ShdType::Clear).fill(BAND_FILL));
+                        }
+                        cell.add_paragraph(
+                            Paragraph::new()
+                                .line_spacing(LineSpacing::new().before(60).after(60))
+                                .add_run(run),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+
+    let mut borders = TableBorders::new();
+    for pos in [
+        TableBorderPosition::Top,
+        TableBorderPosition::Bottom,
+        TableBorderPosition::Left,
+        TableBorderPosition::Right,
+        TableBorderPosition::InsideH,
+        TableBorderPosition::InsideV,
+    ] {
+        borders = borders.set(
+            TableBorder::new(pos)
+                .border_type(BorderType::Single)
+                .size(4)
+                .color(BORDER_GRAY),
+        );
+    }
+
+    Table::new(table_rows)
+        .width(5000, WidthType::Pct)
+        .set_borders(borders)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,7 +303,7 @@ mod tests {
     fn markdown_renders_to_docx() {
         let md = "# Title\n\nSome **bold** and _italic_ with `code`.\n\n\
                   - bullet one\n- bullet two\n\n\
-                  | H1 | H2 |\n|----|----|\n| a | b |\n";
+                  | H1 | H2 |\n|----|----|\n| a | b |\n| c | d |\n";
         let bytes = markdown_to_docx(md).expect("docx");
         // DOCX is a ZIP container: PK magic.
         assert_eq!(&bytes[..2], b"PK");
