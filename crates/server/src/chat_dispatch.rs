@@ -139,6 +139,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let proactive_inbox = state.proactive_inbox.clone();
     let cleanup_tools = state.tools.clone();
     let plugin_store = state.plugin_store.clone();
+    let pending_comm_asks = state.pending_comm_asks.clone();
     let comm_manager = if config.comm_reply.is_some() {
         Some(state.comm_manager.clone())
     } else {
@@ -612,6 +613,37 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 payload["widgets"] = widgets.clone();
                             }
                             hub.broadcast("ask_request", payload);
+                            // Forward the question to the loop/channel
+                            // conversation — without this the run blocks on a
+                            // question the remote user never sees. The next
+                            // inbound message in this conversation resolves it
+                            // (see the pending-ask check in handle_comm_message).
+                            if let Some(cfg) = &comm_reply {
+                                pending_comm_asks
+                                    .lock()
+                                    .await
+                                    .insert(sid.to_string(), request_id.to_string());
+                                let mut meta = HashMap::new();
+                                meta.insert("kind".to_string(), "ask".to_string());
+                                meta.insert("request_id".to_string(), request_id.to_string());
+                                if !agent_display_name.is_empty() {
+                                    meta.insert("senderName".to_string(), agent_display_name.clone());
+                                }
+                                if let Some(w) = &event.widgets {
+                                    meta.insert("widgets".to_string(), w.to_string());
+                                }
+                                send_comm_msg(
+                                    cfg,
+                                    &comm_manager,
+                                    &channel_providers,
+                                    comm::CommMessageType::Message,
+                                    uuid::Uuid::new_v4().to_string(),
+                                    event.text.clone(),
+                                    meta,
+                                    &agent_display_name,
+                                )
+                                .await;
+                            }
                         }
                         StreamEventType::PlanApproval => {
                             let request_id = event.error.as_deref().unwrap_or("");

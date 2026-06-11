@@ -1177,7 +1177,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     lanes.start_pumps();
 
     // Create adaptive concurrency controller and spawn resource monitor
-    let concurrency = Arc::new(agent::ConcurrencyController::new());
+    let concurrency = Arc::new(agent::ConcurrencyController::new(
+        cfg.max_concurrent_runs(),
+    ));
     agent::concurrency::spawn_monitor(concurrency.clone());
 
     // Load models catalog from embedded models.yaml (needed for selector before runner)
@@ -1573,6 +1575,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         comm_manager,
         approval_channels: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         ask_channels: ask_channels.clone(),
+        pending_comm_asks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         update_pending: Arc::new(tokio::sync::Mutex::new(None)),
         hooks,
         mcp_context,
@@ -2470,6 +2473,22 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
 }
 
 /// Handle an incoming NeboAI message with full access to runner/lanes/comm.
+/// If this conversation's run is blocked on an agent question (forwarded
+/// over comm by chat_dispatch's AskRequest arm), the inbound message IS the
+/// answer: resolve the pending ask and report true so no new run starts.
+async fn try_resolve_pending_ask(state: &AppState, session_key: &str, answer: &str) -> bool {
+    let pending = state.pending_comm_asks.lock().await.remove(session_key);
+    if let Some(request_id) = pending {
+        if let Some(tx) = state.ask_channels.lock().await.remove(&request_id) {
+            let _ = tx.send(answer.to_string());
+            tracing::info!(session = %session_key, "inbound comm message resolved pending ask");
+            return true;
+        }
+        // Asker already gone (timeout/cancel) — treat as a normal message.
+    }
+    false
+}
+
 async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     tracing::info!(
         target: "neboai_identity",
@@ -2686,6 +2705,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         let mut prompt = text;
         let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
 
+        if try_resolve_pending_ask(&state, &session_key, &prompt).await {
+            return;
+        }
+
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
@@ -2812,6 +2835,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
         let mut prompt = text;
         let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
+
+        if try_resolve_pending_ask(&state, &session_key, &prompt).await {
+            return;
+        }
 
         let config = chat_dispatch::ChatConfig {
             session_key,
@@ -3010,6 +3037,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             let mut prompt = text;
             let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
 
+            if try_resolve_pending_ask(&state, &session_key, &prompt).await {
+                return;
+            }
+
             let config = chat_dispatch::ChatConfig {
                 session_key,
                 prompt,
@@ -3101,6 +3132,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
         let mut prompt = text;
         let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
+
+        if try_resolve_pending_ask(&state, &session_key, &prompt).await {
+            return;
+        }
 
         let config = chat_dispatch::ChatConfig {
             session_key,

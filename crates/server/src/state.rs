@@ -92,6 +92,11 @@ pub struct AppState {
     pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     /// Pending ask requests: question_id -> sender
     pub ask_channels: tools::AskChannels,
+    /// Asks forwarded to a loop/channel conversation, keyed by session key →
+    /// request_id. The user's NEXT inbound message in that conversation
+    /// resolves the pending ask (conversational answer) instead of starting
+    /// a new run — without this, an agent question over comm blocks forever.
+    pub pending_comm_asks: Arc<Mutex<HashMap<String, String>>>,
     /// Staged update binary ready for apply (path + version)
     pub update_pending: Arc<Mutex<Option<(std::path::PathBuf, String)>>>,
     /// Hook dispatcher for napp hook subscriptions
