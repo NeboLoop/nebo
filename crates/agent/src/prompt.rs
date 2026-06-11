@@ -370,8 +370,9 @@ fn channel_guidance(channel: &str) -> String {
              filename in backticks. Do NOT paste large formatted content into chat. \
              Conversational answers, short explanations, and quick facts stay in chat. \
              Always write under `{out_dir}` — it needs no permissions and renders instantly. \
-             For a PDF: write the .md, then `os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")` \
-             — it typesets on the embedded engine. NEVER use host binaries \
+             For a PDF or Word doc: write the .md, then `os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")` \
+             (or `to: \"docx\"`). For a spreadsheet: write the .csv, then convert `to: \"xlsx\"`. \
+             All conversion runs on embedded engines — NEVER use host binaries \
              (wkhtmltopdf, pandoc, headless chrome) for document conversion."
         );
     }

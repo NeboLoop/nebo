@@ -6,6 +6,12 @@
 //! (wkhtmltopdf is abandoned upstream) or on the bundled Obscura browser (a
 //! DOM+JS automation browser with no layout engine — it cannot print).
 
+mod docx;
+mod xlsx;
+
+pub use docx::markdown_to_docx;
+pub use xlsx::csv_to_xlsx;
+
 use std::sync::OnceLock;
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};

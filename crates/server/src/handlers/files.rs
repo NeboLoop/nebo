@@ -174,18 +174,23 @@ pub async fn serve_file(
         .await
         .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
 
-    // Guess content type from extension
+    // Guess content type from extension. Text types carry charset=utf-8:
+    // agent-written files are UTF-8, and without an explicit charset the
+    // browser falls back to Windows-1252 — em-dashes and emoji render as
+    // mojibake (â€", ðŸ"š) in the Work panel iframe.
     let content_type = match canonical.extension().and_then(|e| e.to_str()) {
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("svg") => "image/svg+xml",
         Some("pdf") => "application/pdf",
-        Some("json") => "application/json",
-        Some("txt") | Some("log") => "text/plain",
-        Some("html") => "text/html",
-        Some("css") => "text/css",
-        Some("js") => "application/javascript",
+        Some("json") => "application/json; charset=utf-8",
+        Some("txt") | Some("log") | Some("md") | Some("markdown") | Some("csv") | Some("typ") => {
+            "text/plain; charset=utf-8"
+        }
+        Some("html") | Some("htm") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") => "application/javascript; charset=utf-8",
         _ => "application/octet-stream",
     };
 
