@@ -355,7 +355,10 @@ fn channel_guidance(channel: &str) -> String {
     // Desktop/web surfaces have the Work panel — steer substantial deliverables
     // into rendered documents instead of walls of text in chat. (Terse channels
     // returned above; loop/plugin channels attach files instead.)
-    if channel.is_empty() || channel == "web" || channel == "app" {
+    // Desktop surfaces AND loop conversations ("neboai") share the Work
+    // Documents flow: loop chats render the same Work panel, and run-produced
+    // files auto-upload as comm attachments — the guidance is identical.
+    if channel.is_empty() || channel == "web" || channel == "app" || channel == "neboai" {
         let out_dir = config::data_dir()
             .map(|d| d.join("files").to_string_lossy().to_string())
             .unwrap_or_else(|_| "~/Documents".to_string());
