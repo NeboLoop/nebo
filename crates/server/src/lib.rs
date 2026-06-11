@@ -2473,10 +2473,23 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
 }
 
 /// Handle an incoming NeboAI message with full access to runner/lanes/comm.
-/// If this conversation's run is blocked on an agent question (forwarded
-/// over comm by chat_dispatch's AskRequest arm), the inbound message IS the
-/// answer: resolve the pending ask and report true so no new run starts.
-async fn try_resolve_pending_ask(state: &AppState, session_key: &str, answer: &str) -> bool {
+/// Control handling for inbound comm messages, before any run starts.
+/// Returns true when the message was consumed:
+/// - metadata kind=stop → cancel the conversation's running session (the
+///   loop UI's Stop button — desktop parity with the local stop event).
+/// - a pending agent question for this session → the message IS the answer;
+///   resolve the blocked ask instead of starting a new run.
+async fn try_handle_comm_control(
+    state: &AppState,
+    session_key: &str,
+    answer: &str,
+    metadata: &std::collections::HashMap<String, String>,
+) -> bool {
+    if metadata.get("kind").map(String::as_str) == Some("stop") {
+        let cancelled = state.run_registry.cancel_by_session(session_key).await;
+        tracing::info!(session = %session_key, cancelled, "inbound comm stop command");
+        return true;
+    }
     let pending = state.pending_comm_asks.lock().await.remove(session_key);
     if let Some(request_id) = pending {
         if let Some(tx) = state.ask_channels.lock().await.remove(&request_id) {
@@ -2705,7 +2718,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         let mut prompt = text;
         let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
 
-        if try_resolve_pending_ask(&state, &session_key, &prompt).await {
+        if try_handle_comm_control(&state, &session_key, &prompt, &msg.metadata).await {
             return;
         }
 
@@ -2836,7 +2849,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         let mut prompt = text;
         let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
 
-        if try_resolve_pending_ask(&state, &session_key, &prompt).await {
+        if try_handle_comm_control(&state, &session_key, &prompt, &msg.metadata).await {
             return;
         }
 
@@ -3037,7 +3050,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             let mut prompt = text;
             let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
 
-            if try_resolve_pending_ask(&state, &session_key, &prompt).await {
+            if try_handle_comm_control(&state, &session_key, &prompt, &msg.metadata).await {
                 return;
             }
 
@@ -3133,7 +3146,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         let mut prompt = text;
         let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
 
-        if try_resolve_pending_ask(&state, &session_key, &prompt).await {
+        if try_handle_comm_control(&state, &session_key, &prompt, &msg.metadata).await {
             return;
         }
 
