@@ -159,8 +159,9 @@ export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
       const ext = urlExt(url);
       const kind: WorkItem['kind'] =
         ext === 'csv' || ext === 'xlsx' || ext === 'xls' ? 'table'
-          : ['js', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'json', 'sh', 'css'].includes(ext) ? 'code'
-            : 'document';
+          : ext === 'pptx' || ext === 'ppt' ? 'slides'
+            : ['js', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'json', 'sh', 'css'].includes(ext) ? 'code'
+              : 'document';
       return { id: url, title, kind, url, codeUrl: ext === 'html' ? sourceFor(url) : undefined };
     });
 }

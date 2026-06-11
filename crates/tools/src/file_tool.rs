@@ -333,6 +333,27 @@ impl FileTool {
             return ToolResult::error(format!("Error: {}", e));
         }
 
+        // Office formats and PDF are binary containers — text written under these
+        // extensions is ALWAYS a corrupt fake (an invented-XML .pptx shipped to a
+        // user once). Redirect to the one real pathway per format.
+        let ext_lower = Path::new(&input.path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        let redirect = match ext_lower.as_str() {
+            "docx" | "doc" => Some("write the content as Markdown (.md), then os(resource: \"file\", action: \"convert\", path: ..., to: \"docx\")"),
+            "xlsx" | "xls" => Some("write the data as CSV (.csv), then os(resource: \"file\", action: \"convert\", path: ..., to: \"xlsx\")"),
+            "pdf" => Some("write the content as Markdown (.md), then os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")"),
+            "pptx" | "ppt" => Some("use the pptx skill: write a JSON spec, then run the nebo-office binary (`nebo-office pptx create spec.json -o out.pptx`)"),
+            _ => None,
+        };
+        if let Some(how) = redirect {
+            return ToolResult::error(format!(
+                "Error: .{ext_lower} is a binary format — writing text to it produces a corrupt file that won't open. Instead, {how}."
+            ));
+        }
+
         let path = expand_path(&input.path);
 
         // Overwriting an existing file requires a prior read (and that it hasn't changed

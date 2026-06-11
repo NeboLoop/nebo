@@ -48,12 +48,13 @@
 
   type Mode =
     | 'markdown' | 'html' | 'pdf' | 'sheet' | 'csv' | 'docx' | 'code'
-    | 'image' | 'video' | 'download';
+    | 'pptx' | 'image' | 'video' | 'download';
 
   const mode: Mode = $derived.by(() => {
     if (ext === 'md' || ext === 'txt') return 'markdown';
     if (ext === 'html' || ext === 'htm') return 'html';
     if (ext === 'pdf') return 'pdf';
+    if (ext === 'pptx' || ext === 'ppt') return 'pptx';
     if (ext === 'xlsx' || ext === 'xls') return 'sheet';
     if (ext === 'csv' || ext === 'tsv') return 'csv';
     if (ext === 'docx') return 'docx';
@@ -205,13 +206,22 @@
           return;
         }
         case 'pdf': {
-          const data = await fetchBinary();
-          const pdfjs = await import('pdfjs-dist');
-          const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
-          pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-          const doc = await pdfjs.getDocument({ data }).promise;
-          loading = false; // container must render before canvases attach
-          await renderPdfPages(pdfjs, doc);
+          await renderPdfFrom(await fetchBinary());
+          return;
+        }
+        case 'pptx': {
+          // Decks render through the PDF viewer via the server's on-demand
+          // pptx→pdf preview (nebo-office). 503 = plugin missing → the error
+          // branch offers the download instead.
+          const res = await fetch(`${url}?preview=pdf`);
+          if (!res.ok) {
+            throw new Error(
+              res.status === 503
+                ? 'Preview needs the nebo-office plugin — download to open in PowerPoint/Keynote.'
+                : `Failed to load preview (${res.status})`
+            );
+          }
+          await renderPdfFrom(await res.arrayBuffer());
           return;
         }
         case 'image':
@@ -247,6 +257,16 @@
     ro.observe(docxContainer);
     return () => ro.disconnect();
   });
+
+  // Shared PDF rendering for native PDFs and pptx previews.
+  async function renderPdfFrom(data: ArrayBuffer) {
+    const pdfjs = await import('pdfjs-dist');
+    const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
+    pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+    const doc = await pdfjs.getDocument({ data }).promise;
+    loading = false; // container must render before canvases attach
+    await renderPdfPages(pdfjs, doc);
+  }
 
   async function renderPdfPages(_pdfjs: unknown, doc: { numPages: number; getPage: (n: number) => Promise<any> }) {
     // Wait a tick for the container to mount after `loading` flips.
@@ -299,7 +319,7 @@
       title={title}
       class="w-full h-full border-0 bg-white"
     ></iframe>
-  {:else if mode === 'pdf'}
+  {:else if mode === 'pdf' || mode === 'pptx'}
     <div bind:this={pdfContainer}></div>
   {:else if mode === 'csv' || mode === 'sheet'}
     {#each sheets as sheet}

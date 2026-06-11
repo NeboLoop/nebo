@@ -144,9 +144,14 @@ pub async fn upload_file(
 }
 
 /// GET /api/v1/files/*path
+///
+/// `?preview=pdf` on a presentation file serves an on-demand PDF rendering
+/// (generated via the nebo-office plugin, cached next to the source) so the
+/// Work panel can show decks through its existing PDF viewer.
 pub async fn serve_file(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(file_path): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
     let data_dir = config::data_dir().map_err(to_error_response)?;
     let files_root = data_dir.join("files");
@@ -168,6 +173,15 @@ pub async fn serve_file(
         .map_err(|_| to_error_response(types::NeboError::NotFound))?;
     if !canonical.starts_with(&canonical_root) {
         return Err(to_error_response(types::NeboError::NotFound));
+    }
+
+    if params.get("preview").map(String::as_str) == Some("pdf")
+        && matches!(
+            canonical.extension().and_then(|e| e.to_str()),
+            Some("pptx" | "ppt")
+        )
+    {
+        return serve_pptx_preview(&state, &canonical, &canonical_root).await;
     }
 
     let bytes = tokio::fs::read(&canonical)
@@ -200,6 +214,74 @@ pub async fn serve_file(
 
     axum::response::Response::builder()
         .header("content-type", content_type)
+        .body(axum::body::Body::from(bytes))
+        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))
+}
+
+/// Render a .pptx to PDF via the nebo-office plugin and serve it. Results
+/// cache under `files/.previews/<name>.pdf` and regenerate when the source
+/// is newer. 503 when the plugin isn't installed — the viewer falls back to
+/// its download card.
+async fn serve_pptx_preview(
+    state: &AppState,
+    source: &std::path::Path,
+    files_root: &std::path::Path,
+) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
+    let name = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let previews_dir = files_root.join(".previews");
+    let cache = previews_dir.join(format!("{name}.pdf"));
+
+    let src_mtime = tokio::fs::metadata(source)
+        .await
+        .and_then(|m| m.modified())
+        .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+    let cache_fresh = match tokio::fs::metadata(&cache).await.and_then(|m| m.modified()) {
+        Ok(t) => t >= src_mtime,
+        Err(_) => false,
+    };
+
+    if !cache_fresh {
+        let Some(bin) = state.plugin_store.resolve("nebo-office", "*") else {
+            return Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(types::api::ErrorResponse {
+                    error: "preview unavailable: the nebo-office plugin is not installed".into(),
+                }),
+            ));
+        };
+        tokio::fs::create_dir_all(&previews_dir)
+            .await
+            .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+        let output = tokio::process::Command::new(&bin)
+            .arg("pdf")
+            .arg("convert")
+            .arg(source)
+            .arg("-o")
+            .arg(&cache)
+            .arg("--bin")
+            .arg(&bin)
+            .output()
+            .await
+            .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(types::api::ErrorResponse {
+                    error: format!("preview conversion failed: {}", stderr.trim()),
+                }),
+            ));
+        }
+    }
+
+    let bytes = tokio::fs::read(&cache)
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+    axum::response::Response::builder()
+        .header("content-type", "application/pdf")
         .body(axum::body::Body::from(bytes))
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))
 }

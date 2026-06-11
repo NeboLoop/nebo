@@ -1123,6 +1123,10 @@ async fn run_loop(
     const MAX_TOOL_DOC_CONTENT: usize = 4_000;
     let mut output_recovery_attempts = 0usize;
     let mut output_escalated = false;
+    // Provider said the model stopped to call tools but the stream carried no
+    // parsed tool calls (payload lost between proxy and parser). Retried, not
+    // trusted — ending the turn silently strands the user mid-task.
+    let mut lost_toolcall_retries = 0usize;
     let mut consecutive_error_iterations = 0usize;
     let mut post_tool_empty_nudges = 0usize;
     let mut empty_content_retries = 0usize;
@@ -3782,6 +3786,35 @@ async fn run_loop(
             })
             .unwrap_or_default();
             hooks.do_action("agent.turn", payload).await;
+        }
+
+        // Contradictory stop: the provider says the model stopped TO CALL TOOLS,
+        // but no tool calls were parsed from the stream — the payload was lost
+        // in transit (observed live with Janus: stop_reason="tool_calls",
+        // tool_call_count=0). Ending the turn here strands the user with only
+        // the preamble text; retry the iteration instead.
+        let stop_says_tools = matches!(stop_reason.as_deref(), Some("tool_calls" | "tool_use"));
+        if stop_says_tools && tool_calls.is_empty() && lost_toolcall_retries < 2 {
+            lost_toolcall_retries += 1;
+            warn!(
+                iteration,
+                session_id,
+                attempt = lost_toolcall_retries,
+                "stop_reason says tool_calls but none were parsed — retrying iteration"
+            );
+            let _ = sessions.append_message(
+                session_id,
+                "user",
+                &steering::wrap_system_reminder(
+                    "Your previous response ended as if calling tools, but no tool \
+                     calls arrived. Make the tool calls now — do not re-introduce \
+                     the task.",
+                ),
+                None,
+                None,
+                Some(HIDDEN_META),
+            );
+            continue;
         }
 
         // Conversation turn complete — normal exit with text response
