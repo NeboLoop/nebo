@@ -270,7 +270,9 @@
   onMount(load);
 </script>
 
-<div class="p-4">
+<!-- html previews fill the panel edge-to-edge (the page scrolls inside the
+     iframe); every other mode scrolls as padded content. -->
+<div class={mode === 'html' && !sourceView ? 'h-full' : 'p-4'}>
   {#if loading}
     <div class="text-xs text-base-content/50 py-8 text-center">Loading…</div>
   {:else if error}
@@ -295,7 +297,7 @@
       sandbox="allow-scripts"
       src={url}
       title={title}
-      class="w-full min-h-[70vh] rounded-lg border border-base-300 bg-white"
+      class="w-full h-full border-0 bg-white"
     ></iframe>
   {:else if mode === 'pdf'}
     <div bind:this={pdfContainer}></div>
