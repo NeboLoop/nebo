@@ -377,9 +377,18 @@ fn channel_guidance(channel: &str) -> String {
              component as .jsx (must `export default`; bare npm imports like recharts, d3, \
              lucide-react are allowed; Tailwind classes work; component libraries like \
              shadcn/ui and `@/...` aliases are NOT available — build UI with plain JSX + \
-             Tailwind), then convert `to: \"html\"`. \
+             Tailwind), then convert `to: \"html\"`. The result renders in a side panel that \
+             can be as narrow as 400px: layouts must be fully responsive — no fixed or \
+             minimum widths above 250px (e.g. never `minmax(500px, 1fr)`), charts in \
+             percentage-width containers, grids that collapse to one column when narrow. \
              All conversion runs on embedded engines — NEVER use host binaries \
-             (wkhtmltopdf, pandoc, headless chrome) for document conversion."
+             (wkhtmltopdf, pandoc, headless chrome) for document conversion. \
+             DATA HONESTY: documents and dashboards must be built from REAL data — this \
+             conversation, files you have actually read, or tool results. Read a file \
+             before citing its contents; never reconstruct it from memory. If no real \
+             data exists, either ask for it, or label the content as fictional IN the \
+             document itself (e.g. a \"Sample data\" subtitle) — never present invented \
+             numbers as real."
         );
     }
 
