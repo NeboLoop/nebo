@@ -167,15 +167,26 @@
 
   function openArtifact(id: string) {
     activeArtifactId = id;
-    creationsOpen = true;
+    openWorkPanel();
     const a = artifacts.find(x => x.id === id);
     if (a) creationsTitle = a.title;
     // WorkViewer owns fetching + rendering (text/binary/media per format).
   }
   const CREATIONS_MIN = 220;
   let creationsWidth = $state(CREATIONS_MIN);
+  let userResized = $state(false);
   let resizing = $state(false);
   let containerEl = $state<HTMLDivElement | null>(null);
+
+  // Open the panel at HALF the chat area (Claude-style) unless the user has
+  // dragged it to their own width this session; always resizable after.
+  function openWorkPanel() {
+    creationsOpen = true;
+    if (!userResized && containerEl) {
+      const w = containerEl.getBoundingClientRect().width;
+      creationsWidth = Math.max(360, Math.min(w * 0.6, w * 0.5));
+    }
+  }
 
   function startResize(e: MouseEvent) {
     e.preventDefault();
@@ -186,6 +197,7 @@
       const newWidth = rect.right - ev.clientX;
       const maxWidth = rect.width * 0.6;
       creationsWidth = Math.max(CREATIONS_MIN, Math.min(maxWidth, newWidth));
+      userResized = true;
     };
     const onUp = () => {
       resizing = false;
@@ -276,7 +288,7 @@
 
   export function showCreations(title = 'Work') {
     creationsTitle = title;
-    creationsOpen = true;
+    openWorkPanel();
   }
 
   export function hideCreations() {
@@ -505,7 +517,7 @@
       {#if headerRight}
         <button
           class="text-sm ml-auto cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
-          onclick={() => creationsOpen = !creationsOpen}
+          onclick={() => creationsOpen ? (creationsOpen = false) : openWorkPanel()}
           title={creationsOpen ? 'Close Work panel' : 'Open Work panel'}
         >
           {headerRight}
