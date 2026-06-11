@@ -649,10 +649,19 @@ impl CommPlugin for NeboAIPlugin {
                 content["type"] = serde_json::Value::String(t);
             }
         }
-        // Include metadata fields (e.g. senderName) in the content JSON
+        // Metadata rides nested under content.metadata — the canonical place
+        // the web reads (attachToolActivity, suggestions, ask options, stop
+        // filters all read content.metadata.*). Root-level copies remain for
+        // older web fallback readers (content.senderName); drop them once no
+        // deployed frontend reads root fields.
+        if !msg.metadata.is_empty() {
+            content["metadata"] = serde_json::to_value(&msg.metadata).unwrap_or_default();
+        }
         if let serde_json::Value::Object(ref mut map) = content {
             for (k, v) in &msg.metadata {
-                map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                if k != "metadata" {
+                    map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                }
             }
         }
         // Include file/image/video attachments if present
@@ -1159,6 +1168,20 @@ async fn read_loop(
                         };
 
                         let mut metadata = HashMap::new();
+                        // Lift the sender's nested content.metadata (string
+                        // fields) — control frames like the web's Stop button
+                        // (kind=stop) arrive here. Envelope fields win below.
+                        if let Some(content_meta) = delivery
+                            .content
+                            .get("metadata")
+                            .and_then(|m| m.as_object())
+                        {
+                            for (k, v) in content_meta {
+                                if let Some(val) = v.as_str() {
+                                    metadata.insert(k.clone(), val.to_string());
+                                }
+                            }
+                        }
                         if !delivery.agent_id.is_empty() {
                             metadata.insert("agent_id".to_string(), delivery.agent_id.clone());
                         }
