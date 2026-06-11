@@ -3,7 +3,7 @@
   import { page } from '$app/stores';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
-  import { createChatController } from '$lib/chat/controller.svelte';
+  import { createChatController, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
   import { uploadFiles } from '$lib/api/upload';
   import type { UploadedAttachment } from '$lib/types/attachment';
@@ -108,12 +108,26 @@
         const messages = resp.messages as ApiChatMessage[];
         chat.setMessages(messages
           .filter((m) => m.role === 'user' || m.role === 'assistant')
-          .map((m) => ({
-            id: m.id,
-            type: m.role as 'user' | 'assistant',
-            content: m.content,
-            html: m.html || undefined,
-          })));
+          .map((m) => {
+            // Persisted run artifacts (metadata.artifacts) → Work cards + media.
+            let artifacts: string[] = [];
+            if (m.metadata) {
+              try {
+                const meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata;
+                if (Array.isArray(meta?.artifacts)) artifacts = meta.artifacts;
+              } catch { /* malformed metadata — render without artifacts */ }
+            }
+            const workItems = artifactsToWorkItems(artifacts);
+            const attachments = artifactsToAttachments(artifacts);
+            return {
+              id: m.id,
+              type: m.role as 'user' | 'assistant',
+              content: m.content,
+              html: m.html || undefined,
+              ...(workItems.length ? { workItems } : {}),
+              ...(attachments.length ? { attachments } : {}),
+            };
+          }));
       }
     } catch { /* first visit — no session yet */ }
 

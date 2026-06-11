@@ -588,6 +588,30 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Attach run-produced artifact URLs to the chat's most recent assistant
+    /// message (metadata.artifacts). Artifacts are otherwise only carried on
+    /// the live chat_complete event — without this they vanish from the Work
+    /// panel on history reload.
+    pub fn attach_artifacts_to_latest_assistant_message(
+        &self,
+        chat_id: &str,
+        artifacts: &[String],
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let json = serde_json::to_string(artifacts)
+            .map_err(|e| NeboError::Internal(format!("serialize artifacts: {e}")))?;
+        conn.execute(
+            "UPDATE chat_messages
+             SET metadata = json_set(COALESCE(NULLIF(metadata, ''), '{}'), '$.artifacts', json(?2))
+             WHERE id = (SELECT id FROM chat_messages
+                         WHERE chat_id = ?1 AND role = 'assistant'
+                         ORDER BY created_at DESC, rowid DESC LIMIT 1)",
+            params![chat_id, json],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// The agent's most recently active conversation — the secondary-agent
     /// counterpart of `get_companion_chat_by_user`, used to unify inbound loop
     /// DMs with the agent's current local conversation. Ordered by last message

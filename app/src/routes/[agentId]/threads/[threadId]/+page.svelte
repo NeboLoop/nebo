@@ -4,7 +4,7 @@
   import { goto } from '$app/navigation';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext, EnrichedChat } from '$lib/types/agentPage';
-  import { createChatController, toolDisplayName, formatTime } from '$lib/chat/controller.svelte';
+  import { createChatController, toolDisplayName, formatTime, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
   import type { ChatMessage } from '$lib/chat/controller.svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
@@ -29,6 +29,8 @@
     /** System-injected messages (e.g. <system-reminder> steering) — visible to
      * the model, hidden from the user. Never render these as chat bubbles. */
     hidden?: boolean;
+    /** Run-produced artifact URLs persisted at chat_complete (Work items + inline media). */
+    artifacts?: string[];
   }
 
   const ctx = getContext<AgentPageContext>('agentPage');
@@ -195,6 +197,22 @@
           html: m.html || undefined,
           time: formatTime(m.createdAt),
         });
+      }
+
+      // Persisted run artifacts (metadata.artifacts, written at chat_complete)
+      // re-attach to this message's last assistant entry so Work cards and
+      // inline media survive history reload.
+      if (meta?.artifacts?.length) {
+        const workItems = artifactsToWorkItems(meta.artifacts);
+        const attachments = artifactsToAttachments(meta.artifacts);
+        for (let i = result.length - 1; i >= 0; i--) {
+          const entry = result[i];
+          if (entry.type === 'assistant' && entry.id === m.id) {
+            if (workItems.length) entry.workItems = workItems;
+            if (attachments.length) entry.attachments = attachments;
+            break;
+          }
+        }
       }
     }
     return result;

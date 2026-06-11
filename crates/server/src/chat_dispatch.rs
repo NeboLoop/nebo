@@ -925,6 +925,25 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     ),
                 );
 
+                // Persist the artifacts onto the turn's final assistant message
+                // so Work items survive history reload (the live event above is
+                // the only other carrier).
+                if !app_file_artifacts.is_empty() {
+                    let chat_id = runner
+                        .sessions()
+                        .resolve_session_id_by_key(&sid)
+                        .ok()
+                        .map(|session_id| runner.sessions().active_chat_id(&session_id));
+                    if let Some(chat_id) = chat_id {
+                        if let Err(e) = runner
+                            .store()
+                            .attach_artifacts_to_latest_assistant_message(&chat_id, &app_file_artifacts)
+                        {
+                            warn!(error = %e, chat_id = %chat_id, "failed to persist artifacts on message");
+                        }
+                    }
+                }
+
                 // Auto-generate a descriptive chat title in the background
                 let title_runner = runner.clone();
                 let title_hub = hub.clone();

@@ -107,6 +107,47 @@ function toolActivityLabel(toolName: string): string {
   return labels[toolName] || 'working';
 }
 
+const IMAGE_VIDEO_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mov'];
+const urlExt = (url: string) => (url.split('/').pop() || '').split('.').pop()?.toLowerCase() || '';
+const isMedia = (url: string) => IMAGE_VIDEO_EXTS.includes(urlExt(url));
+
+/** Map run-produced media URLs (/api/v1/files/...) to inline attachments (images/video).
+ *  Documents go to the Work panel instead — see artifactsToWorkItems. Used for both
+ *  live chat_complete events and persisted message metadata on history load. */
+export function artifactsToAttachments(artifacts: unknown): UploadedAttachment[] {
+  if (!Array.isArray(artifacts)) return [];
+  return artifacts
+    .filter((u): u is string => typeof u === 'string' && u.length > 0 && isMedia(u))
+    .map((url) => {
+      const filename = url.split('/').pop() || 'file';
+      const ext = urlExt(url);
+      const mimeType =
+        ({
+          png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+          webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm',
+          mov: 'video/quicktime',
+        } as Record<string, string>)[ext] || 'application/octet-stream';
+      return { fileId: url, filename, mimeType, size: 0, url };
+    });
+}
+
+/** Map run-produced DOCUMENT URLs to "Work" items (reports/sheets/code → clickable cards
+ *  that open + render in the Work panel). Media is excluded (rendered inline instead). */
+export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
+  if (!Array.isArray(artifacts)) return [];
+  return artifacts
+    .filter((u): u is string => typeof u === 'string' && u.length > 0 && !isMedia(u))
+    .map((url) => {
+      const title = url.split('/').pop() || 'file';
+      const ext = urlExt(url);
+      const kind: WorkItem['kind'] =
+        ext === 'csv' || ext === 'xlsx' || ext === 'xls' ? 'table'
+          : ['js', 'ts', 'py', 'rs', 'go', 'json', 'sh', 'css'].includes(ext) ? 'code'
+            : 'document';
+      return { id: url, title, kind, url };
+    });
+}
+
 /** Format a timestamp for display. */
 export function formatTime(ts: string | number): string {
   try {
@@ -185,46 +226,6 @@ export function createChatController(config: ChatControllerConfig) {
     rafHandle = null;
     pendingStream = {};
     streamingContent = {};
-  }
-
-  const IMAGE_VIDEO_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mov'];
-  const urlExt = (url: string) => (url.split('/').pop() || '').split('.').pop()?.toLowerCase() || '';
-  const isMedia = (url: string) => IMAGE_VIDEO_EXTS.includes(urlExt(url));
-
-  // Map run-produced media URLs (/api/v1/files/...) to inline attachments (images/video).
-  // Documents go to the Work panel instead — see artifactsToWorkItems.
-  function artifactsToAttachments(artifacts: unknown): UploadedAttachment[] {
-    if (!Array.isArray(artifacts)) return [];
-    return artifacts
-      .filter((u): u is string => typeof u === 'string' && u.length > 0 && isMedia(u))
-      .map((url) => {
-        const filename = url.split('/').pop() || 'file';
-        const ext = urlExt(url);
-        const mimeType =
-          ({
-            png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
-            webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm',
-            mov: 'video/quicktime',
-          } as Record<string, string>)[ext] || 'application/octet-stream';
-        return { fileId: url, filename, mimeType, size: 0, url };
-      });
-  }
-
-  // Map run-produced DOCUMENT URLs to "Work" items (reports/sheets/code → clickable cards
-  // that open + render in the Work panel). Media is excluded (rendered inline instead).
-  function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
-    if (!Array.isArray(artifacts)) return [];
-    return artifacts
-      .filter((u): u is string => typeof u === 'string' && u.length > 0 && !isMedia(u))
-      .map((url) => {
-        const title = url.split('/').pop() || 'file';
-        const ext = urlExt(url);
-        const kind: WorkItem['kind'] =
-          ext === 'csv' || ext === 'xlsx' || ext === 'xls' ? 'table'
-            : ['js', 'ts', 'py', 'rs', 'go', 'json', 'sh', 'css'].includes(ext) ? 'code'
-              : 'document';
-        return { id: url, title, kind, url };
-      });
   }
 
   // --- Event filtering ---
