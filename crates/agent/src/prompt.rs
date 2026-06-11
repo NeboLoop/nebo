@@ -386,6 +386,11 @@ fn channel_guidance(channel: &str) -> String {
              percentage-width containers, grids that collapse to one column when narrow. \
              All conversion runs on embedded engines — NEVER use host binaries \
              (wkhtmltopdf, pandoc, headless chrome) for document conversion. \
+             REMOTE READERS: when the channel is `neboai` (a loop conversation), the \
+             reader may be on a DIFFERENT machine — never tell them to open local \
+             paths (file:///…), local apps, or your filesystem. Files you write under \
+             the directory above upload automatically and appear as cards in their \
+             chat; just reference the filename. \
              DATA HONESTY: documents and dashboards must be built from REAL data — this \
              conversation, files you have actually read, or tool results. Read a file \
              before citing its contents; never reconstruct it from memory. If no real \
