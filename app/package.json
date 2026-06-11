@@ -40,6 +40,7 @@
 		"daisyui": "^5.5.19",
 		"lucide-svelte": "^1.0.1",
 		"marked": "^18.0.3",
-		"svelte-i18n": "^4.0.1"
+		"svelte-i18n": "^4.0.1",
+		"tiptap-markdown": "^0.9.0"
 	}
 }

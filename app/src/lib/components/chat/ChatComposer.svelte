@@ -2,7 +2,25 @@
   import { onMount, onDestroy } from 'svelte';
   import { Editor, Extension, Mark } from '@tiptap/core';
   import StarterKit from '@tiptap/starter-kit';
+  import { Markdown } from 'tiptap-markdown';
   import Mention from '@tiptap/extension-mention';
+
+  // Teach the Markdown serializer how to render a mention node, otherwise
+  // editor.storage.markdown.getMarkdown() throws on this custom inline node.
+  // We emit the canonical `<@id>` token the backend already understands.
+  const MentionMarkdown = Mention.extend({
+    addStorage() {
+      return {
+        ...(this.parent?.() ?? {}),
+        markdown: {
+          serialize(state: any, node: any) {
+            state.write(`<@${node.attrs.id}>`);
+          },
+          parse: {},
+        },
+      };
+    },
+  });
   import { Plugin, PluginKey } from '@tiptap/pm/state';
   import { Decoration, DecorationSet } from '@tiptap/pm/view';
   import SlashCommandMenu from './SlashCommandMenu.svelte';
@@ -413,11 +431,19 @@
           codeBlock: false,
           horizontalRule: false,
           blockquote: false,
+          // Tailwind's preflight strips list-style + padding from ol/ul, so an
+          // auto-formatted list renders with no marker/indent (looks like the
+          // "1." vanished). Re-apply list styling via utility classes.
+          orderedList: { HTMLAttributes: { class: 'list-decimal pl-6' } },
+          bulletList: { HTMLAttributes: { class: 'list-disc pl-6' } },
         }),
+        // Bi-directional markdown: parses pasted markdown into rich content and
+        // serializes the doc back to markdown via editor.storage.markdown.getMarkdown().
+        Markdown.configure({ html: false, transformPastedText: true, breaks: true }),
         // [VOICE DISABLED] DictationMark,
         SlashDetector,
         GhostTextExtension,
-        Mention.configure({
+        MentionMarkdown.configure({
           HTMLAttributes: { class: 'mention-chip' },
           suggestion: {
             char: '@',
@@ -579,26 +605,22 @@
   // --- Content serialization ---
   function serializeContent(): { text: string; mentions: MentionRef[] } {
     if (!editor) return { text: '', mentions: [] };
+
+    // Collect mention refs (id + display label) from the document structure —
+    // the markdown text only carries the `<@id>` token, not the display name.
     const mentions: MentionRef[] = [];
-    const json = editor.getJSON();
-
-    function walkNode(node: any): string {
-      if (node.type === 'text') return node.text || '';
-      if (node.type === 'mention') {
+    (function collect(node: any) {
+      if (node?.type === 'mention') {
         mentions.push({ id: node.attrs.id, name: node.attrs.label });
-        return `<@${node.attrs.id}>`;
       }
-      if (node.type === 'hardBreak') return '\n';
-      if (node.type === 'paragraph') {
-        return (node.content || []).map(walkNode).join('');
-      }
-      if (node.content) {
-        return node.content.map(walkNode).join('\n');
-      }
-      return '';
-    }
+      (node?.content || []).forEach(collect);
+    })(editor.getJSON());
 
-    const text = walkNode(json).trim();
+    // Canonical markdown serialization via tiptap-markdown — preserves lists,
+    // line breaks, emphasis, etc. (Mention serializes to `<@id>`).
+    const text = (editor.storage as { markdown: { getMarkdown(): string } }).markdown
+      .getMarkdown()
+      .trim();
     return { text, mentions };
   }
 

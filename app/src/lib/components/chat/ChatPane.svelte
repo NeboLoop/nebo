@@ -96,15 +96,6 @@
     });
   }
 
-  // Render user message content with mention chips
-  function renderUserContent(content: string): string {
-    const escaped = content
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-    return renderMentionChips(escaped);
-  }
-
   // Render assistant message content with basic markdown + mention chips
   function renderMarkdown(content: string): string {
     if (!content) return '';
@@ -578,8 +569,8 @@
           </div>
         {:else}
           <div class="max-w-[640px] self-end mt-3">
-            <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 rounded-br-sm">
-              {@html renderUserContent(msg.content)}
+            <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 rounded-br-sm prose prose-sm max-w-none [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
+              {@html renderMarkdown(msg.content)}
               {#if msg.attachments?.length}
                 <div class="flex flex-wrap gap-2 mt-2">
                   {#each msg.attachments as att}
