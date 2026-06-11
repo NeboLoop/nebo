@@ -4,6 +4,7 @@
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
+  import { downloadArtifact } from '$lib/chat/download';
   import { marked } from 'marked';
   import FileText from 'lucide-svelte/icons/file-text';
   import Code from 'lucide-svelte/icons/code';
@@ -1009,6 +1010,7 @@
         <a
           href={activeArtifact.url}
           download={activeArtifact.title}
+          onclick={(e) => downloadArtifact(e, activeArtifact?.url ?? '')}
           class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 text-base-content/70 hover:text-base-content transition-colors shrink-0"
           title="Download {activeArtifact.title}"
         >

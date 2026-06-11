@@ -25,6 +25,8 @@ ureq = "2"
 
 # System browser
 open = "5"
+# ~/Downloads resolution for the Work-panel save command
+dirs = { workspace = true }
 
 # Shared workspace deps
 tokio = { workspace = true }

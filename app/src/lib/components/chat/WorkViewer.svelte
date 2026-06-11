@@ -13,6 +13,7 @@
    * formulas are never evaluated — values only.
    */
   import { onMount } from 'svelte';
+  import { downloadArtifact } from '$lib/chat/download';
 
   let {
     url,
@@ -253,7 +254,7 @@
   {:else if error}
     <div class="flex flex-col items-center gap-3 py-8">
       <div class="text-xs text-error">{error}</div>
-      <a href={url} download={title} class="btn btn-sm btn-outline">Download {title}</a>
+      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url)} class="btn btn-sm btn-outline">Download {title}</a>
     </div>
   {:else if mode === 'markdown'}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -314,7 +315,7 @@
       <div class="text-xs text-base-content/50 text-center max-w-[260px]">
         No in-app preview for this format yet — download it to open in its native app.
       </div>
-      <a href={url} download={title} class="btn btn-sm btn-primary">Download</a>
+      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url)} class="btn btn-sm btn-primary">Download</a>
     </div>
   {/if}
 </div>

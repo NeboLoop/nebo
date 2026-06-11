@@ -141,6 +141,59 @@ fn get_window_state(label: String) -> Option<WindowState> {
     load_state(&label)
 }
 
+/// Tauri command: save a Work-panel artifact to ~/Downloads and reveal it.
+/// WKWebView ignores the anchor `download` attribute, so the desktop build
+/// saves natively. `file_name` must be a bare name inside the files dir.
+#[tauri::command]
+fn save_artifact(file_name: String) -> Result<String, String> {
+    if file_name.contains('/') || file_name.contains('\\') || file_name.starts_with('.') {
+        return Err("invalid file name".into());
+    }
+    let src = config::data_dir()
+        .map_err(|e| e.to_string())?
+        .join("files")
+        .join(&file_name);
+    if !src.is_file() {
+        return Err(format!("file not found: {file_name}"));
+    }
+    let downloads = dirs::download_dir().ok_or("no Downloads directory")?;
+    // Don't overwrite an existing download: name.ext, name (1).ext, …
+    let mut dest = downloads.join(&file_name);
+    if dest.exists() {
+        let stem = std::path::Path::new(&file_name)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file_name.clone());
+        let ext = std::path::Path::new(&file_name)
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
+        for n in 1.. {
+            let candidate = downloads.join(format!("{stem} ({n}){ext}"));
+            if !candidate.exists() {
+                dest = candidate;
+                break;
+            }
+        }
+    }
+    std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    reveal_in_file_manager(&dest);
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+/// Select the file in the platform file manager (Finder/Explorer); on Linux,
+/// open the containing directory.
+fn reveal_in_file_manager(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .spawn();
+    #[cfg(target_os = "linux")]
+    let _ = open::that(path.parent().unwrap_or(path));
+}
+
 /// Open a URL in the system browser, deduplicating rapid repeats of the same URL.
 fn open_external(url: &str) {
     let mut last = LAST_OPENED_URL.lock().unwrap();
@@ -372,7 +425,7 @@ fn main() {
     let saved = load_state("main");
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_window_state])
+        .invoke_handler(tauri::generate_handler![get_window_state, save_artifact])
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
