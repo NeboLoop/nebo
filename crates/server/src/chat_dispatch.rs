@@ -646,6 +646,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     &agent_display_name,
                                 )
                                 .await;
+                                // The run is now waiting on the USER — clear the
+                                // typing indicator or the loop shows "thinking…"
+                                // until they answer. Resumed activity re-sets it.
+                                if let Some(ref cm) = comm_manager {
+                                    let _ = cm
+                                        .send_typing(&cfg.conversation_id, false, None)
+                                        .await;
+                                }
                             }
                         }
                         StreamEventType::PlanApproval => {
