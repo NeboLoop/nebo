@@ -375,7 +375,9 @@ fn channel_guidance(channel: &str) -> String {
              — CSV must have exactly one record per line (rows separated by newlines). \
              For an INTERACTIVE dashboard, chart, or visualization: write a single-file React \
              component as .jsx (must `export default`; bare npm imports like recharts, d3, \
-             lucide-react are allowed; Tailwind classes work), then convert `to: \"html\"`. \
+             lucide-react are allowed; Tailwind classes work; component libraries like \
+             shadcn/ui and `@/...` aliases are NOT available — build UI with plain JSX + \
+             Tailwind), then convert `to: \"html\"`. \
              All conversion runs on embedded engines — NEVER use host binaries \
              (wkhtmltopdf, pandoc, headless chrome) for document conversion."
         );
