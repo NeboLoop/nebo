@@ -612,107 +612,6 @@ fn rank_memories(memories: Vec<Memory>, limit: usize) -> Vec<ScoredMemory> {
     scored
 }
 
-/// Load memory context for a user from the database.
-/// Uses two-pass overfetch with decay scoring to select the most relevant memories.
-pub fn load_memory_context(store: &Store, user_id: &str) -> String {
-    let mut all_scored: Vec<ScoredMemory> = Vec::new();
-    let max_total: usize = 40;
-
-    // Pass 1: tacit/personality — overfetch 30, cap 10
-    if let Ok(memories) = store.get_tacit_memories_with_min_confidence(
-        user_id,
-        "tacit/personality",
-        MIN_CONFIDENCE_THRESHOLD,
-        30,
-    ) {
-        let ranked = rank_memories(memories, 10);
-        all_scored.extend(ranked);
-    }
-
-    // Pass 2: other tacit/* — overfetch 120, fill remaining up to max_total
-    let remaining = max_total.saturating_sub(all_scored.len());
-    if remaining > 0 {
-        if let Ok(memories) = store.get_tacit_memories_with_min_confidence(
-            user_id,
-            "tacit/",
-            MIN_CONFIDENCE_THRESHOLD,
-            120,
-        ) {
-            // Exclude personality memories already included
-            let personality_ids: std::collections::HashSet<i64> =
-                all_scored.iter().map(|s| s.memory.id).collect();
-            let filtered: Vec<Memory> = memories
-                .into_iter()
-                .filter(|m| !personality_ids.contains(&m.id))
-                .collect();
-            let ranked = rank_memories(filtered, remaining);
-            all_scored.extend(ranked);
-        }
-    }
-
-    // Pass 3: daily memories (today)
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let daily_ns = format!("daily/{}", today);
-    if let Ok(memories) = store.list_memories_by_user_and_namespace(user_id, &daily_ns, 20, 0) {
-        let ranked = rank_memories(memories, 15);
-        all_scored.extend(ranked);
-    }
-
-    // Pass 4: entity memories
-    if let Ok(memories) = store.list_memories_by_user_and_namespace(user_id, "entity/", 30, 0) {
-        let ranked = rank_memories(memories, 15);
-        all_scored.extend(ranked);
-    }
-
-    // Final sort by score
-    all_scored.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    // Format into sections
-    let mut context_parts = Vec::new();
-
-    let tacit: Vec<&ScoredMemory> = all_scored
-        .iter()
-        .filter(|s| s.memory.namespace.starts_with("tacit/"))
-        .collect();
-    if !tacit.is_empty() {
-        let mut section = String::from("## Long-term memories\n");
-        for s in &tacit {
-            section.push_str(&format!("- {}: {}\n", s.memory.key, s.memory.value));
-        }
-        context_parts.push(section);
-    }
-
-    let daily: Vec<&ScoredMemory> = all_scored
-        .iter()
-        .filter(|s| s.memory.namespace.starts_with("daily/"))
-        .collect();
-    if !daily.is_empty() {
-        let mut section = String::from("## Today's context\n");
-        for s in &daily {
-            section.push_str(&format!("- {}: {}\n", s.memory.key, s.memory.value));
-        }
-        context_parts.push(section);
-    }
-
-    let entities: Vec<&ScoredMemory> = all_scored
-        .iter()
-        .filter(|s| s.memory.namespace.starts_with("entity/"))
-        .collect();
-    if !entities.is_empty() {
-        let mut section = String::from("## People & entities\n");
-        for s in &entities {
-            section.push_str(&format!("- {}: {}\n", s.memory.key, s.memory.value));
-        }
-        context_parts.push(section);
-    }
-
-    context_parts.join("\n")
-}
-
 /// Load scored tacit memories for use in prompt assembly.
 /// Merges primary scope with inherited scopes (agent-wide, user preferences).
 /// Inherited memories are scored at 0.8x to rank below local memories.
@@ -728,6 +627,23 @@ pub fn agent_memory_scope(owner_user_id: &str, agent_id: &str) -> String {
     } else {
         format!("{}:agent:{}", owner_user_id, agent_id)
     }
+}
+
+/// The READ scope chain for a memory user_id — the ONE place ancestor scopes
+/// are derived. An agent (and a context-isolated layer under it) also reads
+/// the scopes above it: `owner:agent:X:ctx:Y` → itself, `owner:agent:X`,
+/// `owner`; the bare owner reads only itself. Writes always use the exact
+/// scope, so what each agent learns stays its own.
+pub fn memory_scope_chain(user_id: &str) -> Vec<String> {
+    let mut chain = vec![user_id.to_string()];
+    if let Some((agent_scope, _ctx)) = user_id.split_once(":ctx:") {
+        chain.push(agent_scope.to_string());
+    }
+    if let Some((owner, _rest)) = user_id.split_once(":agent:") {
+        chain.push(owner.to_string());
+    }
+    chain.dedup();
+    chain
 }
 
 pub fn load_scored_memories(

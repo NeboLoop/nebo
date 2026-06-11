@@ -159,7 +159,17 @@ impl AgentTool {
             "store" => {
                 let key = input["key"].as_str().unwrap_or("");
                 let value = input["value"].as_str().unwrap_or("");
-                let namespace = input["namespace"].as_str().unwrap_or("tacit/general");
+                // The advertised `layer` param maps to the canonical namespace
+                // for that layer; an explicit `namespace` overrides. Previously
+                // `layer` was silently ignored, so every explicit store —
+                // preferences, entities, daily facts alike — collapsed into
+                // tacit/general and the categorized recall slices stayed empty.
+                let layer_ns = match input["layer"].as_str().unwrap_or("") {
+                    "daily" => format!("daily/{}", chrono::Local::now().format("%Y-%m-%d")),
+                    "entity" => "entity/default".to_string(),
+                    _ => "tacit/general".to_string(),
+                };
+                let namespace = input["namespace"].as_str().unwrap_or(&layer_ns);
 
                 if key.is_empty() || value.is_empty() {
                     return ToolResult::error(errors::missing_param(
@@ -1662,7 +1672,8 @@ impl DynTool for AgentTool {
          - agent(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\", layer: \"tacit\") — Store a fact\n\
          - agent(resource: \"memory\", action: \"recall\", key: \"user/name\") — Recall a specific fact\n\
          - agent(resource: \"memory\", action: \"search\", query: \"...\") — Search across all memories\n\
-         Layers: \"tacit\" (long-term preferences — MOST COMMON), \"daily\" (today's facts, auto-expires), \"entity\" (people/places/things)\n\n\
+         Layers: \"tacit\" (long-term preferences — MOST COMMON), \"daily\" (today's facts, auto-expires), \"entity\" (people/places/things)\n\
+         For likes/dislikes/working-style facts, store with namespace: \"tacit/preferences\" — those inject into every conversation automatically.\n\n\
          Sessions:\n\
          - agent(resource: \"session\", action: \"list\") / history / status / clear / query\n\n\
          Profile:\n\

@@ -10,19 +10,17 @@ use tokio_util::sync::CancellationToken;
 /// on every Nth turn to reduce LLM calls while still capturing facts.
 const EXTRACTION_TURN_INTERVAL: u32 = 3;
 
-/// Minimum number of tool calls required before extraction can fire.
-/// Prevents extraction on short Q&A exchanges without substantive work.
-const MIN_TOOL_CALLS: u32 = 3;
-
 /// Debounces memory extraction per session.
 /// New messages reset the timer so extraction only runs when idle.
 /// Also tracks a per-session turn counter so extraction only fires
-/// every `EXTRACTION_TURN_INTERVAL` turns AND after at least
-/// `MIN_TOOL_CALLS` tool calls have occurred.
+/// every `EXTRACTION_TURN_INTERVAL` turns. Deliberately NOT gated on tool
+/// activity: ordinary tool-less conversation is where preferences, entities,
+/// and personality facts surface, and a tool-call prerequisite meant those
+/// were never captured at all. The extraction prompt's own selectivity is the
+/// content filter.
 pub struct MemoryDebouncer {
     pending: Arc<Mutex<HashMap<String, CancellationToken>>>,
     turn_counts: Arc<Mutex<HashMap<String, u32>>>,
-    tool_call_counts: Arc<Mutex<HashMap<String, u32>>>,
     delay: Duration,
 }
 
@@ -32,17 +30,8 @@ impl MemoryDebouncer {
         Self {
             pending: Arc::new(Mutex::new(HashMap::new())),
             turn_counts: Arc::new(Mutex::new(HashMap::new())),
-            tool_call_counts: Arc::new(Mutex::new(HashMap::new())),
             delay,
         }
-    }
-
-    /// Record a tool call for the given session. Must be called each time
-    /// a tool is invoked so the extraction threshold can be met.
-    pub async fn record_tool_call(&self, session_id: &str) {
-        let mut counts = self.tool_call_counts.lock().await;
-        let count = counts.entry(session_id.to_string()).or_insert(0);
-        *count += 1;
     }
 
     /// Schedule extraction for a session. Cancels any pending timer.
@@ -54,21 +43,13 @@ impl MemoryDebouncer {
         Fut: Future<Output = ()> + Send,
     {
         // Increment turn counter and check if this turn should run extraction.
-        // Extraction requires BOTH the turn threshold AND the tool call threshold.
         let should_extract = {
             let mut counts = self.turn_counts.lock().await;
             let count = counts.entry(session_id.to_string()).or_insert(0);
             *count += 1;
             if *count >= EXTRACTION_TURN_INTERVAL {
-                let mut tc_counts = self.tool_call_counts.lock().await;
-                let tc_count = tc_counts.entry(session_id.to_string()).or_insert(0);
-                if *tc_count >= MIN_TOOL_CALLS {
-                    *count = 0;
-                    *tc_count = 0;
-                    true
-                } else {
-                    false
-                }
+                *count = 0;
+                true
             } else {
                 false
             }
@@ -128,14 +109,9 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test]
-    async fn test_debounce_fires_on_third_turn_with_tool_calls() {
+    async fn test_debounce_fires_on_third_turn() {
         let counter = Arc::new(AtomicU32::new(0));
         let debouncer = MemoryDebouncer::new(Duration::from_millis(50));
-
-        // Record enough tool calls to meet the threshold
-        for _ in 0..3 {
-            debouncer.record_tool_call("session1").await;
-        }
 
         // Turns 1 and 2 should NOT fire (throttled)
         for _ in 0..2 {
@@ -149,7 +125,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0, "should not fire before 3rd turn");
 
-        // Turn 3 should fire (turn threshold AND tool call threshold met)
+        // Turn 3 should fire — no tool activity required: tool-less chats are
+        // where preferences/entities surface, and gating on tools meant those
+        // were never captured.
         let c = counter.clone();
         debouncer
             .schedule("session1", move || async move {
@@ -157,37 +135,13 @@ mod tests {
             })
             .await;
         tokio::time::sleep(Duration::from_millis(150)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 1, "should fire on 3rd turn with enough tool calls");
-    }
-
-    #[tokio::test]
-    async fn test_debounce_blocked_without_tool_calls() {
-        let counter = Arc::new(AtomicU32::new(0));
-        let debouncer = MemoryDebouncer::new(Duration::from_millis(50));
-
-        // Schedule 3 turns without any tool calls — should NOT fire
-        for _ in 0..3 {
-            let c = counter.clone();
-            debouncer
-                .schedule("session1", move || async move {
-                    c.fetch_add(1, Ordering::SeqCst);
-                })
-                .await;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 0, "should not fire without enough tool calls");
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "should fire on 3rd turn without tool calls");
     }
 
     #[tokio::test]
     async fn test_debounce_different_sessions() {
         let counter = Arc::new(AtomicU32::new(0));
         let debouncer = MemoryDebouncer::new(Duration::from_millis(50));
-
-        // Record enough tool calls for both sessions
-        for _ in 0..3 {
-            debouncer.record_tool_call("session1").await;
-            debouncer.record_tool_call("session2").await;
-        }
 
         // Each session needs 3 turns to fire — schedule 3 for each
         for _ in 0..3 {

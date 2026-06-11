@@ -82,12 +82,13 @@ pub struct ToolScope {
 /// - Layer 1 (User):   `user_id = "user123"` — main Nebo companion
 /// - Layer 2 (Agent):  `user_id = "user123:agent:brief"` — agent-wide
 /// - Layer 3 (Context): `user_id = "user123:agent:brief:ctx:doc-123"` — per-context
+///
+/// Owner-scope inheritance is always on: every agent READS the owner's tacit
+/// memories (facts about the owner belong to the owner, not the agent that
+/// heard them) while WRITING only to its own scope. The former opt-in
+/// `inherit_user` flag is gone; unknown fields in older agent.json parse fine.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryConfig {
-    /// When true, agent can READ the user's main memories (read-only inheritance).
-    /// Only `tacit/preferences` memories are inherited — never writes to user scope.
-    #[serde(default)]
-    pub inherit_user: bool,
     /// When true, memories are isolated per contextId (from SDK embed sessions).
     /// Context comes from the session key's 4th segment: `agent:{id}:{channel}:{ctx}`.
     #[serde(default)]
@@ -940,15 +941,15 @@ mod tests {
         assert!(config.pricing.is_none());
         assert!(config.scopes.is_empty());
         // Memory config defaults
-        assert!(!config.memory.inherit_user);
         assert!(!config.memory.context_isolated);
     }
 
     #[test]
     fn test_memory_config_parsing() {
+        // `inherit_user` was removed (owner-scope inheritance is always on);
+        // older agent.json carrying it must still parse.
         let json = r#"{"memory": {"inherit_user": true, "context_isolated": true}}"#;
         let config = parse_agent_config(json).unwrap();
-        assert!(config.memory.inherit_user);
         assert!(config.memory.context_isolated);
     }
 
@@ -956,7 +957,6 @@ mod tests {
     fn test_memory_config_defaults() {
         let json = r#"{"memory": {}}"#;
         let config = parse_agent_config(json).unwrap();
-        assert!(!config.memory.inherit_user);
         assert!(!config.memory.context_isolated);
     }
 

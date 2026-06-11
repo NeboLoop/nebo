@@ -51,8 +51,10 @@ pub async fn hybrid_search(
     let mut merged: HashMap<String, SearchResult> = HashMap::new();
     let fts_limit = (config.limit * 3) as i64;
 
-    // 1. FTS5 on memories table
-    if let Ok(fts_results) = store.search_memories_fts(query, user_id, fts_limit) {
+    // 1. FTS5 on memories table — across the read-scope chain so an
+    // agent-scoped search also surfaces owner-level facts.
+    let scope_chain = crate::memory::memory_scope_chain(user_id);
+    if let Ok(fts_results) = store.search_memories_fts(query, &scope_chain, fts_limit) {
         for (memory_id, rank) in &fts_results {
             let norm_score = normalize_bm25(*rank) * text_weight;
             if let Ok(Some(mem)) = store.get_memory(*memory_id) {

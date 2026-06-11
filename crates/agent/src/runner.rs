@@ -1213,11 +1213,17 @@ async fn run_loop(
             });
         }
 
-        // If inherit_user enabled, inherit user's preferences only
-        if memory_config.inherit_user {
+        // Every agent reads the owner's IDENTITY memories (read-only): who the
+        // owner is and how to act belongs to the owner, not the agent that
+        // happened to hear it. Only the identity prefixes are blanket-injected
+        // (mirroring the local slice in load_scored_memories — injecting all of
+        // tacit/ was the prompt-bloat source); arbitrary owner facts surface on
+        // demand via the FTS scope chain. Writes stay scoped to the agent, so
+        // what each agent LEARNS remains independent.
+        for prefix in ["tacit/preferences", "tacit/personality"] {
             inherit_scopes.push(db_context::InheritScope {
                 user_id: memory_owner.clone(),
-                namespace_prefix: "tacit/preferences".to_string(),
+                namespace_prefix: prefix.to_string(),
             });
         }
     }
@@ -2896,10 +2902,9 @@ async fn run_loop(
                 channel: channel_ctx.cloned(),
             };
 
-            // Track tool names for context filtering and memory debounce
+            // Track tool names for context filtering
             for tc in &tool_calls {
                 called_tools.push(tc.name.clone());
-                crate::memory_debounce::global().record_tool_call(session_id).await;
             }
 
             // Launch all tool calls concurrently via FuturesUnordered

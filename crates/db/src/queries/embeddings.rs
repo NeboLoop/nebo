@@ -104,29 +104,44 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    /// FTS5 search on memories table. Returns (memory_id, rank).
+    /// FTS5 search on memories table across a READ scope chain (the exact
+    /// scope plus its ancestors, from `memory::memory_scope_chain`). Returns
+    /// (memory_id, rank). An agent-scoped search also surfaces owner-level
+    /// facts; writes remain exact-scope.
     pub fn search_memories_fts(
         &self,
         query: &str,
-        user_id: &str,
+        user_ids: &[String],
         limit: i64,
     ) -> Result<Vec<(i64, f64)>, NeboError> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let conn = self.conn()?;
         // FTS5 match query — escape special chars
         let fts_query = sanitize_fts_query(query);
+        let placeholders = (0..user_ids.len())
+            .map(|i| format!("?{}", i + 3))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT m.id, fts.rank
+             FROM memories_fts fts
+             JOIN memories m ON m.id = fts.rowid
+             WHERE memories_fts MATCH ?1
+               AND m.user_id IN ({placeholders})
+             ORDER BY fts.rank
+             LIMIT ?2"
+        );
         let mut stmt = conn
-            .prepare(
-                "SELECT m.id, fts.rank
-                 FROM memories_fts fts
-                 JOIN memories m ON m.id = fts.rowid
-                 WHERE memories_fts MATCH ?1
-                   AND m.user_id = ?2
-                 ORDER BY fts.rank
-                 LIMIT ?3",
-            )
+            .prepare(&sql)
             .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&fts_query, &limit];
+        for uid in user_ids {
+            params_vec.push(uid);
+        }
         let rows = stmt
-            .query_map(params![fts_query, user_id, limit], |row| {
+            .query_map(params_vec.as_slice(), |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
             })
             .map_err(|e| NeboError::Database(e.to_string()))?;

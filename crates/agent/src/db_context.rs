@@ -344,8 +344,10 @@ pub fn load_prompt_relevant_memories(
         return String::new();
     }
 
-    // FTS search against memories table
-    let fts_results = match store.search_memories_fts(prompt, user_id, 10) {
+    // FTS search against memories table, across the full read-scope chain so
+    // an agent also surfaces owner-level facts.
+    let scope_chain = crate::memory::memory_scope_chain(user_id);
+    let fts_results = match store.search_memories_fts(prompt, &scope_chain, 10) {
         Ok(results) => results,
         Err(_) => return String::new(),
     };
