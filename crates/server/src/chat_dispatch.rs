@@ -138,6 +138,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let presence_tracker = state.presence.clone();
     let proactive_inbox = state.proactive_inbox.clone();
     let cleanup_tools = state.tools.clone();
+    let plugin_store = state.plugin_store.clone();
     let comm_manager = if config.comm_reply.is_some() {
         Some(state.comm_manager.clone())
     } else {
@@ -770,7 +771,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         // blocks the text reply). Only the neboai provider supports
                         // uploads today.
                         let reply_attachments = if reply_config.provider == "neboai" {
-                            resolve_comm_attachments(&comm_manager, &comm_file_artifacts).await
+                            resolve_comm_attachments(&comm_manager, &plugin_store, &comm_file_artifacts).await
                         } else {
                             Vec::new()
                         };
@@ -856,7 +857,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         // No text response. Still deliver any run-produced files as
                         // an attachments-only message so the channel gets the artifact.
                         let reply_attachments = if reply_config.provider == "neboai" {
-                            resolve_comm_attachments(&comm_manager, &comm_file_artifacts).await
+                            resolve_comm_attachments(&comm_manager, &plugin_store, &comm_file_artifacts).await
                         } else {
                             Vec::new()
                         };
@@ -1155,6 +1156,7 @@ pub async fn run_chat_events(
 /// uploaded attachments in input order.
 async fn resolve_comm_attachments(
     comm_manager: &Option<Arc<comm::PluginManager>>,
+    plugin_store: &Arc<napp::plugin::PluginStore>,
     artifacts: &[String],
 ) -> Vec<comm::wire::Attachment> {
     let mut out = Vec::new();
@@ -1204,6 +1206,38 @@ async fn resolve_comm_attachments(
             Ok(att) => out.push(att),
             Err(e) => {
                 warn!(filename = %filename, error = %e, "failed to upload run artifact attachment");
+            }
+        }
+
+        // Decks can't render in a browser — upload the PDF preview alongside
+        // (same cached conversion the local Work panel uses). The web pairs
+        // "<name>.preview.pdf" to its deck and hides it from cards.
+        let is_deck = matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("pptx" | "ppt")
+        );
+        if is_deck {
+            match crate::handlers::files::ensure_pptx_preview(plugin_store, &path, &files_dir)
+                .await
+            {
+                Ok(cache) => match tokio::fs::read(&cache).await {
+                    Ok(pdf) => {
+                        let preview_name = format!("{filename}.preview.pdf");
+                        if let Err(e) = mgr
+                            .upload_file(&preview_name, "application/pdf", pdf)
+                            .await
+                            .map(|att| out.push(att))
+                        {
+                            warn!(filename = %preview_name, error = %e, "failed to upload deck preview");
+                        }
+                    }
+                    Err(e) => warn!(error = %e, "failed to read deck preview cache"),
+                },
+                Err(e) => {
+                    // Best-effort: the deck still ships; the web shows a
+                    // download card instead of a rendered preview.
+                    warn!(filename = %filename, error = %e, "deck preview generation skipped");
+                }
             }
         }
     }

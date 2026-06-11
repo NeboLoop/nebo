@@ -218,43 +218,38 @@ pub async fn serve_file(
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))
 }
 
-/// Render a .pptx to PDF via the nebo-office plugin and serve it. Results
-/// cache under `files/.previews/<name>.pdf` and regenerate when the source
-/// is newer. 503 when the plugin isn't installed — the viewer falls back to
-/// its download card.
-async fn serve_pptx_preview(
-    state: &AppState,
+/// Render a .pptx to a cached PDF via the nebo-office plugin and return the
+/// cache path. Results cache under `files/.previews/<name>.pdf` and
+/// regenerate when the source is newer. The ONE conversion implementation —
+/// used by the preview endpoint and by outbound comm artifact uploads.
+pub(crate) async fn ensure_pptx_preview(
+    plugin_store: &napp::plugin::PluginStore,
     source: &std::path::Path,
     files_root: &std::path::Path,
-) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
+) -> Result<std::path::PathBuf, String> {
     let name = source
         .file_name()
         .and_then(|n| n.to_str())
-        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+        .ok_or_else(|| "invalid source file name".to_string())?;
     let previews_dir = files_root.join(".previews");
     let cache = previews_dir.join(format!("{name}.pdf"));
 
     let src_mtime = tokio::fs::metadata(source)
         .await
         .and_then(|m| m.modified())
-        .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+        .map_err(|e| format!("stat source: {e}"))?;
     let cache_fresh = match tokio::fs::metadata(&cache).await.and_then(|m| m.modified()) {
         Ok(t) => t >= src_mtime,
         Err(_) => false,
     };
 
     if !cache_fresh {
-        let Some(bin) = state.plugin_store.resolve("nebo-office", "*") else {
-            return Err((
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                Json(types::api::ErrorResponse {
-                    error: "preview unavailable: the nebo-office plugin is not installed".into(),
-                }),
-            ));
+        let Some(bin) = plugin_store.resolve("nebo-office", "*") else {
+            return Err("the nebo-office plugin is not installed".into());
         };
         tokio::fs::create_dir_all(&previews_dir)
             .await
-            .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+            .map_err(|e| format!("create previews dir: {e}"))?;
         let output = tokio::process::Command::new(&bin)
             .arg("pdf")
             .arg("convert")
@@ -265,17 +260,32 @@ async fn serve_pptx_preview(
             .arg(&bin)
             .output()
             .await
-            .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+            .map_err(|e| format!("run nebo-office: {e}"))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err((
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                Json(types::api::ErrorResponse {
-                    error: format!("preview conversion failed: {}", stderr.trim()),
-                }),
-            ));
+            return Err(format!("conversion failed: {}", stderr.trim()));
         }
     }
+    Ok(cache)
+}
+
+/// Serve the on-demand pptx→PDF preview. 503 when the plugin is missing or
+/// conversion fails — the viewer falls back to its download card.
+async fn serve_pptx_preview(
+    state: &AppState,
+    source: &std::path::Path,
+    files_root: &std::path::Path,
+) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
+    let cache = ensure_pptx_preview(&state.plugin_store, source, files_root)
+        .await
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(types::api::ErrorResponse {
+                    error: format!("preview unavailable: {e}"),
+                }),
+            )
+        })?;
 
     let bytes = tokio::fs::read(&cache)
         .await
