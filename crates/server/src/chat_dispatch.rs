@@ -329,6 +329,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // final loop/DM reply so generated files (images, reports) reach the
                 // channel Slack-style. Deduped by source URL/path.
                 let mut comm_file_artifacts: Vec<String> = Vec::new();
+                // Follow-up suggestions captured during the stream — attached to the
+                // final comm Message's metadata so the loop renders the same chips.
+                let mut comm_suggestions: Option<String> = None;
                 // Run-produced media (images/files) referenced as /api/v1/files/<name>
                 // URLs, streamed to the LOCAL app on chat_complete so it renders inline.
                 let mut app_file_artifacts: Vec<String> = Vec::new();
@@ -664,6 +667,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "suggestions": suggestions,
                                     ),
                                 );
+                                if comm_reply.is_some() {
+                                    comm_suggestions = Some(suggestions.to_string());
+                                }
                             }
                         }
                         StreamEventType::RateLimit => {
@@ -787,6 +793,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         let mut reply_meta = std::collections::HashMap::new();
                         if !agent_display_name.is_empty() {
                             reply_meta.insert("senderName".to_string(), agent_display_name.clone());
+                        }
+                        if let Some(ref suggestions) = comm_suggestions {
+                            reply_meta.insert("suggestions".to_string(), suggestions.clone());
                         }
                         tracing::info!(
                             target: "neboai_identity",
