@@ -25,6 +25,8 @@
     title: string;
     kind: 'document' | 'code' | 'table' | 'slides';
     url?: string;
+    /** Source behind a compiled artifact (.jsx behind .html) — enables the Preview/Code toggle. */
+    codeUrl?: string;
   }
 
   interface ToolMsg {
@@ -132,7 +134,7 @@
   const artifacts = $derived<Artifact[]>(
     (messages as any[]).flatMap((m) =>
       (m.workItems ?? []).map((w: any) => ({
-        id: w.id, messageId: m.id, title: w.title, kind: w.kind, url: w.url,
+        id: w.id, messageId: m.id, title: w.title, kind: w.kind, url: w.url, codeUrl: w.codeUrl,
       }))
     )
   );
@@ -166,8 +168,13 @@
     }
   }
 
+  // Preview ↔ Code toggle for the active artifact (compiled artifacts pair
+  // their source via codeUrl; plain html shows its own markup).
+  let viewSource = $state(false);
+
   function openArtifact(id: string) {
     activeArtifactId = id;
+    viewSource = false;
     openWorkPanel();
     const a = artifacts.find(x => x.id === id);
     if (a) creationsTitle = a.title;
@@ -1025,6 +1032,18 @@
       {:else}
         <span class="text-sm font-semibold flex-1 truncate">{creationsTitle}</span>
       {/if}
+      {#if activeArtifact?.url && (activeArtifact.codeUrl || activeArtifact.url.endsWith('.html'))}
+        <div class="flex items-center rounded-md bg-base-200 p-0.5 shrink-0">
+          <button
+            class="py-0.5 px-2 rounded text-xs cursor-pointer border-none transition-colors {!viewSource ? 'bg-base-100 font-medium shadow-sm' : 'bg-transparent text-base-content/60 hover:text-base-content'}"
+            onclick={() => viewSource = false}
+          >Preview</button>
+          <button
+            class="py-0.5 px-2 rounded text-xs cursor-pointer border-none transition-colors {viewSource ? 'bg-base-100 font-medium shadow-sm' : 'bg-transparent text-base-content/60 hover:text-base-content'}"
+            onclick={() => viewSource = true}
+          >Code</button>
+        </div>
+      {/if}
       {#if activeArtifact?.url}
         <a
           href={activeArtifact.url}
@@ -1047,12 +1066,14 @@
     <!-- Creations content — one renderer for every format, routed by extension -->
     <div class="flex-1 overflow-y-auto">
       {#if activeArtifact?.url}
-        {#key activeArtifact.id}
+        {#key `${activeArtifact.id}:${viewSource}`}
           <WorkViewer
             url={activeArtifact.url}
             title={activeArtifact.title}
             renderHtml={renderMarkdown}
             oncontentclick={handleWorkMentionClick}
+            sourceView={viewSource}
+            codeUrl={activeArtifact.codeUrl}
           />
         {/key}
       {:else if artifacts.length > 0}

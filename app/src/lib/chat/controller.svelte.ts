@@ -34,7 +34,15 @@ export interface AgentInfo {
 }
 
 /** A produced document/report/sheet/design surfaced in the "Work" panel (click to open). */
-export interface WorkItem { id: string; title: string; kind: 'document' | 'code' | 'table' | 'slides'; url: string; }
+export interface WorkItem {
+  id: string;
+  title: string;
+  kind: 'document' | 'code' | 'table' | 'slides';
+  url: string;
+  /** Source file behind a compiled artifact (e.g. the .jsx behind a .html) —
+   *  the viewer offers a Preview/Code toggle instead of two separate items. */
+  codeUrl?: string;
+}
 
 export type ChatMessage =
   | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[] }
@@ -135,8 +143,17 @@ export function artifactsToAttachments(artifacts: unknown): UploadedAttachment[]
  *  that open + render in the Work panel). Media is excluded (rendered inline instead). */
 export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
   if (!Array.isArray(artifacts)) return [];
-  return artifacts
-    .filter((u): u is string => typeof u === 'string' && u.length > 0 && !isMedia(u))
+  const urls = artifacts.filter(
+    (u): u is string => typeof u === 'string' && u.length > 0 && !isMedia(u)
+  );
+  // Pair a compiled .html with its .jsx/.tsx source (same stem): ONE item with
+  // a Preview/Code toggle, not two cards for the same deliverable.
+  const stem = (u: string) => (u.split('/').pop() || '').replace(/\.[^.]+$/, '');
+  const sourceFor = (u: string) =>
+    urls.find((s) => ['jsx', 'tsx'].includes(urlExt(s)) && stem(s) === stem(u));
+  const paired = new Set(urls.filter((u) => urlExt(u) === 'html').map(sourceFor).filter(Boolean));
+  return urls
+    .filter((url) => !paired.has(url))
     .map((url) => {
       const title = url.split('/').pop() || 'file';
       const ext = urlExt(url);
@@ -144,7 +161,7 @@ export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
         ext === 'csv' || ext === 'xlsx' || ext === 'xls' ? 'table'
           : ['js', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'json', 'sh', 'css'].includes(ext) ? 'code'
             : 'document';
-      return { id: url, title, kind, url };
+      return { id: url, title, kind, url, codeUrl: ext === 'html' ? sourceFor(url) : undefined };
     });
 }
 

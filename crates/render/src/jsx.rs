@@ -168,6 +168,16 @@ impl VisitMut for RewriteImports {
                  components. Inline that code into the component and convert again"
             ));
             return;
+        } else if src.starts_with("@/") || src.starts_with("~/") {
+            // shadcn-style project aliases — they exist in other tools' artifact
+            // runtimes, not here. Without this check they fail at view time with
+            // an opaque "Importing a module script failed".
+            self.error = Some(format!(
+                "import \"{src}\" is a project-path alias — component libraries like \
+                 shadcn/ui are not available here. Build that UI with plain JSX elements \
+                 styled with Tailwind classes (or a real npm package), then convert again"
+            ));
+            return;
         } else if src.starts_with("http://") || src.starts_with("https://") {
             return;
         } else {
@@ -261,6 +271,17 @@ export default function App() { return <LineChart data={[]} />; }
             html.contains("https://esm.sh/recharts?deps=react@18.3.1,react-dom@18.3.1"),
             "recharts pinned to our react: {html}"
         );
+    }
+
+    #[test]
+    fn shadcn_alias_imports_are_rejected() {
+        // Models trained on other artifact runtimes emit shadcn-style aliases.
+        let src = r#"
+import { Table } from "@/components/ui/table";
+export default function App() { return <Table />; }
+"#;
+        let err = jsx_to_html(src, "c.jsx", JsxLang::Jsx).expect_err("must reject");
+        assert!(err.to_string().contains("Tailwind"), "corrective: {err}");
     }
 
     #[test]

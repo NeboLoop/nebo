@@ -20,12 +20,18 @@
     title,
     renderHtml,
     oncontentclick,
+    sourceView = false,
+    codeUrl,
   }: {
     url: string;
     title: string;
     /** Markdown → HTML renderer shared with the chat (mention chips + code-copy buttons). */
     renderHtml: (md: string) => string;
     oncontentclick?: (e: MouseEvent) => void;
+    /** Show the artifact's source instead of its rendered form (Preview/Code toggle). */
+    sourceView?: boolean;
+    /** Source file behind a compiled artifact (the .jsx behind a .html). */
+    codeUrl?: string;
   } = $props();
 
   const ext = $derived((title.split('.').pop() || '').toLowerCase());
@@ -36,7 +42,7 @@
     js: 'javascript', mjs: 'javascript', cjs: 'javascript', ts: 'typescript',
     py: 'python', rs: 'rust', go: 'go', json: 'json', sh: 'bash', bash: 'bash',
     css: 'css', yaml: 'yaml', yml: 'yaml', toml: 'toml', sql: 'sql',
-    svelte: 'svelte', tsx: 'tsx', jsx: 'jsx', rb: 'ruby', java: 'java',
+    svelte: 'svelte', tsx: 'tsx', jsx: 'jsx', rb: 'ruby', java: 'java', html: 'html',
     c: 'c', h: 'c', cpp: 'cpp', xml: 'xml',
   };
 
@@ -128,6 +134,22 @@
     loading = true;
     error = '';
     try {
+      // Source view: show the artifact's code (the .jsx behind a compiled
+      // .html when paired, otherwise the file's own text), shiki-highlighted.
+      if (sourceView) {
+        const srcUrl = codeUrl || url;
+        const srcExt = (srcUrl.split('/').pop() || '').split('.').pop()?.toLowerCase() || '';
+        const res = await fetch(srcUrl);
+        if (!res.ok) throw new Error(`Failed to load (${res.status})`);
+        const text = await res.text();
+        const { codeToHtml } = await import('shiki');
+        renderedHtml = await codeToHtml(text, {
+          lang: CODE_LANGS[srcExt] || 'text',
+          themes: { light: 'github-light', dark: 'github-dark' },
+        });
+        loading = false;
+        return;
+      }
       switch (mode) {
         case 'markdown': {
           renderedHtml = renderHtml(await fetchText());
@@ -256,6 +278,8 @@
       <div class="text-xs text-error">{error}</div>
       <a href={url} download={title} onclick={(e) => downloadArtifact(e, url)} class="btn btn-sm btn-outline">Download {title}</a>
     </div>
+  {:else if sourceView}
+    <div class="text-xs leading-relaxed rounded-lg overflow-x-auto [&_pre]:p-4 [&_pre]:rounded-lg">{@html renderedHtml}</div>
   {:else if mode === 'markdown'}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="prose prose-sm max-w-none" onclick={oncontentclick}>{@html renderedHtml}</div>
