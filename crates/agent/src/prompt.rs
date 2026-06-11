@@ -373,6 +373,9 @@ fn channel_guidance(channel: &str) -> String {
              For a PDF or Word doc: write the .md, then `os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")` \
              (or `to: \"docx\"`). For a spreadsheet: write the .csv, then convert `to: \"xlsx\"` \
              — CSV must have exactly one record per line (rows separated by newlines). \
+             For an INTERACTIVE dashboard, chart, or visualization: write a single-file React \
+             component as .jsx (must `export default`; bare npm imports like recharts, d3, \
+             lucide-react are allowed; Tailwind classes work), then convert `to: \"html\"`. \
              All conversion runs on embedded engines — NEVER use host binaries \
              (wkhtmltopdf, pandoc, headless chrome) for document conversion."
         );

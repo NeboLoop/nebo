@@ -183,6 +183,10 @@ pub async fn serve_file(
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("svg") => "image/svg+xml",
+        Some("webp") => "image/webp",
+        Some("mp4") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
         Some("pdf") => "application/pdf",
         Some("json") => "application/json; charset=utf-8",
         Some("txt") | Some("log") | Some("md") | Some("markdown") | Some("csv") | Some("typ") => {

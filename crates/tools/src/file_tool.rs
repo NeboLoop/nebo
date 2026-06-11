@@ -738,7 +738,7 @@ fn relativize_path(path: &str, base: &str) -> String {
 fn is_work_document(path: &str) -> bool {
     const WORK_EXTS: &[&str] = &[
         "md", "pdf", "csv", "xlsx", "xls", "docx", "doc", "pptx", "ppt", "html", "png",
-        "jpg", "jpeg", "gif", "svg",
+        "jpg", "jpeg", "gif", "svg", "webp", "mp4", "webm", "mov", "jsx", "tsx",
     ];
     std::path::Path::new(path)
         .extension()

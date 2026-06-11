@@ -7,9 +7,11 @@
 //! DOM+JS automation browser with no layout engine — it cannot print).
 
 mod docx;
+mod jsx;
 mod xlsx;
 
 pub use docx::markdown_to_docx;
+pub use jsx::{jsx_to_html, JsxLang};
 pub use xlsx::csv_to_xlsx;
 
 use std::sync::OnceLock;

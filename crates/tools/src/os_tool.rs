@@ -97,6 +97,10 @@ impl OsTool {
         };
         // Rendering is CPU-bound — keep it off the async runtime threads.
         let to_owned = to.to_string();
+        let file_name = src_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "component".into());
         let rendered = tokio::task::spawn_blocking(move || {
             match (to_owned.as_str(), ext.as_str()) {
                 ("pdf", "md" | "markdown" | "txt") => {
@@ -107,6 +111,12 @@ impl OsTool {
                     render::markdown_to_docx(&source).map_err(|e| e.to_string())
                 }
                 ("xlsx", "csv") => render::csv_to_xlsx(&source).map_err(|e| e.to_string()),
+                ("html", "jsx") => render::jsx_to_html(&source, &file_name, render::JsxLang::Jsx)
+                    .map(String::into_bytes)
+                    .map_err(|e| e.to_string()),
+                ("html", "tsx") => render::jsx_to_html(&source, &file_name, render::JsxLang::Tsx)
+                    .map(String::into_bytes)
+                    .map_err(|e| e.to_string()),
                 ("pdf", other) => Err(format!(
                     "pdf converts from .md or .typ (got .{other}). Write the document as Markdown first."
                 )),
@@ -116,8 +126,11 @@ impl OsTool {
                 ("xlsx", other) => Err(format!(
                     "xlsx converts from .csv (got .{other}). Write the data as CSV first."
                 )),
+                ("html", other) => Err(format!(
+                    "html converts from .jsx or .tsx (got .{other}). Write the interactive component as a single-file .jsx first."
+                )),
                 (other, _) => Err(format!(
-                    "unsupported target format '{other}' (supported: pdf from .md/.typ, docx from .md, xlsx from .csv)."
+                    "unsupported target format '{other}' (supported: pdf from .md/.typ, docx from .md, xlsx from .csv, html from .jsx/.tsx)."
                 )),
             }
         })
@@ -271,7 +284,7 @@ impl DynTool for OsTool {
     fn description(&self) -> String {
         "Local machine operations — files, shell, apps, desktop automation, settings, media, credentials, search, PIM.\n\n\
          Resources:\n\
-         - file: read, write, edit, glob, grep, convert — to list a directory, glob its path (pattern defaults to *); convert generates documents via embedded engines: .md→pdf/docx, .csv→xlsx (never use host binaries like wkhtmltopdf/pandoc)\n\
+         - file: read, write, edit, glob, grep, convert — to list a directory, glob its path (pattern defaults to *); convert generates documents via embedded engines: .md→pdf/docx, .csv→xlsx, .jsx/.tsx→html (interactive React) (never use host binaries like wkhtmltopdf/pandoc)\n\
          - shell: exec, list, poll, log, write, kill, info\n\
          - window: list, focus, minimize, maximize, resize, close, move\n\
          - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste\n\
@@ -338,7 +351,7 @@ impl DynTool for OsTool {
         props.insert("path".into(), prop("string", "File or directory path"));
         props.insert("content".into(), prop("string", "REQUIRED for write. The file content to write. Must use this exact field name — not 'text' or 'data'."));
         props.insert("pattern".into(), prop("string", "Pattern to match: filename glob (for glob action) or regex (for grep action)"));
-        props.insert("to".into(), prop("string", "Target format for convert: \"pdf\" (from .md/.typ), \"docx\" (from .md), \"xlsx\" (from .csv). Output lands next to the source."));
+        props.insert("to".into(), prop("string", "Target format for convert: \"pdf\" (from .md/.typ), \"docx\" (from .md), \"xlsx\" (from .csv), \"html\" (from .jsx/.tsx — interactive React component). Output lands next to the source."));
         props.insert(
             "old_string".into(),
             prop("string", "String to find (for edit)"),
