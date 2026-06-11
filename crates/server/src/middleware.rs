@@ -75,7 +75,10 @@ fn auth_error(message: &str) -> Response {
 /// HSTS, Permissions-Policy, X-Frame-Options, X-Content-Type-Options,
 /// X-XSS-Protection, Referrer-Policy.
 pub async fn security_headers(request: Request, next: Next) -> Response {
-    let is_embed = request.uri().path().starts_with("/chat-embed/");
+    // Frameable surfaces: the chat-embed page (app SDK iframes) and run-produced
+    // files (rendered in the Work panel's sandboxed iframe).
+    let is_embed = request.uri().path().starts_with("/chat-embed/")
+        || request.uri().path().starts_with("/api/v1/files/");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert(
@@ -110,6 +113,14 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
 /// a page-appropriate CSP that permits their inline styles/script; everything else
 /// keeps the lockdown.
 pub async fn api_security_headers(request: Request, next: Next) -> Response {
+    // Run-produced files (/api/v1/files/) render inside the app's own Work
+    // panel via a sandboxed iframe, so they must be frameable by the app
+    // (localhost covers both the embedded SPA and the Vite dev server) —
+    // everything else keeps frame-ancestors 'none'. The iframe carries
+    // sandbox="allow-scripts" with no allow-same-origin, so framed content
+    // runs with an opaque origin and cannot reach the API or storage.
+    let is_served_file = request.uri().path().starts_with("/files/")
+        || request.uri().path().starts_with("/api/v1/files/");
     let mut response = next.run(request).await;
 
     let is_html = response
@@ -118,7 +129,9 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/html"));
 
-    let csp = if is_html {
+    let csp = if is_served_file {
+        "frame-ancestors 'self' http://localhost:* http://127.0.0.1:* tauri:"
+    } else if is_html {
         "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
     } else {
         "default-src 'none'; frame-ancestors 'none'"

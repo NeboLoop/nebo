@@ -171,6 +171,9 @@
     const a = artifacts.find(x => x.id === id);
     if (a) creationsTitle = a.title;
     // WorkViewer owns fetching + rendering (text/binary/media per format).
+    // Opening the panel narrows the chat column and reflows the transcript —
+    // re-pin to the bottom so the message you clicked from stays in view.
+    requestAnimationFrame(() => scrollToBottom());
   }
   const CREATIONS_MIN = 220;
   let creationsWidth = $state(CREATIONS_MIN);
@@ -940,27 +943,26 @@
 {#if creationsOpen}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
-    class="w-0 shrink-0 cursor-col-resize relative z-10 group"
+    class="w-1.5 shrink-0 cursor-col-resize relative z-10 group bg-base-200 hover:bg-primary/30 transition-colors {resizing ? '!bg-primary/50' : ''}"
     onmousedown={startResize}
     role="separator"
     aria-orientation="vertical"
     tabindex="0"
   >
-    <!-- Hover hit area (wider than visible) -->
+    <!-- Wider invisible hit area so the drag is easy to grab -->
     <div class="absolute inset-y-0 -left-2 -right-2"></div>
-    <!-- Visible line — appears on hover with delay -->
-    <div class="absolute inset-y-0 -left-px w-0.5 bg-primary/30 opacity-0 group-hover:opacity-100 transition-opacity duration-300 delay-150 {resizing ? '!opacity-100' : ''}"></div>
-    <!-- Grip handle — centered dot pattern -->
-    <div class="absolute top-1/2 -translate-y-1/2 -left-1.5 w-3 h-8 rounded-full bg-base-300 border border-base-content/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 delay-150 {resizing ? '!opacity-100' : ''}">
+    <!-- Grip handle — always faintly visible, solid on hover/drag -->
+    <div class="absolute top-1/2 -translate-y-1/2 left-1/2 -translate-x-1/2 w-3 h-10 rounded-full bg-base-300 border border-base-content/10 flex items-center justify-center opacity-60 group-hover:opacity-100 transition-opacity {resizing ? '!opacity-100' : ''}">
       <div class="flex flex-col gap-0.5">
-        <div class="w-0.5 h-0.5 rounded-full bg-base-content/30"></div>
-        <div class="w-0.5 h-0.5 rounded-full bg-base-content/30"></div>
-        <div class="w-0.5 h-0.5 rounded-full bg-base-content/30"></div>
+        <div class="w-0.5 h-0.5 rounded-full bg-base-content/40"></div>
+        <div class="w-0.5 h-0.5 rounded-full bg-base-content/40"></div>
+        <div class="w-0.5 h-0.5 rounded-full bg-base-content/40"></div>
       </div>
     </div>
   </div>
-  <!-- Creations panel -->
-  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300" style="width: {creationsWidth}px">
+  <!-- Creations panel. pointer-events-none while dragging the divider: the
+       viewer iframe otherwise swallows mousemove and the resize stalls. -->
+  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
     <!-- Creations header -->
     <div class="h-11 px-4 border-b border-base-content/10 flex items-center gap-2 shrink-0">
       {#if activeArtifact}

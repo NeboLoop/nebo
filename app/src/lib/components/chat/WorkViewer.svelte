@@ -61,8 +61,6 @@
   let error = $state('');
   /** Rendered HTML for markdown / docx / code modes. */
   let renderedHtml = $state('');
-  /** Raw text for html-iframe srcdoc. */
-  let rawText = $state('');
   /** Parsed sheet data: per sheet, name + rows. */
   let sheets = $state<{ name: string; rows: string[][]; total: number }[]>([]);
   let pdfContainer = $state<HTMLDivElement | null>(null);
@@ -94,10 +92,11 @@
           renderedHtml = renderHtml(await fetchText());
           break;
         }
-        case 'html': {
-          rawText = await fetchText();
+        case 'html':
+          // Rendered via <iframe src> directly — no fetch needed. (srcdoc +
+          // sandbox renders in Chromium but stays blank in Tauri's WKWebView;
+          // a URL-loaded iframe works in both.)
           break;
-        }
         case 'code': {
           const text = await fetchText();
           const { codeToHtml } = await import('shiki');
@@ -191,10 +190,11 @@
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="text-xs leading-relaxed rounded-lg overflow-x-auto [&_pre]:p-4 [&_pre]:rounded-lg" onclick={oncontentclick}>{@html renderedHtml}</div>
   {:else if mode === 'html'}
-    <!-- Opaque origin: scripts may run but can't reach the app, API, or storage. -->
+    <!-- URL-loaded (srcdoc + sandbox stays blank in Tauri's WKWebView).
+         Opaque origin: scripts may run but can't reach the app, API, or storage. -->
     <iframe
       sandbox="allow-scripts"
-      srcdoc={rawText}
+      src={url}
       title={title}
       class="w-full min-h-[70vh] rounded-lg border border-base-300 bg-white"
     ></iframe>
