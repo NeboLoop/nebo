@@ -209,8 +209,17 @@
 
   // Open the panel at HALF the chat area (Claude-style) unless the user has
   // dragged it to their own width this session; always resizable after.
+  // Opening with nothing selected lands on the thread's latest artifact —
+  // the empty state is only for threads with no artifacts at all.
   function openWorkPanel() {
     creationsOpen = true;
+    if (!activeArtifactId || !artifacts.some((a) => a.id === activeArtifactId)) {
+      const latest = artifacts.at(-1);
+      if (latest) {
+        activeArtifactId = latest.id;
+        creationsTitle = latest.title;
+      }
+    }
     if (!userResized && containerEl) {
       const w = containerEl.getBoundingClientRect().width;
       creationsWidth = clampPanelWidth(Math.max(360, w * 0.5));
