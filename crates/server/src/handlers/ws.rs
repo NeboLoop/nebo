@@ -1638,10 +1638,20 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &C
                 .agent_space_conv_for_slug(&bot_slug)
                 .await
         };
-        conv_id.map(|cid| crate::chat_dispatch::CommReplyConfig {
-            provider: "neboai".to_string(),
-            topic: "agent_space".to_string(),
-            conversation_id: cid,
+        conv_id.map(|cid| {
+            // Write through the conv↔agent association (durable side of
+            // ConvMaps) so an inbound DM on this conversation still resolves
+            // to this agent after a restart, before the join repopulates
+            // ConvMaps. Mirrors the inbound write-through in lib.rs.
+            let row_id = if agent_id.is_empty() { "assistant" } else { agent_id.as_str() };
+            if let Err(e) = state.store.set_agent_loop_conv_id(row_id, &cid) {
+                warn!(error = %e, conv_id = %cid, "failed to persist loop_conv_id");
+            }
+            crate::chat_dispatch::CommReplyConfig {
+                provider: "neboai".to_string(),
+                topic: "agent_space".to_string(),
+                conversation_id: cid,
+            }
         })
     } else {
         None

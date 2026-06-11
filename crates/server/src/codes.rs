@@ -1665,8 +1665,16 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         None => return Ok(()), // No loops, nothing to reconcile
     };
 
-    // Store personal loop_id for session unification
+    // Store personal loop_id for session unification — in memory for this
+    // connection AND persisted, so the unification branch is deterministic from
+    // the first inbound DM after a restart (before reconcile completes).
     *state.personal_loop_id.write().await = Some(personal.loop_id.clone());
+    if let Err(e) = state
+        .store
+        .set_plugin_setting("neboai", "personal_loop_id", &personal.loop_id)
+    {
+        warn!(error = %e, "failed to persist personal_loop_id");
+    }
 
     let remote_agents = api
         .list_agents(&personal.loop_id)
@@ -1939,8 +1947,15 @@ pub(crate) async fn register_agent_in_loop(
         .first()
         .ok_or_else(|| NeboError::Internal("bot not in any loop".into()))?;
 
-    // Store personal loop_id for session unification
+    // Store personal loop_id for session unification (memory + persisted; see
+    // reconcile_agents for why persistence matters across restarts).
     *state.personal_loop_id.write().await = Some(personal.loop_id.clone());
+    if let Err(e) = state
+        .store
+        .set_plugin_setting("neboai", "personal_loop_id", &personal.loop_id)
+    {
+        warn!(error = %e, "failed to persist personal_loop_id");
+    }
 
     // register_agent upserts by slug (see reconcile_agents), so this is idempotent.
     api.register_agent(&personal.loop_id, name, &slug, None)

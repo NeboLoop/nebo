@@ -300,6 +300,35 @@ impl Store {
         .db_err("get_agent_by_loop_agent_id")
     }
 
+    /// Persist the NeboAI agent-space conversation id observed for an agent.
+    /// Durable side of the in-memory ConvMaps conv→agent association so inbound
+    /// DMs still resolve after a restart (before the join repopulates ConvMaps).
+    pub fn set_agent_loop_conv_id(&self, id: &str, loop_conv_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agents SET loop_conv_id = ?1 WHERE id = ?2",
+            params![loop_conv_id, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Resolve a local agent id from a NeboAI agent-space conversation id.
+    /// Fallback used by the inbound DM path when ConvMaps has no entry yet.
+    pub fn get_agent_id_by_loop_conv_id(
+        &self,
+        loop_conv_id: &str,
+    ) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT id FROM agents WHERE loop_conv_id = ?1",
+            params![loop_conv_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .db_err("get_agent_id_by_loop_conv_id")
+    }
+
     // ── Agent Workflow Bindings ──
 
     pub fn upsert_agent_workflow(

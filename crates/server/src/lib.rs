@@ -1546,6 +1546,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     let jwt_secret = JwtSecret(cfg.auth.access_secret.clone());
 
+    // Seed from the persisted value so the personal-loop unification branch
+    // is deterministic from the first inbound DM after a restart (reconcile
+    // refreshes it once the connection is up). Read before `store` moves
+    // into AppState below.
+    let personal_loop_id_seed = store
+        .get_plugin_setting("neboai", "personal_loop_id")
+        .ok()
+        .flatten();
+
     let state = AppState {
         config: cfg.clone(),
         store,
@@ -1579,7 +1588,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         presence: Arc::new(agent::PresenceTracker::new()),
         proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
         run_registry: run_registry::RunRegistry::new(),
-        personal_loop_id: Arc::new(tokio::sync::RwLock::new(None)),
+        personal_loop_id: Arc::new(tokio::sync::RwLock::new(personal_loop_id_seed)),
         channel_providers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         channel_bridges: tools::new_channel_bridge_registry(),
         a2ui: a2ui_manager,
@@ -2849,37 +2858,77 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
     // Route chat and DM messages to the agent runner via unified chat pipeline
     if msg.topic == "chat" || msg.topic == "dm" {
-        // Check if this conversation is actually an agent_space (gateway sends stream=dm for these)
-        if let Some(agent_slug) = state
+        // Check if this conversation is actually an agent_space (gateway sends
+        // stream=dm for these). ConvMaps is in-memory and rebuilt from JOIN
+        // updates after every reconnect, so fall back to the persisted
+        // agents.loop_conv_id mapping when it has no entry yet — otherwise a DM
+        // arriving in that window forks into a new `neboai:dm:` conversation.
+        let convmap_slug = state
             .comm_manager
             .agent_slug_for_conv(&msg.conversation_id)
-            .await
-        {
+            .await;
+        let durable_agent_id = if convmap_slug.is_none() {
+            state
+                .store
+                .get_agent_id_by_loop_conv_id(&msg.conversation_id)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        if convmap_slug.is_some() || durable_agent_id.is_some() {
             let text = extract_message_text(&msg.content);
             if text.is_empty() {
                 return;
             }
             // Resolve to a stable local agent id. Never drops: bot_* handles and
             // unresolved slugs both fall back to the primary bot.
-            let (agent_id, is_default_bot) =
-                resolve_inbound_agent(&state, &agent_slug, &msg.conversation_id, &msg.metadata).await;
+            let (agent_id, is_default_bot) = if let Some(ref slug) = convmap_slug {
+                resolve_inbound_agent(&state, slug, &msg.conversation_id, &msg.metadata).await
+            } else {
+                let aid = durable_agent_id.clone().unwrap_or_default();
+                if aid == "assistant" {
+                    (String::new(), true)
+                } else {
+                    (aid, false)
+                }
+            };
 
-            // Check if this is the owner's personal loop → unify session with local agent chat
+            // Write through the conv↔agent association so the durable fallback
+            // can resolve this conversation after a restart.
+            if convmap_slug.is_some() {
+                let row_id = if is_default_bot { "assistant" } else { agent_id.as_str() };
+                if let Err(e) = state
+                    .store
+                    .set_agent_loop_conv_id(row_id, &msg.conversation_id)
+                {
+                    tracing::warn!(error = %e, conv_id = %msg.conversation_id, "failed to persist loop_conv_id");
+                }
+            }
+
+            // Check if this is the owner's personal loop → unify session with
+            // local agent chat. A durable-mapping hit is personal by
+            // construction: loop_conv_id is only written for conversations of
+            // agents registered on the owner's personal loop.
             let space_loop_id = state
                 .comm_manager
                 .agent_space_loop_id(&msg.conversation_id)
                 .await;
             let personal_id = state.personal_loop_id.read().await.clone();
-            let is_personal = if is_default_bot {
+            let is_personal = if durable_agent_id.is_some() {
+                true
+            } else if is_default_bot {
                 space_loop_id.is_some() && (personal_id.is_none() || space_loop_id == personal_id)
             } else {
                 space_loop_id.is_some() && space_loop_id == personal_id
             };
+            let agent_slug = convmap_slug.clone().unwrap_or_default();
             tracing::info!(
                 agent_slug = %agent_slug,
                 agent_id = %agent_id,
                 conv_id = %msg.conversation_id,
                 is_personal = is_personal,
+                durable_fallback = durable_agent_id.is_some(),
                 space_loop_id = ?space_loop_id,
                 personal_loop_id = ?personal_id,
                 "dm→agent_space reroute: conv belongs to agent space"
@@ -2888,7 +2937,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             let session_key = if is_personal && is_default_bot {
                 resolve_companion_session_key(&state)
             } else if is_personal {
-                agent::keyparser::build_agent_session_key(&agent_id, "web")
+                resolve_agent_session_key(&state, &agent_id)
             } else {
                 agent::keyparser::build_session_key(
                     "neboai",
@@ -3610,6 +3659,25 @@ fn resolve_companion_session_key(state: &AppState) -> String {
             key
         }
         _ => "web".to_string(),
+    }
+}
+
+/// Resolve the session key for an inbound personal-loop message to a secondary
+/// agent: the agent's most recently active local conversation, so loop DMs and
+/// desktop threads stay ONE continuous conversation (the secondary-agent
+/// counterpart of `resolve_companion_session_key`). Falls back to the agent's
+/// legacy `:web` session when the agent has no conversations yet.
+fn resolve_agent_session_key(state: &AppState, agent_id: &str) -> String {
+    match state.store.get_latest_agent_chat(agent_id) {
+        Ok(Some(chat)) => {
+            let key = chat
+                .session_name
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| agent::keyparser::build_agent_session_key(agent_id, "web"));
+            tracing::debug!(session_key = %key, agent_id = %agent_id, "resolved agent session key for NeboAI unification");
+            key
+        }
+        _ => agent::keyparser::build_agent_session_key(agent_id, "web"),
     }
 }
 

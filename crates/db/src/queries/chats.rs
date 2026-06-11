@@ -588,6 +588,27 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The agent's most recently active conversation — the secondary-agent
+    /// counterpart of `get_companion_chat_by_user`, used to unify inbound loop
+    /// DMs with the agent's current local conversation. Ordered by last message
+    /// activity because chats.updated_at is set at creation, not per message.
+    pub fn get_latest_agent_chat(&self, agent_id: &str) -> Result<Option<Chat>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT * FROM chats
+             WHERE session_name LIKE 'agent:' || ?1 || ':%'
+             ORDER BY COALESCE(
+                 (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.chat_id = chats.id),
+                 updated_at
+             ) DESC
+             LIMIT 1",
+            params![agent_id],
+            row_to_chat,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn list_chat_days(
         &self,
         chat_id: &str,
