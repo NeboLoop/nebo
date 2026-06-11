@@ -25,6 +25,13 @@ Auth:
 # Database uses ~/.nebo/data/nebo.db by default (shared with agent)
 Database: {}
 
+# Agent runtime limits
+# MaxConcurrentRuns caps in-flight LLM calls across all agents.
+# 0 = auto (scales from available memory/load, up to 100).
+# Override at runtime via env var: NEBO_MAX_CONCURRENT_RUNS
+Runtime:
+  MaxConcurrentRuns: 0
+
 # NeboAI integration (managed services)
 # Enables: Loops (social trust circles), Marketplace, Gateway plugins
 # Override any URL via env var: NEBOAI_API_URL, NEBOAI_JANUS_URL, NEBOAI_COMMS_URL

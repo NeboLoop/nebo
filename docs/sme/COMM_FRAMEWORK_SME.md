@@ -1557,3 +1557,27 @@ Submitted --> Working --> Completed
                 |
                 +--> InputRequired --> (re-submit)
 ```
+
+## Appendix: Channel-Plugin Bridges (Slack/Discord-style outbound)
+
+This SME covers the NeboLoop comm framework. The *other* outbound comm path —
+channel plugins like Slack — is a separate mechanism, documented for plugin
+authors in `docs/publishers-guide/channel-plugins.md`. Runtime facts (verified
+against source, 2026-06-11):
+
+- A plugin declares a `channel` block in plugin.json (`command: "bridge --listen"`,
+  `shared`, `restartDelaySecs`). Nebo runs one resident bridge process per
+  enabled (agent, plugin) pair, registered globally as `{agent_id}:{plugin_slug}`
+  (`crates/tools/src/channel_bridge.rs`).
+- Outbound ops are intercepted by the `plugin` tool: when a command's first
+  verb is `reply`, `post`, `upload`, or `dm`, it is routed to the agent's bridge
+  over stdin NDJSON instead of spawning the CLI
+  (`crates/tools/src/plugin_tool.rs` — verb match + `route_through_bridge`).
+- **No CLI fallback**: if no bridge is registered for the calling agent, the op
+  fails with a structured error pointing at channel settings.
+- **Agent context required**: the caller's agent id is parsed from the session
+  key (`agent:<id>:…`); runs without agent context (system tasks, cron without
+  a bound agent) cannot perform channel ops.
+- Inbound messages stream from the bridge's stdout into the channel loop;
+  replies route back through the same bridge (`reply` op). The loop-side
+  CommReplyConfig machinery in this document is not involved.

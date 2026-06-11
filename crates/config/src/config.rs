@@ -38,6 +38,8 @@ pub struct Config {
     pub app_oauth: HashMap<String, AppOAuthProviderConfig>,
     #[serde(rename = "Log")]
     pub log: LogConfig,
+    #[serde(rename = "Runtime")]
+    pub runtime: RuntimeConfig,
     /// Local Chrome extension ID for development (load unpacked).
     /// Production Web Store ID is always included automatically.
     #[serde(rename = "BrowserExtensionId", default)]
@@ -187,6 +189,15 @@ pub struct AppOAuthProviderConfig {
     pub tenant_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct RuntimeConfig {
+    /// Max concurrent agent runs (LLM calls in flight). 0 = auto — the
+    /// concurrency controller scales from available memory and load.
+    #[serde(rename = "MaxConcurrentRuns")]
+    pub max_concurrent_runs: usize,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LogConfig {
@@ -219,6 +230,7 @@ impl Default for Config {
             neboai: NeboAIConfig::default(),
             app_oauth: HashMap::new(),
             log: LogConfig::default(),
+            runtime: RuntimeConfig::default(),
             browser_extension_id: None,
         }
     }
@@ -372,6 +384,12 @@ impl Config {
                 .to_string_lossy()
                 .into_owned();
         }
+        // Runtime limits env var override
+        if let Ok(v) = env::var("NEBO_MAX_CONCURRENT_RUNS")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            self.runtime.max_concurrent_runs = n;
+        }
         // Apply NeboAI env var overrides
         if let Ok(v) = env::var("NEBOAI_API_URL") {
             self.neboai.api_url = v;
@@ -413,6 +431,10 @@ impl Config {
     }
     pub fn is_neboai_enabled(&self) -> bool {
         parse_bool(&self.neboai.enabled, true)
+    }
+    /// Configured cap on concurrent agent runs; None = auto.
+    pub fn max_concurrent_runs(&self) -> Option<usize> {
+        (self.runtime.max_concurrent_runs > 0).then_some(self.runtime.max_concurrent_runs)
     }
 }
 

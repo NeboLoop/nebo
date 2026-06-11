@@ -8,6 +8,15 @@ use crate::registry::{DynTool, ResourceKind, ToolResult};
 /// Max chars for auto-snapshot appended after mutation actions.
 const AUTO_SNAPSHOT_MAX_CHARS: usize = 6_000;
 
+/// Select-all chord for the host platform (backend and browser run on the same machine).
+#[cfg(target_os = "macos")]
+const SELECT_ALL_KEY: &str = "cmd+a";
+#[cfg(not(target_os = "macos"))]
+const SELECT_ALL_KEY: &str = "ctrl+a";
+
+/// How long a visited page / search result stays reusable by siblings.
+const VISITED_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Preview size for inline read_page/evaluate/fetch results. Results beyond this
 /// return this many chars inline and spill the FULL text to a file the model can
 /// page through (see `spill_large_result`) — never a silent cut.
@@ -28,11 +37,16 @@ struct VisitedPage {
 /// WebTool consolidates web operations: HTTP fetch, search, and browser automation.
 pub struct WebTool {
     client: reqwest::Client,
+    /// Non-redirecting client used only for model-supplied URLs (`handle_http`):
+    /// redirects are followed manually in `fetch_checked` so every hop gets the
+    /// SSRF check, which the auto-following `client` can't provide.
+    bare_client: reqwest::Client,
     browser: Option<Arc<browser::Manager>>,
     store: Option<Arc<db::Store>>,
     broadcaster: Option<Broadcaster>,
-    /// Per-session navigate URL visit counts for loop detection.
-    nav_history: Mutex<HashMap<String, HashMap<String, u32>>>,
+    /// Per-session navigate origin visit counts for loop detection:
+    /// session → origin → (count, last visit). Stale sessions are pruned on insert.
+    nav_history: Mutex<HashMap<String, HashMap<String, (u32, std::time::Instant)>>>,
     /// Cross-subagent visited pages: group_key → url/query → cached result.
     /// Siblings in the same parent group share this cache so they don't
     /// duplicate browsing work.
@@ -41,14 +55,29 @@ pub struct WebTool {
 
 impl WebTool {
     pub fn new() -> Self {
+        const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
-            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+            .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
+        let bare_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .user_agent(USER_AGENT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| {
+                // Fallback must also never auto-follow redirects — each hop gets
+                // the SSRF check in fetch_checked.
+                reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .expect("reqwest client")
+            });
         Self {
             client,
+            bare_client,
             browser: None,
             store: None,
             broadcaster: None,
@@ -90,7 +119,7 @@ impl WebTool {
         let guard = self.visited_pages.lock().ok()?;
         let group = guard.get(group_key)?;
         let entry = group.get(url_or_query)?;
-        if entry.timestamp.elapsed() < std::time::Duration::from_secs(300) {
+        if entry.timestamp.elapsed() < VISITED_TTL {
             Some(entry.clone())
         } else {
             None
@@ -107,6 +136,12 @@ impl WebTool {
         session_id: &str,
     ) {
         if let Ok(mut guard) = self.visited_pages.lock() {
+            // Evict expired entries so memory stays bounded by recent activity
+            // (entries otherwise only expire on read, never on write).
+            for group in guard.values_mut() {
+                group.retain(|_, v| v.timestamp.elapsed() < VISITED_TTL);
+            }
+            guard.retain(|_, group| !group.is_empty());
             let group = guard.entry(group_key.to_string()).or_default();
             group.insert(
                 url_or_query.to_string(),
@@ -134,6 +169,85 @@ impl WebTool {
         }
     }
 
+    /// Fetch a model-supplied URL with the SSRF guard applied to EVERY hop:
+    /// redirects are followed manually (limit 5, matching the previous auto
+    /// policy) so a public URL can't redirect into a private address unchecked.
+    async fn fetch_checked(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        mut headers: reqwest::header::HeaderMap,
+        mut body: Option<String>,
+    ) -> Result<reqwest::Response, String> {
+        let mut method = method;
+        let mut current = check_url_allowed(url).await?;
+
+        // Initial request + up to 5 redirect follows.
+        for _ in 0..=5 {
+            let mut req = self
+                .bare_client
+                .request(method.clone(), current.clone())
+                .headers(headers.clone());
+            if let Some(ref b) = body {
+                req = req.body(b.clone());
+            }
+            let resp = req.send().await.map_err(|e| {
+                format!(
+                    "HTTP request failed for {}: {}. Check that the URL is correct and the server is reachable.",
+                    current, e
+                )
+            })?;
+
+            if !resp.status().is_redirection() {
+                return Ok(resp);
+            }
+            // Redirect without a usable Location — return it as-is, like reqwest does.
+            let Some(location) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+            else {
+                return Ok(resp);
+            };
+            let Some((next_method, next_url, drop_body)) =
+                next_hop(resp.status(), &method, resp.url(), &location)
+            else {
+                return Ok(resp);
+            };
+            let next = check_url_allowed(next_url.as_str()).await?;
+
+            // Mirror reqwest's redirect hygiene: credentials never cross hosts,
+            // and body-describing headers go away with the body.
+            let cross_host = next.host_str() != current.host_str()
+                || next.port_or_known_default() != current.port_or_known_default();
+            if cross_host {
+                for h in [
+                    reqwest::header::AUTHORIZATION,
+                    reqwest::header::COOKIE,
+                    reqwest::header::PROXY_AUTHORIZATION,
+                    reqwest::header::WWW_AUTHENTICATE,
+                ] {
+                    headers.remove(&h);
+                }
+            }
+            if drop_body {
+                body = None;
+                for h in [
+                    reqwest::header::CONTENT_TYPE,
+                    reqwest::header::CONTENT_LENGTH,
+                    reqwest::header::CONTENT_ENCODING,
+                    reqwest::header::TRANSFER_ENCODING,
+                ] {
+                    headers.remove(&h);
+                }
+            }
+            method = next_method;
+            current = next;
+        }
+        Err(format!("Too many redirects for {} (limit 5)", url))
+    }
+
     async fn handle_http(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
         let url = match input.get("url").and_then(|v| v.as_str()) {
             Some(u) => u,
@@ -146,25 +260,23 @@ impl WebTool {
             }
         };
 
-        // SSRF protection: block private IPs
-        if is_private_url(url) {
-            return ToolResult::error("Cannot fetch private/internal URLs (SSRF protection)");
-        }
-
         // Sanitize action: fetch HTML, extract visible text, chunk for LLM context
         let action = input
             .get("action")
             .and_then(|v| v.as_str())
             .unwrap_or("fetch");
         if action == "sanitize" {
-            let resp = match self.client.get(url).send().await {
+            let resp = match self
+                .fetch_checked(
+                    reqwest::Method::GET,
+                    url,
+                    reqwest::header::HeaderMap::new(),
+                    None,
+                )
+                .await
+            {
                 Ok(r) => r,
-                Err(e) => {
-                    return ToolResult::error(format!(
-                        "HTTP request failed for {}: {}. Check that the URL is correct and the server is reachable.",
-                        url, e
-                    ))
-                }
+                Err(e) => return ToolResult::error(e),
             };
             let status = resp.status().as_u16();
             let html = match resp.text().await {
@@ -205,42 +317,40 @@ impl WebTool {
         }
 
         // HTTP method comes from the `method` param (the one way); defaults to GET.
-        let method = input
+        let method_str = input
             .get("method")
             .and_then(|v| v.as_str())
             .unwrap_or("GET")
             .to_uppercase();
 
-        let mut req = match method.as_str() {
-            "GET" => self.client.get(url),
-            "POST" => self.client.post(url),
-            "PUT" => self.client.put(url),
-            "DELETE" => self.client.delete(url),
-            "HEAD" => self.client.head(url),
-            "PATCH" => self.client.patch(url),
-            _ => return ToolResult::error(format!("Unsupported HTTP method: {}", method)),
+        let method = match method_str.as_str() {
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
+            "HEAD" => reqwest::Method::HEAD,
+            "PATCH" => reqwest::Method::PATCH,
+            _ => return ToolResult::error(format!("Unsupported HTTP method: {}", method_str)),
         };
 
         // Add custom headers
-        if let Some(headers) = input.get("headers").and_then(|v| v.as_object()) {
-            for (key, value) in headers {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(hdrs) = input.get("headers").and_then(|v| v.as_object()) {
+            for (key, value) in hdrs {
                 if let Some(val) = value.as_str() {
                     if let (Ok(name), Ok(val)) = (
                         reqwest::header::HeaderName::from_bytes(key.as_bytes()),
                         reqwest::header::HeaderValue::from_str(val),
                     ) {
-                        req = req.header(name, val);
+                        headers.insert(name, val);
                     }
                 }
             }
         }
 
-        // Add body
-        if let Some(body) = input.get("body").and_then(|v| v.as_str()) {
-            req = req.body(body.to_string());
-        }
+        let body = input.get("body").and_then(|v| v.as_str()).map(String::from);
 
-        match req.send().await {
+        match self.fetch_checked(method, url, headers, body).await {
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 let content_type = resp
@@ -286,7 +396,7 @@ impl WebTool {
 
                         ToolResult::ok(format!(
                             "HTTP {} {} — Status: {}\n\n{}",
-                            method, url, status, display_body
+                            method_str, url, status, display_body
                         ))
                         .with_http_status(status)
                     }
@@ -296,10 +406,9 @@ impl WebTool {
                     )),
                 }
             }
-            Err(e) => ToolResult::error(format!(
-                "HTTP request failed for {}: {}. Check that the URL is correct and the server is reachable.",
-                url, e
-            )),
+            // fetch_checked errors already carry full context (SSRF rejection,
+            // request failure with URL, redirect limit).
+            Err(e) => ToolResult::error(e),
         }
     }
 
@@ -386,30 +495,20 @@ impl WebTool {
             tracing::warn!(query, "browser search failed — falling back to DDG scraping");
         }
 
-        // 3. DuckDuckGo HTTP scraping (fail-fast: cap at 8s so a hung/blocked request can't
-        //    stall the whole turn — see docs/bugs/web-search-slow-fallback.md). It internally
-        //    chains to Brave scraping if DDG returns nothing.
-        tracing::info!(query, "trying DDG HTTP scraping");
-        let result = match tokio::time::timeout(
-            std::time::Duration::from_secs(8),
-            self.search_duckduckgo_html(query),
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(_) => {
-                tracing::warn!(query, "DDG scraping timed out after 8s");
-                ToolResult::error(
-                    "Web search timed out and no browser is connected. Connect the Nebo Chrome \
-                     extension or configure a search API key for reliable results.",
-                )
-            }
-        };
+        // 3. DuckDuckGo HTTP scraping → Brave scraping. Each request is individually
+        //    capped at 8s inside (fail-fast: a hung DDG request must not eat Brave's
+        //    budget — see docs/bugs/web-search-slow-fallback.md).
+        tracing::info!(query, "trying direct scrape chain (DDG → Brave)");
+        let result = self.search_duckduckgo_html(query).await;
         if !result.is_error {
             self.record_visited(group_key, &search_key, &result.content, false, session_id);
         }
         result
     }
+
+    /// Per-request budget for direct search scraping (DDG, Brave). A blocked engine
+    /// often hangs rather than failing — fail fast and move to the next tier.
+    const SCRAPE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
     /// Whether a browser backend (connected extension or headless agent-browser) is available
     /// to run a search — used to prefer it over DDG HTTP scraping.
@@ -420,21 +519,14 @@ impl WebTool {
         }
     }
 
-    /// Search via the user's browser — navigate to DuckDuckGo and read the results page.
+    /// Search via the user's browser — navigate to Brave search and read the results page.
+    /// Returns an ERROR result when the browser path can't produce results; the caller
+    /// (`handle_search`) owns the one fallback chain (DDG scrape → Brave), so failures
+    /// here never bypass its fail-fast caps.
     async fn search_via_browser(&self, query: &str, session_id: &str) -> ToolResult {
-        let manager = match &self.browser {
-            Some(m) => m,
-            None => {
-                // No browser — try DuckDuckGo HTTP scraping, then Brave
-                return self.search_duckduckgo_html(query).await;
-            }
-        };
-
-        let executor = match manager.executor() {
+        let executor = match self.browser.as_ref().and_then(|m| m.executor()) {
             Some(e) => e,
-            None => {
-                return self.search_duckduckgo_html(query).await;
-            }
+            None => return ToolResult::error("no browser backend available"),
         };
 
         // Nudge the user to install the extension whenever it isn't connected — even if the
@@ -449,13 +541,44 @@ impl WebTool {
                 || !executor.wait_for_connection(grace).await
             {
                 self.broadcast_extension_disconnected("not_connected", session_id);
-                return self.search_duckduckgo_html(query).await;
+                return ToolResult::error("no browser backend connected");
             }
         }
 
-        // Navigate to DuckDuckGo search
+        // HUMAN-FLOW SEARCH first (extension tier): land on the homepage, click the
+        // search box, type the query with human cadence, press Enter. Navigating
+        // straight to a results URL with query params is the classic automation
+        // signature — it's how our IP got bot-flagged. Real users never construct
+        // `?q=` URLs by hand.
+        if executor.extension_connected() {
+            if let Some(result) = self
+                .search_via_browser_human(&executor, query, session_id)
+                .await
+            {
+                return result;
+            }
+            tracing::warn!("human search flow failed — falling back to results-URL navigation");
+        } else if executor.cdp_available() {
+            // Obscura (headless, no real Chrome session) is the path most likely to
+            // get bot-flagged — it MUST browse like a human too. Same homepage →
+            // human click → human type → Enter flow, via the CDP tier's humanized
+            // input (curved mouse, click hold, typing cadence). NEVER a ?q= URL.
+            if let Some(result) = self
+                .search_via_cdp_human(&executor, query, session_id)
+                .await
+            {
+                return result;
+            }
+            tracing::warn!("cdp human search flow failed — falling back to results-URL navigation");
+        }
+
+        // Fallback: navigate to the Brave results URL directly. NOT DuckDuckGo:
+        // html.duckduckgo.com serves its bot-block "anomaly" page even to a real
+        // browser (verified live 2026-06-11 — both the extension and the built-in
+        // browser got zero-result pages on every query), while Brave returns real
+        // results even from flagged IPs.
         let search_url = format!(
-            "https://html.duckduckgo.com/html/?q={}",
+            "https://search.brave.com/search?q={}",
             urlencoding::encode(query)
         );
         let nav_args = serde_json::json!({ "url": search_url });
@@ -463,8 +586,8 @@ impl WebTool {
             .execute("navigate", &nav_args, Some(session_id))
             .await
         {
-            tracing::warn!(error = %e, "browser navigate failed, falling back to DDG scraping");
-            return self.search_duckduckgo_html(query).await;
+            tracing::warn!(error = %e, "browser search navigate failed");
+            return ToolResult::error(format!("browser search navigate failed: {}", e));
         }
 
         // Pull the rendered page HTML and parse result links generically. Reading the real
@@ -472,24 +595,136 @@ impl WebTool {
         // bot-block that hits direct scraping. `read_page` returns the accessibility tree (the
         // search FORM, not the results), so we evaluate the raw HTML and run the same generic
         // link extractor. If the page yields nothing usable (bot-check, or a results-less form
-        // page), fall through to the direct scrape chain (DDG → Brave) so we never return chrome
-        // as if it were results.
+        // page), error out so the caller falls through to the direct scrape chain — we never
+        // return page chrome as if it were results.
         let html_expr = serde_json::json!({ "expression": "document.documentElement.outerHTML" });
         if let Ok(v) = executor.execute("evaluate", &html_expr, Some(session_id)).await {
-            let html = v
-                .get("text")
-                .or_else(|| v.get("result"))
-                .or_else(|| v.get("value"))
-                .or_else(|| v.get("pageContent"))
-                .and_then(|x| x.as_str())
-                .unwrap_or("");
-            let results = extract_search_links(html, "duckduckgo.com");
-            if !results.is_empty() {
+            let html = evaluate_result_text(&v);
+            let results = extract_search_links(html, "search.brave.com");
+            // A real results page always yields several external links. 0–1 means a
+            // block/consent/still-loading page (seen live: DDG's anomaly page carries
+            // exactly one stray torproject link) — fall through, don't return junk.
+            if results.len() >= 2 {
                 return format_search_results(query, &results);
             }
         }
-        tracing::warn!("browser search yielded no parseable results — falling back to direct scrape chain");
-        self.search_duckduckgo_html(query).await
+        tracing::warn!("browser search yielded no parseable results");
+        ToolResult::error("browser search yielded no parseable results")
+    }
+
+    /// Human-flow Brave search via the extension: homepage → click the search box →
+    /// type the query (the extension adds human mouse paths + typing cadence) →
+    /// Enter → read results. Returns None when any step can't complete (layout
+    /// change, box not found, transport failure) — the caller then falls back to
+    /// plain results-URL navigation.
+    async fn search_via_browser_human(
+        &self,
+        executor: &browser::ActionExecutor,
+        query: &str,
+        session_id: &str,
+    ) -> Option<ToolResult> {
+        let nav = serde_json::json!({ "url": "https://search.brave.com/" });
+        executor.execute("navigate", &nav, Some(session_id)).await.ok()?;
+
+        // Locate the search box on our own snapshot format: `role "label" [ref_N]`.
+        let snap = executor
+            .execute(
+                "read_page",
+                &serde_json::json!({"filter": "interactive"}),
+                Some(session_id),
+            )
+            .await
+            .ok()?;
+        let page = snap.get("pageContent").and_then(|v| v.as_str()).unwrap_or("");
+        let re = regex::Regex::new(r"(?m)^\s*(?:searchbox|textbox|combobox)[^\[\n]*\[(ref_\d+)\]")
+            .ok()?;
+        let search_ref = re.captures(page)?.get(1)?.as_str().to_string();
+
+        // Click the box, type the query, press Enter — one extension round trip.
+        let actions = vec![
+            browser::BatchAction {
+                tool: "click".to_string(),
+                args: serde_json::json!({"ref": search_ref}),
+            },
+            browser::BatchAction {
+                tool: "type".to_string(),
+                args: serde_json::json!({"text": query}),
+            },
+            browser::BatchAction {
+                tool: "press".to_string(),
+                args: serde_json::json!({"key": "Enter"}),
+            },
+        ];
+        let opts = browser::BatchOptions { stop_on_error: true };
+        let results = executor
+            .batch_execute(actions, opts, Some(session_id))
+            .await
+            .ok()?;
+        if results.iter().any(|r| r.is_err()) {
+            return None;
+        }
+
+        // Let the results page settle, then read it.
+        let _ = executor
+            .execute("wait", &serde_json::json!({"ms": 2000}), Some(session_id))
+            .await;
+        let v = executor
+            .execute(
+                "evaluate",
+                &serde_json::json!({"expression": "document.documentElement.outerHTML"}),
+                Some(session_id),
+            )
+            .await
+            .ok()?;
+        let links = extract_search_links(evaluate_result_text(&v), "search.brave.com");
+        (links.len() >= 2).then(|| format_search_results(query, &links))
+    }
+
+    /// Human-flow Brave search via the built-in Obscura browser (CDP tier). Same
+    /// shape as the extension flow, but the headless tier has no element-ref
+    /// surface, so the search box is located by CSS selector — the CDP tier's
+    /// humanized `click` resolves it to a center coordinate and moves there along a
+    /// curved path. Returns None on any miss so the caller falls back to URL nav.
+    async fn search_via_cdp_human(
+        &self,
+        executor: &browser::ActionExecutor,
+        query: &str,
+        session_id: &str,
+    ) -> Option<ToolResult> {
+        executor
+            .execute(
+                "navigate",
+                &serde_json::json!({ "url": "https://search.brave.com/" }),
+                Some(session_id),
+            )
+            .await
+            .ok()?;
+        // Brave's homepage search input — first match of these selectors.
+        let click = serde_json::json!({
+            "selector": "#searchbox, input[name=\"q\"], textarea[name=\"q\"], input[type=\"search\"]"
+        });
+        executor.execute("click", &click, Some(session_id)).await.ok()?;
+        executor
+            .execute("type", &serde_json::json!({ "text": query }), Some(session_id))
+            .await
+            .ok()?;
+        executor
+            .execute("press", &serde_json::json!({ "key": "Enter" }), Some(session_id))
+            .await
+            .ok()?;
+
+        // Let the results page load (Enter submits + navigates), then read it.
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        let v = executor
+            .execute(
+                "evaluate",
+                &serde_json::json!({"expression": "document.documentElement.outerHTML"}),
+                Some(session_id),
+            )
+            .await
+            .ok()?;
+        let links = extract_search_links(evaluate_result_text(&v), "search.brave.com");
+        (links.len() >= 2).then(|| format_search_results(query, &links))
     }
 
     /// Dispatch to the correct BYOK search API provider.
@@ -605,49 +840,68 @@ impl WebTool {
         Ok(parse_serpapi_results(&body))
     }
 
-    /// Fallback: Brave HTML scraping (no API key needed).
+    /// Fetch a search-results page with the per-request scrape budget applied.
+    /// Returns the HTML, or an error string (timeout or transport failure).
+    async fn fetch_search_page(&self, url: &str) -> Result<String, String> {
+        let fetch = async {
+            let resp = self.client.get(url).send().await.map_err(|e| e.to_string())?;
+            resp.text().await.map_err(|e| e.to_string())
+        };
+        match tokio::time::timeout(Self::SCRAPE_TIMEOUT, fetch).await {
+            Ok(r) => r,
+            Err(_) => Err(format!(
+                "timed out after {}s",
+                Self::SCRAPE_TIMEOUT.as_secs()
+            )),
+        }
+    }
+
+    /// Fallback: Brave HTML scraping (no API key needed). The floor of the chain —
+    /// when this fails there is nothing left to try.
     async fn search_brave_html(&self, query: &str) -> ToolResult {
         let search_url = format!(
             "https://search.brave.com/search?q={}",
             urlencoding::encode(query)
         );
 
-        match self.client.get(&search_url).send().await {
-            Ok(resp) => match resp.text().await {
-                Ok(html) => {
-                    let results = extract_search_links(&html, "search.brave.com");
-                    if results.is_empty() {
-                        ToolResult::ok(format!("No results found for: {}", query))
-                    } else {
-                        format_search_results(query, &results)
-                    }
+        match self.fetch_search_page(&search_url).await {
+            Ok(html) => {
+                let results = extract_search_links(&html, "search.brave.com");
+                if results.is_empty() {
+                    ToolResult::ok(format!("No results found for: {}", query))
+                } else {
+                    format_search_results(query, &results)
                 }
-                Err(e) => ToolResult::error(format!("Failed to read search response: {}", e)),
-            },
-            Err(e) => ToolResult::error(format!("Search request failed: {}", e)),
+            }
+            Err(e) => ToolResult::error(format!(
+                "Web search failed: all search engines unreachable (Brave: {}). \
+                 Connect the Nebo Chrome extension or configure a search API key \
+                 for reliable results.",
+                e
+            )),
         }
     }
 
     /// Fallback: DuckDuckGo HTML scraping (no API key needed, no rate limits).
+    /// Chains to Brave on timeout, transport failure, or zero results — DDG's own
+    /// budget can't eat Brave's.
     async fn search_duckduckgo_html(&self, query: &str) -> ToolResult {
         let search_url = format!(
             "https://html.duckduckgo.com/html/?q={}",
             urlencoding::encode(query)
         );
 
-        match self.client.get(&search_url).send().await {
-            Ok(resp) => match resp.text().await {
-                Ok(html) => {
-                    let results = extract_search_links(&html, "duckduckgo.com");
-                    if results.is_empty() {
-                        // Final fallback: try Brave
-                        self.search_brave_html(query).await
-                    } else {
-                        format_search_results(query, &results)
-                    }
+        match self.fetch_search_page(&search_url).await {
+            Ok(html) => {
+                let results = extract_search_links(&html, "duckduckgo.com");
+                // < 2 results = DDG's bot-block "anomaly" page (it carries a stray
+                // external link or two), not a real results page — go to Brave.
+                if results.len() < 2 {
+                    self.search_brave_html(query).await
+                } else {
+                    format_search_results(query, &results)
                 }
-                Err(e) => ToolResult::error(format!("Failed to read DuckDuckGo response: {}", e)),
-            },
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "DuckDuckGo scraping failed, falling back to Brave");
                 self.search_brave_html(query).await
@@ -743,8 +997,10 @@ impl WebTool {
                 }
                 // Skip re-navigating to a URL visited recently (by a sibling OR earlier this
                 // session) — return the cached page instead of re-loading it.
+                // `fresh: true` bypasses the cache for a deliberate reload.
+                let fresh = input.get("fresh").and_then(|v| v.as_bool()).unwrap_or(false);
                 let nav_key = format!("nav:{}", url);
-                if let Some(cached) = self.check_visited(group_key, &nav_key) {
+                if !fresh && let Some(cached) = self.check_visited(group_key, &nav_key) {
                     tracing::info!(
                         session_id = %session_id,
                         visited_by = %cached.visited_by,
@@ -978,7 +1234,7 @@ impl WebTool {
                     });
                     batch_actions.push(browser::BatchAction {
                         tool: "press".to_string(),
-                        args: serde_json::json!({"key": "cmd+a"}),
+                        args: serde_json::json!({"key": SELECT_ALL_KEY}),
                     });
                     batch_actions.push(browser::BatchAction {
                         tool: "type".to_string(),
@@ -1164,18 +1420,25 @@ impl WebTool {
                 // Check for post-action screenshot in result: { text: "...", screenshot: { data, format } }
                 let (mut text_result, mut screenshot_b64) =
                     if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
-                        let screenshot = result.get("screenshot").and_then(|s| {
-                            let data = s.get("data")?.as_str()?;
-                            let fmt = s.get("format").and_then(|f| f.as_str()).unwrap_or("jpeg");
-                            Some(format!("data:image/{};base64,{}", fmt, data))
-                        });
-                        (text.to_string(), screenshot)
+                        (text.to_string(), extract_screenshot_b64(&result))
                     } else if action == "snapshot" || action == "read_page" {
                         let page_content = result
                             .get("pageContent")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
                         (page_content.to_string(), None)
+                    } else if action == "screenshot" {
+                        // The extension returns the screenshot FLAT ({ data, format, ... }) —
+                        // route the image to image_url, never pretty-print megabytes of
+                        // base64 into the model's text content.
+                        match extract_screenshot_b64(&result) {
+                            Some(shot) => ("Screenshot captured.".to_string(), Some(shot)),
+                            None => (
+                                serde_json::to_string_pretty(&result)
+                                    .unwrap_or_else(|_| format!("{}", result)),
+                                None,
+                            ),
+                        }
                     } else {
                         let s = serde_json::to_string_pretty(&result)
                             .unwrap_or_else(|_| format!("{}", result));
@@ -1198,11 +1461,7 @@ impl WebTool {
                     if action == "navigate" && screenshot_b64.is_none() {
                         let shot_args = serde_json::json!({});
                         if let Ok(shot_result) = executor.execute("screenshot", &shot_args, session_id).await {
-                            screenshot_b64 = shot_result.get("screenshot").and_then(|s| {
-                                let data = s.get("data")?.as_str()?;
-                                let fmt = s.get("format").and_then(|f| f.as_str()).unwrap_or("jpeg");
-                                Some(format!("data:image/{};base64,{}", fmt, data))
-                            });
+                            screenshot_b64 = extract_screenshot_b64(&shot_result);
                         }
                     }
                 }
@@ -1225,17 +1484,29 @@ impl WebTool {
                             let sid = session_id.unwrap_or("default").to_string();
                             let count = {
                                 let mut history = self.nav_history.lock().unwrap();
+                                // Prune sessions with no navigation in the last hour
+                                // so the map stays bounded by recent activity.
+                                const NAV_HISTORY_TTL: std::time::Duration =
+                                    std::time::Duration::from_secs(3600);
+                                history.retain(|_, origins| {
+                                    origins
+                                        .values()
+                                        .any(|(_, last)| last.elapsed() < NAV_HISTORY_TTL)
+                                });
                                 let session_map = history.entry(sid).or_default();
-                                let c = session_map.entry(origin).or_insert(0);
-                                *c += 1;
-                                *c
+                                let entry = session_map
+                                    .entry(origin)
+                                    .or_insert((0, std::time::Instant::now()));
+                                entry.0 += 1;
+                                entry.1 = std::time::Instant::now();
+                                entry.0
                             };
                             if count >= 3 {
                                 text_result.push_str(&format!(
                                     "\n\n⚠ You have navigated to this site {} times in this session. \
                                      If you're not making progress, STOP and try a different approach: \
                                      use web(action: search) to find an alternative source, or \
-                                     use wait(duration: 3) before read_page if content is loading slowly.",
+                                     use wait(ms: 3000) before read_page if content is loading slowly.",
                                     count
                                 ));
                             }
@@ -1277,6 +1548,7 @@ impl DynTool for WebTool {
     }
 
     fn description(&self) -> String {
+        format!(
         "Web operations — HTTP requests, search, and browser automation.\n\n\
          Decision: API/static HTML → fetch/search. Rendered page or user sessions → browser actions.\n\n\
          ## Browser — Controls the user's real Chrome browser\n\
@@ -1289,12 +1561,12 @@ impl DynTool for WebTool {
          ## Rules\n\
          - read_page FIRST before interacting — see what's on screen\n\
          - Scroll down to find content below the fold — read_page only shows the viewport\n\
-         - For text inputs: click → press(key: cmd+a) → type. fill is for dropdowns/checkboxes only\n\
+         - For text inputs: click → press(key: {SELECT_ALL_KEY}) → type. fill is for dropdowns/checkboxes only\n\
          - NEVER navigate with search query params (triggers anti-bot). Navigate to the site, find the search box, type your query\n\
          - Do NOT click file upload buttons. Use file_upload(ref) instead\n\
          - After search results appear, extract data from results BEFORE visiting individual pages\n\
          - When you have enough info, STOP and respond. Don't keep browsing to be thorough"
-            .to_string()
+        )
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -1481,6 +1753,10 @@ impl DynTool for WebTool {
                     "type": "boolean",
                     "description": "For navigate: force navigation past 'Leave site?' dialogs (default false)"
                 },
+                "fresh": {
+                    "type": "boolean",
+                    "description": "For navigate: skip the recently-visited cache and load the page fresh (default false)"
+                },
                 "actions": {
                     "type": "array",
                     "description": "For browser_batch: list of actions to execute sequentially in one round trip. Each item is an object with 'action' plus that action's normal params. Stops on first error.",
@@ -1576,6 +1852,29 @@ impl DynTool for WebTool {
             }
         })
     }
+}
+
+/// Pull the text payload out of an `evaluate` result. The extension returns
+/// `{text}` (current builds) or a bare string (older builds); the CDP backend
+/// returns `{text}`.
+fn evaluate_result_text(v: &serde_json::Value) -> &str {
+    v.get("text")
+        .or_else(|| v.get("result"))
+        .or_else(|| v.get("value"))
+        .or_else(|| v.get("pageContent"))
+        .and_then(|x| x.as_str())
+        .or_else(|| v.as_str())
+        .unwrap_or("")
+}
+
+/// Extract a data-URL screenshot from an extension result. Mutation actions nest it
+/// (`{ text, screenshot: {data, format} }`); the `screenshot` tool returns it flat
+/// (`{ data, format, ... }`).
+fn extract_screenshot_b64(result: &serde_json::Value) -> Option<String> {
+    let obj = result.get("screenshot").unwrap_or(result);
+    let data = obj.get("data")?.as_str()?;
+    let fmt = obj.get("format").and_then(|f| f.as_str()).unwrap_or("jpeg");
+    Some(format!("data:image/{};base64,{}", fmt, data))
 }
 
 /// Append a compact page snapshot after a mutation action.
@@ -1860,24 +2159,114 @@ fn extract_origin(url: &str) -> String {
     }
 }
 
-/// Simple SSRF check: block private/loopback IPs.
-fn is_private_url(url: &str) -> bool {
-    let lower = url.to_lowercase();
-    // Block obvious private addresses
-    lower.contains("://localhost")
-        || lower.contains("://127.")
-        || lower.contains("://0.")
-        || lower.contains("://10.")
-        || lower.contains("://172.16.")
-        || lower.contains("://172.17.")
-        || lower.contains("://172.18.")
-        || lower.contains("://172.19.")
-        || lower.contains("://172.2")
-        || lower.contains("://172.30.")
-        || lower.contains("://172.31.")
-        || lower.contains("://192.168.")
-        || lower.contains("://[::1]")
-        || lower.contains("://169.254.")
+/// Canonical SSRF guard for model-supplied URLs: parse, require http/https,
+/// and classify the host. IP literals (including the WHATWG-normalized hex/
+/// decimal/short IPv4 forms and IPv4-mapped IPv6) are checked directly;
+/// hostnames are DNS-resolved and rejected if ANY resolved address is
+/// non-public. Fails closed on parse/resolve errors.
+///
+/// Residual risk (accepted for a single-user desktop app): DNS rebinding —
+/// we resolve and approve, then reqwest's connector resolves again; closing
+/// that TOCTOU window would require pinning the vetted IP per request.
+async fn check_url_allowed(raw: &str) -> Result<url::Url, String> {
+    let parsed =
+        url::Url::parse(raw).map_err(|e| format!("Invalid URL {}: {}", raw, e))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!(
+            "Cannot fetch {} URLs — only http and https are supported.",
+            parsed.scheme()
+        ));
+    }
+    match parsed.host() {
+        None => Err(format!("Invalid URL {}: missing host", raw)),
+        Some(url::Host::Ipv4(ip)) if !is_public_ip(ip.into()) => {
+            Err("Cannot fetch private/internal URLs (SSRF protection)".to_string())
+        }
+        Some(url::Host::Ipv6(ip)) if !is_public_ip(ip.into()) => {
+            Err("Cannot fetch private/internal URLs (SSRF protection)".to_string())
+        }
+        Some(url::Host::Domain(domain)) => {
+            let d = domain.trim_end_matches('.');
+            if d.eq_ignore_ascii_case("localhost")
+                || d.to_ascii_lowercase().ends_with(".localhost")
+            {
+                return Err(
+                    "Cannot fetch private/internal URLs (SSRF protection)".to_string()
+                );
+            }
+            let port = parsed.port_or_known_default().unwrap_or(80);
+            let addrs = tokio::net::lookup_host((d, port))
+                .await
+                .map_err(|e| format!("Could not resolve host {}: {}", d, e))?;
+            for addr in addrs {
+                if !is_public_ip(addr.ip()) {
+                    return Err(format!(
+                        "Cannot fetch private/internal URLs (SSRF protection) — {} resolves to a private address",
+                        d
+                    ));
+                }
+            }
+            Ok(parsed)
+        }
+        Some(_) => Ok(parsed),
+    }
+}
+
+/// Whether an IP is publicly routable — the classification half of the SSRF
+/// guard, pure and unit-testable. Covers loopback, RFC1918, link-local,
+/// CGNAT, reserved v4 ranges, and the private/special IPv6 ranges.
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    // Unwrap IPv4-mapped IPv6 (::ffff:a.b.c.d) into the v4 address.
+    match ip.to_canonical() {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || o[0] == 0 // 0.0.0.0/8 "this network"
+                || (o[0] == 100 && (o[1] & 0xC0) == 64) // CGNAT 100.64.0.0/10
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24
+                || o[0] >= 240) // 240.0.0.0/4 reserved
+        }
+        std::net::IpAddr::V6(v6) => {
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.is_multicast())
+        }
+    }
+}
+
+/// Compute the next redirect hop (reqwest/browser semantics): 303 always
+/// becomes GET; 301/302 demote POST to GET; 307/308 preserve method and body.
+/// Returns (method, url, drop_body), or None if `location` doesn't parse.
+fn next_hop(
+    status: reqwest::StatusCode,
+    method: &reqwest::Method,
+    base: &url::Url,
+    location: &str,
+) -> Option<(reqwest::Method, url::Url, bool)> {
+    let mut next = base.join(location).ok()?;
+    next.set_fragment(None);
+    use reqwest::StatusCode;
+    let (method, drop_body) = match status {
+        StatusCode::SEE_OTHER => (
+            if *method == reqwest::Method::HEAD {
+                reqwest::Method::HEAD
+            } else {
+                reqwest::Method::GET
+            },
+            true,
+        ),
+        StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND if *method == reqwest::Method::POST => {
+            (reqwest::Method::GET, true)
+        }
+        _ => (method.clone(), false),
+    };
+    Some((method, next, drop_body))
 }
 
 /// Strip HTML tags for readable text output.
@@ -2308,6 +2697,166 @@ button "Next" [ref_4]
 link "Create account" [ref_5]"#;
         let result = detect_auth_page(url, content);
         assert!(result.is_some(), "should detect Google OAuth login");
+    }
+
+    #[test]
+    fn is_public_ip_blocks_private_and_special_ranges() {
+        let blocked: &[&str] = &[
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "100.64.0.1",
+            "192.0.0.192",
+            "255.255.255.255",
+            "240.0.0.1",
+            "::1",
+            "::",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+        ];
+        for ip in blocked {
+            let parsed: std::net::IpAddr = ip.parse().unwrap();
+            assert!(!is_public_ip(parsed), "{} should be blocked", ip);
+        }
+    }
+
+    #[test]
+    fn is_public_ip_allows_public_ranges() {
+        // 172.2.x.x and 172.200.x.x are regressions for the old substring
+        // check, which wrongly blocked them via the "://172.2" prefix.
+        let allowed: &[&str] = &[
+            "1.1.1.1",
+            "8.8.8.8",
+            "172.2.1.1",
+            "172.200.5.5",
+            "100.128.0.1",
+            "93.184.216.34",
+            "2606:4700::1111",
+        ];
+        for ip in allowed {
+            let parsed: std::net::IpAddr = ip.parse().unwrap();
+            assert!(is_public_ip(parsed), "{} should be allowed", ip);
+        }
+    }
+
+    #[tokio::test]
+    async fn check_url_allowed_blocks_private_literals_and_schemes() {
+        // Literals only — no DNS dependency.
+        let blocked: &[&str] = &[
+            "http://0x7f000001",
+            "http://2130706433",
+            "http://017700000001",
+            "http://127.1",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[fe80::1]/",
+            "http://localhost:8080/x",
+            "http://foo.localhost/",
+            "http://169.254.169.254/latest/meta-data/",
+            "file:///etc/passwd",
+            "ftp://example.com",
+        ];
+        for url in blocked {
+            assert!(
+                check_url_allowed(url).await.is_err(),
+                "{} should be rejected",
+                url
+            );
+        }
+        assert!(check_url_allowed("http://172.2.1.1/").await.is_ok());
+        assert!(check_url_allowed("https://93.184.216.34/").await.is_ok());
+    }
+
+    #[test]
+    fn next_hop_follows_redirect_semantics() {
+        let base = url::Url::parse("https://example.com/start").unwrap();
+
+        // 301/302 demote POST to GET and drop the body.
+        for status in [
+            reqwest::StatusCode::MOVED_PERMANENTLY,
+            reqwest::StatusCode::FOUND,
+        ] {
+            let (m, u, drop) = next_hop(status, &reqwest::Method::POST, &base, "/next").unwrap();
+            assert_eq!(m, reqwest::Method::GET);
+            assert_eq!(u.as_str(), "https://example.com/next");
+            assert!(drop);
+        }
+
+        // 303 always becomes GET (except HEAD stays HEAD).
+        let (m, _, drop) = next_hop(
+            reqwest::StatusCode::SEE_OTHER,
+            &reqwest::Method::PUT,
+            &base,
+            "/other",
+        )
+        .unwrap();
+        assert_eq!(m, reqwest::Method::GET);
+        assert!(drop);
+        let (m, _, _) = next_hop(
+            reqwest::StatusCode::SEE_OTHER,
+            &reqwest::Method::HEAD,
+            &base,
+            "/other",
+        )
+        .unwrap();
+        assert_eq!(m, reqwest::Method::HEAD);
+
+        // 307/308 preserve method and body.
+        for status in [
+            reqwest::StatusCode::TEMPORARY_REDIRECT,
+            reqwest::StatusCode::PERMANENT_REDIRECT,
+        ] {
+            let (m, _, drop) = next_hop(status, &reqwest::Method::POST, &base, "/kept").unwrap();
+            assert_eq!(m, reqwest::Method::POST);
+            assert!(!drop);
+        }
+
+        // Relative Location is joined against the base; fragments are cleared.
+        let (_, u, _) = next_hop(
+            reqwest::StatusCode::FOUND,
+            &reqwest::Method::GET,
+            &base,
+            "page#frag",
+        )
+        .unwrap();
+        assert_eq!(u.as_str(), "https://example.com/page");
+    }
+
+    #[test]
+    fn record_visited_evicts_expired_entries() {
+        let tool = WebTool::new();
+        tool.record_visited("group-a", "nav:https://a.com", "page a", false, "s1");
+
+        // Manually age the entry past the TTL. checked_sub: backdating an
+        // Instant past the monotonic clock's origin panics, so skip the test
+        // on a machine whose clock is younger than the TTL.
+        let Some(aged) = std::time::Instant::now()
+            .checked_sub(VISITED_TTL + std::time::Duration::from_secs(1))
+        else {
+            return;
+        };
+        {
+            let mut guard = tool.visited_pages.lock().unwrap();
+            let entry = guard
+                .get_mut("group-a")
+                .and_then(|g| g.get_mut("nav:https://a.com"))
+                .unwrap();
+            entry.timestamp = aged;
+        }
+        assert!(tool.check_visited("group-a", "nav:https://a.com").is_none());
+
+        // A new insert prunes the expired entry and its now-empty group.
+        tool.record_visited("group-b", "nav:https://b.com", "page b", false, "s2");
+        let guard = tool.visited_pages.lock().unwrap();
+        assert!(!guard.contains_key("group-a"), "expired group should be evicted");
+        assert!(guard.contains_key("group-b"));
     }
 
     #[test]

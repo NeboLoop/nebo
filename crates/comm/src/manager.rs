@@ -245,6 +245,26 @@ impl PluginManager {
         }
     }
 
+    /// The (chat_id, chat_title) an agent-space conversation is bound to.
+    pub async fn chat_for_conv(&self, conv_id: &str) -> Option<(String, String)> {
+        let inner = self.inner.read().await;
+        if let Some(ref active) = inner.active {
+            active.chat_for_conv(conv_id).await
+        } else {
+            None
+        }
+    }
+
+    /// The conversation bound to ONE chat of an agent (per-chat spaces).
+    pub async fn agent_chat_conv_for_slug(&self, slug: &str, chat_id: &str) -> Option<String> {
+        let inner = self.inner.read().await;
+        if let Some(ref active) = inner.active {
+            active.agent_chat_conv_for_slug(slug, chat_id).await
+        } else {
+            None
+        }
+    }
+
     /// Look up the loop_id for an agent_space conversation.
     pub async fn agent_space_loop_id(&self, conv_id: &str) -> Option<String> {
         let inner = self.inner.read().await;

@@ -28,6 +28,17 @@ pub fn spawn(
         // Initial delay to let the server boot
         tokio::time::sleep(Duration::from_secs(10)).await;
 
+        // Re-fire runs that a previous process consumed but never completed.
+        // Must run before the first tick so no live runs have open history rows.
+        recover_interrupted_jobs(
+            &store,
+            &runner,
+            &hub,
+            &workflow_manager,
+            &run_registry,
+            &state,
+        );
+
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
@@ -35,7 +46,7 @@ pub fn spawn(
                 &store,
                 &runner,
                 &hub,
-                &*workflow_manager,
+                &workflow_manager,
                 &run_registry,
                 &state,
             )
@@ -50,10 +61,10 @@ pub fn spawn(
 }
 
 async fn tick(
-    store: &Store,
-    runner: &Runner,
-    hub: &ClientHub,
-    workflow_manager: &dyn tools::workflows::WorkflowManager,
+    store: &Arc<Store>,
+    runner: &Arc<Runner>,
+    hub: &Arc<ClientHub>,
+    workflow_manager: &Arc<dyn tools::workflows::WorkflowManager>,
     run_registry: &RunRegistry,
     state: &AppState,
 ) -> Result<(), String> {
@@ -70,6 +81,11 @@ async fn tick(
     // compared against `Utc::now()` here, that same cron would fire at 7 AM
     // UTC — e.g. 1 AM MDT for an MDT user.
     let now = Local::now();
+
+    // Counts jobs dispatched this tick — used to stagger same-tick starts so
+    // a herd of jobs due at the same minute (e.g. every agent's 9:00 briefing)
+    // ramps up at ~1 job/sec instead of spiking the provider all at once.
+    let mut dispatched: u64 = 0;
 
     for job in &jobs {
         // Normalize schedule at read time — handles stale 5-field expressions in DB
@@ -124,71 +140,172 @@ async fn tick(
             continue; // not yet due
         }
 
-        info!(job = job.name.as_str(), "executing scheduled task");
+        info!(job = job.name.as_str(), "dispatching scheduled task");
 
-        // Record history start
-        let history = store.create_cron_history(job.id).ok();
+        // Consume this occurrence at dispatch time. Jobs run concurrently in
+        // their own tasks, so waiting until completion (the old sequential
+        // behavior) would let the next tick re-fire the same occurrence while
+        // this run is still in flight. The run outcome is recorded separately
+        // via update_cron_job_last_error + history. If the process dies before
+        // the run completes, the startup recovery sweep re-fires it from the
+        // dangling history row.
+        let _ = store.update_cron_job_last_run(job.id, None);
 
-        let (success, output, err_msg) = match job.task_type.as_str() {
-            "bash" | "shell" | "" => execute_shell(&job.command).await,
-            "agent" => execute_agent(runner, hub, job, run_registry, state).await,
-            "workflow" => execute_workflow_task(workflow_manager, &job.command).await,
-            "agent_workflow" | "role_workflow" => {
-                execute_agent_workflow_task(workflow_manager, &store, &job.command).await
-            }
-            other => (
-                false,
-                String::new(),
-                Some(format!("unknown task type: {}", other)),
-            ),
-        };
+        let delay = Duration::from_secs(dispatched);
+        dispatched += 1;
 
-        // Best-effort: update last_run timestamp (non-critical tracking)
-        let _ = store.update_cron_job_last_run(job.id, err_msg.as_deref());
-
-        // Best-effort: update history record (non-critical tracking)
-        if let Some(h) = history {
-            let _ = store.update_cron_history(
-                h.id,
-                success,
-                if output.is_empty() {
-                    None
-                } else {
-                    Some(&output)
-                },
-                err_msg.as_deref(),
-            );
-        }
-
-        // Suppress the OS-level "Nebo" desktop popup when the job already
-        // delivered its response to a channel (Slack/Discord/etc.). The
-        // channel post IS the user-facing notification; firing an additional
-        // desktop alert is duplicate noise that says "test-timer-live-2
-        // completed" — meaningless to a user who just got the real message
-        // in Slack. Non-channel-bound jobs (shell, system workflows) still
-        // get the desktop notification because they have no other surface.
-        let channel_bound = job.agent_id.as_deref().is_some_and(|s| !s.is_empty())
-            && job
-                .channel_ctx_json
-                .as_deref()
-                .is_some_and(|s| !s.is_empty());
-
-        if success {
-            info!(job = job.name.as_str(), "task completed");
-            if !channel_bound {
-                notify_crate::send("Nebo", &format!("{} completed", job.name));
-            }
-        } else {
-            let err = err_msg.as_deref().unwrap_or("unknown");
-            warn!(job = job.name.as_str(), error = err, "task failed");
-            // Always surface failures — even for channel-bound jobs — because
-            // the channel-side delivery itself may have failed and the user
-            // needs to know something went wrong.
-            notify_crate::send("Nebo", &format!("{} failed: {}", job.name, err));
-        }
+        spawn_job_run(
+            store,
+            runner,
+            hub,
+            workflow_manager,
+            run_registry,
+            state,
+            job,
+            delay,
+        );
     }
 
     Ok(())
+}
+
+/// Spawn one job run in its own task: creates the history row, waits out the
+/// stagger `delay`, executes, and records the outcome. Occurrence accounting
+/// (`update_cron_job_last_run`) is the caller's concern — the recovery sweep
+/// re-fires an already-consumed occurrence and must not bump it again.
+#[allow(clippy::too_many_arguments)]
+fn spawn_job_run(
+    store: &Arc<Store>,
+    runner: &Arc<Runner>,
+    hub: &Arc<ClientHub>,
+    workflow_manager: &Arc<dyn tools::workflows::WorkflowManager>,
+    run_registry: &RunRegistry,
+    state: &AppState,
+    job: &db::models::CronJob,
+    delay: Duration,
+) {
+    // Record history start
+    let history = store.create_cron_history(job.id).ok();
+
+    let store = store.clone();
+    let runner = runner.clone();
+    let hub = hub.clone();
+    let workflow_manager = workflow_manager.clone();
+    let run_registry = run_registry.clone();
+    let state = state.clone();
+    let job = job.clone();
+
+    tokio::spawn(async move {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+
+            let (success, output, err_msg) = match job.task_type.as_str() {
+                "bash" | "shell" | "" => execute_shell(&job.command).await,
+                "agent" => execute_agent(&runner, &hub, &job, &run_registry, &state).await,
+                "workflow" => execute_workflow_task(&*workflow_manager, &job.command).await,
+                "agent_workflow" | "role_workflow" => {
+                    execute_agent_workflow_task(&*workflow_manager, &store, &job.command).await
+                }
+                other => (
+                    false,
+                    String::new(),
+                    Some(format!("unknown task type: {}", other)),
+                ),
+            };
+
+            // Best-effort: record run outcome (non-critical tracking)
+            let _ = store.update_cron_job_last_error(job.id, err_msg.as_deref());
+
+            // Best-effort: update history record (non-critical tracking)
+            if let Some(h) = history {
+                let _ = store.update_cron_history(
+                    h.id,
+                    success,
+                    if output.is_empty() {
+                        None
+                    } else {
+                        Some(&output)
+                    },
+                    err_msg.as_deref(),
+                );
+            }
+
+            // Suppress the OS-level "Nebo" desktop popup when the job already
+            // delivered its response to a channel (Slack/Discord/etc.). The
+            // channel post IS the user-facing notification; firing an additional
+            // desktop alert is duplicate noise that says "test-timer-live-2
+            // completed" — meaningless to a user who just got the real message
+            // in Slack. Non-channel-bound jobs (shell, system workflows) still
+            // get the desktop notification because they have no other surface.
+            let channel_bound = job.agent_id.as_deref().is_some_and(|s| !s.is_empty())
+                && job
+                    .channel_ctx_json
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty());
+
+            if success {
+                info!(job = job.name.as_str(), "task completed");
+                if !channel_bound {
+                    notify_crate::send("Nebo", &format!("{} completed", job.name));
+                }
+            } else {
+                let err = err_msg.as_deref().unwrap_or("unknown");
+                warn!(job = job.name.as_str(), error = err, "task failed");
+                // Always surface failures — even for channel-bound jobs — because
+                // the channel-side delivery itself may have failed and the user
+                // needs to know something went wrong.
+                notify_crate::send("Nebo", &format!("{} failed: {}", job.name, err));
+            }
+        });
+}
+
+/// Startup recovery sweep: re-fire jobs whose last dispatch never recorded an
+/// outcome. last_run is consumed at dispatch time, so a process death between
+/// dispatch and completion would otherwise silently lose that occurrence
+/// (at-most-once). Runs once, before the first tick, so no live runs can have
+/// open history rows. Does NOT bump last_run — the occurrence was already
+/// consumed by the original dispatch.
+fn recover_interrupted_jobs(
+    store: &Arc<Store>,
+    runner: &Arc<Runner>,
+    hub: &Arc<ClientHub>,
+    workflow_manager: &Arc<dyn tools::workflows::WorkflowManager>,
+    run_registry: &RunRegistry,
+    state: &AppState,
+) {
+    let jobs = match store.list_interrupted_cron_jobs() {
+        Ok(jobs) => jobs,
+        Err(e) => {
+            warn!("failed to list interrupted cron jobs: {}", e);
+            return;
+        }
+    };
+
+    // Close ALL dangling rows (even ones older than the re-fire window) so
+    // history reads as failed instead of forever pending.
+    match store.close_interrupted_cron_history() {
+        Ok(n) if n > 0 => info!(rows = n, "closed interrupted cron history rows"),
+        Ok(_) => {}
+        Err(e) => warn!("failed to close interrupted cron history: {}", e),
+    }
+
+    for (i, job) in jobs.iter().enumerate() {
+        info!(
+            job = job.name.as_str(),
+            "re-firing cron job interrupted by restart"
+        );
+        spawn_job_run(
+            store,
+            runner,
+            hub,
+            workflow_manager,
+            run_registry,
+            state,
+            job,
+            Duration::from_secs(i as u64),
+        );
+    }
 }
 
 async fn execute_shell(command: &str) -> (bool, String, Option<String>) {

@@ -227,7 +227,11 @@ impl ExtensionBridge {
             return Err("Chrome extension not connected".to_string());
         }
 
-        // Find the connection matching the default browser, or fall back to any
+        // Find the connection matching the default browser, or fall back to any.
+        // Among matches, prefer the OLDEST connection (lowest id): HashMap order is
+        // arbitrary, and a transient second relay from the same browser (e.g. the
+        // options page's connection test) must never steal routing from the
+        // long-lived one — requests sent to it are dropped and time out at 60s.
         let default = self
             .default_browser
             .lock()
@@ -235,9 +239,11 @@ impl ExtensionBridge {
             .clone()
             .unwrap_or_default();
         let target = conns
-            .values()
-            .find(|c| !default.is_empty() && c.browser.contains(&default))
-            .or_else(|| conns.values().next());
+            .iter()
+            .filter(|(_, c)| !default.is_empty() && c.browser.contains(&default))
+            .min_by_key(|(id, _)| **id)
+            .or_else(|| conns.iter().min_by_key(|(id, _)| **id))
+            .map(|(_, c)| c);
 
         let tx = match target {
             Some(conn) => conn.tx.clone(),
@@ -339,10 +345,14 @@ impl ExtensionBridge {
             .await
             .clone()
             .unwrap_or_default();
+        // Same oldest-matching-connection rule as execute() — never route to a
+        // transient second relay (see comment there).
         let target = conns
-            .values()
-            .find(|c| !default.is_empty() && c.browser.contains(&default))
-            .or_else(|| conns.values().next());
+            .iter()
+            .filter(|(_, c)| !default.is_empty() && c.browser.contains(&default))
+            .min_by_key(|(id, _)| **id)
+            .or_else(|| conns.iter().min_by_key(|(id, _)| **id))
+            .map(|(_, c)| c);
 
         let tx = match target {
             Some(conn) => conn.tx.clone(),

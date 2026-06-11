@@ -38,7 +38,7 @@ This document covers the full browser automation pipeline in the Rust rewrite: e
 
 ## 1. Architecture Overview
 
-Extension-backed browser automation uses a **four-hop relay chain**. The agent never talks to Chrome directly in this path — everything flows through the Chrome extension's native messaging bridge. If the extension is not connected and `agent-browser` is installed, `ActionExecutor` falls back to the headless path described in [Headless Fallback](#25-headless-fallback).
+Extension-backed browser automation uses a **four-hop relay chain**. The agent never talks to Chrome directly in this path — everything flows through the Chrome extension's native messaging bridge. If the extension is unavailable (or fails mid-call with a transport error), `ActionExecutor` fails over per-call to the built-in CDP browser (Obscura) described in [Headless Fallback](#25-headless-fallback).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
@@ -353,8 +353,9 @@ pub struct ExtensionBridge {
     default_browser: Arc<Mutex<Option<String>>>,
     /// Timestamp of last active connection (for grace period on reconnect).
     last_connected: Arc<Mutex<Option<Instant>>>,
-    /// Single-slot cache for read_page results (2.5s TTL).
-    page_cache: Arc<Mutex<Option<PageCacheEntry>>>,
+    /// Per-session cache for read_page results (2.5s TTL), keyed by
+    /// session_id (or "_default") so concurrent sub-agents don't share pages.
+    page_cache: Arc<Mutex<HashMap<String, PageCacheEntry>>>,
 }
 ```
 
@@ -387,8 +388,8 @@ Returns true if connected OR if `last_connected` is within the given duration. U
 Polls `is_connected()` every 100ms up to the timeout. Used by WebTool to wait for reconnection.
 
 **`execute(tool, args, session_id) -> Result<Value, String>`**
-1. Return cached `read_page` if it is younger than 2.5s
-2. Invalidate the cache before mutation tools (`click`, `navigate`, `evaluate`, tab actions, etc.)
+1. Return this session's cached `read_page` if it is younger than 2.5s
+2. Invalidate this session's cache entry before mutation tools (`click`, `navigate`, `evaluate`, tab actions, etc.)
 3. Lock connections, find one matching default browser (or fall back to any)
 4. Clone the target connection's `tx` channel
 5. Assign request ID, create oneshot channel, store in pending
@@ -419,25 +420,29 @@ pub struct ToolRequest {
 
 ## 7. ActionExecutor
 
-**File:** `crates/browser/src/executor.rs`
+**File:** `crates/browser/src/executor.rs` (249 lines)
 
-Thin wrapper around `ExtensionBridge` plus optional headless fallback. Used by `WebTool` to execute browser actions.
+ONE entry point with an ordered backend fallback: tier 1 = the user's Chrome extension (authenticated, human session), tier 2 = the built-in Rust Chrome (Obscura) driven over CDP via `CdpBridge`. Tier 3 (direct HTTP) lives in the caller (`web_tool`).
 
 ```rust
 pub struct ActionExecutor {
     bridge: Arc<ExtensionBridge>,
-    headless: Option<Arc<HeadlessBridge>>,
+    cdp: Option<Arc<CdpBridge>>,
 }
 ```
 
-- `is_connected()`: true if extension is connected or headless backend is available
-- `extension_connected()`: true only for the Chrome extension path
-- `headless_available()`: true if `agent-browser` was detected
-- `was_recently_connected(within)`: true if extension recently connected or headless exists
-- `wait_for_connection(timeout)`: waits for extension unless headless exists
-- `execute(tool, args, session_id)`: routes to extension first; otherwise routes to headless; returns `ExtensionNotConnected` if neither exists
-- `batch_execute(actions, opts, session_id)`: extension uses one round-trip; headless executes sequentially
+**Failover is per-call and transport-gated:** if the extension errors, `is_transport_failure()` decides whether to retry on CDP. Only disconnect/timeout/"not connected"/"native host"/"no browser" errors fail over — tool-level errors (element not found, page too big, frame error) mean the extension is working and are surfaced to the agent instead of spawning a blank CDP page.
+
+- `is_connected()`: true if extension is connected OR the CDP backend exists
+- `extension_connected()`: true only for the Chrome extension path (tier 1)
+- `cdp_available()`: true if the built-in CDP backend exists (tier 2)
+- `was_recently_connected(within)`: true if extension recently connected or CDP exists
+- `wait_for_connection(timeout)`: returns true immediately if CDP exists, else waits for the extension
+- `execute(tool, args, session_id)`: extension first; on transport failure retries the same action on CDP; `ExtensionNotConnected` if neither backend exists
+- `batch_execute(actions, opts, session_id)`: extension batches in one round-trip; CDP runs the batch sequentially (`cdp_batch`, honoring `stop_on_error`)
 - `click_and_read`, `fill_and_read`, `navigate_and_read`: convenience batches for common flows
+- `send_command(command, session_id)`: fire-and-forget to the extension (indicators)
+- `close_session(session_id)`: canonical cleanup for a finished sub-agent — sends `hide_indicators` + `close_session_tabs` to the extension AND closes the CDP session page; each side is a no-op if it never served the session
 
 ---
 
@@ -684,68 +689,78 @@ Helpers for web storage manipulation via CDP evaluate:
 
 ## 16. WebTool Integration
 
-**File:** `crates/tools/src/web_tool.rs` (1,026 lines)
+**File:** `crates/tools/src/web_tool.rs` (~2,700 lines)
 
-The `web` domain tool handles four resource types: `http`, `search`, `browser`, `devtools`.
+The `web` domain tool handles four resource types: `http`, `search`, `browser`, `devtools`. The `resource` param is primary (auto-corrected via `auto_correct_resource`); when absent, `infer_resource(action)` derives it.
 
 ### 16.1 Resource Routing
 
 ```
 action → infer_resource():
-├─ fetch, get, post, put, delete, head, sanitize, patch → "http"
-├─ search, query → "search"
-├─ navigate, read_page, click, double_click, triple_click, right_click,
-│  fill, form_input, type, screenshot, evaluate, launch, close,
-│  list_pages, list_tabs, new_tab, close_tab, back, go_back, forward,
-│  go_forward, reload, scroll, scroll_to, hover, select, press, key,
-│  wait, drag, status, text, snapshot → "browser"
-└─ console, source, storage, dom, cookies, performance → "devtools"
+├─ fetch, sanitize → "http"
+├─ search → "search"
+├─ navigate, read_page, click, fill, type, screenshot, evaluate,
+│  list_tabs, new_tab, close_tab, history, scroll, hover, select,
+│  press, wait, drag, status, read_console_messages,
+│  read_network_requests, resize_window, file_upload, find,
+│  fill_form, browser_batch → "browser"
+└─ console → "devtools"
 ```
+
+There are NO aliases (no `get`/`post`/`snapshot`/`back`/`key` etc.) — one canonical action name per operation. `back`/`forward` are `history` with `direction`; click variants are `click` with `click_count`/`button` params.
 
 ### 16.2 Browser Action Routing
 
 ```
-web(action: "navigate", url: "...")
-  → infer_resource("navigate") returns "browser"
+web(resource: "browser", action: "navigate", url: "...")
   → handle_browser(input)
     → Check manager exists (Option<Arc<Manager>>)
-    → "status" action works even disconnected
-    → Get executor: manager.executor()
-    → Check executor.is_connected()
-    → If disconnected but was_recently_connected(3s):
-        → wait_for_connection(3s) — poll 100ms intervals
-        → If still not connected: "Browser extension reconnecting — try again in a moment"
-    → If disconnected and NOT recently connected:
-        → "Browser extension not connected. Install the Nebo Chrome/Brave extension..."
-    → handle_browser_via_extension(executor, action, input)
+    → executor = manager.executor() — single source of truth for backend state
+    → "status" works even disconnected: reports both Extension and
+      Built-in Chrome (CDP) availability from the executor
+    → If extension not connected: broadcast browser_extension_disconnected
+      (install nudge) — even when CDP is carrying the work
+    → If executor.is_connected() false:
+        → was_recently_connected(3s)? → wait_for_connection(3s)
+          → still down: "Browser extension reconnecting — try again in a moment."
+        → else: "No browser backend available. Connect the Nebo Chrome/Brave extension."
+    → navigate pre-checks:
+        → binary-file URLs (.pdf/.docx/.zip/…) are SKIPPED (would only trigger
+          a download + OS save dialog); agent is told to find an HTML page
+        → visited-page cache: a URL navigated within the last 5 min (by this
+          session OR a sibling subagent in the same group) returns the cached
+          page; `fresh: true` bypasses the cache for a deliberate reload
+    → handle_browser_via_extension(executor, action, input, session_id)
 ```
+
+**Cross-subagent caches:** `visited_pages` (group-keyed by parent session; navigate results + search results, 5-min TTL, expired entries evicted on insert) and `nav_history` (per-session origin visit counts with last-visit timestamps; sessions idle >1h pruned on insert). Navigating the same origin ≥3 times appends a loop-detection warning telling the agent to change approach.
 
 ### 16.3 Action Name Mapping
 
-| Web Tool Action | Extension Tool |
-|----------------|---------------|
-| `snapshot`, `read_page` | `read_page` |
-| `navigate` | `navigate` |
-| `click` | `click` |
-| `double_click` | `double_click` |
-| `triple_click` | `triple_click` |
-| `right_click` | `right_click` |
-| `hover` | `hover` |
-| `fill`, `form_input` | `form_input` |
-| `type` | `type` |
-| `select` | `select` |
-| `screenshot` | `screenshot` |
-| `scroll` | `scroll` |
-| `scroll_to` | `scroll_to` |
-| `press`, `key` | `press` |
-| `drag` | `drag` |
-| `back`, `go_back` | `go_back` |
-| `forward`, `go_forward` | `go_forward` |
-| `wait` | `wait` |
-| `evaluate` | `evaluate` |
-| `list_tabs` | `list_tabs` |
-| `new_tab` | `new_tab` (requires non-empty URL) |
-| `close_tab`, `close` | `close_tab` |
+`map_action_to_tool()` accepts canonical model actions ONLY — variants are resolved from params by the caller, never as aliases:
+
+| Web Tool Action | Extension Tool | Resolution |
+|----------------|---------------|------------|
+| `read_page` | `read_page` | |
+| `navigate` | `navigate` | |
+| `click` | `click` / `double_click` / `triple_click` / `right_click` | from `click_count` (2/3) and `button: "right"` |
+| `hover` | `hover` | |
+| `fill` | `form_input` | |
+| `type` | `type` | |
+| `select` | `select` | |
+| `screenshot` | `screenshot` | |
+| `scroll` | `scroll` / `scroll_to` | `scroll_to` when `ref` present and no `direction` |
+| `press` | `press` | |
+| `drag` | `drag` | |
+| `history` | `go_back` / `go_forward` | from `direction` (default back) |
+| `wait` | `wait` | |
+| `evaluate` | `evaluate` | |
+| `list_tabs` / `new_tab` / `close_tab` | same | `new_tab` requires a non-empty URL |
+| `read_console_messages` / `read_network_requests` / `resize_window` | same | |
+| `file_upload` | `file_upload` | |
+| `find` | `find` | |
+| `fill_form` | (expands to a batch) | per text field: `click` → `press(SELECT_ALL_KEY)` → `type`; non-string values use `form_input`. `SELECT_ALL_KEY` is `cmd+a` on macOS, `ctrl+a` elsewhere (compile-time cfg) |
+| `browser_batch` | (multiple, one round trip) | each item mapped via `map_action_to_tool`; stops on first error |
 
 ### 16.4 Argument Forwarding
 
@@ -753,52 +768,64 @@ web(action: "navigate", url: "...")
 
 | Action | Forwarded Keys |
 |--------|---------------|
-| `navigate`, `new_tab` | `url` |
-| `click`, `double_click`, `triple_click`, `right_click` | `ref`, `selector`, `coordinate`, `x`, `y`, `modifiers` |
-| `hover` | `ref`, `coordinate`, `x`, `y` |
-| `fill`, `form_input` | `ref`, `selector`, `value` |
+| `navigate` | `url`, `force` |
+| `new_tab` | `url` |
+| `click` | `ref`, `selector`, `coordinate`, `modifiers`, `click_count`, `button` |
+| `hover` | `ref`, `coordinate` |
+| `fill` | `ref`, `selector`, `value` |
 | `type` | `text` |
 | `select` | `ref`, `selector`, `value` |
-| `scroll` | `direction`, `amount`, `scroll_direction`, `scroll_amount`, `coordinate` |
-| `scroll_to` | `ref` |
-| `press`, `key` | `key`, `text`, `repeat` |
+| `scroll` | `direction`, `amount`, `coordinate`, `ref` |
+| `press` | `key`, `text`, `repeat` |
 | `drag` | `start_coordinate`, `coordinate` |
-| `wait` | `ms`, `duration` |
+| `wait` | `ms` |
 | `evaluate` | `expression`, `text` |
 | `read_page` | `filter`, `depth`, `maxChars`, `refId` |
-| DevTools actions | `url`, `selector`, `expression`, `filter` |
+| `close_tab` | `tabId`, `tabIds` |
+| `read_console_messages` | `onlyErrors`, `clear`, `pattern`, `limit` |
+| `read_network_requests` | `urlPattern`, `clear`, `limit` |
+| `resize_window` | `width`, `height` |
+| `file_upload` | `paths`, `ref` |
+| `find` | `query` |
+
+Note `fresh` (navigate cache bypass) is consumed by the Rust side and never forwarded.
 
 ### 16.5 DevTools Resource
 
-Maps user-facing actions to extension tool names:
-
 | Action | Extension Tool | Status |
 |--------|---------------|--------|
-| `console` | `read_console_messages` | Working. `filter` param translated to `pattern` |
-| `source` | — | Not yet implemented (returns clear error) |
-| `storage` | — | Not yet implemented (returns clear error) |
-| `dom` | — | Not yet implemented (returns clear error) |
-| `cookies` | — | Not yet implemented (returns clear error) |
-| `performance` | — | Not yet implemented (returns clear error) |
+| `console` | `read_console_messages` | Working. `filter` param translated to `pattern`; also forwards `onlyErrors`, `clear`, `limit` |
+| anything else | — | "Unknown devtools action '<a>'. Available: console" |
+
+(Network inspection is a browser-resource action: `read_network_requests`.)
 
 ### 16.6 HTTP Resource
 
-- Methods: GET, POST, PUT, DELETE, HEAD, PATCH
-- Custom headers support, body support
-- `sanitize` action: extracts visible text, chunks for LLM (default 4000 chars, configurable via `chunk_size`)
-- SSRF protection: blocks private IPs (localhost, 127.*, 0.*, 10.*, 172.16-31.*, 192.168.*, [::1], 169.254.*)
-- Response bodies >50KB shown in 20KB chunks with offset pagination
-- HTML responses auto-stripped of tags for readability
+- Methods: GET, POST, PUT, DELETE, HEAD, PATCH (one `method` param)
+- Custom headers and body support
+- `sanitize` action: extracts visible text, chunks for LLM (default 4000 chars, configurable via `chunk_size`, paged by `offset`)
+- **SSRF guard (`check_url_allowed`)**: proper URL parse (`url` crate — canonicalizes hex/decimal/short IPv4 forms), http/https schemes only, IP literals classified by `is_public_ip` (loopback, RFC1918, link-local, CGNAT 100.64/10, 192.0.0.0/24, ≥240/4, unspecified/broadcast; IPv6 loopback/unspecified/unique-local/link-local/multicast; v4-mapped unwrapped via `to_canonical`), hostnames DNS-resolved and rejected if ANY address is non-public, fails closed on parse/resolve errors
+- **Redirects followed manually** (`fetch_checked`, ≤5 hops via a non-redirecting `bare_client`): the full SSRF check (including DNS) re-runs on EVERY hop; reqwest-matching semantics (303→GET, 301/302 POST→GET, 307/308 preserve; credentials stripped on cross-host hops; body headers dropped with the body). Accepted residual risk: DNS-rebinding TOCTOU (single-user desktop threat model — documented in code)
+- HTML responses return sanitized visible text; large results spill: first 15K chars inline + full text saved to `<data>/tmp/web/*.txt` for paging via `os(read)` — never a silent cut
+- Non-HTML bodies >50KB shown raw in 20KB chunks with `offset` pagination
 
 ### 16.7 Search Resource
 
-BYOK providers checked in order:
-1. `search-brave` (Brave Search API, X-Subscription-Token header)
-2. `search-tavily` (Tavily API, key in JSON body)
-3. `search-google` (Google CSE, key + cx params)
-4. `search-serpapi` (SerpAPI, key as query param)
+Fallback chain (first non-empty result wins):
+1. **BYOK API providers** from `auth_profiles`, in order: `search-brave`, `search-tavily`, `search-google` (needs `cx` in metadata), `search-serpapi`
+2. **Browser-based search** when a backend is connected — human flow on BOTH tiers (extension AND Obscura/CDP):
+   - **Extension tier** (`search_via_browser_human`): navigate to the `search.brave.com` HOMEPAGE, find the search box on the interactive ref snapshot, then click → type → Enter in one batch.
+   - **CDP/Obscura tier** (`search_via_cdp_human`): same homepage → click → type → Enter, but the headless tier has no ref surface so the search box is located by CSS selector; the CDP tier's humanized `click` resolves it to a center coordinate. **This closes the gap that got Obscura bot-flagged** — the headless path no longer constructs `?q=` URLs.
+   - Both tiers synthesize curved mouse paths, human click durations (50–110ms hold), and irregular typing cadence (35–110ms). Neither constructs a `?q=` results URL — that's the automation signature that flags IPs.
+   - **URL flow** remains only as the last-resort fallback when the human flow misses (navigate `search.brave.com/search?q=…` directly — NOT DDG, whose html endpoint bot-blocks real browsers too).
+   All paths require ≥2 extracted links — 0–1 means a block/consent/still-loading page, which falls through instead of returning junk.
+3. **DuckDuckGo HTML scraping** — 8s per-request budget (fail-fast; a blocked engine hangs rather than failing)
+4. **Brave HTML scraping** — own 8s budget, chained when DDG times out, errors, or yields nothing. The floor of the chain; its failure message is honest about all engines being unreachable
 
-Fallback: Brave HTML scraping (no API key needed).
+Supporting behavior:
+- `normalize_search_query()`: strips stacked `site:` filters (2+ = spam pattern) and clamps to 400 chars at a word boundary — keyword engines reject long operator-stuffed queries
+- `extract_search_links()`: ONE generic results extractor for all engines (harvests external `<a href>` + anchor text, decodes DDG `uddg=` redirects, drops engine/social/nav hosts, dedups by normalized URL) — no per-engine selectors to rot
+- Search results are cached in the cross-subagent `visited_pages` cache (key `search:<query>`, 5-min TTL) so siblings and repeat queries don't re-search
 
 ### 16.8 Resource Permissions
 
@@ -806,15 +833,25 @@ Fallback: Brave HTML scraping (no API key needed).
 - `http` and `search`: No resource lock (parallelizable)
 - `requires_approval`: true for all WebTool calls
 
-### 16.9 Error Messages
+### 16.9 Agent Ergonomics (post-action behavior)
+
+- **Auto-snapshot**: every mutation action (navigate, click, type, fill, select, press, scroll, drag, hover, file_upload, history) appends a compact interactive-elements page snapshot (≤6,000 chars) — the model never needs a follow-up read_page
+- **Auto-screenshot** after navigate (attached as image)
+- **read_page char-limit retry ladder**: on "character limit" errors retries with depth 5 → depth 3 → filter interactive (maxChars 50000)
+- **Large reads spill**: read_page/evaluate results >15K chars return a preview + full text written to a file
+- **Auth-page detection** (`detect_auth_page`, two-signal threshold): warns the agent not to attempt logins
+- **Error-page detection** (`detect_error_page`): flags 404/5xx pages and suggests search instead
+- **Friendly errors** (`friendly_browser_error`): maps raw browser errors to recovery suggestions
+
+### 16.10 Error Messages
 
 | Condition | Error |
 |-----------|-------|
 | No browser manager | "Browser automation is not available. Use web(action: \"fetch\"...)" |
-| Extension disconnected, recently connected | "Browser extension reconnecting — try again in a moment." |
-| Extension disconnected, not recent | "Browser extension not connected. Install the Nebo Chrome/Brave extension..." |
+| Backend down, recently connected | "Browser extension reconnecting — try again in a moment." |
+| No backend at all | "No browser backend available. Connect the Nebo Chrome/Brave extension." |
 | Unsupported action | Lists all available actions |
-| new_tab without URL | "new_tab requires a URL." |
+| new_tab without URL | "new_tab requires a URL. Use navigate to change the current tab..." |
 
 ---
 
@@ -958,9 +995,11 @@ The result is attached as `{ text: "...", screenshot: { data, format } }` alongs
 
 ### 18.4 Domain Drift Security
 
-Tools that interact with page content (`click`, `hover`, `form_input`, `type`, `evaluate`, `file_upload`) perform a domain drift check before execution. This verifies the tab is still on the same origin as when the action was initiated, preventing the agent from accidentally interacting with a wrong page after redirects or navigation. If the origin has changed, the tool returns a security error.
+Tools that interact with page content (`click`, `hover`, `form_input`, `type`, `press`, `scroll_to`, `drag`, `evaluate`, `file_upload`) perform a domain drift check before execution: the tab's current origin is compared against the origin recorded at the last successful `read_page`/`find` (`snapshotOrigins` per tab) — i.e. the page the agent actually saw when its refs were issued. On mismatch the tool returns a security error telling the agent to `read_page` first. Agent-initiated transitions (`navigate`, `go_back`, `go_forward`, `new_tab`) clear the recorded origin until the next read. (Until 2026-06-11 this check fetched the tab URL immediately before comparing — a no-op.)
 
 ### 18.5 Element Reference Resolution
+
+Refs are **stable**: a reverse `WeakMap` (`window.__neboElementToRef`) gives an element the same `ref_N` across tree rebuilds, the counter never resets, and live entries survive rebuilds (dead WeakRefs are pruned). A ref from an older `read_page` stays valid while its element lives — auto-snapshot rebuilds can no longer silently renumber.
 
 The extension uses a two-tier element resolution system:
 
@@ -1041,7 +1080,8 @@ Convenience constructors: `ok()`, `pong()`, `connected()`, `error_msg()`, `tool_
 | Relay WS connection backoff | 500ms → 5s (10 attempts) | `cli/main.rs`, `src-tauri/main.rs` |
 | Extension reconnect | 2 seconds | sibling `chrome-extension/src/native.ts` |
 | Extension keep-alive alarm | 24 seconds | sibling `chrome-extension/src/background.ts` |
-| `read_page` cache TTL | 2.5 seconds | `extension_bridge.rs`, `headless_bridge.rs` |
+| `read_page` cache TTL (per session) | 2.5 seconds | `extension_bridge.rs` |
+| CDP new_page / navigate / evaluate | 30s / 45s / 20s | `cdp_bridge.rs` |
 | Debugger attach timeout | **8 seconds** | sibling `chrome-extension/src/tools.ts` (`DEBUGGER_ATTACH_TIMEOUT`) |
 | Content-script execution timeout | 45 seconds | sibling `chrome-extension/src/tools.ts` (`EXECUTE_SCRIPT_TIMEOUT`) |
 | CDP command timeout | 30 seconds | sibling `chrome-extension/src/tools.ts` (`CDP_COMMAND_TIMEOUT`) |
@@ -1050,6 +1090,7 @@ Convenience constructors: `ok()`, `pong()`, `connected()`, `error_msg()`, `tool_
 | Page load wait helper | 15 seconds | sibling `chrome-extension/src/tools.ts` (`waitForTabLoad`) |
 | CDP port wait (Chrome launch) | 15 seconds (200ms poll) | `chrome.rs` |
 | HTTP client timeout | 30 seconds | `web_tool.rs` |
+| Search scrape budget (DDG, Brave — each) | 8 seconds | `web_tool.rs` (`SCRAPE_TIMEOUT`) |
 | Options page connection test | 3 seconds | sibling `chrome-extension/src/options.ts` |
 | Indicator hide animation | ~350ms | sibling `chrome-extension/src/content/visual-indicator.ts` |
 | Agent tab/group cleanup delay | ~200ms | sibling `chrome-extension/src/native.ts` |
@@ -1160,7 +1201,7 @@ Called from `NativeHost.execute_tool()` only (the direct desktop path). The exte
 
 ### 23.1 Page Load Timing on Complex Pages
 
-**Issue:** Navigation to heavy pages (e.g., SPAs that load async content) can return before all client-side content has settled. The bridge timeout is now 60s, and extension-side helpers wait for tab load, but that still does not guarantee every async render or API call has finished. Agents should `read_page`, and if content is incomplete, `wait` briefly and read again.
+**Status: largely fixed extension-side (verified 2026-06-11).** `navigate` waits `waitForTabLoad` (status `complete`, 15s cap) **plus** `waitForDomStable` (MutationObserver, 500ms quiet / 3s cap); departures from restricted origins (chrome://, chrome-extension://) use `waitForNavigationCycle` (loading→complete) to dodge the stale-`complete` race (`tools.ts:148–213, 1386–1404`). Mutation actions additionally get `waitForNetworkIdle` (fetch/XHR monkey-patch, 500ms quiet / 5s cap) + DOM-stable before their post-action snapshot. The residual stale-`complete` race lives ONLY in the `new_tab` session-reuse path (`native.ts:286–294`), which skips all of this (see 23.10). Truly async late renders can still slip through — agents should `wait` + re-read when content looks partial.
 
 ### 23.2 Manifest Path Staleness
 
@@ -1190,7 +1231,47 @@ This is Chrome's error when trying to execute scripts on restricted pages: `chro
 
 The `detect_default_browser()` function only works on macOS (reads LSHandlers). On Linux and Windows, it falls back to "unknown", which means tool requests go to any available connection rather than the user's default browser. Not a problem when only one browser runs the extension.
 
-### 23.9 DevTools Tool Coverage
+### 23.9 Extension Bugs Found in the 2026-06-11 Audit (extension repo — open)
+
+Verified against `~/workspaces/nebo/chrome-extension` source; host-side halves are fixed in this repo (see 23.11):
+
+| # | Bug | Where | Severity |
+|---|-----|-------|----------|
+| 1 | ~~`evaluate` returns a BARE JSON string instead of `{text}`~~ **FIXED 2026-06-11** — now wraps in `{text}` (host tolerates both shapes for old extension builds) | `tools.ts` evaluate | critical (was: broke browser search) |
+| 2 | ~~`capturePostActionScreenshot` has no size cap~~ **FIXED 2026-06-11** — oversized captures dropped at `MAX_BASE64_CHARS`; relay bound also raised host-side | `tools.ts` | major |
+| 3 | ~~Stale element refs silently REBIND to wrong elements~~ **FIXED 2026-06-11** — refs are now STABLE: reverse `WeakMap` (`__neboElementToRef`) keeps the same number per element across rebuilds; counter never resets; dead WeakRefs pruned per rebuild. `resolveRef`'s re-snapshot retry is now sound | `accessibility-tree.ts` | major |
+| 4 | ~~Domain-drift security check is a no-op~~ **FIXED 2026-06-11** — origin is recorded per tab at `read_page`/`find` success (`snapshotOrigins`) and compared at action time; agent-initiated transitions (navigate/back/forward/new_tab) clear it until the next read_page | `tools.ts` | major |
+| 5 | ~~`getClickablePointViaCDP` reads the map from the wrong JS world~~ **FIXED 2026-06-11** — marks the element with a unique attribute from the isolated world (the DOM is shared), queries it from the main world for the objectId, `DOM.getContentQuads` path now actually runs; marker cleaned up in `finally` | `tools.ts` | major |
+| 6 | ~~Post-action screenshots include the agent glow/Stop-button overlay~~ **FIXED 2026-06-11** — inner `SHOW_AFTER_TOOL_USE` removed from `clickTool`; the `handleToolRequest`/`handleBatchRequest` finally restores indicators after the screenshot | `tools.ts` | major |
+| 7 | ~~Hi-DPI coordinate clicks from post-action screenshots land wrong~~ **FIXED 2026-06-11** — `capturePostActionScreenshot` now uses the same probe → `calcOptimalDimensions` → clip/scale capture pipeline as the explicit screenshot tool AND updates `screenshotContexts`, so `transformCoords` always has the matching context | `tools.ts` | major |
+| 8 | ~~`press` false success~~ **FIXED 2026-06-11** — unmapped multi-char keys and chords with unmapped mains now return errors (single literal characters still insert as text) | `tools.ts` | major |
+| 9 | ~~`new_tab` session-reuse path skips navigate's protections~~ **FIXED 2026-06-11** — the reuse path now routes through the `navigate` tool implementation (URL normalization, beforeunload handling, navigation-cycle wait). This was the race behind the live junk-result incident | `native.ts` | major |
+| 10 | ~~Options-page relay hijacks routing~~ **MITIGATED host-side 2026-06-11** — `extension_bridge` now routes to the OLDEST matching connection (lowest id) in both `execute` and `batch_execute`, so a transient second relay can never steal requests | `extension_bridge.rs` | minor |
+| 11 | ~~`MAC_COMMANDS` chord lookup order-sensitive; no cmd→ctrl on Win/Linux~~ **FIXED 2026-06-11** — `getMacCommands` canonicalizes aliases + modifier order; `pressKeyChord` maps cmd/command/meta/win → ctrl on non-Mac platforms (models freelance "cmd+a" everywhere; Meta+A is a no-op outside macOS) | `tools.ts` | minor |
+| 12 | ~~Service-worker restarts lose module state~~ **FIXED 2026-06-11** — `neboGroupId` and `screenshotContexts` persist to `chrome.storage.session` and restore on SW startup (group existence verified before reuse). Console/network buffers intentionally NOT persisted: transient diagnostics, not worth per-event write amplification | `native.ts`, `tools.ts` | minor |
+| 13 | ~~Network log wiped by cross-origin subframes; `loadingFailed` fabricates 503~~ **FIXED 2026-06-11** — bucket resets only on main-frame `Page.frameNavigated`; failures record `error: <errorText>` and render as `failed (<reason>)` instead of a fake status | `tools.ts` | minor |
+
+### 23.10 new_tab Reuse Race
+
+See 23.9 #9 — the `chrome.tabs.update(url)` + `waitForTabLoad` reuse path resolves instantly on the OLD page's `complete` status when the session tab sits on `blank.html`. Fix is to route the reuse path through the `navigate` tool implementation.
+
+### 23.11 Host-Side Fixes Landed 2026-06-11
+
+- `search_via_browser` accepts the extension's bare-string `evaluate` result (`v.as_str()` fallback) AND the CDP backend's `{text}` shape — browser-tier search now functional on both tiers.
+- `CdpBridge` gained `evaluate` support (was navigate + read_page only — tier-2 browser search could never work).
+- Search fallback chain consolidated in `handle_search`: `search_via_browser` returns errors instead of running its own uncapped scrape chain; DDG and Brave scrape requests each get an 8s budget (a hanging DDG no longer eats Brave's chance).
+- Screenshot results route to `image_url` via `extract_screenshot_b64` (nested mutation shape AND flat screenshot-tool shape) — previously the explicit `screenshot` action pretty-printed up to 1.4 MB of base64 into model text with no image, and navigate's auto-screenshot never attached.
+- Relay extension→server size bound raised 1 MB → 64 MB (Chrome's 1 MB cap is host→extension only; screenshots and outerHTML evaluate results legitimately exceed 1 MB — overflow used to kill the bridge and time out every pending tool).
+- Navigate loop-warning text now advertises `wait(ms: 3000)` (matches the schema; `duration` was never forwarded).
+- **Browser-tier search engine switched DDG → Brave** (`search_via_browser` navigates `search.brave.com`): live verification showed html.duckduckgo.com serves its bot-block page even to real browsers (extension AND built-in), so every browser-tier search burned 20–45s for nothing before falling back. Brave returns real results even from flagged IPs.
+- Extension fixes landed in the sibling repo (`tools.ts`, built to `dist/`, **requires reloading the unpacked extension in Chrome**): evaluate wraps in `{text}`, post-action screenshots capped at `MAX_BASE64_CHARS`, inner indicator-restore removed so screenshots no longer show the agent glow.
+- **Human input synthesis in the extension** (`tools.ts`): clicks travel a curved, eased, jittered mouse path from the last pointer position (`humanMouseMove`, 4–18 steps) with 50–110ms press durations (was: teleport + 12ms click); typing has irregular 35–110ms inter-key cadence (compressed 4× for >200-char texts). These timing patterns are primary bot-detection signals — zero-delta keystrokes and mouse teleports are what got the IP flagged.
+- **Human-flow search** (`search_via_browser_human`): extension-tier search now lands on the Brave homepage and clicks/types/Enters like a person instead of jumping to a `?q=` results URL; the URL flow remains for the CDP tier and as fallback. Verified live 2026-06-11 (navigate→read_page→batch→wait→evaluate in the log, real results returned).
+- **Round 2 (2026-06-11, later)**: `hover` and `drag` routed through the human-input layer (curved approach, eased drag steps, human press timing); `press` errors on unmapped keys instead of false success; `getMacCommands` chord lookup canonicalized; stable element refs + real domain-drift check (see §18.4/§18.5); host `extension_bridge` routes to the oldest matching connection in `execute` AND `batch_execute`.
+- **Round 3 (2026-06-11, later still)**: `new_tab` reuse routes through `navigate`; `getClickablePointViaCDP` fixed via the marker-attribute world bridge (Playwright-accurate quads now actually used for ref clicks); post-action screenshots use the explicit-screenshot clip/scale pipeline + update `screenshotContexts` (Hi-DPI coordinate fidelity); `pressKeyChord` maps cmd→ctrl on non-Mac.
+- **Round 4 (2026-06-11, final)**: SW-restart persistence (`neboGroupId` + `screenshotContexts` via `chrome.storage.session`); network log resets only on main-frame navigation and reports failures honestly; stale `badge.showConnected(arg)` call fixed. **All 13 findings from the 2026-06-11 audit are now closed.**
+
+### 23.12 DevTools Tool Coverage
 
 **Status: Partially fixed.** `web(action: "console")` now correctly maps to the extension's `read_console_messages` tool (previously mapped to nonexistent `devtools_console`). The `filter` param is translated to `pattern` for backward compatibility. Devtools actions `source`, `storage`, `dom`, `cookies`, and `performance` have no extension implementation yet — the Rust side now returns a clear "not yet available" error instead of the previous "Unknown tool" from the extension.
 
@@ -1261,8 +1342,9 @@ ps aux | grep nebo | grep chrome-extension
 | `browser/src/config.rs` | 106 | BrowserConfig, ProfileConfig, ResolvedProfile — profile detection, defaults, resolution |
 | `browser/src/chrome.rs` | 208 | Chrome binary detection (macOS/Linux/Windows), RunningChrome launch, CDP port wait, process lifecycle |
 | `browser/src/session.rs` | 185 | Session (multi-page, active target) and Page (state, refs, console, errors) |
-| `browser/src/extension_bridge.rs` | current | Multi-browser bridge — per-browser channels, default browser routing, session IDs, batch execution, read_page cache, grace period, 60s timeout |
-| `browser/src/executor.rs` | current | Routes to ExtensionBridge first, then headless agent-browser fallback |
+| `browser/src/extension_bridge.rs` | 534 | Multi-browser bridge — per-browser channels, default browser routing, session IDs, batch execution, per-session read_page cache, grace period, 60s timeout |
+| `browser/src/executor.rs` | 249 | Routes to ExtensionBridge first; per-call transport-failure failover to CdpBridge (tier 2) |
+| `browser/src/cdp_bridge.rs` | current | Tier-2 built-in browser — launches bundled Obscura over CDP (chromiumoxide), one page per session, lazy + self-healing |
 | `browser/src/manager.rs` | 193 | Manager — owns ExtensionBridge, managed Chrome profiles, sessions |
 | `browser/src/native_host.rs` | 550 | Native messaging host — manifest install/update/validate, stdin/stdout protocol, Windows registry, direct path |
 | `browser/src/native_types.rs` | 112 | NativeMessage struct — all message types with convenience constructors |
@@ -1271,7 +1353,7 @@ ps aux | grep nebo | grep chrome-extension
 | `browser/src/snapshot_store.rs` | 170 | TTL in-memory cache for annotated snapshots — put/get/lookup/cleanup, 1-hour TTL |
 | `browser/src/storage.rs` | 91 | Web storage helpers — StorageKind, StorageState, JS snippet generators |
 | `browser/src/audit.rs` | 22 | Security audit logging for sensitive tools (evaluate, screenshot) |
-| `tools/src/web_tool.rs` | 1,026 | WebTool — 4 resources (http, search, browser, devtools), SSRF protection, search providers |
+| `tools/src/web_tool.rs` | ~2,700 | WebTool — 4 resources (http, search, browser, devtools), SSRF guard + manual redirect checks, search chain, cross-subagent caches, agent ergonomics |
 | `cli/src/main.rs` (~170 lines) | — | Relay bridge — stdin/stdout ↔ WebSocket, browser detection, hello handshake |
 | `server/src/handlers/ws.rs` (~95 lines) | — | WS handler for /ws/extension — per-browser connection, tool relay |
 | `server/src/lib.rs` (~30 lines) | — | Browser init + manifest install/update |
@@ -1287,60 +1369,47 @@ ps aux | grep nebo | grep chrome-extension
 
 ---
 
-## 25. Headless Fallback
+## 25. Headless Fallback (Tier 2 — Built-in CDP Browser)
 
 ### 25.1 Current Implementation
 
-Browser automation no longer hard-requires the Nebo Chrome extension. `browser::Manager::new()` calls `HeadlessBridge::detect_binary()`, which checks for an `agent-browser` executable on PATH. If present, the same `web(action: ...)` interface can run against that headless backend when the extension is disconnected.
+**File:** `crates/browser/src/cdp_bridge.rs`
 
-Two execution paths sit behind the same tool interface:
+Browser automation no longer hard-requires the Nebo Chrome extension. Tier 2 is the bundled **Obscura** headless browser (fork: `localrivet/obscura`, branch `chromiumoxide-cdp-compat` — the bundled binary MUST build from this fork or tier 2 hangs; see memory `obscura-fork-cdp-fixes`). `CdpBridge` launches `obscura serve --stealth` on an ephemeral loopback port and drives it over CDP via `chromiumoxide`.
 
 ```
 web(action: "click", ref: "ref_1")
     ↓
 ExtensionBridge connected?
-    YES → Chrome extension path (CDP via extension, visible browser, JPEG screenshots)
-    NO  → HeadlessBridge if agent-browser is installed
-    ELSE → no browser backend error with install guidance
+    YES → Chrome extension path (visible browser, user's session)
+        └─ on TRANSPORT failure (disconnect/timeout) → retry same call on CDP
+    NO  → CdpBridge if the obscura binary is bundled/configured
+    ELSE → "No browser backend available" with install guidance
 ```
 
-`HeadlessBridge` does not implement its own CDP client. It shells out to `agent-browser` with a persistent session name (`nebo_default`) and normalizes refs between Nebo's `ref_N` format and agent-browser's `@eN` format. It also mirrors the 2.5s `read_page` cache and runs batch actions sequentially.
+Key properties:
+- **Lazy launch**: the Obscura process starts on first use — extension users never pay for it. The process is killed on drop (`kill_on_drop`).
+- **One CDP page (tab) per `session_id`** — preserves the 1:1 sub-agent→tab model; `close_session` closes that session's page.
+- **Self-healing connection**: a CDP event-loop task flips a liveness flag when the connection dies; a dead core is dropped and relaunched on the next call instead of wedging.
+- **Operation timeouts**: `new_page` 30s (recycles the connection on hang), navigation 45s, evaluate 20s — a wedged browser fails fast instead of trapping the tool.
+- **ObscuraConfig**: binary path, optional persistent `storage_dir` (cookies/storage; None = ephemeral), `stealth` (anti-detection + tracker blocking), optional `log_path` capturing Obscura's own navigations/CDP errors.
+- **Humanized input parity (2026-06-11)**: the CDP tier has full human-input synthesis (`crates/browser/src/human_input.rs`) — a direct port of the extension's `humanMouseMove`/`humanDelay`/click/type primitives onto chromiumoxide. `execute` supports `click` (by CSS `selector` or `coordinate`), `type`, and `press` with curved bezier mouse paths, 50–110ms click holds, and 35–110ms typing cadence, threading the last pointer position per session. Click resolves a selector to its center via JS, moves there along a curve, presses, and explicitly `focus()`es the element (Obscura's synthesized click doesn't move keyboard focus to form fields — a headless quirk; the human motion is still what detection observes). This is what lets `search_via_cdp_human` browse like a person instead of hitting `?q=` URLs. Verified live against the real Obscura binary (`human_click_and_type_fills_input`, run with `--ignored`).
 
-### 25.2 Supported Headless Mapping
+### 25.2 Differences from Extension Path
 
-| Nebo action | agent-browser command |
-|-------------|-----------------------|
-| `navigate` | `open <url>` |
-| `read_page` / `snapshot` | `snapshot -c`, plus `-i` for interactive filter |
-| `click` | `click @eN` |
-| `double_click` | `dblclick @eN` |
-| `hover` | `hover @eN` |
-| `fill` / `form_input` | `fill @eN <value>` |
-| `type` | `type <text>` |
-| `select` | `select @eN <value>` |
-| `press` / `key` | `press <key>` |
-| `scroll` | `scroll <direction> <amount>` |
-| `scroll_to` | `scrollintoview @eN` |
-| `screenshot` | `screenshot --json` |
-| `evaluate` | `eval <expression>` |
-| `wait` | `wait <ms>` |
-| `go_back` / `go_forward` | `back` / `forward` |
-| `get_page_text` | `text` |
-| `find` | `find text <query>` |
-| `file_upload` | `upload @eN <path>` |
-| `drag` | `drag @eN @eM` |
-
-Unsupported headless actions return a clear error asking the user to connect the Nebo Chrome extension for full browser control. Current unsupported examples include `triple_click`, `right_click`, `zoom`, `list_tabs`, `new_tab`, console/network inspection, and window resizing.
-
-### 25.3 Differences from Extension Path
-
-| Capability | Extension | Headless |
-|-----------|-----------|----------|
-| Visible browser | Yes (user sees actions) | No (invisible) |
-| Screenshots | Extension-processed screenshots | Via `agent-browser screenshot --json` |
-| User's cookies/logins | Yes (user's Chrome profile) | No (clean profile, unless `--user-data-dir` specified) |
+| Capability | Extension (tier 1) | Built-in CDP (tier 2) |
+|-----------|--------------------|------------------------|
+| Visible browser | Yes (user sees actions) | No (headless, no window) |
+| User's cookies/logins | Yes (user's Chrome profile) | Separate profile (persistent only if `storage_dir` set) |
 | Extension install required | Yes | No |
-| Requires `agent-browser` | No | Yes |
-| Tab/session model | Per-Nebo-session Chrome tab groups | Single persistent `nebo_default` headless session |
-| Browser-specific DevTools actions | Yes | Mostly unsupported |
+| Requires bundled obscura binary | No | Yes |
+| Tab/session model | Per-Nebo-session Chrome tab groups | One CDP page per `session_id` |
+| Batching | One round-trip (`execute_batch`) | Sequential per action |
+| Humanized input | Curved mouse, click hold, typing cadence | **Same** (`human_input.rs`, 2026-06-11) |
+| Element targeting | refs (accessibility tree) + selector/coordinate | selector + coordinate (no ref surface yet) |
+| Supported actions | full tool set | navigate, read_page, evaluate, click, type, press |
+
+### 25.3 Known Robustness Gap
+
+Leaked CDP targets + a dead-connection cache can wedge tier-2 `new_page` in very long sessions (`error=cdp new_page:`); bounded in real runs by `close_session`, and the 30s `new_page` timeout now recycles the connection. A fresh restart clears it. (See memory `obscura-tier2-target-leak-wedge`.)
 | Performance | Relay chain, but real user browser | Subprocess calls, no native messaging relay |

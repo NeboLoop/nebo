@@ -115,7 +115,7 @@ pub struct EventBus {
 - **Best-effort delivery**: `emit()` silently drops events if receiver is gone
 - **No backpressure**: Unbounded channel — producers never block
 - **No persistence**: Events exist only in memory, lost on restart
-- **No deduplication**: Same event emitted twice will be dispatched twice
+- **No deduplication at the bus**: Same event emitted twice will be dispatched twice. The exception is plugin-watch auto-emission: `watch_loop` fingerprints each NDJSON line (hash of source + payload, DB-backed via `check_event_dedup`/`record_event_dedup`) and skips lines seen within a **10-minute TTL** (`crates/agent/src/agent_worker.rs` — dedup check before emit; stale entries cleaned on watch restart). Consequence for plugin authors: watch event payloads must vary between emissions (include an id/seq), or repeats inside the window are silently dropped before they ever reach the bus.
 
 The `EventBus` instance is:
 1. Stored in `AppState` (for system emitters)

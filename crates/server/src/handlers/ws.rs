@@ -1616,27 +1616,46 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &C
     // Works for both custom agents (agent_space by slug) and the companion (default bot).
     let comm_reply = if state.comm_manager.is_connected().await {
         let bot_id = config::read_bot_id().unwrap_or_default();
-        let conv_id = if !agent_id.is_empty() {
-            // Custom (secondary) agent: look up by its bot-scoped handle
-            // (`bot_<id8>_<slug>`), matching how reconcile registers it.
-            let slug = {
-                let registry = state.agent_registry.read().await;
-                registry
-                    .get(&agent_id)
-                    .map(|r| comm::handle::secondary_handle(&bot_id, &r.name))
-            };
-            if let Some(slug) = slug {
-                state.comm_manager.agent_space_conv_for_slug(&slug).await
-            } else {
-                None
+        // Per-chat agent spaces: mirror THIS chat's turns to ITS OWN loop
+        // conversation, never the agent's merged stream. The chat for this
+        // turn is the thread uuid embedded in the session key, or the
+        // session's active chat.
+        let turn_chat_id = if let Some(pos) = session_key.find(":thread:") {
+            session_key[pos + 8..].to_string()
+        } else {
+            state
+                .runner
+                .sessions()
+                .resolve_session_id_by_key(&session_key)
+                .ok()
+                .map(|sid| state.runner.sessions().active_chat_id(&sid))
+                .unwrap_or_default()
+        };
+        let slug = if !agent_id.is_empty() {
+            // Custom (secondary) agent: bot-scoped handle (`bot_<id8>_<slug>`),
+            // matching how reconcile registers it.
+            let registry = state.agent_registry.read().await;
+            registry
+                .get(&agent_id)
+                .map(|r| comm::handle::secondary_handle(&bot_id, &r.name))
+        } else {
+            // Companion (primary): bot_<id8>.
+            Some(comm::handle::default_bot_handle(&bot_id, ""))
+        };
+        let conv_id = if let Some(ref slug) = slug {
+            // Prefer the conversation bound to this chat; fall back to the
+            // agent's general conversation until the chat has been synced
+            // (chats/sync on reconcile creates per-chat conversations).
+            match state
+                .comm_manager
+                .agent_chat_conv_for_slug(slug, &turn_chat_id)
+                .await
+            {
+                Some(cid) => Some(cid),
+                None => state.comm_manager.agent_space_conv_for_slug(slug).await,
             }
         } else {
-            // Companion (primary): look up by bot_<id8>.
-            let bot_slug = comm::handle::default_bot_handle(&bot_id, "");
-            state
-                .comm_manager
-                .agent_space_conv_for_slug(&bot_slug)
-                .await
+            None
         };
         conv_id.map(|cid| {
             // Write through the conv↔agent association (durable side of

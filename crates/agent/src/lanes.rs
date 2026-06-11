@@ -112,6 +112,10 @@ use types::constants::lanes;
 ///   tracing warning. Default: 2000ms.
 /// - `completion_tx` — Optional oneshot sender, set by [`LaneManager::enqueue`]
 ///   so the caller can await completion.
+/// - `fairness_key` — Optional grouping key (typically the agent id). On lanes
+///   with a per-key cap, at most [`MAX_ACTIVE_PER_KEY`] tasks sharing a key run
+///   at once; eligible tasks with other keys skip ahead so one heavy agent
+///   can't starve the rest.
 pub struct LaneTask {
     pub id: String,
     pub lane: String,
@@ -120,7 +124,13 @@ pub struct LaneTask {
     pub enqueued_at: Instant,
     pub warn_after_ms: u64,
     pub completion_tx: Option<oneshot::Sender<Result<(), String>>>,
+    pub fairness_key: Option<String>,
 }
+
+/// Per-fairness-key concurrency cap on lanes that enforce one (`per_key_cap`).
+/// Two concurrent runs per agent: one active conversation plus one follow-up,
+/// while 249 other agents stay responsive.
+pub const MAX_ACTIVE_PER_KEY: usize = 2;
 
 /// Internal state for a single lane: its FIFO queue, active count, and cap.
 struct LaneState {
@@ -129,6 +139,10 @@ struct LaneState {
     /// Maximum concurrent tasks for this lane. `0` means unlimited — the global
     /// `ConcurrencyController` governs instead.
     max_concurrent: usize,
+    /// Per-fairness-key cap. `0` disables per-key fairness for this lane.
+    per_key_cap: usize,
+    /// Active task count per fairness key (entries removed at zero).
+    active_by_key: HashMap<String, usize>,
 }
 
 /// Per-category task queue manager with concurrency control.
@@ -152,6 +166,10 @@ pub struct LaneManager {
 struct LaneConfig {
     name: &'static str,
     max_concurrent: usize,
+    /// Per-fairness-key cap (0 = disabled). Only top-level entry lanes enforce
+    /// fairness — capping `subagent`/`nested` could deadlock a parent run that
+    /// is itself holding a slot while waiting on its children.
+    per_key_cap: usize,
 }
 
 /// Lane configurations.
@@ -169,34 +187,42 @@ const LANE_CONFIGS: &[LaneConfig] = &[
     LaneConfig {
         name: lanes::MAIN,
         max_concurrent: 0,
+        per_key_cap: MAX_ACTIVE_PER_KEY,
     },
     LaneConfig {
         name: lanes::EVENTS,
         max_concurrent: 0,
+        per_key_cap: MAX_ACTIVE_PER_KEY,
     },
     LaneConfig {
         name: lanes::SUBAGENT,
         max_concurrent: 0,
+        per_key_cap: 0, // parents wait on children — capping would deadlock
     },
     LaneConfig {
         name: lanes::NESTED,
         max_concurrent: 0,
+        per_key_cap: 0, // parents wait on children — capping would deadlock
     },
     LaneConfig {
         name: lanes::HEARTBEAT,
         max_concurrent: 0,
+        per_key_cap: MAX_ACTIVE_PER_KEY,
     }, // multiple roles tick concurrently
     LaneConfig {
         name: lanes::COMM,
         max_concurrent: 0,
+        per_key_cap: MAX_ACTIVE_PER_KEY,
     },
     LaneConfig {
         name: lanes::DEV,
         max_concurrent: 0,
+        per_key_cap: MAX_ACTIVE_PER_KEY,
     },
     LaneConfig {
         name: lanes::DESKTOP,
         max_concurrent: 1,
+        per_key_cap: 0, // already serialized to one task
     }, // one screen, one mouse
 ];
 
@@ -212,6 +238,8 @@ impl LaneManager {
                 queue: VecDeque::new(),
                 active: 0,
                 max_concurrent: config.max_concurrent,
+                per_key_cap: config.per_key_cap,
+                active_by_key: HashMap::new(),
             };
             lanes.insert(
                 config.name.to_string(),
@@ -358,7 +386,21 @@ async fn pump_lane(name: &str, state: &Arc<std::sync::Mutex<LaneState>>, notify:
             if max > 0 && s.active >= max {
                 break;
             }
-            match s.queue.pop_front() {
+            // FIFO, except tasks whose fairness key is at the per-key cap are
+            // skipped (they stay queued) so other keys' work proceeds.
+            let LaneState {
+                queue,
+                active_by_key,
+                per_key_cap,
+                ..
+            } = &mut *s;
+            let idx = queue.iter().position(|t| {
+                *per_key_cap == 0
+                    || t.fairness_key.as_ref().is_none_or(|k| {
+                        active_by_key.get(k).copied().unwrap_or(0) < *per_key_cap
+                    })
+            });
+            match idx.and_then(|i| s.queue.remove(i)) {
                 Some(task) => {
                     // Check for stale tasks
                     let wait_ms = task.enqueued_at.elapsed().as_millis() as u64;
@@ -372,6 +414,11 @@ async fn pump_lane(name: &str, state: &Arc<std::sync::Mutex<LaneState>>, notify:
                         );
                     }
                     s.active += 1;
+                    if s.per_key_cap > 0
+                        && let Some(k) = &task.fairness_key
+                    {
+                        *s.active_by_key.entry(k.clone()).or_insert(0) += 1;
+                    }
                     task
                 }
                 None => break,
@@ -379,6 +426,7 @@ async fn pump_lane(name: &str, state: &Arc<std::sync::Mutex<LaneState>>, notify:
         };
 
         let task_id = task.id.clone();
+        let fairness_key = task.fairness_key.clone();
         let lane_name = name.to_string();
         let state_clone = state.clone();
         let notify_clone = notify.clone();
@@ -397,6 +445,14 @@ async fn pump_lane(name: &str, state: &Arc<std::sync::Mutex<LaneState>>, notify:
             {
                 let mut s = state_clone.lock().unwrap();
                 s.active = s.active.saturating_sub(1);
+                if let Some(k) = &fairness_key
+                    && let Some(count) = s.active_by_key.get_mut(k)
+                {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        s.active_by_key.remove(k);
+                    }
+                }
             }
 
             // Re-notify pump to drain queued tasks now that a slot is free
@@ -445,6 +501,7 @@ pub fn make_task(
         enqueued_at: Instant::now(),
         warn_after_ms: 2000,
         completion_tx: None,
+        fairness_key: None,
     }
 }
 
@@ -591,6 +648,69 @@ mod tests {
             assert!(result.is_ok());
         }
 
+        mgr.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_per_key_fairness_cap() {
+        let mgr = LaneManager::new();
+        mgr.start_pumps();
+
+        // Two long-running tasks for agent-a saturate its per-key cap (2).
+        let gate = Arc::new(Notify::new());
+        let mut blockers = Vec::new();
+        for i in 0..MAX_ACTIVE_PER_KEY {
+            let gate = gate.clone();
+            let mut task = make_task("main", format!("blocker {}", i), async move {
+                gate.notified().await;
+                Ok(())
+            });
+            task.fairness_key = Some("agent-a".to_string());
+            blockers.push(mgr.enqueue("main", task).unwrap());
+        }
+
+        // Give the pump a moment to start both blockers
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // A third agent-a task must wait; an agent-b task must skip ahead.
+        let (a_tx, a_rx) = oneshot::channel();
+        let mut task_a = make_task("main", "third for a", async move {
+            let _ = a_tx.send(());
+            Ok(())
+        });
+        task_a.fairness_key = Some("agent-a".to_string());
+        mgr.enqueue_async("main", task_a);
+
+        let mut task_b = make_task("main", "for b", async { Ok(()) });
+        task_b.fairness_key = Some("agent-b".to_string());
+        let b_rx = mgr.enqueue("main", task_b).unwrap();
+
+        // agent-b completes even though it was enqueued after agent-a's third task
+        tokio::time::timeout(std::time::Duration::from_secs(2), b_rx)
+            .await
+            .expect("agent-b should not be blocked by agent-a's cap")
+            .expect("channel closed")
+            .unwrap();
+
+        // agent-a's third task is still held back by the cap
+        let mut a_rx = a_rx;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut a_rx)
+                .await
+                .is_err(),
+            "third agent-a task should be capped while two are active"
+        );
+
+        // Release the blockers — the capped task now runs
+        gate.notify_waiters();
+        tokio::time::timeout(std::time::Duration::from_secs(2), a_rx)
+            .await
+            .expect("capped task should run after a slot freed")
+            .expect("channel closed");
+
+        for rx in blockers {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+        }
         mgr.shutdown();
     }
 

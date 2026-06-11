@@ -648,8 +648,17 @@ async fn run_native_messaging() -> anyhow::Result<()> {
                 break;
             }
             let len = u32::from_le_bytes(len_buf) as usize;
-            if len > 1_048_576 {
-                eprintln!("[nebo-relay] message too large: {} bytes", len);
+            // Chrome's 1 MB native-messaging cap applies HOST→EXTENSION only; the
+            // extension legitimately sends larger payloads this way (screenshots
+            // ~1.4 MB, full-page outerHTML several MB). Anything past this bound
+            // means a corrupted length prefix — resync is impossible on a
+            // length-prefixed stream, so exit and let Chrome relaunch the relay.
+            const MAX_EXT_MSG_BYTES: usize = 64 * 1024 * 1024;
+            if len > MAX_EXT_MSG_BYTES {
+                eprintln!(
+                    "[nebo-relay] implausible message length {} bytes — corrupted stream, exiting",
+                    len
+                );
                 break;
             }
 

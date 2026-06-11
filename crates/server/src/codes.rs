@@ -1784,6 +1784,7 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         .iter()
         .map(|(a, _, slug)| (slug.clone(), a.id.clone()))
         .collect();
+    let mut chat_sync_targets: Vec<(String, String)> = Vec::new();
     match api.list_agents(&personal.loop_id).await {
         Ok(final_agents) => {
             info!(target: "neboai_identity", count = final_agents.len(), local_slugs = ?slug_to_local.keys().collect::<Vec<_>>(), "reconcile: stabilize pass — loop agents to map");
@@ -1798,7 +1799,10 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
                 };
                 match local_id {
                     Some(local_id) => match state.store.set_agent_loop_agent_id(&local_id, Some(remote.id.as_str())) {
-                        Ok(()) => info!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %remote.id, slug = %remote.slug, "reconcile: STABILIZED loop id"),
+                        Ok(()) => {
+                            info!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %remote.id, slug = %remote.slug, "reconcile: STABILIZED loop id");
+                            chat_sync_targets.push((local_id, remote.id.clone()));
+                        }
                         Err(e) => warn!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %remote.id, error = %e, "reconcile: FAILED to store loop_agent_id"),
                     },
                     None => warn!(target: "neboai_identity", slug = %remote.slug, loop_agent_id = %remote.id, "reconcile: remote agent has NO local match — not stabilized"),
@@ -1806,6 +1810,35 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
             }
         }
         Err(e) => warn!(target: "neboai_identity", error = %e, "reconcile: stabilize pass — list_agents FAILED"),
+    }
+
+    // Per-chat agent spaces: publish each agent's desktop chat list so every
+    // chat gets its own loop conversation (the remote emulates the local
+    // Threads tab). Additive server-side — loop-created chats are untouched.
+    for (local_id, loop_agent_id) in &chat_sync_targets {
+        let prefix = format!("agent:{}:", local_id);
+        let chats = match state.store.list_chats_by_session_enriched(&prefix) {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(chat, _, _)| comm::api::AgentChatSync {
+                    chat_id: chat.id,
+                    title: chat.title,
+                    last_activity_at: chrono::DateTime::from_timestamp(chat.updated_at, 0)
+                        .map(|t| t.to_rfc3339()),
+                })
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                warn!(target: "neboai_identity", local_id = %local_id, error = %e, "reconcile: chat list failed — skipping chats sync");
+                continue;
+            }
+        };
+        if chats.is_empty() {
+            continue;
+        }
+        match api.sync_agent_chats(loop_agent_id, &chats).await {
+            Ok(()) => info!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %loop_agent_id, count = chats.len(), "reconcile: chats synced"),
+            Err(e) => warn!(target: "neboai_identity", local_id = %local_id, error = %e, "reconcile: chats sync FAILED"),
+        }
     }
 
     info!("agent reconciliation complete");

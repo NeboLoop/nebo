@@ -6,6 +6,14 @@ use ai::RateLimitMeta;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info, warn};
 
+/// Hard upper bound for the adaptive ceiling when no explicit limit is configured.
+/// LLM permits are spent waiting on network streams, so this is bounded by memory
+/// and provider rate limits (already handled via 429 backpressure), not CPU cores.
+const DEFAULT_MAX_CEILING: usize = 100;
+
+/// Floor — never throttle below this.
+const MIN_PERMITS: usize = 2;
+
 /// Adaptive global concurrency controller for LLM and tool execution.
 ///
 /// Governs all LLM calls and parallel tool execution via dynamic semaphores.
@@ -25,25 +33,48 @@ pub struct ConcurrencyController {
     backpressure: AtomicBool,
     /// Tool-level concurrency per turn.
     tool_semaphore: Arc<Semaphore>,
+    /// Absolute max permits — configured limit, or DEFAULT_MAX_CEILING when auto.
+    /// The semaphore is created with this many permits; the resource monitor can
+    /// only trim below it (permits can never grow past the initial count).
+    max_ceiling: usize,
 }
 
 impl ConcurrencyController {
-    /// Create a new controller with resource-aware defaults.
-    pub fn new() -> Self {
-        let cpu_cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
-        let initial = (cpu_cores * 2).min(20);
+    /// Create a new controller. `max_concurrent_runs` is the configured hard cap
+    /// on in-flight LLM calls; None = auto (resource monitor trims from
+    /// DEFAULT_MAX_CEILING based on available memory and load).
+    pub fn new(max_concurrent_runs: Option<usize>) -> Self {
+        let max_ceiling = max_concurrent_runs
+            .unwrap_or(DEFAULT_MAX_CEILING)
+            .max(MIN_PERMITS);
 
-        Self {
-            llm_semaphore: Arc::new(Semaphore::new(initial)),
-            effective_permits: AtomicUsize::new(initial),
+        let controller = Self {
+            llm_semaphore: Arc::new(Semaphore::new(max_ceiling)),
+            effective_permits: AtomicUsize::new(max_ceiling),
             held_back: Mutex::new(Vec::new()),
-            min_permits: 2,
-            ceiling: AtomicUsize::new(initial),
+            min_permits: MIN_PERMITS,
+            ceiling: AtomicUsize::new(max_ceiling),
             backpressure: AtomicBool::new(false),
-            tool_semaphore: Arc::new(Semaphore::new(8)),
-        }
+            // Tools run locally (processes, files, browser) so a global cap stays,
+            // but it scales with run capacity instead of starving a busy fleet.
+            tool_semaphore: Arc::new(Semaphore::new((max_ceiling / 4).max(8))),
+            max_ceiling,
+        };
+
+        // Trim to current memory immediately — the first monitor probe is 30s
+        // out, and a small machine restarting into a queue of pending work
+        // could overcommit before it lands. Same heuristic as the monitor.
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        let mem_limit = (sys.available_memory() / 1_048_576 / 200) as usize;
+        controller.set_ceiling(mem_limit.min(max_ceiling));
+
+        controller
+    }
+
+    /// Absolute max permits (configured cap or default).
+    pub fn max_ceiling(&self) -> usize {
+        self.max_ceiling
     }
 
     /// Acquire a permit for an LLM call. Blocks when at capacity.
@@ -101,8 +132,12 @@ impl ConcurrencyController {
             "rate limit backpressure: reducing concurrency"
         );
 
-        // Try to acquire permits synchronously (non-blocking) to hold them back
+        // Try to acquire permits synchronously (non-blocking) to hold them back.
+        // Count only NEWLY acquired permits — held_back may already contain
+        // permits from a prior ceiling trim, and those were already subtracted
+        // from effective_permits when they were held.
         let mut held = self.held_back.lock().unwrap();
+        let held_before = held.len();
         for _ in 0..actual_hold {
             match self.llm_semaphore.clone().try_acquire_owned() {
                 Ok(permit) => {
@@ -111,11 +146,11 @@ impl ConcurrencyController {
                 Err(_) => break, // All permits in use, can't reduce further
             }
         }
-        let held_count = held.len();
+        let newly_held = held.len() - held_before;
         drop(held);
 
         self.effective_permits
-            .store(effective - held_count, Ordering::SeqCst);
+            .store(effective.saturating_sub(newly_held), Ordering::SeqCst);
 
         // Permits are released on report_success or set_ceiling calls.
         // The backpressure flag + held permits naturally throttle until success.
@@ -163,20 +198,22 @@ impl ConcurrencyController {
             let can_release = clamped - effective;
             self.release_held(can_release);
         } else if clamped < effective {
-            // Ceiling decreased — acquire more permits into held_back
+            // Ceiling decreased — acquire more permits into held_back.
+            // Count only NEWLY acquired permits (see report_rate_limit).
             let to_hold = effective - clamped;
             let mut held = self.held_back.lock().unwrap();
+            let held_before = held.len();
             for _ in 0..to_hold {
                 match self.llm_semaphore.clone().try_acquire_owned() {
                     Ok(permit) => held.push(permit),
                     Err(_) => break,
                 }
             }
-            let actual_held = held.len();
+            let newly_held = held.len() - held_before;
             drop(held);
 
             self.effective_permits
-                .store(effective.saturating_sub(actual_held), Ordering::SeqCst);
+                .store(effective.saturating_sub(newly_held), Ordering::SeqCst);
         }
 
         debug!(
@@ -233,16 +270,17 @@ pub fn spawn_monitor(controller: Arc<ConcurrencyController>) {
                 .map(|n| n.get())
                 .unwrap_or(4);
 
+            // LLM permits wait on network streams, not compute — memory and
+            // *measured* load govern the ceiling; core count is not a cap.
             let mem_limit = (available_mb / 200) as usize;
-            let cpu_limit = cpu_cores * 2;
             let load_factor = if load > cpu_cores as f64 {
                 (cpu_cores as f64 / load).max(0.3)
             } else {
                 1.0
             };
 
-            let ceiling = ((mem_limit.min(cpu_limit) as f64) * load_factor) as usize;
-            controller.set_ceiling(ceiling.clamp(2, 50));
+            let ceiling = ((mem_limit as f64) * load_factor) as usize;
+            controller.set_ceiling(ceiling.min(controller.max_ceiling()));
         }
     });
 }
@@ -253,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_controller_creation() {
-        let ctrl = ConcurrencyController::new();
+        let ctrl = ConcurrencyController::new(None);
         assert!(ctrl.effective_permits() >= 2);
         assert_eq!(ctrl.ceiling(), ctrl.effective_permits());
         assert!(!ctrl.is_backpressured());
@@ -261,7 +299,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_acquire_llm_permit() {
-        let ctrl = ConcurrencyController::new();
+        let ctrl = ConcurrencyController::new(None);
         let permit = ctrl.acquire_llm_permit().await;
         assert!(ctrl.effective_permits() >= 2);
         drop(permit);
@@ -269,14 +307,41 @@ mod tests {
 
     #[tokio::test]
     async fn test_acquire_tool_permit() {
-        let ctrl = ConcurrencyController::new();
+        let ctrl = ConcurrencyController::new(None);
         let permit = ctrl.acquire_tool_permit().await;
         drop(permit);
     }
 
     #[test]
+    fn test_configured_cap() {
+        let ctrl = ConcurrencyController::new(Some(4));
+        assert_eq!(ctrl.max_ceiling(), 4);
+        // Boot probe may trim below the cap on a memory-starved machine,
+        // but never above it and never below the floor.
+        assert!(ctrl.ceiling() <= 4);
+        assert!(ctrl.ceiling() >= MIN_PERMITS);
+        assert_eq!(ctrl.effective_permits(), ctrl.ceiling());
+    }
+
+    #[test]
+    fn test_configured_cap_clamps_to_min() {
+        let ctrl = ConcurrencyController::new(Some(1));
+        assert_eq!(ctrl.max_ceiling(), MIN_PERMITS);
+    }
+
+    #[test]
+    fn test_auto_defaults_to_max_ceiling() {
+        let ctrl = ConcurrencyController::new(None);
+        assert_eq!(ctrl.max_ceiling(), DEFAULT_MAX_CEILING);
+        // Boot probe trims to available memory; effective tracks the ceiling.
+        assert!(ctrl.ceiling() <= DEFAULT_MAX_CEILING);
+        assert!(ctrl.ceiling() >= MIN_PERMITS);
+        assert_eq!(ctrl.effective_permits(), ctrl.ceiling());
+    }
+
+    #[test]
     fn test_report_success_clears_backpressure() {
-        let ctrl = ConcurrencyController::new();
+        let ctrl = ConcurrencyController::new(None);
         ctrl.backpressure.store(true, Ordering::SeqCst);
         assert!(ctrl.is_backpressured());
         ctrl.report_success(None);
@@ -285,21 +350,21 @@ mod tests {
 
     #[test]
     fn test_report_rate_limit_sets_backpressure() {
-        let ctrl = ConcurrencyController::new();
+        let ctrl = ConcurrencyController::new(None);
         ctrl.report_rate_limit(Some(5));
         assert!(ctrl.is_backpressured());
     }
 
     #[test]
     fn test_set_ceiling_clamps_to_min() {
-        let ctrl = ConcurrencyController::new();
+        let ctrl = ConcurrencyController::new(None);
         ctrl.set_ceiling(1); // Below min_permits (2)
         assert!(ctrl.ceiling() >= 2);
     }
 
     #[test]
     fn test_set_ceiling_noop_same_value() {
-        let ctrl = ConcurrencyController::new();
+        let ctrl = ConcurrencyController::new(None);
         let initial = ctrl.ceiling();
         ctrl.set_ceiling(initial);
         assert_eq!(ctrl.ceiling(), initial);
@@ -307,7 +372,9 @@ mod tests {
 
     #[test]
     fn test_release_held_empty() {
-        let ctrl = ConcurrencyController::new();
+        // Small configured cap: the boot probe won't trim below it, so
+        // held_back is deterministically empty.
+        let ctrl = ConcurrencyController::new(Some(4));
         let before = ctrl.effective_permits();
         ctrl.release_held(5); // Nothing held
         assert_eq!(ctrl.effective_permits(), before);
@@ -315,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_report_success_with_headroom_releases() {
-        let ctrl = ConcurrencyController::new();
+        let ctrl = ConcurrencyController::new(None);
         // First, hold back some permits
         ctrl.report_rate_limit(Some(5));
         let after_limit = ctrl.effective_permits();

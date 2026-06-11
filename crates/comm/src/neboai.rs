@@ -49,6 +49,10 @@ pub(crate) struct AgentSpaceMeta {
     pub agent_id: String,
     pub agent_slug: String,
     pub loop_id: String,
+    /// Desktop chat this conversation is bound to ('general' = the legacy
+    /// single conversation; empty from servers that predate per-chat spaces).
+    pub chat_id: String,
+    pub chat_title: String,
 }
 
 struct Inner {
@@ -147,6 +151,7 @@ impl NeboAIPlugin {
             .get(slug)
             .cloned()
     }
+
 
     /// Queue a raw encoded frame for sending.
     async fn queue_send(&self, data: Vec<u8>) -> Result<(), CommError> {
@@ -909,6 +914,23 @@ impl CommPlugin for NeboAIPlugin {
         self.rotated_token.write().await.take()
     }
 
+    async fn chat_for_conv(&self, conv_id: &str) -> Option<(String, String)> {
+        let maps = self.conv_maps.read().await;
+        maps.agent_space_convs
+            .get(conv_id)
+            .map(|m| (m.chat_id.clone(), m.chat_title.clone()))
+    }
+
+    async fn agent_chat_conv_for_slug(&self, slug: &str, chat_id: &str) -> Option<String> {
+        let maps = self.conv_maps.read().await;
+        if chat_id.is_empty() || chat_id == "general" {
+            return maps.agent_space_by_slug.get(slug).cloned();
+        }
+        maps.agent_chat_convs
+            .get(&(slug.to_string(), chat_id.to_string()))
+            .cloned()
+    }
+
     async fn agent_slug_for_conv(&self, conv_id: &str) -> Option<String> {
         let maps = self.conv_maps.read().await;
         maps.agent_space_convs
@@ -992,6 +1014,9 @@ struct ConvMaps {
     agent_space_by_slug: HashMap<String, String>,       // slug → conv_id
     agent_space_by_id: HashMap<String, String>,         // agent_id → conv_id
     embed_convs: HashMap<String, String>,               // conv_id → embed stream
+    /// (agent_slug, chat_id) → conversation — per-chat agent spaces. The
+    /// 'general' chat also lives in agent_space_by_slug/by_id for compat.
+    agent_chat_convs: HashMap<(String, String), String>,
 }
 
 impl ConvMaps {
@@ -1029,10 +1054,27 @@ impl ConvMaps {
                 self.dm_convs.insert(conv_id, peer);
             }
             JoinUpdate::AgentSpace(meta, conv_id) => {
-                self.agent_space_by_slug
-                    .insert(meta.agent_slug.clone(), conv_id.clone());
-                self.agent_space_by_id
-                    .insert(meta.agent_id.clone(), conv_id.clone());
+                // The 'general' chat (or a pre-chats server sending no chat
+                // id) is "the agent's conversation" — keep the legacy maps
+                // pointing at it so existing lookups stay correct. Named
+                // chats only register in the per-chat map.
+                if meta.chat_id.is_empty() || meta.chat_id == "general" {
+                    self.agent_space_by_slug
+                        .insert(meta.agent_slug.clone(), conv_id.clone());
+                    self.agent_space_by_id
+                        .insert(meta.agent_id.clone(), conv_id.clone());
+                }
+                self.agent_chat_convs.insert(
+                    (
+                        meta.agent_slug.clone(),
+                        if meta.chat_id.is_empty() {
+                            "general".to_string()
+                        } else {
+                            meta.chat_id.clone()
+                        },
+                    ),
+                    conv_id.clone(),
+                );
                 self.agent_space_convs.insert(conv_id, meta);
             }
             JoinUpdate::Embed {
@@ -1310,6 +1352,8 @@ async fn read_loop(
                                         agent_id: result.agent_id,
                                         agent_slug: result.agent_slug,
                                         loop_id: result.loop_id.clone(),
+                                        chat_id: result.chat_id.clone(),
+                                        chat_title: result.chat_title.clone(),
                                     },
                                     result.conversation_id,
                                 ))

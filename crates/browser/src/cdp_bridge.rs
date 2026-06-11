@@ -24,6 +24,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::BrowserError;
+use crate::human_input;
 
 /// Bound for a single CDP operation. Obscura ops are normally sub-second; a hang
 /// past this means the browser/connection is wedged, so we fail fast (and, for
@@ -70,6 +71,9 @@ pub struct CdpBridge {
     core: Mutex<Option<Arc<CdpCore>>>,
     /// True once tier-2 has been launched at least once (sync status, no lock).
     launched: AtomicBool,
+    /// Last pointer position per session — the start of the next human mouse path
+    /// (mirrors the extension's per-tab `lastMousePos`).
+    mouse_pos: Mutex<HashMap<String, (f64, f64)>>,
 }
 
 impl CdpBridge {
@@ -78,6 +82,7 @@ impl CdpBridge {
             config,
             core: Mutex::new(None),
             launched: AtomicBool::new(false),
+            mouse_pos: Mutex::new(HashMap::new()),
         }
     }
 
@@ -261,10 +266,116 @@ impl CdpBridge {
                     .map_err(|e| BrowserError::Other(format!("cdp read_page decode: {e}")))?;
                 Ok(json!({ "pageContent": text }))
             }
+            "evaluate" => {
+                let expression = args
+                    .get("expression")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| BrowserError::Other("evaluate requires 'expression'".into()))?;
+                let page = self.page_for(session_id).await?;
+                let eval =
+                    match tokio::time::timeout(EVAL_TIMEOUT, page.evaluate(expression)).await {
+                        Ok(Ok(e)) => e,
+                        Ok(Err(e)) => {
+                            return Err(BrowserError::Other(format!("cdp evaluate: {e}")));
+                        }
+                        Err(_) => {
+                            return Err(BrowserError::Timeout("cdp evaluate timed out".into()));
+                        }
+                    };
+                // Same result key the extension uses, so callers read one shape.
+                let text = match eval.value() {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(v) => v.to_string(),
+                    None => String::new(),
+                };
+                Ok(json!({ "text": text }))
+            }
+            // Humanized input — exact parity with the extension (curved mouse path,
+            // human click hold, typing cadence). Targets an element by CSS `selector`
+            // or explicit `coordinate`.
+            "click" => {
+                let page = self.page_for(session_id).await?;
+                let (x, y) = self.resolve_point(&page, args).await?;
+                let from = self.mouse_pos.lock().await.get(session_id).copied();
+                let pos = human_input::human_click(&page, from, x, y).await?;
+                self.mouse_pos
+                    .lock()
+                    .await
+                    .insert(session_id.to_string(), pos);
+                // Obscura's synthesized mouse click does not reliably move keyboard
+                // focus to form fields (a headless quirk). The human mouse motion
+                // above is what bot-detection observes; this focus() just guarantees
+                // a following `type` lands in the field the agent clicked.
+                if let Some(sel) = args.get("selector").and_then(|v| v.as_str()) {
+                    let expr = format!(
+                        "(() => {{ const el = document.querySelector({sel}); \
+                         if (el && typeof el.focus === 'function') el.focus(); }})()",
+                        sel = serde_json::to_string(sel).unwrap_or_else(|_| "''".into()),
+                    );
+                    let _ = page.evaluate(expr).await;
+                }
+                Ok(json!({ "text": format!("Clicked at ({:.0}, {:.0})", x, y) }))
+            }
+            "type" => {
+                let text = args
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| BrowserError::Other("type requires 'text'".into()))?;
+                let page = self.page_for(session_id).await?;
+                human_input::human_type(&page, text).await?;
+                Ok(json!({ "text": format!("Typed {} chars", text.chars().count()) }))
+            }
+            "press" => {
+                let key = args
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| BrowserError::Other("press requires 'key'".into()))?;
+                let page = self.page_for(session_id).await?;
+                human_input::press_key(&page, key).await?;
+                Ok(json!({ "text": format!("Pressed {key}") }))
+            }
             other => Err(BrowserError::Other(format!(
                 "built-in browser (CDP) does not support '{other}' yet"
             ))),
         }
+    }
+
+    /// Resolve a click target to viewport CSS-pixel coordinates: explicit
+    /// `coordinate: [x, y]`, or a CSS `selector` whose center is found via JS
+    /// (scrolled into view first). Errors if neither resolves.
+    async fn resolve_point(
+        &self,
+        page: &Page,
+        args: &Value,
+    ) -> Result<(f64, f64), BrowserError> {
+        if let Some(arr) = args.get("coordinate").and_then(|v| v.as_array()) {
+            if let (Some(x), Some(y)) = (
+                arr.first().and_then(|v| v.as_f64()),
+                arr.get(1).and_then(|v| v.as_f64()),
+            ) {
+                return Ok((x, y));
+            }
+        }
+        let selector = args
+            .get("selector")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| BrowserError::Other("click requires 'selector' or 'coordinate'".into()))?;
+        let expr = format!(
+            "(() => {{ const el = document.querySelector({sel}); if (!el) return null; \
+             el.scrollIntoView({{block:'center', inline:'center'}}); \
+             const r = el.getBoundingClientRect(); \
+             if (r.width === 0 && r.height === 0) return null; \
+             return [r.left + r.width/2, r.top + r.height/2]; }})()",
+            sel = serde_json::to_string(selector).unwrap_or_else(|_| "''".into()),
+        );
+        let eval = tokio::time::timeout(EVAL_TIMEOUT, page.evaluate(expr))
+            .await
+            .map_err(|_| BrowserError::Timeout("cdp resolve_point timed out".into()))?
+            .map_err(|e| BrowserError::Other(format!("cdp resolve_point: {e}")))?;
+        let point: Option<(f64, f64)> = eval.into_value().ok();
+        point.ok_or_else(|| {
+            BrowserError::Other(format!("element not found or not visible: {selector}"))
+        })
     }
 
     /// True once the managed Chrome has been launched (i.e. tier-2 is in use).
@@ -404,6 +515,47 @@ mod tests {
             );
             bridge.close_session(&sid).await;
         }
+    }
+
+    /// Humanized click + type land real characters in a focused input — proves
+    /// the CDP input synthesis (curved move, click, keydown/keyup cadence) works
+    /// end to end, not just that it compiles.
+    #[tokio::test]
+    #[ignore = "requires the obscura binary; run with --ignored"]
+    async fn human_click_and_type_fills_input() {
+        let Some(bridge) = try_bridge() else {
+            eprintln!("obscura binary not found — skipping");
+            return;
+        };
+        let sid = "human-input";
+        let html = "data:text/html,<body style='margin:40px'>\
+                    <input id='box' style='width:300px;height:30px'></body>";
+        bridge
+            .execute("navigate", &json!({ "url": html }), sid)
+            .await
+            .expect("navigate");
+        bridge
+            .execute("click", &json!({ "selector": "#box" }), sid)
+            .await
+            .expect("click");
+        bridge
+            .execute("type", &json!({ "text": "hello world" }), sid)
+            .await
+            .expect("type");
+        let v = bridge
+            .execute(
+                "evaluate",
+                &json!({ "expression": "document.getElementById('box').value" }),
+                sid,
+            )
+            .await
+            .expect("evaluate");
+        assert_eq!(
+            v.get("text").and_then(|t| t.as_str()),
+            Some("hello world"),
+            "humanized typing should fill the input"
+        );
+        bridge.close_session(sid).await;
     }
 
     /// Concurrent sub-agents each drive their own tab on the shared browser.

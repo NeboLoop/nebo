@@ -703,6 +703,29 @@ impl NeboAIApi {
         resp
     }
 
+    /// Publish this bot's desktop chat list for one loop agent (additive
+    /// upsert server-side). Each chat becomes its own loop conversation —
+    /// the remote emulates the local Threads tab.
+    pub async fn sync_agent_chats(
+        &self,
+        loop_agent_id: &str,
+        chats: &[AgentChatSync],
+    ) -> Result<(), CommError> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Req<'a> {
+            chats: &'a [AgentChatSync],
+        }
+        let _: serde_json::Value = self
+            .do_json(
+                reqwest::Method::PUT,
+                &format!("/api/v1/agents/{}/chats/sync", loop_agent_id),
+                Some(&Req { chats }),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// List agents registered by this bot in a loop.
     pub async fn list_agents(&self, loop_id: &str) -> Result<Vec<AgentInfo>, CommError> {
         #[derive(serde::Deserialize)]
@@ -1221,4 +1244,14 @@ fn build_query(
     } else {
         format!("?{}", params.join("&"))
     }
+}
+
+/// One desktop chat in a chats/sync publish.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChatSync {
+    pub chat_id: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<String>,
 }

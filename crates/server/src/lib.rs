@@ -2974,7 +2974,55 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 "dm→agent_space reroute: conv belongs to agent space"
             );
 
-            let session_key = if is_personal && is_default_bot {
+            // Per-chat agent spaces: the gateway binds each conversation to ONE
+            // desktop chat (chatId/chatTitle on the JOIN). Route strictly to
+            // that chat's session — never "whatever chat is active". The
+            // 'general' chat (or a pre-chats server) keeps the legacy
+            // unification so the agent's main conversation stays continuous.
+            let conv_chat = state
+                .comm_manager
+                .chat_for_conv(&msg.conversation_id)
+                .await;
+            let strict_chat = match conv_chat {
+                Some((ref cid, _)) if !cid.is_empty() && cid != "general" => true,
+                _ => false,
+            };
+            let session_key = if is_personal && strict_chat {
+                let (chat_id, chat_title) = conv_chat.clone().unwrap_or_default();
+                let row_id = if is_default_bot { "assistant" } else { agent_id.as_str() };
+                match state.store.get_chat(&chat_id) {
+                    Ok(Some(chat)) => chat
+                        .session_name
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| {
+                            agent::keyparser::build_agent_session_key(
+                                row_id,
+                                &format!("thread:{}", chat_id),
+                            )
+                        }),
+                    _ => {
+                        // Loop-created chat the desktop hasn't materialized yet —
+                        // create it as a thread of this agent (the same shape the
+                        // desktop Threads tab creates).
+                        let key = agent::keyparser::build_agent_session_key(
+                            row_id,
+                            &format!("thread:{}", chat_id),
+                        );
+                        let title = if chat_title.is_empty() {
+                            "New chat".to_string()
+                        } else {
+                            chat_title.clone()
+                        };
+                        if let Err(e) = state
+                            .store
+                            .create_chat_for_session(&chat_id, &key, &title, None)
+                        {
+                            tracing::warn!(error = %e, chat_id = %chat_id, "failed to create desktop chat for loop chat");
+                        }
+                        key
+                    }
+                }
+            } else if is_personal && is_default_bot {
                 resolve_companion_session_key(&state)
             } else if is_personal {
                 resolve_agent_session_key(&state, &agent_id)
@@ -3011,7 +3059,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     .or_else(|| state.store.get_agent(&agent_id).ok().flatten().map(|a| a.name))
                     .unwrap_or_else(|| agent_slug.clone())
             };
-            if !is_default_bot {
+            if !is_default_bot && !strict_chat {
                 let _ = state
                     .store
                     .create_chat(&session_key, &format!("Agent: {}", agent_name));

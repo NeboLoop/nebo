@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>English</string>
+	<key>CFBundleDisplayName</key>
+	<string>Nebo</string>
+	<key>CFBundleExecutable</key>
+	<string>nebo</string>
+	<key>CFBundleIconFile</key>
+	<string>icon.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.neboai.nebo</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Nebo</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.10.2</string>
+	<key>CFBundleVersion</key>
+	<string>20260607.180325</string>
+	<key>CSResourcesFileMapped</key>
+	<true/>
+	<key>LSMinimumSystemVersion</key>
+	<string>10.13</string>
+	<key>LSRequiresCarbon</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Nebo reads and organizes files on your Desktop when you ask it to.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Nebo reads and organizes files in your Documents when you ask it to.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Nebo reads and organizes files in your Downloads when you ask it to.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Nebo controls apps like Calendar, Reminders, Music, and Finder on your behalf.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Nebo reads and manages your calendar events when you ask it to.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Nebo reads and manages your reminders when you ask it to.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Nebo looks up and manages your contacts when you ask it to.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Nebo uses the camera when you ask it to capture or analyze video.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Nebo uses the microphone for voice input.</string>
+</dict>
+</plist>

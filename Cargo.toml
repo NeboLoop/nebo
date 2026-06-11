@@ -44,7 +44,6 @@ axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = { version = "0.5" }
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "fs", "set-header", "trace"] }
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
-hyper = { version = "1" }
 
 # Browser automation (Chrome DevTools Protocol) — tier-2 built-in browser backend.
 # No features: drops the optional Chromium fetcher (we launch Chrome ourselves via
@@ -129,7 +128,6 @@ voice = { path = "crates/voice", package = "nebo-voice" }
 comm = { path = "crates/comm", package = "nebo-comm" }
 notify_crate = { path = "crates/notify", package = "nebo-notify" }
 updater = { path = "crates/updater", package = "nebo-updater" }
-cli = { path = "crates/cli", package = "nebo-cli" }
 sandbox-runtime = { git = "https://github.com/NeboLoop/sandbox-runtime.git", branch = "master" }
 vm = { path = "crates/vm", package = "nebo-vm" }
 

@@ -119,6 +119,19 @@ pub trait CommPlugin: Send + Sync {
         None
     }
 
+    /// The (chat_id, chat_title) an agent-space conversation is bound to —
+    /// per-chat agent spaces. None for non-agent-space conversations or
+    /// servers that predate per-chat spaces.
+    async fn chat_for_conv(&self, _conv_id: &str) -> Option<(String, String)> {
+        None
+    }
+
+    /// The conversation bound to ONE chat of an agent (per-chat agent
+    /// spaces). 'general'/empty falls back to the agent's main conversation.
+    async fn agent_chat_conv_for_slug(&self, _slug: &str, _chat_id: &str) -> Option<String> {
+        None
+    }
+
     /// Look up the loop_id for an agent_space conversation.
     /// Returns the loop_id if this conversation belongs to a registered agent space.
     async fn agent_space_loop_id(&self, _conv_id: &str) -> Option<String> {

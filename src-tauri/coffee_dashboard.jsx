@@ -1,0 +1,132 @@
+import React, { useState } from 'react';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts';
+
+const data = [
+  { month: 'Jan', revenue: 24500 },
+  { month: 'Feb', revenue: 28300 },
+  { month: 'Mar', revenue: 31200 },
+  { month: 'Apr', revenue: 29800 },
+  { month: 'May', revenue: 33500 },
+  { month: 'Jun', revenue: 36200 },
+  { month: 'Jul', revenue: 38900 },
+  { month: 'Aug', revenue: 41200 },
+  { month: 'Sep', revenue: 39800 },
+  { month: 'Oct', revenue: 42500 },
+  { month: 'Nov', revenue: 45300 },
+  { month: 'Dec', revenue: 48700 },
+];
+
+const formatCurrency = (value) => {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(value);
+};
+
+const CoffeeDashboard = () => {
+  const totalRevenue = data.reduce((sum, item) => sum + item.revenue, 0);
+  const averageRevenue = Math.round(totalRevenue / data.length);
+  const highestMonth = data.reduce((max, item) => 
+    item.revenue > max.revenue ? item : max
+  );
+  const lowestMonth = data.reduce((min, item) => 
+    item.revenue < min.revenue ? item : min
+  );
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-8">
+      <div className="max-w-6xl mx-auto">
+        {/* Header */}
+        <header className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            Coffee Shop Revenue Dashboard
+          </h1>
+          <p className="text-gray-600">Monthly Performance Overview</p>
+        </header>
+
+        {/* Stat Row */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <p className="text-sm font-medium text-gray-500 mb-1">Total Revenue</p>
+            <p className="text-2xl font-bold text-green-600">
+              {formatCurrency(totalRevenue)}
+            </p>
+          </div>
+          
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <p className="text-sm font-medium text-gray-500 mb-1">Average Monthly</p>
+            <p className="text-2xl font-bold text-blue-600">
+              {formatCurrency(averageRevenue)}
+            </p>
+          </div>
+          
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <p className="text-sm font-medium text-gray-500 mb-1">Highest Month</p>
+            <p className="text-xl font-bold text-purple-600">{highestMonth.month}</p>
+            <p className="text-sm text-gray-600">{formatCurrency(highestMonth.revenue)}</p>
+          </div>
+          
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <p className="text-sm font-medium text-gray-500 mb-1">Lowest Month</p>
+            <p className="text-xl font-bold text-orange-600">{lowestMonth.month}</p>
+            <p className="text-sm text-gray-600">{formatCurrency(lowestMonth.revenue)}</p>
+          </div>
+        </div>
+
+        {/* Chart */}
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <h2 className="text-xl font-semibold text-gray-800 mb-6">
+            Monthly Revenue Trend
+          </h2>
+          <ResponsiveContainer width="100%" height={400}>
+            <BarChart
+              data={data}
+              margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis 
+                dataKey="month" 
+                stroke="#6b7280"
+                tick={{ fontSize: 14 }}
+              />
+              <YAxis 
+                stroke="#6b7280"
+                tick={{ fontSize: 14 }}
+                tickFormatter={(value) => `$${value.toLocaleString()}`}
+              />
+              <Tooltip 
+                formatter={(value) => formatCurrency(value)}
+                contentStyle={{
+                  backgroundColor: '#fff',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '8px',
+                  padding: '12px',
+                }}
+              />
+              <Legend wrapperStyle={{ paddingTop: '20px' }} />
+              <Bar
+                dataKey="revenue"
+                fill="#10b981"
+                radius={[8, 8, 0, 0]}
+                barSize={40}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default CoffeeDashboard;

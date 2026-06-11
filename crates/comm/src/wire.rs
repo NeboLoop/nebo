@@ -115,6 +115,13 @@ pub struct JoinResultPayload {
     /// not camelCase.
     #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
     pub conv_type: String,
+    /// Agent-space chats: this conversation maps to ONE desktop chat of the
+    /// agent. 'general' (or empty, from older servers) is the legacy single
+    /// conversation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub chat_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub chat_title: String,
 }
 
 /// LEAVE_CONVERSATION frame payload (client -> server).
@@ -234,6 +241,8 @@ mod tests {
             agent_id: String::new(),
             agent_slug: String::new(),
             conv_type: String::new(),
+            chat_id: String::new(),
+            chat_title: String::new(),
         };
         let json = serde_json::to_string(&p).unwrap();
         // Empty fields should be omitted
@@ -257,6 +266,8 @@ mod tests {
             agent_id: "agent-456".into(),
             agent_slug: "researcher".into(),
             conv_type: String::new(),
+            chat_id: String::new(),
+            chat_title: String::new(),
         };
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains("agentId"));
