@@ -371,7 +371,8 @@ fn channel_guidance(channel: &str) -> String {
              Conversational answers, short explanations, and quick facts stay in chat. \
              Always write under `{out_dir}` — it needs no permissions and renders instantly. \
              For a PDF or Word doc: write the .md, then `os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")` \
-             (or `to: \"docx\"`). For a spreadsheet: write the .csv, then convert `to: \"xlsx\"`. \
+             (or `to: \"docx\"`). For a spreadsheet: write the .csv, then convert `to: \"xlsx\"` \
+             — CSV must have exactly one record per line (rows separated by newlines). \
              All conversion runs on embedded engines — NEVER use host binaries \
              (wkhtmltopdf, pandoc, headless chrome) for document conversion."
         );

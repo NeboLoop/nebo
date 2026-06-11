@@ -176,10 +176,35 @@
     requestAnimationFrame(() => scrollToBottom());
   }
   const CREATIONS_MIN = 220;
+  // The chat column must stay usable no matter how wide the panel goes —
+  // wide enough for the composer, message bubbles, and header controls.
+  const CHAT_MIN = 400;
   let creationsWidth = $state(CREATIONS_MIN);
   let userResized = $state(false);
   let resizing = $state(false);
   let containerEl = $state<HTMLDivElement | null>(null);
+
+  // One clamp for every pathway that sets the panel width (open, drag,
+  // container resize): never below CREATIONS_MIN, never so wide the chat
+  // column drops under CHAT_MIN.
+  function clampPanelWidth(w: number): number {
+    if (!containerEl) return Math.max(CREATIONS_MIN, w);
+    const total = containerEl.getBoundingClientRect().width;
+    const max = Math.max(CREATIONS_MIN, total - CHAT_MIN);
+    return Math.max(CREATIONS_MIN, Math.min(max, w));
+  }
+
+  // Re-clamp when the container shrinks (window resize, sidebar toggle) —
+  // the panel width is absolute px, so without this the flex chat column
+  // absorbs the entire loss and collapses.
+  $effect(() => {
+    if (!containerEl) return;
+    const ro = new ResizeObserver(() => {
+      if (creationsOpen) creationsWidth = clampPanelWidth(creationsWidth);
+    });
+    ro.observe(containerEl);
+    return () => ro.disconnect();
+  });
 
   // Open the panel at HALF the chat area (Claude-style) unless the user has
   // dragged it to their own width this session; always resizable after.
@@ -187,7 +212,7 @@
     creationsOpen = true;
     if (!userResized && containerEl) {
       const w = containerEl.getBoundingClientRect().width;
-      creationsWidth = Math.max(360, Math.min(w * 0.6, w * 0.5));
+      creationsWidth = clampPanelWidth(Math.max(360, w * 0.5));
     }
   }
 
@@ -197,9 +222,7 @@
     const onMove = (ev: MouseEvent) => {
       if (!containerEl) return;
       const rect = containerEl.getBoundingClientRect();
-      const newWidth = rect.right - ev.clientX;
-      const maxWidth = rect.width * 0.6;
-      creationsWidth = Math.max(CREATIONS_MIN, Math.min(maxWidth, newWidth));
+      creationsWidth = clampPanelWidth(rect.right - ev.clientX);
       userResized = true;
     };
     const onUp = () => {
@@ -516,10 +539,10 @@
   <!-- Header -->
   {#if headerTitle}
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
-      <span class="text-sm font-semibold">{headerTitle}</span>
+      <span class="text-sm font-semibold truncate min-w-0">{headerTitle}</span>
       {#if headerRight}
         <button
-          class="text-sm ml-auto cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
+          class="text-sm ml-auto shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
           onclick={() => creationsOpen ? (creationsOpen = false) : openWorkPanel()}
           title={creationsOpen ? 'Close Work panel' : 'Open Work panel'}
         >

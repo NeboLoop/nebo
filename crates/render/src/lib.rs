@@ -30,6 +30,8 @@ pub enum RenderError {
     Compile(String),
     #[error("pdf export failed: {0}")]
     Export(String),
+    #[error("{0}")]
+    Input(String),
 }
 
 /// Embedded fonts + font book, loaded once per process (search is not free).

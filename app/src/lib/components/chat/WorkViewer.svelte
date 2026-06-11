@@ -79,8 +79,47 @@
     return res.arrayBuffer();
   }
 
+  // RFC 4180 parse: quoted fields may contain the separator, "" escapes,
+  // and embedded newlines — naive line/sep splitting scrambles real CSV.
   function parseCsv(text: string, sep: string): string[][] {
-    return text.split('\n').filter((l) => l.trim()).map((l) => l.split(sep).map((c) => c.trim()));
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let field = '';
+    let inQuotes = false;
+    const endField = () => {
+      row.push(field.trim());
+      field = '';
+    };
+    const endRow = () => {
+      endField();
+      if (row.some((c) => c)) rows.push(row);
+      row = [];
+    };
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') {
+            field += '"';
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          field += ch;
+        }
+      } else if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === sep) {
+        endField();
+      } else if (ch === '\n') {
+        endRow();
+      } else if (ch !== '\r') {
+        field += ch;
+      }
+    }
+    if (field.trim() || row.length) endRow();
+    return rows;
   }
 
   async function load() {
