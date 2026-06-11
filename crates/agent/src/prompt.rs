@@ -329,15 +329,11 @@ const GEMINI_OPERATIONAL_GUIDANCE: &str = r#"
 /// this belongs in the prompt rather than the per-turn message stream (R7: migrated
 /// from the ChannelAdapter / ChannelPluginRouting / LoopFileSharing steering generators).
 ///
-/// Exactly one of three forms applies: terse-formatting channels (dm/cli/voice), the
-/// NeboAI loop (file sharing via the `loop` tool), or any other plugin-backed channel
-/// (route I/O + uploads through `plugin(...)`). `neboai` is treated as internal for
-/// plugin routing — it's served by the `loop` tool, not a plugin.
+/// Exactly one of four forms applies: terse-formatting channels (dm/cli/voice), the
+/// NeboAI loop (file sharing via the `loop` tool), desktop/web surfaces (""/web/app —
+/// Work-panel document steering), or any other plugin-backed channel (route I/O +
+/// uploads through `plugin(...)`). `neboai` is served by the `loop` tool, not a plugin.
 fn channel_guidance(channel: &str) -> String {
-    // Internal surfaces Nebo owns directly — no plugin layer. `neboai` is internal here
-    // (handled by the loop branch below); the rest format-only or have no channel guidance.
-    const INTERNAL_CHANNELS: &[&str] = &["", "web", "dm", "cli", "voice", "neboai"];
-
     if let Some(fmt) = match channel {
         "dm" => Some("Keep responses concise for direct messages. Avoid markdown formatting."),
         "cli" => Some("Use plain text output suitable for terminal display. No markdown."),
@@ -356,8 +352,25 @@ fn channel_guidance(channel: &str) -> String {
             .to_string();
     }
 
-    if INTERNAL_CHANNELS.contains(&channel) {
-        return String::new();
+    // Desktop/web surfaces have the Work panel — steer substantial deliverables
+    // into rendered documents instead of walls of text in chat. (Terse channels
+    // returned above; loop/plugin channels attach files instead.)
+    if channel.is_empty() || channel == "web" || channel == "app" {
+        let out_dir = config::data_dir()
+            .map(|d| d.join("files").to_string_lossy().to_string())
+            .unwrap_or_else(|_| "~/Documents".to_string());
+        return format!(
+            "\n\n## Work Documents\n\
+             The app renders documents you produce in a side Work panel. When the substance \
+             of a reply is a self-contained deliverable — a report, table, plan, puzzle, \
+             one-pager, formatted code file, anything the user will keep, reuse, or print — \
+             WRITE IT AS A FILE with `os(resource: \"file\", action: \"write\", path: \"{out_dir}/<name>.<ext>\", content: ...)` \
+             using a fitting extension (.md for documents, .html for rich layout, .csv for \
+             tables), then keep the chat reply to one or two sentences that mention the \
+             filename in backticks. Do NOT paste large formatted content into chat. \
+             Conversational answers, short explanations, and quick facts stay in chat. \
+             Always write under `{out_dir}` — it needs no permissions and renders instantly."
+        );
     }
 
     // Plugin-backed channel (slack/discord/teams/…). No hardcoded slugs — `{channel}`

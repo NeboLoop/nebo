@@ -1,5 +1,6 @@
 <script lang="ts">
   import ChatComposer from './ChatComposer.svelte';
+  import WorkViewer from './WorkViewer.svelte';
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
@@ -96,11 +97,33 @@
     });
   }
 
-  // Render assistant message content with basic markdown + mention chips
+  // Render assistant message content with basic markdown + mention chips.
+  // Code blocks get a copy affordance: each <pre> is wrapped with a positioned
+  // button handled by delegated click (copyCodeBlock) — the button copies the
+  // wrapped <code>'s text, so no payload attributes are needed.
   function renderMarkdown(content: string): string {
     if (!content) return '';
     const html = marked.parse(content, { async: false }) as string;
-    return renderMentionChips(html);
+    const withCopy = html
+      .replace(
+        /<pre>/g,
+        '<div class="relative group/code"><button type="button" data-code-copy title="Copy code" class="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-xs font-medium bg-base-100/80 border border-base-content/10 text-base-content/60 opacity-0 group-hover/code:opacity-100 hover:text-base-content hover:bg-base-200 cursor-pointer transition-opacity">Copy</button><pre>'
+      )
+      .replace(/<\/pre>/g, '</pre></div>');
+    return renderMentionChips(withCopy);
+  }
+
+  // Delegated handler for the injected code-block copy buttons.
+  function copyCodeBlock(target: HTMLElement): boolean {
+    const btn = target.closest?.('[data-code-copy]') as HTMLElement | null;
+    if (!btn) return false;
+    const code = btn.parentElement?.querySelector('pre code, pre')?.textContent ?? '';
+    navigator.clipboard.writeText(code).then(() => {
+      const prev = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = prev; }, 1200);
+    });
+    return true;
   }
 
   // "Work" artifacts produced by the agent — flattened from each assistant message's
@@ -112,8 +135,6 @@
       }))
     )
   );
-  // Lazy-loaded file content keyed by artifact id (undefined = not fetched, '' = loading).
-  let loadedContent = $state<Record<string, string | undefined>>({});
 
   const artifactIcons = { document: FileText, code: Code, table: Table, slides: Presentation };
   const activeArtifact = $derived(artifacts.find(a => a.id === activeArtifactId));
@@ -133,6 +154,10 @@
   }
 
   function handleWorkMentionClick(e: MouseEvent) {
+    if (copyCodeBlock(e.target as HTMLElement)) {
+      e.preventDefault();
+      return;
+    }
     const el = (e.target as HTMLElement)?.closest?.('[data-work-id]');
     if (el) {
       e.preventDefault();
@@ -140,21 +165,12 @@
     }
   }
 
-  async function openArtifact(id: string) {
+  function openArtifact(id: string) {
     activeArtifactId = id;
     creationsOpen = true;
     const a = artifacts.find(x => x.id === id);
     if (a) creationsTitle = a.title;
-    // Fetch the file content once, on first open.
-    if (a?.url && loadedContent[id] === undefined) {
-      loadedContent = { ...loadedContent, [id]: '' };
-      try {
-        const res = await fetch(a.url);
-        loadedContent = { ...loadedContent, [id]: res.ok ? await res.text() : 'Failed to load file.' };
-      } catch {
-        loadedContent = { ...loadedContent, [id]: 'Failed to load file.' };
-      }
-    }
+    // WorkViewer owns fetching + rendering (text/binary/media per format).
   }
   const CREATIONS_MIN = 220;
   let creationsWidth = $state(CREATIONS_MIN);
@@ -736,7 +752,13 @@
 
       {:else if msg.type === 'assistant'}
         {@const origIdx = originalIndices[idx]}
-        <div class="max-w-[640px] mt-3">
+        {@const nextGroup = groupedMessages[idx + 1]}
+        <!-- One assistant TURN reads as one container: narration segments
+             between tool groups flow as paragraphs; the time/copy/retry row
+             renders once, on the segment that ends the turn. -->
+        {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask') : !isLoading}
+        {@const isTurnStart = idx === 0 || groupedMessages[idx - 1]?.type === 'user' || groupedMessages[idx - 1]?.type === 'ask'}
+        <div class="max-w-[640px] {isTurnStart ? 'mt-3' : 'mt-1.5'}">
           {#if msg.delegateAgentName}
             {@const da = allAgents.find(a => a.id === msg.delegateAgentId)}
             {@const dc = AGENT_COLORS_MAP[da?.color || 'teal'] || AGENT_COLORS_MAP['teal']}
@@ -806,29 +828,31 @@
             </button>
           {/each}
 
-          <div class="flex items-center gap-1 mt-2">
-            {#if msg.time}
-              <span class="text-xs text-base-content/50 font-mono mr-1">{msg.time}</span>
-            {/if}
-            <button
-              class="w-7 h-7 rounded-md grid place-items-center {copiedIdx === origIdx ? 'text-success' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'} cursor-pointer bg-transparent border-none transition-colors"
-              title={copiedIdx === origIdx ? 'Copied!' : 'Copy'}
-              onclick={() => copyMessage(msg.content, origIdx)}
-            >
-              {#if copiedIdx === origIdx}
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              {:else}
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          {#if isTurnEnd}
+            <div class="flex items-center gap-1 mt-2">
+              {#if msg.time}
+                <span class="text-xs text-base-content/50 font-mono mr-1">{msg.time}</span>
               {/if}
-            </button>
-            <button
-              class="w-7 h-7 rounded-md grid place-items-center text-base-content/50 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none transition-colors"
-              title="Retry"
-              onclick={() => redoMessage(origIdx)}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-            </button>
-          </div>
+              <button
+                class="w-7 h-7 rounded-md grid place-items-center {copiedIdx === origIdx ? 'text-success' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'} cursor-pointer bg-transparent border-none transition-colors"
+                title={copiedIdx === origIdx ? 'Copied!' : 'Copy'}
+                onclick={() => copyMessage(msg.content, origIdx)}
+              >
+                {#if copiedIdx === origIdx}
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                {:else}
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                {/if}
+              </button>
+              <button
+                class="w-7 h-7 rounded-md grid place-items-center text-base-content/50 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none transition-colors"
+                title="Retry"
+                onclick={() => redoMessage(origIdx)}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+              </button>
+            </div>
+          {/if}
         </div>
       {/if}
     {/each}
@@ -952,44 +976,17 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
-    <!-- Creations content -->
+    <!-- Creations content — one renderer for every format, routed by extension -->
     <div class="flex-1 overflow-y-auto">
-      {#if activeArtifact}
-        {@const body = loadedContent[activeArtifact.id]}
-        <div class="p-4">
-          {#if body === undefined || body === ''}
-            <div class="text-xs text-base-content/50 py-8 text-center">Loading…</div>
-          {:else if activeArtifact.kind === 'code'}
-            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap rounded-lg bg-base-200 p-4 overflow-x-auto">{body}</pre>
-          {:else if activeArtifact.kind === 'table'}
-            {@const lines = body.split('\n').filter(l => l.trim())}
-            {@const headerCells = lines[0]?.split(',').map(c => c.trim()) ?? []}
-            {@const bodyLines = lines.slice(1)}
-            <div class="overflow-x-auto rounded-lg border border-base-300">
-              <table class="table table-xs w-full">
-                <thead>
-                  <tr class="bg-base-200">
-                    {#each headerCells as cell}
-                      <th class="text-xs font-semibold">{cell}</th>
-                    {/each}
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each bodyLines as line}
-                    <tr class="border-t border-base-300">
-                      {#each line.split(',').map(c => c.trim()) as cell}
-                        <td class="text-xs">{cell}</td>
-                      {/each}
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-          {:else}
-            <!-- Document / slides: full markdown via the shared renderer -->
-            <div class="prose prose-sm max-w-none">{@html renderMarkdown(body)}</div>
-          {/if}
-        </div>
+      {#if activeArtifact?.url}
+        {#key activeArtifact.id}
+          <WorkViewer
+            url={activeArtifact.url}
+            title={activeArtifact.title}
+            renderHtml={renderMarkdown}
+            oncontentclick={handleWorkMentionClick}
+          />
+        {/key}
       {:else}
         <div class="flex flex-col items-center justify-center h-full gap-3 text-base-content/50 p-6">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">

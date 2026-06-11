@@ -222,7 +222,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         hub.broadcast("chat_created", created_payload);
     }
 
-    let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
+    let fairness_key = agent_id.clone();
+    let mut lane_task = make_task(&lane, format!("chat:{}", sid), async move {
         // RunHandle auto-unregisters from RunRegistry on drop (panic-safe).
         let _run_handle = run_handle;
 
@@ -233,13 +234,19 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             }
         }
 
-        // Helper: build a WS broadcast payload with session_id, agentId, and
-        // optional originAgentId (for @mention delegate routing).
+        // One id per user turn (this run): the frontend groups every stream
+        // event carrying the same turn_id — text, tool, thinking — into a
+        // single turn container with blocks finalized in place.
+        let turn_id = uuid::Uuid::new_v4().to_string();
+
+        // Helper: build a WS broadcast payload with session_id, agentId,
+        // turn_id, and optional originAgentId (for @mention delegate routing).
         macro_rules! ws_payload {
             ($($key:tt : $val:expr),* $(,)?) => {{
                 let mut v = serde_json::json!({
                     "session_id": sid,
                     "agentId": agent_id,
+                    "turn_id": turn_id,
                     $($key: $val),*
                 });
                 if let Some(ref oid) = origin_agent_id {
@@ -734,13 +741,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     }
                 }
 
-                // Render HTML before comm reply (which may move full_response)
-                let html = if !full_response.is_empty() {
-                    Some(md_to_html(&full_response))
-                } else {
-                    None
-                };
-
                 // Send final comm reply — flush remaining stream buffer + complete message
                 if let Some(reply_config) = &comm_reply {
                     // Strip markdown image references to local files — the actual
@@ -913,12 +913,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     }
                 }
 
-                // Always send chat_complete (with any run-produced media artifacts so
-                // the app renders them inline).
+                // Always send chat_complete (with any run-produced media artifacts
+                // so the app renders them inline). Carries NO message content:
+                // streamed blocks finalize in place on the frontend — a final
+                // payload that re-carried the turn text is what caused segments
+                // to render twice.
                 hub.broadcast(
                     "chat_complete",
                     ws_payload!(
-                        "html": html,
                         "artifacts": &app_file_artifacts,
                     ),
                 );
@@ -963,6 +965,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
         Ok(())
     });
+    lane_task.fairness_key = Some(fairness_key);
 
     state.lanes.enqueue_async(&lane, lane_task);
 }
@@ -1073,7 +1076,8 @@ pub async fn run_chat_events(
     };
 
     let (tx, rx) = mpsc::channel(64);
-    let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
+    let fairness_key = agent_id.clone();
+    let mut lane_task = make_task(&lane, format!("chat:{}", sid), async move {
         let _run_handle = run_handle;
         match runner.run(req).await {
             Ok(mut events) => loop {
@@ -1118,6 +1122,7 @@ pub async fn run_chat_events(
         drop(_run_handle);
         Ok(())
     });
+    lane_task.fairness_key = Some(fairness_key);
 
     state.lanes.enqueue_async(&lane, lane_task);
     Ok(rx)

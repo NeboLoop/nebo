@@ -556,6 +556,20 @@
           }
           return false;
         },
+        handleDrop(_view, event) {
+          // Files dropped onto the editor attach (same as handlePaste above).
+          // Without this, ProseMirror parses the drop's text/uri-list through
+          // the markdown clipboard parser and inserts the file PATH as text
+          // instead of attaching the file.
+          const files = Array.from(event.dataTransfer?.files || []);
+          if (files.length > 0) {
+            event.preventDefault();
+            (event as Event & { _composerHandled?: boolean })._composerHandled = true;
+            addFiles(files);
+            return true;
+          }
+          return false;
+        },
       },
       onUpdate({ editor: ed }) {
         editorIsEmpty = ed.isEmpty;
@@ -617,8 +631,9 @@
     })(editor.getJSON());
 
     // Canonical markdown serialization via tiptap-markdown — preserves lists,
-    // line breaks, emphasis, etc. (Mention serializes to `<@id>`).
-    const text = (editor.storage as { markdown: { getMarkdown(): string } }).markdown
+    // line breaks, emphasis, etc. (Mention serializes to `<@id>`). The storage
+    // type is augmented by the extension at runtime, hence the cast.
+    const text = (editor.storage as unknown as { markdown: { getMarkdown(): string } }).markdown
       .getMarkdown()
       .trim();
     return { text, mentions };

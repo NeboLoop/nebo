@@ -267,11 +267,13 @@ export function createChatController(config: ChatControllerConfig) {
     if (content || attachments.length || workItems.length) {
       const isDelegate = aid !== agentId;
       const delegateAgent = isDelegate ? allAgents.find(a => a.id === aid) : null;
+      // Finalize in place: the streamed text IS the final segment —
+      // chat_complete carries no replacement content (a final payload that
+      // re-carried the whole turn made earlier segments render twice).
       messages = [...messages, {
         id: 'msg-' + Date.now(),
         type: 'assistant' as const,
         content: content || '',
-        html: data.html || undefined,
         time: formatTime(Date.now()),
         ...(delegateAgent ? {
           delegateAgentId: delegateAgent.id,
