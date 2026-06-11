@@ -990,18 +990,32 @@
     <!-- Creations header -->
     <div class="h-11 px-4 border-b border-base-content/10 flex items-center gap-2 shrink-0">
       {#if activeArtifact}
-        <!-- Artifact tabs -->
-        <div class="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
-          {#each artifacts as a}
-            {@const ArtIcon2 = artifactIcons[a.kind]}
-            <button
-              class="flex items-center gap-1.5 py-1 px-2 rounded-md text-xs cursor-pointer border-none transition-colors shrink-0 {activeArtifactId === a.id ? 'bg-base-200 font-medium text-base-content' : 'bg-transparent text-base-content/50 hover:text-base-content/70 hover:bg-base-200/50'}"
-              onclick={() => openArtifact(a.id)}
-            >
-              {#if ArtIcon2}<ArtIcon2 class="w-3 h-3 shrink-0" />{/if}
-              <span class="truncate max-w-[100px]">{a.title}</span>
-            </button>
-          {/each}
+        {@const ActiveIcon = artifactIcons[activeArtifact.kind]}
+        <!-- Active file + dropdown list of every artifact in the thread
+             (a tab strip stops scaling past a handful of files). -->
+        <div class="dropdown flex-1 min-w-0">
+          <div tabindex="0" role="button" class="flex items-center gap-1.5 py-1 px-2 rounded-md text-xs font-medium cursor-pointer hover:bg-base-200 transition-colors max-w-full w-fit">
+            {#if ActiveIcon}<ActiveIcon class="w-3 h-3 shrink-0" />{/if}
+            <span class="truncate">{activeArtifact.title}</span>
+            {#if artifacts.length > 1}
+              <span class="text-xs text-base-content/50 font-mono shrink-0">{artifacts.length}</span>
+            {/if}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-base-content/50"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <ul class="dropdown-content menu menu-sm bg-base-100 border border-base-300 rounded-box z-50 w-72 max-h-80 overflow-y-auto flex-nowrap p-1 shadow-md">
+            {#each artifacts as a}
+              {@const ArtIcon2 = artifactIcons[a.kind]}
+              <li>
+                <button
+                  class="flex items-center gap-2 {activeArtifactId === a.id ? 'bg-base-200 font-medium' : ''}"
+                  onclick={() => { openArtifact(a.id); (document.activeElement as HTMLElement | null)?.blur(); }}
+                >
+                  {#if ArtIcon2}<ArtIcon2 class="w-3.5 h-3.5 shrink-0 text-base-content/70" />{/if}
+                  <span class="truncate text-xs">{a.title}</span>
+                </button>
+              </li>
+            {/each}
+          </ul>
         </div>
       {:else}
         <span class="text-sm font-semibold flex-1 truncate">{creationsTitle}</span>

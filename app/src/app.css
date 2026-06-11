@@ -336,3 +336,21 @@
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.18) !important;
   margin-bottom: 1rem !important;
 }
+
+/* Slim horizontal scrollbar for tab strips and table rails (native bars
+   overlay fat pills on top of the content). */
+.scrollbar-slim {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-base-content) 25%, transparent) transparent;
+}
+.scrollbar-slim::-webkit-scrollbar {
+  height: 4px;
+  width: 4px;
+}
+.scrollbar-slim::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-slim::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-base-content) 25%, transparent);
+  border-radius: 9999px;
+}

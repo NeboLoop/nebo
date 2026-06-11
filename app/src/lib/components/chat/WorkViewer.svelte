@@ -280,7 +280,7 @@
       {#if sheets.length > 1}
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mt-4 mb-2 first:mt-0">{sheet.name}</div>
       {/if}
-      <div class="overflow-x-auto rounded-lg border border-base-300 mb-2">
+      <div class="overflow-x-auto scrollbar-slim rounded-lg border border-base-300 mb-2">
         <table class="table table-xs w-full">
           <thead>
             <tr class="bg-base-200">
