@@ -490,11 +490,13 @@ impl CommPlugin for NeboAIPlugin {
         let devlog_for_read = self.devlog.read().await.clone();
         let connected_for_read = self.connected.clone();
         let notify_for_read = self.disconnect_notify.clone();
+        let maps_for_read = self.conv_maps.clone();
         tokio::spawn(async move {
             read_loop(
                 read,
                 read_handler,
                 join_tx,
+                maps_for_read,
                 dedup,
                 read_cancel,
                 devlog_for_read,
@@ -622,6 +624,11 @@ impl CommPlugin for NeboAIPlugin {
             } else {
                 "dm"
             }
+        } else if msg.topic == "embed" {
+            // Embed replies go out on the "chat" stream — the web widget listens
+            // for non-ephemeral streams and merges `type: "stream"` chunks,
+            // finalizing on the closing typeless message (like agent space).
+            "chat"
         } else {
             &msg.topic
         };
@@ -956,6 +963,10 @@ enum JoinUpdate {
     Channel(ChannelMeta, String),       // meta, conversation_id
     Dm(DmPeer, String),                 // peer, conversation_id
     AgentSpace(AgentSpaceMeta, String), // meta, conversation_id
+    Embed {
+        stream: String, // "embed:{oauthClientId}"
+        conversation_id: String,
+    },
 }
 
 /// Shared conversation maps updated by the join processor task.
@@ -971,6 +982,7 @@ struct ConvMaps {
     agent_space_convs: HashMap<String, AgentSpaceMeta>, // conv_id → meta
     agent_space_by_slug: HashMap<String, String>,       // slug → conv_id
     agent_space_by_id: HashMap<String, String>,         // agent_id → conv_id
+    embed_convs: HashMap<String, String>,               // conv_id → embed stream
 }
 
 impl ConvMaps {
@@ -1014,6 +1026,12 @@ impl ConvMaps {
                     .insert(meta.agent_id.clone(), conv_id.clone());
                 self.agent_space_convs.insert(conv_id, meta);
             }
+            JoinUpdate::Embed {
+                stream,
+                conversation_id,
+            } => {
+                self.embed_convs.insert(conversation_id, stream);
+            }
         }
     }
 }
@@ -1023,6 +1041,7 @@ async fn read_loop(
     mut read: SplitStream<WsStream>,
     handler: Option<MessageHandler>,
     join_tx: mpsc::Sender<JoinUpdate>,
+    conv_maps: Arc<RwLock<ConvMaps>>,
     dedup: DedupWindow,
     cancel: tokio_util::sync::CancellationToken,
     devlog: Option<DevLog>,
@@ -1152,6 +1171,20 @@ async fn read_loop(
 
                         let conv_id_str = uuid_from_bytes(&header.conversation_id);
 
+                        // Deliveries on an embed conversation arrive on stream
+                        // "chat" — tag the topic as "embed" (recorded at JOIN
+                        // time) so the server routes them to the embed branch.
+                        let topic = if conv_maps
+                            .read()
+                            .await
+                            .embed_convs
+                            .contains_key(&conv_id_str)
+                        {
+                            "embed".to_string()
+                        } else {
+                            delivery.stream.clone()
+                        };
+
                         if let Some(ref dl) = devlog {
                             dl.inbound(
                                 &delivery.stream,
@@ -1166,7 +1199,7 @@ async fn read_loop(
                             id: uuid_from_bytes(&header.msg_id),
                             from: delivery.sender_id.clone(),
                             to: String::new(),
-                            topic: delivery.stream.clone(),
+                            topic,
                             conversation_id: conv_id_str,
                             msg_type: CommMessageType::Message,
                             content: delivery.content.to_string(),
@@ -1202,7 +1235,13 @@ async fn read_loop(
                         };
 
                         if let Some(ref dl) = devlog {
-                            let info = if !result.agent_id.is_empty() {
+                            let info = if result.conv_type == "embed" {
+                                format!(
+                                    "embed stream={} conv={}",
+                                    result.stream,
+                                    &result.conversation_id.get(..8).unwrap_or(&result.conversation_id),
+                                )
+                            } else if !result.agent_id.is_empty() {
                                 format!(
                                     "agent_space agent={} conv={}",
                                     result.agent_slug,
@@ -1230,7 +1269,17 @@ async fn read_loop(
                             dl.join_result(&info);
                         }
 
-                        if !result.agent_id.is_empty() {
+                        if result.conv_type == "embed" {
+                            // Embed conversation join (pushed by the gateway when
+                            // a publisher widget opens a conversation with this
+                            // bot) — track it so deliveries get topic "embed".
+                            let _ = join_tx
+                                .send(JoinUpdate::Embed {
+                                    stream: result.stream,
+                                    conversation_id: result.conversation_id,
+                                })
+                                .await;
+                        } else if !result.agent_id.is_empty() {
                             // Agent space join
                             let _ = join_tx
                                 .send(JoinUpdate::AgentSpace(

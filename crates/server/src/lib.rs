@@ -2720,6 +2720,133 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         return;
     }
 
+    // Route embed conversations — a publisher product (e.g. Monument) embeds a
+    // chat widget where the user talks to this bot. `context` in the content is
+    // host-page-asserted (advisory); `embed` is stamped by the NeboLoop gateway
+    // (trusted app identity). Replies go back on the same conversation.
+    if msg.topic == "embed" {
+        let text = extract_message_text(&msg.content);
+        if text.is_empty() {
+            tracing::warn!(conv_id = %msg.conversation_id, "embed message with empty text, skipping");
+            return;
+        }
+
+        // Embed conversations belong to the BOT — default to the primary agent,
+        // but honor an explicit `<@id>` mention chip (like the channel branch).
+        let bot_id = config::read_bot_id().unwrap_or_default();
+        let mut agent_id = String::new();
+        for cap in MENTION_TOKEN_RE.captures_iter(&text) {
+            let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+            if !bot_id.is_empty() && id == bot_id {
+                break; // primary bot — keep agent_id empty
+            }
+            if let Ok(Some(a)) = state.store.get_agent_by_loop_agent_id(id) {
+                if a.loop_exposed != 0 {
+                    agent_id = a.id;
+                    break;
+                }
+            }
+        }
+
+        let session_key =
+            agent::keyparser::build_session_key("neboai", "embed", &msg.conversation_id);
+
+        if handle_comm_slash_command(&state, &text, &session_key, "embed", &msg.conversation_id)
+            .await
+            .is_some()
+        {
+            return;
+        }
+
+        // Parse the full content JSON for the host-page context (advisory) and
+        // the gateway-stamped app identity (trusted).
+        let content_json: serde_json::Value =
+            serde_json::from_str(&msg.content).unwrap_or(serde_json::Value::Null);
+        let ctx = content_json.get("context").filter(|v| v.is_object());
+        let embed_info = content_json.get("embed").filter(|v| v.is_object());
+        let mention_context = build_embed_context(ctx, embed_info);
+
+        let app_label = ctx
+            .and_then(|c| c.get("app"))
+            .and_then(|v| v.as_str())
+            .or_else(|| embed_info.and_then(|e| e.get("app")).and_then(|v| v.as_str()))
+            .unwrap_or("embed")
+            .to_string();
+
+        tracing::info!(
+            conv_id = %msg.conversation_id,
+            app = %app_label,
+            agent_id = %agent_id,
+            text_len = text.len(),
+            has_context = mention_context.is_some(),
+            "embed: routing to bot"
+        );
+
+        let _ = state
+            .store
+            .create_chat(&session_key, &format!("Embed: {}", app_label));
+
+        let preview = if text.len() > 80 {
+            format!("{}...", truncate_str(&text, 80))
+        } else {
+            text.clone()
+        };
+        notify_crate::send(&format!("Embed chat: {}", app_label), &preview);
+
+        // A mentioned agent uses ITS persona/config; otherwise the bot's main
+        // persona (embed conversations belong to the bot, not a specific agent).
+        let entity_config = if !agent_id.is_empty() {
+            entity_config::resolve_for_chat(&state.store, "agent", &agent_id)
+        } else {
+            entity_config::resolve_for_chat(&state.store, "main", "main")
+        };
+
+        let mut prompt = text;
+        let images = process_comm_attachments(&state, &msg.attachments, &mut prompt).await;
+
+        let config = chat_dispatch::ChatConfig {
+            session_key,
+            prompt,
+            system: String::new(),
+            user_id: String::new(),
+            channel: "neboai".to_string(),
+            origin: tools::Origin::Comm,
+            agent_id,
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            lane: types::constants::lanes::COMM.to_string(),
+            comm_reply: Some(chat_dispatch::CommReplyConfig {
+                provider: "neboai".to_string(),
+                topic: "embed".to_string(),
+                conversation_id: msg.conversation_id.clone(),
+            }),
+            entity_config,
+            images,
+            entity_name: String::new(),
+            origin_agent_id: None,
+            mention_context,
+            tool_scope: None,
+            plan_mode: false,
+            channel_ctx: None,
+        };
+
+        chat_dispatch::run_chat(&state, config).await;
+
+        state.event_bus.emit(tools::events::Event {
+            source: "neboai.embed".to_string(),
+            payload: serde_json::json!({
+                "from": msg.from,
+                "content": msg.content,
+                "conversation_id": msg.conversation_id,
+            }),
+            origin: "neboai".to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        });
+        return;
+    }
+
     // Route chat and DM messages to the agent runner via unified chat pipeline
     if msg.topic == "chat" || msg.topic == "dm" {
         // Check if this conversation is actually an agent_space (gateway sends stream=dm for these)
@@ -3686,6 +3813,73 @@ async fn handle_comm_slash_command(
     }
 
     Some(())
+}
+
+/// Build the system-role context preamble for an embed conversation.
+/// `ctx` is the host-page-asserted context (advisory); `embed` is the
+/// gateway-stamped app identity (trusted). Absent fields are omitted.
+fn build_embed_context(
+    ctx: Option<&serde_json::Value>,
+    embed: Option<&serde_json::Value>,
+) -> Option<String> {
+    if ctx.is_none() && embed.is_none() {
+        return None;
+    }
+
+    let str_at = |v: Option<&serde_json::Value>, key: &str| -> Option<String> {
+        v.and_then(|o| o.get(key))
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+
+    let app = str_at(ctx, "app");
+    let verified = str_at(embed, "app");
+
+    let mut out = String::new();
+    match (&app, &verified) {
+        (Some(a), Some(v)) => out.push_str(&format!(
+            "The user is chatting from inside {} (verified app: {}).",
+            a, v
+        )),
+        (Some(a), None) => out.push_str(&format!("The user is chatting from inside {}.", a)),
+        (None, Some(v)) => out.push_str(&format!(
+            "The user is chatting from an embedded widget (verified app: {}).",
+            v
+        )),
+        (None, None) => out.push_str("The user is chatting from an embedded widget."),
+    }
+
+    let mut location: Vec<String> = Vec::new();
+    for key in ["project", "task"] {
+        let obj = ctx.and_then(|c| c.get(key)).filter(|v| v.is_object());
+        let name = str_at(obj, "name");
+        let id = str_at(obj, "id");
+        match (name, id) {
+            (Some(n), Some(i)) => location.push(format!("{} \"{}\" (id {})", key, n, i)),
+            (Some(n), None) => location.push(format!("{} \"{}\"", key, n)),
+            (None, Some(i)) => location.push(format!("{} id {}", key, i)),
+            (None, None) => {}
+        }
+    }
+    if let Some(url) = str_at(ctx, "url") {
+        location.push(format!("page {}", url));
+    }
+    if let Some(method) = str_at(ctx, "method") {
+        location.push(format!("intent: {}", method));
+    }
+    if !location.is_empty() {
+        out.push_str(&format!(" Current location: {}.", location.join(", ")));
+    }
+
+    if let Some(a) = app.or(verified) {
+        out.push_str(&format!(
+            " Use your {} tools (MCP) to look up or act on this context when relevant.",
+            a
+        ));
+    }
+
+    Some(out)
 }
 
 /// Extract text from a comm message content (JSON or plain text).

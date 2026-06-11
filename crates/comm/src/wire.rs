@@ -109,6 +109,12 @@ pub struct JoinResultPayload {
     /// Agent slug for agent space joins.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent_slug: String,
+    /// Conversation type (e.g. "embed" for publisher chat widgets).
+    /// Empty for servers that don't send it. The Go SDK serializes this
+    /// field as "type" (wire.JoinResultPayload `json:"type,omitempty"`),
+    /// not camelCase.
+    #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
+    pub conv_type: String,
 }
 
 /// LEAVE_CONVERSATION frame payload (client -> server).
@@ -227,6 +233,7 @@ mod tests {
             peer_type: String::new(),
             agent_id: String::new(),
             agent_slug: String::new(),
+            conv_type: String::new(),
         };
         let json = serde_json::to_string(&p).unwrap();
         // Empty fields should be omitted
@@ -249,6 +256,7 @@ mod tests {
             peer_type: String::new(),
             agent_id: "agent-456".into(),
             agent_slug: "researcher".into(),
+            conv_type: String::new(),
         };
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains("agentId"));
