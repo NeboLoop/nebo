@@ -24,6 +24,7 @@ members = [
     "crates/a2ui/a2ui-core",
     "crates/a2ui/a2ui-validation",
     "crates/vm",
+    "crates/render",
     "crates/vm-daemon",
 ]
 
@@ -123,6 +124,7 @@ napp = { path = "crates/napp", package = "nebo-napp" }
 proto = { path = "crates/proto", package = "nebo-proto" }
 workflow = { path = "crates/workflow", package = "nebo-workflow" }
 browser = { path = "crates/browser", package = "nebo-browser" }
+render = { path = "crates/render", package = "nebo-render" }
 voice = { path = "crates/voice", package = "nebo-voice" }
 comm = { path = "crates/comm", package = "nebo-comm" }
 notify_crate = { path = "crates/notify", package = "nebo-notify" }

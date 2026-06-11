@@ -1,0 +1,18 @@
+[package]
+name = "nebo-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "render"
+
+[dependencies]
+# Typst typesetting compiler — the canonical PDF engine. Pure Rust, embedded
+# fonts, identical output on every platform; document conversion never depends
+# on host binaries (wkhtmltopdf is abandoned; Obscura has no layout engine).
+typst = "0.14"
+typst-pdf = "0.14"
+typst-kit = { version = "0.14", default-features = false, features = ["fonts", "embed-fonts"] }
+pulldown-cmark = { workspace = true }
+thiserror = { workspace = true }

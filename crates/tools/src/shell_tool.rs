@@ -102,6 +102,28 @@ impl ShellTool {
             ));
         }
 
+        // Document conversion has ONE canonical pathway — the embedded Typst
+        // engine behind `os(file convert)`. Host converter binaries only exist
+        // on some machines (wkhtmltopdf is abandoned upstream), so shelling out
+        // to them produces runs that work on the developer's laptop and fail on
+        // every customer install. Redirect instead of executing.
+        {
+            let cmd_head = input.command.trim_start();
+            const HOST_CONVERTERS: &[&str] = &["wkhtmltopdf", "weasyprint", "pandoc", "wkhtmltoimage"];
+            if HOST_CONVERTERS
+                .iter()
+                .any(|c| cmd_head.starts_with(c) && cmd_head[c.len()..].starts_with([' ', '\t']))
+            {
+                return ToolResult::error(
+                    "Host document converters are not available on user machines. \
+                     Convert documents with the built-in engine instead: write the document \
+                     as Markdown, then os(resource: \"file\", action: \"convert\", \
+                     path: \"/path/doc.md\", to: \"pdf\"). It typesets identically on every \
+                     platform and the PDF appears in the Work panel automatically.",
+                );
+            }
+        }
+
         // Privilege escalation is never a legitimate automation step: Nebo runs
         // unattended, so sudo either hangs on a password prompt or silently
         // escalates. Refuse before anything executes (covers background too).

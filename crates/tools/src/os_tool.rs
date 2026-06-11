@@ -68,6 +68,72 @@ impl OsTool {
         self
     }
 
+    /// `os(resource: "file", action: "convert", path: "report.md", to: "pdf")` —
+    /// typeset a Markdown (or Typst) document to PDF with the embedded Typst
+    /// engine. The one document→PDF pathway: pure Rust, embedded fonts,
+    /// identical on every platform — never host binaries (wkhtmltopdf is
+    /// abandoned upstream) and never the bundled browser (no layout engine).
+    async fn handle_convert(&self, input: &serde_json::Value) -> ToolResult {
+        let path = input["path"].as_str().unwrap_or("");
+        let to = input["to"].as_str().unwrap_or("pdf");
+        if path.is_empty() {
+            return ToolResult::error(
+                "Error: path is required. Example: os(resource: \"file\", action: \"convert\", path: \"/path/report.md\", to: \"pdf\")",
+            );
+        }
+        if to != "pdf" {
+            return ToolResult::error(format!(
+                "Error: unsupported target format '{to}' (supported: pdf). Source must be a .md or .typ file."
+            ));
+        }
+        let src = crate::file_tool::expand_path(path);
+        let src_path = std::path::Path::new(&src);
+        if !src_path.exists() {
+            return ToolResult::error(format!("Error: source file not found: {src}"));
+        }
+        let ext = src_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let source = match std::fs::read_to_string(src_path) {
+            Ok(s) => s,
+            Err(e) => return ToolResult::error(format!("Error reading {src}: {e}")),
+        };
+        // Typesetting is CPU-bound — keep it off the async runtime threads.
+        let rendered = tokio::task::spawn_blocking(move || match ext.as_str() {
+            "md" | "markdown" | "txt" => {
+                render::markdown_to_pdf(&source).map_err(|e| e.to_string())
+            }
+            "typ" => render::typst_to_pdf(&source).map_err(|e| e.to_string()),
+            other => Err(format!(
+                "convert typesets Markdown to PDF — source must be .md or .typ (got .{other}). \
+                 Write the document as Markdown first, then convert it."
+            )),
+        })
+        .await;
+        let bytes = match rendered {
+            Ok(Ok(b)) => b,
+            Ok(Err(msg)) => {
+                return ToolResult::error(format!(
+                    "Error converting to PDF: {msg}. The source document still renders in the Work panel."
+                ));
+            }
+            Err(e) => return ToolResult::error(format!("Error converting to PDF: {e}")),
+        };
+        let out = src_path.with_extension("pdf");
+        if let Err(e) = std::fs::write(&out, &bytes) {
+            return ToolResult::error(format!("Error writing {}: {e}", out.display()));
+        }
+        let out_str = out.to_string_lossy().to_string();
+        ToolResult::ok(format!(
+            "Converted {src} to {out_str} ({} bytes)",
+            bytes.len()
+        ))
+        // PDF is a user-facing work product — surface it in the Work panel.
+        .with_image_url(out_str)
+    }
+
     pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
         self.store = Some(store);
         self
@@ -77,7 +143,7 @@ impl OsTool {
     fn infer_resource(action: &str) -> &str {
         match action {
             // File
-            "read" | "write" | "edit" | "glob" | "grep" => "file",
+            "read" | "write" | "edit" | "glob" | "grep" | "convert" => "file",
             // Shell
             "exec" | "poll" | "log" => "shell",
             // Input
@@ -195,7 +261,7 @@ impl DynTool for OsTool {
     fn description(&self) -> String {
         "Local machine operations — files, shell, apps, desktop automation, settings, media, credentials, search, PIM.\n\n\
          Resources:\n\
-         - file: read, write, edit, glob, grep — to list a directory, glob its path (pattern defaults to *)\n\
+         - file: read, write, edit, glob, grep, convert — to list a directory, glob its path (pattern defaults to *); convert typesets a .md (or .typ) file to PDF via the embedded Typst engine (never use host binaries like wkhtmltopdf)\n\
          - shell: exec, list, poll, log, write, kill, info\n\
          - window: list, focus, minimize, maximize, resize, close, move\n\
          - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste\n\
@@ -262,6 +328,7 @@ impl DynTool for OsTool {
         props.insert("path".into(), prop("string", "File or directory path"));
         props.insert("content".into(), prop("string", "REQUIRED for write. The file content to write. Must use this exact field name — not 'text' or 'data'."));
         props.insert("pattern".into(), prop("string", "Pattern to match: filename glob (for glob action) or regex (for grep action)"));
+        props.insert("to".into(), prop("string", "Target format for convert (only \"pdf\"). Source must be a .md or .typ file; output lands next to it."));
         props.insert(
             "old_string".into(),
             prop("string", "String to find (for edit)"),
@@ -586,7 +653,12 @@ impl DynTool for OsTool {
             }
 
             match resource.as_str() {
-                // File + Shell — delegate to inner tools
+                // File + Shell — delegate to inner tools. `convert` is handled
+                // here (not in FileTool) because rendering runs on the async
+                // bundled-browser engine; everything else about it is a file op.
+                "file" if input["action"].as_str() == Some("convert") => {
+                    self.handle_convert(&input).await
+                }
                 "file" => self.file_tool.execute(ctx, input),
                 "shell" => self.shell_tool.execute(ctx, input).await,
 
