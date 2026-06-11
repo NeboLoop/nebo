@@ -209,16 +209,12 @@
 
   // Open the panel at HALF the chat area (Claude-style) unless the user has
   // dragged it to their own width this session; always resizable after.
-  // Opening with nothing selected lands on the thread's latest artifact —
-  // the empty state is only for threads with no artifacts at all.
+  // Opening with nothing selected shows the artifact list in the panel —
+  // never auto-pick a file the user didn't ask for.
   function openWorkPanel() {
     creationsOpen = true;
-    if (!activeArtifactId || !artifacts.some((a) => a.id === activeArtifactId)) {
-      const latest = artifacts.at(-1);
-      if (latest) {
-        activeArtifactId = latest.id;
-        creationsTitle = latest.title;
-      }
+    if (activeArtifactId && !artifacts.some((a) => a.id === activeArtifactId)) {
+      activeArtifactId = null; // stale selection from another thread
     }
     if (!userResized && containerEl) {
       const w = containerEl.getBoundingClientRect().width;
@@ -1059,6 +1055,24 @@
             oncontentclick={handleWorkMentionClick}
           />
         {/key}
+      {:else if artifacts.length > 0}
+        <!-- No file selected yet: list every artifact in the thread to pick from. -->
+        <div class="p-3 flex flex-col gap-1.5">
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-1 pt-1 pb-2">Files in this thread</div>
+          {#each artifacts as a}
+            {@const ListIcon = artifactIcons[a.kind]}
+            <button
+              class="flex items-center gap-3 w-full p-3 rounded-xl border border-base-content/10 bg-base-200/30 hover:border-base-content/20 hover:bg-base-200/50 cursor-pointer transition-colors text-left"
+              onclick={() => openArtifact(a.id)}
+            >
+              {#if ListIcon}<ListIcon class="w-4 h-4 text-base-content/50 shrink-0" />{/if}
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium truncate">{a.title}</div>
+                <div class="text-xs text-base-content/50">{a.kind === 'code' ? 'Code' : a.kind === 'table' ? 'Spreadsheet' : a.kind === 'slides' ? 'Presentation' : 'Document'}</div>
+              </div>
+            </button>
+          {/each}
+        </div>
       {:else}
         <div class="flex flex-col items-center justify-center h-full gap-3 text-base-content/50 p-6">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
