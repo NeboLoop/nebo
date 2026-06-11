@@ -196,7 +196,7 @@ const SHELL: &str = r#"<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<style>html,body{height:100%;margin:0}body{background:#fafafa;font-family:system-ui,-apple-system,sans-serif}#root{min-height:100%}</style>
+<style>html,body{min-height:100%;margin:0}body{background:#fafafa;font-family:system-ui,-apple-system,sans-serif}#root{min-height:100vh}</style>
 </head>
 <body>
 <div id="root"></div>

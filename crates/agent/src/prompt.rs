@@ -383,7 +383,9 @@ fn channel_guidance(channel: &str) -> String {
              Tailwind), then convert `to: \"html\"`. The result renders in a side panel that \
              can be as narrow as 400px: layouts must be fully responsive — no fixed or \
              minimum widths above 250px (e.g. never `minmax(500px, 1fr)`), charts in \
-             percentage-width containers, grids that collapse to one column when narrow. \
+             percentage-width containers, grids that collapse to one column when narrow, \
+             and the page must stay vertically scrollable — never `overflow: hidden` or a \
+             fixed `height: 100vh` clamp on the root container. \
              All conversion runs on embedded engines — NEVER use host binaries \
              (wkhtmltopdf, pandoc, headless chrome) for document conversion. \
              REMOTE READERS: when the channel is `neboai` (a loop conversation), the \
