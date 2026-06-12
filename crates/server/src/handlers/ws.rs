@@ -1676,9 +1676,14 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &C
         None
     };
 
-    // Send the user's prompt to NeboAI so it appears in the Loop conversation
+    // Send the user's prompt to NeboAI so it appears in the Loop conversation.
+    // The relay markers are the canonical "this is the OWNER's own message
+    // relayed by the bot" shape (same as the reconcile backfill) — without
+    // them the web renders the mirrored prompt as the agent speaking.
     if let Some(ref reply_cfg) = comm_reply {
         let mut meta = std::collections::HashMap::new();
+        meta.insert("relay".to_string(), "true".to_string());
+        meta.insert("role".to_string(), "user".to_string());
         meta.insert("senderName".to_string(), "You".to_string());
         let user_msg = comm::CommMessage {
             id: uuid::Uuid::new_v4().to_string(),
