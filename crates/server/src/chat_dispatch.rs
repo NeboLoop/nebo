@@ -56,6 +56,30 @@ fn tool_activity_label(tool_name: &str) -> &str {
     }
 }
 
+/// Past-tense counterpart, sent on the result phase: collapsed work lines
+/// report OUTCOMES ("Ran a command"), not in-progress activity. One source
+/// for every client — web and mobile render these verbatim.
+fn tool_outcome_label(tool_name: &str) -> &str {
+    match tool_name {
+        "bash"    => "Ran a command",
+        "grep"    => "Searched files",
+        "glob"    => "Found files",
+        "read"    => "Read a file",
+        "write"   => "Wrote a file",
+        "edit"    => "Edited a file",
+
+        "web"     => "Searched the web",
+        "browser" => "Read a page",
+        "bot"     => "Thought it through",
+        "desktop" => "Used the desktop",
+        "event"   => "Checked the schedule",
+        "loop"    => "Sent a message",
+
+        "os"      => "Checked the workspace",
+        _         => "Did a step",
+    }
+}
+
 /// True when a streamed text chunk is an orchestrator progress heartbeat —
 /// the transient `"\n_Working on: ..._\n"` / `"\n_Working..._\n"` status the
 /// sub-agent runner emits every 30s (`orchestrator.rs`). It's a "still alive"
@@ -1500,6 +1524,11 @@ async fn send_comm_tool_activity(
     }
     if let Some(err) = is_error {
         metadata.insert("is_error".to_string(), err.to_string());
+    }
+    // The result phase carries the past-tense outcome label — collapsed work
+    // lines report what WAS DONE ("Ran a command"), not effort.
+    if phase == "result" {
+        metadata.insert("outcome".to_string(), tool_outcome_label(tool).to_string());
     }
     send_comm_msg(
         cfg,
