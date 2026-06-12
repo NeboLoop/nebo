@@ -224,6 +224,9 @@ impl ShellTool {
                 }
 
                 let stderr = String::from_utf8_lossy(&output.stderr);
+                #[cfg(target_os = "windows")]
+                let stderr: std::borrow::Cow<'_, str> =
+                    std::borrow::Cow::Owned(process::clean_powershell_stderr(&stderr));
                 if !stderr.is_empty() {
                     if !result.is_empty() {
                         result.push('\n');

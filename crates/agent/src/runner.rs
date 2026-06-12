@@ -2605,12 +2605,18 @@ async fn run_loop(
                         sticky_metadata = Some(meta);
                     }
                 }
-                StreamEventType::ToolResult
-                | StreamEventType::ApprovalRequest
+                StreamEventType::ToolResult => {
+                    // CLI providers (handles_tools) execute tools themselves via
+                    // MCP and stream the results back; relay so chat_dispatch can
+                    // broadcast tool_result. API providers never emit this event —
+                    // the runner synthesizes it after executing tools itself.
+                    let _ = tx.send(event).await;
+                }
+                StreamEventType::ApprovalRequest
                 | StreamEventType::AskRequest
                 | StreamEventType::PlanApproval
                 | StreamEventType::FollowupSuggestions => {
-                    // ToolResult/Approval/Ask/Plan/Followup: only sent by runner, not received from provider.
+                    // Approval/Ask/Plan/Followup: only sent by runner, not received from provider.
                 }
                 StreamEventType::ToolSummary => {
                     // Tool execution summary — relay to parent for display.

@@ -316,6 +316,58 @@ pub fn shell_command() -> (String, Vec<String>) {
     }
 }
 
+/// Strip PowerShell error-record decoration from stderr, keeping only the
+/// human-readable message lines.
+///
+/// PowerShell 5.1 wraps every error in a multi-line record:
+///
+/// ```text
+/// ls : Cannot find path 'C:\x' because it does not exist.
+/// At line:1 char:1
+/// + ls /x
+/// + ~~~~~
+///     + CategoryInfo          : ObjectNotFound: (C:\x:String) [...]
+///     + FullyQualifiedErrorId : PathNotFound,...
+/// ```
+///
+/// Only the first line carries information the model can act on; the rest
+/// is position markers and exception taxonomy that bloats the context to
+/// ~5x what bash emits for the same failure. Tool responses must stay
+/// within the response budget on every platform, so the decoration is
+/// dropped here. bash/zsh stderr never matches these patterns — this is
+/// only compiled on Windows.
+#[cfg(target_os = "windows")]
+pub fn clean_powershell_stderr(stderr: &str) -> String {
+    fn is_decoration(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        // "At line:1 char:1" position header
+        if trimmed.starts_with("At line:") && trimmed.contains("char:") {
+            return true;
+        }
+        // "+ <command echo>" and "+ ~~~~" squiggle markers
+        if let Some(rest) = trimmed.strip_prefix("+ ") {
+            return rest.chars().all(|c| c == '~' || c.is_whitespace())
+                || trimmed.starts_with("+ CategoryInfo")
+                || trimmed.starts_with("+ FullyQualifiedErrorId")
+                || !rest.is_empty(); // command echo line
+        }
+        false
+    }
+
+    let cleaned: Vec<&str> = stderr
+        .lines()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty() && !is_decoration(l))
+        .collect();
+
+    if cleaned.is_empty() {
+        // Never erase a real error entirely — fall back to the raw text.
+        stderr.trim_end().to_string()
+    } else {
+        cleaned.join("\n")
+    }
+}
+
 /// Configure a Command to not flash a console window on Windows.
 ///
 /// On Windows, subprocess spawning creates a visible console window by default.
@@ -350,4 +402,44 @@ pub fn hide_window_std(_cmd: &mut std::process::Command) {
 /// Delegates to `napp::plugin_runtime::sanitized_env` — the canonical implementation.
 pub fn sanitized_env() -> Vec<(String, String)> {
     napp::plugin_runtime::sanitized_env()
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod ps_stderr_tests {
+    use super::clean_powershell_stderr;
+
+    #[test]
+    fn strips_error_record_decoration() {
+        let raw = "ls : Cannot find path 'C:\\nonexistent\\path' because it does not exist.\r\nAt line:1 char:1\r\n+ ls /nonexistent/path\r\n+ ~~~~~~~~~~~~~~~~~~~~\r\n    + CategoryInfo          : ObjectNotFound: (C:\\nonexistent\\path:String) [Get-ChildItem], ItemNotFoundException\r\n    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetChildItemCommand\r\n \r\n";
+        let cleaned = clean_powershell_stderr(raw);
+        assert_eq!(
+            cleaned,
+            "ls : Cannot find path 'C:\\nonexistent\\path' because it does not exist."
+        );
+        assert!(cleaned.len() < 200);
+    }
+
+    #[test]
+    fn keeps_wrapped_message_lines() {
+        let raw = "nonexistent_command : The term 'nonexistent_command' is not recognized as the name of a cmdlet, function, script file, \r\nor operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and \r\ntry again.\r\nAt line:1 char:1\r\n+ nonexistent_command --flag\r\n+ ~~~~~~~~~~~~~~~~~~~\r\n    + CategoryInfo          : ObjectNotFound: (nonexistent_command:String) [], CommandNotFoundException\r\n    + FullyQualifiedErrorId : CommandNotFoundException\r\n \r\n";
+        let cleaned = clean_powershell_stderr(raw);
+        assert!(cleaned.contains("is not recognized"));
+        assert!(cleaned.contains("try again."));
+        assert!(!cleaned.contains("CategoryInfo"));
+        assert!(!cleaned.contains("At line:"));
+    }
+
+    #[test]
+    fn falls_back_to_raw_when_everything_filtered() {
+        // Pathological input that is all decoration — never return empty.
+        let raw = "At line:1 char:1\r\n+ foo\r\n";
+        let cleaned = clean_powershell_stderr(raw);
+        assert!(!cleaned.is_empty());
+    }
+
+    #[test]
+    fn plain_stderr_unchanged() {
+        let raw = "warning: something simple\n";
+        assert_eq!(clean_powershell_stderr(raw), "warning: something simple");
+    }
 }
