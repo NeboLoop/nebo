@@ -1,7 +1,8 @@
-//! Context-aware follow-up suggestion generation.
+//! Question-driven answer options.
 //!
-//! After a chat turn completes, generates 2-3 short follow-up suggestions
-//! that the user can click to quickly continue the conversation.
+//! When a chat turn ends with the assistant asking the user a question,
+//! generates 2-4 tappable answer options. Turns that don't ask anything get
+//! NO chips — suggestions on every turn are noise users learn to ignore.
 
 use std::sync::Arc;
 
@@ -13,13 +14,11 @@ use ai::{ChatRequest, Message, Provider, StreamEventType};
 use crate::runner::prefer_non_gateway;
 use types::strutil::floor_char_boundary;
 
-/// Generate 2-3 follow-up suggestions based on the last exchange.
+/// Generate 2-4 answer options when the assistant's reply asks a question.
 ///
 /// Uses the cheapest available provider with a minimal prompt.
-/// Returns `None` on any failure (non-fatal).
-///
-/// Skips generation for short conversational replies where follow-up
-/// chips would be noise rather than helpful.
+/// Returns `None` on any failure (non-fatal) and for replies that don't
+/// ask the user anything — ordinary turns get no chips.
 pub async fn generate_suggestions(
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     last_exchange: &[db::models::ChatMessage],
@@ -29,11 +28,14 @@ pub async fn generate_suggestions(
         return None;
     }
 
-    // Only generate suggestions when the assistant produced substantive output.
-    // Short conversational replies (questions, acknowledgments) don't benefit
-    // from follow-up chips — they're noise.
+    // Suggestions are ANSWER OPTIONS for a question the assistant actually
+    // asked — never generic "what next" filler (product decision: chips on
+    // every turn train users to ignore them). Only generate when the reply's
+    // closing poses a question; otherwise stay silent.
     let last_assistant = last_exchange.iter().rev().find(|m| m.role == "assistant")?;
-    if last_assistant.content.len() < 200 {
+    let content = &last_assistant.content;
+    let tail_start = floor_char_boundary(content, content.len().saturating_sub(400));
+    if !content[tail_start..].contains('?') {
         return None;
     }
 
@@ -42,17 +44,19 @@ pub async fn generate_suggestions(
         prefer_non_gateway(&lock)
     }?;
 
-    let system = "Generate 2-3 follow-up suggestions the USER would naturally type next. \
+    let system = "The assistant's reply ends by asking the user a question. \
+Generate 2-4 tappable ANSWER OPTIONS for that question. \
 Output ONLY a JSON array of strings.\n\
 RULES:\n\
-- 2-8 words each, max 50 characters\n\
-- Predict what the user would type, not what the AI would say\n\
-- Be specific and actionable: \"Show me the calendar\" beats \"Tell me more\"\n\
+- Each option is a direct answer to the question the assistant asked\n\
+- Options must be meaningfully different directions, not rephrasings\n\
+- 1-8 words each, max 50 characters\n\
+- Only offer options the assistant's reply explicitly raised or clearly implied\n\
+- If the question is open-ended with no enumerable answers, output []\n\
+- If the assistant wasn't really asking the user to decide anything, output []\n\
 - NEVER use questions, multiple sentences, or explanations\n\
-- NEVER start with \"Tell me\", \"Can you\", \"What about\", \"How do I\"\n\
-- Stay silent (empty array) if the next step isn't obvious\n\
-Good: [\"Run the tests\", \"Send it now\", \"Show me alternatives\"]\n\
-Bad: [\"Can you tell me more about how this works?\", \"What are the alternatives?\"]";
+Good: [\"3% pool\", \"5% pool\", \"Start drafting the articles\"]\n\
+Bad: [\"Tell me more\", \"Sounds good\", \"What are the alternatives?\"]";
 
     // Build context from last few messages, truncated.
     // Use more messages (up to 6) and larger truncation to give the model
@@ -134,8 +138,9 @@ Bad: [\"Can you tell me more about how this works?\", \"What are the alternative
                     if s.is_empty() || s.len() > 50 {
                         return false;
                     }
+                    // Single-word answers ("Yes", "5%") are valid option chips.
                     let words = s.split_whitespace().count();
-                    if words < 2 || words > 10 {
+                    if words < 1 || words > 10 {
                         return false;
                     }
                     // Reject multi-sentence, questions, or AI-voice
