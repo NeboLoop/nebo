@@ -80,6 +80,64 @@ fn tool_outcome_label(tool_name: &str) -> &str {
     }
 }
 
+/// Verb forms for STRAP actions: (gerund for the live activity label,
+/// past tense for the outcome label).
+fn strap_verb(action: &str) -> Option<(&'static str, &'static str)> {
+    Some(match action {
+        "create" | "add" | "insert" => ("creating", "Created"),
+        "read" | "get" | "view" | "fetch" => ("reading", "Read"),
+        "list" | "ls" => ("listing", "Listed"),
+        "search" | "find" | "query" | "glob" | "grep" => ("searching", "Searched"),
+        "update" | "edit" | "set" | "patch" | "rename" | "move" => ("updating", "Updated"),
+        "delete" | "remove" | "clear" => ("deleting", "Deleted"),
+        "send" | "post" | "reply" | "dm" => ("sending", "Sent"),
+        "run" | "exec" | "execute" | "shell" => ("running", "Ran"),
+        "write" | "save" => ("writing", "Wrote"),
+        "download" => ("downloading", "Downloaded"),
+        "upload" => ("uploading", "Uploaded"),
+        "open" | "launch" | "start" => ("opening", "Opened"),
+        "stop" | "close" | "kill" => ("stopping", "Stopped"),
+        "check" | "status" | "verify" => ("checking", "Checked"),
+        _ => return None,
+    })
+}
+
+/// Humanize a tool call from its STRAP signature — `os(resource: file,
+/// action: read)` reads as "reading a file" / "Read a file", which says far
+/// more than the bare domain-tool name ("os"). MCP tools (`mcp__slug__tool`)
+/// humanize from their slug + tool name. Falls back to the name-only maps.
+/// Returns (activity gerund phrase, past-tense outcome).
+fn humanize_tool_call(tool_name: &str, input: &serde_json::Value) -> (String, String) {
+    // MCP: mcp__github__create_issue → "using GitHub (create issue)".
+    if let Some(rest) = tool_name.strip_prefix("mcp__") {
+        if let Some((slug, tool)) = rest.split_once("__") {
+            let tool_h = tool.replace('_', " ");
+            return (
+                format!("using {slug} ({tool_h})"),
+                format!("Used {slug}: {tool_h}"),
+            );
+        }
+    }
+    // STRAP: toolName(resource, action, …).
+    let resource = input.get("resource").and_then(|v| v.as_str());
+    let action = input.get("action").and_then(|v| v.as_str());
+    if let (Some(resource), Some(action)) = (resource, action) {
+        let noun = resource.replace('_', " ");
+        if let Some((gerund, past)) = strap_verb(action) {
+            return (format!("{gerund} {noun}"), format!("{past} {noun}"));
+        }
+        // Unknown verb: show the signature honestly rather than guessing.
+        return (
+            format!("running {action} on {noun}"),
+            format!("Ran {action} on {noun}"),
+        );
+    }
+    (
+        tool_activity_label(tool_name).to_string(),
+        tool_outcome_label(tool_name).to_string(),
+    )
+}
+
 /// True when a streamed text chunk is an orchestrator progress heartbeat —
 /// the transient `"\n_Working on: ..._\n"` / `"\n_Working..._\n"` status the
 /// sub-agent runner emits every 30s (`orchestrator.rs`). It's a "still alive"
@@ -510,6 +568,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 );
                                 // Mirror the tool event to the loop so it shows live
                                 // activity (and renders "Used N tools"), like the local app.
+                                let (activity, _) = humanize_tool_call(&tc.name, &tc.input);
                                 if let Some(cfg) = &comm_reply {
                                     let request = tc.input.to_string();
                                     send_comm_tool_activity(
@@ -521,15 +580,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "start",
                                         &tc.name,
                                         &tc.id,
-                                        tool_activity_label(&tc.name).to_string(),
+                                        activity.clone(),
                                         Some(request.as_str()),
+                                        None,
                                         None,
                                     )
                                     .await;
                                 }
                                 if let Some(ref cm) = comm_manager {
                                     if let Some(ref cr) = comm_reply {
-                                        let _ = cm.send_typing(&cr.conversation_id, true, Some(tool_activity_label(&tc.name))).await;
+                                        let _ = cm.send_typing(&cr.conversation_id, true, Some(&activity)).await;
                                     }
                                 }
                             }
@@ -559,6 +619,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // timeline can show Request/Response like the local app.
                             if let Some(cfg) = &comm_reply {
                                 let response: String = event.text.trim().chars().take(4000).collect();
+                                let outcome = event
+                                    .tool_call
+                                    .as_ref()
+                                    .map(|tc| humanize_tool_call(&tc.name, &tc.input).1)
+                                    .unwrap_or_else(|| tool_outcome_label(tool_name).to_string());
                                 send_comm_tool_activity(
                                     cfg,
                                     &comm_manager,
@@ -571,6 +636,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     response,
                                     None,
                                     Some(event.error.is_some()),
+                                    Some(outcome),
                                 )
                                 .await;
                             }
@@ -1511,6 +1577,7 @@ async fn send_comm_tool_activity(
     content: String,
     request: Option<&str>,
     is_error: Option<bool>,
+    outcome: Option<String>,
 ) {
     let mut metadata = HashMap::new();
     metadata.insert("phase".to_string(), phase.to_string());
@@ -1526,9 +1593,9 @@ async fn send_comm_tool_activity(
         metadata.insert("is_error".to_string(), err.to_string());
     }
     // The result phase carries the past-tense outcome label — collapsed work
-    // lines report what WAS DONE ("Ran a command"), not effort.
-    if phase == "result" {
-        metadata.insert("outcome".to_string(), tool_outcome_label(tool).to_string());
+    // lines report what WAS DONE ("Read a file"), not effort.
+    if let Some(outcome) = outcome {
+        metadata.insert("outcome".to_string(), outcome);
     }
     send_comm_msg(
         cfg,

@@ -3075,7 +3075,10 @@ async fn run_loop(
                         tool_call: Some(ai::ToolCall {
                             id: tc.id.clone(),
                             name: tc.name.clone(),
-                            input: serde_json::Value::Null,
+                            // Carry the call's input so downstream consumers
+                            // (loop tool-activity labels) can read the STRAP
+                            // resource/action signature.
+                            input: tc.input.clone(),
                         }),
                         error: if result.is_error {
                             Some(result.content.clone())
@@ -3126,7 +3129,10 @@ async fn run_loop(
                         tool_call: Some(ai::ToolCall {
                             id: tc.id.clone(),
                             name: tc.name.clone(),
-                            input: serde_json::Value::Null,
+                            // Carry the call's input so downstream consumers
+                            // (loop tool-activity labels) can read the STRAP
+                            // resource/action signature.
+                            input: tc.input.clone(),
                         }),
                         error: if result.is_error {
                             Some(result.content.clone())
@@ -3154,7 +3160,7 @@ async fn run_loop(
                             tool_call: Some(ai::ToolCall {
                                 id: tc.id.clone(),
                                 name: tc.name.clone(),
-                                input: serde_json::Value::Null,
+                                input: tc.input.clone(),
                             }),
                             error: Some(result.content.clone()),
                             usage: None,
