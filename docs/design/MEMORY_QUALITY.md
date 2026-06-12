@@ -260,7 +260,13 @@ Test live against Janus (no mock mode), session IDs timestamped, per the testing
   **Remaining check:** dev DB daily count (710) → 0 once `cargo tauri dev` finishes rebuilding and
   restarts the backend; prod (16) clears on next prod app launch with this build. Verify next
   iteration, then check this box.
-- [ ] R4 — deliberate-store prompt change
+- [x] R4 — deliberate-store prompt change — **shipped 2026-06-12.** The `## Memory` section of
+  the static prompt now states the two immediate-store triggers verbatim (explicit "remember"
+  requests; behavioral corrections, with the why) over the auto-capture floor, replacing the
+  softer "proactively save" framing. Declarative-facts guidance retained. Metric (explicit
+  stores/week, correction-class capture rate) reads from live usage going forward.
+  `nebo-agent` 305 + `nebo-tools` 231 green (the recurring `shell_tool::plain_commands_still_execute`
+  parallel-load flake passes in isolation every time — pre-existing, worth a separate fix).
 
 ## Known adjacent issues (not in scope, tracked)
 
