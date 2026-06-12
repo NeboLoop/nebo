@@ -246,8 +246,13 @@ Test live against Janus (no mock mode), session IDs timestamped, per the testing
   231 green (pre-existing `shell_tool` parallel-load flake passes in isolation).
   **Follow-up (cross-repo):** NeboLoop scanner must accept/validate `memory.topics` in agent
   manifests — not a blocker, desktop validation rejects invalid configs at load.
-- [ ] R3 — consolidation prompt alignment + one-time daily sweep — **code shipped 2026-06-12,
-  live confirmation pending.** Consolidation now loads the WHOLE scope (was tacit/-only — topic
+- [x] R3 — consolidation prompt alignment + one-time daily sweep — **shipped + live-verified
+  2026-06-12.** Live metric: `daily/*` count 16 → **0** in the live DB
+  (`~/Library/Application Support/Nebo/data/nebo.db` — confirmed via `lsof` as the DB the dev
+  process opens; the `Nebo-Dev/data` DB named in earlier audits is an orphaned April-era copy no
+  process opens — its 710 dailies sweep automatically if an instance ever opens it, since the
+  retirement sweep runs at every startup). Post-sweep namespaces are exactly the invariant +
+  topical layers. Consolidation now loads the WHOLE scope (was tacit/-only — topic
   layers were invisible to the only reaper); prompt gains durable-vs-dated test, done/dated topic
   retirement, and merge-to-oldest-id rule (preserves original created date). Startup sweep retires
   ALL `daily/*` rows across scopes (idempotent SQL, before the LLM loop). Unit test green
