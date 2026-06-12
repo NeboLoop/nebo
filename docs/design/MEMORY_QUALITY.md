@@ -236,7 +236,16 @@ Test live against Janus (no mock mode), session IDs timestamped, per the testing
   green. Per-rule reject counters live via `tracing` (`memory_reject` warn lines) — live junk-rate
   on new writes to be read after real usage. Bonus (no-legacy decision): tool `daily` layer removed,
   `project` layer added to tool schema.
-- [ ] R2 — agent.json topics + per-scope prompt assembly + tool layer validation
+- [x] R2 — agent.json topics + per-scope prompt assembly + tool layer validation —
+  **shipped 2026-06-12.** Metric: topic-classified share to be read from a topic-declaring agent's
+  new writes once one ships; structural verification green — `MemoryTopic` parse/validation tests
+  (reserved slugs, kebab-case, 8-topic cap, 120-char descriptions all rejected), declared-slug
+  storage mapping test (`lead` kept, undeclared → `project`), extraction prompt assembles declared
+  topic lines per scope (runner + pre-compaction flush both threaded), memory tool `layer` accepts
+  declared slugs via `ToolContext.memory_topics`. `nebo-napp` 127 + `nebo-agent` 305 + `nebo-tools`
+  231 green (pre-existing `shell_tool` parallel-load flake passes in isolation).
+  **Follow-up (cross-repo):** NeboLoop scanner must accept/validate `memory.topics` in agent
+  manifests — not a blocker, desktop validation rejects invalid configs at load.
 - [ ] R3 — consolidation prompt alignment + one-time daily sweep
 - [ ] R4 — deliberate-store prompt change
 

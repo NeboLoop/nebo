@@ -110,6 +110,10 @@ pub struct ToolContext {
     /// model_override — without it sub-agents fall to the global default,
     /// which can be a different provider than the parent conversation.
     pub model_preference: Option<String>,
+    /// Declared memory topic slugs for the active agent scope (agent.json
+    /// `memory.topics`). The memory tool accepts these as `layer` values in
+    /// addition to the built-in layers. Empty for the main bot.
+    pub memory_topics: Vec<String>,
 }
 
 impl ToolContext {

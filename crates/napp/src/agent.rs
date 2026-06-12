@@ -93,6 +93,41 @@ pub struct MemoryConfig {
     /// Context comes from the session key's 4th segment: `agent:{id}:{channel}:{ctx}`.
     #[serde(default)]
     pub context_isolated: bool,
+    /// Optional declared memory topics. When set, they replace the generic
+    /// `project/` category in this agent's extraction prompt — each slug is a
+    /// namespace prefix inside the agent's memory scope, and the description
+    /// is injected verbatim as the category definition. Invariant layers
+    /// (tacit/*, entity/) are never affected. Empty = default `project`.
+    /// See docs/design/MEMORY_QUALITY.md.
+    #[serde(default)]
+    pub topics: Vec<MemoryTopic>,
+}
+
+/// One declared memory topic — `{ "slug": "lead", "description": "A prospective
+/// buyer or seller — stage, budget, timeline, next action" }`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryTopic {
+    pub slug: String,
+    pub description: String,
+}
+
+/// Topic slugs that collide with built-in memory layers.
+const RESERVED_TOPIC_SLUGS: &[&str] = &[
+    "tacit", "entity", "daily", "project", "memory", "style", "artifact",
+];
+
+/// Max declared topics — bounds extraction-prompt growth (~150 tokens for 8).
+const MAX_MEMORY_TOPICS: usize = 8;
+/// Max topic description length in chars.
+const MAX_TOPIC_DESCRIPTION_LEN: usize = 120;
+
+fn is_kebab_slug(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && !s.contains("--")
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Agent configuration parsed from agent.json.
@@ -613,6 +648,34 @@ fn validate_agent_config(config: &AgentConfig) -> Result<(), NappError> {
             tracing::warn!(skill_ref = %ref_str, "skill ref is not a qualified name — cascade install may skip it");
         }
     }
+    if config.memory.topics.len() > MAX_MEMORY_TOPICS {
+        return Err(NappError::Manifest(format!(
+            "memory.topics may declare at most {} topics (got {})",
+            MAX_MEMORY_TOPICS,
+            config.memory.topics.len()
+        )));
+    }
+    for topic in &config.memory.topics {
+        if !is_kebab_slug(&topic.slug) {
+            return Err(NappError::Manifest(format!(
+                "memory topic slug '{}' must be kebab-case: lowercase letters, numbers, and hyphens",
+                topic.slug
+            )));
+        }
+        if RESERVED_TOPIC_SLUGS.contains(&topic.slug.as_str()) {
+            return Err(NappError::Manifest(format!(
+                "memory topic slug '{}' is reserved",
+                topic.slug
+            )));
+        }
+        if topic.description.trim().is_empty() || topic.description.len() > MAX_TOPIC_DESCRIPTION_LEN
+        {
+            return Err(NappError::Manifest(format!(
+                "memory topic '{}' description must be non-empty and at most {} chars",
+                topic.slug, MAX_TOPIC_DESCRIPTION_LEN
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -942,6 +1005,41 @@ mod tests {
         assert!(config.scopes.is_empty());
         // Memory config defaults
         assert!(!config.memory.context_isolated);
+        assert!(config.memory.topics.is_empty());
+    }
+
+    #[test]
+    fn test_memory_topics_parse_and_validate() {
+        let json = r#"{"memory": {"topics": [
+            {"slug": "lead", "description": "A prospective buyer or seller — stage, budget, timeline, next action"},
+            {"slug": "listing", "description": "A property being marketed — address, price, status, showings"}
+        ]}}"#;
+        let config = parse_agent_config(json).unwrap();
+        assert_eq!(config.memory.topics.len(), 2);
+        assert_eq!(config.memory.topics[0].slug, "lead");
+    }
+
+    #[test]
+    fn test_memory_topics_reject_invalid() {
+        // Reserved slug
+        let json = r#"{"memory": {"topics": [{"slug": "project", "description": "x"}]}}"#;
+        assert!(parse_agent_config(json).is_err());
+        // Non-kebab slug
+        let json = r#"{"memory": {"topics": [{"slug": "My Leads", "description": "x"}]}}"#;
+        assert!(parse_agent_config(json).is_err());
+        // Empty description
+        let json = r#"{"memory": {"topics": [{"slug": "lead", "description": "  "}]}}"#;
+        assert!(parse_agent_config(json).is_err());
+        // Over the topic cap
+        let topics: Vec<String> = (0..9)
+            .map(|i| format!(r#"{{"slug": "topic-{i}", "description": "d"}}"#))
+            .collect();
+        let json = format!(r#"{{"memory": {{"topics": [{}]}}}}"#, topics.join(","));
+        assert!(parse_agent_config(&json).is_err());
+        // Description over 120 chars
+        let long = "d".repeat(121);
+        let json = format!(r#"{{"memory": {{"topics": [{{"slug": "lead", "description": "{long}"}}]}}}}"#);
+        assert!(parse_agent_config(&json).is_err());
     }
 
     #[test]

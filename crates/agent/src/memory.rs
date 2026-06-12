@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ai::{EmbeddingProvider, Provider};
 use db::Store;
 use db::models::{ChatMessage, Memory};
+use napp::agent::MemoryTopic;
 use tracing::{debug, warn};
 
 use crate::chunking;
@@ -126,11 +127,14 @@ fn extract_confidence_from_metadata(mem: &Memory) -> Option<f64> {
 /// Extract facts from conversation messages.
 /// When `store` and `user_id` are provided, existing memory keys are loaded
 /// and included in the prompt so the LLM avoids extracting duplicates.
+/// `topics` are the scope's declared memory topics (agent.json `memory.topics`);
+/// when non-empty they replace the generic `project` category in the prompt.
 pub async fn extract_facts(
     provider: &dyn Provider,
     messages: &[ChatMessage],
     store: Option<&Store>,
     user_id: Option<&str>,
+    topics: &[MemoryTopic],
 ) -> Option<ExtractedFacts> {
     let conversation = build_conversation_text(messages);
     if conversation.is_empty() {
@@ -143,10 +147,19 @@ pub async fn extract_facts(
         _ => String::new(),
     };
 
-    // Extraction prompt v2 — docs/design/MEMORY_QUALITY.md. The topic
-    // category lines are the default `project` definition; agent-declared
-    // topics replace them per scope in R2.
-    let topic_categories = "- \"project\" — ongoing work, goals, or constraints the user would expect you to know next time";
+    // Extraction prompt v2 — docs/design/MEMORY_QUALITY.md. Agent-declared
+    // topics replace the generic `project` definition; the description is the
+    // category instruction verbatim.
+    let topic_categories = if topics.is_empty() {
+        "- \"project\" — ongoing work, goals, or constraints the user would expect you to know next time"
+            .to_string()
+    } else {
+        topics
+            .iter()
+            .map(|t| format!("- \"{}\" — {}", t.slug, t.description))
+            .collect::<Vec<_>>()
+            .join("\n            ")
+    };
 
     let prompt = format!(
         "Analyze the conversation and extract durable facts worth remembering in FUTURE conversations.\n\n\
@@ -239,8 +252,9 @@ pub fn store_facts(
     facts: &ExtractedFacts,
     user_id: &str,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    topics: &[MemoryTopic],
 ) {
-    let entries = format_for_storage(facts);
+    let entries = format_for_storage(facts, topics);
     let mut stored_entries: Vec<MemoryEntry> = Vec::new();
     for entry in entries {
         // Stage-0 write guard — the canonical deterministic filter shared
@@ -374,12 +388,9 @@ fn store_style_observation(store: &Store, entry: &MemoryEntry, user_id: &str) {
     }
 }
 
-/// Topic slugs accepted from the extractor. R1 ships the default `project`
-/// layer only; agent-declared topics extend this per scope in R2.
-const DEFAULT_TOPIC_SLUGS: &[&str] = &["project"];
-
-/// Convert extracted facts to storage entries.
-fn format_for_storage(facts: &ExtractedFacts) -> Vec<MemoryEntry> {
+/// Convert extracted facts to storage entries. `topics` are the scope's
+/// declared topic slugs; `project` is always accepted as the fallback layer.
+fn format_for_storage(facts: &ExtractedFacts, topics: &[MemoryTopic]) -> Vec<MemoryEntry> {
     let mut entries = Vec::new();
 
     for f in &facts.preferences {
@@ -440,12 +451,12 @@ fn format_for_storage(facts: &ExtractedFacts) -> Vec<MemoryEntry> {
 
     for f in &facts.topics {
         let confidence = resolve_confidence(f.confidence, f.explicit);
-        // Validate the topic slug against the accepted set; unknown or
-        // missing slugs fall back to the default `project` layer.
+        // Validate the topic slug against the scope's declared topics;
+        // unknown or missing slugs fall back to the default `project` layer.
         let topic = f
             .topic
             .as_deref()
-            .filter(|t| DEFAULT_TOPIC_SLUGS.contains(t))
+            .filter(|t| *t == "project" || topics.iter().any(|d| d.slug == *t))
             .unwrap_or("project");
         entries.push(MemoryEntry {
             layer: topic.to_string(),
@@ -899,15 +910,14 @@ mod tests {
             ..Default::default()
         };
 
-        let entries = format_for_storage(&facts);
+        let entries = format_for_storage(&facts, &[]);
         assert_eq!(entries.len(), 1);
         assert!((entries[0].confidence - 0.9).abs() < f64::EPSILON);
         assert!(entries[0].explicit);
     }
 
-    #[test]
-    fn test_format_for_storage_topics_map_to_project() {
-        let mk = |topic: Option<&str>| Fact {
+    fn topic_fact(topic: Option<&str>) -> Fact {
+        Fact {
             key: "deck-build".to_string(),
             value: "Budget for the deck project is $5,000, approved June 10 2026".to_string(),
             category: String::new(),
@@ -915,19 +925,48 @@ mod tests {
             confidence: 0.8,
             explicit: Some(false),
             topic: topic.map(str::to_string),
-        };
+        }
+    }
+
+    #[test]
+    fn test_format_for_storage_topics_map_to_project() {
         let facts = ExtractedFacts {
-            topics: vec![mk(Some("project")), mk(Some("unknown-slug")), mk(None)],
+            topics: vec![
+                topic_fact(Some("project")),
+                topic_fact(Some("unknown-slug")),
+                topic_fact(None),
+            ],
             ..Default::default()
         };
 
-        let entries = format_for_storage(&facts);
+        let entries = format_for_storage(&facts, &[]);
         assert_eq!(entries.len(), 3);
         // Valid slug kept; unknown and missing slugs fall back to project.
         for e in &entries {
             assert_eq!(e.namespace, "project");
             assert_eq!(e.layer, "project");
         }
+    }
+
+    #[test]
+    fn test_format_for_storage_declared_topics() {
+        let declared = vec![MemoryTopic {
+            slug: "lead".to_string(),
+            description: "A prospective buyer or seller".to_string(),
+        }];
+        let facts = ExtractedFacts {
+            topics: vec![
+                topic_fact(Some("lead")),
+                topic_fact(Some("listing")), // undeclared → project
+                topic_fact(Some("project")), // fallback layer always accepted
+            ],
+            ..Default::default()
+        };
+
+        let entries = format_for_storage(&facts, &declared);
+        assert_eq!(entries[0].namespace, "lead");
+        assert_eq!(entries[1].namespace, "project");
+        assert_eq!(entries[2].namespace, "project");
     }
 
     #[test]
@@ -945,7 +984,7 @@ mod tests {
             ..Default::default()
         };
 
-        let entries = format_for_storage(&facts);
+        let entries = format_for_storage(&facts, &[]);
         assert!(!entries[0].key.contains('\x00'));
         assert!(!entries[0].value.contains('\x01'));
     }

@@ -168,10 +168,12 @@ impl AgentTool {
                 // The advertised `layer` param maps to the canonical namespace
                 // for that layer; an explicit `namespace` overrides. The
                 // `daily` layer is retired (docs/design/MEMORY_QUALITY.md) —
-                // ongoing work lives in the topical `project` layer instead.
+                // ongoing work lives in the topical `project` layer, plus any
+                // topics the active agent declared in agent.json.
                 let layer_ns = match input["layer"].as_str().unwrap_or("") {
                     "entity" => "entity/default".to_string(),
                     "project" => "project".to_string(),
+                    l if ctx.memory_topics.iter().any(|t| t == l) => l.to_string(),
                     _ => "tacit/general".to_string(),
                 };
                 let namespace = input["namespace"].as_str().unwrap_or(&layer_ns);
@@ -1696,7 +1698,7 @@ impl DynTool for AgentTool {
          - agent(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\", layer: \"tacit\") — Store a fact\n\
          - agent(resource: \"memory\", action: \"recall\", key: \"user/name\") — Recall a specific fact\n\
          - agent(resource: \"memory\", action: \"search\", query: \"...\") — Search across all memories\n\
-         Layers: \"tacit\" (long-term preferences — MOST COMMON), \"project\" (ongoing work: goals, decisions, status), \"entity\" (people/places/things)\n\
+         Layers: \"tacit\" (long-term preferences — MOST COMMON), \"project\" (ongoing work: goals, decisions, status), \"entity\" (people/places/things), or a topic slug your agent declares in agent.json memory.topics\n\
          For likes/dislikes/working-style facts, store with namespace: \"tacit/preferences\" — those inject into every conversation automatically.\n\n\
          Sessions:\n\
          - agent(resource: \"session\", action: \"list\") / history / status / clear / query\n\n\

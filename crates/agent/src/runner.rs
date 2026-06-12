@@ -1174,6 +1174,10 @@ async fn run_loop(
         .cloned()
         .unwrap_or_default();
 
+    // Declared memory topics for this scope (agent.json memory.topics) —
+    // threaded into extraction, the flush, and the memory tool's layer map.
+    let memory_topics = memory_config.topics.clone();
+
     // Extract context_id from session key for context-isolated memory scoping.
     // Session key format: "agent:{agent_id}:{channel}:{context_id}"
     let context_id: Option<String> = {
@@ -1832,6 +1836,7 @@ async fn run_loop(
                         &store,
                         session_id,
                         &memory_user_id,
+                        &memory_topics,
                     )
                     .await;
                 }
@@ -2931,6 +2936,7 @@ async fn run_loop(
                 channel: channel_ctx.cloned(),
                 model_preference: (!model_override.is_empty())
                     .then(|| model_override.to_string()),
+                memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
             };
 
             // Track tool names for context filtering
@@ -3928,6 +3934,7 @@ async fn run_loop(
             let mem_uid = memory_user_id.clone();
             let session_id_owned = session_id.to_string();
             let embed_prov = embedding_provider.cloned();
+            let topics = memory_topics.clone();
 
             debouncer
                 .schedule(session_id, move || async move {
@@ -3937,9 +3944,9 @@ async fn run_loop(
                     };
                     if let Some(provider) = provider {
                         if let Some(facts) =
-                            memory::extract_facts(provider.as_ref(), &last_exchange, Some(&store), Some(&mem_uid)).await
+                            memory::extract_facts(provider.as_ref(), &last_exchange, Some(&store), Some(&mem_uid), &topics).await
                         {
-                            memory::store_facts(&store, &facts, &mem_uid, embed_prov);
+                            memory::store_facts(&store, &facts, &mem_uid, embed_prov, &topics);
                             debug!(
                                 session_id = session_id_owned,
                                 "extracted and stored memory facts"
