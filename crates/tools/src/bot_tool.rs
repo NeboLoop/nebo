@@ -475,7 +475,13 @@ impl AgentTool {
                 let description = input["description"]
                     .as_str()
                     .unwrap_or(&task_prompt[..task_prompt.len().min(80)]);
-                let model_override = input["model_override"].as_str().unwrap_or("");
+                // No explicit override → inherit the parent run's model so the
+                // sub-agent uses the same provider as the conversation that
+                // spawned it (not the global default).
+                let model_override = match input["model_override"].as_str() {
+                    Some(m) if !m.is_empty() => m.to_string(),
+                    _ => ctx.model_preference.clone().unwrap_or_default(),
+                };
                 let wait = input["wait"].as_bool().unwrap_or(true);
                 let max_iterations = input["max_iterations"].as_u64().unwrap_or(0) as usize;
                 let skills: Vec<String> = input["skills"]

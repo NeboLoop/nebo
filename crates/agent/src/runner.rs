@@ -709,6 +709,10 @@ impl Runner {
             ctx.session_id = session_id.clone();
             ctx.origin = req.origin;
             ctx.user_id = req.user_id.clone();
+            // Sub-agents spawned from this run inherit its model unless
+            // explicitly overridden.
+            ctx.model_preference =
+                (!model_override.is_empty()).then(|| model_override.clone());
         }
 
         tokio::spawn(async move {
@@ -2910,6 +2914,8 @@ async fn run_loop(
                 run_id: progress.map(|p| p.run_id.clone()),
                 ask_channels: ask_channels.cloned(),
                 channel: channel_ctx.cloned(),
+                model_preference: (!model_override.is_empty())
+                    .then(|| model_override.to_string()),
             };
 
             // Track tool names for context filtering
