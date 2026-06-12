@@ -372,9 +372,12 @@ mod tests {
 
     #[test]
     fn test_release_held_empty() {
-        // Small configured cap: the boot probe won't trim below it, so
-        // held_back is deterministically empty.
+        // The boot probe trims to available_mb/200 — on a memory-starved
+        // machine that lands below even a small configured cap, leaving
+        // permits in held_back. Drain them first so held_back is empty
+        // regardless of the machine running the test.
         let ctrl = ConcurrencyController::new(Some(4));
+        ctrl.release_held(usize::MAX);
         let before = ctrl.effective_permits();
         ctrl.release_held(5); // Nothing held
         assert_eq!(ctrl.effective_permits(), before);
