@@ -38,9 +38,6 @@ const MAX_RETRYABLE_RETRIES: usize = 5;
 /// Consecutive overloaded (529) errors before falling back to a cheaper model.
 #[allow(dead_code)] // reserved for overload fallback logic
 const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
-/// Metadata flag marking a message as system-injected (steering reminders, post-tool
-/// nudges): visible to the model, hidden from the user. The frontend skips these.
-const HIDDEN_META: &str = r#"{"hidden":true}"#;
 /// Timeout for individual tool execution.
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 /// Default max auto-continuations when agent stops mid-task (no work tasks).
@@ -612,21 +609,11 @@ impl Runner {
 
             info!(ms = t_msg_save.elapsed().as_millis() as u64, session_id = %session_id, "[telemetry] user message saved");
 
-            // Inject @mention routing context as a hidden <system-reminder> in
-            // the live stream. Weak models heed a stream reminder where they
-            // skim a plain system message — important for fan-out, where the
-            // "answer as yourself" framing has to fight an "each of you" prompt.
-            if let Some(ref ctx) = req.mention_context {
-                let _ = self.sessions.append_message(
-                    &session_id,
-                    "user",
-                    &steering::wrap_system_reminder(ctx),
-                    None,
-                    None,
-                    Some(HIDDEN_META),
-                );
-            }
+            // @mention routing context rides the FIRST LLM call as an
+            // ephemeral <system-reminder> (seeded into run_loop's pending
+            // reminders) — never persisted to the session.
         }
+        let mention_context = req.mention_context.clone();
 
         // Create result channel
         let (tx, rx) = mpsc::channel(100);
@@ -794,6 +781,7 @@ impl Runner {
                         false,  // no plan_mode for forks
                         &preactivate_tools,
                         channel_ctx.as_ref(),
+                        None, // forks carry no mention context
                     )
                     .await;
 
@@ -873,6 +861,7 @@ impl Runner {
                 plan_mode,
                 &preactivate_tools,
                 channel_ctx.as_ref(),
+                mention_context.as_deref(),
             )
             .await;
 
@@ -1074,8 +1063,17 @@ async fn run_loop(
     plan_mode: bool,
     preactivate_tools: &[String],
     channel_ctx: Option<&tools::ChannelContext>,
+    mention_context: Option<&str>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
+    // Stream reminders are EPHEMERAL: queued here, injected into the NEXT
+    // LLM call's messages in-memory, then dropped. Never persisted to the
+    // session — a reminder that lands in stored history pollutes every
+    // later context window AND leaks into channel mirrors/backfills.
+    let mut pending_stream_reminders: Vec<String> = Vec::new();
+    if let Some(ctx) = mention_context {
+        pending_stream_reminders.push(steering::wrap_system_reminder(ctx));
+    }
     // External messaging channels (NeboLoop/Slack/etc.) get the full Interactive treatment —
     // narrating comm-style, progress + action-confirm reminders, smaller streamed chunks — even
     // though the run itself is Autonomous. The person on the other end is waiting on a reply and
@@ -2112,6 +2110,15 @@ async fn run_loop(
             ai_messages.push(Message {
                 role: "user".to_string(),
                 content: steering::wrap_system_reminder(&text),
+                ..Default::default()
+            });
+        }
+        // Queued stream reminders ride THIS call only, then vanish (R8:
+        // reminders are ephemeral — never persisted, never re-sent).
+        for content in pending_stream_reminders.drain(..) {
+            ai_messages.push(Message {
+                role: "user".to_string(),
+                content,
                 ..Default::default()
             });
         }
@@ -3534,16 +3541,7 @@ async fn run_loop(
                     channel,
                 };
                 if let Some(reminder) = steering::select_reminder(&rctx, &mut reminder_cadence) {
-                    if let Err(e) = sessions.append_message(
-                        session_id,
-                        "user",
-                        &reminder,
-                        None,
-                        None,
-                        Some(HIDDEN_META),
-                    ) {
-                        warn!(session_id = %session_id, error = %e, "failed to inject system reminder");
-                    }
+                    pending_stream_reminders.push(reminder);
                 }
             }
 
@@ -3646,21 +3644,13 @@ async fn run_loop(
                     attempt = output_recovery_attempts,
                     "max output tokens recovery"
                 );
-                // Inject the continuation as a hidden stream reminder after the (already
-                // persisted, line ~2740) truncated assistant turn — it lands in the next
-                // iteration's window. Mirrors the post-tool reminder channel (R8).
-                let _ = sessions.append_message(
-                    session_id,
-                    "user",
-                    &steering::wrap_system_reminder(
-                        "Your previous response was cut off by the output token limit. \
-                         Resume directly from where you stopped — no recap, no apology. \
-                         If you had pending tool calls, make them now.",
-                    ),
-                    None,
-                    None,
-                    Some(HIDDEN_META),
-                );
+                // Continuation rides the next call as an ephemeral reminder
+                // after the (already persisted, line ~2740) truncated turn.
+                pending_stream_reminders.push(steering::wrap_system_reminder(
+                    "Your previous response was cut off by the output token limit. \
+                     Resume directly from where you stopped — no recap, no apology. \
+                     If you had pending tool calls, make them now.",
+                ));
                 continue;
             }
         }
@@ -3688,19 +3678,12 @@ async fn run_loop(
                     min = min_iterations,
                     "budget continuation: forcing next iteration"
                 );
-                // Budget continuation as a hidden stream reminder (R8).
-                let _ = sessions.append_message(
-                    session_id,
-                    "user",
-                    &steering::wrap_system_reminder(
-                        "You stopped early but your task is not complete. \
-                         Keep working — use your tools to make more progress. \
-                         Do not summarize or ask to continue. Take the next action.",
-                    ),
-                    None,
-                    None,
-                    Some(HIDDEN_META),
-                );
+                // Budget continuation as an ephemeral stream reminder (R8).
+                pending_stream_reminders.push(steering::wrap_system_reminder(
+                    "You stopped early but your task is not complete. \
+                     Keep working — use your tools to make more progress. \
+                     Do not summarize or ask to continue. Take the next action.",
+                ));
                 continue;
             }
         }
@@ -3724,25 +3707,13 @@ async fn run_loop(
                     iteration,
                     session_id, "empty response after tool calls — nudging model to continue"
                 );
-                // Append empty assistant + user nudge to maintain valid message sequence.
-                // Both are system-injected (HIDDEN_META) so they never render in the UI.
-                let _ = sessions.append_message(
-                    session_id,
-                    "assistant",
-                    "(empty)",
-                    None,
-                    None,
-                    Some(HIDDEN_META),
-                );
-                let _ = sessions.append_message(
-                    session_id,
-                    "user",
+                // Ephemeral nudge on the next call — nothing persisted (the
+                // tool results already sit in the session; user-after-tool is
+                // a valid sequence for every provider we ship).
+                pending_stream_reminders.push(steering::wrap_system_reminder(
                     "You just executed tool calls but returned an empty response. \
                      Please process the tool results above and continue with the task.",
-                    None,
-                    None,
-                    Some(HIDDEN_META),
-                );
+                ));
                 continue;
             }
 
@@ -3808,18 +3779,11 @@ async fn run_loop(
                 attempt = lost_toolcall_retries,
                 "stop_reason says tool_calls but none were parsed — retrying iteration"
             );
-            let _ = sessions.append_message(
-                session_id,
-                "user",
-                &steering::wrap_system_reminder(
-                    "Your previous response ended as if calling tools, but no tool \
-                     calls arrived. Make the tool calls now — do not re-introduce \
-                     the task.",
-                ),
-                None,
-                None,
-                Some(HIDDEN_META),
-            );
+            pending_stream_reminders.push(steering::wrap_system_reminder(
+                "Your previous response ended as if calling tools, but no tool \
+                 calls arrived. Make the tool calls now — do not re-introduce \
+                 the task.",
+            ));
             continue;
         }
 
