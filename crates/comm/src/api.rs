@@ -710,20 +710,25 @@ impl NeboAIApi {
         &self,
         loop_agent_id: &str,
         chats: &[AgentChatSync],
-    ) -> Result<(), CommError> {
+    ) -> Result<Vec<AgentChatSyncResult>, CommError> {
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Req<'a> {
             chats: &'a [AgentChatSync],
         }
-        let _: serde_json::Value = self
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            #[serde(default)]
+            chats: Vec<AgentChatSyncResult>,
+        }
+        let resp: Resp = self
             .do_json(
                 reqwest::Method::PUT,
                 &format!("/api/v1/agents/{}/chats/sync", loop_agent_id),
                 Some(&Req { chats }),
             )
             .await?;
-        Ok(())
+        Ok(resp.chats)
     }
 
     /// List agents registered by this bot in a loop.
@@ -1244,6 +1249,21 @@ fn build_query(
     } else {
         format!("?{}", params.join("&"))
     }
+}
+
+/// One chat in the chats/sync RESPONSE: `created` marks a conversation the
+/// server just made — the bridge backfills its desktop history exactly once.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChatSyncResult {
+    pub chat_id: String,
+    pub conversation_id: String,
+    #[serde(default)]
+    pub created: bool,
+    /// Conversation head seq — 0 means the conversation is still empty
+    /// (synced before backfill existed) and needs backfilling too.
+    #[serde(default)]
+    pub head_seq: u64,
 }
 
 /// One desktop chat in a chats/sync publish.

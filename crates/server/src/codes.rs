@@ -1835,9 +1835,77 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         if chats.is_empty() {
             continue;
         }
-        match api.sync_agent_chats(loop_agent_id, &chats).await {
-            Ok(()) => info!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %loop_agent_id, count = chats.len(), "reconcile: chats synced"),
-            Err(e) => warn!(target: "neboai_identity", local_id = %local_id, error = %e, "reconcile: chats sync FAILED"),
+        let results = match api.sync_agent_chats(loop_agent_id, &chats).await {
+            Ok(results) => {
+                info!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %loop_agent_id, count = chats.len(), "reconcile: chats synced");
+                results
+            }
+            Err(e) => {
+                warn!(target: "neboai_identity", local_id = %local_id, error = %e, "reconcile: chats sync FAILED");
+                continue;
+            }
+        };
+
+        // One-shot history backfill: a chat whose loop conversation was just
+        // created opens EMPTY remotely — mirror its recent desktop messages
+        // so the remote shows the same conversation as the local Threads
+        // tab. Runs once per chat by construction (created=false afterward).
+        let agent_display = state
+            .store
+            .get_agent(local_id)
+            .ok()
+            .flatten()
+            .map(|a| a.name)
+            .unwrap_or_else(|| "Nebo".to_string());
+        for r in results.iter().filter(|r| r.created || r.head_seq == 0) {
+            let msgs = match state.store.get_recent_chat_messages(&r.chat_id, 50) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(target: "neboai_identity", chat_id = %r.chat_id, error = %e, "backfill: history load failed");
+                    continue;
+                }
+            };
+            let total = msgs.len();
+            for m in msgs {
+                if m.content.trim().is_empty() {
+                    continue;
+                }
+                let mut meta = std::collections::HashMap::new();
+                if m.role == "user" {
+                    meta.insert("relay".to_string(), "true".to_string());
+                    meta.insert("role".to_string(), "user".to_string());
+                    meta.insert("senderName".to_string(), "You".to_string());
+                } else {
+                    meta.insert("senderName".to_string(), agent_display.clone());
+                }
+                let msg = comm::CommMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    from: String::new(),
+                    to: String::new(),
+                    topic: "agent_space".to_string(),
+                    conversation_id: r.conversation_id.clone(),
+                    msg_type: comm::CommMessageType::Message,
+                    content: m.content,
+                    metadata: meta,
+                    timestamp: 0,
+                    human_injected: m.role == "user",
+                    human_id: None,
+                    task_id: None,
+                    correlation_id: None,
+                    task_status: None,
+                    artifacts: vec![],
+                    attachments: vec![],
+                    error: None,
+                };
+                if let Err(e) = state.comm_manager.send(msg).await {
+                    warn!(target: "neboai_identity", chat_id = %r.chat_id, error = %e, "backfill: send failed — aborting this chat");
+                    break;
+                }
+                // Light pacing so a multi-chat backfill doesn't trip the
+                // gateway's send rate limit.
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            }
+            info!(target: "neboai_identity", chat_id = %r.chat_id, count = total, "backfill: chat history mirrored");
         }
     }
 
