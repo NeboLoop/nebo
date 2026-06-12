@@ -105,6 +105,11 @@ pub struct ToolContext {
     /// Channel context (Slack/Discord/etc.) when this run was triggered by an
     /// inbound channel message. `None` for web UI, scheduled, or system runs.
     pub channel: Option<ChannelContext>,
+    /// Resolved model of the run that invoked this tool ("provider/model").
+    /// Sub-agent spawning inherits it when the caller gives no explicit
+    /// model_override — without it sub-agents fall to the global default,
+    /// which can be a different provider than the parent conversation.
+    pub model_preference: Option<String>,
 }
 
 impl ToolContext {

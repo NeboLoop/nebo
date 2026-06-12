@@ -27,6 +27,8 @@ Examples (every call MUST include all required params):
 - os(resource: "file", action: "grep", pattern: "TODO", path: "C:\src\")
 - os(resource: "file", action: "grep", pattern: "fn main", path: ".", context_before: 2, context_after: 5)
 
+Paths: Windows paths (C:\...) and POSIX-style paths both work — `/tmp/...` maps to the user's temp directory (%TEMP%) and `~` to the home directory. When the user gives a POSIX path like /tmp/file.txt, pass it through unchanged — do NOT refuse it as "not a Windows path" and do NOT translate it yourself.
+
 **Shell actions (PowerShell)** — resource: "shell" for all:
 - os(resource: "shell", action: "exec", command: "Get-ChildItem") — Run a command
 - os(resource: "shell", action: "exec", command: "...", background: true) — Background

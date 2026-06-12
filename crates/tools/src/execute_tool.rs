@@ -147,14 +147,26 @@ impl ExecuteTool {
         }
     }
 
-    /// Resolve runtime: bundled /tmp/nebo-runtimes/ first, then system PATH.
+    /// Resolve runtime: bundled runtimes dir first, then system PATH.
+    /// (`/tmp/nebo-runtimes` on Unix, `%TEMP%\nebo-runtimes` on Windows.)
     fn find_runtime(language: &str) -> Option<RuntimeKind> {
-        let runtimes_dir = Path::new("/tmp/nebo-runtimes");
+        #[cfg(not(windows))]
+        let runtimes_dir = std::path::PathBuf::from("/tmp/nebo-runtimes");
+        #[cfg(windows)]
+        let runtimes_dir = std::env::temp_dir().join("nebo-runtimes");
+        // Windows binaries carry .exe — probing the bare name misses them.
+        let exe = |name: &str| {
+            if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                name.to_string()
+            }
+        };
 
         match language {
             "python" => {
                 // Check bundled uv first
-                let uv_path = runtimes_dir.join("uv");
+                let uv_path = runtimes_dir.join(exe("uv"));
                 if uv_path.is_file() {
                     return Some(RuntimeKind::Uv(uv_path));
                 }
@@ -166,7 +178,7 @@ impl ExecuteTool {
             }
             "typescript" | "javascript" => {
                 // Check bundled bun first
-                let bun_path = runtimes_dir.join("bun");
+                let bun_path = runtimes_dir.join(exe("bun"));
                 if bun_path.is_file() {
                     return Some(RuntimeKind::Bun(bun_path));
                 }

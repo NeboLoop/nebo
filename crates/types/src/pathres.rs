@@ -121,6 +121,13 @@ fn candidate_list(paths: &[PathBuf]) -> String {
 
 /// Expand `~` / `~/...` to the user's home directory. Does NOT check
 /// that the resulting path exists. Use for writes / new files.
+///
+/// On Windows this also maps POSIX `/tmp` to [`std::env::temp_dir`].
+/// Models and users routinely write `/tmp/...` regardless of platform;
+/// Windows has an exact equivalent (`%TEMP%`, the same directory Git
+/// Bash mounts at `/tmp`), so the mapping is unambiguous. Other POSIX
+/// roots (`/home`, `/Users`) have no such equivalent and are left
+/// alone. No-op on Unix.
 pub fn expand(input: &str) -> PathBuf {
     if input == "~" {
         if let Some(home) = home_dir() {
@@ -129,6 +136,15 @@ pub fn expand(input: &str) -> PathBuf {
     } else if let Some(rest) = input.strip_prefix("~/") {
         if let Some(home) = home_dir() {
             return home.join(rest);
+        }
+    }
+    #[cfg(windows)]
+    {
+        if input == "/tmp" {
+            return std::env::temp_dir();
+        }
+        if let Some(rest) = input.strip_prefix("/tmp/") {
+            return std::env::temp_dir().join(rest);
         }
     }
     PathBuf::from(input)
@@ -247,8 +263,18 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(windows))]
     fn expand_leaves_absolute_paths_alone() {
         assert_eq!(expand("/tmp/foo"), PathBuf::from("/tmp/foo"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn expand_maps_posix_tmp_to_temp_dir_on_windows() {
+        assert_eq!(expand("/tmp"), std::env::temp_dir());
+        assert_eq!(expand("/tmp/foo.txt"), std::env::temp_dir().join("foo.txt"));
+        // Other absolute paths pass through untouched
+        assert_eq!(expand("/Users/x/foo"), PathBuf::from("/Users/x/foo"));
     }
 
     #[test]

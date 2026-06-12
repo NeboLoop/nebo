@@ -696,6 +696,10 @@ impl Runner {
             ctx.session_id = session_id.clone();
             ctx.origin = req.origin;
             ctx.user_id = req.user_id.clone();
+            // Sub-agents spawned from this run inherit its model unless
+            // explicitly overridden.
+            ctx.model_preference =
+                (!model_override.is_empty()).then(|| model_override.clone());
         }
 
         tokio::spawn(async move {
@@ -2620,12 +2624,18 @@ async fn run_loop(
                         sticky_metadata = Some(meta);
                     }
                 }
-                StreamEventType::ToolResult
-                | StreamEventType::ApprovalRequest
+                StreamEventType::ToolResult => {
+                    // CLI providers (handles_tools) execute tools themselves via
+                    // MCP and stream the results back; relay so chat_dispatch can
+                    // broadcast tool_result. API providers never emit this event —
+                    // the runner synthesizes it after executing tools itself.
+                    let _ = tx.send(event).await;
+                }
+                StreamEventType::ApprovalRequest
                 | StreamEventType::AskRequest
                 | StreamEventType::PlanApproval
                 | StreamEventType::FollowupSuggestions => {
-                    // ToolResult/Approval/Ask/Plan/Followup: only sent by runner, not received from provider.
+                    // Approval/Ask/Plan/Followup: only sent by runner, not received from provider.
                 }
                 StreamEventType::ToolSummary => {
                     // Tool execution summary — relay to parent for display.
@@ -2919,6 +2929,8 @@ async fn run_loop(
                 run_id: progress.map(|p| p.run_id.clone()),
                 ask_channels: ask_channels.cloned(),
                 channel: channel_ctx.cloned(),
+                model_preference: (!model_override.is_empty())
+                    .then(|| model_override.to_string()),
             };
 
             // Track tool names for context filtering
@@ -3415,7 +3427,13 @@ async fn run_loop(
                     let total_len = result.content.len();
                     // Persist full result to temp file so agent can Read it if needed
                     let result_id = uuid::Uuid::new_v4().to_string();
-                    let result_dir = std::path::Path::new("/tmp/nebo-tool-results");
+                    #[cfg(not(windows))]
+                    let result_dir = std::path::PathBuf::from("/tmp/nebo-tool-results");
+                    // Windows: no /tmp — use the real temp dir (matches the
+                    // pathres /tmp mapping the read-back path goes through).
+                    #[cfg(windows)]
+                    let result_dir = std::env::temp_dir().join("nebo-tool-results");
+                    let result_dir = result_dir.as_path();
                     let _ = std::fs::create_dir_all(result_dir);
                     let result_path = result_dir.join(format!("{}.txt", result_id));
                     if let Err(e) = std::fs::write(&result_path, &result.content) {

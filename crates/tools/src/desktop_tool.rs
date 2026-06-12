@@ -1548,7 +1548,15 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
     let use_jpeg = false;
 
     let ext = if use_jpeg { "jpg" } else { "png" };
+    #[cfg(not(windows))]
     let tmp_path = format!("/tmp/nebo-capture-{}.{}", std::process::id(), ext);
+    // Windows has no /tmp — write to the real temp dir or the PowerShell
+    // capture saves to a nonexistent C:\tmp and the readback fails.
+    #[cfg(windows)]
+    let tmp_path = std::env::temp_dir()
+        .join(format!("nebo-capture-{}.{}", std::process::id(), ext))
+        .to_string_lossy()
+        .into_owned();
 
     #[cfg(target_os = "macos")]
     let result = {

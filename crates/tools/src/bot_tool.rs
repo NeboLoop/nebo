@@ -141,7 +141,7 @@ impl AgentTool {
 
     fn infer_resource(&self, action: &str) -> &str {
         match action {
-            "store" | "recall" | "search" => "memory",
+            "store" | "save" | "recall" | "search" => "memory",
             "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create"
             | "update" | "delete" => "task",
             "research" | "deep_research" | "submit_findings" => "research",
@@ -160,7 +160,9 @@ impl AgentTool {
         let action = input["action"].as_str().unwrap_or("");
 
         match action {
-            "store" => {
+            // "save" is the most common model misspelling of "store" — accept
+            // it rather than burn a correction round-trip.
+            "store" | "save" => {
                 let key = input["key"].as_str().unwrap_or("");
                 let value = input["value"].as_str().unwrap_or("");
                 // The advertised `layer` param maps to the canonical namespace
@@ -473,7 +475,13 @@ impl AgentTool {
                 let description = input["description"]
                     .as_str()
                     .unwrap_or(&task_prompt[..task_prompt.len().min(80)]);
-                let model_override = input["model_override"].as_str().unwrap_or("");
+                // No explicit override → inherit the parent run's model so the
+                // sub-agent uses the same provider as the conversation that
+                // spawned it (not the global default).
+                let model_override = match input["model_override"].as_str() {
+                    Some(m) if !m.is_empty() => m.to_string(),
+                    _ => ctx.model_preference.clone().unwrap_or_default(),
+                };
                 let wait = input["wait"].as_bool().unwrap_or(true);
                 let max_iterations = input["max_iterations"].as_u64().unwrap_or(0) as usize;
                 let skills: Vec<String> = input["skills"]

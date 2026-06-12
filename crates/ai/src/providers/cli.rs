@@ -109,14 +109,19 @@ impl Provider for CLIProvider {
             args.push(req.model.clone());
         }
 
-        // Control thinking effort for Claude
+        // Control thinking effort for Claude. Thinking-off used to force
+        // --effort low, but at low effort the model frequently emits the
+        // acknowledgment line ("Reading that file now.") and ends the turn
+        // without ever calling the tool — measured at ~50% first-call failure
+        // in the prompt harness. Medium keeps cost down without that failure
+        // mode; thinking-on still gets high.
         if self.command == "claude" {
             if req.enable_thinking {
                 args.push("--effort".to_string());
                 args.push("high".to_string());
             } else {
                 args.push("--effort".to_string());
-                args.push("low".to_string());
+                args.push("medium".to_string());
             }
         }
 
@@ -140,6 +145,23 @@ impl Provider for CLIProvider {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        // Run the CLI from a neutral workspace, not the server's cwd. CLIs
+        // auto-discover project context from their working directory (memory
+        // dirs, CLAUDE.md/AGENTS.md, git status) — inheriting whatever repo the
+        // server was launched from leaks that project's instructions and
+        // memories into every Nebo chat.
+        let workspace = std::env::temp_dir().join("nebo-cli-workspace");
+        if std::fs::create_dir_all(&workspace).is_ok() {
+            cmd.current_dir(&workspace);
+        }
+        // Claude Code ships its own file-based memory system and CLAUDE.md
+        // auto-discovery. Nebo has one canonical memory pathway — the agent
+        // memory tool — so the CLI's must be off or the model maintains
+        // memory files instead of calling it. (--bare would also do this but
+        // forces API-key auth, breaking OAuth subscriptions.)
+        cmd.env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")
+            .env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1");
 
         // Windows: suppress console window flash for GUI app
         #[cfg(target_os = "windows")]
@@ -204,6 +226,10 @@ impl Provider for CLIProvider {
 
                 // Tool state tracking for accumulated input
                 let mut pending_tool: Option<PendingToolCall> = None;
+                // tool_use id → name, so tool_result events (which only carry
+                // the id) can be attributed to the tool that produced them.
+                let mut tool_names: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
 
                 loop {
                     let line = if let Some(ref token) = cancel_token {
@@ -323,6 +349,7 @@ impl Provider for CLIProvider {
                                     let input: serde_json::Value =
                                         serde_json::from_str(&input_json)
                                             .unwrap_or(serde_json::json!({}));
+                                    tool_names.insert(tool.id.clone(), tool.name.clone());
                                     let _ = tx
                                         .send(StreamEvent::tool_call(ToolCall {
                                             id: tool.id,
@@ -330,6 +357,63 @@ impl Provider for CLIProvider {
                                             input,
                                         }))
                                         .await;
+                                }
+                                continue;
+                            }
+                            // Tool results come back as user-role messages in the
+                            // CLI stream (the CLI executes tools itself via MCP).
+                            // Surface them as ToolResult events so the runner and
+                            // chat_dispatch see the same tool lifecycle as with
+                            // runner-executed tools.
+                            "user" => {
+                                let blocks = raw
+                                    .get("message")
+                                    .and_then(|m| m.get("content"))
+                                    .and_then(|c| c.as_array());
+                                if let Some(blocks) = blocks {
+                                    for block in blocks {
+                                        if block.get("type").and_then(|v| v.as_str())
+                                            != Some("tool_result")
+                                        {
+                                            continue;
+                                        }
+                                        let id = block
+                                            .get("tool_use_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let name = tool_names
+                                            .get(&id)
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        let text = tool_result_text(block);
+                                        let is_error = block
+                                            .get("is_error")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false);
+                                        let _ = tx
+                                            .send(StreamEvent {
+                                                event_type: StreamEventType::ToolResult,
+                                                text,
+                                                tool_call: Some(ToolCall {
+                                                    id,
+                                                    name,
+                                                    input: serde_json::Value::Null,
+                                                }),
+                                                error: if is_error {
+                                                    Some("tool error".to_string())
+                                                } else {
+                                                    None
+                                                },
+                                                usage: None,
+                                                rate_limit: None,
+                                                widgets: None,
+                                                provider_metadata: None,
+                                                stop_reason: None,
+                                                image_url: None,
+                                            })
+                                            .await;
+                                    }
                                 }
                                 continue;
                             }
@@ -416,6 +500,26 @@ struct PendingToolCall {
     id: String,
     name: String,
     input: String,
+}
+
+/// Extract the text of a `tool_result` content block. The CLI emits the
+/// result either as a plain string or as an array of `{type: "text"}` blocks.
+fn tool_result_text(block: &serde_json::Value) -> String {
+    match block.get("content") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| {
+                if p.get("type").and_then(|v| v.as_str()) == Some("text") {
+                    p.get("text").and_then(|v| v.as_str()).map(str::to_string)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
 }
 
 /// Build a single prompt string from messages.

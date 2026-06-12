@@ -33,6 +33,15 @@ async fn grade_with_claude_code(prompt: &str, model: &str) -> Result<String, Str
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
 
+    // Grade from a neutral workspace so the judge doesn't auto-discover the
+    // repo's CLAUDE.md or the operator's project memory as context.
+    let workspace = std::env::temp_dir().join("nebo-cli-workspace");
+    if std::fs::create_dir_all(&workspace).is_ok() {
+        cmd.current_dir(&workspace);
+    }
+    cmd.env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")
+        .env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1");
+
     #[cfg(unix)]
     {
         unsafe {
