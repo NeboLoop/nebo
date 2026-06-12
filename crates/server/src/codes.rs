@@ -1857,7 +1857,20 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
             .flatten()
             .map(|a| a.name)
             .unwrap_or_else(|| "Nebo".to_string());
+        // Once-guard within this process: reconnect flaps can run two
+        // reconciles back-to-back, and the second sync may read head_seq
+        // before the first backfill's sends persist — which double-mirrors
+        // the chat. head_seq==0 still guards across restarts.
+        static BACKFILLED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+            std::sync::OnceLock::new();
+        let backfilled = BACKFILLED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
         for r in results.iter().filter(|r| r.created || r.head_seq == 0) {
+            {
+                let mut seen = backfilled.lock().unwrap();
+                if !seen.insert(r.chat_id.clone()) {
+                    continue;
+                }
+            }
             let msgs = match state.store.get_recent_chat_messages(&r.chat_id, 50) {
                 Ok(m) => m,
                 Err(e) => {
