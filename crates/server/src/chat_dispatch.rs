@@ -423,7 +423,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // fanout frames, so a tight window is cheap.
                 const COMM_COALESCE_MS: u64 = COALESCE_MS;
                 // Stable ID across all stream chunks so the gateway coalesces them
-                let comm_stream_id = uuid::Uuid::new_v4().to_string();
+                // Per-SEGMENT stream id: rotates after each tool round so each
+                // prose segment is its own message on the loop — clients render
+                // work lines interleaved with the text they belong to (the
+                // Claude pattern), not one combined block at the top.
+                let mut comm_stream_id = uuid::Uuid::new_v4().to_string();
+                let mut segment_had_tools = false;
 
                 loop {
                     let event = tokio::select! {
@@ -483,6 +488,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // gets a live activity signal via send_typing()
                             // instead, without the "_Working on:_" spam.
                             if comm_reply.is_some() && !is_progress_heartbeat(&event.text) {
+                                if segment_had_tools {
+                                    comm_stream_id = uuid::Uuid::new_v4().to_string();
+                                    segment_had_tools = false;
+                                }
                                 comm_buffer.push_str(&event.text);
                                 // Flush the FIRST chunk immediately so the loop
                                 // paints the opening text the instant the model
@@ -570,6 +579,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // activity (and renders "Used N tools"), like the local app.
                                 let (activity, _) = humanize_tool_call(&tc.name, &tc.input);
                                 if let Some(cfg) = &comm_reply {
+                                    segment_had_tools = true;
                                     let request = tc.input.to_string();
                                     send_comm_tool_activity(
                                         cfg,
@@ -963,6 +973,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             streamed = comm_streamed,
                             "sending comm reply (final complete message)"
                         );
+                        // When chunks streamed over the neboai wire, the persisted
+                        // stream rows ARE the content — an empty final carries only
+                        // the reply metadata (senderName, suggestions, attachments)
+                        // and finalizes in place. Re-carrying the full text doubled
+                        // reloaded history and forced clients to collapse all the
+                        // turn's segments into one block. Other providers (Slack…)
+                        // still get the full text.
+                        let final_content = if comm_streamed && reply_config.provider == "neboai" {
+                            String::new()
+                        } else {
+                            strip_progress_heartbeats(&full_response)
+                        };
                         let reply = comm::CommMessage {
                             id: uuid::Uuid::new_v4().to_string(),
                             from: String::new(),
@@ -970,7 +992,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             topic: reply_config.topic.clone(),
                             conversation_id: reply_config.conversation_id.clone(),
                             msg_type: comm::CommMessageType::Message,
-                            content: strip_progress_heartbeats(&full_response),
+                            content: final_content,
                             metadata: reply_meta,
                             timestamp: 0,
                             human_injected: false,
