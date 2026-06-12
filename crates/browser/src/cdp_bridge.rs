@@ -442,6 +442,10 @@ async fn wait_for_cdp(port: u16, timeout: Duration) -> Result<(), BrowserError> 
 ///   3. `<data_dir>/bin/obscura`    — downloaded-update path
 ///   4. `$PATH`                     — system install (e.g. `/usr/local/bin`)
 pub fn find_obscura(data_dir: &str) -> Option<PathBuf> {
+    // Windows binaries carry the .exe suffix; every probe below must use the
+    // platform name or detection silently fails on Windows.
+    const BIN_NAME: &str = if cfg!(windows) { "obscura.exe" } else { "obscura" };
+
     if let Ok(p) = std::env::var("OBSCURA_BIN") {
         let p = PathBuf::from(p);
         if p.exists() {
@@ -450,19 +454,19 @@ pub fn find_obscura(data_dir: &str) -> Option<PathBuf> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let sibling = dir.join("obscura");
+            let sibling = dir.join(BIN_NAME);
             if sibling.exists() {
                 return Some(sibling);
             }
         }
     }
-    let bundled = PathBuf::from(data_dir).join("bin").join("obscura");
+    let bundled = PathBuf::from(data_dir).join("bin").join(BIN_NAME);
     if bundled.exists() {
         return Some(bundled);
     }
     if let Ok(path) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path) {
-            let cand = dir.join("obscura");
+            let cand = dir.join(BIN_NAME);
             if cand.exists() {
                 return Some(cand);
             }

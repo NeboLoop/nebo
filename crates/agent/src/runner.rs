@@ -3400,7 +3400,13 @@ async fn run_loop(
                     let total_len = result.content.len();
                     // Persist full result to temp file so agent can Read it if needed
                     let result_id = uuid::Uuid::new_v4().to_string();
-                    let result_dir = std::path::Path::new("/tmp/nebo-tool-results");
+                    #[cfg(not(windows))]
+                    let result_dir = std::path::PathBuf::from("/tmp/nebo-tool-results");
+                    // Windows: no /tmp — use the real temp dir (matches the
+                    // pathres /tmp mapping the read-back path goes through).
+                    #[cfg(windows)]
+                    let result_dir = std::env::temp_dir().join("nebo-tool-results");
+                    let result_dir = result_dir.as_path();
                     let _ = std::fs::create_dir_all(result_dir);
                     let result_path = result_dir.join(format!("{}.txt", result_id));
                     if let Err(e) = std::fs::write(&result_path, &result.content) {

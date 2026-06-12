@@ -141,7 +141,7 @@ impl AgentTool {
 
     fn infer_resource(&self, action: &str) -> &str {
         match action {
-            "store" | "recall" | "search" => "memory",
+            "store" | "save" | "recall" | "search" => "memory",
             "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create"
             | "update" | "delete" => "task",
             "research" | "deep_research" | "submit_findings" => "research",
@@ -160,7 +160,9 @@ impl AgentTool {
         let action = input["action"].as_str().unwrap_or("");
 
         match action {
-            "store" => {
+            // "save" is the most common model misspelling of "store" — accept
+            // it rather than burn a correction round-trip.
+            "store" | "save" => {
                 let key = input["key"].as_str().unwrap_or("");
                 let value = input["value"].as_str().unwrap_or("");
                 // The advertised `layer` param maps to the canonical namespace

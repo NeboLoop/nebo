@@ -146,6 +146,23 @@ impl Provider for CLIProvider {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // Run the CLI from a neutral workspace, not the server's cwd. CLIs
+        // auto-discover project context from their working directory (memory
+        // dirs, CLAUDE.md/AGENTS.md, git status) — inheriting whatever repo the
+        // server was launched from leaks that project's instructions and
+        // memories into every Nebo chat.
+        let workspace = std::env::temp_dir().join("nebo-cli-workspace");
+        if std::fs::create_dir_all(&workspace).is_ok() {
+            cmd.current_dir(&workspace);
+        }
+        // Claude Code ships its own file-based memory system and CLAUDE.md
+        // auto-discovery. Nebo has one canonical memory pathway — the agent
+        // memory tool — so the CLI's must be off or the model maintains
+        // memory files instead of calling it. (--bare would also do this but
+        // forces API-key auth, breaking OAuth subscriptions.)
+        cmd.env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")
+            .env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1");
+
         // Windows: suppress console window flash for GUI app
         #[cfg(target_os = "windows")]
         {
