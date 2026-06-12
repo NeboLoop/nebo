@@ -166,13 +166,12 @@ impl AgentTool {
                 let key = input["key"].as_str().unwrap_or("");
                 let value = input["value"].as_str().unwrap_or("");
                 // The advertised `layer` param maps to the canonical namespace
-                // for that layer; an explicit `namespace` overrides. Previously
-                // `layer` was silently ignored, so every explicit store —
-                // preferences, entities, daily facts alike — collapsed into
-                // tacit/general and the categorized recall slices stayed empty.
+                // for that layer; an explicit `namespace` overrides. The
+                // `daily` layer is retired (docs/design/MEMORY_QUALITY.md) —
+                // ongoing work lives in the topical `project` layer instead.
                 let layer_ns = match input["layer"].as_str().unwrap_or("") {
-                    "daily" => format!("daily/{}", chrono::Local::now().format("%Y-%m-%d")),
                     "entity" => "entity/default".to_string(),
+                    "project" => "project".to_string(),
                     _ => "tacit/general".to_string(),
                 };
                 let namespace = input["namespace"].as_str().unwrap_or(&layer_ns);
@@ -182,6 +181,19 @@ impl AgentTool {
                         "store",
                         "key and value",
                         "bot(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\")",
+                    ));
+                }
+
+                // Stage-0 write guard — same canonical filter the automatic
+                // extraction path runs. Explicit stores are user-directed, so
+                // explicit=true (short stated facts like "favorite color:
+                // blue" survive the too-thin rule).
+                if let Some(rule) = crate::memory_guard::stage0_reject(key, value, true) {
+                    warn!(rule = rule, key = key, "memory store rejected by stage-0 guard");
+                    return ToolResult::error(format!(
+                        "Memory store rejected ({rule}): this value is not a durable fact worth \
+                         remembering (secrets, bare numbers/times/paths, and session mechanics \
+                         are filtered). Store a self-contained 1-2 sentence fact instead, or skip storing."
                     ));
                 }
 
@@ -1684,7 +1696,7 @@ impl DynTool for AgentTool {
          - agent(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\", layer: \"tacit\") — Store a fact\n\
          - agent(resource: \"memory\", action: \"recall\", key: \"user/name\") — Recall a specific fact\n\
          - agent(resource: \"memory\", action: \"search\", query: \"...\") — Search across all memories\n\
-         Layers: \"tacit\" (long-term preferences — MOST COMMON), \"daily\" (today's facts, auto-expires), \"entity\" (people/places/things)\n\
+         Layers: \"tacit\" (long-term preferences — MOST COMMON), \"project\" (ongoing work: goals, decisions, status), \"entity\" (people/places/things)\n\
          For likes/dislikes/working-style facts, store with namespace: \"tacit/preferences\" — those inject into every conversation automatically.\n\n\
          Sessions:\n\
          - agent(resource: \"session\", action: \"list\") / history / status / clear / query\n\n\

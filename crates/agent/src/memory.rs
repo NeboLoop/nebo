@@ -22,6 +22,9 @@ pub struct Fact {
     /// Whether the user explicitly stated this fact (vs inferred).
     #[serde(default)]
     pub explicit: Option<bool>,
+    /// Topic slug for facts in the `topics` array (e.g. "project").
+    #[serde(default)]
+    pub topic: Option<String>,
 }
 
 fn default_confidence() -> f64 {
@@ -29,6 +32,9 @@ fn default_confidence() -> f64 {
 }
 
 /// All facts extracted from a conversation.
+/// `decisions` and `task_context` were deleted (docs/design/MEMORY_QUALITY.md):
+/// both wrote to the retired `daily/` layer; their durable residue is by
+/// definition a topic fact, and session state belongs to the session layer.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct ExtractedFacts {
     #[serde(default)]
@@ -36,13 +42,12 @@ pub struct ExtractedFacts {
     #[serde(default)]
     pub entities: Vec<Fact>,
     #[serde(default)]
-    pub decisions: Vec<Fact>,
-    #[serde(default)]
     pub styles: Vec<Fact>,
     #[serde(default)]
     pub artifacts: Vec<Fact>,
+    /// Ongoing work: goals, decisions, constraints, status — keyed by topic.
     #[serde(default)]
-    pub task_context: Vec<Fact>,
+    pub topics: Vec<Fact>,
 }
 
 /// A storage-ready memory entry.
@@ -55,6 +60,8 @@ pub struct MemoryEntry {
     pub tags: Vec<String>,
     pub is_style: bool,
     pub confidence: f64,
+    /// User directly stated this fact (feeds the stage-0 too-thin rule).
+    pub explicit: bool,
 }
 
 /// A memory scored by decay and confidence for ranking.
@@ -136,38 +143,46 @@ pub async fn extract_facts(
         _ => String::new(),
     };
 
+    // Extraction prompt v2 — docs/design/MEMORY_QUALITY.md. The topic
+    // category lines are the default `project` definition; agent-declared
+    // topics replace them per scope in R2.
+    let topic_categories = "- \"project\" — ongoing work, goals, or constraints the user would expect you to know next time";
+
     let prompt = format!(
-        "Extract key facts from this conversation. Return a JSON object with these categories:\n\
-         - preferences: user preferences and behaviors\n\
-         - entities: people, places, things mentioned\n\
-         - decisions: decisions made during the conversation\n\
-         - styles: communication/personality observations\n\
-         - artifacts: content produced for the user\n\
-         - task_context: task parameters (dates, budgets, quantities)\n\n\
-         Each fact should have: key (string), value (string), category (string), tags (string array), confidence (0-1), explicit (boolean — true if user directly stated it, false if inferred).\n\n\
-         When writing the value field, prefix it with a category tag in brackets when applicable:\n\
-         - [preference] for user preferences, likes, dislikes\n\
-         - [project] for project details, goals, tech stack\n\
-         - [workflow] for recurring workflows, processes, habits\n\
-         - [contact] for people, relationships, organizations\n\
-         - [decision] for decisions made, choices, rationale\n\
-         - [error] for errors encountered, solutions found\n\
-         - [file] for files modified, paths discussed\n\n\
-         Examples:\n\
-         - [preference] User prefers dark mode in all editors\n\
-         - [project] Brief app uses SvelteKit + Tauri stack\n\
-         - [error] SQLite WAL mode fix: set journal_mode before writes\n\n\
-         Facts that don't fit a category should be written without a prefix.\n\n\
-         Do NOT save:\n\
-         - Code snippets, file paths, or architecture details (derivable from the codebase)\n\
-         - Debugging solutions (the fix is already in the code)\n\
-         - Anything already in .nebo.md or agent configuration files\n\
-         - Ephemeral task details or step-by-step instructions\n\
-         - Information the user explicitly asked you NOT to remember\n\n\
-         {}\
-         Conversation:\n{}\n\n\
-         Return ONLY valid JSON, no markdown fences.",
-        existing_memories_section, conversation
+        "Analyze the conversation and extract durable facts worth remembering in FUTURE conversations.\n\n\
+         THE BAR — every fact must pass all three:\n\
+         1. Will this still matter in a month?\n\
+         2. Is it hard to re-derive on demand (not available from the user's files, calendar, tools, or this session)?\n\
+         3. Is it about the user or their ongoing work — not about this conversation's mechanics?\n\n\
+         Empty arrays are normal. Most conversations contain nothing durable.\n\n\
+         Return a JSON object with these arrays:\n\
+         1. \"preferences\" — preferences and corrections about how to work, stated or demonstrated.\n\
+            Include the why when the user gave one.\n\
+         2. \"styles\" — communication/personality style observations (key: \"style/trait-name\")\n\
+         3. \"entities\" — people, organizations, and places with significance beyond the current task\n\
+            (key: \"kind/name\", e.g. \"person/sarah\"). A name mentioned in passing is NOT an entity.\n\
+         4. \"topics\" — ongoing work: goals, decisions, constraints, current status. Convert relative\n\
+            dates to absolute. Each fact names its topic:\n\
+            {topic_categories}\n\
+         5. \"artifacts\" — important produced content worth referencing later (key: \"artifact/description\")\n\n\
+         NEVER extract:\n\
+         - times, dates, counts, quantities, IDs, or file paths standing alone\n\
+         - session mechanics: which tools ran, message/input sizes, the current date, iteration details\n\
+         - anything trivially re-derivable from the user's files, calendar, or connected tools\n\
+         - secrets, credentials, API keys\n\
+         - sensitive personal information — protected attributes (race, ethnicity, national origin,\n\
+           religion, age, sex, sexual orientation, gender identity, immigration status, disability,\n\
+           serious illness, union membership), government identifiers, financial account numbers,\n\
+           health information, home addresses — UNLESS the user explicitly asked you to remember it\n\n\
+         Each fact:\n\
+         - \"key\": unique, descriptive, path-like (\"category/name\")\n\
+         - \"value\": 1-2 self-contained sentences (readable without this conversation)\n\
+         - \"topic\": (topics array only) one of the topic slugs above\n\
+         - \"tags\": searchable tags\n\
+         - \"explicit\": true if the user directly stated it, false if inferred\n\n\
+         {existing_memories_section}\
+         Conversation:\n{conversation}\n\n\
+         Return ONLY valid JSON, no markdown fences."
     );
 
     let req = ai::ChatRequest {
@@ -228,20 +243,11 @@ pub fn store_facts(
     let entries = format_for_storage(facts);
     let mut stored_entries: Vec<MemoryEntry> = Vec::new();
     for entry in entries {
-        // Skip entries that contain credential patterns (protect non-technical users)
-        if crate::secret_scan::contains_secret(&entry.value) {
-            warn!(key = %entry.key, "skipping memory storage — credential pattern detected");
-            continue;
-        }
-
-        // Skip entries that look like prompt injection
-        if sanitize::detect_prompt_injection(&entry.key)
-            || sanitize::detect_prompt_injection(&entry.value)
+        // Stage-0 write guard — the canonical deterministic filter shared
+        // with the explicit memory-tool store (tools::memory_guard).
+        if let Some(rule) = tools::memory_guard::stage0_reject(&entry.key, &entry.value, entry.explicit)
         {
-            debug!(
-                "skipping memory entry due to injection detection: {}",
-                entry.key
-            );
+            warn!(rule = rule, key = %entry.key, "memory entry rejected by stage-0 guard");
             continue;
         }
 
@@ -368,9 +374,12 @@ fn store_style_observation(store: &Store, entry: &MemoryEntry, user_id: &str) {
     }
 }
 
+/// Topic slugs accepted from the extractor. R1 ships the default `project`
+/// layer only; agent-declared topics extend this per scope in R2.
+const DEFAULT_TOPIC_SLUGS: &[&str] = &["project"];
+
 /// Convert extracted facts to storage entries.
 fn format_for_storage(facts: &ExtractedFacts) -> Vec<MemoryEntry> {
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let mut entries = Vec::new();
 
     for f in &facts.preferences {
@@ -383,6 +392,7 @@ fn format_for_storage(facts: &ExtractedFacts) -> Vec<MemoryEntry> {
             tags: f.tags.clone(),
             is_style: false,
             confidence,
+            explicit: f.explicit == Some(true),
         });
     }
 
@@ -396,19 +406,7 @@ fn format_for_storage(facts: &ExtractedFacts) -> Vec<MemoryEntry> {
             tags: f.tags.clone(),
             is_style: false,
             confidence,
-        });
-    }
-
-    for f in &facts.decisions {
-        let confidence = resolve_confidence(f.confidence, f.explicit);
-        entries.push(MemoryEntry {
-            layer: "daily".to_string(),
-            namespace: format!("daily/{}", today),
-            key: sanitize::sanitize_memory_key(&normalize_key(&f.key)),
-            value: sanitize::sanitize_memory_value(&f.value),
-            tags: f.tags.clone(),
-            is_style: false,
-            confidence,
+            explicit: f.explicit == Some(true),
         });
     }
 
@@ -422,6 +420,7 @@ fn format_for_storage(facts: &ExtractedFacts) -> Vec<MemoryEntry> {
             tags: f.tags.clone(),
             is_style: true,
             confidence,
+            explicit: f.explicit == Some(true),
         });
     }
 
@@ -435,19 +434,28 @@ fn format_for_storage(facts: &ExtractedFacts) -> Vec<MemoryEntry> {
             tags: f.tags.clone(),
             is_style: false,
             confidence,
+            explicit: f.explicit == Some(true),
         });
     }
 
-    for f in &facts.task_context {
+    for f in &facts.topics {
         let confidence = resolve_confidence(f.confidence, f.explicit);
+        // Validate the topic slug against the accepted set; unknown or
+        // missing slugs fall back to the default `project` layer.
+        let topic = f
+            .topic
+            .as_deref()
+            .filter(|t| DEFAULT_TOPIC_SLUGS.contains(t))
+            .unwrap_or("project");
         entries.push(MemoryEntry {
-            layer: "daily".to_string(),
-            namespace: format!("daily/{}", today),
+            layer: topic.to_string(),
+            namespace: topic.to_string(),
             key: sanitize::sanitize_memory_key(&normalize_key(&f.key)),
             value: sanitize::sanitize_memory_value(&f.value),
             tags: f.tags.clone(),
             is_style: false,
             confidence,
+            explicit: f.explicit == Some(true),
         });
     }
 
@@ -886,6 +894,7 @@ mod tests {
                 tags: vec![],
                 confidence: 0.5,
                 explicit: Some(true),
+                topic: None,
             }],
             ..Default::default()
         };
@@ -893,6 +902,32 @@ mod tests {
         let entries = format_for_storage(&facts);
         assert_eq!(entries.len(), 1);
         assert!((entries[0].confidence - 0.9).abs() < f64::EPSILON);
+        assert!(entries[0].explicit);
+    }
+
+    #[test]
+    fn test_format_for_storage_topics_map_to_project() {
+        let mk = |topic: Option<&str>| Fact {
+            key: "deck-build".to_string(),
+            value: "Budget for the deck project is $5,000, approved June 10 2026".to_string(),
+            category: String::new(),
+            tags: vec![],
+            confidence: 0.8,
+            explicit: Some(false),
+            topic: topic.map(str::to_string),
+        };
+        let facts = ExtractedFacts {
+            topics: vec![mk(Some("project")), mk(Some("unknown-slug")), mk(None)],
+            ..Default::default()
+        };
+
+        let entries = format_for_storage(&facts);
+        assert_eq!(entries.len(), 3);
+        // Valid slug kept; unknown and missing slugs fall back to project.
+        for e in &entries {
+            assert_eq!(e.namespace, "project");
+            assert_eq!(e.layer, "project");
+        }
     }
 
     #[test]
@@ -905,6 +940,7 @@ mod tests {
                 tags: vec![],
                 confidence: 0.8,
                 explicit: None,
+                topic: None,
             }],
             ..Default::default()
         };
