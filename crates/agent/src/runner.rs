@@ -1071,6 +1071,14 @@ async fn run_loop(
     // session — a reminder that lands in stored history pollutes every
     // later context window AND leaks into channel mirrors/backfills.
     let mut pending_stream_reminders: Vec<String> = Vec::new();
+    // Temporal grounding (the harness pattern): every turn's first call
+    // carries WHEN the message arrived, then the marker vanishes. The model
+    // resolves "today/tomorrow/in an hour" against the message, not against
+    // however stale its window is.
+    pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+        "Message sent at {}.",
+        chrono::Local::now().format("%a %Y-%m-%d %H:%M %Z")
+    )));
     if let Some(ctx) = mention_context {
         pending_stream_reminders.push(steering::wrap_system_reminder(ctx));
     }
