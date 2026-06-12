@@ -1846,6 +1846,22 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
             }
         };
 
+        // Deletion propagation: a chat tombstoned on the loop deletes the
+        // desktop copy too (same pathway as DELETE /api/v1/chats/:id). The
+        // tombstone survives the additive upsert above, so this also stops
+        // the chat from resurrecting on the next sync.
+        for r in results.iter().filter(|r| r.deleted) {
+            if let Err(e) = state
+                .store
+                .delete_chat_messages_by_chat_id(&r.chat_id)
+                .and_then(|_| state.store.delete_chat(&r.chat_id))
+            {
+                warn!(target: "neboai_identity", chat_id = %r.chat_id, error = %e, "reconcile: loop-deleted chat — local delete FAILED");
+            } else {
+                info!(target: "neboai_identity", chat_id = %r.chat_id, local_id = %local_id, "reconcile: chat deleted on loop — local copy removed");
+            }
+        }
+
         // One-shot history backfill: a chat whose loop conversation was just
         // created opens EMPTY remotely — mirror its recent desktop messages
         // so the remote shows the same conversation as the local Threads
@@ -1864,7 +1880,7 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         static BACKFILLED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
             std::sync::OnceLock::new();
         let backfilled = BACKFILLED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-        for r in results.iter().filter(|r| r.created || r.head_seq == 0) {
+        for r in results.iter().filter(|r| !r.deleted && (r.created || r.head_seq == 0)) {
             {
                 let mut seen = backfilled.lock().unwrap();
                 if !seen.insert(r.chat_id.clone()) {

@@ -1264,6 +1264,9 @@ pub struct AgentChatSyncResult {
     /// (synced before backfill existed) and needs backfilling too.
     #[serde(default)]
     pub head_seq: u64,
+    /// Tombstoned on the loop — delete the local copy, never backfill.
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 /// One desktop chat in a chats/sync publish.
