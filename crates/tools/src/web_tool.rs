@@ -51,6 +51,13 @@ pub struct WebTool {
     /// Siblings in the same parent group share this cache so they don't
     /// duplicate browsing work.
     visited_pages: Mutex<HashMap<String, HashMap<String, VisitedPage>>>,
+    /// Single-flight gate for searches: `group_key\0search_key` → Notify. When
+    /// several sibling sub-agents fire the SAME query concurrently (the deep-research
+    /// 3-voter stampede), the first becomes the leader and runs ONE actual search;
+    /// the rest wait on the Notify and read the leader's cached result instead of
+    /// each hitting the search API/engine. The post-completion cache only dedups
+    /// SEQUENTIAL repeats; this closes the concurrent window.
+    search_in_flight: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
 }
 
 impl WebTool {
@@ -83,6 +90,7 @@ impl WebTool {
             broadcaster: None,
             nav_history: Mutex::new(HashMap::new()),
             visited_pages: Mutex::new(HashMap::new()),
+            search_in_flight: Mutex::new(HashMap::new()),
         }
     }
 
@@ -441,14 +449,69 @@ impl WebTool {
                 query = %query,
                 "search cache hit — returning cached results instead of re-searching"
             );
-            return ToolResult {
-                content: format!("[Already searched this recently — cached results]\n\n{}", cached.content),
-                is_error: cached.is_error,
-                image_url: None,
-                http_status: None,
-            };
+            return cached_search_result(&cached);
         }
 
+        // Single-flight: collapse a concurrent burst of the SAME query (the deep-research
+        // 3-voter stampede) onto ONE real search. The first caller leads; the rest wait for
+        // it and read its cached result, so N identical concurrent queries cost ONE API/engine
+        // hit instead of N. Decide the role under the lock with NO await held (std Mutex), then
+        // do all awaits outside it.
+        enum Flight {
+            Leader(Arc<tokio::sync::Notify>),
+            Follower(Arc<tokio::sync::Notify>),
+            Uncoordinated, // lock poisoned — just search, skip dedup
+        }
+        let flight_key = format!("{group_key}\u{0}{search_key}");
+        let flight = match self.search_in_flight.lock() {
+            Ok(mut guard) => match guard.get(&flight_key) {
+                Some(n) => Flight::Follower(n.clone()),
+                None => {
+                    let n = Arc::new(tokio::sync::Notify::new());
+                    guard.insert(flight_key.clone(), n.clone());
+                    Flight::Leader(n)
+                }
+            },
+            Err(_) => Flight::Uncoordinated,
+        };
+
+        match flight {
+            Flight::Uncoordinated => self.run_search(query, session_id, group_key, &search_key).await,
+            Flight::Follower(notify) => {
+                // Wait for the leader, then read its cached result.
+                let notified = notify.notified();
+                if let Some(cached) = self.check_visited(group_key, &search_key) {
+                    return cached_search_result(&cached);
+                }
+                let _ = tokio::time::timeout(Self::SEARCH_FOLLOWER_WAIT, notified).await;
+                if let Some(cached) = self.check_visited(group_key, &search_key) {
+                    return cached_search_result(&cached);
+                }
+                // Leader failed/empty or took too long — do our own search (rare).
+                self.run_search(query, session_id, group_key, &search_key).await
+            }
+            Flight::Leader(notify) => {
+                // Run exactly one search, then release the gate + wake followers.
+                let result = self.run_search(query, session_id, group_key, &search_key).await;
+                if let Ok(mut guard) = self.search_in_flight.lock() {
+                    guard.remove(&flight_key);
+                }
+                notify.notify_waiters();
+                result
+            }
+        }
+    }
+
+    /// The actual search chain (BYOK API → browser → DDG/Brave scrape), recording a
+    /// successful result in the shared cache. Split out of `handle_search` so the
+    /// single-flight leader and any fall-through follower share one implementation.
+    async fn run_search(
+        &self,
+        query: &str,
+        session_id: &str,
+        group_key: &str,
+        search_key: &str,
+    ) -> ToolResult {
         // 1. Try BYOK API providers (check auth_profiles for search-* providers)
         if let Some(store) = &self.store {
             for provider in [
@@ -470,7 +533,7 @@ impl WebTool {
                         {
                             Ok(results) if !results.is_empty() => {
                                 let result = format_search_results(query, &results);
-                                self.record_visited(group_key, &search_key, &result.content, false, session_id);
+                                self.record_visited(group_key, search_key, &result.content, false, session_id);
                                 return result;
                             }
                             Err(e) => {
@@ -489,7 +552,7 @@ impl WebTool {
             tracing::info!(query, "browser available — searching via browser/extension");
             let browser_result = self.search_via_browser(query, session_id).await;
             if !browser_result.is_error {
-                self.record_visited(group_key, &search_key, &browser_result.content, false, session_id);
+                self.record_visited(group_key, search_key, &browser_result.content, false, session_id);
                 return browser_result;
             }
             tracing::warn!(query, "browser search failed — falling back to DDG scraping");
@@ -501,7 +564,7 @@ impl WebTool {
         tracing::info!(query, "trying direct scrape chain (DDG → Brave)");
         let result = self.search_duckduckgo_html(query).await;
         if !result.is_error {
-            self.record_visited(group_key, &search_key, &result.content, false, session_id);
+            self.record_visited(group_key, search_key, &result.content, false, session_id);
         }
         result
     }
@@ -509,6 +572,14 @@ impl WebTool {
     /// Per-request budget for direct search scraping (DDG, Brave). A blocked engine
     /// often hangs rather than failing — fail fast and move to the next tier.
     const SCRAPE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+    /// How long a single-flight follower waits for the leader's search before giving
+    /// up and searching itself. Must exceed the leader's worst-case duration — the full
+    /// failing fallback chain (browser human flow → 8s DDG scrape → 8s Brave scrape) can
+    /// run ~30s — so followers wake on the leader's notify rather than timing out
+    /// mid-search and re-stampeding. An API search (the fast path this enables) resolves
+    /// in ~1s, so followers normally wake almost immediately.
+    const SEARCH_FOLLOWER_WAIT: std::time::Duration = std::time::Duration::from_secs(40);
 
     /// Whether a browser backend (connected extension or headless agent-browser) is available
     /// to run a search — used to prefer it over DDG HTTP scraping.
@@ -2327,6 +2398,20 @@ struct SearchResult {
     title: String,
     url: String,
     snippet: String,
+}
+
+/// Wrap a cached search hit as a ToolResult (shared by the fast-path cache check
+/// and the single-flight follower path).
+fn cached_search_result(cached: &VisitedPage) -> ToolResult {
+    ToolResult {
+        content: format!(
+            "[Already searched this recently — cached results]\n\n{}",
+            cached.content
+        ),
+        is_error: cached.is_error,
+        image_url: None,
+        http_status: None,
+    }
 }
 
 /// Format search results into a ToolResult.

@@ -31,6 +31,10 @@ pub struct StructuredTask {
     /// this key so each sub-agent owns its own tab (the 1:1 sub-agent→tab model), while
     /// siblings keyed `subagent:{parent}:sa-{id}` share the parent's visited-page cache.
     pub tab_key: String,
+    /// Optional cap on free-phase tool-use turns. `None` → the agent default. Used to
+    /// hold a sub-agent to a single tool call (e.g. the reference deep-research search
+    /// agent does ONE WebSearch per angle, not an open-ended browse loop).
+    pub max_tool_turns: Option<u32>,
 }
 
 /// Trait for running forced-structured-output sub-agents AND executing single tools on

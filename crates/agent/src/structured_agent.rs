@@ -66,8 +66,11 @@ impl StructuredAgent for StructuredRunner {
                 }
             }
 
-            let req = StructuredRequest::new(task.system, task.task, task.schema, String::new())
+            let mut req = StructuredRequest::new(task.system, task.task, task.schema, String::new())
                 .with_aux_tools(aux);
+            if let Some(turns) = task.max_tool_turns {
+                req.max_tool_turns = turns;
+            }
 
             let registry = self.registry.clone();
             let ctx = Self::ctx_for(&task.tab_key);
