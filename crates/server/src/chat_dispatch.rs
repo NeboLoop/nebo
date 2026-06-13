@@ -35,8 +35,8 @@ pub fn md_to_html(md: &str) -> String {
     html_output
 }
 
-fn tool_activity_label(tool_name: &str) -> &str {
-    match tool_name {
+fn tool_activity_label(tool_name: &str) -> Option<&'static str> {
+    Some(match tool_name {
         "bash"    => "running a command",
         "grep"    => "searching files",
         "glob"    => "finding files",
@@ -52,15 +52,15 @@ fn tool_activity_label(tool_name: &str) -> &str {
         "loop"    => "sending a message",
 
         "os"      => "checking the workspace",
-        _         => "working",
-    }
+        _         => return None,
+    })
 }
 
 /// Past-tense counterpart, sent on the result phase: collapsed work lines
 /// report OUTCOMES ("Ran a command"), not in-progress activity. One source
 /// for every client — web and mobile render these verbatim.
-fn tool_outcome_label(tool_name: &str) -> &str {
-    match tool_name {
+fn tool_outcome_label(tool_name: &str) -> Option<&'static str> {
+    Some(match tool_name {
         "bash"    => "Ran a command",
         "grep"    => "Searched files",
         "glob"    => "Found files",
@@ -76,8 +76,15 @@ fn tool_outcome_label(tool_name: &str) -> &str {
         "loop"    => "Sent a message",
 
         "os"      => "Checked the workspace",
-        _         => "Did a step",
-    }
+        _         => return None,
+    })
+}
+
+/// Honest fallback for a tool we don't have nice copy for: name it as-is
+/// ("using tool_search" / "Used tool_search") rather than vague filler.
+fn humanize_tool_name(tool_name: &str) -> (String, String) {
+    let n = tool_name.replace('_', " ");
+    (format!("using {n}"), format!("Used {n}"))
 }
 
 /// Verb forms for STRAP actions: (gerund for the live activity label,
@@ -132,10 +139,12 @@ fn humanize_tool_call(tool_name: &str, input: &serde_json::Value) -> (String, St
             format!("Ran {action} on {noun}"),
         );
     }
-    (
-        tool_activity_label(tool_name).to_string(),
-        tool_outcome_label(tool_name).to_string(),
-    )
+    match (tool_activity_label(tool_name), tool_outcome_label(tool_name)) {
+        (Some(a), Some(o)) => (a.to_string(), o.to_string()),
+        // Unknown tool (e.g. tool_search, a skill, a delegate) — name it
+        // honestly instead of "working" / "Did a step".
+        _ => humanize_tool_name(tool_name),
+    }
 }
 
 /// True when a streamed text chunk is an orchestrator progress heartbeat —
@@ -647,7 +656,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     .tool_call
                                     .as_ref()
                                     .map(|tc| humanize_tool_call(&tc.name, &tc.input).1)
-                                    .unwrap_or_else(|| tool_outcome_label(tool_name).to_string());
+                                    .unwrap_or_else(|| {
+                                        tool_outcome_label(tool_name)
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| humanize_tool_name(tool_name).1)
+                                    });
                                 send_comm_tool_activity(
                                     cfg,
                                     &comm_manager,
