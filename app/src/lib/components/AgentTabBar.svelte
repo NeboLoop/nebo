@@ -44,7 +44,7 @@
   {#if isApp}
     <a href="/{agentId}/overview" role="tab" class="tab flex-1 {activeTab === 'overview' ? 'tab-active' : ''}">Overview</a>
   {:else}
-    <a href="/{agentId}/threads" role="tab" class="tab flex-1 {activeTab === 'threads' ? 'tab-active' : ''}">Threads</a>
+    <a href="/{agentId}/threads" role="tab" class="tab flex-1 {activeTab === 'threads' ? 'tab-active' : ''}">Chats</a>
   {/if}
   <a href="/{agentId}/runs" role="tab" class="tab flex-1 {activeTab === 'runs' ? 'tab-active' : ''}">Runs</a>
   <a href="/{agentId}/settings" role="tab" class="tab flex-1 {activeTab === 'settings' ? 'tab-active' : ''}">Settings</a>

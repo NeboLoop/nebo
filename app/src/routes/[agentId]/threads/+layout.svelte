@@ -109,10 +109,10 @@
   <AgentTabBar agentId={agentId} agentName={agent?.name ?? ''} agentInitial={agent?.initial ?? ''} status={agentStatus} isApp={ctx.isApp} />
 
   <div class="flex-1 overflow-y-auto">
-    <!-- New thread -->
+    <!-- New chat -->
     <a href="/{agentId}/threads" class="block w-full text-left py-2.5 px-3.5 border-b border-base-300 cursor-pointer hover:bg-base-200 transition-colors no-underline text-base-content">
-      <div class="text-sm font-medium text-primary">+ New Thread</div>
-      <div class="text-xs text-base-content/70">Clean context. {agent?.name} knows who you are but nothing about previous threads.</div>
+      <div class="text-sm font-medium text-primary">+ New chat</div>
+      <div class="text-xs text-base-content/70">Clean context. {agent?.name} knows who you are but nothing about previous chats.</div>
     </a>
 
     {#each threads as t}
@@ -159,7 +159,7 @@
         <span class="loading loading-spinner loading-sm"></span>
       </div>
     {:else if threads.length === 0}
-      <div class="p-6 text-center text-sm text-base-content/50">No threads yet. Start a new one.</div>
+      <div class="p-6 text-center text-sm text-base-content/50">No chats yet. Start a new one.</div>
     {/if}
   </div>
 </div>
