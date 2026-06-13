@@ -419,12 +419,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // arriving in half-second chunks. The chunks are ephemeral
                 // fanout frames, so a tight window is cheap.
                 const COMM_COALESCE_MS: u64 = COALESCE_MS;
-                // ONE stable stream id for the whole reply: the gateway coalesces
-                // chunks under it and the final full-text Message finalizes that
-                // bubble. (Per-segment rotation was reverted — it required an
-                // empty final, which the gateway then dropped on reload since it
-                // doesn't persist Stream frames.)
-                let comm_stream_id = uuid::Uuid::new_v4().to_string();
+                // Per-segment stream id. A "segment" is the prose between two tool
+                // rounds. Each segment is flushed as its OWN persisted Message
+                // (not an empty final — the gateway doesn't persist Stream frames,
+                // so an empty final loses the reply on reload). tool_activity for a
+                // round is tagged with the NEXT segment's id, so the client renders
+                // "Used N tools" above the prose that follows it — interleaved,
+                // exactly like the desktop, and durable.
+                let mut comm_stream_id = uuid::Uuid::new_v4().to_string();
+                // Accumulated text of the CURRENT segment (cleared at each tool
+                // round when the segment is flushed as a Message).
+                let mut comm_segment = String::new();
 
                 loop {
                     let event = tokio::select! {
@@ -485,6 +490,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // instead, without the "_Working on:_" spam.
                             if comm_reply.is_some() && !is_progress_heartbeat(&event.text) {
                                 comm_buffer.push_str(&event.text);
+                                // Accumulate the current segment's full text (the
+                                // persisted Message body, flushed at the next tool
+                                // round or turn end).
+                                comm_segment.push_str(&event.text);
                                 // Flush the FIRST chunk immediately so the loop
                                 // paints the opening text the instant the model
                                 // produces it (matches the local-chat feel);
@@ -541,20 +550,34 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 last_flush = tokio::time::Instant::now();
                             }
                             if let Some(cfg) = &comm_reply {
-                                if !comm_buffer.is_empty() {
+                                // Close the current prose segment: persist it as
+                                // its OWN Message (durable; the gateway drops Stream
+                                // frames), then rotate the stream id so this round's
+                                // tool_activity tags the NEXT segment and renders
+                                // above the prose that follows — interleaved like
+                                // the desktop. Only fires when the segment has
+                                // prose, so consecutive tool calls in one round
+                                // don't each rotate.
+                                if !comm_segment.trim().is_empty() {
+                                    let mut seg_meta = std::collections::HashMap::new();
+                                    if !agent_display_name.is_empty() {
+                                        seg_meta.insert("senderName".to_string(), agent_display_name.clone());
+                                    }
                                     send_comm_msg(
                                         cfg,
                                         &comm_manager,
                                         &channel_providers,
-                                        comm::CommMessageType::Stream,
+                                        comm::CommMessageType::Message,
                                         comm_stream_id.clone(),
-                                        comm_buffer.clone(),
-                                        std::collections::HashMap::new(),
+                                        strip_progress_heartbeats(&comm_segment),
+                                        seg_meta,
                                         &agent_display_name,
                                     )
                                     .await;
                                     comm_streamed = true;
+                                    comm_segment.clear();
                                     comm_buffer.clear();
+                                    comm_stream_id = uuid::Uuid::new_v4().to_string();
                                     last_comm_flush = Some(tokio::time::Instant::now());
                                 }
                             }
@@ -872,9 +895,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     // images are delivered as comm attachments, so these would just
                     // render as broken links in the web frontend.
                     if !comm_file_artifacts.is_empty() {
-                        strip_local_image_markdown(&mut full_response);
+                        strip_local_image_markdown(&mut comm_segment);
                     }
-                    if !full_response.is_empty() {
+                    // Send the LAST prose segment as the final Message. Earlier
+                    // segments were already persisted at their tool rounds, so this
+                    // carries only the closing prose — re-sending full_response here
+                    // would duplicate them. (full_response still drives the local
+                    // web reply above; this branch is the comm/loop mirror only.)
+                    if !comm_segment.trim().is_empty() {
                         // Build metadata with agent name for all outbound messages
                         let mut reply_meta = std::collections::HashMap::new();
                         if !agent_display_name.is_empty() {
@@ -934,43 +962,28 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             comm_streamed = true;
                         }
 
-                        // Always send a final complete Message. When chunks were
-                        // streamed, the web replaces the accumulated streaming
-                        // bubble with this full text (no duplication, and any
-                        // mid-word chunk artifacts are repaired); when nothing
-                        // streamed, this is the sole reply. Carries any
-                        // run-produced file attachments alongside the text.
+                        // Final segment Message. Each segment (this one + any
+                        // flushed at tool rounds) is a durable Message — the
+                        // gateway drops Stream frames, so these are what survive a
+                        // reload. Tool rounds tagged the following segment's id, so
+                        // the client renders "Used N tools" above the prose that
+                        // followed them: interleaved like the desktop, and durable.
                         info!(
                             topic = %reply_config.topic,
                             conv_id = %reply_config.conversation_id,
-                            response_len = full_response.len(),
+                            segment_len = comm_segment.len(),
                             attachment_count = reply_attachments.len(),
                             streamed = comm_streamed,
-                            "sending comm reply (final complete message)"
+                            "sending comm reply (final segment message)"
                         );
-                        // When chunks streamed over the neboai wire, the persisted
-                        // stream rows ARE the content — an empty final carries only
-                        // the reply metadata (senderName, suggestions, attachments)
-                        // and finalizes in place. Re-carrying the full text doubled
-                        // reloaded history and forced clients to collapse all the
-                        // turn's segments into one block. Other providers (Slack…)
-                        // still get the full text.
-                        // The final Message MUST carry the full text: the loop
-                        // gateway does NOT persist Stream frames (they're coalesced
-                        // ephemerals), so the final is the ONLY row that survives a
-                        // reload. Emptying it lost every streamed reply on refresh.
-                        // The live client still finalizes its streaming bubble in
-                        // place against this full text (no duplication); inline
-                        // segmentation is a live-only nicety, not worth dropping
-                        // persistence for.
                         let reply = comm::CommMessage {
-                            id: uuid::Uuid::new_v4().to_string(),
+                            id: comm_stream_id.clone(),
                             from: String::new(),
                             to: String::new(),
                             topic: reply_config.topic.clone(),
                             conversation_id: reply_config.conversation_id.clone(),
                             msg_type: comm::CommMessageType::Message,
-                            content: strip_progress_heartbeats(&full_response),
+                            content: strip_progress_heartbeats(&comm_segment),
                             metadata: reply_meta,
                             timestamp: 0,
                             human_injected: false,
