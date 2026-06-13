@@ -2,7 +2,7 @@
  * Unified chat controller — ONE way to manage chat state across all surfaces.
  *
  * Handles: WS event subscription, message accumulation, streaming, tool tracking,
- * token usage, quota warnings, followup suggestions, ask widgets, and all
+ * token usage, quota warnings, ask widgets, and all
  * send/stop/edit/redo actions.
  *
  * Each surface (thread page, embed, web app) creates a controller instance
@@ -188,7 +188,6 @@ export function createChatController(config: ChatControllerConfig) {
   let isLoading = $state(false);
   let tokenUsage = $state<TokenUsage | null>(null);
   let quotaWarning = $state('');
-  let followupSuggestions = $state<string[]>([]);
   let allAgents = $state<AgentInfo[]>([]);
   let activityStatus = $state('');
 
@@ -426,13 +425,6 @@ export function createChatController(config: ChatControllerConfig) {
     }
   }
 
-  function handleFollowupSuggestions(data: any) {
-    if (!isMyEvent(data)) return;
-    if (Array.isArray(data.suggestions)) {
-      followupSuggestions = data.suggestions;
-    }
-  }
-
   function handleUsage(data: any) {
     if (!isMyEvent(data)) return;
     tokenUsage = {
@@ -458,7 +450,7 @@ export function createChatController(config: ChatControllerConfig) {
       type: 'ask' as const,
       requestId,
       prompt: data.prompt as string,
-      widgets: (data.widgets ?? [{ type: 'confirm', options: ['Yes', 'No'] }]) as AskWidgetDef[],
+      widgets: (data.widgets ?? [{ type: 'options', multiSelect: false, options: ['Yes', 'No'] }]) as AskWidgetDef[],
     }];
   }
 
@@ -502,7 +494,6 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(ws.on('thinking', handleThinking));
   unsubs.push(ws.on('tool_start', handleToolStart));
   unsubs.push(ws.on('tool_result', handleToolResult));
-  unsubs.push(ws.on('followup_suggestions', handleFollowupSuggestions));
   unsubs.push(ws.on('usage', handleUsage));
   unsubs.push(ws.on('quota_warning', handleQuotaWarning));
   unsubs.push(ws.on('ask_request', handleAskRequest));
@@ -537,7 +528,6 @@ export function createChatController(config: ChatControllerConfig) {
     }
 
     isLoading = true;
-    followupSuggestions = [];
     phaseStartTime = Date.now();
     pendingTools.clear();
 
@@ -653,7 +643,6 @@ export function createChatController(config: ChatControllerConfig) {
     set isLoading(v: boolean) { isLoading = v; },
     get tokenUsage() { return tokenUsage; },
     get quotaWarning() { return quotaWarning; },
-    get followupSuggestions() { return followupSuggestions; },
     get activityStatus() { return activityStatus; },
     get allAgents() { return allAgents; },
 
@@ -676,7 +665,6 @@ export function createChatController(config: ChatControllerConfig) {
       }
     },
     dismissWarning,
-    dismissFollowups() { followupSuggestions = []; },
     destroy,
   };
 }

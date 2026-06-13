@@ -271,7 +271,6 @@
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
   quotaWarning={chat.quotaWarning}
-  followupSuggestions={chat.followupSuggestions}
   activityStatus={chat.activityStatus}
   {hasMore}
   {isLoadingMore}
@@ -284,8 +283,6 @@
   onedit={(idx, text) => chat.edit(idx, text)}
   onredo={(idx) => chat.redo(idx)}
   onasksubmit={(id, val) => chat.submitAsk(id, val)}
-  onfollowupselect={(s) => chat.send(s)}
-  ondismissfollowups={() => chat.dismissFollowups()}
   ondismisswarning={() => chat.dismissWarning()}
   isLoading={chat.isLoading}
 />

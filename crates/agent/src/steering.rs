@@ -137,7 +137,6 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(NarrationSuppressor),
         Box::new(RepetitionDetector),
         Box::new(ToolResultGrounding),
-        Box::new(AskToolNudge),
         Box::new(ResearchDelegationNudge),
         Box::new(TaskTrackingNudge),
         Box::new(TaskCompletionNudge),
@@ -1262,67 +1261,6 @@ impl Reminder for TaskCompletionNudge {
     }
 }
 
-// 17. Ask Tool Nudge — steer the LLM to use the interactive ask widget instead of plain-text questions
-struct AskToolNudge;
-impl Reminder for AskToolNudge {
-    fn name(&self) -> &'static str {
-        "ask_tool_nudge"
-    }
-    fn priority(&self) -> u8 {
-        7
-    }
-    fn min_turns_between(&self) -> usize {
-        2
-    }
-    fn check(&self, ctx: &ReminderContext) -> Option<String> {
-        if ctx.is_claude() {
-            return None;
-        }
-        // Find the last non-empty assistant message
-        let msg = ctx
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == "assistant" && !m.content.is_empty())?;
-
-        // Skip if this turn already had an ask tool call
-        if let Some(ref tc) = msg.tool_calls {
-            if tc.contains("\"ask\"") {
-                return None;
-            }
-        }
-
-        // Detect question patterns in the assistant's text
-        let text = &msg.content;
-        let has_question_mark = text.lines().any(|line| line.trim_end().ends_with('?'));
-        let lower = text.to_lowercase();
-        let has_choice_phrase = [
-            "which do you prefer",
-            "what would you like",
-            "please choose",
-            "let me know",
-            "would you rather",
-            "which option",
-            "pick one",
-            "choose from",
-        ]
-        .iter()
-        .any(|p| lower.contains(p));
-
-        if !has_question_mark && !has_choice_phrase {
-            return None;
-        }
-        Some(
-            "When you need user input, ALWAYS use the ask tool instead of asking in plain text.\n\
-             - Yes/no: agent(resource: \"ask\", action: \"confirm\", text: \"...\")\n\
-             - Choices: agent(resource: \"ask\", action: \"select\", text: \"...\", options: [\"A\", \"B\", \"C\"])\n\
-             - Open-ended: agent(resource: \"ask\", action: \"prompt\", text: \"...\")\n\
-             Never ask questions as plain text — use the ask tool so the user gets interactive buttons."
-                .to_string(),
-        )
-    }
-}
-
 /// Detects when the main agent is in an exploratory research loop —
 /// repeatedly calling discovery-flavored tools (`tool_search`, `skill`,
 /// `plugin help/events`) trying to figure out how to do something — and
@@ -1568,24 +1506,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ask_tool_nudge_skips_when_ask_tool_used() {
-        // Assistant already asked via the ask tool → no nudge.
-        let asked = ChatMessage {
-            tool_calls: Some(
-                r#"[{"name":"agent","input":{"resource":"ask","action":"select"}}]"#.to_string(),
-            ),
-            ..make_msg("assistant", "Which do you prefer?")
-        };
-        let msgs = vec![make_msg("user", "pick"), asked];
-        assert!(
-            AskToolNudge
-                .check(&rctx_prov(&msgs, tools::ExecutionMode::Interactive, "openai", 2))
-                .is_none(),
-            "no nudge when the ask tool was already used"
-        );
-    }
-
-    #[test]
     fn test_user_stop_forces_break_without_errors() {
         let messages = vec![
             make_msg("user", "search for emails"),
@@ -1649,27 +1569,6 @@ mod tests {
             html: None,
             ..make_msg("assistant", content)
         }
-    }
-
-    #[test]
-    fn test_ask_tool_nudge_question_and_claude_skip() {
-        // Assistant asks a plain-text question → fires (non-Claude), skipped (direct Claude).
-        let msgs = vec![
-            make_msg("user", "Help me redecorate my living room"),
-            make_msg("assistant", "I can suggest a few options.\nWhich do you prefer?"),
-        ];
-        assert!(
-            AskToolNudge
-                .check(&rctx_prov(&msgs, tools::ExecutionMode::Interactive, "openai", 2))
-                .is_some(),
-            "fires for non-Claude on a plain-text question"
-        );
-        assert!(
-            AskToolNudge
-                .check(&rctx_prov(&msgs, tools::ExecutionMode::Interactive, "anthropic", 2))
-                .is_none(),
-            "skipped for direct Claude"
-        );
     }
 
     /// Build a ReminderContext with explicit messages + recent_tool_names.

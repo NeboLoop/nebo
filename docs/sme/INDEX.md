@@ -197,7 +197,8 @@ All new SME documents created:
 | 20 | `EVENT_SYSTEM_SME.md` | EventBus, dispatcher, emit tool, event-triggered workflows | ~823 |
 | 21 | `AUTOMATION_SME.md` | Heartbeats, cron, workflow engine, agent workers | ~1407 |
 | 22 | `NEBOLOOP_CONNECTION.md` | NeboAI connection, hub chat, wire protocol | ~674 |
-| | **Total new documentation** | | **~16,650** |
+| 23 | `RIVET_DEPLOYMENT_SECURITY_SME.md` | Rivet PaaS security (server-Nebo substrate): VM/network isolation, jailer, capacity over-commit, audit findings | ~430 |
+| | **Total new documentation** | | **~17,080** |
 
 ---
 

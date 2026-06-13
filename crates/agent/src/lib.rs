@@ -7,7 +7,6 @@ pub mod db_context;
 pub mod decompose;
 pub mod dedupe;
 pub mod memory_consolidation;
-pub mod followup;
 pub mod fuzzy;
 pub mod hooks;
 pub mod keyparser;
