@@ -14,6 +14,9 @@ pub enum Origin {
     System,
     /// External MCP client (Claude Desktop, Cursor, etc.).
     Mcp,
+    /// Automated workflow activity (engine-driven, unattended). Never HITL —
+    /// the ask tool is unavailable here (see `BotTool::handle_ask`).
+    Workflow,
 }
 
 impl Default for Origin {
@@ -48,7 +51,8 @@ impl From<Origin> for ExecutionMode {
             | Origin::App
             | Origin::Skill
             | Origin::System
-            | Origin::Mcp => ExecutionMode::Autonomous,
+            | Origin::Mcp
+            | Origin::Workflow => ExecutionMode::Autonomous,
         }
     }
 }
@@ -57,6 +61,11 @@ impl From<Origin> for ExecutionMode {
 pub type AskChannels = std::sync::Arc<
     tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
 >;
+
+/// Sentinel value the frontend sends as the `ask_response` when the user dismisses
+/// (Skip / Esc) an ask widget instead of answering. The ask tool interprets it as
+/// "no answer — make a reasonable assumption", keeping the run from hanging.
+pub const SKIP_SENTINEL: &str = "__skip__";
 
 /// Channel context — set when the current run was triggered by an inbound
 /// channel message (Slack, Discord, Teams, etc.). Lets channel plugins'
@@ -134,7 +143,9 @@ impl ToolContext {
     ///
     /// Emits an `AskRequest` stream event (rendered as `AskWidget` in the frontend)
     /// and waits for the `ask_response` WebSocket message. Returns `None` if the
-    /// stream or ask channels are not available (e.g. CLI mode).
+    /// stream or ask channels are not available (e.g. CLI mode). The frontend sends
+    /// [`SKIP_SENTINEL`] as the value when the user dismisses the question, so the
+    /// call always resolves and can never hang.
     ///
     /// `widgets` should be a JSON array of widget definitions, e.g.:
     /// ```json
@@ -174,9 +185,20 @@ mod tests {
             Origin::Skill,
             Origin::System,
             Origin::Mcp,
+            Origin::Workflow,
         ] {
             assert_eq!(ExecutionMode::from(o), ExecutionMode::Autonomous);
         }
+    }
+
+    #[test]
+    fn workflow_origin_is_autonomous_not_hitl() {
+        // Guards the ask-tool HITL gate: workflow activities must never read as
+        // interactive, or the ask tool would block an unattended run.
+        assert_eq!(
+            ExecutionMode::from(Origin::Workflow),
+            ExecutionMode::Autonomous
+        );
     }
 
     #[test]

@@ -75,10 +75,23 @@ For complex decisions, consult advisors who return independent perspectives.
 - agent(resource: context, action: compact) — Compact conversation to free context space
 - agent(resource: context, action: reset) — Reset conversation context
 
-**Ask (user input):**
-- agent(resource: ask, action: prompt, text: "What would you like?") — Prompt user for input
-- agent(resource: ask, action: confirm, text: "Proceed with deletion?") — Yes/no confirmation
-- agent(resource: ask, action: select, text: "Pick a color", options: ["red", "blue", "green"]) — Multiple choice
+**Ask (user input) — HITL ONLY, use SPARINGLY:**
+Asking renders interactive choices to the human. It works ONLY in direct desktop/mobile chat —
+NEVER in automated, scheduled, channel, or workflow runs (there is nobody at the keyboard; the call
+is rejected). Ask is the EXCEPTION, not the default:
+- Ask ONLY when you are genuinely blocked on a decision that is the user's to make, or to clarify
+  underspecified work BEFORE starting it.
+- Do NOT ask on every turn. Do NOT ask for confirmations you can reasonably default. Do NOT ask
+  "should I proceed?" — just proceed and report. If you can make a sensible assumption, do, and say
+  what you assumed.
+Mechanics:
+- Give 2–4 distinct options (meaningfully different directions, not rephrasings). Don't add an
+  "Other" option — the UI always provides a free-text escape and a Skip control.
+- Put your recommended option FIRST and add "(Recommended)" to its label.
+- Each option may carry a short description of what it means / its trade-off.
+- agent(resource: ask, action: select, text: "Which trigger type?", options: [{label: "Schedule (Recommended)", description: "Run on a cron schedule"}, {label: "Event", description: "Run when an event fires"}]) — single choice
+- agent(resource: ask, action: select, text: "Which inboxes?", multi_select: true, options: ["Work", "Personal"]) — multiple choice (non-exclusive)
+- agent(resource: ask, action: confirm, text: "Proceed with deletion?") — Yes/No (only when the consequence is irreversible and you truly cannot default)
 
 **Registry (installed agent management + delegation):**
 When user mentions a named agent or wants to list/activate/delegate to installed agents.

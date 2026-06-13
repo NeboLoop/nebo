@@ -171,5 +171,6 @@
 	emptyDesc="I can help you build and modify workflows. Describe what you want and I'll make it happen."
 	onsend={(text) => sendWithSync(text)}
 	onstop={() => chat?.stop()}
+	onasksubmit={(id, val) => chat?.submitAsk(id, val)}
 	isLoading={chat?.isLoading ?? initLoading}
 />

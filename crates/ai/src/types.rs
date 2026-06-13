@@ -42,7 +42,6 @@ pub enum StreamEventType {
     ApprovalRequest,
     AskRequest,
     PlanApproval,
-    FollowupSuggestions,
     SubagentStart,
     SubagentProgress,
     SubagentComplete,
@@ -327,20 +326,6 @@ impl StreamEvent {
         }
     }
 
-    pub fn followup_suggestions(suggestions: Vec<String>) -> Self {
-        Self {
-            event_type: StreamEventType::FollowupSuggestions,
-            text: String::new(),
-            tool_call: None,
-            error: None,
-            usage: None,
-            rate_limit: None,
-            widgets: Some(serde_json::json!(suggestions)),
-            provider_metadata: None,
-            stop_reason: None,
-            image_url: None,
-        }
-    }
 }
 
 /// Describes a tool available to the AI.

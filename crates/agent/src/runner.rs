@@ -876,38 +876,7 @@ impl Runner {
             }
             let _ = tx.send(StreamEvent::done()).await;
 
-            // Generate follow-up suggestions in the background (non-blocking).
-            // Only for normal interactive chats (skip_memory is false for those).
             if !skip_memory {
-                let tx_suggestions = tx.clone();
-                let providers_suggestions = providers.clone();
-                let session_mgr_suggestions = session_mgr.clone();
-                let session_id_suggestions = session_id.clone();
-                let cheap_model = selector.get_cheapest_model();
-                tokio::spawn(async move {
-                    let all_msgs = session_mgr_suggestions
-                        .get_messages(&session_id_suggestions)
-                        .unwrap_or_default();
-                    let last_exchange: Vec<_> = {
-                        let last_user_idx = all_msgs.iter().rposition(|m| m.role == "user");
-                        match last_user_idx {
-                            Some(idx) => all_msgs[idx..].to_vec(),
-                            None => vec![],
-                        }
-                    };
-                    if let Some(suggestions) = crate::followup::generate_suggestions(
-                        &providers_suggestions,
-                        &last_exchange,
-                        &cheap_model,
-                    )
-                    .await
-                    {
-                        let _ = tx_suggestions
-                            .send(StreamEvent::followup_suggestions(suggestions))
-                            .await;
-                    }
-                });
-
                 // Auto-generate session title after first exchange.
                 // Only runs when the chat title is still a default placeholder.
                 let providers_title = providers.clone();
@@ -2638,9 +2607,8 @@ async fn run_loop(
                 }
                 StreamEventType::ApprovalRequest
                 | StreamEventType::AskRequest
-                | StreamEventType::PlanApproval
-                | StreamEventType::FollowupSuggestions => {
-                    // Approval/Ask/Plan/Followup: only sent by runner, not received from provider.
+                | StreamEventType::PlanApproval => {
+                    // Approval/Ask/Plan: only sent by runner, not received from provider.
                 }
                 StreamEventType::ToolSummary => {
                     // Tool execution summary — relay to parent for display.

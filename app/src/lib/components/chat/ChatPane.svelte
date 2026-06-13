@@ -54,7 +54,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], followupSuggestions = [], activityStatus = '', tokenUsage = null, quotaWarning = '', onsend, onstop, onedit, onredo, onasksubmit, onfollowupselect, ondismissfollowups, ondismisswarning, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], activityStatus = '', tokenUsage = null, quotaWarning = '', onsend, onstop, onedit, onredo, onasksubmit, ondismisswarning, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
     messages?: Message[];
     agentName?: string;
     agentId?: string;
@@ -67,7 +67,6 @@
     emptyTitle?: string;
     emptyDesc?: string;
     allAgents?: AgentInfo[];
-    followupSuggestions?: string[];
     activityStatus?: string;
     tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number; overhead?: number } | null;
     quotaWarning?: string;
@@ -76,8 +75,6 @@
     onedit?: (msgIndex: number, newContent: string) => void;
     onredo?: (msgIndex: number) => void;
     onasksubmit?: (requestId: string, value: string) => void;
-    onfollowupselect?: (suggestion: string) => void;
-    ondismissfollowups?: () => void;
     ondismisswarning?: () => void;
     onloadmore?: () => void;
     isLoading?: boolean;
@@ -930,24 +927,6 @@
       <span class="text-xs text-base-content/50 font-mono" title="{totalPrompt.toLocaleString()} total prompt · {(tokenUsage.overhead ?? 0).toLocaleString()} system+tools · {(tokenUsage.cacheRead ?? 0).toLocaleString()} cache read">
         {conversationIn.toLocaleString()} in · {tokenUsage.output.toLocaleString()} out
       </span>
-    </div>
-  {/if}
-
-  <!-- Follow-up suggestion chips -->
-  {#if followupSuggestions.length > 0 && !isLoading}
-    <div class="max-w-3xl mx-auto w-full shrink-0 px-4 pb-2 flex flex-wrap items-center gap-2">
-      {#each followupSuggestions as suggestion}
-        <button
-          class="btn btn-sm btn-outline btn-primary rounded-full text-xs"
-          onclick={() => onfollowupselect?.(suggestion)}
-        >
-          {suggestion}
-        </button>
-      {/each}
-      <button
-        class="text-xs text-base-content/40 hover:text-base-content/70 transition-colors cursor-pointer bg-transparent border-none px-1"
-        onclick={() => ondismissfollowups?.()}
-      >dismiss</button>
     </div>
   {/if}
 

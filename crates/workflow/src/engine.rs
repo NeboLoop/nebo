@@ -873,8 +873,10 @@ async fn run_llm_loop(
             ..Default::default()
         });
 
-        // Execute each tool call and collect results
-        let ctx = tools::ToolContext::default();
+        // Execute each tool call and collect results. Workflow activities are unattended —
+        // mark the origin so the ask tool (and any HITL-gated capability) is unavailable;
+        // the engine never blocks on a UI prompt.
+        let ctx = tools::ToolContext::new(tools::Origin::Workflow);
         let mut tool_result_entries = Vec::new();
         for tc in &tool_calls {
             let tool = tools.iter().find(|t| t.name() == tc.name)

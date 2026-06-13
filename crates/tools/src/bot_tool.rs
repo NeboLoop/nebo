@@ -1215,6 +1215,22 @@ impl AgentTool {
         let action = input["action"].as_str().unwrap_or("prompt");
         match action {
             "prompt" | "confirm" | "select" => {
+                // HITL gate: asking is only valid in direct, interactive chat (desktop/mobile).
+                // Automated/workflow/channel/sub-agent runs have nobody at the keyboard and
+                // ask_user() would block an ephemeral oneshot forever — so it must be
+                // unavailable, not merely fail. (Mirrors Claude disabling AskUserQuestion in
+                // channel mode.) `Origin::Workflow` and all autonomous origins are blocked here.
+                if crate::origin::ExecutionMode::from(ctx.origin)
+                    != crate::origin::ExecutionMode::Interactive
+                    || ctx.ask_channels.is_none()
+                {
+                    return ToolResult::error(
+                        "Asking the user is only available in direct chat (HITL). This is an \
+                         automated, workflow, or channel run — make a reasonable decision and \
+                         proceed, and tell the user what you assumed.",
+                    );
+                }
+
                 let text = input["text"].as_str().unwrap_or("");
                 if text.is_empty() {
                     return ToolResult::error(errors::missing_param(
@@ -1223,29 +1239,33 @@ impl AgentTool {
                         "bot(resource: \"ask\", action: \"prompt\", text: \"What would you like to do?\")",
                     ));
                 }
-                let options = input
+
+                // Options may be plain strings (["red","blue"]) or rich objects
+                // ([{label, description, recommended}]). Pass them through verbatim — the
+                // AskWidget normalizes both shapes. A bare `confirm` with no options is Yes/No.
+                let mut options = input
                     .get("options")
                     .cloned()
                     .unwrap_or(serde_json::json!([]));
+                if action == "confirm" && options.as_array().map_or(true, |a| a.is_empty()) {
+                    options = serde_json::json!(["Yes", "No"]);
+                }
 
-                // Build widget definition from action type
-                let widget_type = match action {
-                    "confirm" => "confirm",
-                    "select" => {
-                        if options.as_array().map_or(0, |a| a.len()) > 5 {
-                            "select"
-                        } else {
-                            "buttons"
-                        }
-                    }
-                    _ => "buttons",
-                };
+                // `confirm` is always single-select; otherwise honor `multi_select`.
+                let multi_select =
+                    action != "confirm" && input.get("multi_select").and_then(|v| v.as_bool()).unwrap_or(false);
+
                 let widgets = serde_json::json!([{
-                    "type": widget_type,
+                    "type": "options",
+                    "multiSelect": multi_select,
                     "options": options,
                 }]);
 
                 match ctx.ask_user(text, widgets).await {
+                    Some(response) if response == crate::origin::SKIP_SENTINEL => ToolResult::ok(
+                        "The user skipped this question. Make a reasonable assumption and carry \
+                         on, but tell the user what assumption you made.",
+                    ),
                     Some(response) => ToolResult::ok(
                         serde_json::json!({
                             "response": response,
@@ -1254,7 +1274,6 @@ impl AgentTool {
                     ),
                     None => ToolResult::error(
                         "Ask prompt not supported in this context — no UI is connected. \
-                         This happens when running as a sub-agent or in a non-interactive channel. \
                          Make a reasonable decision and proceed, or explain your options to the user in your response.",
                     ),
                 }

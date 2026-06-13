@@ -1,11 +1,33 @@
-<script lang="ts">
+<script lang="ts" module>
+	/** Sent as the answer when the user dismisses instead of choosing. Mirrors
+	 * `SKIP_SENTINEL` in crates/tools/src/origin.rs. */
+	export const SKIP_VALUE = '__skip__';
+
+	export type AskOption = string | { label: string; description?: string; recommended?: boolean };
+
 	export interface AskWidgetDef {
-		type: 'buttons' | 'select' | 'confirm' | 'radio' | 'checkbox';
+		/** 'options' is canonical; legacy single-choice shapes still render. */
+		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox';
 		label?: string;
-		options?: string[];
+		options?: AskOption[];
+		multiSelect?: boolean;
 		default?: string;
 	}
 
+	interface NormalizedOption {
+		label: string;
+		description?: string;
+		recommended?: boolean;
+	}
+
+	function normalizeOptions(options: AskOption[] | undefined): NormalizedOption[] {
+		return (options ?? []).map((o) =>
+			typeof o === 'string' ? { label: o } : { label: o.label, description: o.description, recommended: o.recommended }
+		);
+	}
+</script>
+
+<script lang="ts">
 	interface Props {
 		requestId: string;
 		prompt: string;
@@ -17,126 +39,135 @@
 
 	let { requestId, prompt, widgets, response, disabled = false, onSubmit }: Props = $props();
 
-	let selectValue = $state('');
-	let radioValue = $state('');
-	let selectedOptions = $state(new Set<string>());
+	const widget = $derived(widgets?.[0]);
+	const options = $derived(normalizeOptions(widget?.options));
+	const isMulti = $derived(widget?.multiSelect === true || widget?.type === 'checkbox');
 
-	const answered = $derived(response != null && response !== undefined);
+	let selected = $state(new Set<string>());
+	let showOther = $state(false);
+	let otherText = $state('');
+
+	const answered = $derived(response != null);
+	const wasSkipped = $derived(response === SKIP_VALUE);
 
 	function submit(value: string) {
-		if (!answered) {
+		if (!answered && !disabled) {
 			onSubmit(requestId, value);
 		}
 	}
 
-	function toggleOption(option: string) {
-		const next = new Set(selectedOptions);
-		if (next.has(option)) {
-			next.delete(option);
-		} else {
-			next.add(option);
+	function toggle(label: string) {
+		const next = new Set(selected);
+		if (next.has(label)) next.delete(label);
+		else next.add(label);
+		selected = next;
+	}
+
+	function submitOther() {
+		const v = otherText.trim();
+		if (v) submit(v);
+	}
+
+	function onKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape' && !answered && !disabled) {
+			submit(SKIP_VALUE);
 		}
-		selectedOptions = next;
 	}
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 <div class="rounded-xl bg-base-200 px-4 py-3 mb-1 max-w-md">
-	<p class="text-base font-medium mb-2">{prompt}</p>
+	<p class="text-sm font-medium mb-2">{prompt}</p>
 
 	{#if answered}
-		<div class="flex flex-wrap gap-1">
-			{#each (response ?? '').split(', ') as item}
-				<div class="badge badge-primary badge-sm">{item}</div>
-			{/each}
-		</div>
-	{:else if disabled}
-		<div class="flex flex-wrap gap-1">
+		{#if wasSkipped}
 			<div class="badge badge-ghost badge-sm">Skipped</div>
-		</div>
+		{:else}
+			<div class="flex flex-wrap gap-1">
+				{#each (response ?? '').split(', ') as item}
+					<div class="badge badge-primary badge-sm">{item}</div>
+				{/each}
+			</div>
+		{/if}
+	{:else if disabled}
+		<div class="badge badge-ghost badge-sm">Skipped</div>
 	{:else}
-		{#each widgets as widget}
-			{#if widget.label}
-				<p class="text-sm text-base-content/60 mb-1">{widget.label}</p>
+		{#if widget?.label}
+			<p class="text-xs text-base-content/70 mb-1">{widget.label}</p>
+		{/if}
+
+		{#if isMulti}
+			<div class="flex flex-col gap-1">
+				{#each options as option}
+					<label class="label cursor-pointer justify-start gap-2 py-1">
+						<input
+							type="checkbox"
+							class="checkbox checkbox-sm checkbox-primary"
+							checked={selected.has(option.label)}
+							onchange={() => toggle(option.label)}
+						/>
+						<span class="flex flex-col">
+							<span class="text-sm">
+								{option.label}
+								{#if option.recommended}<span class="badge badge-primary badge-xs ml-1">Recommended</span>{/if}
+							</span>
+							{#if option.description}<span class="text-xs text-base-content/70">{option.description}</span>{/if}
+						</span>
+					</label>
+				{/each}
+			</div>
+		{:else}
+			<div class="flex flex-col gap-1.5">
+				{#each options as option}
+					<button
+						type="button"
+						class="btn btn-sm btn-outline justify-start h-auto py-1.5 normal-case"
+						onclick={() => submit(option.label)}
+					>
+						<span class="flex flex-col items-start text-left">
+							<span class="font-medium">
+								{option.label}
+								{#if option.recommended}<span class="badge badge-primary badge-xs ml-1">Recommended</span>{/if}
+							</span>
+							{#if option.description}<span class="text-xs text-base-content/70 font-normal">{option.description}</span>{/if}
+						</span>
+					</button>
+				{/each}
+			</div>
+		{/if}
+
+		<!-- Free-text escape + dismiss -->
+		<div class="mt-2 flex flex-col gap-2">
+			{#if showOther}
+				<div class="flex gap-2 items-center">
+					<input
+						type="text"
+						class="input input-bordered input-sm flex-1"
+						placeholder="Type your answer…"
+						bind:value={otherText}
+						onkeydown={(e) => e.key === 'Enter' && submitOther()}
+					/>
+					<button type="button" class="btn btn-sm btn-primary" disabled={!otherText.trim()} onclick={submitOther}>OK</button>
+				</div>
 			{/if}
 
-			{#if widget.type === 'buttons' || widget.type === 'confirm'}
-				<div class="flex flex-wrap gap-2">
-					{#each widget.options ?? ['Yes', 'No'] as option}
-						<button
-							type="button"
-							class="btn btn-sm btn-outline"
-							onclick={() => submit(option)}
-						>
-							{option}
-						</button>
-					{/each}
-				</div>
-			{:else if widget.type === 'select'}
-				<div class="flex gap-2 items-center">
-					<select
-						class="select select-bordered select-sm flex-1"
-						bind:value={selectValue}
-					>
-						<option value="" disabled selected>Choose...</option>
-						{#each widget.options ?? [] as option}
-							<option value={option}>{option}</option>
-						{/each}
-					</select>
+			<div class="flex items-center gap-3">
+				{#if isMulti}
 					<button
 						type="button"
 						class="btn btn-sm btn-primary"
-						disabled={!selectValue}
-						onclick={() => submit(selectValue)}
+						disabled={selected.size === 0}
+						onclick={() => submit([...selected].join(', '))}
 					>
-						OK
+						Submit{selected.size > 0 ? ` (${selected.size})` : ''}
 					</button>
-				</div>
-			{:else if widget.type === 'radio'}
-				<div class="flex flex-col gap-1">
-					{#each widget.options ?? [] as option}
-						<label class="label cursor-pointer justify-start gap-2">
-							<input
-								type="radio"
-								name="ask-radio-{requestId}"
-								class="radio radio-sm radio-primary"
-								value={option}
-								bind:group={radioValue}
-							/>
-							<span class="label-text">{option}</span>
-						</label>
-					{/each}
-					<button
-						type="button"
-						class="btn btn-sm btn-primary mt-1 self-start"
-						disabled={!radioValue}
-						onclick={() => submit(radioValue)}
-					>
-						Submit
-					</button>
-				</div>
-			{:else if widget.type === 'checkbox'}
-				<div class="flex flex-col gap-1">
-					{#each widget.options ?? [] as option}
-						<label class="label cursor-pointer justify-start gap-2">
-							<input
-								type="checkbox"
-								class="checkbox checkbox-sm checkbox-primary"
-								checked={selectedOptions.has(option)}
-								onchange={() => toggleOption(option)}
-							/>
-							<span class="label-text">{option}</span>
-						</label>
-					{/each}
-					<button
-						type="button"
-						class="btn btn-sm btn-primary mt-1 self-start"
-						disabled={selectedOptions.size === 0}
-						onclick={() => submit([...selectedOptions].join(', '))}
-					>
-						Submit ({selectedOptions.size})
-					</button>
-				</div>
-			{/if}
-		{/each}
+				{/if}
+				{#if !showOther}
+					<button type="button" class="text-xs text-base-content/60 hover:text-base-content cursor-pointer bg-transparent border-none px-0" onclick={() => (showOther = true)}>Other…</button>
+				{/if}
+				<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>Skip</button>
+			</div>
+		</div>
 	{/if}
 </div>

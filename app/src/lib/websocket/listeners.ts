@@ -146,15 +146,6 @@ export function attachWebSocketListeners(): void {
     );
   }
 
-  // --- Follow-up suggestions ---
-  unsubs.push(
-    ws.on('followup_suggestions', (data: any) => {
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('nebo:followup_suggestions', { detail: data }));
-      }
-    })
-  );
-
   // --- Plan approval ---
   unsubs.push(
     ws.on('plan_approval', (data: any) => {
