@@ -127,6 +127,27 @@ impl NeboAIPlugin {
             .cloned()
     }
 
+    /// Resolve a channel's ID to its routing conversation_id for an outbound send.
+    /// If the channel isn't joined yet, join it and wait briefly for the JOIN
+    /// result to populate `channel_convs` (it lands asynchronously via the inbound
+    /// handler). Errors if it never resolves so the caller doesn't report a false
+    /// success for an undeliverable message.
+    async fn resolve_channel_conv(&self, channel_id: &str) -> Result<String, CommError> {
+        if let Some(c) = self.conversation_for_channel(channel_id).await {
+            return Ok(c);
+        }
+        self.join_loop_channel(channel_id).await?;
+        for _ in 0..30 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if let Some(c) = self.conversation_for_channel(channel_id).await {
+                return Ok(c);
+            }
+        }
+        Err(CommError::Other(format!(
+            "channel {channel_id} could not be resolved (bot not a member?) — message not sent"
+        )))
+    }
+
     /// Snapshot of channel metadata.
     pub async fn channel_metas(&self) -> HashMap<String, ChannelMeta> {
         self.conv_maps.read().await.channel_meta.clone()
@@ -601,10 +622,31 @@ impl CommPlugin for NeboAIPlugin {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(CommError::NotConnected);
         }
+
+        // LoopChannel sends carry the CHANNEL ID (the loop tool has no access to
+        // the channel→conversation map). But the gateway routes channel messages
+        // by the channel's distinct conversation_id, on the fixed "channel" stream.
+        // Resolve here — without this the SendPayload targets a conversation that
+        // doesn't exist and the message is silently dropped (the send reports
+        // success because it's fire-and-forget). Done before taking `inner` so the
+        // join-on-miss path doesn't deadlock on the lock.
+        let loop_channel_conv = if matches!(msg.msg_type, CommMessageType::LoopChannel) {
+            let channel_id = if !msg.conversation_id.is_empty() {
+                msg.conversation_id.clone()
+            } else {
+                msg.topic.clone()
+            };
+            Some(self.resolve_channel_conv(&channel_id).await?)
+        } else {
+            None
+        };
+
         let inner = self.inner.read().await;
 
         // Find conversation for the topic/target
-        let conv_id = if !msg.conversation_id.is_empty() {
+        let conv_id = if let Some(ref c) = loop_channel_conv {
+            c.clone()
+        } else if !msg.conversation_id.is_empty() {
             msg.conversation_id.clone()
         } else if !msg.to.is_empty() {
             // Try agent space first, then DM peer lookup
@@ -621,7 +663,11 @@ impl CommPlugin for NeboAIPlugin {
             return Err(CommError::Other("no conversation_id or recipient".into()));
         };
 
-        let stream = if msg.topic.is_empty() {
+        let stream = if loop_channel_conv.is_some() {
+            // Channel messages always go out on the fixed "channel" stream
+            // (mirrors the agent's channel-reply path), not the channel UUID.
+            "channel"
+        } else if msg.topic.is_empty() {
             // Default to agent_space if we resolved via agent slug, else dm
             let maps = self.conv_maps.read().await;
             if !msg.to.is_empty() && maps.agent_space_by_slug.contains_key(&msg.to) {

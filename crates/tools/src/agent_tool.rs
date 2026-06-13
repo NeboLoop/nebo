@@ -1735,12 +1735,55 @@ impl PersonaTool {
         let processed = Self::fix_time_notation(trimmed);
         let fields: Vec<&str> = processed.split_whitespace().collect();
 
-        match fields.len() {
+        let seven_field = match fields.len() {
             5 => format!("0 {} *", processed), // standard 5-field → 7-field
             6 => format!("0 {}", processed),   // 6-field (missing seconds) → 7-field
             7 => processed,                    // already 7-field
             _ => format!("0 {} * * * *", processed), // best effort
+        };
+        Self::fix_dow_field(&seven_field)
+    }
+
+    /// Translate numeric day-of-week values from the Unix convention
+    /// (0=Sunday..6=Saturday, 7=Sunday) into named days (SUN..SAT).
+    ///
+    /// The `cron` crate uses Quartz ordinals — 1=Sunday..7=Saturday, and 0 is
+    /// a parse error. Everything that writes crons here (LLMs, the workflow
+    /// builder, `cron_to_human_readable`) assumes Unix numbering, so without
+    /// this translation "1-5" (Mon–Fri) fires Sun–Thu and "0,6" (weekends)
+    /// never fires at all. Named days are unambiguous in both conventions.
+    pub fn fix_dow_field(expr: &str) -> String {
+        let mut fields: Vec<String> = expr.split_whitespace().map(String::from).collect();
+        if fields.len() != 7 {
+            return expr.to_string();
         }
+        const NAMES: [&str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+        let map_tok = |tok: &str| -> String {
+            match tok.parse::<u8>() {
+                Ok(n) if n <= 7 => NAMES[(n % 7) as usize].to_string(),
+                _ => tok.to_string(),
+            }
+        };
+        let translated = fields[5]
+            .split(',')
+            .map(|part| {
+                let (range, step) = match part.split_once('/') {
+                    Some((r, s)) => (r, Some(s)),
+                    None => (part, None),
+                };
+                let mapped = match range.split_once('-') {
+                    Some((a, b)) => format!("{}-{}", map_tok(a), map_tok(b)),
+                    None => map_tok(range),
+                };
+                match step {
+                    Some(s) => format!("{}/{}", mapped, s),
+                    None => mapped,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        fields[5] = translated;
+        fields.join(" ")
     }
 
     /// Fix H:MM or HH:MM time notation in cron fields.
@@ -2673,6 +2716,36 @@ impl DynTool for PersonaTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_cron_translates_numeric_dow() {
+        // The `cron` crate is Quartz-style (1=Sunday, 0 invalid) while every
+        // producer writes Unix-style (0=Sunday). Numeric DOW must become
+        // named days or "weekdays" fires Sun–Thu and "weekends" never parses.
+        assert_eq!(
+            tools_dow(&PersonaTool::normalize_cron("0 7 * * 1-5")),
+            "MON-FRI"
+        );
+        assert_eq!(
+            tools_dow(&PersonaTool::normalize_cron("0 7 * * 0,6")),
+            "SUN,SAT"
+        );
+        assert_eq!(
+            tools_dow(&PersonaTool::normalize_cron("0 0 7 * * 7 *")),
+            "SUN"
+        );
+        // Wildcards and named days pass through untouched.
+        assert_eq!(tools_dow(&PersonaTool::normalize_cron("0 7 * * *")), "*");
+        assert_eq!(
+            tools_dow(&PersonaTool::normalize_cron("0 0 7 * * MON-FRI *")),
+            "MON-FRI"
+        );
+    }
+
+    /// Extract the day-of-week field from a normalized 7-field cron.
+    fn tools_dow(cron: &str) -> String {
+        cron.split_whitespace().nth(5).unwrap_or("").to_string()
+    }
 
     #[test]
     fn test_extract_skill_name_qualified() {

@@ -28,10 +28,6 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::agents::toggle_agent),
         )
         .route(
-            "/agents/{id}/install-deps",
-            axum::routing::post(handlers::agents::install_deps),
-        )
-        .route(
             "/agents/active",
             axum::routing::get(handlers::agents::list_active_agents),
         )

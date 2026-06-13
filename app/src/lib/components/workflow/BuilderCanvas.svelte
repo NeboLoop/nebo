@@ -22,6 +22,8 @@
 		agentId = '',
 		mode = 'view',
 		selectedNodeId = null,
+		layoutEpoch = 0,
+		ontidy,
 		onselect,
 		onopenCatalog,
 		onremove,
@@ -35,8 +37,12 @@
 		agentId: string;
 		mode: 'view' | 'edit';
 		selectedNodeId: string | null;
+		/** Bump to discard manual node positions (Tidy Up). */
+		layoutEpoch?: number;
+		/** Auto-arrange handler — shows the tidy button in the canvas controls. */
+		ontidy?: () => void;
 		onselect?: (nodeId: string | null) => void;
-		onopenCatalog?: (afterNodeId: string | null, branchLabel?: string) => void;
+		onopenCatalog?: (afterNodeId: string | null, branchLabel?: string, beforeTarget?: string) => void;
 		onremove?: (nodeId: string) => void;
 		onduplicate?: (nodeId: string) => void;
 		oncreateConnection?: (fromId: string, toId: string) => void;
@@ -59,10 +65,11 @@
 	// ── Position overrides (for dragged nodes) ──
 	let posOverrides = $state<Record<string, { x: number; y: number }>>({});
 
-	// Clear overrides when the graph structure changes
+	// Clear overrides when the graph structure changes or Tidy Up is pressed
+	// (layoutEpoch bump) — node ids alone don't change on Tidy Up.
 	let prevNodeIdKey = '';
 	$effect(() => {
-		const key = baseLayout.nodes.map(n => n.id).join(',');
+		const key = `${layoutEpoch}:${baseLayout.nodes.map(n => n.id).join(',')}`;
 		if (prevNodeIdKey && key !== prevNodeIdKey) posOverrides = {};
 		prevNodeIdKey = key;
 	});
@@ -97,7 +104,7 @@
 	// ── "+" connector positions
 	const plusButtons = $derived.by(() => {
 		if (mode !== 'edit') return [];
-		const buttons: Array<{ x: number; y: number; afterNodeId: string; branchLabel?: string }> = [];
+		const buttons: Array<{ x: number; y: number; afterNodeId: string; branchLabel?: string; beforeTarget?: string }> = [];
 
 		const outgoingCount = new Map<string, number>();
 		for (const edge of displayEdges) {
@@ -109,14 +116,21 @@
 			const y1 = edge.from.y + edge.from.h / 2;
 			const x2 = edge.to.x;
 			const y2 = edge.to.y + edge.to.h / 2;
+			// Carry the edge's target + label so insertion splices THIS edge —
+			// on a fork, "first outgoing edge" would be the wrong branch.
 			buttons.push({
 				x: (x1 + x2) / 2,
 				y: (y1 + y2) / 2,
 				afterNodeId: edge.from.id,
+				beforeTarget: edge.to.id,
+				...(edge.label ? { branchLabel: edge.label } : {}),
 			});
 		}
 
 		for (const node of displayNodes) {
+			// The emit bookend never has outgoing edges — a trailing "+" there
+			// would create nonsensical activities downstream of __emit__.
+			if (node.type === 'emit') continue;
 			const count = outgoingCount.get(node.id) ?? 0;
 			if (count === 0) {
 				if (node.type === 'activity' && isBranchingType(node.activityType)) {
@@ -388,11 +402,12 @@
 		if (wireDrag) {
 			const canvas = screenToCanvas(e.clientX, e.clientY);
 			const target = findNodeAtPoint(canvas.x, canvas.y, wireDrag.sourceId);
-			if (target) {
+			if (target && target.id !== '__trigger__') {
 				oncreateConnection?.(wireDrag.sourceId, target.id);
-			} else {
+			} else if (!target) {
 				onopenCatalog?.(wireDrag.sourceId, '__parallel__');
 			}
+			// Dropping on the trigger is a no-op — nothing may enter it.
 			wireDrag = null;
 			return;
 		}
@@ -551,8 +566,20 @@
 				title="Fit to screen"
 				onclick={doFitToScreen}
 			>
-				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+				<!-- Corner-bracket frame: the canvas-tool convention for "fit
+				     content to view" (the diagonal-arrows glyph reads as
+				     expand/fullscreen). -->
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
 			</button>
+			{#if mode === 'edit' && ontidy}
+				<button
+					class="btn btn-square btn-sm btn-ghost border border-base-300 bg-base-100"
+					title="Tidy up — auto-arrange nodes"
+					onclick={ontidy}
+				>
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
+				</button>
+			{/if}
 		</div>
 
 		<!-- SVG layer for edges + wire drag -->
@@ -738,16 +765,16 @@
 			{/each}
 
 			<!-- "+" connector buttons -->
-			{#each plusButtons as btn, bi (`plus-${bi}-${btn.afterNodeId}-${btn.branchLabel ?? ''}`)}
-				{#if btn.branchLabel}
+			{#each plusButtons as btn, bi (`plus-${bi}-${btn.afterNodeId}-${btn.branchLabel ?? ''}-${btn.beforeTarget ?? ''}`)}
+				{#if btn.branchLabel && !btn.beforeTarget}
 					<div
 						data-wf-plus
 						class="absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 cursor-pointer group"
 						style="left: {btn.x}px; top: {btn.y}px;"
 						role="button"
 						tabindex="0"
-						onclick={(e) => { e.stopPropagation(); onopenCatalog?.(btn.afterNodeId, btn.branchLabel); }}
-						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onopenCatalog?.(btn.afterNodeId, btn.branchLabel); } }}
+						onclick={(e) => { e.stopPropagation(); onopenCatalog?.(btn.afterNodeId, btn.branchLabel, btn.beforeTarget); }}
+						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onopenCatalog?.(btn.afterNodeId, btn.branchLabel, btn.beforeTarget); } }}
 						title="Add {btn.branchLabel} branch"
 					>
 						<div class="w-6 h-6 rounded-full border-2 border-dashed border-base-content/20 bg-base-100 flex items-center justify-center text-base-content/40 text-xs group-hover:border-primary group-hover:text-primary group-hover:bg-primary/5 transition-colors">+</div>
@@ -760,8 +787,8 @@
 						style="left: {btn.x}px; top: {btn.y}px;"
 						role="button"
 						tabindex="0"
-						onclick={(e) => { e.stopPropagation(); onopenCatalog?.(btn.afterNodeId); }}
-						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onopenCatalog?.(btn.afterNodeId); } }}
+						onclick={(e) => { e.stopPropagation(); onopenCatalog?.(btn.afterNodeId, btn.branchLabel, btn.beforeTarget); }}
+						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onopenCatalog?.(btn.afterNodeId, btn.branchLabel, btn.beforeTarget); } }}
 						title="Add node"
 					>+</div>
 				{/if}

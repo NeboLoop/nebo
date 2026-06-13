@@ -684,21 +684,19 @@ impl WorkflowManager for WorkflowManagerImpl {
                 merged
             };
 
-            // Acquire concurrency permit for this binding. Up to BINDING_CONCURRENCY
-            // runs execute in parallel; additional events wait (not dropped).
-            let binding_permit = if let Some(ref detail) = trigger_detail {
+            // Resolve the concurrency semaphore for this binding. The permit
+            // itself is acquired INSIDE the spawned task — acquiring here
+            // would block the caller (the EventDispatcher consumer loop runs
+            // run_inline serially, so one saturated binding would stall event
+            // dispatch for every agent). Events still wait, never dropped.
+            let binding_sem = trigger_detail.as_ref().map(|detail| {
                 let binding_name = detail.split(':').next().unwrap_or(detail);
                 let sem_key = format!("agent:{}:{}", agent_id, binding_name);
-                let sem = {
-                    let mut sems = self.binding_semaphores.lock().unwrap();
-                    sems.entry(sem_key)
-                        .or_insert_with(|| Arc::new(Semaphore::new(BINDING_CONCURRENCY)))
-                        .clone()
-                };
-                Some(sem.acquire_owned().await.map_err(|e| format!("semaphore closed: {}", e))?)
-            } else {
-                None
-            };
+                let mut sems = self.binding_semaphores.lock().unwrap();
+                sems.entry(sem_key)
+                    .or_insert_with(|| Arc::new(Semaphore::new(BINDING_CONCURRENCY)))
+                    .clone()
+            });
 
             // Create run record using agent_id for tracking
             let run_id = uuid::Uuid::new_v4().to_string();
@@ -743,9 +741,21 @@ impl WorkflowManager for WorkflowManagerImpl {
             let binding_name = def.name.clone();
 
             tokio::spawn(async move {
-                // Hold the concurrency permit for the lifetime of this run.
-                // Dropped automatically when the task completes, freeing a slot.
-                let _permit = binding_permit;
+                // Acquire and hold the binding's concurrency permit for the
+                // lifetime of this run; waiting happens in THIS task so the
+                // dispatcher stays free. Dropped automatically on completion.
+                let _permit = match binding_sem {
+                    Some(sem) => match sem.acquire_owned().await {
+                        Ok(permit) => Some(permit),
+                        Err(e) => {
+                            // Semaphores are never closed; degrade to unpermitted
+                            // rather than silently dropping the queued event.
+                            tracing::warn!(run_id = %run_id_clone, error = %e, "binding semaphore closed, running unpermitted");
+                            None
+                        }
+                    },
+                    None => None,
+                };
 
                 // Session key for posting chat messages to the agent's conversation
                 let chat_session = format!("agent:{}:web", agent_id_owned);

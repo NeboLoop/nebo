@@ -11,9 +11,8 @@
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   const sidebarCollapsed = sidebarCollapsedFor('agents');
   import { devMode } from '$lib/stores/devmode.js';
-  import { ACTIVITY_TYPES, getActivityType, createTypedActivity, isBranchingType, type ActivityType } from '$lib/utils/workflowTypes';
-  import { generateLinearConnections, removeConnection, type WorkflowConnection } from '$lib/utils/workflowLayout';
   import type { AgentDisplay, EnrichedChat, AgentRun, WorkflowStatsLocal, WorkflowConfig } from '$lib/types/agentPage';
+  import { mapWorkflows, saveWorkflows } from '$lib/utils/workflowApi';
   import type { Agent, AgentRunEntry, ActiveAgent, WorkflowRun } from '$lib/api/neboComponents';
 
   /** Raw run entries from the API — WorkflowRun is the generated type, but the backend
@@ -326,25 +325,8 @@
         }
       }
       // Workflows — backend returns a map keyed by binding name, not an array
-      const wfData = workflowsResp?.workflows;
-      if (wfData && typeof wfData === 'object' && !Array.isArray(wfData)) {
-        const wfMap: Record<string, WorkflowConfig> = {};
-        for (const [name, raw] of Object.entries(wfData)) {
-          if (!name) continue;
-          const wf = raw as Record<string, unknown>;
-          const trigger = (wf.trigger || {}) as Record<string, unknown>;
-          wfMap[name] = {
-            trigger: { type: String(trigger.type || 'manual'), event: trigger.event as string, schedule: trigger.schedule as string || trigger.cron as string },
-            schedule: (trigger.schedule || trigger.cron) as string,
-            activities: Array.isArray(wf.activities) ? wf.activities as WorkflowConfig['activities'] : [],
-            connections: Array.isArray(wf.connections) ? wf.connections : undefined,
-            isActive: wf.isActive === true,
-            description: typeof wf.description === 'string' ? wf.description : undefined,
-            lastFired: typeof wf.lastFired === 'string' ? wf.lastFired : undefined,
-            emit: typeof wf.emit === 'string' ? wf.emit : undefined,
-            source: typeof wf.source === 'string' ? wf.source : undefined,
-          };
-        }
+      const wfMap = mapWorkflows(workflowsResp?.workflows);
+      if (wfMap) {
         if (apiConfig[id]) {
           apiConfig[id] = { ...apiConfig[id], workflows: wfMap };
         } else {
@@ -428,282 +410,64 @@
   const workflowStats = $derived(agentId ? (apiStats[agentId] || { totalRuns: 0, completed: 0, failed: 0, running: 0, avgDuration: '—', lastRunAt: '—' }) : { totalRuns: 0, completed: 0, failed: 0, running: 0, avgDuration: '—', lastRunAt: '—' });
   const workflowRuns = $derived(agentId ? mapRawRunsToWFRuns(apiRawRuns[agentId] || []) : []);
 
-  // Workflow modal state
-  let editingWorkflow = $state<{ name: string; wf: WorkflowConfig } | null>(null);
-  let expandedActivities = $state<Record<number, boolean>>({});
+  // Workflow canvas state
   let showCanvasModal = $state(false);
-  let deleteConfirmIdx = $state<number | null>(null);
-  let skillSearchIdx = $state<number | null>(null);
-  let skillSearchQuery = $state('');
+  let canvasFocusWorkflow = $state<string | null>(null);
 
   function triggerSummary(wf: WorkflowConfig): string {
     if (wf.trigger?.type === 'schedule') return wf.schedule || 'Scheduled';
     if (wf.trigger?.type === 'event') return `On ${wf.trigger.event || 'event'}`;
+    if (wf.trigger?.type === 'watch') return `Watch: ${wf.trigger.event || wf.trigger.plugin || 'plugin'}`;
+    if (wf.trigger?.type === 'heartbeat') return `Every ${wf.trigger.interval || '?'}`;
     return 'Manual trigger';
   }
 
+  // Persist the full workflow map through the binding CRUD API, then sync
+  // local state from what the server actually stored.
+  async function persistWorkflows(wfs: Record<string, WorkflowConfig>): Promise<void> {
+    const id = agentId;
+    if (!id) return;
+    const wfMap = await saveWorkflows(id, apiConfig[id]?.workflows ?? {}, wfs);
+    if (wfMap) {
+      apiConfig[id] = { ...(apiConfig[id] ?? DEFAULT_CONFIG), workflows: wfMap };
+    }
+  }
+
+  async function toggleWorkflow(name: string): Promise<void> {
+    const id = agentId;
+    if (!id) return;
+    const wf = apiConfig[id]?.workflows?.[name];
+    if (wf) wf.isActive = wf.isActive === false; // optimistic flip
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.toggleAgentWorkflow(id, name) as { isActive?: boolean };
+      if (wf && typeof resp?.isActive === 'boolean') wf.isActive = resp.isActive;
+    } catch {
+      if (wf) wf.isActive = wf.isActive === false; // revert
+    }
+  }
+
+  // Clicking a workflow row opens the canvas builder focused on it — the one
+  // editing surface. The "+ New workflow" button passes a freshly-built wf
+  // that isn't in config yet; seed it into local state so the canvas sees it
+  // (canvas Save persists it, same as any edit).
   function openWorkflow(name: string, wf: WorkflowConfig) {
-    editingWorkflow = { name, wf };
-    expandedActivities = {};
-  }
-
-  function toggleActivity(idx: number) {
-    expandedActivities[idx] = !expandedActivities[idx];
-  }
-
-  function openCanvas() {
+    const id = agentId;
+    if (id && !apiConfig[id]?.workflows?.[name]) {
+      apiConfig[id] = {
+        ...(apiConfig[id] ?? DEFAULT_CONFIG),
+        workflows: { ...(apiConfig[id]?.workflows ?? {}), [name]: wf },
+      };
+    }
+    canvasFocusWorkflow = name;
     showCanvasModal = true;
   }
 
-  // Activity type picker state
-  let showTypePicker = $state(false);
-  let typePickerSearch = $state('');
-  const filteredTypes = $derived.by(() => {
-    const q = typePickerSearch.toLowerCase().trim();
-    const entries = Object.values(ACTIVITY_TYPES);
-    if (!q) return entries;
-    return entries.filter(t => t.label.toLowerCase().includes(q) || t.description.toLowerCase().includes(q));
-  });
-
-  function addActivity() {
-    showTypePicker = true;
-    typePickerSearch = '';
+  function openCanvas() {
+    canvasFocusWorkflow = null;
+    showCanvasModal = true;
   }
 
-  function addTypedActivity(actType: ActivityType) {
-    if (!editingWorkflow) return;
-    const activities = editingWorkflow.wf.activities ?? [];
-    const typeDef = ACTIVITY_TYPES[actType];
-    const id = typeDef.label.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now().toString(36);
-    const params: Record<string, any> = {};
-    for (const p of typeDef.parameters) {
-      if (p.default !== undefined) params[p.key] = p.default;
-    }
-    const newActivity = {
-      id,
-      type: actType,
-      intent: typeDef.description,
-      skills: [...typeDef.defaultSkills],
-      steps: [...typeDef.defaultSteps],
-      params,
-    };
-    editingWorkflow = {
-      ...editingWorkflow,
-      wf: {
-        ...editingWorkflow.wf,
-        activities: [...activities, newActivity],
-      },
-    };
-    expandedActivities[activities.length] = true;
-    showTypePicker = false;
-    typePickerSearch = '';
-  }
-
-  function changeActivityType(activityIdx: number, newType: ActivityType) {
-    if (!editingWorkflow) return;
-    const typeDef = ACTIVITY_TYPES[newType];
-    const activity = editingWorkflow.wf.activities?.[activityIdx];
-    if (!activity) return;
-    const params: Record<string, any> = {};
-    for (const p of typeDef.parameters) {
-      if (p.default !== undefined) params[p.key] = p.default;
-    }
-    updateActivity(activityIdx, {
-      type: newType,
-      skills: activity.skills?.length ? activity.skills : [...typeDef.defaultSkills],
-      steps: activity.steps?.length ? activity.steps : [...typeDef.defaultSteps],
-      params: { ...(activity.params ?? {}), ...params },
-    });
-  }
-
-  function duplicateActivity(activityIdx: number) {
-    if (!editingWorkflow) return;
-    const activities = editingWorkflow.wf.activities ?? [];
-    const original = activities[activityIdx];
-    if (!original) return;
-    const dupe = {
-      ...JSON.parse(JSON.stringify(original)),
-      id: `${original.id}-copy-${Date.now().toString(36)}`,
-    };
-    const newActivities = [...activities];
-    newActivities.splice(activityIdx + 1, 0, dupe);
-
-    // Also duplicate connections if they exist
-    let newConnections = editingWorkflow.wf.connections ? [...editingWorkflow.wf.connections] as WorkflowConnection[] : undefined;
-    if (newConnections) {
-      const outgoing = newConnections.filter((c) => c.from === original.id);
-      if (outgoing.length > 0) {
-        const firstTarget = outgoing[0].to;
-        const firstLabel = outgoing[0].label;
-        const idx = newConnections.indexOf(outgoing[0]);
-        newConnections.splice(idx, 1, { from: original.id, to: dupe.id, ...(firstLabel ? { label: firstLabel } : {}) });
-        newConnections.push({ from: dupe.id, to: firstTarget });
-      } else {
-        newConnections.push({ from: original.id, to: dupe.id });
-      }
-    }
-
-    editingWorkflow = {
-      ...editingWorkflow,
-      wf: {
-        ...editingWorkflow.wf,
-        activities: newActivities,
-        ...(newConnections ? { connections: newConnections } : {}),
-      },
-    };
-    expandedActivities[activityIdx + 1] = true;
-  }
-
-  function moveActivity(activityIdx: number, direction: -1 | 1) {
-    if (!editingWorkflow) return;
-    const activities = [...(editingWorkflow.wf.activities ?? [])];
-    const targetIdx = activityIdx + direction;
-    if (targetIdx < 0 || targetIdx >= activities.length) return;
-    [activities[activityIdx], activities[targetIdx]] = [activities[targetIdx], activities[activityIdx]];
-
-    // Update expanded state
-    const newExpanded: Record<number, boolean> = {};
-    for (const [k, v] of Object.entries(expandedActivities)) {
-      const ki = Number(k);
-      if (ki === activityIdx) newExpanded[targetIdx] = v;
-      else if (ki === targetIdx) newExpanded[activityIdx] = v;
-      else newExpanded[ki] = v;
-    }
-    expandedActivities = newExpanded;
-
-    editingWorkflow = {
-      ...editingWorkflow,
-      wf: { ...editingWorkflow.wf, activities },
-    };
-  }
-
-  // Connection management
-  function addNewConnection(from: string, to: string, label?: string) {
-    if (!editingWorkflow) return;
-    let conns: WorkflowConnection[] = editingWorkflow.wf.connections
-      ? [...editingWorkflow.wf.connections] as WorkflowConnection[]
-      : generateLinearConnections(editingWorkflow.wf.activities ?? [], editingWorkflow.wf.emit);
-    const exists = conns.some((c) => c.from === from && c.to === to);
-    if (exists) return;
-    conns.push({ from, to, ...(label ? { label } : {}) });
-    editingWorkflow = {
-      ...editingWorkflow,
-      wf: { ...editingWorkflow.wf, connections: conns },
-    };
-  }
-
-  function removeWorkflowConnection(from: string, to: string) {
-    if (!editingWorkflow || !editingWorkflow.wf.connections) return;
-    editingWorkflow = {
-      ...editingWorkflow,
-      wf: {
-        ...editingWorkflow.wf,
-        connections: removeConnection(editingWorkflow.wf.connections, from, to),
-      },
-    };
-  }
-
-  // Connection editor state
-  let showAddConnection = $state(false);
-  let newConnFrom = $state('');
-  let newConnTo = $state('');
-  let newConnLabel = $state('');
-
-  const allNodeIds = $derived.by(() => {
-    if (!editingWorkflow) return [];
-    const ids = ['__trigger__'];
-    for (const a of editingWorkflow.wf.activities ?? []) ids.push(a.id);
-    if (editingWorkflow.wf.emit) ids.push('__emit__');
-    return ids;
-  });
-
-  function toKebab(value: string): string {
-    return value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-');
-  }
-
-  function emitNameFromWorkflow(name: string): string {
-    return toKebab(name).replace(/-/g, '.') + '.completed';
-  }
-
-  function toggleEmit(checked: boolean) {
-    if (!editingWorkflow) return;
-    editingWorkflow = {
-      ...editingWorkflow,
-      wf: {
-        ...editingWorkflow.wf,
-        emit: checked ? emitNameFromWorkflow(editingWorkflow.name) : undefined,
-      },
-    };
-  }
-
-  function updateActivity(activityIdx: number, patch: Record<string, any>) {
-    if (!editingWorkflow) return;
-    const activities = [...(editingWorkflow.wf.activities ?? [])];
-    activities[activityIdx] = { ...activities[activityIdx], ...patch };
-    editingWorkflow = {
-      ...editingWorkflow,
-      wf: { ...editingWorkflow.wf, activities },
-    };
-  }
-
-  function addStep(activityIdx: number) {
-    if (!editingWorkflow) return;
-    const activity = editingWorkflow.wf.activities?.[activityIdx];
-    if (!activity) return;
-    updateActivity(activityIdx, { steps: [...(activity.steps ?? []), ''] });
-  }
-
-  function addSkill(activityIdx: number, skill: string) {
-    if (!editingWorkflow || !skill.trim()) return;
-    const activity = editingWorkflow.wf.activities?.[activityIdx];
-    if (!activity) return;
-    const existing = activity.skills ?? [];
-    if (existing.includes(skill.trim())) return;
-    updateActivity(activityIdx, { skills: [...existing, skill.trim()] });
-  }
-
-  function removeSkill(activityIdx: number, skill: string) {
-    if (!editingWorkflow) return;
-    const activity = editingWorkflow.wf.activities?.[activityIdx];
-    if (!activity) return;
-    updateActivity(activityIdx, { skills: (activity.skills ?? []).filter((s: string) => s !== skill) });
-  }
-
-  function removeActivity(activityIdx: number) {
-    if (!editingWorkflow) return;
-    const activities = (editingWorkflow.wf.activities ?? []).filter((_: unknown, i: number) => i !== activityIdx);
-    editingWorkflow = {
-      ...editingWorkflow,
-      wf: { ...editingWorkflow.wf, activities },
-    };
-    deleteConfirmIdx = null;
-    // Clean up expanded state
-    const newExpanded: Record<number, boolean> = {};
-    for (const [k, v] of Object.entries(expandedActivities)) {
-      const ki = Number(k);
-      if (ki < activityIdx) newExpanded[ki] = v;
-      else if (ki > activityIdx) newExpanded[ki - 1] = v;
-    }
-    expandedActivities = newExpanded;
-  }
-
-  function openSkillSearch(activityIdx: number) {
-    skillSearchIdx = activityIdx;
-    skillSearchQuery = '';
-  }
-
-  function closeSkillSearch() {
-    skillSearchIdx = null;
-    skillSearchQuery = '';
-  }
-
-  const filteredSkills = $derived.by(() => {
-    if (skillSearchIdx === null || !editingWorkflow) return [];
-    const activity = editingWorkflow.wf.activities?.[skillSearchIdx];
-    const existing = new Set(activity?.skills ?? []);
-    const query = skillSearchQuery.toLowerCase();
-    return skills.filter((s: string) => !existing.has(s) && s.toLowerCase().includes(query));
-  });
 
   function selectAgent(id: string) {
     const a = allAgents.find(ag => ag.id === id);
@@ -796,6 +560,8 @@
     openWorkflow,
     openCanvas,
     triggerSummary,
+    persistWorkflows,
+    toggleWorkflow,
     toggleAgentStatus,
     agentStatus,
     refreshRuns,
@@ -888,547 +654,6 @@
 {/if}
 
 <!-- Workflow editor modal -->
-{#if editingWorkflow}
-  {@const ew = editingWorkflow}
-  {@const purchased = ew.wf.source === 'marketplace'}
-  <div class="fixed inset-0 z-50 flex items-center justify-center" data-modal-open>
-    <div class="absolute inset-0 bg-black/30" role="presentation"></div>
-    <div class="relative bg-base-100 rounded-xl border border-base-300 shadow-xl w-[620px] max-h-[80vh] flex flex-col z-10">
-      <!-- Header -->
-      <div class="flex items-center justify-between px-5 py-3.5 border-b border-base-300 shrink-0">
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2">
-            <span class="text-sm font-semibold">{ew.name || 'Untitled Workflow'}</span>
-            {#if purchased}
-              <span class="py-0 px-1.5 rounded bg-base-200 text-xs font-mono">Marketplace</span>
-            {/if}
-            {#if ew.wf.isActive === false}
-              <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">Paused</span>
-            {/if}
-          </div>
-          <div class="text-xs text-base-content/70">{agent?.name} &middot; {ew.wf.activities?.length ?? 0} activities</div>
-        </div>
-        <div class="flex items-center gap-2 shrink-0">
-          {#if !purchased}
-            <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={ew.wf.isActive !== false} role="switch" title="Enable/disable workflow" />
-          {/if}
-          <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-lg" onclick={() => editingWorkflow = null}>&times;</button>
-        </div>
-      </div>
-
-      {#if purchased}
-        <div class="flex items-center gap-2 px-5 py-2 bg-base-200 border-b border-base-300 text-xs">
-          <span>&#128274;</span>
-          <span>Installed from Marketplace &mdash; read-only.</span>
-          <button class="ml-auto py-0.5 px-2 rounded border border-base-300 bg-base-100 text-xs font-medium cursor-pointer hover:bg-base-100 transition-colors">Duplicate as custom</button>
-        </div>
-      {/if}
-
-      <div class="flex-1 overflow-y-auto p-5">
-        <!-- Name -->
-        <div class="mb-5">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Name</div>
-          {#if purchased}
-            <div class="text-sm">{ew.name}</div>
-          {:else}
-            <input type="text" value={ew.name} placeholder="e.g. morning-scan"
-              oninput={(e) => {
-                const raw = e.currentTarget.value;
-                const newName = toKebab(raw);
-                e.currentTarget.value = newName;
-                const hadEmit = !!editingWorkflow!.wf.emit;
-                editingWorkflow = {
-                  ...editingWorkflow!,
-                  name: newName,
-                  wf: {
-                    ...editingWorkflow!.wf,
-                    emit: hadEmit ? emitNameFromWorkflow(newName) : undefined,
-                  },
-                };
-              }}
-              class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm outline-none font-mono bg-base-100" />
-          {/if}
-        </div>
-
-        <!-- Trigger -->
-        <div class="mb-5">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Trigger</div>
-          {#if purchased}
-            <div class="py-1.5 px-3 rounded-md border border-base-300 bg-base-200 text-sm inline-flex items-center gap-1.5">
-              {#if ew.wf.trigger?.type === 'schedule'}&#8635;{:else if ew.wf.trigger?.type === 'event'}&#9889;{:else}&#9654;{/if}
-              <span class="capitalize">{ew.wf.trigger?.type ?? 'manual'}</span>
-            </div>
-          {:else}
-            <div class="grid grid-cols-4 gap-1.5">
-              {#each [
-                { type: 'schedule', icon: '&#8635;', label: 'Schedule', desc: 'Run at set times' },
-                { type: 'heartbeat', icon: '&#10084;', label: 'Heartbeat', desc: 'Run on interval' },
-                { type: 'event', icon: '&#9889;', label: 'Event', desc: 'React to events' },
-                { type: 'manual', icon: '&#9654;', label: 'Manual', desc: 'Run on demand' },
-              ] as tt}
-                <button class="flex flex-col items-center gap-0.5 py-2 px-2 rounded-lg text-center cursor-pointer border transition-colors {ew.wf.trigger?.type === tt.type ? 'bg-primary/5 border-primary text-primary' : 'bg-base-100 border-base-300 hover:bg-base-200'}">
-                  <span class="text-base">{@html tt.icon}</span>
-                  <span class="text-xs font-medium">{tt.label}</span>
-                </button>
-              {/each}
-            </div>
-          {/if}
-
-          <!-- Trigger config by type -->
-          {#if ew.wf.trigger?.type === 'schedule' && !purchased}
-            <div class="mt-3 flex flex-col gap-2">
-              <input type="text" value={ew.wf.schedule ?? ''} placeholder="e.g. 8:00 AM daily"
-                class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm outline-none font-mono bg-base-100" />
-              <div class="flex gap-1.5">
-                {#each ['Weekdays', 'Weekends', 'Daily', 'Custom'] as preset}
-                  <button class="py-1 px-2.5 rounded-md text-xs cursor-pointer border border-base-300 bg-base-100 hover:bg-base-200 transition-colors">{preset}</button>
-                {/each}
-              </div>
-            </div>
-          {:else if ew.wf.trigger?.type === 'schedule' && purchased}
-            <div class="mt-2 py-1.5 px-2.5 rounded-md border border-base-300 bg-base-200 text-sm font-mono">{ew.wf.schedule ?? ''}</div>
-          {:else if ew.wf.trigger?.type === 'heartbeat' && !purchased}
-            <div class="mt-3 flex flex-col gap-2">
-              <select class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-mono">
-                <option value="5m">Every 5 minutes</option>
-                <option value="10m">Every 10 minutes</option>
-                <option value="15m">Every 15 minutes</option>
-                <option value="30m" selected>Every 30 minutes</option>
-                <option value="1h">Every hour</option>
-                <option value="2h">Every 2 hours</option>
-                <option value="4h">Every 4 hours</option>
-                <option value="8h">Every 8 hours</option>
-              </select>
-              <div class="text-xs text-base-content/50">Optional: restrict to specific hours (e.g. 9 AM - 6 PM)</div>
-            </div>
-          {:else if ew.wf.trigger?.type === 'event'}
-            <div class="mt-3">
-              <input type="text" value={ew.wf.trigger?.event ?? ''} placeholder="e.g. GitHub PR opened, email.received" disabled={purchased}
-                class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm outline-none font-mono {purchased ? 'bg-base-200' : 'bg-base-100'}" />
-              <div class="text-xs text-base-content/50 mt-1">Comma-separated event names</div>
-            </div>
-          {/if}
-        </div>
-
-        <!-- Description -->
-        <div class="mb-5">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Description</div>
-          {#if purchased}
-            <div class="text-sm leading-relaxed">{ew.wf.description ?? ''}</div>
-          {:else}
-            <textarea rows="2"
-              class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-body leading-relaxed">{ew.wf.description ?? ''}</textarea>
-          {/if}
-        </div>
-
-        <!-- Emit event -->
-        {#if !purchased}
-          <div class="mb-5">
-            <div class="flex items-center justify-between mb-1.5">
-              <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Emit Event</div>
-              <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={!!ew.wf.emit} onchange={(e) => toggleEmit(e.currentTarget.checked)} role="switch" title="Emit event on completion" />
-            </div>
-            {#if ew.wf.emit}
-              <div class="py-1.5 px-2.5 rounded-md border border-base-300 bg-base-200/50 text-sm font-mono text-base-content/70">{ew.wf.emit}</div>
-              <div class="text-xs text-base-content/50 mt-1">Other workflows can listen for this event as a trigger.</div>
-            {:else}
-              <div class="text-xs text-base-content/50">Enable to announce an event when this workflow completes.</div>
-            {/if}
-          </div>
-        {:else if ew.wf.emit}
-          <div class="mb-5">
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Emits</div>
-            <div class="py-1 px-2 rounded bg-accent/10 text-xs text-accent font-mono inline-block">&#8594; {ew.wf.emit}</div>
-          </div>
-        {/if}
-
-        <!-- Activities sequence -->
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Activities</div>
-          <div class="flex flex-col gap-0">
-            {#each ew.wf.activities ?? [] as activity, idx}
-              {@const typeDef = getActivityType(activity.type)}
-              <!-- Connector line -->
-              {#if idx > 0}
-                <div class="flex justify-center py-1">
-                  <div class="w-px h-4 bg-base-300"></div>
-                </div>
-              {/if}
-
-              <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
-                <!-- Activity header -->
-                <button
-                  class="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors"
-                  onclick={() => toggleActivity(idx)}
-                >
-                  <div class="w-6 h-6 rounded-md bg-base-200 border {typeDef.accentClass} flex items-center justify-center text-sm shrink-0">{typeDef.icon}</div>
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-1.5">
-                      <span class="text-sm font-medium">{activity.id}</span>
-                      <span class="py-0 px-1 rounded bg-base-200 text-xs text-base-content/50 font-mono">{typeDef.label}</span>
-                      {#if isBranchingType(activity.type)}
-                        <span class="py-0 px-1 rounded bg-accent/10 text-xs text-accent font-mono">branching</span>
-                      {/if}
-                    </div>
-                    <div class="text-xs text-base-content/70 truncate">{activity.intent}</div>
-                  </div>
-                  {#if !purchased}
-                    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-                    <div class="flex items-center gap-0.5 shrink-0" role="group" onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}>
-                      <span class="w-5 h-5 rounded flex items-center justify-center text-xs text-base-content/40 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed {idx === 0 ? 'opacity-30 cursor-not-allowed' : ''}" role="button" tabindex="0" aria-disabled={idx === 0} onclick={() => { if (idx !== 0) moveActivity(idx, -1); }} onkeydown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && idx !== 0) { e.preventDefault(); moveActivity(idx, -1); } }} title="Move up">&#9650;</span>
-                      <span class="w-5 h-5 rounded flex items-center justify-center text-xs text-base-content/40 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed {idx === (ew.wf.activities?.length ?? 0) - 1 ? 'opacity-30 cursor-not-allowed' : ''}" role="button" tabindex="0" aria-disabled={idx === (ew.wf.activities?.length ?? 0) - 1} onclick={() => { if (idx !== (ew.wf.activities?.length ?? 0) - 1) moveActivity(idx, 1); }} onkeydown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && idx !== (ew.wf.activities?.length ?? 0) - 1) { e.preventDefault(); moveActivity(idx, 1); } }} title="Move down">&#9660;</span>
-                    </div>
-                  {/if}
-                  <span class="text-sm transition-transform shrink-0 {expandedActivities[idx] ? 'rotate-90' : ''}">&rsaquo;</span>
-                </button>
-
-                <!-- Expanded detail -->
-                {#if expandedActivities[idx]}
-                  <div class="px-3.5 pb-3.5 border-t border-base-300">
-                    <!-- Type selector -->
-                    {#if !purchased}
-                      <div class="mt-3">
-                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Type</div>
-                        <select
-                          class="w-full py-[6px] px-2 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body"
-                          value={activity.type || 'custom'}
-                          onchange={(e) => changeActivityType(idx, e.currentTarget.value as ActivityType)}
-                        >
-                          {#each Object.values(ACTIVITY_TYPES) as t}
-                            <option value={t.type}>{t.icon} {t.label} — {t.description}</option>
-                          {/each}
-                        </select>
-                      </div>
-                    {:else}
-                      <div class="mt-3">
-                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Type</div>
-                        <div class="text-sm inline-flex items-center gap-1.5">
-                          <span>{typeDef.icon}</span>
-                          <span>{typeDef.label}</span>
-                        </div>
-                      </div>
-                    {/if}
-                    <!-- Name -->
-                    <div class="mt-3">
-                      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Name</div>
-                      {#if purchased}
-                        <div class="text-sm font-mono">{activity.id}</div>
-                      {:else}
-                        <input type="text" value={activity.id} placeholder="e.g. scan-sources"
-                          oninput={(e) => { e.currentTarget.value = toKebab(e.currentTarget.value); updateActivity(idx, { id: toKebab(e.currentTarget.value) }); }}
-                          class="w-full py-[6px] px-2 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-mono" />
-                      {/if}
-                    </div>
-                    <!-- Intent -->
-                    <div class="mt-3">
-                      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Intent</div>
-                      {#if purchased}
-                        <div class="text-sm">{activity.intent}</div>
-                      {:else}
-                        <input type="text" value={activity.intent} placeholder="What should this step accomplish?"
-                          oninput={(e) => updateActivity(idx, { intent: e.currentTarget.value })}
-                          class="w-full py-[6px] px-2 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body" />
-                      {/if}
-                    </div>
-                    <!-- Type-specific parameters -->
-                    {#if typeDef.parameters.length > 0}
-                      <div class="mt-3">
-                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Parameters</div>
-                        <div class="flex flex-col gap-2.5">
-                          {#each typeDef.parameters as param}
-                            <div>
-                              <div class="text-xs text-base-content/70 mb-0.5">{param.label}</div>
-                              {#if param.description}
-                                <div class="text-xs text-base-content/40 mb-1">{param.description}</div>
-                              {/if}
-                              {#if purchased}
-                                <div class="text-sm font-mono">{activity.params?.[param.key] ?? param.default ?? '—'}</div>
-                              {:else if param.type === 'select'}
-                                <select
-                                  class="w-full py-[6px] px-2 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body"
-                                  value={activity.params?.[param.key] ?? param.default ?? ''}
-                                  onchange={(e) => {
-                                    const params = { ...(activity.params ?? {}), [param.key]: e.currentTarget.value };
-                                    updateActivity(idx, { params });
-                                  }}
-                                >
-                                  {#each param.options ?? [] as opt}
-                                    <option value={opt.value}>{opt.label}</option>
-                                  {/each}
-                                </select>
-                              {:else if param.type === 'textarea'}
-                                <textarea rows="3"
-                                  class="w-full py-[6px] px-2 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-mono leading-relaxed"
-                                  placeholder={param.placeholder ?? ''}
-                                  oninput={(e) => {
-                                    const params = { ...(activity.params ?? {}), [param.key]: e.currentTarget.value };
-                                    updateActivity(idx, { params });
-                                  }}
-                                >{activity.params?.[param.key] ?? param.default ?? ''}</textarea>
-                              {:else if param.type === 'number'}
-                                <input type="number"
-                                  class="w-full py-[6px] px-2 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-mono"
-                                  value={activity.params?.[param.key] ?? param.default ?? ''}
-                                  placeholder={param.placeholder ?? ''}
-                                  oninput={(e) => {
-                                    const params = { ...(activity.params ?? {}), [param.key]: Number(e.currentTarget.value) };
-                                    updateActivity(idx, { params });
-                                  }}
-                                />
-                              {:else if param.type === 'toggle'}
-                                <input type="checkbox" class="toggle toggle-sm toggle-primary"
-                                  checked={!!(activity.params?.[param.key] ?? param.default ?? false)}
-                                  onchange={(e) => {
-                                    const params = { ...(activity.params ?? {}), [param.key]: e.currentTarget.checked };
-                                    updateActivity(idx, { params });
-                                  }}
-                                  role="switch"
-                                />
-                              {:else}
-                                <input type="text"
-                                  class="w-full py-[6px] px-2 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-mono"
-                                  value={activity.params?.[param.key] ?? param.default ?? ''}
-                                  placeholder={param.placeholder ?? ''}
-                                  oninput={(e) => {
-                                    const params = { ...(activity.params ?? {}), [param.key]: e.currentTarget.value };
-                                    updateActivity(idx, { params });
-                                  }}
-                                />
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      </div>
-                    {/if}
-                    <!-- Skills -->
-                    <div class="mt-3">
-                      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Skills</div>
-                      <div class="flex flex-wrap gap-1.5">
-                        {#each activity.skills ?? [] as skill}
-                          <span class="py-0.5 px-2 rounded bg-base-200 font-mono text-xs inline-flex items-center gap-1">
-                            {skill}
-                            {#if !purchased}
-                              <button class="hover:text-error cursor-pointer bg-transparent border-none text-xs p-0 leading-none" onclick={() => removeSkill(idx, skill)}>&times;</button>
-                            {/if}
-                          </span>
-                        {/each}
-                        {#if !purchased}
-                          <div class="relative">
-                            <input type="text" placeholder="+ add skill"
-                              onfocus={() => openSkillSearch(idx)}
-                              oninput={(e) => { skillSearchQuery = e.currentTarget.value; }}
-                              onkeydown={(e) => {
-                                if (e.key === 'Escape') { closeSkillSearch(); e.currentTarget.blur(); }
-                                else if (e.key === 'Enter' && filteredSkills.length > 0) { addSkill(idx, filteredSkills[0]); e.currentTarget.value = ''; skillSearchQuery = ''; }
-                                else if (e.key === 'Enter' && e.currentTarget.value.trim()) { addSkill(idx, e.currentTarget.value.trim()); e.currentTarget.value = ''; skillSearchQuery = ''; }
-                              }}
-                              onblur={() => { setTimeout(() => closeSkillSearch(), 150); }}
-                              class="py-0.5 px-2 rounded border border-dashed border-base-300 text-xs bg-transparent outline-none font-mono w-28 placeholder:text-primary" />
-                            {#if skillSearchIdx === idx && (filteredSkills.length > 0 || skillSearchQuery)}
-                              <div class="absolute top-full left-0 mt-1 w-56 max-h-48 flex flex-col rounded-lg border border-base-300 bg-base-100 shadow-lg z-20">
-                                <div class="flex-1 overflow-y-auto">
-                                  {#if filteredSkills.length > 0}
-                                    {#each filteredSkills.slice(0, 20) as s}
-                                      <button
-                                        class="w-full text-left px-2.5 py-1.5 text-xs font-mono cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors"
-                                        onmousedown={() => { addSkill(idx, s); skillSearchQuery = ''; }}
-                                      >{s}</button>
-                                    {/each}
-                                  {:else}
-                                    <div class="px-2.5 py-1.5 text-xs text-base-content/50">No matching skills</div>
-                                  {/if}
-                                </div>
-                                {#if filteredSkills.length > 20}
-                                  <div class="px-2.5 py-1.5 text-xs text-base-content/50 border-t border-base-300 shrink-0">+{filteredSkills.length - 20} more — type to filter</div>
-                                {/if}
-                              </div>
-                            {/if}
-                          </div>
-                        {/if}
-                      </div>
-                    </div>
-                    <!-- Steps -->
-                    <div class="mt-3">
-                      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Steps</div>
-                      <div class="flex flex-col gap-1">
-                        {#each activity.steps ?? [] as step, stepIdx}
-                          <div class="flex items-start gap-2 group">
-                            <span class="font-mono text-xs mt-[5px] shrink-0 w-3 text-right">{stepIdx + 1}</span>
-                            {#if purchased}
-                              <span class="flex-1 py-[5px] px-2 text-sm">{step}</span>
-                            {:else}
-                              <input type="text" value={step}
-                                class="flex-1 py-[5px] px-2 rounded border border-transparent hover:border-base-300 focus:border-base-300 text-sm bg-transparent outline-none font-body" />
-                              <button class="opacity-0 group-hover:opacity-100 hover:text-error text-sm cursor-pointer bg-transparent border-none shrink-0 mt-[5px]">&times;</button>
-                            {/if}
-                          </div>
-                        {/each}
-                        {#if !purchased}
-                          <button class="text-left py-1 px-5 text-sm text-primary cursor-pointer bg-transparent border-none hover:opacity-70" onclick={() => addStep(idx)}>+ Add step</button>
-                        {/if}
-                      </div>
-                    </div>
-                    <!-- Activity actions -->
-                    {#if !purchased}
-                      <div class="mt-4 pt-3 border-t border-base-300 flex items-center justify-between">
-                        <div>
-                          {#if deleteConfirmIdx === idx}
-                            <div class="flex items-center gap-2">
-                              <span class="text-xs text-error">Remove this activity?</span>
-                              <button class="py-1 px-2.5 rounded-md bg-error text-error-content text-xs font-medium cursor-pointer border-none hover:brightness-110 transition-all" onclick={() => removeActivity(idx)}>Remove</button>
-                              <button class="py-1 px-2.5 rounded-md text-xs text-base-content/60 cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => deleteConfirmIdx = null}>Cancel</button>
-                            </div>
-                          {:else}
-                            <button class="flex items-center gap-1 text-xs text-base-content/50 cursor-pointer bg-transparent border-none hover:text-error transition-colors" onclick={() => deleteConfirmIdx = idx}>
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                              Remove
-                            </button>
-                          {/if}
-                        </div>
-                        <button
-                          class="flex items-center gap-1 text-xs text-base-content/50 cursor-pointer bg-transparent border-none hover:text-primary transition-colors"
-                          onclick={() => duplicateActivity(idx)}
-                        >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                          Duplicate
-                        </button>
-                      </div>
-                    {/if}
-                  </div>
-                {/if}
-              </div>
-            {/each}
-
-            {#if !purchased}
-              <div class="flex justify-center py-1">
-                <div class="w-px h-4 bg-base-300"></div>
-              </div>
-
-              {#if showTypePicker}
-                <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
-                  <div class="flex items-center justify-between px-3 py-2 border-b border-base-300">
-                    <div class="text-xs font-semibold">Choose Activity Type</div>
-                    <button class="w-5 h-5 rounded flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-sm" onclick={() => showTypePicker = false}>&times;</button>
-                  </div>
-                  <div class="px-3 py-2 border-b border-base-300">
-                    <input type="text" class="w-full py-[5px] px-2 rounded-md border border-base-300 text-xs bg-base-100 outline-none" placeholder="Search types..." bind:value={typePickerSearch} />
-                  </div>
-                  <div class="max-h-64 overflow-y-auto py-1">
-                    {#each filteredTypes as t}
-                      <button
-                        class="w-full flex items-center gap-2.5 px-3 py-2 text-left cursor-pointer bg-transparent border-none hover:bg-base-200/50 transition-colors"
-                        onclick={() => addTypedActivity(t.type)}
-                      >
-                        <div class="w-6 h-6 rounded-md bg-base-200 border {t.accentClass} flex items-center justify-center text-sm shrink-0">{t.icon}</div>
-                        <div class="flex-1 min-w-0">
-                          <div class="text-sm font-medium">{t.label}</div>
-                          <div class="text-xs text-base-content/60 truncate">{t.description}</div>
-                        </div>
-                        {#if t.branches}
-                          <span class="py-0 px-1 rounded bg-accent/10 text-xs text-accent font-mono shrink-0">branching</span>
-                        {/if}
-                      </button>
-                    {/each}
-                    {#if filteredTypes.length === 0}
-                      <div class="px-3 py-4 text-center text-xs text-base-content/40">No types match "{typePickerSearch}"</div>
-                    {/if}
-                  </div>
-                </div>
-              {:else}
-                <button class="w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={addActivity}>+ Add activity</button>
-              {/if}
-            {/if}
-          </div>
-        </div>
-
-        <!-- Connections -->
-        {#if !purchased && (ew.wf.activities?.length ?? 0) > 0}
-          {@const conns = ew.wf.connections ?? generateLinearConnections(ew.wf.activities ?? [], ew.wf.emit)}
-          <div class="mt-5">
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Connections</div>
-            {#if conns.length > 0}
-              <div class="flex flex-col gap-1">
-                {#each conns as conn}
-                  <div class="flex items-center gap-2 py-1.5 px-3 rounded-lg border border-base-300 bg-base-100 group text-xs">
-                    <span class="font-mono text-base-content/70 truncate flex-1">{conn.from === '__trigger__' ? 'Trigger' : conn.from}</span>
-                    <span class="text-base-content/30 shrink-0">&#8594;</span>
-                    <span class="font-mono text-base-content/70 truncate flex-1">{conn.to === '__emit__' ? 'Emit' : conn.to}</span>
-                    {#if conn.label}
-                      <span class="py-0 px-1 rounded bg-accent/10 text-accent font-mono shrink-0">{conn.label}</span>
-                    {/if}
-                    <button
-                      class="opacity-0 group-hover:opacity-100 w-4 h-4 rounded flex items-center justify-center text-base-content/40 hover:text-error cursor-pointer bg-transparent border-none shrink-0 transition-opacity"
-                      title="Remove connection"
-                      onclick={() => removeWorkflowConnection(conn.from, conn.to)}
-                    >&times;</button>
-                  </div>
-                {/each}
-              </div>
-            {:else}
-              <div class="text-xs text-base-content/50">No connections defined.</div>
-            {/if}
-
-            <!-- Add connection -->
-            {#if showAddConnection}
-              <div class="mt-2 rounded-lg border border-base-300 bg-base-100 p-3 flex flex-col gap-2">
-                <div class="flex items-center gap-2">
-                  <select class="flex-1 py-[5px] px-2 rounded-md border border-base-300 text-xs bg-base-100 outline-none font-mono" bind:value={newConnFrom}>
-                    <option value="">From...</option>
-                    {#each allNodeIds as nid}
-                      <option value={nid}>{nid === '__trigger__' ? 'Trigger' : nid === '__emit__' ? 'Emit' : nid}</option>
-                    {/each}
-                  </select>
-                  <span class="text-xs text-base-content/30">&#8594;</span>
-                  <select class="flex-1 py-[5px] px-2 rounded-md border border-base-300 text-xs bg-base-100 outline-none font-mono" bind:value={newConnTo}>
-                    <option value="">To...</option>
-                    {#each allNodeIds as nid}
-                      <option value={nid}>{nid === '__trigger__' ? 'Trigger' : nid === '__emit__' ? 'Emit' : nid}</option>
-                    {/each}
-                  </select>
-                </div>
-                <input type="text" class="w-full py-[5px] px-2 rounded-md border border-base-300 text-xs bg-base-100 outline-none font-mono" placeholder="Label (optional, e.g. True, False)" bind:value={newConnLabel} />
-                <div class="flex items-center gap-2">
-                  <button
-                    class="py-1 px-2.5 rounded-md bg-primary text-primary-content text-xs font-medium cursor-pointer border-none disabled:opacity-40 disabled:cursor-not-allowed"
-                    disabled={!newConnFrom || !newConnTo || newConnFrom === newConnTo}
-                    onclick={() => {
-                      addNewConnection(newConnFrom, newConnTo, newConnLabel || undefined);
-                      showAddConnection = false;
-                      newConnFrom = '';
-                      newConnTo = '';
-                      newConnLabel = '';
-                    }}
-                  >Add</button>
-                  <button class="py-1 px-2.5 rounded-md text-xs text-base-content/60 cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => { showAddConnection = false; newConnFrom = ''; newConnTo = ''; newConnLabel = ''; }}>Cancel</button>
-                </div>
-              </div>
-            {:else}
-              <button
-                class="mt-2 text-xs text-primary cursor-pointer bg-transparent border-none hover:opacity-70"
-                onclick={() => showAddConnection = true}
-              >+ Add connection</button>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-      <!-- Footer -->
-      <div class="flex items-center justify-between px-5 py-3 border-t border-base-300 shrink-0">
-        {#if purchased}
-          <div></div>
-          <button class="py-1.5 px-3 rounded-md border border-base-300 bg-base-100 text-sm cursor-pointer hover:bg-base-200 transition-colors" onclick={() => editingWorkflow = null}>Close</button>
-        {:else}
-          <button class="py-1.5 px-3 rounded-md text-sm text-error cursor-pointer bg-transparent border border-base-300 hover:bg-error/10 transition-colors">Delete</button>
-          <div class="flex gap-2">
-            <button class="py-1.5 px-3 rounded-md border border-base-300 bg-base-100 text-sm cursor-pointer hover:bg-base-200 transition-colors" onclick={() => editingWorkflow = null}>Cancel</button>
-            <button class="py-1.5 px-4 rounded-md bg-base-content text-base-100 text-sm font-medium cursor-pointer border-none" onclick={() => editingWorkflow = null}>Save</button>
-          </div>
-        {/if}
-      </div>
-    </div>
-  </div>
-{/if}
-
 <!-- Workflow canvas builder — full-screen overlay -->
 {#if showCanvasModal}
   <div class="fixed inset-0 z-[60] flex flex-col" data-modal-open>
@@ -1449,8 +674,9 @@
           workflows={config.workflows}
           agentId={agentId}
           agentName={agent?.name ?? 'Agent'}
-          onclose={() => showCanvasModal = false}
-          onsave={(wfs) => { config.workflows = wfs; showCanvasModal = false; }}
+          focusWorkflow={canvasFocusWorkflow}
+          onclose={() => { showCanvasModal = false; canvasFocusWorkflow = null; }}
+          onsave={(wfs) => { showCanvasModal = false; canvasFocusWorkflow = null; persistWorkflows(wfs).catch((e) => console.error('[nebo] failed to save workflows', e)); }}
         />
       </div>
     </div>

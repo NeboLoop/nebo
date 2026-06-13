@@ -76,7 +76,7 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| db::models::Setting {
             id: 1,
-            autonomous_mode: 0,
+            auto_install_deps: 0,
             auto_approve_read: 0,
             auto_approve_write: 0,
             auto_approve_bash: 0,

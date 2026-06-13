@@ -325,6 +325,7 @@ impl WorkflowBinding {
             "name": name,
             "inputs": inputs,
             "activities": self.activities,
+            "connections": self.connections,
             "budget": self.budget,
             "dependencies": { "skills": [], "workflows": [] },
         })
@@ -344,7 +345,16 @@ pub struct AgentActivity {
     /// Activity type: custom, research, email, notify, code, condition, loop, wait, agent, connector, http, transform.
     #[serde(rename = "type", default)]
     pub activity_type: String,
+    /// Natural-language task. Optional — typed nodes (http, wait, condition)
+    /// may be fully described by `params`.
+    #[serde(default)]
     pub intent: String,
+    /// Display label from the builder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Declared branches for condition/loop activities.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<AgentBranch>,
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
@@ -361,6 +371,16 @@ pub struct AgentActivity {
     pub token_budget: AgentTokenBudget,
     #[serde(default)]
     pub on_error: AgentOnError,
+}
+
+/// A declared branch on a branching activity (condition/loop).
+/// Serializes as `{ label, nextId }` to match the builder and
+/// `workflow::parser::Branch`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentBranch {
+    pub label: String,
+    #[serde(default, rename = "nextId", skip_serializing_if = "Option::is_none")]
+    pub next_id: Option<String>,
 }
 
 /// Token budget for an activity.

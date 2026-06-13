@@ -94,6 +94,11 @@
     return 'Manual trigger';
   }
 
+  function formatLastFired(iso: string): string {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+
   // --- Identity auto-save ---
   let identitySaved = $state(false);
   let identitySaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -773,10 +778,10 @@
                   <div class="flex items-center gap-2 mt-1.5 flex-wrap">
                     <span class="text-xs text-base-content/50 font-mono">{triggerSummary(wf)}</span>
                     <span class="text-xs text-base-content/30">&middot;</span>
-                    <span class="text-xs text-base-content/50 font-mono inline-flex items-center gap-1">{wf.activities?.length ?? 0} activities{#each [...new Set((wf.activities ?? []).map((a: WorkflowActivity) => a.type).filter(Boolean))] as t}<span class="inline-block" title={getActivityType(t).label}>{getActivityType(t).icon}</span>{/each}</span>
+                    <span class="text-xs text-base-content/50 font-mono inline-flex items-center gap-1">{wf.activities?.length ?? 0} {(wf.activities?.length ?? 0) === 1 ? 'activity' : 'activities'}{#each [...new Set((wf.activities ?? []).map((a: WorkflowActivity) => a.type).filter(Boolean))] as t}<span class="inline-block" title={getActivityType(t).label}>{getActivityType(t).icon}</span>{/each}</span>
                     {#if wf.lastFired}
                       <span class="text-xs text-base-content/30">&middot;</span>
-                      <span class="text-xs text-base-content/50 font-mono">Last: {wf.lastFired}</span>
+                      <span class="text-xs text-base-content/50 font-mono">Last: {formatLastFired(wf.lastFired)}</span>
                     {/if}
                     {#if wf.emit}
                       <span class="text-xs text-base-content/30">&middot;</span>
@@ -785,7 +790,7 @@
                   </div>
                 </button>
 
-                <input type="checkbox" class="toggle toggle-sm toggle-primary shrink-0 mt-1" checked={wf.isActive !== false} role="switch" />
+                <input type="checkbox" class="toggle toggle-sm toggle-primary shrink-0 mt-1" checked={wf.isActive !== false} role="switch" aria-checked={wf.isActive !== false} onchange={() => ctx.toggleWorkflow(name)} />
               </div>
             </div>
           {/each}

@@ -1730,8 +1730,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             .await;
     }
 
-    // Resolve dependency cascade for agents that were just created from filesystem
-    if !agents_needing_cascade.is_empty() {
+    // Resolve dependency cascade for agents that were just created from filesystem.
+    // This is the IMPLICIT boot-time reconcile — gated by the `auto_install_deps`
+    // setting (default OFF) so we don't auto-pull deps for every agent on launch.
+    if !agents_needing_cascade.is_empty() && crate::deps::auto_install_deps_enabled(&state) {
         let cascade_state = state.clone();
         tokio::spawn(async move {
             for frontmatter in agents_needing_cascade {
@@ -2192,8 +2194,11 @@ async fn handle_agent_fs_events(
                         None,
                     ) {
                         Ok(_) => {
-                            // Resolve dependency cascade if agent has frontmatter
-                            if !loaded.frontmatter.is_empty() {
+                            // Implicit reconcile cascade for an agent newly discovered
+                            // on disk — gated by `auto_install_deps` (default OFF).
+                            if !loaded.frontmatter.is_empty()
+                                && crate::deps::auto_install_deps_enabled(&state)
+                            {
                                 let cascade_state = state.clone();
                                 let fm = loaded.frontmatter.clone();
                                 tokio::spawn(async move {

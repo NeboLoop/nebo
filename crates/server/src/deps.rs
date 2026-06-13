@@ -1,8 +1,14 @@
-//! Dependency auto-install cascade resolver.
+//! Dependency install cascade resolver.
 //!
-//! Walks the STRAP hierarchy (AGENT → WORK → SKILL) downward,
-//! checks local presence, and either auto-installs (autonomous mode)
-//! or reports pending (non-autonomous mode).
+//! Walks the STRAP hierarchy (AGENT → WORK → SKILL) downward, checks local
+//! presence, and installs whatever is missing. There is ONE install path:
+//! every explicit install (a pasted code, a marketplace install, a collection)
+//! force-installs its declared dependencies — choosing to install an artifact
+//! IS consent to install the components it requires.
+//!
+//! The `auto_install_deps` setting gates ONLY the implicit boot-time reconcile
+//! cascades in `lib.rs` (filesystem agents discovered on startup), so we don't
+//! auto-pull a pile of deps for every agent on every launch without consent.
 
 use std::collections::HashSet;
 
@@ -63,7 +69,6 @@ impl DepRef {
 pub enum DepStatus {
     AlreadyInstalled,
     Installed,
-    PendingApproval,
     Failed { error: String },
     Unresolvable { reason: String },
 }
@@ -86,14 +91,19 @@ pub struct CascadeResult {
 
 // ── Core Resolver ───────────────────────────────────────────────────
 
-/// Main entry — respects autonomous_mode from DB settings.
+/// Install every dependency in `deps` and recurse into their transitive deps.
+///
+/// This is THE cascade. It always installs — there is no "pending/approve"
+/// branch any more. Explicit installs (codes, marketplace, collections) all
+/// flow through here; the boot-time reconcile in `lib.rs` gates the CALL on
+/// `auto_install_deps_enabled`, not the behavior inside.
 pub async fn resolve_cascade(
     state: &AppState,
     deps: Vec<DepRef>,
     visited: &mut HashSet<String>,
 ) -> CascadeResult {
     announce_cascade_start(state, &deps);
-    resolve_cascade_inner(state, deps, visited, false).await
+    resolve_cascade_inner(state, deps, visited).await
 }
 
 /// Tell the UI how many top-level dependencies are about to be processed, so the
@@ -105,27 +115,17 @@ fn announce_cascade_start(state: &AppState, deps: &[DepRef]) {
     );
 }
 
-/// Force-install variant — called when user explicitly approves pending deps.
-pub async fn resolve_cascade_force(
-    state: &AppState,
-    deps: Vec<DepRef>,
-    visited: &mut HashSet<String>,
-) -> CascadeResult {
-    announce_cascade_start(state, &deps);
-    resolve_cascade_inner(state, deps, visited, true).await
-}
-
 fn resolve_cascade_inner<'a>(
     state: &'a AppState,
     deps: Vec<DepRef>,
     visited: &'a mut HashSet<String>,
-    force: bool,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CascadeResult> + Send + 'a>> {
     Box::pin(async move {
-        let autonomous = force || is_autonomous(state);
         let mut results = Vec::new();
         let mut installed_count = 0usize;
-        let mut pending_count = 0usize;
+        // Retained for the CascadeResult shape the frontend reads; never
+        // incremented now that the cascade always installs.
+        let pending_count = 0usize;
         let mut failed_count = 0usize;
 
         for dep in deps {
@@ -171,79 +171,59 @@ fn resolve_cascade_inner<'a>(
                 continue;
             }
 
-            if autonomous {
-                // Signal the UI that this dependency is now being installed so it can
-                // render a live per-dependency progress indicator.
-                state.hub.broadcast(
-                    "dep_started",
-                    serde_json::json!({
-                        "depType": format!("{:?}", dep.dep_type),
-                        "reference": dep.reference,
-                        "name": dep.name,
-                        "slug": dep.slug,
-                    }),
-                );
-                match install_dep(state, &dep).await {
-                    Ok(child_deps) => {
-                        state.hub.broadcast(
-                            "dep_installed",
-                            serde_json::json!({
-                                "depType": format!("{:?}", dep.dep_type),
-                                "reference": dep.reference,
-                                "name": dep.name,
-                                "slug": dep.slug,
-                            }),
-                        );
-                        installed_count += 1;
+            // Signal the UI that this dependency is now being installed so it can
+            // render a live per-dependency progress indicator.
+            state.hub.broadcast(
+                "dep_started",
+                serde_json::json!({
+                    "depType": format!("{:?}", dep.dep_type),
+                    "reference": dep.reference,
+                    "name": dep.name,
+                    "slug": dep.slug,
+                }),
+            );
+            match install_dep(state, &dep).await {
+                Ok(child_deps) => {
+                    state.hub.broadcast(
+                        "dep_installed",
+                        serde_json::json!({
+                            "depType": format!("{:?}", dep.dep_type),
+                            "reference": dep.reference,
+                            "name": dep.name,
+                            "slug": dep.slug,
+                        }),
+                    );
+                    installed_count += 1;
 
-                        // Recurse into child deps
-                        let child_result =
-                            resolve_cascade_inner(state, child_deps, visited, force).await;
-                        installed_count += child_result.installed_count;
-                        pending_count += child_result.pending_count;
-                        failed_count += child_result.failed_count;
+                    // Recurse into child deps
+                    let child_result = resolve_cascade_inner(state, child_deps, visited).await;
+                    installed_count += child_result.installed_count;
+                    failed_count += child_result.failed_count;
 
-                        results.push(DepResult {
-                            dep,
-                            status: DepStatus::Installed,
-                            children: child_result.results,
-                        });
-                    }
-                    Err(e) => {
-                        state.hub.broadcast(
-                            "dep_failed",
-                            serde_json::json!({
-                                "depType": format!("{:?}", dep.dep_type),
-                                "reference": dep.reference,
-                                "name": dep.name,
-                                "slug": dep.slug,
-                                "error": e,
-                            }),
-                        );
-                        failed_count += 1;
-                        results.push(DepResult {
-                            dep,
-                            status: DepStatus::Failed { error: e },
-                            children: vec![],
-                        });
-                    }
+                    results.push(DepResult {
+                        dep,
+                        status: DepStatus::Installed,
+                        children: child_result.results,
+                    });
                 }
-            } else {
-                state.hub.broadcast(
-                    "dep_pending",
-                    serde_json::json!({
-                        "depType": format!("{:?}", dep.dep_type),
-                        "reference": dep.reference,
-                        "name": dep.name,
-                        "slug": dep.slug,
-                    }),
-                );
-                pending_count += 1;
-                results.push(DepResult {
-                    dep,
-                    status: DepStatus::PendingApproval,
-                    children: vec![],
-                });
+                Err(e) => {
+                    state.hub.broadcast(
+                        "dep_failed",
+                        serde_json::json!({
+                            "depType": format!("{:?}", dep.dep_type),
+                            "reference": dep.reference,
+                            "name": dep.name,
+                            "slug": dep.slug,
+                            "error": e,
+                        }),
+                    );
+                    failed_count += 1;
+                    results.push(DepResult {
+                        dep,
+                        status: DepStatus::Failed { error: e },
+                        children: vec![],
+                    });
+                }
             }
         }
 
@@ -267,13 +247,15 @@ fn resolve_cascade_inner<'a>(
 
 // ── Autonomy Check ──────────────────────────────────────────────────
 
-fn is_autonomous(state: &AppState) -> bool {
+/// Whether the implicit boot-time reconcile cascade may auto-install missing
+/// deps. Explicit installs ignore this — they always install. Default OFF.
+pub(crate) fn auto_install_deps_enabled(state: &AppState) -> bool {
     state
         .store
         .get_settings()
         .ok()
         .flatten()
-        .map(|s| s.autonomous_mode == 1)
+        .map(|s| s.auto_install_deps == 1)
         .unwrap_or(false)
 }
 
@@ -775,13 +757,14 @@ pub struct ApproveRequest {
     pub deps: Vec<DepRef>,
 }
 
-/// POST /deps/approve — force-install previously pending deps.
+/// POST /deps/approve — (re)install a specific set of deps. The sole retry
+/// path: the install modal calls this to retry a single dep row that failed.
 pub async fn approve_deps(
     State(state): State<AppState>,
     Json(body): Json<ApproveRequest>,
 ) -> HandlerResult<serde_json::Value> {
     let mut visited = HashSet::new();
-    let result = resolve_cascade_force(&state, body.deps, &mut visited).await;
+    let result = resolve_cascade(&state, body.deps, &mut visited).await;
     Ok(Json(serde_json::json!(result)))
 }
 
@@ -823,5 +806,21 @@ mod tests {
         assert!(!skill_present_in_root(&root, "SKIL-ZZZZ-ZZZZ", "SKIL-ZZZZ-ZZZZ"));
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The cascade always installs now, but built-in / simple-name refs must
+    /// still be classified `Unresolvable` rather than sent to the marketplace.
+    /// `is_marketplace_ref` is the gate that distinguishes the two.
+    #[test]
+    fn marketplace_refs_vs_builtins() {
+        // Qualified names and install codes are marketplace refs.
+        assert!(is_marketplace_ref("@org/skills/intake-parser"));
+        assert!(is_marketplace_ref("SKIL-AAAA-BBBB"));
+        assert!(is_marketplace_ref("AGNT-AAAA-BBBB"));
+        assert!(is_marketplace_ref("PLUG-AAAA-BBBB"));
+        assert!(is_marketplace_ref("WORK-AAAA-BBBB"));
+        // Bare/simple names are built-ins — never resolved against the marketplace.
+        assert!(!is_marketplace_ref("web"));
+        assert!(!is_marketplace_ref("system"));
     }
 }

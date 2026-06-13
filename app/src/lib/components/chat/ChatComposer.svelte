@@ -47,7 +47,7 @@
 
   type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string; isApp?: boolean };
 
-  let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '' }: {
+  let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '', allowAttachments = true }: {
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -57,6 +57,10 @@
     onstop?: () => void;
     isLoading?: boolean;
     sessionId?: string;
+    /** Hide the attach affordance for chats whose send pathway has no use
+     *  for files (e.g. the workflow Architect) — a paperclip that silently
+     *  drops the file is worse than none. */
+    allowAttachments?: boolean;
   } = $props();
 
   let editorElement = $state<HTMLDivElement | null>(null);
@@ -701,6 +705,7 @@
   }
 
   export function addFiles(files: File[]) {
+    if (!allowAttachments) return; // covers drop, paste, and browse pathways
     for (const file of files) {
       const isImage = file.type.startsWith('image/');
       const previewUrl = isImage ? URL.createObjectURL(file) : null;
@@ -870,15 +875,17 @@
     <!-- Toolbar -->
     <div class="flex items-center justify-between mt-2">
       <div class="flex items-center gap-1">
-        <button
-          class="w-8 h-8 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent"
-          onclick={browseFiles}
-          title="Attach files"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-          </svg>
-        </button>
+        {#if allowAttachments}
+          <button
+            class="w-8 h-8 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent"
+            onclick={browseFiles}
+            title="Attach files"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
+        {/if}
         <!-- [VOICE DISABLED]
         <VoiceButton
           ownerId={composerOwnerId}

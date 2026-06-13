@@ -898,30 +898,6 @@ pub async fn toggle_agent(
     Ok(Json(serde_json::json!({ "agent": agent })))
 }
 
-/// POST /agents/{id}/install-deps — attempt to resolve and install all dependencies
-pub async fn install_deps(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> HandlerResult<serde_json::Value> {
-    let agent = state
-        .store
-        .get_agent(&id)
-        .map_err(to_error_response)?
-        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
-
-    // Collect skill deps from frontmatter
-    let all_deps = crate::deps::extract_agent_deps_from_frontmatter(&agent.frontmatter);
-
-    // Force-install (user explicitly requested)
-    let mut visited = std::collections::HashSet::new();
-    let cascade = crate::deps::resolve_cascade_force(&state, all_deps, &mut visited).await;
-
-    Ok(Json(serde_json::json!({
-        "agentId": id,
-        "cascade": cascade,
-    })))
-}
-
 /// Process workflow bindings from agent.json: upsert to DB and register triggers.
 pub async fn process_agent_bindings(
     agent_id: &str,
@@ -1028,59 +1004,12 @@ pub async fn process_agent_bindings(
         }));
     }
 
-    // Register schedule/event triggers from the bindings
+    // Register schedule cron rows from the bindings. Live trigger
+    // registration (event subscriptions, heartbeat/watch/folder loops) is
+    // owned by the AgentWorker — it registers everything when the agent is
+    // activated, so installs never double-subscribe.
     if let Ok(bindings) = state.store.list_agent_workflows(agent_id) {
         workflow::triggers::register_agent_triggers(agent_id, &bindings, &state.store);
-
-        // Register event subscriptions with the dispatcher (only active bindings)
-        let event_subs: Vec<_> = bindings
-            .iter()
-            .filter(|b| b.trigger_type == "event" && b.is_active == 1)
-            .flat_map(|b| {
-                // Look up the WorkflowBinding from config to get inline def
-                let def_json = config
-                    .workflows
-                    .get(&b.binding_name)
-                    .filter(|wb| wb.has_activities())
-                    .map(|wb| wb.to_workflow_json(&b.binding_name));
-
-                // Build emit_source from the WorkflowBinding
-                let agent_name = state
-                    .store
-                    .get_agent(agent_id)
-                    .ok()
-                    .flatten()
-                    .map(|r| r.name)
-                    .unwrap_or_else(|| agent_id.to_string());
-                let emit_src = config
-                    .workflows
-                    .get(&b.binding_name)
-                    .and_then(|wb| wb.emit.as_ref())
-                    .map(|emit_name| {
-                        let slug = agent_name.to_lowercase().replace(' ', "-");
-                        format!("{}.{}", slug, emit_name)
-                    });
-
-                b.trigger_config
-                    .split(',')
-                    .map(move |source| workflow::events::EventSubscription {
-                        pattern: source.trim().to_string(),
-                        default_inputs: b
-                            .inputs
-                            .as_ref()
-                            .and_then(|s| serde_json::from_str(s).ok())
-                            .unwrap_or_else(|| serde_json::json!({})),
-                        agent_source: agent_id.to_string(),
-                        binding_name: b.binding_name.clone(),
-                        definition_json: def_json.clone(),
-                        emit_source: emit_src.clone(),
-                    })
-            })
-            .collect();
-
-        for sub in event_subs {
-            state.event_dispatcher.subscribe(sub).await;
-        }
     }
 
     info!(
@@ -1134,11 +1063,14 @@ async fn create_blank_agent(state: AppState) -> HandlerResult<serde_json::Value>
     })))
 }
 
-/// GET /agents/event-sources — returns available emit names from active workflow bindings.
+/// GET /agents/event-sources — every event source a trigger can subscribe to:
+/// workflow emits (chaining) AND watch-plugin auto-emissions ({plugin}.{event}).
+/// The builder offers these as suggestions — a typo'd source is a subscription
+/// that silently never matches, so picking beats typing.
 pub async fn list_event_sources(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let emit_sources = state.store.list_emit_sources().map_err(to_error_response)?;
 
-    let sources: Vec<serde_json::Value> = emit_sources
+    let mut sources: Vec<serde_json::Value> = emit_sources
         .iter()
         .map(|es| {
             let slug = es.agent_name.to_lowercase().replace(' ', "-");
@@ -1147,12 +1079,43 @@ pub async fn list_event_sources(State(state): State<AppState>) -> HandlerResult<
             serde_json::json!({
                 "value": value,
                 "label": label,
+                "kind": "emit",
                 "agentName": es.agent_name,
                 "bindingName": es.binding_name,
                 "description": es.description,
             })
         })
         .collect();
+
+    // Watch bindings with an `event` auto-emit into the EventBus as
+    // "{plugin}.{event}" (see AgentTrigger::Watch).
+    if let Ok(watch_configs) = state.store.list_watch_trigger_configs() {
+        for (agent_name, binding_name, config) in watch_configs {
+            let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&config) else {
+                continue;
+            };
+            let plugin = cfg.get("plugin").and_then(|v| v.as_str()).unwrap_or("");
+            let event = cfg.get("event").and_then(|v| v.as_str()).unwrap_or("");
+            if plugin.is_empty() || event.is_empty() {
+                continue;
+            }
+            sources.push(serde_json::json!({
+                "value": format!("{}.{}", plugin, event),
+                "label": format!("{} watcher ({})", plugin, agent_name),
+                "kind": "watch",
+                "agentName": agent_name,
+                "bindingName": binding_name,
+                "description": serde_json::Value::Null,
+            }));
+        }
+    }
+
+    // Dedupe by value (several watchers can surface the same plugin event).
+    let mut seen = std::collections::HashSet::new();
+    sources.retain(|s| {
+        let value = s.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        seen.insert(value)
+    });
 
     Ok(Json(serde_json::json!({ "sources": sources })))
 }
@@ -1217,8 +1180,10 @@ fn compute_next_fire(
 
         let next_ts = match binding.trigger_type.as_str() {
             "schedule" => {
-                // Parse cron and find the next fire time that's in the future
-                let schedule: cron::Schedule = match binding.trigger_config.parse() {
+                // Normalize at read like the scheduler does — handles stale
+                // 5-field expressions and numeric day-of-week in old rows.
+                let normalized = tools::PersonaTool::normalize_cron(&binding.trigger_config);
+                let schedule: cron::Schedule = match normalized.parse() {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
@@ -1230,12 +1195,18 @@ fn compute_next_fire(
                 let parts: Vec<&str> = binding.trigger_config.split('|').collect();
                 let interval_str = parts.first().copied().unwrap_or("30m");
                 let interval_secs = parse_interval_secs(interval_str);
+                if interval_secs <= 0 {
+                    // A zero/negative interval (e.g. "0m") would loop forever
+                    // below — treat as unschedulable.
+                    continue;
+                }
                 let last_fired = parse_last_fired(binding.last_fired.as_deref());
                 let mut next = last_fired.timestamp() + interval_secs;
 
                 // If next is in the past, advance to the next future interval
-                while next <= now_ts {
-                    next += interval_secs;
+                if next <= now_ts {
+                    let missed = (now_ts - next) / interval_secs + 1;
+                    next += missed * interval_secs;
                 }
 
                 Some(next)
@@ -1261,18 +1232,11 @@ fn parse_last_fired(s: Option<&str>) -> chrono::DateTime<chrono::Utc> {
         .unwrap_or(chrono::DateTime::UNIX_EPOCH)
 }
 
+/// One interval parser for the whole system (types::timeutil) — the display
+/// path here and the firing path in agent_worker must agree, or nextFireAt
+/// shows times that never happen (e.g. "2h30m" used to display as 30m).
 fn parse_interval_secs(s: &str) -> i64 {
-    let s = s.trim();
-    if let Some(rest) = s.strip_suffix('s') {
-        rest.parse().unwrap_or(60)
-    } else if let Some(rest) = s.strip_suffix('m') {
-        rest.parse::<i64>().unwrap_or(30) * 60
-    } else if let Some(rest) = s.strip_suffix('h') {
-        rest.parse::<i64>().unwrap_or(1) * 3600
-    } else {
-        // Bare number = minutes
-        s.parse::<i64>().unwrap_or(30) * 60
-    }
+    types::timeutil::parse_duration(s).as_secs() as i64
 }
 
 /// GET /agents/{id}/workflows — returns workflow bindings for an agent.
@@ -1634,6 +1598,11 @@ pub async fn reload_agent(
         active.agent_md = current_md;
         active.config = napp::agent::parse_agent_config(&current_fm).ok();
     }
+
+    // Re-sync live triggers with the reloaded bindings (worker owns them;
+    // the awaited restart also clears the old config's subscriptions, which
+    // this handler previously leaked).
+    restart_agent_worker_if_active(&state, &id).await;
 
     let updated = state.store.get_agent(&id).map_err(to_error_response)?;
     Ok(Json(serde_json::json!({
@@ -2147,6 +2116,26 @@ pub async fn chat_with_agent(
 
 // ── Workflow Binding CRUD ─────────────────────────────────────────────────────
 
+/// Extract a heartbeat window as the canonical "HH:MM-HH:MM" string.
+/// Accepts both the string form stored in agent.json and the
+/// `{ start, end }` object form returned by `reconstruct_trigger`, so a
+/// GET → PUT round-trip never silently drops the window.
+fn heartbeat_window_str(trigger_config: &serde_json::Value) -> Option<String> {
+    match trigger_config.get("window") {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
+        Some(serde_json::Value::Object(o)) => {
+            let start = o.get("start").and_then(|v| v.as_str()).unwrap_or("");
+            let end = o.get("end").and_then(|v| v.as_str()).unwrap_or("");
+            if !start.is_empty() && !end.is_empty() {
+                Some(format!("{}-{}", start, end))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Build trigger JSON for agent.json from flat (type, config) pair.
 fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) -> serde_json::Value {
     match trigger_type {
@@ -2155,7 +2144,13 @@ fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) ->
                 .get("cron")
                 .and_then(|v| v.as_str())
                 .unwrap_or("0 * * * *");
-            serde_json::json!({ "type": "schedule", "cron": cron })
+            let mut t = serde_json::json!({ "type": "schedule", "cron": cron });
+            if let Some(schedule) = trigger_config.get("schedule").and_then(|v| v.as_str()) {
+                if !schedule.is_empty() {
+                    t["schedule"] = serde_json::json!(schedule);
+                }
+            }
+            t
         }
         "heartbeat" => {
             let interval = trigger_config
@@ -2163,10 +2158,8 @@ fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) ->
                 .and_then(|v| v.as_str())
                 .unwrap_or("30m");
             let mut t = serde_json::json!({ "type": "heartbeat", "interval": interval });
-            if let Some(window) = trigger_config.get("window").and_then(|v| v.as_str()) {
-                if !window.is_empty() {
-                    t["window"] = serde_json::json!(window);
-                }
+            if let Some(window) = heartbeat_window_str(trigger_config) {
+                t["window"] = serde_json::json!(window);
             }
             t
         }
@@ -2185,6 +2178,19 @@ fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) ->
                     vec![]
                 };
             serde_json::json!({ "type": "event", "sources": sources })
+        }
+        "watch" => {
+            // Pass every config key through (plugin, command, event, ...) —
+            // the watch config shape is owned by the plugin.
+            let mut t = serde_json::json!({ "type": "watch" });
+            if let Some(obj) = trigger_config.as_object() {
+                for (k, v) in obj {
+                    if k != "type" {
+                        t[k.as_str()] = v.clone();
+                    }
+                }
+            }
+            t
         }
         "folder" => {
             let mut t = serde_json::json!({ "type": "folder" });
@@ -2214,9 +2220,9 @@ fn flatten_trigger_config(trigger_type: &str, trigger_config: &serde_json::Value
                 .get("interval")
                 .and_then(|v| v.as_str())
                 .unwrap_or("30m");
-            match trigger_config.get("window").and_then(|v| v.as_str()) {
-                Some(w) if !w.is_empty() => format!("{}|{}", interval, w),
-                _ => interval.to_string(),
+            match heartbeat_window_str(trigger_config) {
+                Some(w) => format!("{}|{}", interval, w),
+                None => interval.to_string(),
             }
         }
         "event" => {
@@ -2233,6 +2239,10 @@ fn flatten_trigger_config(trigger_type: &str, trigger_config: &serde_json::Value
                     .to_string()
             }
         }
+        // Watch and folder configs are stored as JSON — `reconstruct_trigger`
+        // parses them back. A missing arm here meant any PUT on a watch
+        // binding flattened its config to "" and killed the trigger.
+        "watch" => trigger_config.to_string(),
         "folder" => trigger_config.to_string(),
         _ => String::new(),
     }
@@ -2250,90 +2260,21 @@ fn write_agent_json_to_fs(napp_path: &Option<String>, frontmatter: &serde_json::
     }
 }
 
-/// Register triggers (schedule cron + event subscriptions) for a single binding.
-async fn register_binding_triggers(
-    agent_id: &str,
-    binding_name: &str,
-    trigger_type: &str,
-    trigger_config_flat: &str,
-    frontmatter: &serde_json::Value,
-    inputs_json: Option<&str>,
-    state: &AppState,
-) {
-    if trigger_type == "schedule" {
-        let name = format!("agent-{}-{}", agent_id, binding_name);
-        let command = format!("agent:{}:{}", agent_id, binding_name);
-        if let Err(e) = state.store.upsert_cron_job(
-            &name,
-            trigger_config_flat,
-            &command,
-            "agent_workflow",
-            None,
-            None,
-            None,
-            true,
-            Some(agent_id),
-            None,
-        ) {
-            warn!(agent = agent_id, binding = binding_name, error = %e, "failed to register cron job");
-        }
-    } else if trigger_type == "event" {
-        // Build event subscriptions from the binding definition in frontmatter
-        let binding_val = frontmatter
-            .get("workflows")
-            .and_then(|w| w.get(binding_name));
-
-        let parsed_binding = binding_val
-            .and_then(|v| serde_json::from_value::<napp::agent::WorkflowBinding>(v.clone()).ok());
-
-        let def_json = parsed_binding
-            .as_ref()
-            .filter(|wb| wb.has_activities())
-            .map(|wb| wb.to_workflow_json(binding_name));
-
-        // Build emit_source from binding emit field
-        let emit_source =
-            parsed_binding
-                .as_ref()
-                .and_then(|wb| wb.emit.as_ref())
-                .map(|emit_name| {
-                    let agent_name = frontmatter
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .map(|s| s.to_string())
-                        .or_else(|| {
-                            state
-                                .store
-                                .get_agent(agent_id)
-                                .ok()
-                                .flatten()
-                                .map(|r| r.name)
-                        })
-                        .unwrap_or_else(|| agent_id.to_string());
-                    let slug = agent_name.to_lowercase().replace(' ', "-");
-                    format!("{}.{}", slug, emit_name)
-                });
-
-        for source in trigger_config_flat
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            state
-                .event_dispatcher
-                .subscribe(workflow::events::EventSubscription {
-                    pattern: source.to_string(),
-                    default_inputs: inputs_json
-                        .and_then(|s| serde_json::from_str(s).ok())
-                        .unwrap_or_else(|| serde_json::json!({})),
-                    agent_source: agent_id.to_string(),
-                    binding_name: binding_name.to_string(),
-                    definition_json: def_json.clone(),
-                    emit_source: emit_source.clone(),
-                })
-                .await;
-        }
-    }
+/// Re-sync an active agent's live triggers by restarting its worker.
+///
+/// The AgentWorker is the SINGLE owner of live trigger registration — event
+/// subscriptions, heartbeat/watch/folder loops, and cron rows (via
+/// `register_agent_triggers` at worker start). After any binding mutation,
+/// restarting the worker makes its registrations match the DB exactly:
+/// `start_agent` awaits the old worker's stop (all unsubscribes complete)
+/// before the new worker registers. Inactive agents have no worker and no
+/// live triggers — their registrations happen on activation.
+pub(crate) async fn restart_agent_worker_if_active(state: &AppState, agent_id: &str) {
+    let name = match state.agent_registry.read().await.get(agent_id) {
+        Some(active) => active.name.clone(),
+        None => return,
+    };
+    state.agent_workers.start_agent(agent_id, &name, None).await;
 }
 
 /// POST /agents/{id}/workflows — create a new workflow binding.
@@ -2390,6 +2331,9 @@ pub async fn create_agent_workflow(
     }
     if let Some(activities) = body.get("activities") {
         binding_val["activities"] = activities.clone();
+    }
+    if let Some(connections) = body.get("connections") {
+        binding_val["connections"] = connections.clone();
     }
     if let Some(budget) = body.get("budget") {
         binding_val["budget"] = budget.clone();
@@ -2451,17 +2395,10 @@ pub async fn create_agent_workflow(
         )
         .map_err(to_error_response)?;
 
-    // Register triggers
-    register_binding_triggers(
-        &id,
-        binding_name,
-        trigger_type,
-        &trigger_config_flat,
-        &fm,
-        inputs_json.as_deref(),
-        &state,
-    )
-    .await;
+    // The worker owns live trigger registration — restart it so the new
+    // binding's trigger (heartbeat/watch/event/schedule) goes live now,
+    // not at the next app restart.
+    restart_agent_worker_if_active(&state, &id).await;
 
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
@@ -2524,6 +2461,9 @@ pub async fn update_agent_workflow(
     }
     if let Some(activities) = body.get("activities") {
         updated["activities"] = activities.clone();
+    }
+    if let Some(connections) = body.get("connections") {
+        updated["connections"] = connections.clone();
     }
     if let Some(budget) = body.get("budget") {
         updated["budget"] = budget.clone();
@@ -2603,26 +2543,14 @@ pub async fn update_agent_workflow(
         )
         .map_err(to_error_response)?;
 
-    // If trigger type changed, unregister old triggers first
+    // If trigger type changed, clear the old cron row before re-sync.
     if body.get("triggerType").is_some() {
         workflow::triggers::unregister_single_agent_trigger(&id, &binding_name, &state.store);
-        state
-            .event_dispatcher
-            .unsubscribe_binding(&id, &binding_name)
-            .await;
     }
 
-    // Register new triggers
-    register_binding_triggers(
-        &id,
-        &binding_name,
-        new_trigger_type,
-        &trigger_config_flat,
-        &fm,
-        inputs_json.as_deref(),
-        &state,
-    )
-    .await;
+    // The worker owns live trigger registration — restart it so every PUT
+    // (trigger change, description edit, new activities) takes effect now.
+    restart_agent_worker_if_active(&state, &id).await;
 
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
@@ -2644,7 +2572,7 @@ pub async fn toggle_agent_workflow(
     Path((id, binding_name)): Path<(String, String)>,
 ) -> HandlerResult<serde_json::Value> {
     // Verify agent exists
-    let agent = state
+    state
         .store
         .get_agent(&id)
         .map_err(to_error_response)?
@@ -2655,31 +2583,17 @@ pub async fn toggle_agent_workflow(
         .toggle_agent_workflow(&id, &binding_name)
         .map_err(to_error_response)?;
 
-    if is_active {
-        // Re-register triggers
-        let fm: serde_json::Value = serde_json::from_str(&agent.frontmatter).unwrap_or_default();
-        if let Ok(bindings) = state.store.list_agent_workflows(&id) {
-            if let Some(binding) = bindings.iter().find(|b| b.binding_name == binding_name) {
-                register_binding_triggers(
-                    &id,
-                    &binding_name,
-                    &binding.trigger_type,
-                    &binding.trigger_config,
-                    &fm,
-                    binding.inputs.as_deref(),
-                    &state,
-                )
-                .await;
-            }
-        }
-    } else {
-        // Unregister triggers
+    if !is_active {
+        // Remove the cron row — the worker won't prune rows for disabled
+        // bindings, and a lingering row is misleading even though the
+        // scheduler gates on is_active.
         workflow::triggers::unregister_single_agent_trigger(&id, &binding_name, &state.store);
-        state
-            .event_dispatcher
-            .unsubscribe_binding(&id, &binding_name)
-            .await;
     }
+
+    // The worker owns live trigger registration — restart it so the toggle
+    // takes effect immediately: ON starts heartbeat/watch/folder loops and
+    // event subs; OFF tears them down (worker start skips inactive bindings).
+    restart_agent_worker_if_active(&state, &id).await;
 
     Ok(Json(serde_json::json!({
         "bindingName": binding_name,
@@ -2730,12 +2644,11 @@ pub async fn delete_agent_workflow(
         .delete_single_agent_workflow(&id, &binding_name)
         .map_err(to_error_response)?;
 
-    // Unregister triggers
+    // Remove the cron row, then restart the worker — it owns live trigger
+    // registration, and the restart tears down the deleted binding's
+    // heartbeat/watch/folder loops and event subscriptions immediately.
     workflow::triggers::unregister_single_agent_trigger(&id, &binding_name, &state.store);
-    state
-        .event_dispatcher
-        .unsubscribe_binding(&id, &binding_name)
-        .await;
+    restart_agent_worker_if_active(&state, &id).await;
 
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
@@ -3242,26 +3155,50 @@ pub async fn start_workflow_chat(
         serde_json::to_string_pretty(&workflows_json).unwrap_or_else(|_| "{}".to_string());
 
     let mut system_parts = vec![format!(
-        "You are the Architect — an expert workflow builder assistant for the agent \"{agent_name}\". \
-         You help design, modify, and troubleshoot automation workflows.\n\n\
-         ## Your Capabilities\n\
-         - Add, remove, and reorder workflow activities (steps)\n\
-         - Configure triggers (schedule, heartbeat, event, manual)\n\
-         - Set up connections between activities and between workflows (via emit/event)\n\
-         - Configure activity details: intent, skills, steps, parameters\n\
-         - Explain how workflows execute and help debug issues\n\n\
-         ## Workflow Format Reference\n\
-         Each workflow has:\n\
-         - **trigger**: {{ type, schedule/cron/interval/event, window }}\n\
-         - **activities**: array of {{ id, type, label, intent, skills, steps, params, branches }}\n\
-         - **connections**: array of {{ from, to, label }} defining execution order\n\
-         - **emit**: optional event name emitted on completion (chains to other workflows)\n\
-         - **isActive**: whether the workflow is currently enabled\n\n\
-         Activity types: custom, llm, tool, branch, loop, webhook, delay, transform\n\
-         Trigger types: schedule (cron), heartbeat (interval), event (reactive), manual\n\n\
+        "You are the Architect — the workflow builder assistant for the agent \"{agent_name}\". \
+         You can SEE the user's current draft (below) and you can EDIT it by emitting structured ops.\n\n\
+         ## Editing the draft\n\
+         When the user asks for a change, include EXACTLY ONE fenced block in your reply:\n\
+         ```workflow-ops\n\
+         {{\"ops\": [ ... ]}}\n\
+         ```\n\
+         The builder applies the ops to the user's open DRAFT (one undo step; nothing is saved \
+         until they press Save). The block is stripped from your message before display, so ALSO \
+         describe what you changed in one short sentence. Never emit ops for questions — answer in prose.\n\n\
+         ## Ops\n\
+         - {{\"op\":\"add_activity\",\"workflow\":NAME,\"activity\":{{id,type,intent,skills?,steps?,params?}},\"after\":ID|\"__trigger__\"|null,\"branchLabel\"?:LABEL}}\n\
+         - {{\"op\":\"update_activity\",\"workflow\":NAME,\"id\":ID,\"set\":{{...partial activity}}}}\n\
+         - {{\"op\":\"remove_activity\",\"workflow\":NAME,\"id\":ID}}\n\
+         - {{\"op\":\"connect\",\"workflow\":NAME,\"from\":ID|\"__trigger__\",\"to\":ID|\"__emit__\",\"label\"?:LABEL}}\n\
+         - {{\"op\":\"disconnect\",\"workflow\":NAME,\"from\":ID,\"to\":ID}}\n\
+         - {{\"op\":\"set_trigger\",\"workflow\":NAME,\"trigger\":{{type:\"schedule\"|\"heartbeat\"|\"event\"|\"manual\",schedule?,cron?,interval?,window?,event?}}}}\n\
+         - {{\"op\":\"set_emit\",\"workflow\":NAME,\"emit\":EVENT|null}} / {{\"op\":\"set_description\",...}}\n\
+         - {{\"op\":\"create_workflow\",\"name\":NAME,\"workflow\"?:{{...}}}} / {{\"op\":\"delete_workflow\",\"workflow\":NAME}} / {{\"op\":\"rename_workflow\",\"from\":A,\"to\":B}}\n\n\
+         ## Activity types (the only valid `type` values)\n\
+         custom, research (params: depth, sources), email (params: to, subject), notify, \
+         code (params: language, code), http (params: method, url, headers, body — runs deterministically, no AI), \
+         transform, condition, loop, wait (params: duration e.g. \"5m\"), \
+         agent (params: agentId — delegation), connector (params: serverId, tool, input — MCP)\n\n\
+         ## Execution semantics (the engine owns ALL control flow — deterministic, repeatable)\n\
+         - Activities run sequentially along connections (__trigger__ → ... → __emit__); a node with \
+           multiple outgoing edges runs its branches IN PARALLEL; a join waits for all active branches.\n\
+         - condition REQUIRES params.expression + params.mode (expression|contains|exists|regex) and \
+           routes via edges labeled \"True\"/\"False\". Routing is never decided by the AI.\n\
+         - loop REQUIRES params.source (data path, e.g. \"inputs.items\") and uses edges labeled \
+           \"Each item\" (body) and \"Done\". The AI lives INSIDE activities (intent + steps), never in routing.\n\n\
+         ## Example\n\
+         User: \"notify me when an urgent email arrives\"\n\
+         ```workflow-ops\n\
+         {{\"ops\":[\n\
+           {{\"op\":\"add_activity\",\"workflow\":\"triage\",\"activity\":{{\"id\":\"urgent-check\",\"type\":\"condition\",\"params\":{{\"expression\":\"subject contains urgent\",\"mode\":\"contains\"}}}},\"after\":\"classify\"}},\n\
+           {{\"op\":\"add_activity\",\"workflow\":\"triage\",\"activity\":{{\"id\":\"ping-owner\",\"type\":\"notify\",\"intent\":\"Notify the owner about the urgent email\"}},\"after\":null}},\n\
+           {{\"op\":\"connect\",\"workflow\":\"triage\",\"from\":\"urgent-check\",\"to\":\"ping-owner\",\"label\":\"True\"}}\n\
+         ]}}\n\
+         ```\n\n\
          ## Rules\n\
-         - Be concise and actionable. Show the user exactly what to change.\n\
-         - When suggesting modifications, describe them precisely (which workflow, which activity, what field).\n\
+         - Reference ONLY workflow names and activity ids that exist in the draft below (or ones you create in the same batch).\n\
+         - New activity ids: short kebab-case, unique within the workflow.\n\
+         - Be concise. One sentence on what you changed; no restating the JSON.\n\
          - If the user asks something outside workflow building, redirect them to the main chat."
     )];
 
@@ -3290,8 +3227,31 @@ pub async fn start_workflow_chat(
         .get_or_create(&session_key, "")
         .map_err(to_error_response)?;
 
-    // Always re-seed: clear old messages and inject fresh context so the AI
-    // sees the latest workflow state every time the builder opens.
+    // Refresh mode: the builder calls this before each send when the draft
+    // changed, so the Architect always sees CURRENT state. Replace only the
+    // seeded system message — the conversation is preserved. Falls through
+    // to a full seed if the session has no system message yet.
+    let refresh = body
+        .get("refresh")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if refresh {
+        if let Ok(messages) = state.runner.sessions().get_messages(&session.id) {
+            if let Some(sys) = messages.iter().find(|m| m.role == "system") {
+                state
+                    .store
+                    .update_chat_message_content(&sys.id, &system_context, None)
+                    .map_err(to_error_response)?;
+                return Ok(Json(serde_json::json!({
+                    "sessionKey": session_key,
+                    "agentId": id,
+                })));
+            }
+        }
+    }
+
+    // Full seed (builder open / first visit): clear old messages and inject
+    // fresh context so the AI sees the latest workflow state.
     let _ = state.runner.sessions().clear_current_messages(&session.id);
 
     let _ = state.runner.sessions().append_message(

@@ -125,7 +125,7 @@ pub async fn update_settings(
     state
         .store
         .update_settings(
-            body["autonomousMode"].as_bool(),
+            body["autoInstallDeps"].as_bool(),
             body["autoApproveRead"].as_bool(),
             body["autoApproveWrite"].as_bool(),
             body["autoApproveBash"].as_bool(),

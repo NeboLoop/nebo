@@ -54,7 +54,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], followupSuggestions = [], activityStatus = '', tokenUsage = null, quotaWarning = '', onsend, onstop, onedit, onredo, onasksubmit, onfollowupselect, ondismissfollowups, ondismisswarning, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], followupSuggestions = [], activityStatus = '', tokenUsage = null, quotaWarning = '', onsend, onstop, onedit, onredo, onasksubmit, onfollowupselect, ondismissfollowups, ondismisswarning, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
     messages?: Message[];
     agentName?: string;
     agentId?: string;
@@ -83,6 +83,8 @@
     isLoading?: boolean;
     isLoadingMore?: boolean;
     hasMore?: boolean;
+    /** Hide the attach affordance when the chat's send pathway ignores files. */
+    allowAttachments?: boolean;
   } = $props();
 
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
@@ -498,6 +500,7 @@
   // Drag-and-drop handlers
   function handleDragEnter(e: DragEvent) {
     e.preventDefault();
+    if (!allowAttachments) return; // no drop affordance when files go nowhere
     dragCounter++;
     isDragging = true;
   }
@@ -970,6 +973,7 @@
       {onsend}
       {onstop}
       {isLoading}
+      {allowAttachments}
       bind:this={composerRef}
     />
   </div>

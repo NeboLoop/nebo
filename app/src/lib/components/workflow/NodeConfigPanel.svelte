@@ -1,4 +1,5 @@
 <script lang="ts">
+	import EventSourcePicker from './EventSourcePicker.svelte';
 	import { getActivityType, ACTIVITY_TYPES, type ActivityType } from '$lib/utils/workflowTypes';
 	import type { WorkflowConfig, WorkflowActivity, WorkflowTrigger } from '$lib/types/agentPage';
 
@@ -12,6 +13,7 @@
 		onupdateTrigger,
 		onupdateEmit,
 		onupdateDescription,
+		onupdateActive,
 		onremove,
 		onremoveWorkflow,
 		onclose,
@@ -26,6 +28,7 @@
 		onupdateTrigger?: (trigger: WorkflowTrigger) => void;
 		onupdateEmit?: (emit: string) => void;
 		onupdateDescription?: (desc: string) => void;
+		onupdateActive?: (active: boolean) => void;
 		onremove?: (nodeId: string) => void;
 		onremoveWorkflow?: () => void;
 		onclose?: () => void;
@@ -85,6 +88,19 @@
 		return `${time} daily`;
 	}
 
+	/** Build a 5-field cron from structured parts. Day-of-week uses named days
+	 *  (MON-FRI) — numeric DOW is ambiguous between Unix and Quartz conventions. */
+	function buildCron(hour: number, minute: number, ampm: string, days: string, customDays: number[]): string {
+		let h = hour % 12;
+		if (ampm === 'PM') h += 12;
+		const names = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+		let dow = '*';
+		if (days === 'weekdays') dow = 'MON-FRI';
+		else if (days === 'weekends') dow = 'SAT,SUN';
+		else if (days === 'custom' && customDays.length > 0) dow = customDays.map(d => names[d]).join(',');
+		return `${minute} ${h} * * ${dow}`;
+	}
+
 	// ── Schedule editing state
 	const schedParsed = $derived(parseScheduleString(workflow?.trigger?.schedule || workflow?.schedule || ''));
 	let schedHour = $state(8);
@@ -92,35 +108,70 @@
 	let schedAmpm = $state('AM');
 	let schedDays = $state('daily');
 	let schedCustomDays = $state<number[]>([]);
-	let schedInitialized = $state(false);
+	let schedInitFor = $state<string | null>(null);
 
-	// Sync parsed schedule into editing state when workflow changes
+	// Sync parsed schedule into editing state when switching workflows — keyed
+	// by workflow name so tab switches / undo don't leak the previous
+	// workflow's picker state into the next emitSchedule().
 	$effect(() => {
 		const p = schedParsed;
-		if (!schedInitialized || !isEditable) {
+		if (schedInitFor !== workflowName || !isEditable) {
 			schedHour = p.hour;
 			schedMinute = p.minute;
 			schedAmpm = p.ampm;
 			schedDays = p.days;
 			schedCustomDays = p.customDays;
-			schedInitialized = true;
+			schedInitFor = workflowName;
 		}
 	});
 
 	function emitSchedule() {
 		const str = buildScheduleString(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays);
-		onupdateTrigger?.({ ...currentTrigger(), schedule: str });
+		const cron = buildCron(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays);
+		onupdateTrigger?.({ ...currentTrigger(), schedule: str, cron });
+	}
+
+	/** Switch trigger type; preserves config when the type is unchanged. */
+	function switchTriggerType(tt: string) {
+		if (workflow?.trigger?.type === tt) return;
+		if (tt === 'schedule') {
+			onupdateTrigger?.({
+				type: tt,
+				schedule: buildScheduleString(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays),
+				cron: buildCron(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays),
+			});
+		} else if (tt === 'heartbeat') {
+			onupdateTrigger?.({ type: tt, interval: '30m' });
+		} else {
+			onupdateTrigger?.({ type: tt });
+		}
 	}
 
 	// ── Heartbeat editing state
 	let hbWindowEnabled = $state(false);
-	let hbInitialized = $state(false);
+	let hbInitFor = $state<string | null>(null);
 
 	$effect(() => {
-		if (!hbInitialized || !isEditable) {
+		if (hbInitFor !== workflowName || !isEditable) {
 			const w = workflow?.trigger?.window;
 			hbWindowEnabled = !!(w && (w.start || w.end));
-			hbInitialized = true;
+			hbInitFor = workflowName;
+		}
+	});
+
+	// ── Event source suggestions — the system knows every subscribable source
+	// (workflow emits + watch-plugin auto-emissions); a typo'd source is a
+	// subscription that silently never fires, so picking beats typing.
+	let availableEventSources = $state<import('$lib/api/neboComponents').EventSourceOption[]>([]);
+	let eventSourcesLoaded = $state(false);
+
+	$effect(() => {
+		if (workflow?.trigger?.type === 'event' && isEditable && !eventSourcesLoaded) {
+			eventSourcesLoaded = true;
+			import('$lib/api/nebo')
+				.then((api) => api.listEventSources())
+				.then((resp) => { availableEventSources = resp?.sources ?? []; })
+				.catch(() => { /* suggestions are an enhancement, not a dependency */ });
 		}
 	});
 
@@ -135,6 +186,11 @@
 		return workflow?.trigger ?? { type: 'manual' };
 	}
 
+	function formatLastFired(iso: string): string {
+		const d = new Date(iso);
+		return isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+	}
+
 	function updateParam(key: string, value: unknown) {
 		const params = { ...(activity?.params || {}), [key]: value };
 		onupdateActivity?.('params', params);
@@ -146,13 +202,31 @@
 	<div class="flex items-center justify-between px-4 py-3 border-b border-base-content/10 shrink-0">
 		<div class="flex-1 min-w-0">
 			<div class="text-sm font-semibold truncate">{workflowName}</div>
-			<div class="text-xs text-base-content/50">{workflow?.activities?.length ?? 0} activities</div>
+			<div class="text-xs text-base-content/50">{workflow?.activities?.length ?? 0} {(workflow?.activities?.length ?? 0) === 1 ? 'activity' : 'activities'}</div>
 		</div>
 		<div class="flex items-center gap-1.5 shrink-0">
 			{#if isEditable}
-				<input type="checkbox" class="toggle toggle-sm toggle-primary" checked={workflow?.isActive !== false} role="switch" title="Enable/disable" />
+				<input
+					type="checkbox"
+					class="toggle toggle-sm toggle-primary"
+					checked={workflow?.isActive !== false}
+					role="switch"
+					aria-checked={workflow?.isActive !== false}
+					title="Enable/disable"
+					onchange={(e) => onupdateActive?.((e.target as HTMLInputElement).checked)}
+				/>
 			{/if}
-			<button class="w-6 h-6 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base" onclick={onclose}>&times;</button>
+			{#if selectedNodeId}
+				<!-- Only meaningful with a node selected: returns to the
+				     workflow overview. The panel itself is a fixed column —
+				     a dead × in overview mode was a lying control. -->
+				<button
+					class="w-6 h-6 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base"
+					title="Back to workflow overview"
+					aria-label="Back to workflow overview"
+					onclick={onclose}
+				>&times;</button>
+			{/if}
 		</div>
 	</div>
 
@@ -164,10 +238,10 @@
 			{#if activityTypeDef}
 				<div class="mb-3 flex items-center gap-2">
 					<div class="w-6 h-6 rounded-md bg-base-200 flex items-center justify-center text-sm shrink-0">{activityTypeDef.icon}</div>
-					<span class="text-xs font-medium text-base-content/70">{activityTypeDef.label}</span>
+					<span class="text-sm font-medium text-base-content/70">{activityTypeDef.label}</span>
 					{#if isEditable}
 						<select
-							class="select select-xs select-bordered ml-auto"
+							class="select select-sm select-bordered ml-auto"
 							value={activity.type || 'custom'}
 							onchange={(e) => onupdateActivity?.('type', (e.target as HTMLSelectElement).value)}
 						>
@@ -203,7 +277,7 @@
 						onchange={(e) => onupdateActivity?.('intent', (e.target as HTMLTextAreaElement).value)}
 					></textarea>
 				{:else}
-					<div class="text-xs text-base-content/70 mt-0.5">{activity.intent}</div>
+					<div class="text-sm text-base-content/70 mt-0.5">{activity.intent}</div>
 				{/if}
 			</div>
 
@@ -231,7 +305,7 @@
 					<div class="flex gap-1 mt-1.5">
 						<input
 							type="text"
-							class="input input-xs input-bordered flex-1"
+							class="input input-sm input-bordered flex-1"
 							placeholder="Add skill..."
 							bind:value={newSkillText}
 							onkeydown={(e) => {
@@ -269,7 +343,7 @@
 									{#if isEditable}
 										<select
 											id="param-{param.key}"
-											class="select select-xs select-bordered w-full"
+											class="select select-sm select-bordered w-full"
 											value={String(activity.params?.[param.key] ?? param.default ?? '')}
 											onchange={(e) => updateParam(param.key, (e.target as HTMLSelectElement).value)}
 										>
@@ -284,7 +358,7 @@
 									{#if isEditable}
 										<textarea
 											id="param-{param.key}"
-											class="textarea textarea-xs textarea-bordered w-full resize-none"
+											class="textarea textarea-sm textarea-bordered w-full resize-none"
 											rows="2"
 											placeholder={param.placeholder}
 											value={String(activity.params?.[param.key] ?? '')}
@@ -307,10 +381,15 @@
 										<input
 											id="param-{param.key}"
 											type={param.type === 'number' ? 'number' : 'text'}
-											class="input input-xs input-bordered w-full"
+											class="input input-sm input-bordered w-full"
 											placeholder={param.placeholder}
 											value={String(activity.params?.[param.key] ?? '')}
-											onchange={(e) => updateParam(param.key, (e.target as HTMLInputElement).value)}
+											onchange={(e) => {
+												const raw = (e.target as HTMLInputElement).value;
+												// Numbers stay numbers — "100" as a string breaks
+												// maxIterations and numeric expression comparisons.
+												updateParam(param.key, param.type === 'number' ? Number(raw) : raw);
+											}}
 										/>
 									{:else}
 										<div class="text-xs text-base-content/70 font-mono">{activity.params?.[param.key] || '—'}</div>
@@ -335,7 +414,7 @@
 							{#if isEditable && editingStepIdx === i}
 								<input
 									type="text"
-									class="input input-xs input-bordered flex-1"
+									class="input input-sm input-bordered flex-1"
 									bind:value={editingStepText}
 									onkeydown={(e) => {
 										if (e.key === 'Enter') {
@@ -356,14 +435,14 @@
 							{:else}
 								{#if isEditable}
 									<span
-										class="text-xs flex-1 cursor-pointer hover:text-primary"
+										class="text-sm flex-1 cursor-pointer hover:text-primary"
 										role="button"
 										tabindex="0"
 										onclick={() => { editingStepIdx = i; editingStepText = step; }}
 										onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); editingStepIdx = i; editingStepText = step; } }}
 									>{step}</span>
 								{:else}
-									<span class="text-xs flex-1">{step}</span>
+									<span class="text-sm flex-1">{step}</span>
 								{/if}
 							{/if}
 							{#if isEditable}
@@ -383,7 +462,7 @@
 					<div class="flex gap-1 mt-1.5">
 						<input
 							type="text"
-							class="input input-xs input-bordered flex-1"
+							class="input input-sm input-bordered flex-1"
 							placeholder="Add step..."
 							bind:value={newStepText}
 							onkeydown={(e) => {
@@ -432,7 +511,7 @@
 									{workflow?.trigger?.type === tt
 										? 'border-primary bg-primary/10 text-primary'
 										: 'border-base-300 bg-transparent hover:border-base-content/20 text-base-content/70'}"
-								onclick={() => onupdateTrigger?.({ type: tt })}
+								onclick={() => switchTriggerType(tt)}
 							>
 								<span class="text-sm">{triggerIcons[tt]}</span>
 								<span class="text-xs font-medium">{tt.charAt(0).toUpperCase() + tt.slice(1)}</span>
@@ -446,7 +525,7 @@
 							<!-- Time picker: Hour : Minute AM/PM -->
 							<div class="flex items-center gap-1.5">
 								<select
-									class="select select-xs select-bordered w-16"
+									class="select select-sm select-bordered w-16"
 									value={schedHour}
 									onchange={(e) => { schedHour = parseInt((e.target as HTMLSelectElement).value); emitSchedule(); }}
 								>
@@ -456,7 +535,7 @@
 								</select>
 								<span class="text-xs text-base-content/40">:</span>
 								<select
-									class="select select-xs select-bordered w-16"
+									class="select select-sm select-bordered w-16"
 									value={schedMinute}
 									onchange={(e) => { schedMinute = parseInt((e.target as HTMLSelectElement).value); emitSchedule(); }}
 								>
@@ -521,7 +600,7 @@
 								<label class="text-xs text-base-content/60 mb-0.5 block" for="hb-interval">Every</label>
 								<select
 									id="hb-interval"
-									class="select select-xs select-bordered w-full"
+									class="select select-sm select-bordered w-full"
 									value={workflow?.trigger?.interval || '30m'}
 									onchange={(e) => onupdateTrigger?.({ ...currentTrigger(), interval: (e.target as HTMLSelectElement).value })}
 								>
@@ -554,14 +633,14 @@
 								<div class="flex items-center gap-2">
 									<input
 										type="time"
-										class="input input-xs input-bordered flex-1"
+										class="input input-sm input-bordered flex-1"
 										value={workflow?.trigger?.window?.start || '09:00'}
 										onchange={(e) => onupdateTrigger?.({ ...currentTrigger(), window: { ...workflow?.trigger?.window, start: (e.target as HTMLInputElement).value } })}
 									/>
 									<span class="text-xs text-base-content/40">to</span>
 									<input
 										type="time"
-										class="input input-xs input-bordered flex-1"
+										class="input input-sm input-bordered flex-1"
 										value={workflow?.trigger?.window?.end || '18:00'}
 										onchange={(e) => onupdateTrigger?.({ ...currentTrigger(), window: { ...workflow?.trigger?.window, end: (e.target as HTMLInputElement).value } })}
 									/>
@@ -573,16 +652,13 @@
 					<!-- Event config -->
 					{#if workflow?.trigger?.type === 'event'}
 						<div>
-							<label class="text-xs text-base-content/60 mb-0.5 block" for="event-sources">Event sources</label>
-							<input
-								id="event-sources"
-								type="text"
-								class="input input-xs input-bordered w-full font-mono"
-								placeholder="e.g. email.received, workflow.done"
+							<div class="text-xs text-base-content/60 mb-0.5">Event sources</div>
+							<EventSourcePicker
 								value={workflow?.trigger?.event || ''}
-								onchange={(e) => onupdateTrigger?.({ ...currentTrigger(), event: (e.target as HTMLInputElement).value })}
+								suggestions={availableEventSources}
+								onchange={(value) => onupdateTrigger?.({ ...currentTrigger(), event: value })}
 							/>
-							<div class="text-xs text-base-content/40 mt-1">Comma-separated event names. Wildcards supported (e.g. email.*)</div>
+							<div class="text-xs text-base-content/40 mt-1">Type to search known sources, Enter to add. Custom names and wildcards (email.*) work too.</div>
 						</div>
 					{/if}
 
@@ -613,13 +689,13 @@
 				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Description</div>
 				{#if isEditable}
 					<textarea
-						class="textarea textarea-sm textarea-bordered w-full resize-none text-xs"
+						class="textarea textarea-sm textarea-bordered w-full resize-none"
 						rows="2"
 						value={workflow?.description || ''}
 						onchange={(e) => onupdateDescription?.((e.target as HTMLTextAreaElement).value)}
 					></textarea>
 				{:else}
-					<div class="text-xs text-base-content/70 leading-relaxed">{workflow?.description || 'No description'}</div>
+					<div class="text-sm text-base-content/70 leading-relaxed">{workflow?.description || 'No description'}</div>
 				{/if}
 			</div>
 
@@ -627,13 +703,25 @@
 			<div class="mb-4">
 				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Emits</div>
 				{#if isEditable}
+					{@const suggestedEmit = `${workflowName.toLowerCase().replace(/\s+/g, '-')}.complete`}
 					<input
 						type="text"
-						class="input input-xs input-bordered w-full font-mono"
-						placeholder="e.g. brief.morning.delivered"
+						class="input input-sm input-bordered w-full font-mono"
+						placeholder="e.g. {suggestedEmit}"
 						value={workflow?.emit || ''}
 						onchange={(e) => onupdateEmit?.((e.target as HTMLInputElement).value)}
 					/>
+					{#if !workflow?.emit}
+						<div class="text-xs text-base-content/40 mt-1">
+							Optional — other workflows can trigger on this when the run completes.
+							<button
+								class="text-primary font-mono cursor-pointer bg-transparent border-none p-0 hover:underline"
+								onclick={() => onupdateEmit?.(suggestedEmit)}
+							>Use {suggestedEmit}</button>
+						</div>
+					{:else}
+						<div class="text-xs text-base-content/40 mt-1">Renaming breaks workflows subscribed to this event.</div>
+					{/if}
 				{:else if workflow?.emit}
 					<div class="py-1 px-2 rounded bg-accent/10 text-xs text-accent font-mono inline-block">{workflow.emit}</div>
 				{:else}
@@ -644,7 +732,7 @@
 			{#if workflow?.lastFired}
 				<div class="mb-4">
 					<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Last Fired</div>
-					<div class="text-xs text-base-content/70 font-mono">{workflow.lastFired}</div>
+					<div class="text-xs text-base-content/70 font-mono">{formatLastFired(workflow.lastFired)}</div>
 				</div>
 			{/if}
 

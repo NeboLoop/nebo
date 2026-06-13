@@ -423,7 +423,7 @@ pub struct Setting {
     #[serde(skip_serializing)]
     pub id: i64,
     #[serde(serialize_with = "i64_as_bool")]
-    pub autonomous_mode: i64,
+    pub auto_install_deps: i64,
     #[serde(serialize_with = "i64_as_bool")]
     pub auto_approve_read: i64,
     #[serde(serialize_with = "i64_as_bool")]

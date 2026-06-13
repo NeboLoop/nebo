@@ -58,6 +58,23 @@ pub struct WebTool {
     /// each hitting the search API/engine. The post-completion cache only dedups
     /// SEQUENTIAL repeats; this closes the concurrent window.
     search_in_flight: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+    /// Platform web search via the Janus gateway (provider-agnostic, server-owned
+    /// keys, metered per-user). When set, this is the PRIMARY search tier — it
+    /// hits a real search API instead of scraping engines through a browser,
+    /// which is what gets the agent's IP bot-flagged. The browser/scrape chain
+    /// becomes the fallback for when Janus is unreachable (offline/dev).
+    janus_search: Option<JanusSearchConfig>,
+}
+
+/// Connection details for the Janus `/v1/search` endpoint. Auth mirrors the
+/// Janus LLM provider: `X-Bot-ID` identifies the bot for per-user billing, and
+/// the Bearer token is the bot's Janus credential (the `janus` auth profile's
+/// api_key when present, else the bot_id itself).
+#[derive(Clone)]
+struct JanusSearchConfig {
+    /// Janus base URL without the `/v1` suffix (e.g. `https://janus.neboai.com`).
+    base_url: String,
+    bot_id: String,
 }
 
 impl WebTool {
@@ -91,7 +108,19 @@ impl WebTool {
             nav_history: Mutex::new(HashMap::new()),
             visited_pages: Mutex::new(HashMap::new()),
             search_in_flight: Mutex::new(HashMap::new()),
+            janus_search: None,
         }
+    }
+
+    /// Configure the Janus search tier (platform-owned, provider-agnostic).
+    /// `base_url` is the Janus root without `/v1`; `bot_id` is the bot identity
+    /// used for the `X-Bot-ID` billing header and as the Bearer fallback.
+    pub fn with_janus_search(mut self, base_url: String, bot_id: String) -> Self {
+        let base_url = base_url.trim_end_matches('/').to_string();
+        if !base_url.is_empty() {
+            self.janus_search = Some(JanusSearchConfig { base_url, bot_id });
+        }
+        self
     }
 
     pub fn with_browser(mut self, manager: Arc<browser::Manager>) -> Self {
@@ -512,6 +541,26 @@ impl WebTool {
         group_key: &str,
         search_key: &str,
     ) -> ToolResult {
+        // 0. Platform search via Janus (the canonical path): a real search API,
+        //    server-owned multi-provider keys, metered per-user. Avoids the
+        //    browser-scrape bot-flagging entirely. Falls through to the legacy
+        //    tiers only when Janus is unreachable/unconfigured (offline/dev).
+        if self.janus_search.is_some() {
+            match self.search_via_janus(query).await {
+                Ok(results) if !results.is_empty() => {
+                    let result = format_search_results(query, &results);
+                    self.record_visited(group_key, search_key, &result.content, false, session_id);
+                    return result;
+                }
+                Ok(_) => {
+                    tracing::warn!(query, "Janus search returned no results, trying fallback tiers");
+                }
+                Err(e) => {
+                    tracing::warn!(query, error = %e, "Janus search failed, trying fallback tiers");
+                }
+            }
+        }
+
         // 1. Try BYOK API providers (check auth_profiles for search-* providers)
         if let Some(store) = &self.store {
             for provider in [
@@ -567,6 +616,75 @@ impl WebTool {
             self.record_visited(group_key, search_key, &result.content, false, session_id);
         }
         result
+    }
+
+    /// Search via the Janus gateway's `/v1/search` endpoint. Janus owns the
+    /// provider keys and fails over across Serper/Brave/Tavily server-side, so
+    /// the client just asks for results and gets normalized hits back. Auth
+    /// mirrors the Janus LLM provider: `X-Bot-ID` for per-user billing and a
+    /// Bearer token (the `janus` auth profile's api_key, else the bot_id).
+    async fn search_via_janus(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        let cfg = self
+            .janus_search
+            .as_ref()
+            .ok_or_else(|| "janus search not configured".to_string())?;
+
+        // Bearer parity with the LLM provider: prefer a real Janus OAuth token
+        // from the `janus` auth profile; fall back to the bot_id.
+        let bearer = self
+            .store
+            .as_ref()
+            .and_then(|s| s.list_active_auth_profiles_by_provider("janus").ok())
+            .and_then(|profiles| profiles.into_iter().find(|p| !p.api_key.is_empty()))
+            .map(|p| p.api_key)
+            .filter(|k| !k.is_empty())
+            .unwrap_or_else(|| cfg.bot_id.clone());
+
+        let url = format!("{}/v1/search", cfg.base_url);
+        let body = serde_json::json!({ "query": query, "max_results": 10 });
+
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&bearer)
+            .header("X-Bot-ID", &cfg.bot_id)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(12))
+            .send()
+            .await
+            .map_err(|e| format!("janus request: {e}"))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let snippet = resp.text().await.unwrap_or_default();
+            return Err(format!("janus status {status}: {}", snippet.chars().take(200).collect::<String>()));
+        }
+
+        let parsed: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("janus decode: {e}"))?;
+
+        let results = parsed
+            .get("results")
+            .and_then(|r| r.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| {
+                        let url = r.get("url").and_then(|v| v.as_str())?;
+                        let title = r.get("title").and_then(|v| v.as_str()).unwrap_or(url);
+                        let snippet = r.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+                        Some(SearchResult {
+                            title: title.to_string(),
+                            url: url.to_string(),
+                            snippet: snippet.to_string(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        Ok(results)
     }
 
     /// Per-request budget for direct search scraping (DDG, Brave). A blocked engine

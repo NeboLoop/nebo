@@ -13,12 +13,12 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listEventSources();
       if (resp?.sources?.length) {
-        events = (resp.sources as Record<string, unknown>[]).map((e) => ({
-          id: String(e.id || ''),
-          type: String(e.type || 'agent'),
-          source: String(e.source || e.agentName || ''),
-          payload: String(e.payload || e.message || e.description || ''),
-          time: String(e.time || e.createdAt || ''),
+        events = resp.sources.map((e) => ({
+          id: e.value,
+          type: e.kind || 'agent',
+          source: e.value,
+          payload: e.description || e.label,
+          time: '',
         }));
       }
     } catch { /* keep mock data */ }
