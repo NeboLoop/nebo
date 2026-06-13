@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { installStoreProduct, activateAgent, getAgent, updateAgentInputs, listAgentWorkflows, updateAgentWorkflow, authLogin, installDeps } from '$lib/api/nebo';
+	import { installStoreProduct, activateAgent, getAgent, updateAgentInputs, listAgentWorkflows, updateAgentWorkflow, authLogin } from '$lib/api/nebo';
 	import type { AgentWorkflow } from '$lib/api/neboComponents';
 	import type { AgentInputField } from '$lib/types/agentPage';
 	import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
@@ -57,7 +57,6 @@
 	interface DepRow { reference: string; depType: string; label: string; state: DepUiState; error?: string; }
 	let depRows = $state<DepRow[]>([]);
 	let depsAdvanced = false;
-	let depsForced = false;
 	let depTimeout: ReturnType<typeof setTimeout> | undefined;
 	const installedDeps = $derived(depRows.filter(d => d.state === 'done').length);
 
@@ -111,34 +110,11 @@
 	function handleDepPending(e: CustomEvent) {
 		ensureDepRow(e.detail?.reference, e.detail?.depType);
 	}
-	function handleDepCascadeComplete(e: CustomEvent) {
+	function handleDepCascadeComplete() {
 		if (step !== 'installing-deps') return;
-		const pending = e.detail?.pending ?? 0;
-		// Non-autonomous mode stops at pending — force-install once.
-		if (pending > 0 && !depsForced && agentId) {
-			depsForced = true;
-			installDeps(agentId)
-				.then((res: any) => { applyCascadeResults(res?.cascade?.results); finishDeps(); })
-				.catch(() => finishDeps());
-			return;
-		}
+		// The backend force-installs declared deps at install time, so the cascade
+		// always settles via dep_* events — there is no "pending" to approve.
 		finishDeps();
-	}
-
-	function applyCascadeResults(results: any[]) {
-		if (!Array.isArray(results)) return;
-		for (const r of results) {
-			const ref = r?.dep?.reference;
-			if (!ref) continue;
-			const row = ensureDepRow(ref, r?.dep?.depType);
-			const st = r?.status;
-			if (typeof st === 'string') {
-				if (st === 'installed' || st === 'already_installed') row.state = 'done';
-			} else if (st && typeof st === 'object') {
-				if ('failed' in st) { row.state = 'failed'; row.error = st.failed?.error; }
-				else if ('unresolvable' in st) { row.state = 'failed'; row.error = st.unresolvable?.reason; }
-			}
-		}
 	}
 
 	function finishDeps() {
@@ -267,7 +243,6 @@
 			depRows = configuring ? [] : normalizeDeps();
 			if (depRows.length > 0) {
 				depsAdvanced = false;
-				depsForced = false;
 				step = 'installing-deps';
 				// Safety net: advance even if no terminal cascade event arrives.
 				depTimeout = setTimeout(() => finishDeps(), 30000);

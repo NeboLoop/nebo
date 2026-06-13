@@ -600,7 +600,7 @@ export interface Session {
 }
 
 export interface Setting {
-	autonomousMode: boolean
+	autoInstallDeps: boolean
 	autoApproveRead: boolean
 	autoApproveWrite: boolean
 	autoApproveBash: boolean
@@ -1132,11 +1132,6 @@ export interface HttpProxyResponse {
 	status: string
 	headers: unknown
 	body: unknown
-}
-
-export interface InstallDepsResponse {
-	agentId: string
-	cascade: unknown
 }
 
 export interface InstallStoreProductResponse {
