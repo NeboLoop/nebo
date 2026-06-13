@@ -419,13 +419,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // arriving in half-second chunks. The chunks are ephemeral
                 // fanout frames, so a tight window is cheap.
                 const COMM_COALESCE_MS: u64 = COALESCE_MS;
-                // Stable ID across all stream chunks so the gateway coalesces them
-                // Per-SEGMENT stream id: rotates after each tool round so each
-                // prose segment is its own message on the loop — clients render
-                // work lines interleaved with the text they belong to (the
-                // Claude pattern), not one combined block at the top.
-                let mut comm_stream_id = uuid::Uuid::new_v4().to_string();
-                let mut segment_had_tools = false;
+                // ONE stable stream id for the whole reply: the gateway coalesces
+                // chunks under it and the final full-text Message finalizes that
+                // bubble. (Per-segment rotation was reverted — it required an
+                // empty final, which the gateway then dropped on reload since it
+                // doesn't persist Stream frames.)
+                let comm_stream_id = uuid::Uuid::new_v4().to_string();
 
                 loop {
                     let event = tokio::select! {
@@ -485,10 +484,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // gets a live activity signal via send_typing()
                             // instead, without the "_Working on:_" spam.
                             if comm_reply.is_some() && !is_progress_heartbeat(&event.text) {
-                                if segment_had_tools {
-                                    comm_stream_id = uuid::Uuid::new_v4().to_string();
-                                    segment_had_tools = false;
-                                }
                                 comm_buffer.push_str(&event.text);
                                 // Flush the FIRST chunk immediately so the loop
                                 // paints the opening text the instant the model
@@ -576,7 +571,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // activity (and renders "Used N tools"), like the local app.
                                 let (activity, _) = humanize_tool_call(&tc.name, &tc.input);
                                 if let Some(cfg) = &comm_reply {
-                                    segment_had_tools = true;
                                     let request = tc.input.to_string();
                                     send_comm_tool_activity(
                                         cfg,
@@ -961,11 +955,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         // reloaded history and forced clients to collapse all the
                         // turn's segments into one block. Other providers (Slack…)
                         // still get the full text.
-                        let final_content = if comm_streamed && reply_config.provider == "neboai" {
-                            String::new()
-                        } else {
-                            strip_progress_heartbeats(&full_response)
-                        };
+                        // The final Message MUST carry the full text: the loop
+                        // gateway does NOT persist Stream frames (they're coalesced
+                        // ephemerals), so the final is the ONLY row that survives a
+                        // reload. Emptying it lost every streamed reply on refresh.
+                        // The live client still finalizes its streaming bubble in
+                        // place against this full text (no duplication); inline
+                        // segmentation is a live-only nicety, not worth dropping
+                        // persistence for.
                         let reply = comm::CommMessage {
                             id: uuid::Uuid::new_v4().to_string(),
                             from: String::new(),
@@ -973,7 +970,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             topic: reply_config.topic.clone(),
                             conversation_id: reply_config.conversation_id.clone(),
                             msg_type: comm::CommMessageType::Message,
-                            content: final_content,
+                            content: strip_progress_heartbeats(&full_response),
                             metadata: reply_meta,
                             timestamp: 0,
                             human_injected: false,
