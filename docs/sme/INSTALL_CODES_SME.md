@@ -1,8 +1,8 @@
 # Install Codes, Collections & the Install Modal — SME
 
-> **Last verified:** 2026-06-12 (against working tree)
-> **Scope:** Marketplace install codes (`SKIL-`/`AGNT-`/`PLUG-`/`APPS-`/`COLL-`/`CONN-`/`WORK-`/`LOOP-`/`NEBO-`), the dependency cascade, collection installs, the WebSocket progress protocol, and the `CodeInstallModal` UI.
-> **Key files:** `crates/server/src/codes.rs`, `crates/server/src/deps.rs`, `app/src/lib/components/chat/CodeInstallModal.svelte`, `app/src/lib/marketplace/installCodes.ts`, `app/src/lib/websocket/listeners.ts`
+> **Last verified:** 2026-06-13 (after the dependency-cascade unification + modal merge)
+> **Scope:** Marketplace install codes (`SKIL-`/`AGNT-`/`PLUG-`/`APPS-`/`COLL-`/`CONN-`/`WORK-`/`LOOP-`/`NEBO-`), the dependency cascade, collection installs, the WebSocket progress protocol, and the `InstallFlowModal` UI.
+> **Key files:** `crates/server/src/codes.rs`, `crates/server/src/deps.rs`, `app/src/lib/components/install/InstallFlowModal.svelte`, `app/src/lib/marketplace/installCodes.ts`, `app/src/lib/websocket/listeners.ts`
 
 ---
 
@@ -10,9 +10,11 @@
 
 An install code is a `PREFIX-XXXX-XXXX` token (Crockford Base32 groups). Redeeming one always flows through **one canonical backend pathway** — `codes::detect_code()` → `codes::handle_code()` → a per-family handler — no matter where the code was entered (chat, marketplace sidebar, store product page, a Loop channel).
 
-A **collection** (`COLL-`) is *not* a special installer: it is a named list of item codes. `handle_collection_code` resolves the list, converts every item to a `DepRef`, and feeds them all to the **one canonical multi-artifact installer**, `deps::resolve_cascade_force()` — the same machinery that installs a single agent's transitive dependencies.
+There is **ONE dependency cascade** (`deps::resolve_cascade`) and it **always installs**. Every *explicit* install — a pasted code, a marketplace install, a collection — force-installs its declared dependencies: choosing to install an artifact IS consent to install the components it requires. A **collection** (`COLL-`) is not a special installer; it's a named list of item codes that `handle_collection_code` converts to `DepRef`s and feeds to the same `resolve_cascade`.
 
-Progress is **not** in the HTTP/chat response. The redeem call blocks until everything is installed; all live detail is broadcast over WebSocket as `code_*` / `dep_*` events, which the frontend re-dispatches as `nebo:*` window CustomEvents consumed by `CodeInstallModal.svelte`.
+The `auto_install_deps` setting (formerly `autonomous_mode`, which was only ever read by this cascade) now gates **only** the implicit boot-time reconcile in `lib.rs` (filesystem agents discovered on startup), so Nebo doesn't auto-pull a pile of deps for every agent on every launch without consent. Default OFF.
+
+Progress is **not** in the HTTP/chat response. The redeem call blocks until everything is installed; all live detail is broadcast over WebSocket as `code_*` / `dep_*` events, which the frontend re-dispatches as `nebo:*` window CustomEvents consumed by `InstallFlowModal.svelte`.
 
 ```
 entry point ──► detect_code ──► handle_code ──► handle_<family>_code
@@ -20,11 +22,11 @@ entry point ──► detect_code ──► handle_code ──► handle_<family
                        broadcast "code_processing"    ├─ api.redeem_code(code)        ← NeboLoop round-trip
                                                       ├─ api.get_collection(id)       ← NeboLoop round-trip
                                                       ├─ items → Vec<DepRef>
-                                                      └─ deps::resolve_cascade_force
+                                                      └─ deps::resolve_cascade        ← always installs
                                                             │ broadcast "dep_cascade_start" {total}
                                                             │ per item: "dep_started" → install_dep() → "dep_installed"/"dep_failed"
                                                             │           (recurse into child deps)
-                                                            └ broadcast "dep_cascade_complete" {installed,pending,failed}
+                                                            └ broadcast "dep_cascade_complete" {installed,pending:0,failed}
                                     broadcast "code_result" (final summary)
 ```
 
@@ -34,142 +36,141 @@ entry point ──► detect_code ──► handle_code ──► handle_<family
 
 | # | Entry | Path | Notes |
 |---|-------|------|-------|
-| 1 | **Chat composer** (user pastes code as a message) | `app/src/lib/chat/controller.svelte.ts:534` → `ws.send('chat', { prompt: code, ... })` | `dispatchInstallStart()` opens the modal *locally* first (see §7) |
-| 2 | **Marketplace sidebar "Install code" box** | `app/src/routes/marketplace/+layout.svelte:164-182` (`redeemCode()`) | Also `ws.send('chat', { prompt: code, agent_id: 'assistant' })`. ⚠️ Wrapped in `if (ws.isConnected())` — silently does nothing when WS is down (modal still opens; see §9.5) |
-| 3 | **Backend chat WS intercept** | `crates/server/src/handlers/ws.rs:1465-1466` | Every chat prompt is checked with `detect_code()` *before* reaching the LLM; codes never become model prompts |
-| 4 | **Store product install button** | `crates/server/src/handlers/store.rs:281-314` (`install_store_product`, `POST /store/products/{id}/install`) | Fetches the product's code, then routes through `handle_code()` with synthetic session `store-install-{id}` |
-| 5 | **Direct HTTP** | `POST /api/v1/codes` → `submit_code()` `crates/server/src/codes.rs:1235` | Returns the final summary JSON synchronously |
-| 6 | **Loop/channel messages** | `crates/server/src/channel_dispatch.rs:43-44` (`handle_code_text`) | Codes pasted in a channel install non-interactively (modal auto-dismisses; `interactive: false`) |
+| 1 | **Chat composer** (user pastes code) | `app/src/lib/chat/controller.svelte.ts` → `ws.send('chat', …)` | `dispatchInstallStart()` opens the modal *locally* first (§7) |
+| 2 | **Marketplace "Install code" box** | `app/src/routes/marketplace/+layout.svelte` (`redeemCode()`) | Also `ws.send('chat', …)`. ⚠️ Wrapped in `if (ws.isConnected())` — silently no-ops when WS is down |
+| 3 | **Backend chat WS intercept** | `crates/server/src/handlers/ws.rs` | Every chat prompt is `detect_code()`-checked before reaching the LLM; codes never become model prompts |
+| 4 | **Store product install button** | `crates/server/src/handlers/store.rs` (`install_store_product`, `POST /store/products/{id}/install`) | Fetches the product's code, routes through `handle_code()` |
+| 5 | **Direct HTTP** | `POST /api/v1/codes` → `submit_code()` (`codes.rs`) | Returns the final summary JSON synchronously |
+| 6 | **Loop/channel messages** | `crates/server/src/channel_dispatch.rs` (`handle_code_text`) | Codes pasted in a channel install non-interactively (modal auto-dismisses; `interactive: false`) |
 
-Frontend code recognition is centralized in `app/src/lib/marketplace/installCodes.ts` — `CODE_RE` (line 12), `matchInstallCode()`, `dispatchInstallStart()`. **One regex / one type map shared by every entry point** — a stale copy once silently dropped whole code families (the file header documents this bug class).
+Frontend code recognition is centralized in `app/src/lib/marketplace/installCodes.ts` — `CODE_RE`, `matchInstallCode()`, `dispatchInstallStart()`. One regex / one type map shared by every entry point.
 
 ---
 
 ## 3. Code Families & Dispatch
 
-Backend detection: `detect_code()` `codes.rs:41-84` (format `PREFIX-XXXX-XXXX`, Crockford Base32 charset). Dispatch: `handle_code()` `codes.rs:102-138`.
+Detection: `detect_code()` (`codes.rs`). Dispatch: `handle_code()`.
 
 | Prefix | CodeType | Handler (`codes.rs`) | Installs |
 |--------|----------|----------------------|----------|
-| `NEBO-` | Nebo | `handle_nebo_code` :258 | NeboAI account pairing |
-| `SKIL-` | Skill | `handle_skill_code` :266 | SKILL.md / sealed .napp → skill loader |
-| `WORK-` | Work | `handle_work_code` :379 | Workflow (DB + `~/.nebo/workflows/<slug>/`) |
-| `AGNT-` | Agent | `handle_agent_code` :663 | Agent (DB + `~/.nebo/agents/<slug>/`), auth wizard, auto-activation |
-| `LOOP-` | Loop | `handle_loop_code` :924 | Join a Loop |
-| `PLUG-` | Plugin | `handle_plugin_code` :937 | Per-platform binary via `fetch_and_install_plugin` :1103 |
-| `APPS-` | App | `handle_app_code` :1211 | Agent path + `reconcile_app_fields` :1188 |
-| `COLL-` | Collection | `handle_collection_code` :472 | Every item via `resolve_cascade_force` (§4) |
-| `CONN-` | Connection | `handle_connection_code` :601 | MCP server config → same parser as Settings paste-import |
+| `NEBO-` | Nebo | `handle_nebo_code` | NeboAI account pairing |
+| `SKIL-` | Skill | `handle_skill_code` | SKILL.md / sealed .napp → skill loader |
+| `WORK-` | Work | `handle_work_code` | Workflow (DB + `~/.nebo/workflows/<slug>/`) |
+| `AGNT-` | Agent | `handle_agent_code` | Agent (DB + `~/.nebo/agents/<slug>/`), auth wizard, auto-activation |
+| `LOOP-` | Loop | `handle_loop_code` | Join a Loop |
+| `PLUG-` | Plugin | `handle_plugin_code` | Per-platform binary via `fetch_and_install_plugin` |
+| `APPS-` | App | `handle_app_code` → delegates to `handle_agent_code` + `reconcile_app_fields` |
+| `COLL-` | Collection | `handle_collection_code` | Every item via `resolve_cascade` (§4) |
+| `CONN-` | Connection | `handle_connection_code` | MCP server config → same parser as Settings paste-import |
 
-`handle_code()` brackets every install with broadcasts: `code_processing` (start, :115-126), `code_result` (end, :143-160), `chat_complete` (:179-182).
+`handle_code()` brackets every install with broadcasts: `code_processing` (start), `code_result` (end), `chat_complete`.
 
 ---
 
 ## 4. Collection Install (`COLL-`) End-to-End
 
-`handle_collection_code()` — `crates/server/src/codes.rs:472-593`.
+`handle_collection_code()` — `crates/server/src/codes.rs`.
 
-1. **Redeem** (:480-483): `api.redeem_code(code)` → NeboLoop `POST /api/v1/codes/redeem` (`crates/comm/src/api.rs:397-405`). Records the install for this bot, resolves the collection artifact.
-2. **Payment gate** (:488-497): `status == "payment_required"` → return early with `checkout_url`; the modal runs the purchase flow (§7) and the code is re-processed after payment.
-3. **Fetch items** (:500-508): `api.get_collection(artifact_id)` → NeboLoop `GET /api/v1/collections/{id}` → `items` array.
-   ⚠️ NeboLoop-side `InstallCollection` **skips `private` items for non-owners** — a customer bundle must use `unlisted`/`invite_only` visibility. The desktop never sees the skipped items.
-4. **Map items → `DepRef`s** (:510-555). Each item carries its own install `code`, `type`, `name`, `slug`. Type map: `skill`→Skill, `agent`|`app`→Agent (apps ARE agents), `plugin`→Plugin, `workflow`→Workflow. Items with no code or unknown type are **logged and skipped, never silently dropped**. `app` items set `has_app` for step 6.
-5. **Force-install all** (:559-560): `resolve_cascade_force(state, deps, &mut visited)`. Force because pasting a collection code is an explicit request for the whole bundle — `autonomous_mode` only gates *implicit* dependency auto-install.
-6. **App reconciliation** (:564-566): `reconcile_app_fields()` :1188-1209 reloads the agent loader and persists `is_app` / `app_ui_path` / `app_binary_path` / `app_window_config` to DB so apps show up and launch as apps.
-7. **Summary + setup sweep** (:568-592): message `Installed collection "<name>": N of M items installed[, K failed]`; `sweep_plugin_auth()` :1301-1328 finds installed plugins still missing credentials → broadcast `dep_needs_setup`.
+1. **Redeem**: `api.redeem_code(code)` → NeboLoop `POST /api/v1/codes/redeem`. Payment-gated collections return early with a `checkout_url`.
+2. **Fetch items**: `api.get_collection(artifact_id)` → NeboLoop `GET /api/v1/collections/{id}` → `items` array.
+   ⚠️ NeboLoop-side `InstallCollection` **skips `private` items for non-owners** — a customer bundle must use `unlisted`/`invite_only` visibility.
+3. **Map items → `DepRef`s**. Each item carries its own install `code`, `type`, `name`, `slug`. Type map: `skill`→Skill, `agent`|`app`→Agent (apps ARE agents), `plugin`→Plugin, `workflow`→Workflow. Items with no code or unknown type are **logged and skipped, never silently dropped**. `app` items set `has_app` for step 5.
+4. **Install all**: `resolve_cascade(state, deps, &mut visited)` — installs every item and recurses into transitive deps.
+5. **App reconciliation**: `reconcile_app_fields()` persists `is_app` / `app_ui_path` / `app_binary_path` / `app_window_config` so apps show up and launch as apps.
+6. **Summary + setup sweep**: message `Installed collection "<name>": N of M items installed[, K failed]`; `sweep_plugin_auth()` finds installed plugins still missing credentials → broadcast `dep_needs_setup`.
 
-The HTTP/chat call **blocks for the entire cascade** — there is no per-item timeout; each NeboLoop request has a 15s client timeout (`crates/comm/src/api.rs:34-37`).
+The HTTP/chat call **blocks for the entire cascade** — no per-item timeout; each NeboLoop request has a 15s client timeout.
 
 ---
 
 ## 5. The Dependency Cascade (`crates/server/src/deps.rs`)
 
-Two public entry points, one inner loop:
+**One public installer**, `resolve_cascade(state, deps, visited)`, which always installs. (The old gated/force split was collapsed on 2026-06-13 — see git `d5efc37a`.) It calls `announce_cascade_start()` → broadcast `dep_cascade_start { total }`, then `resolve_cascade_inner`.
 
-- `resolve_cascade()` :90 — normal path (agent/skill frontmatter deps); respects `autonomous_mode`, otherwise marks items `PendingApproval` (user approves via `POST /api/v1/deps/approve` → frontend `approveDeps()`).
-- `resolve_cascade_force()` :109 — explicit-approval path (collections, user-approved pending deps); installs everything.
+`resolve_cascade_inner`, per dep:
 
-Both call `announce_cascade_start()` :101-106 → broadcast `dep_cascade_start { total }` so the modal can render a determinate bar.
+1. **Dedup/cycle check**: visited set keyed `DepType:reference` — recursion-safe.
+2. **Already installed?** `is_installed()` — per-type presence checks: skills by filesystem (SKILL.md / extracted dir / .napp / manifest `code` match), workflows by DB code/name, plugins by slug in `plugin_store`, agents by DB id/name. If present → broadcast `dep_installed`, count it.
+3. **Built-in refs**: simple names (no `@`, not a code) are `Unresolvable` — never sent to NeboLoop (`is_marketplace_ref`).
+4. **Install**: broadcast `dep_started` → `install_dep()` → on success broadcast `dep_installed`, extract the artifact's own deps, **recurse**; on failure broadcast `dep_failed { error }`, count it, **continue with remaining items** (no abort).
+5. Finally broadcast `dep_cascade_complete { installed, pending, failed }`. `pending` is always 0 (there is no pending/approve state any more). Inner recursion emits its own `dep_cascade_complete` per level — the modal does not route on this event, so nesting is harmless.
 
-`resolve_cascade_inner()` :118-266, per dep:
+**Boot-time reconcile (the only gated callers):** two `tokio::spawn` sites in `lib.rs` reconcile filesystem agents on startup. Each is wrapped in `if crate::deps::auto_install_deps_enabled(&state)` (reads the `auto_install_deps` setting, default OFF).
 
-1. **Dedup/cycle check** (:132-136): visited set keyed `DepType:reference` — recursion-safe.
-2. **Already installed?** `is_installed()` :293 — per-type presence checks: skills by filesystem (SKILL.md / extracted dir / .napp / manifest `code` match, :329), workflows by DB code/name (:373), plugins by slug in `plugin_store` (:307), agents by DB id/name (:316). If present → broadcast `dep_installed` and count it (so retried rows settle correctly).
-3. **Built-in refs**: simple names (no `@`, not a code) are `Unresolvable` — never sent to NeboLoop (:160-172).
-4. **Install** (autonomous/forced, :174-230): broadcast `dep_started` → `install_dep()` → on success broadcast `dep_installed`, extract the artifact's *own* deps, **recurse**; on failure broadcast `dep_failed { error }`, count it, **continue with remaining items** (no abort).
-5. Non-autonomous: broadcast `dep_pending`, mark `PendingApproval`.
-6. Finally broadcast `dep_cascade_complete { installed, pending, failed }` (:250-257). Note: inner recursion emits its own `dep_cascade_complete` per level — the modal ignores this event, so nesting is harmless today.
-
-Per-type installers (all redeem through NeboLoop then persist + reload the relevant loader):
-
-| Type | Installer | Persist | Child-dep extraction |
-|------|-----------|---------|----------------------|
-| Agent | `install_agent` :462 | `tools::persist_agent_from_api` + `agent_loader.load_all()` | `extract_agent_deps_from_frontmatter` :621 |
-| Skill | `install_skill` :494 | `tools::persist_skill_from_api` + `skill_loader.load_all()` | `extract_skill_deps` :748 |
-| Workflow | `install_workflow` :556 | `persist_workflow_artifact` (`codes.rs:1364`) | `extract_workflow_deps` :719 |
-| Plugin | `install_plugin` :576 | `codes::fetch_and_install_plugin` (`codes.rs:1103`): platform binary → `download_napp` → `plugin_store.install_from_napp` → DB upsert → re-register tool + hooks | plugin manifest deps :605 |
+Per-type installers (all redeem through NeboLoop then persist + reload the relevant loader): `install_agent`, `install_skill`, `install_workflow`, `install_plugin` (binary via `codes::fetch_and_install_plugin`). Child-dep extraction: `extract_agent_deps_from_frontmatter`, `extract_skill_deps`, `extract_workflow_deps`.
 
 ---
 
 ## 6. WebSocket Progress Protocol
 
-All broadcasts go through `state.hub.broadcast(event, payload)` — **global, unscoped** (every connected client gets them; see §9.6). The frontend forwards them 1:1 as `nebo:<event>` window CustomEvents in `app/src/lib/websocket/listeners.ts:272-297`.
+All broadcasts go through `state.hub.broadcast(event, payload)` — **global, unscoped**. The frontend forwards them 1:1 as `nebo:<event>` window CustomEvents in `app/src/lib/websocket/listeners.ts`.
 
 | Event | Payload | Emitted | Modal handler |
 |-------|---------|---------|---------------|
-| `code_processing` | `{ session_id, code, code_type, status_message, interactive }` | `handle_code` start (`codes.rs:115`) — and synthesized locally by `dispatchInstallStart()` | `handleCodeProcessing` — `reset()`, open, arm 30s safety net |
-| `dep_cascade_start` | `{ total }` | `announce_cascade_start` (`deps.rs:101`) | `handleDepCascadeStart` — sets `depTotal` (only while `phase === 'installing'`) |
-| `dep_started` | `{ depType, reference, name, slug }` | `deps.rs:177` | row → spinner |
-| `dep_installed` | same | `deps.rs:142` (already present) and `:188` (fresh install) | row → ✓ |
-| `dep_failed` | `+ error` | `deps.rs:213` | row → ✗ + per-row **Install** retry button (`retryDep` → `approveDeps`) |
-| `dep_pending` | same | `deps.rs:232` (non-autonomous only) | row added as pending |
-| `dep_cascade_complete` | `{ installed, pending, failed }` | `deps.rs:250` | forwarded but **not consumed by the modal** (AgentSetupModal uses it) |
-| `dep_needs_setup` | `{ items: [{slug,label,description,authType}] }` | collection :580, agent installs | "Needs setup" section → Settings → Plugins |
-| `plugin_installing` / `plugin_installed` | `{ plugin }` | plugin pipeline | row updates (plugin slug as reference) |
-| `agent_auth_required`, `plugin_auth_url`, `plugin_auth_complete`, `plugin_auth_error` | — | agent/plugin auth flows | `phase = 'auth'` queue (multi-plugin OAuth, `env`-type routes to Settings) |
-| `code_result` | `{ success, message, artifact_*, payment_required, checkout_url, needsAuth, tier, interactive }` | `handle_code` end (`codes.rs:143`) | done / error / confirm-purchase / agent-setup handoff |
+| `code_processing` | `{ session_id, code, code_type, status_message, interactive }` | `handle_code` start (also synthesized locally by `dispatchInstallStart()`) | open + arm 30s safety net (code mode) |
+| `dep_cascade_start` | `{ total }` | `announce_cascade_start` | sets `depTotal` (determinate bar) |
+| `dep_started` | `{ depType, reference, name, slug }` | `resolve_cascade_inner` | row → spinner |
+| `dep_installed` | same | already-present + fresh-install | row → ✓ |
+| `dep_failed` | `+ error` | install failure | row → ✗ + per-row **Install** retry (`approveDeps`) |
+| `dep_cascade_complete` | `{ installed, pending:0, failed }` | end of each cascade level | forwarded; the modal does not route on it (it routes on `code_result`) |
+| `dep_needs_setup` | `{ items: [{slug,label,description,authType}] }` | collection + agent installs | "Needs setup" section → Settings → Plugins |
+| `plugin_installing` / `plugin_installed` | `{ plugin }` | plugin pipeline | row updates |
+| `plugin_auth_url` / `plugin_auth_complete` / `plugin_auth_error` | — | agent/plugin auth flows | drive the `auth` step |
+| `code_result` | `{ success, message, artifact_*, payment_required, checkout_url, tier, interactive }` | `handle_code` end | done / error / confirm-purchase / → `loadSetup` for agents |
+
+`dep_pending` is **no longer emitted** — the cascade never pends. (`agent_auth_required` is also no longer load-bearing for the UI: the merged modal reads plugin-auth needs from `getAgent().pluginsNeedingAuth` in `loadSetup`.)
 
 ---
 
-## 7. Frontend: `CodeInstallModal.svelte` (app/src/lib/components/chat/)
+## 7. Frontend: `InstallFlowModal.svelte` (app/src/lib/components/install/)
 
-Mounted in `routes/marketplace/+layout.svelte:364` and `routes/[agentId]/+layout.svelte:1632` — driven entirely by the window events above (no props besides `show`/`onclose`/`onAgentSetup`).
+**One** component for every install+setup path (it replaced the old `CodeInstallModal` + `AgentSetupModal` on 2026-06-13 — git `f7587082`). Three launch modes converge on one phase machine:
 
-**Phases** (line 14): `installing → confirm → processing → checkout → auth → done | error`.
+- **`code`** — WS-driven: opens on a pasted code (`nebo:code_processing`). Mounted in `routes/marketplace/+layout.svelte` and `routes/[agentId]/+layout.svelte`.
+- **`product`** — API-driven: caller sets `appId` + `show`; the modal calls `installStoreProduct`. Used by marketplace `LargeCard` (Get) and `ProductDetail` (Install).
+- **`configure`** — edit an installed agent (`existingAgentId`), no install. Used by `ProductDetail` (Configure) and the `[agentId]/+layout` needs-setup auto-open.
 
-- **Instant open:** `dispatchInstallStart()` (`installCodes.ts:51`) synthesizes a local `code_processing` event the moment the user submits, so the modal opens before the WS round-trip. The backend's real `code_processing` arrives moments later and re-runs `reset()` (safe: cascade events come after it).
-- **Progress rendering** (lines 569-591): `progressTotal = max(depTotal, deps.length)`. If `> 1` → determinate `<progress>` bar with `settledCount/progressTotal`; **otherwise an honest spinner + the code** (this is the state in the "Installing collection…" screenshot — see §9.1).
-- **Dependency list** (lines 729-770): renders whenever `deps.length > 0`, in *any* phase — per-row status icon (pending ring / spinner / ✓ / ✗), display name via `depLabel()` (name → last segment of `@org/type/name` → raw ref), copyable code, type tag, and per-row retry for failures.
-- **Cancel/close** (line 163): clears timers, closes the modal. **It does not abort the backend install** — the cascade runs to completion regardless.
-- **`interactive` flag:** desktop-initiated installs stay open until dismissed; channel/loop-triggered installs auto-close ~1.5s after done.
-- **30s safety net** (lines 186-195): if no `code_result` within 30s of `code_processing`, the modal *pretends* completion ("`<Type>` installed — finalizing dependencies...") and fires the sidebar refresh. See §9.2 for why this misfires on big collections.
-- **Purchase flow:** `payment_required` → fetch payment methods → `confirm` → `createMarketplaceSubscription()` → system-browser checkout → wait (5 min timer) for the post-payment `code_result`.
-- **Post-install refresh:** `notifySidebarRefresh()` dispatches `nebo:agent_installed`; consumed by `Sidebar.svelte:37` (`loadAgents()`) and `[agentId]/+layout.svelte:227` (`loadAgentRoster()`). Skills/plugins/installed pages are lazy-loaded on navigation — no live refresh.
+**Phase machine** (conditional steps shown only when applicable):
+```
+installing (progress + dep cascade)
+ → [confirm → processing]            payment, code mode only (payment_required)
+ → loadSetup(agentId)                the join point: getAgent (inputFields, pluginsNeedingAuth,
+                                      needsSetup) + listAgentWorkflows
+ → [inputs]   if inputFields present   (AgentInputForm)
+ → [auth]     if pluginsNeedingAuth    (per-plugin OAuth queue; env-type → Settings)
+ → [schedule] if active heartbeat wf   (interval picker)
+ → finalize(): activateAgent(agentId) → done
+```
 
-Related component: `app/src/lib/components/agent-setup/AgentSetupModal.svelte` — the agent-install wizard listens to the same `dep_*` events (incl. `dep_cascade_complete`) with its own `DepRow` state; it is the handoff target when an agent install `needsAuth`.
+- **Join point `loadSetup`** reconciles the WS path and the API path: code mode calls it on `code_result` success for an agent/app (`artifact_id`); non-agent codes go straight to `done`. Product mode calls it after `installStoreProduct`. Configure mode calls it immediately.
+- **Backend force-cascade means deps always settle** via `dep_*` events — the modal is a pure progress renderer; there is no `installDeps`/approve-on-complete workaround.
+- **Global "Skip setup"** (footer during inputs/auth/schedule): `activateAgent(agentId)` immediately with defaults → `done`; unfilled required inputs / missing plugin auth remain flagged (the `done` step links to `/settings/plugins` and `/[agentId]/settings/configure`; existing `needsSetup` / `pluginsNeedingAuth` plumbing surfaces them later).
+- **Dependency list** renders whenever `deps.length > 0`, in any phase — per-row status icon, `depLabel()`, copyable code, type tag, and per-row **Install** retry for failures.
+- **30s safety net** (code mode): if no `code_result` arrives, the modal soft-completes.
 
 ---
 
 ## 8. Where Failures Surface
 
-- One failed item never aborts the cascade — it lands as a `dep_failed` row with a retry button; the final message carries `N of M items installed, K failed`, and the overall `code_result` is still `success: true` (HTTP 200).
-- Per-row retry calls `approveDeps({ deps: [...] })` (`POST /api/v1/deps/approve`) which re-enters `resolve_cascade_force` for just that dep; the same `dep_*` events settle the row.
-- Items NeboLoop omits (private items for non-owners) or that the mapper skips (no code / unknown type) produce **no row and no failure** — only a backend `warn!` log. The user just sees a smaller total.
+- One failed item never aborts the cascade — it lands as a `dep_failed` row with a retry button; the final message carries `N of M installed, K failed`; `code_result` is still `success: true`.
+- **The single retry path** is `approveDeps({ deps: [...] })` → `POST /api/v1/deps/approve`, which re-enters `resolve_cascade` for just that dep. (The old `POST /agents/{id}/install-deps` endpoint was removed on 2026-06-13 — it was a duplicate force path.)
+- Items NeboLoop omits (private, non-owner) or the mapper skips (no code / unknown type) produce no row and no failure — only a backend `warn!` log; the user sees a smaller total.
 
 ---
 
-## 9. Known Gaps / UX Limitations (verified 2026-06-12)
+## 9. Status of Past Gaps / Limitations
 
-These explain why a collection install can sit on a bare spinner with no detail:
+**Fixed 2026-06-13:**
+- ~~Stuck-pending deps~~ — explicit installs now force-cascade; `dep_pending` is gone.
+- ~~Two divergent modals with duplicated auth/dep rendering~~ — merged into `InstallFlowModal`.
+- ~~Duplicate force endpoints~~ — `install_deps` removed; `approve_deps` is the sole retry.
 
-1. **The blind window.** Nothing item-level exists until `dep_cascade_start`, which fires only *after* `redeem_code` + `get_collection` (two sequential NeboLoop round-trips, each with a 15s client timeout) plus item mapping. Until then the modal can only show the spinner + code. The backend knows the item list at `codes.rs:556` but never tells the UI what the items *are* — `dep_cascade_start` carries only a count, and rows appear one-by-one as `dep_started` arrives. Pre-announcing all items (e.g. broadcasting the mapped `DepRef` list, or emitting `dep_pending` for every item up front) would let the modal show the full named checklist immediately.
-2. **30s safety-net false "done".** `installTimeout` is armed once in `handleCodeProcessing` and only cleared by `code_result`. `dep_*` activity does **not** reset it — so any cascade taking >30s (easy for a multi-plugin collection with binary downloads) flips the modal to `done` ("installed — finalizing dependencies...") while installs are still running. The deps list keeps updating beneath the premature checkmark.
-3. **Single-item collections never show the bar.** The determinate bar requires `progressTotal > 1`; a one-item collection keeps the spinner (the dep row does still render).
-4. **`statusMessage` is static.** It stays "Installing collection..." for the whole run; only the row list and counter convey activity. There is no "currently installing X" headline.
-5. **Silent drop when WS is down.** Marketplace `redeemCode()` opens the modal unconditionally but only sends the code `if (ws.isConnected())` — disconnected WS means the spinner spins forever (until the 30s fake-done).
-6. **Broadcasts are global and unscoped.** `dep_*` events carry no session/install id; two concurrent installs (or another device on the same backend) would interleave rows in one modal.
-7. **Cancel is cosmetic.** Closing the modal does not stop the synchronous backend cascade.
-8. **Per-level `dep_cascade_complete`.** Recursive child cascades each emit their own complete event; harmless only because the modal ignores the event entirely.
+**Still true (UX, not correctness):**
+1. **The blind window.** Item rows appear only as `dep_started` arrives (after `redeem_code` + `get_collection` round-trips). `dep_cascade_start` carries only a count. Pre-announcing the mapped `DepRef` list (or emitting a row per item up front) would show the full named checklist immediately.
+2. **Single-item collections** keep the spinner (the determinate bar needs `progressTotal > 1`); the dep row still renders.
+3. **Static `statusMessage`** during install — activity is conveyed by the row list + counter, not a "currently installing X" headline.
+4. **Silent no-op when WS is down** — the marketplace `redeemCode()` opens the modal but only sends `if (ws.isConnected())`.
+5. **Broadcasts are global/unscoped** — `dep_*` events carry no install id; concurrent installs could interleave. Mitigated in the merged modal: code-mode handlers guard on `mode`, and dep/auth handlers guard on `show`.
 
 ---
 
@@ -178,15 +179,15 @@ These explain why a collection install can sit on a bare spinner with no detail:
 | Concern | File |
 |---------|------|
 | Code detection, dispatch, per-family handlers, plugin binary install, app reconcile, auth sweep, `POST /api/v1/codes` | `crates/server/src/codes.rs` |
-| Dependency cascade, presence detection, per-type installers, dep extraction | `crates/server/src/deps.rs` |
-| Dep approval endpoint (`/api/v1/deps/approve`) route registration | `crates/server/src/routes/mod.rs:85-92` |
-| Chat-WS code intercept | `crates/server/src/handlers/ws.rs:1465` |
-| Channel-message code intercept | `crates/server/src/channel_dispatch.rs:43` |
-| Store product install | `crates/server/src/handlers/store.rs:281` |
-| NeboLoop REST client (`redeem_code`, `get_collection`, `install_skill`, `install_workflow`, `get_plugin`, `download_napp`) | `crates/comm/src/api.rs` |
-| Install modal (all phases + progress UI) | `app/src/lib/components/chat/CodeInstallModal.svelte` |
+| The one cascade, presence detection, per-type installers, dep extraction, `auto_install_deps_enabled`, `approve_deps` | `crates/server/src/deps.rs` |
+| Boot-time reconcile (gated cascade callers) | `crates/server/src/lib.rs` |
+| `auto_install_deps` setting (renamed from `autonomous_mode`) | `crates/db/migrations/0104_rename_autonomous_mode.sql`, `crates/db/src/models.rs`, `crates/db/src/queries/settings.rs`, `crates/server/src/handlers/agent.rs` |
+| Dep approval / retry route (`/deps/approve`) | `crates/server/src/routes/mod.rs` |
+| Chat-WS / channel code intercept | `crates/server/src/handlers/ws.rs`, `crates/server/src/channel_dispatch.rs` |
+| Store product install | `crates/server/src/handlers/store.rs` |
+| NeboLoop REST client | `crates/comm/src/api.rs` |
+| **The unified install + setup modal** | `app/src/lib/components/install/InstallFlowModal.svelte` |
 | Canonical code regex / type map / instant-open dispatcher | `app/src/lib/marketplace/installCodes.ts` |
-| WS → window event forwarding | `app/src/lib/websocket/listeners.ts:272-297` |
-| Marketplace code input | `app/src/routes/marketplace/+layout.svelte:159-182, 219-241` |
-| Chat composer code intercept | `app/src/lib/chat/controller.svelte.ts:534` |
-| Agent setup wizard (same `dep_*` events) | `app/src/lib/components/agent-setup/AgentSetupModal.svelte` |
+| WS → window event forwarding | `app/src/lib/websocket/listeners.ts` |
+| Mount points | `app/src/routes/marketplace/+layout.svelte`, `app/src/routes/[agentId]/+layout.svelte`, `app/src/lib/components/marketplace/LargeCard.svelte`, `app/src/lib/components/marketplace/ProductDetail.svelte` |
+| Settings toggle | `app/src/routes/settings/permissions/+page.svelte` |
