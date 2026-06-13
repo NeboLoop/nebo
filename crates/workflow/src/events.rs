@@ -48,9 +48,17 @@ impl EventDispatcher {
         *lock = subs;
     }
 
-    /// Add a single subscription.
+    /// Add a single subscription. Idempotent: a subscription with the same
+    /// (agent, binding, pattern) key replaces the existing one instead of
+    /// duplicating it — duplicate registrations would fire the workflow once
+    /// per copy on every matching event.
     pub async fn subscribe(&self, sub: EventSubscription) {
         let mut lock = self.subscriptions.write().await;
+        lock.retain(|existing| {
+            !(existing.agent_source == sub.agent_source
+                && existing.binding_name == sub.binding_name
+                && existing.pattern == sub.pattern)
+        });
         lock.push(sub);
     }
 
@@ -293,5 +301,40 @@ mod tests {
 
         // Massive nested payload removed
         assert!(!map.contains_key("payload"));
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_is_idempotent() {
+        let dispatcher = EventDispatcher::new();
+        let sub = |inputs: serde_json::Value| EventSubscription {
+            pattern: "email.new".into(),
+            default_inputs: inputs,
+            agent_source: "agent-1".into(),
+            binding_name: "auto-reply".into(),
+            definition_json: None,
+            emit_source: None,
+        };
+
+        // Same (agent, binding, pattern) registered twice → ONE subscription,
+        // carrying the latest payload.
+        dispatcher.subscribe(sub(serde_json::json!({"v": 1}))).await;
+        dispatcher.subscribe(sub(serde_json::json!({"v": 2}))).await;
+
+        let event = Event {
+            source: "email.new".into(),
+            payload: serde_json::json!({}),
+            origin: "test".into(),
+            timestamp: 0,
+        };
+        let matches = dispatcher.match_event(&event).await;
+        assert_eq!(matches.len(), 1, "duplicate subscription survived");
+        assert_eq!(matches[0].default_inputs["v"], 2, "stale subscription won");
+
+        // Different pattern for the same binding is a distinct subscription.
+        let mut other = sub(serde_json::json!({}));
+        other.pattern = "email.*".into();
+        dispatcher.subscribe(other).await;
+        let matches = dispatcher.match_event(&event).await;
+        assert_eq!(matches.len(), 2);
     }
 }

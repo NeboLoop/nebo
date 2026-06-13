@@ -10,6 +10,7 @@
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   import { getScheduleAgents, runsPerWeek, userScheduleItems, loadScheduleFromAPI } from '$lib/stores/schedule.js';
   import * as api from '$lib/api/nebo';
+  import { mapWorkflows, saveWorkflows } from '$lib/utils/workflowApi';
   const sidebarCollapsed = sidebarCollapsedFor('schedule');
 
   onMount(() => { loadScheduleFromAPI(); });
@@ -35,28 +36,19 @@
     canvasWorkflowsData = {};
     try {
       const resp = await api.listAgentWorkflows(agentFull);
-      const workflowMap = resp?.workflows;
-      if (workflowMap && typeof workflowMap === 'object' && !Array.isArray(workflowMap)) {
-        const wfs: Record<string, WorkflowConfig> = {};
-        for (const [name, wfRaw] of Object.entries(workflowMap)) {
-          const wf = wfRaw as Record<string, unknown>;
-          wfs[name] = {
-            trigger: (wf.trigger as WorkflowConfig['trigger']) || undefined,
-            description: (wf.description as string) || name,
-            isActive: wf.isActive as boolean | undefined,
-            emit: wf.emit as string | undefined,
-            activities: (wf.activities as WorkflowConfig['activities']) || [],
-            connections: (wf.connections as WorkflowConfig['connections']) || [],
-          };
-        }
-        canvasWorkflowsData = wfs;
-      }
+      canvasWorkflowsData = mapWorkflows(resp?.workflows) ?? {};
     } catch {}
   }
 
   function handleCanvasSave(workflows: Record<string, WorkflowConfig>) {
-    // TODO: persist to backend via API
+    const agentFull = canvasAgentFull;
+    const prev = canvasWorkflowsData;
     canvasWorkflowsData = workflows;
+    if (agentFull) {
+      saveWorkflows(agentFull, prev, workflows)
+        .then((fresh) => { if (fresh) canvasWorkflowsData = fresh; })
+        .catch((e) => console.error('[nebo] failed to save workflows', e));
+    }
     canvasAgentFull = null;
   }
 

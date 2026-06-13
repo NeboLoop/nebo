@@ -1,7 +1,3 @@
-use std::sync::OnceLock;
-
-use regex::Regex;
-
 /// Maximum length for a memory key.
 const MAX_KEY_LENGTH: usize = 128;
 /// Maximum length for a memory value.
@@ -52,32 +48,9 @@ pub fn sanitize_for_prompt(text: &str) -> String {
     }
 }
 
-/// Detect prompt injection attempts in text.
-/// Returns true if suspicious patterns are found.
-pub fn detect_prompt_injection(text: &str) -> bool {
-    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
-    let patterns = PATTERNS.get_or_init(|| {
-        let raw = [
-            r"(?i)ignore\s+(all\s+)?previous\s+instructions",
-            r"(?i)ignore\s+(all\s+)?above\s+instructions",
-            r"(?i)disregard\s+(all\s+)?previous",
-            r"(?i)forget\s+(all\s+)?previous",
-            r"(?i)you\s+are\s+now\s+(?:a|an)\s+",
-            r"(?i)new\s+instructions?\s*:",
-            r"(?i)system\s*:\s*you\s+are",
-            r"(?i)assistant\s*:\s*I\s+will",
-            r"(?i)\bprompt\s+injection\b",
-            r"(?i)override\s+(?:system|safety|instructions)",
-            r"(?i)jailbreak",
-            r"(?i)DAN\s+mode",
-            r"(?i)\bdo\s+anything\s+now\b",
-            r"(?i)act\s+as\s+(?:if\s+)?(?:you\s+(?:are|were)|a\s+)",
-        ];
-        raw.iter().filter_map(|p| Regex::new(p).ok()).collect()
-    });
-
-    patterns.iter().any(|re| re.is_match(text))
-}
+/// Detect prompt injection attempts in text — canonical implementation lives
+/// in `tools::memory_guard` so both memory write paths share one filter.
+pub use tools::memory_guard::detect_prompt_injection;
 
 #[cfg(test)]
 mod tests {

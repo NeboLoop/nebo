@@ -676,6 +676,13 @@ impl Registry {
         // Web tool (HTTP fetch + search + browser) — requires "web" permission
         if allowed("web") {
             let mut web_tool = crate::web_tool::WebTool::new().with_store(store.clone());
+            // Platform search via Janus: resolve the gateway URL (honoring the
+            // NEBOAI_JANUS_URL env override) and the bot identity so web(search)
+            // hits a real search API instead of scraping engines through a browser.
+            if let Ok(cfg) = config::Config::load_embedded() {
+                let bot_id = config::read_bot_id().unwrap_or_default();
+                web_tool = web_tool.with_janus_search(cfg.neboai.janus_url.clone(), bot_id);
+            }
             if let Some(mgr) = browser_manager {
                 web_tool = web_tool.with_browser(mgr);
             }

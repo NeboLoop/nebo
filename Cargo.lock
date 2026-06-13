@@ -6238,13 +6238,16 @@ dependencies = [
 name = "nebo-workflow"
 version = "0.11.1"
 dependencies = [
+ "async-trait",
  "chrono",
+ "futures",
  "nebo-ai",
  "nebo-config",
  "nebo-db",
  "nebo-napp",
  "nebo-tools",
  "nebo-types",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

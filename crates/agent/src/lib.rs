@@ -24,7 +24,6 @@ pub mod pruning;
 pub mod research;
 pub mod runner;
 pub mod sanitize;
-pub mod secret_scan;
 pub mod search;
 pub mod search_adapter;
 pub mod selector;

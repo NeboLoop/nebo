@@ -479,6 +479,25 @@ impl Store {
         Ok(())
     }
 
+    /// Watch-trigger configs of active bindings, with the owning agent's
+    /// name — used to surface `{plugin}.{event}` auto-emission sources.
+    pub fn list_watch_trigger_configs(&self) -> Result<Vec<(String, String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.name, aw.binding_name, aw.trigger_config
+                 FROM agent_workflows aw
+                 JOIN agents a ON aw.agent_id = a.id
+                 WHERE aw.trigger_type = 'watch' AND aw.is_active = 1",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn list_emit_sources(&self) -> Result<Vec<EmitSource>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn

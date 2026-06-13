@@ -10,7 +10,7 @@
 | Category | Systems | Documented | Missing SME |
 |----------|---------|------------|-------------|
 | Core Agent | 10 | 10 | 0 |
-| Server & Chat | 8 | 8 | 0 |
+| Server & Chat | 9 | 9 | 0 |
 | Tools | 6 | 6 | 0 |
 | AI & Providers | 3 | 3 | 0 |
 | Data & Storage | 4 | 4 | 0 |
@@ -21,7 +21,7 @@
 | Frontend | 8 | 8 | 0 |
 | Infrastructure | 4 | 4 | 0 |
 | Automation & Eventing | 2 | 2 | 0 |
-| **Totals** | **64** | **64** | **0** |
+| **Totals** | **65** | **65** | **0** |
 
 ---
 
@@ -52,6 +52,7 @@
 | 16 | Heartbeat & Proactive | `server/heartbeat.rs` | `AGENTS_SME.md` | Current |
 | 17 | Middleware & CORS | `server/middleware.rs` | `MIDDLEWARE_SCHEDULER_SME.md` §1 | Current |
 | 18 | Scheduler (background jobs) | `server/scheduler.rs` | `MIDDLEWARE_SCHEDULER_SME.md` §2 | Current |
+| 18a | Install Codes, Dep Cascade & Collections | `server/codes.rs`, `server/deps.rs`, `CodeInstallModal.svelte` | `INSTALL_CODES_SME.md` | Current |
 
 ## 3. Tool Systems
 

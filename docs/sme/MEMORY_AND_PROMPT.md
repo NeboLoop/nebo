@@ -149,15 +149,21 @@ This is placed in `ChatRequest.system`. Each provider maps it to their API forma
 
 ---
 
-## 2. Three-Tier Storage Model
+## 2. Storage Model (Taxonomy v2 — 2026-06-12)
+
+> Redesigned per `docs/design/MEMORY_QUALITY.md`. The `daily/` layer is **retired** — date-as-namespace
+> duplicated `created_at` and organized memories on the one axis nobody recalls on. Ongoing work lives
+> in the topical layer; ephemera are not stored at all (the session layer owns them). The spine:
+> session owns the ephemeral → topical layer owns the ongoing → `tacit/` owns the permanent →
+> memory consolidation is the only reaper.
 
 ### Layers
 
 | Layer | Namespace Pattern | Lifespan | Use Case | Example Keys |
 |-------|-------------------|----------|----------|--------------|
 | `tacit` | `tacit/preferences`, `tacit/personality`, `tacit/artifacts` | Permanent (with decay for personality) | Long-term preferences, style observations, produced content | `code-indentation`, `style/humor-dry`, `artifact/landing-page-hero-copy` |
-| `daily` | `daily/<YYYY-MM-DD>` | Time-scoped by date | Day-specific facts, decisions | `architecture-decision`, `meeting-notes` |
-| `entity` | `entity/default` | Permanent | People, places, projects, things | `person/sarah`, `project/nebo` |
+| topical (default `project`) | `project` (agent-declarable slugs land in R2) | Retired by consolidation when done/dated | Ongoing work: goals, decisions, constraints, status | `deck-build`, `123-main-st-closing` |
+| `entity` | `entity/default` | Permanent | People, places, things with significance beyond the current task | `person/sarah`, `project/nebo` |
 
 ### Namespace Resolution
 
@@ -194,15 +200,15 @@ layer="",     namespace=""           -> "default" (for store), "" (for search --
 
 ### Trigger: Debounced Idle Extraction
 
-**When:** After every agentic loop completion (no more tool calls), gated by three thresholds:
+**When:** After every agentic loop completion (no more tool calls), gated by two thresholds:
 
 1. **5-second debounce** — new messages reset the timer so extraction only runs when idle
 2. **Turn interval** — `EXTRACTION_TURN_INTERVAL = 3` — at least 3 turns must pass since last extraction
-3. **Tool call minimum** — `MIN_TOOL_CALLS = 3` — at least 3 tool invocations must be recorded
 
-All three conditions must be met simultaneously. Turn and tool call counts are tracked per session via `turn_counts` and `tool_call_counts` HashMaps inside `MemoryDebouncer`. The `record_tool_call(session_id)` method must be called each time a tool is invoked so the extraction threshold can be met. Both counters reset to 0 when extraction fires.
+> The former `MIN_TOOL_CALLS = 3` gate was removed in `487fe179` (tool-less chats never extracted).
+> Turn counts are tracked per session in `MemoryDebouncer`; the counter resets when extraction fires.
 
-**Scope:** Last 6 messages only. (Older messages were already processed in their respective turns.)
+**Scope:** From the last user message onward (the pre-compaction flush in `memory_flush.rs` covers ALL messages).
 
 **Flow:**
 ```
@@ -224,29 +230,24 @@ runLoop completes (text-only response, no tool calls)
             Else -> format_for_storage() -> upsert_memory()
 ```
 
-### Extraction Prompt
+### Extraction Prompt (v2 — 2026-06-12)
 
-The LLM is prompted to return JSON with 6 arrays:
+The full prompt text lives in `docs/design/MEMORY_QUALITY.md` and `memory.rs::extract_facts`.
+Five arrays (the junk-producing `decisions` and `task_context` categories were deleted —
+their durable residue is by definition a topic fact):
 
-```
-Analyze the following conversation and extract durable facts that should be
-remembered long-term.
+1. `preferences` — preferences and corrections about how to work (include the why)
+2. `styles` — communication/personality observations (key: `style/trait-name`)
+3. `entities` — people/orgs/places **with significance beyond the current task**
+4. `topics` — ongoing work: goals, decisions, constraints, status; relative dates converted
+   to absolute; each fact names its `topic` slug (default `project`; agent-declared in R2)
+5. `artifacts` — important produced content
 
-Return a JSON object with six arrays:
-1. "preferences" - User preferences and learned behaviors
-2. "entities" - Information about people, places, projects (key: "type/name")
-3. "decisions" - Important decisions made during this conversation
-4. "styles" - Communication/personality style observations (key: "style/trait-name")
-5. "artifacts" - Important content produced (key: "artifact/description")
-6. "task_context" - Task parameters: dates, budgets, quantities, locations
-
-Each fact should have:
-- "key": A unique, descriptive key for retrieval (path-like: "category/name")
-- "value": The actual information to remember
-- "category": One of "preference", "entity", "decision", "style", "artifact"
-- "tags": Relevant tags for searching
-- "explicit": boolean -- true if user directly stated, false if inferred
-```
+The prompt enforces a durability bar (matters in a month / hard to re-derive / about the user
+not the conversation's mechanics), states "empty arrays are normal", and carries a NEVER list:
+standalone times/dates/counts/paths, session mechanics, re-derivable facts, secrets, and a
+sensitive-personal-information denylist (protected attributes, government IDs, financial
+accounts, health, home addresses) unless the user explicitly asks to remember.
 
 ### Input Limits
 
@@ -265,18 +266,28 @@ Each fact should have:
 4. `serde_json` deserialize into `ExtractedFacts`
 5. Empty response or no JSON → return None (no error -- common for trivial conversations)
 
-### FormatForStorage Mapping
+### FormatForStorage Mapping (v2)
 
 `format_for_storage()` in `memory.rs`:
 
 | Category | Layer | Namespace | IsStyle | Example Key |
 |----------|-------|-----------|---------|-------------|
-| `preferences` | `tacit` | `preferences` | false | `code-indentation` |
-| `entities` | `entity` | `default` | false | `person/sarah` |
-| `decisions` | `daily` | `<YYYY-MM-DD>` | false | `architecture-choice` |
-| `styles` | `tacit` | `personality` | **true** | `style/humor-dry` |
-| `artifacts` | `tacit` | `artifacts` | false | `artifact/hero-copy` |
-| `task_context` | `daily` | `<YYYY-MM-DD>` | false | `task-context-note` |
+| `preferences` | `tacit` | `tacit/preferences` | false | `code-indentation` |
+| `entities` | `entity` | `entity/default` | false | `person/sarah` |
+| `styles` | `tacit` | `tacit/personality` | **true** | `style/humor-dry` |
+| `artifacts` | `tacit` | `tacit/artifacts` | false | `artifact/hero-copy` |
+| `topics` | topic slug | topic slug (validated, fallback `project`) | false | `deck-build` |
+
+### Stage-0 Write Guard (canonical — both write paths)
+
+`tools::memory_guard::stage0_reject(key, value, explicit)` runs before every persist — in
+`store_facts()` (automatic extraction) AND the explicit memory-tool store in `bot_tool.rs`
+(which previously bypassed secret/injection checks entirely). Rules, in order: `secret`,
+`injection`, `bare-number`, `time-fragment`, `path`, `key-blocklist`, `echo`, `too-thin`
+(skipped when `explicit` — short stated facts like "favorite color: blue" survive). Rejections
+log the rule name via `tracing` for extractor tuning. The module also hosts the canonical
+`contains_secret`/`detect_secret`/`detect_prompt_injection` (moved from `agent::secret_scan`,
+which was deleted; `agent::sanitize::detect_prompt_injection` is a re-export).
 
 ### Confidence Resolution
 
@@ -300,10 +311,11 @@ Each fact should have:
 
 ### Known Gaps
 
-- No `IsDuplicate()` check before storing (relies on upsert for collision handling)
+- No `IsDuplicate()` check before storing (relies on upsert for collision handling; the prompt
+  carries an existing-memories section to discourage duplicates)
 - No timeout on extraction (provider stream may hang indefinitely)
-- Uses `prov_lock.first()` for model selection, not cost-optimized
-- Explicit memory tool stores (`agent(resource: "memory", action: "store")`) bypass `secret_scan.rs` and prompt-injection checks because they call `upsert_memory()` directly in `bot_tool.rs`.
+- ~~Explicit memory tool stores bypass secret/injection checks~~ — **FIXED 2026-06-12**: both
+  write paths run `tools::memory_guard::stage0_reject` (see Stage-0 Write Guard above).
 
 **Files:** `crates/agent/src/memory.rs`, `crates/agent/src/memory_debounce.rs`, `crates/agent/src/memory_flush.rs`
 
@@ -311,7 +323,10 @@ Each fact should have:
 
 ### 3.1 Secret Scanning
 
-> **Status: Partially wired.** Module exists at `crates/agent/src/secret_scan.rs` (~90 lines). Automatic memory extraction calls it from `store_facts()` before persistence. Explicit memory tool stores in `crates/tools/src/bot_tool.rs` still bypass it.
+> **Status: Fully wired (2026-06-12).** Canonical implementation moved to
+> `crates/tools/src/memory_guard.rs` (lowest shared crate — `agent` depends on `tools`). Both
+> write paths run it via `stage0_reject`: automatic extraction (`store_facts()`) and the explicit
+> memory-tool store (`bot_tool.rs`). `crates/agent/src/secret_scan.rs` was deleted.
 
 Pre-write scanner for memory persistence. Scans fact values for common credential patterns before storage.
 
@@ -783,7 +798,7 @@ load_db_context(store, user_id, inherit_scopes) -> DBContext
   |
   +-- Load personality directive (tacit/personality/directive memory)
   |
-  +-- Load scored tacit memories (limit 40)
+  +-- Load scored tacit memories (identity slice, limit 8 — abf1ca3b)
        Primary scope: memories WHERE user_id = primary_user_id
        Inherited scopes: memories WHERE user_id = scope.user_id AND namespace LIKE scope.prefix
        Inherited memories scored at 0.8x (rank below local)
@@ -792,14 +807,17 @@ load_db_context(store, user_id, inherit_scopes) -> DBContext
 
 The `inherit_scopes` parameter enables multi-layer memory loading for agents with `MemoryConfig`. See [Section 28](#28-scoped-memory-architecture).
 
-### Two-Pass Loading with Overfetch
+### Identity-Slice Loading (replaces the old 4-pass strategy)
 
-From `load_memory_context()` in `memory.rs:519-614`:
+Always-on injection is the **identity slice only** (`load_scored_memories()` in `memory.rs`;
+`load_memory_context()` was deleted as dead code in `487fe179`):
 
-- **Pass 1:** `tacit/personality` — overfetch 30, confidence ≥ 0.65, re-rank by `score_memory()`, cap at 10
-- **Pass 2:** Other `tacit/*` — overfetch 120, confidence ≥ 0.65, fill remaining up to 40 total
-- **Pass 3:** Today's daily memories (limit 20, cap 15)
-- **Pass 4:** Entity memories (limit 30, cap 15)
+- **Phase 1:** `tacit/preferences` + `tacit/personality`, confidence ≥ 0.65, overfetch 2× limit
+- **Phase 2:** Inherited scopes (owner identity prefixes, always-on for agents), scored at 0.8×
+- Dedup by key (highest score wins), truncate to limit (8)
+
+Everything else — topics, entities, artifacts — surfaces on demand via
+`load_prompt_relevant_memories()` (FTS against the user prompt) and hybrid search.
 
 ### format_for_system_prompt (9-Section Assembly)
 

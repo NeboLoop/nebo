@@ -42,8 +42,8 @@
         desc: CAPABILITY_LABELS[key]?.desc || '',
         enabled: permObj[key] ?? true,
       }));
-      if (settingsResp?.settings?.autonomousMode !== undefined) {
-        autonomous = !!settingsResp.settings.autonomousMode;
+      if (settingsResp?.settings?.autoInstallDeps !== undefined) {
+        autonomous = !!settingsResp.settings.autoInstallDeps;
       }
     } catch { /* keep mock data */ }
   });
@@ -84,7 +84,7 @@
   async function saveAutonomousMode(enabled: boolean) {
     try {
       const api = await import('$lib/api/nebo');
-      await api.updateSettings({ autonomousMode: enabled });
+      await api.updateSettings({ autoInstallDeps: enabled });
     } catch { /* keep local state */ }
   }
 

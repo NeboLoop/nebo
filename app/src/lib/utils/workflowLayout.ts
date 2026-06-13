@@ -288,7 +288,9 @@ function buildAdjacency(
   const adj = new Map<string, string[]>();
   const edgeLabels = new Map<string, string>(); // key: "from→to"
 
-  if (connections && connections.length > 0) {
+  // A non-null connections array is AUTHORITATIVE even when empty —
+  // deleting the last edge must not resurrect the linear fallback.
+  if (connections) {
     // Use explicit connections
     for (const c of connections) {
       if (!adj.has(c.from)) adj.set(c.from, []);
@@ -319,19 +321,30 @@ export function clampZoom(value: number): number {
   return Math.min(Math.max(value, MIN_ZOOM), MAX_ZOOM);
 }
 
-export function computeBounds(nodes: LayoutWorkflowNode[]): { width: number; height: number } {
-  if (nodes.length === 0) return { width: 600, height: 300 };
-  let maxX = 0;
-  let maxY = 0;
+export function computeBounds(
+  nodes: LayoutWorkflowNode[],
+): { width: number; height: number; minX: number; minY: number } {
+  if (nodes.length === 0) return { width: 600, height: 300, minX: 0, minY: 0 };
+  // Dragged nodes can sit at negative coordinates — bounds must track the
+  // true min or fit-to-screen centers wrong and clips content off the top/left.
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
   for (const n of nodes) {
+    minX = Math.min(minX, n.x);
+    minY = Math.min(minY, n.y);
     maxX = Math.max(maxX, n.x + n.w);
     maxY = Math.max(maxY, n.y + n.h);
   }
-  return { width: maxX + PADDING, height: maxY + PADDING };
+  // Content between origin and the nodes still renders, so extend to 0.
+  minX = Math.min(minX, 0);
+  minY = Math.min(minY, 0);
+  return { width: maxX - minX + PADDING, height: maxY - minY + PADDING, minX, minY };
 }
 
 export function fitToContainer(
-  bounds: { width: number; height: number },
+  bounds: { width: number; height: number; minX?: number; minY?: number },
   containerW: number,
   containerH: number,
 ): { zoom: number; pan: { x: number; y: number } } {
@@ -343,8 +356,10 @@ export function fitToContainer(
   return {
     zoom,
     pan: {
-      x: (containerW - chartW) / 2,
-      y: (containerH - chartH) / 2,
+      // Shift by the (possibly negative) content origin so the top-left of
+      // the actual content — not coordinate (0,0) — lands in view.
+      x: (containerW - chartW) / 2 - (bounds.minX ?? 0) * zoom,
+      y: (containerH - chartH) / 2 - (bounds.minY ?? 0) * zoom,
     },
   };
 }
@@ -361,7 +376,14 @@ export function edgePath(edge: WorkflowEdge): string {
 
 // ── Workflow mutation helpers ─────────────────────────────────────
 
-let nextNodeId = 1;
+/** Smallest `{base}-{n}` id not already taken. A module counter resets on
+ *  every page load — saved ids like "a-copy-1" would collide next session. */
+function uniqueNodeId(activities: Activity[], base: string): string {
+  const taken = new Set(activities.map(a => a.id));
+  let n = 1;
+  while (taken.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
 
 /** Add an activity node to a workflow. Returns a new activities array. */
 export function addActivityToWorkflow(
@@ -370,7 +392,7 @@ export function addActivityToWorkflow(
   newActivity?: Partial<Activity>,
 ): Activity[] {
   const act: Activity = {
-    id: newActivity?.id || `activity-${nextNodeId++}`,
+    id: newActivity?.id || uniqueNodeId(activities, 'activity'),
     intent: newActivity?.intent || 'New activity',
     skills: newActivity?.skills || [],
     steps: newActivity?.steps || [],
@@ -406,7 +428,7 @@ export function duplicateActivityInWorkflow(
   if (idx < 0) return activities;
   const original = activities[idx];
   const dupe: Activity = {
-    id: `${original.id}-copy-${nextNodeId++}`,
+    id: uniqueNodeId(activities, `${original.id}-copy`),
     intent: original.intent,
     skills: original.skills ? [...original.skills] : [],
     steps: original.steps ? [...original.steps] : [],

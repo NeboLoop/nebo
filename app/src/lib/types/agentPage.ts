@@ -29,6 +29,7 @@ export interface EnrichedChat {
 export interface WorkflowTrigger {
 	type: string
 	event?: string
+	sources?: string[]
 	schedule?: string
 	cron?: string
 	interval?: string
@@ -133,6 +134,8 @@ export interface AgentPageContext {
 	openWorkflow: (name: string, wf: WorkflowConfig) => void
 	openCanvas: () => void
 	triggerSummary: (wf: WorkflowConfig) => string
+	persistWorkflows: (wfs: Record<string, WorkflowConfig>) => Promise<void>
+	toggleWorkflow: (name: string) => Promise<void>
 	toggleAgentStatus: (id: string, e?: MouseEvent) => void
 	agentStatus: (id: string) => string
 	refreshRuns: () => Promise<void>

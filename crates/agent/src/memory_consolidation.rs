@@ -9,6 +9,10 @@
 //!
 //! Each distinct `user_id` is consolidated independently. Cross-scope merging
 //! never happens — `"user:agent:brief:ctx:doc-A"` is never merged with `:ctx:doc-B`.
+//!
+//! Consolidation is the system's ONLY memory reaper (docs/design/MEMORY_QUALITY.md):
+//! there is no TTL machinery. Topic memories (`project/`, agent-declared slugs)
+//! are retired here when their work is done or dated.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
@@ -47,6 +51,16 @@ pub struct ConsolidationResult {
 /// consolidates each that passes the gate chain.
 pub fn spawn_sweep(store: Arc<Store>, providers: Arc<tokio::sync::RwLock<Vec<Arc<dyn Provider>>>>) {
     tokio::spawn(async move {
+        // Retire the legacy daily/ layer (docs/design/MEMORY_QUALITY.md):
+        // date-scoped memories are gone — ongoing work lives in topical
+        // layers. Cheap SQL, idempotent; runs at startup so old installs
+        // converge without any TTL machinery.
+        match store.delete_memories_by_namespace_prefix("daily/") {
+            Ok(0) => {}
+            Ok(n) => info!(deleted = n, "retired legacy daily/ memory layer"),
+            Err(e) => warn!(error = %e, "daily layer retirement sweep failed"),
+        }
+
         // Let server boot before expensive background LLM work.
         // tokio::time::interval first tick fires immediately — this delay
         // prevents ~30s of LLM calls during the startup window.
@@ -160,9 +174,10 @@ pub async fn consolidate_scope(
     store: &Store,
     user_id: &str,
 ) -> Result<ConsolidationResult, String> {
-    // Load all tacit memories for this scope
+    // Load ALL memories for this scope (tacit, topical, entity) — consolidation
+    // is the only reaper, so topic layers must be visible to it.
     let memories = store
-        .get_tacit_memories_by_user(user_id, 200)
+        .list_memories_by_user_and_namespace(user_id, "", 200, 0)
         .map_err(|e| format!("load memories: {}", e))?;
 
     if memories.len() < MIN_MEMORIES_FOR_CONSOLIDATION as usize {
@@ -185,8 +200,12 @@ pub async fn consolidate_scope(
         "You are a memory curator. Review these {} facts stored for a user and:\n\
          1. Identify duplicates — keep the most complete version, mark others for deletion\n\
          2. Identify contradictions — newer facts (higher id) supersede older ones\n\
-         3. Identify stale or irrelevant facts that should be removed\n\
-         4. Identify facts that can be merged into a single, more useful entry\n\n\
+         3. Separate the durable from the dated — preferences, working style, and key\n\
+            relationships (tacit/ and entity/ namespaces) are durable: keep and sharpen them.\n\
+            Topic facts (project/ and other namespaces) describe ongoing work: if the work\n\
+            is clearly done or its date has passed, delete them — folding any lasting\n\
+            takeaway into an updated durable fact\n\
+         4. Identify stale or irrelevant facts that should be removed\n\n\
          Facts:\n[{}]\n\n\
          Return ONLY valid JSON with this structure:\n\
          {{\n\
@@ -196,7 +215,9 @@ pub async fn consolidate_scope(
          }}\n\n\
          Rules:\n\
          - Every input id must appear in exactly one of: keep, update (by id), or delete\n\
-         - Bias toward keeping — only delete when clearly redundant or contradicted\n\
+         - Bias toward keeping — only delete when clearly redundant, contradicted, done, or dated\n\
+         - When merging duplicates, apply the update to the OLDEST id (preserves the original\n\
+           created date) and delete the newer copies\n\
          - Updated values should be concise declarative facts",
         memories.len(),
         memory_lines.join(",\n")

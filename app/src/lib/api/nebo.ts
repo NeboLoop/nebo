@@ -307,13 +307,6 @@ export function updateAgentInputs(id: string, req: Record<string, unknown> = {})
 }
 
 /**
- * @description "Install deps"
- */
-export function installDeps(id: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.InstallDepsResponse>(`/api/v1/agents/${id}/install-deps`, req)
-}
-
-/**
  * @description "Reload agent"
  */
 export function reloadAgent(id: string, req: Record<string, unknown> = {}) {

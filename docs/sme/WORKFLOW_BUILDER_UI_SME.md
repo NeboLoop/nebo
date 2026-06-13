@@ -64,6 +64,9 @@ workflow modification.
 app/src/lib/utils/
   +-- workflowLayout.ts    Layout engine (dagre), edge paths, mutation helpers
   +-- workflowTypes.ts     Activity type system, catalog mapping, defaults
+  +-- workflowApi.ts       THE one load/save pathway: mapWorkflows (wire -> WorkflowConfig),
+                           triggerPayload (trigger -> triggerType/triggerConfig),
+                           saveWorkflows (diff prev vs next -> create/update/delete + refresh)
 
 app/src/lib/types/
   +-- agentPage.ts         WorkflowConfig, WorkflowActivity, WorkflowTrigger
@@ -97,8 +100,12 @@ onclose: () => void                          // close modal
 onsave: (wfs: Record<string, WorkflowConfig>) => void  // persist changes
 ```
 
-On save, the parent layout writes back to `config.workflows` which triggers the
-agent update API call upstream.
+On save, the parent layout calls `persistWorkflows(wfs)` →
+`saveWorkflows(agentId, prev, next)` in `$lib/utils/workflowApi.ts`, which diffs
+the edited map against the loaded one and issues
+`createAgentWorkflow`/`updateAgentWorkflow`/`deleteAgentWorkflow` calls from the
+generated API client, then refreshes local state from `listAgentWorkflows`.
+The schedule page's embedded builder uses the same `saveWorkflows` pathway.
 
 ---
 
@@ -170,17 +177,46 @@ struct WorkflowDef {
 
 struct Activity {
     id: String,
-    intent: String,
+    activity_type: String,      // serde "type" — builder node type (condition, http, ...)
+    intent: String,             // OPTIONAL — typed nodes may be params-only
+    label: Option<String>,
+    params: Option<serde_json::Value>,  // type-specific config (authoritative)
+    branches: Vec<Branch>,      // declared branch labels (condition/loop)
     skills: Vec<String>,
-    mcps: Vec<String>,          // MCP server dependencies
+    mcps: Vec<String>,          // ⚠ parsed but consumed nowhere (dead field)
     cmds: Vec<String>,          // workflow commands (e.g. "emit")
     model: String,              // LLM model override
     steps: Vec<String>,
-    token_budget: TokenBudget,
+    token_budget: TokenBudget,  // ENFORCED per-activity inside run_llm_loop
     on_error: OnError,          // retry count + fallback policy
     min_iterations: u32,        // budget continuation threshold
 }
+// WorkflowDef also carries connections: Vec<Connection { from, to, label }>
 ```
+
+### Execution semantics (engine.rs + graph.rs) — "Temporal/n8n meets AI"
+
+The ENGINE owns all control flow, deterministically; the AI lives INSIDE
+activities (per-step LLM turns, evaluator-gated) and never decides routing.
+
+- `connections` empty → legacy sequential array-order path (engine.rs), unchanged.
+- `connections` present → `graph.rs::execute_graph`: sequential along edges;
+  a fork (multiple outgoing edges) runs branches IN PARALLEL, each branch
+  sequential; a join executes once after ALL activated incoming branches
+  (skipped branches propagate skips so joins never wait on dead paths).
+- **condition**: deterministic only — params.expression + mode
+  (expression/contains/exists/regex) over `{inputs, item, nodes.<id>}`;
+  True/False labeled edges. Missing expression = validation error.
+- **loop**: params.source data path, sequential per item through the
+  "Each item" body (validated self-contained), maxIterations cap, then "Done".
+- **wait**: bounded cancellable sleep (cap 1h); waitUntil rejected at validation.
+- **http**: engine-issued deterministic call through the web tool's
+  SSRF-checked http resource — no LLM turn.
+- All other types: LLM-driven with type preamble + params injected into the
+  prompt (`typed_node_preamble` in engine.rs).
+- Prior context per node = static transitive ancestors' outputs in
+  activity-array order (timing-independent); per-node visit cap backstops
+  malformed graphs.
 
 Key difference: triggers are NOT stored in the workflow definition. They are owned
 by agents via `agent_workflows` bindings. The frontend `WorkflowConfig.trigger` is an
@@ -578,10 +614,15 @@ interface ValidationError {
 }
 ```
 
-**Checks performed:**
-1. **Empty activity ID** — every activity must have a non-empty `id`
-2. **Duplicate activity ID** — IDs must be unique within a workflow
-3. **Missing intent** — every activity must have a non-empty `intent`
+**Checks performed (mirrors parser.rs — what passes here parses and runs):**
+1. **Empty / duplicate activity IDs**
+2. **Typed-node params** — condition requires `expression` (deterministic
+   routing), loop requires `source`, http requires `url`, wait requires
+   `duration` (and rejects `waitUntil`); all OTHER types need intent-or-steps
+3. **Connection rules** — no edges into `__trigger__` / out of `__emit__`,
+   no dangling endpoints, no duplicates, branch labels only from
+   condition/loop (which must label ALL outgoing edges)
+4. **Cycles** — rejected except a loop's Each-item body returning to its loop
 
 Validation errors are displayed in the toolbar as a warning badge showing the count.
 Hovering shows the full list of error messages. The **Save button is disabled** when
@@ -597,41 +638,39 @@ Backend validation (parser.rs) performs additional checks:
 
 ## AI Architect Chat (BuilderChat.svelte)
 
-The left panel (320px) provides a simulated AI assistant for workflow modification.
+The left panel (320px) is a REAL LLM chat that edits the user's draft.
 
-### Current Implementation
+### Session
 
-The chat is **locally simulated** (no backend LLM call). It uses pattern matching
-on user input to determine actions:
+`start_workflow_chat` (crates/server/src/handlers/agents.rs) seeds session
+`{agentId}:help:workflow` with a system prompt containing: the op contract,
+the real 12 activity types + key params, the deterministic execution
+semantics, and the current workflows JSON. The builder re-seeds on open;
+`refresh: true` replaces ONLY the system message (conversation preserved) —
+`BuilderChat.sendWithSync()` calls it before each send when the draft changed.
 
-| User Intent         | Pattern Match                      | Action                    |
-|---------------------|------------------------------------|---------------------------|
-| Add/create activity | "add", "create", "new"             | Extracts label + intent, calls `onaction('add-activity', ...)` |
-| Delete node         | "delete", "remove"                 | Instructions to right-click |
-| Connect workflows   | "connect", "chain", "link"         | Explains emit/event chaining |
-| Configure trigger   | "trigger", "schedule", "when"      | Explains trigger config panel |
-| Other               | fallback                           | Lists capabilities |
-
-### Message Flow
+### Edit pipeline (ops, not prose)
 
 ```
-User types message
+User asks for a change
   |
   v
-handleSend(text)
+Architect reply contains ONE ```workflow-ops fenced JSON block
   |
-  +-- Add user message to messages[]
-  +-- Pattern match on lowercase text
-  +-- setTimeout (simulated thinking)
-  +-- Add thinking block message
-  +-- setTimeout (simulated processing)
-  +-- Add tool-group message (simulated tool call)
-  +-- Add assistant response message
-  +-- Call onaction() to mutate workflow (if applicable)
+  v
+BuilderChat onResponseComplete -> extractOpsBlock (workflowOps.ts)
+  |
+  v
+onops -> WorkflowBuilder.applyArchitectOps -> applyOps (pure, validated)
+  |   one undo snapshot for the whole batch; invalid ops skipped with reasons
+  v
+Rendered message rewritten: prose + "Applied to draft" / "Skipped" receipt
 ```
 
-The chat reuses the shared `ChatPane` component with a custom agent name ("Architect")
-and a static intro message from `ARCHITECT_INTRO_MESSAGE` in tokens.ts.
+Ops mirror WorkflowConfig 1:1 (`workflowOps.ts`): add/update/remove_activity,
+connect/disconnect, set_trigger/set_emit/set_description,
+create/delete/rename_workflow. NOTHING is written to the server by the chat —
+Save persists, undo reverts.
 
 ---
 
@@ -673,17 +712,31 @@ POST   /api/v1/workflows/{id}/toggle        Toggle workflow
 WorkflowBuilder.onsave(wfs)
   |
   v
-Parent layout: config.workflows = wfs
+Parent layout: persistWorkflows(wfs)
   |
   v
-Agent config save (upstream) -> PUT /api/v1/agents/{id}
+workflowApi.saveWorkflows(agentId, prev, next)   <- ONE pathway (also used by /schedule)
+  |  diff: removed -> DELETE, new -> POST, changed -> PUT
+  |  payload: { triggerType, triggerConfig, description, activities, connections, emit }
+  v
+Server handlers (create/update/delete_agent_workflow)
+  |  frontmatter binding updated (incl. connections) + agent_workflows row upserted
+  v
+Trigger registration -> upserts cron_jobs for schedules, event subscriptions
   |
   v
-Server handler -> updates agent_workflows table
-  |
-  v
-Trigger registration (triggers.rs) -> upserts cron_jobs for schedules
+listAgentWorkflows -> mapWorkflows -> local state synced to server truth
 ```
+
+Trigger payload shapes (`triggerPayload` in workflowApi.ts):
+
+| type      | triggerConfig                                            |
+|-----------|----------------------------------------------------------|
+| schedule  | `{ cron, schedule? }` — cron uses NAMED days (MON-FRI); numeric DOW is ambiguous (the `cron` crate is Quartz-style: 1=Sunday) and is translated to names by `normalize_cron::fix_dow_field` on the backend |
+| heartbeat | `{ interval, window?: "HH:MM-HH:MM" }` — window is a string on the wire; the GET shape is `{start,end}` and the backend accepts both |
+| event     | `{ sources: string[] }` — GET returns `sources`; the display-only `trigger.event` is derived from it in `mapWorkflows` |
+| watch / folder | full trigger object passed through (plugin, command, event, path, ...) |
+| manual    | `{}`                                                     |
 
 ---
 
@@ -703,21 +756,26 @@ When a workflow is triggered (manually, by schedule, or by event), the server:
 
 ```
 Frontend (WorkflowBuilder)
-  |  trigger type + config (schedule/heartbeat/event/manual)
+  |  trigger type + config (schedule/heartbeat/event/watch/folder/manual)
   v
-Agent API (save)
+Workflow binding CRUD (create/update/toggle/delete) — persists, then:
   |
   v
-agent_workflows table
-  |  trigger_type, trigger_config, is_active
-  v
-triggers.rs::register_agent_triggers()
+restart_agent_worker_if_active(state, agent_id)
   |
-  +-- schedule: creates cron_job (name: "agent-{id}-{binding}")
-  +-- event: stored in agent_workflows, consumed by EventDispatcher
-  +-- heartbeat: server heartbeat loop checks interval + window
-  +-- manual: no registration needed
+  v
+AgentWorker — the SINGLE owner of live trigger registration:
+  +-- schedule: cron_jobs rows (scheduler gates on is_active, named-DOW crons)
+  +-- event: EventDispatcher subscriptions (idempotent keyed subscribe)
+  +-- heartbeat: interval loop (window-aware incl. overnight wrap,
+  |             per-tick is_active check, skips while a run is active/queued)
+  +-- watch/folder: plugin/file watcher loops
+  +-- manual: no registration
 ```
+
+`AgentWorker::stop` is async and fully awaited (restart can't race
+subscriptions); inactive bindings are skipped at start. Changes via the API
+take effect immediately — no app restart.
 
 ### Event System
 
@@ -896,6 +954,9 @@ The workflow engine surfaces these error types that may appear in run history:
 | `app/src/lib/components/workflow/NodeCatalog.svelte` | Slide-in node type catalog with search and drag support |
 | `app/src/lib/components/workflow/NodeConfigPanel.svelte` | Right panel: trigger config, activity detail, steps editor |
 | `app/src/lib/components/WorkflowCanvas.svelte` | Read-only workflow canvas (runs/schedule views) |
+| `app/src/lib/utils/workflowApi.ts` | One load/save pathway: mapWorkflows, triggerPayload, saveWorkflows |
+| `app/src/lib/utils/workflowOps.ts` | Architect op contract: applyOps (pure, validated), extractOpsBlock |
+| `crates/workflow/src/graph.rs` | Deterministic graph executor: fork/join, condition/loop/wait/http nodes |
 | `app/src/lib/utils/workflowLayout.ts` | Dagre layout engine, edge paths, mutation helpers |
 | `app/src/lib/utils/workflowTypes.ts` | Activity type system: definitions, defaults, catalog mapping |
 | `app/src/lib/types/agentPage.ts` | TypeScript interfaces: WorkflowConfig, WorkflowActivity, WorkflowTrigger |

@@ -177,7 +177,7 @@ pub fn resolve_for_chat(
 ) -> Option<ResolvedEntityConfig> {
     let settings = store.get_settings().ok()?.unwrap_or_else(|| Setting {
         id: 1,
-        autonomous_mode: 0,
+        auto_install_deps: 0,
         auto_approve_read: 0,
         auto_approve_write: 0,
         auto_approve_bash: 0,

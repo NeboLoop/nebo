@@ -36,6 +36,15 @@ var typeOverrides = map[string]string{
 	// ── User permissions ──
 	"userGetPermissions.permissions": "ToolPermission[]",
 
+	// ── Agent workflows (map keyed by binding name, NOT an array) ──
+	"list_agent_workflows.workflows": "Record<string, AgentWorkflowEntry>",
+
+	// ── Memories (Memory is already generated from the Rust struct) ──
+	"list_memories.memories": "Memory[]",
+
+	// ── Event sources (emit + watch auto-emissions, for trigger suggestions) ──
+	"list_event_sources.sources": "EventSourceOption[]",
+
 	// ── Misc ──
 	"get_agent_stats.stats":       "AgentStats",
 	"list_aliases.aliases":        "AliasEntry[]",
@@ -101,6 +110,38 @@ var extraInterfaces = map[string]string{
 	role: string
 	type: string
 	parentId?: string
+}`,
+
+	"EventSourceOption": `export interface EventSourceOption {
+	value: string
+	label: string
+	kind: string
+	agentName: string
+	bindingName: string
+	description?: string
+}`,
+
+	"AgentWorkflowTrigger": `export interface AgentWorkflowTrigger {
+	type: string
+	cron?: string
+	schedule?: string
+	interval?: string
+	window?: { start?: string; end?: string }
+	sources?: string[]
+	event?: string
+	plugin?: string
+	command?: string
+}`,
+
+	"AgentWorkflowEntry": `export interface AgentWorkflowEntry {
+	trigger: AgentWorkflowTrigger
+	description?: string
+	isActive: boolean
+	lastFired?: string
+	emit?: string
+	activities?: unknown[]
+	connections?: unknown[]
+	inputs?: unknown
 }`,
 
 	"UserProfileFull": `export interface UserProfileFull {

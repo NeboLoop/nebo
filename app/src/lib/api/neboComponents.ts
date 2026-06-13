@@ -600,7 +600,7 @@ export interface Session {
 }
 
 export interface Setting {
-	autonomousMode: boolean
+	autoInstallDeps: boolean
 	autoApproveRead: boolean
 	autoApproveWrite: boolean
 	autoApproveBash: boolean
@@ -1134,11 +1134,6 @@ export interface HttpProxyResponse {
 	body: unknown
 }
 
-export interface InstallDepsResponse {
-	agentId: string
-	cascade: unknown
-}
-
 export interface InstallStoreProductResponse {
 	success: boolean
 	agentId: string
@@ -1174,7 +1169,7 @@ export interface ListAgentRunsResponse {
 }
 
 export interface ListAgentWorkflowsResponse {
-	workflows: unknown[]
+	workflows: Record<string, AgentWorkflowEntry>
 	count: number
 }
 
@@ -1209,7 +1204,7 @@ export interface ListDependentsResponse {
 }
 
 export interface ListEventSourcesResponse {
-	sources: unknown[]
+	sources: EventSourceOption[]
 }
 
 export interface ListIntegrationsResponse {
@@ -1217,7 +1212,7 @@ export interface ListIntegrationsResponse {
 }
 
 export interface ListMemoriesResponse {
-	memories: unknown[]
+	memories: Memory[]
 	total: number
 }
 
@@ -1386,6 +1381,13 @@ export interface PluginSetupRunResponse {
 	ok: boolean
 	output: unknown
 	outputFormat: unknown
+}
+
+export interface ProcessAgentBindingsResponse {
+	binding: string
+	triggerType: unknown
+	hasActivities: unknown
+	status: string
 }
 
 export interface ProxyPluginRouteResponse {
@@ -1695,6 +1697,29 @@ export interface AgentStats {
 	lastRunAt: string
 }
 
+export interface AgentWorkflowEntry {
+	trigger: AgentWorkflowTrigger
+	description?: string
+	isActive: boolean
+	lastFired?: string
+	emit?: string
+	activities?: unknown[]
+	connections?: unknown[]
+	inputs?: unknown
+}
+
+export interface AgentWorkflowTrigger {
+	type: string
+	cron?: string
+	schedule?: string
+	interval?: string
+	window?: { start?: string; end?: string }
+	sources?: string[]
+	event?: string
+	plugin?: string
+	command?: string
+}
+
 export interface AliasEntry {
 	alias: string
 	command: string
@@ -1719,6 +1744,15 @@ export interface EnrichedChat {
 	createdAt: number
 	updatedAtEpoch: number
 	sessionName: string
+}
+
+export interface EventSourceOption {
+	value: string
+	label: string
+	kind: string
+	agentName: string
+	bindingName: string
+	description?: string
 }
 
 export interface ToolPermission {

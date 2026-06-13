@@ -98,6 +98,26 @@ pub async fn execute_workflow(
             .map(|s| s.to_string())
     });
 
+    // Explicit connections → deterministic graph execution (forks parallel,
+    // joins barriered, condition/loop routing engine-evaluated). No
+    // connections → the sequential array-order path below, unchanged.
+    if !def.connections.is_empty() {
+        return crate::graph::execute_graph(
+            def,
+            &inputs,
+            store,
+            provider,
+            resolved_tools,
+            &run_id,
+            cancel_token,
+            skill_content,
+            event_bus,
+            resolved_emit,
+            progress_tx,
+        )
+        .await;
+    }
+
     let mut total_tokens: u32 = 0;
     let mut prior_context = String::new();
     let activity_count = def.activities.len();
@@ -164,6 +184,10 @@ pub async fn execute_workflow(
 
         let started_at = chrono::Utc::now().timestamp();
 
+        // Accumulates every token this activity consumes — successful turns,
+        // evaluator turns, failed retry attempts, and exit-path turns.
+        let mut activity_spent: u32 = 0;
+
         match execute_activity_with_retry(
             activity,
             &prior_context,
@@ -175,11 +199,12 @@ pub async fn execute_workflow(
             store,
             &run_id,
             progress_tx.as_ref(),
+            &mut activity_spent,
         )
         .await
         {
-            Ok((result_text, tokens_used)) => {
-                total_tokens += tokens_used;
+            Ok((result_text, _tokens_used)) => {
+                total_tokens += activity_spent;
                 consecutive_failures = 0;
                 last_failure_pattern = None;
 
@@ -188,7 +213,7 @@ pub async fn execute_workflow(
                     &run_id,
                     &activity.id,
                     "completed",
-                    tokens_used as i64,
+                    activity_spent as i64,
                     1,
                     None,
                     started_at,
@@ -224,12 +249,13 @@ pub async fn execute_workflow(
                 ));
             }
             Err(WorkflowError::Exited(reason)) => {
+                total_tokens += activity_spent;
                 let completed_at = chrono::Utc::now().timestamp();
                 let _ = store.create_activity_result(
                     &run_id,
                     &activity.id,
                     "exited",
-                    0,
+                    activity_spent as i64,
                     1,
                     Some(&reason),
                     started_at,
@@ -247,13 +273,14 @@ pub async fn execute_workflow(
                 return Ok((run_id, prior_context));
             }
             Err(e) => {
+                total_tokens += activity_spent;
                 let completed_at = chrono::Utc::now().timestamp();
                 let err_msg = e.to_string();
                 if let Err(db_err) = store.create_activity_result(
                     &run_id,
                     &activity.id,
                     "failed",
-                    0,
+                    activity_spent as i64,
                     activity.on_error.retry as i64,
                     Some(&err_msg),
                     started_at,
@@ -352,7 +379,11 @@ pub async fn execute_workflow(
 }
 
 /// Execute an activity with retry support.
-async fn execute_activity_with_retry(
+///
+/// `spent` accumulates tokens across ALL attempts (failed retries included) —
+/// callers use it for run totals; the Ok tuple's count covers only the
+/// successful attempt.
+pub(crate) async fn execute_activity_with_retry(
     activity: &Activity,
     prior_context: &str,
     inputs: &serde_json::Value,
@@ -363,6 +394,7 @@ async fn execute_activity_with_retry(
     store: &Arc<Store>,
     run_id: &str,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
+    spent: &mut u32,
 ) -> Result<(String, u32), WorkflowError> {
     let max_attempts = activity.on_error.retry.max(1);
 
@@ -378,10 +410,14 @@ async fn execute_activity_with_retry(
             store,
             run_id,
             progress_tx,
+            spent,
         )
         .await
         {
             Ok(result) => return Ok(result),
+            // Deliberate stops are not failures — retrying would re-run the
+            // activity's tool side effects from scratch.
+            Err(e @ (WorkflowError::Exited(_) | WorkflowError::Cancelled)) => return Err(e),
             Err(e) if attempt + 1 < max_attempts => {
                 warn!(
                     activity = activity.id.as_str(),
@@ -413,6 +449,7 @@ pub async fn execute_activity(
     store: &Arc<Store>,
     run_id: &str,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
+    spent: &mut u32,
 ) -> Result<(String, u32), WorkflowError> {
     // Detect if browser tool is available for this activity
     let has_browser = tools.iter().any(|t| t.name() == "web");
@@ -442,10 +479,16 @@ pub async fn execute_activity(
         );
         let messages = vec![ai::Message {
             role: "user".into(),
-            content: activity.intent.clone(),
+            // Typed nodes may have no intent — the system prompt carries the
+            // type contract and parameters; providers reject empty messages.
+            content: if activity.intent.trim().is_empty() {
+                "Execute this activity as defined by its type and parameters.".to_string()
+            } else {
+                activity.intent.clone()
+            },
             ..Default::default()
         }];
-        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages).await;
+        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent).await;
     }
 
     // --- Per-step execution ---
@@ -507,25 +550,32 @@ pub async fn execute_activity(
             &tool_defs,
             &system,
             messages.clone(),
+            spent,
         )
         .await
         .map_err(|e| {
-            // Record failure
+            // Exit-by-design (exit tool) is a clean stop, not a step failure —
+            // recording it as failed painted successful exited runs red in the UI.
+            let status = if matches!(e, WorkflowError::Exited(_)) {
+                "exited"
+            } else {
+                "failed"
+            };
             let _ =
-                store.update_task_item(&task_item.id, "failed", None, Some(&e.to_string()), 0, 0);
+                store.update_task_item(&task_item.id, status, None, Some(&e.to_string()), 0, 0);
             if let Some(tx) = progress_tx {
                 let _ = tx.send(WorkflowProgress::TaskUpdated {
                     list_id: list_id.clone(),
                     task_id: task_item.id.clone(),
                     seq: task_seq,
-                    status: "failed".to_string(),
+                    status: status.to_string(),
                 });
             }
             e
         })?;
 
-        // --- Orchestrator evaluation ---
-        let eval = evaluate_step(
+        // --- Orchestrator evaluation (its tokens count too) ---
+        let (eval, eval_tokens) = evaluate_step(
             provider,
             &system,
             step,
@@ -534,6 +584,7 @@ pub async fn execute_activity(
             total_steps,
         )
         .await?;
+        *spent += eval_tokens;
 
         match eval {
             EvalDecision::Proceed => {
@@ -578,6 +629,15 @@ pub async fn execute_activity(
 
         // Record completion
         total_tokens += step_tokens;
+
+        // Cumulative per-activity budget across steps + evaluator turns.
+        if activity.token_budget.max > 0 && *spent > activity.token_budget.max {
+            return Err(WorkflowError::BudgetExceeded {
+                activity_id: activity.id.clone(),
+                used: *spent,
+                limit: activity.token_budget.max,
+            });
+        }
         let tokens_in = (step_tokens as i64) / 2; // approximate split
         let tokens_out = step_tokens as i64 - tokens_in;
         if let Err(e) = store.update_task_item(
@@ -608,7 +668,9 @@ pub async fn execute_activity(
 }
 
 /// Evaluate a step's output using the same provider (prompt-cached system prompt).
-/// Returns Proceed or Exit. Fails open (Proceed) on any error.
+/// Returns Proceed or Exit plus the evaluator's own token usage (previously
+/// uncounted — every step paid an invisible evaluation turn).
+/// Fails open (Proceed) on any error.
 async fn evaluate_step(
     provider: &dyn ai::Provider,
     system: &str,
@@ -616,7 +678,7 @@ async fn evaluate_step(
     step_output: &str,
     step_index: usize,
     total_steps: usize,
-) -> Result<EvalDecision, WorkflowError> {
+) -> Result<(EvalDecision, u32), WorkflowError> {
     let eval_system = format!(
         "{}\n\n## Step Evaluation Mode\n\
          You are evaluating the output of Step {}/{}: \"{}\"\n\n\
@@ -628,11 +690,7 @@ async fn evaluate_step(
         system, step_index + 1, total_steps, step_text,
     );
 
-    let truncated_output = if step_output.len() > 2000 {
-        &step_output[..2000]
-    } else {
-        step_output
-    };
+    let truncated_output = truncate_at_char_boundary(step_output, 2000);
 
     let messages = vec![ai::Message {
         role: "user".into(),
@@ -661,24 +719,34 @@ async fn evaluate_step(
         .map_err(|e| WorkflowError::Provider(e.to_string()))?;
 
     let mut response_text = String::new();
+    let mut eval_tokens: u32 = 0;
     while let Some(event) = rx.recv().await {
         match event.event_type {
             StreamEventType::Text => response_text.push_str(&event.text),
             StreamEventType::Error => {
                 warn!("step evaluator error: {:?}", event.error);
-                return Ok(EvalDecision::Proceed);
+                return Ok((EvalDecision::Proceed, eval_tokens));
             }
-            StreamEventType::Done => break,
+            StreamEventType::Done => {
+                if let Some(usage) = event.usage {
+                    eval_tokens = (usage.input_tokens + usage.output_tokens) as u32;
+                }
+                break;
+            }
             _ => {}
         }
     }
 
-    Ok(parse_eval_response(&response_text))
+    Ok((parse_eval_response(&response_text), eval_tokens))
 }
 
 /// Core LLM multi-turn loop extracted from the original execute_activity.
 /// Runs until the LLM produces a response with no tool calls, then returns
 /// the final text response and total tokens used.
+///
+/// `spent` accumulates EVERY token consumed, including turns that later end
+/// in an error — error variants can't carry token counts, so callers read
+/// the accumulator to keep run totals truthful across exits/failures/retries.
 async fn run_llm_loop(
     activity: &Activity,
     provider: &dyn ai::Provider,
@@ -686,6 +754,7 @@ async fn run_llm_loop(
     tool_defs: &[ai::ToolDefinition],
     system: &str,
     mut messages: Vec<ai::Message>,
+    spent: &mut u32,
 ) -> Result<(String, u32), WorkflowError> {
     let mut tokens_used: u32 = 0;
     let mut iterations: u32 = 0;
@@ -738,12 +807,25 @@ async fn run_llm_loop(
                 }
                 StreamEventType::Done => {
                     if let Some(usage) = event.usage {
-                        tokens_used += (usage.input_tokens + usage.output_tokens) as u32;
+                        let turn = (usage.input_tokens + usage.output_tokens) as u32;
+                        tokens_used += turn;
+                        *spent += turn;
                     }
                     break;
                 }
                 _ => {}
             }
+        }
+
+        // Per-activity token budget — enforced DURING the loop, not after the
+        // activity finishes. A runaway activity stops at its own ceiling
+        // instead of spending unboundedly until the workflow-total check.
+        if activity.token_budget.max > 0 && tokens_used > activity.token_budget.max {
+            return Err(WorkflowError::BudgetExceeded {
+                activity_id: activity.id.clone(),
+                used: tokens_used,
+                limit: activity.token_budget.max,
+            });
         }
 
         // If no tool calls, check if we should force-continue (min_iterations budget)
@@ -833,18 +915,6 @@ async fn run_llm_loop(
                 consecutive_same_tool = 1;
             }
         }
-        if consecutive_same_tool >= 3 {
-            messages.push(ai::Message {
-                role: "user".into(),
-                content: format!(
-                    "You have called '{}' {} times in a row. Take a different action \
-                     or complete this activity by responding without tool calls.",
-                    last_tool_name, consecutive_same_tool
-                ),
-                ..Default::default()
-            });
-        }
-
         // Early termination on repeated tool-not-found
         let all_not_found = tool_result_entries.iter().all(|e| {
             e.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false)
@@ -871,6 +941,21 @@ async fn run_llm_loop(
             tool_results: Some(serde_json::Value::Array(tool_result_entries)),
             ..Default::default()
         });
+
+        // Same-tool loop nudge — MUST come after the tool-results message:
+        // providers reject a user message wedged between tool_use and
+        // tool_result, which would 400 exactly when the model is stuck.
+        if consecutive_same_tool >= 3 {
+            messages.push(ai::Message {
+                role: "user".into(),
+                content: format!(
+                    "You have called '{}' {} times in a row. Take a different action \
+                     or complete this activity by responding without tool calls.",
+                    last_tool_name, consecutive_same_tool
+                ),
+                ..Default::default()
+            });
+        }
 
         iterations += 1;
     }
@@ -899,7 +984,7 @@ fn synthesize_from_tool_results(messages: &[ai::Message]) -> String {
                     let joined = parts.join("\n---\n");
                     const MAX_LEN: usize = 4000;
                     if joined.len() > MAX_LEN {
-                        return format!("{}...", &joined[..MAX_LEN]);
+                        return format!("{}...", truncate_at_char_boundary(&joined, MAX_LEN));
                     }
                     return joined;
                 }
@@ -942,9 +1027,48 @@ fn build_activity_prompt_no_steps(
     prompt
 }
 
+/// How each LLM-driven activity type operates. Deterministic types
+/// (condition/loop/wait/http) never reach the LLM — the engine executes them.
+fn typed_node_preamble(activity_type: &str) -> Option<&'static str> {
+    match activity_type {
+        "research" => Some(
+            "This is a research activity: gather information per the parameters \
+             (depth, sources) using web/search tools. Summarize findings with sources.",
+        ),
+        "email" => Some(
+            "This is an email activity: compose and send using the messaging tools. \
+             Recipient/subject parameters are authoritative; template placeholders like \
+             {{topic}} resolve from inputs and prior results.",
+        ),
+        "notify" => Some(
+            "This is a notification activity: deliver one concise notification to the \
+             owner via the message tool. No follow-up actions.",
+        ),
+        "code" => Some(
+            "This is a code activity: write and run code in the configured language \
+             using the os tool. Return the program's output as your summary.",
+        ),
+        "transform" => Some(
+            "This is a data-transform activity: reshape the prior results/inputs as the \
+             parameters describe. Output ONLY the transformed data — no commentary.",
+        ),
+        "agent" => Some(
+            "This is a delegation activity: delegate the task to the agent named in the \
+             parameters via agent(resource: \"registry\", action: \"delegate\", ...) and \
+             relay its result.",
+        ),
+        "connector" => Some(
+            "This is an MCP connector activity: call the configured server's tool \
+             (parameters name the server, tool, and input) via the mcp tool and report \
+             the result.",
+        ),
+        _ => None,
+    }
+}
+
 /// Build the system prompt for an activity.
 ///
-/// Spec order: Execution Rules → Skills → Tools → Task → Steps → Inputs → Prior Results → Browser Guide
+/// Spec order: Execution Rules → Skills → Tools → Type/Params → Task → Steps → Inputs → Prior Results → Browser Guide
 fn build_activity_prompt(
     activity: &Activity,
     prior_context: &str,
@@ -1000,8 +1124,32 @@ fn build_activity_prompt(
         prompt.push_str("\nDo NOT call any tool not in this list. Do NOT prefix tool names with mcp__ or any namespace.\n\n");
     }
 
-    // Intent
-    prompt.push_str(&format!("## Task\n{}\n\n", activity.intent));
+    // Typed-node contract: the type's preamble tells the model HOW this
+    // activity kind operates; params are the authoritative configuration.
+    // Routing stays with the engine — these only shape the work inside the node.
+    if let Some(preamble) = typed_node_preamble(&activity.activity_type) {
+        prompt.push_str(&format!(
+            "## Activity Type: {}\n{}\n\n",
+            activity.activity_type, preamble
+        ));
+    }
+    if let Some(params) = &activity.params {
+        if params.as_object().is_some_and(|o| !o.is_empty()) {
+            prompt.push_str(&format!(
+                "## Parameters\nConfigured parameters for this activity — treat them as authoritative:\n```json\n{}\n```\n\n",
+                serde_json::to_string_pretty(params).unwrap_or_else(|_| params.to_string())
+            ));
+        }
+    }
+
+    // Intent — typed nodes may have none; the type + parameters ARE the task.
+    if activity.intent.trim().is_empty() {
+        prompt.push_str(
+            "## Task\nExecute this activity as defined by its type and parameters above.\n\n",
+        );
+    } else {
+        prompt.push_str(&format!("## Task\n{}\n\n", activity.intent));
+    }
 
     // Steps
     if !activity.steps.is_empty() {
@@ -1092,7 +1240,7 @@ fn format_input_value(val: &serde_json::Value) -> String {
             } else {
                 format!(
                     "{}\n\n... (truncated — {} total chars)",
-                    &s[..INPUT_VALUE_MAX_CHARS],
+                    truncate_at_char_boundary(s, INPUT_VALUE_MAX_CHARS),
                     s.len()
                 )
             }
@@ -1131,7 +1279,7 @@ fn format_input_value(val: &serde_json::Value) -> String {
                     result.push_str("\n```");
                 } else {
                     result.push_str("```json\n");
-                    result.push_str(&pretty[..INPUT_VALUE_MAX_CHARS]);
+                    result.push_str(truncate_at_char_boundary(&pretty, INPUT_VALUE_MAX_CHARS));
                     result.push_str("\n```\n");
                     result.push_str(&format!(
                         "... (nested data truncated — {} total chars)",
@@ -1149,13 +1297,28 @@ fn format_input_value(val: &serde_json::Value) -> String {
             } else {
                 format!(
                     "```json\n{}\n```\n... (truncated — {} total chars)",
-                    &pretty[..INPUT_VALUE_MAX_CHARS],
+                    truncate_at_char_boundary(&pretty, INPUT_VALUE_MAX_CHARS),
                     pretty.len()
                 )
             }
         }
         other => other.to_string(),
     }
+}
+
+/// Truncate a string at a byte limit without splitting a UTF-8 character.
+/// Direct byte slicing (`&s[..n]`) panics when `n` lands inside a multibyte
+/// character — tool output routinely contains emoji and non-ASCII text, and
+/// a panic here kills the run task, leaving the run stuck in `running`.
+fn truncate_at_char_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// Extract a normalized error pattern for circuit breaker comparison.
@@ -1213,6 +1376,48 @@ mod engine_tests {
             EvalDecision::Proceed => {}
             other => panic!("expected Proceed, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_typed_node_prompt_injection() {
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "send-summary",
+            "type": "email",
+            "params": { "to": "owner@example.com", "subject": "Daily {{topic}}" }
+        }))
+        .unwrap();
+        let prompt = build_activity_prompt(
+            &activity,
+            "",
+            &serde_json::json!({}),
+            None,
+            None,
+            false,
+            &[],
+        );
+        assert!(prompt.contains("## Activity Type: email"));
+        assert!(prompt.contains("## Parameters"));
+        assert!(prompt.contains("owner@example.com"));
+        // Empty intent gets the deterministic fallback task line.
+        assert!(prompt.contains("Execute this activity as defined by its type and parameters"));
+
+        // Plain activities are unchanged: no type/params sections.
+        let plain: Activity = serde_json::from_value(serde_json::json!({
+            "id": "a", "intent": "Do the thing"
+        }))
+        .unwrap();
+        let prompt = build_activity_prompt(
+            &plain,
+            "",
+            &serde_json::json!({}),
+            None,
+            None,
+            false,
+            &[],
+        );
+        assert!(!prompt.contains("## Activity Type"));
+        assert!(!prompt.contains("## Parameters"));
+        assert!(prompt.contains("## Task\nDo the thing"));
     }
 
     #[test]

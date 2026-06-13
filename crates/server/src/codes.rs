@@ -461,14 +461,10 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
 
 /// Install a collection (COLL-): redeem the code to resolve the collection, then
 /// install EVERY item through the one canonical multi-artifact installer
-/// (`deps::resolve_cascade_force`), which redeems, persists, reloads, and cascades
+/// (`deps::resolve_cascade`), which redeems, persists, reloads, and cascades
 /// each item's transitive dependencies. There is intentionally no separate
 /// collection installer — a collection is just a named list of artifact codes, so
 /// it flows through the same path a single pasted code would.
-///
-/// Items are FORCE-installed: pasting a collection code is an explicit request for
-/// the whole bundle, so every item must install regardless of `autonomous_mode`
-/// (which only gates implicit dependency auto-install).
 async fn handle_collection_code(
     state: &AppState,
     code: &str,
@@ -555,9 +551,9 @@ async fn handle_collection_code(
     }
     let total = deps.len();
 
-    // Install every item via the canonical installer (force — see fn doc).
+    // Install every item via the canonical installer.
     let mut visited = std::collections::HashSet::new();
-    let result = crate::deps::resolve_cascade_force(state, deps, &mut visited).await;
+    let result = crate::deps::resolve_cascade(state, deps, &mut visited).await;
 
     // Apps install through the agent path; detect & persist their app-specific
     // paths so they show up and launch as apps (the cascade only does the agent part).

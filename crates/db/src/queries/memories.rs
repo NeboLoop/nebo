@@ -256,6 +256,21 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Delete memories under a namespace prefix across ALL user scopes.
+    /// Used to retire a whole layer (e.g. the legacy `daily/` layer).
+    pub fn delete_memories_by_namespace_prefix(
+        &self,
+        namespace_prefix: &str,
+    ) -> Result<usize, NeboError> {
+        let conn = self.conn()?;
+        let pattern = format!("{namespace_prefix}%");
+        conn.execute(
+            "DELETE FROM memories WHERE namespace LIKE ?1",
+            params![pattern],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn search_memories(
         &self,
         query: &str,
@@ -575,5 +590,36 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+
+    #[test]
+    fn test_delete_memories_by_namespace_prefix() {
+        let path = std::env::temp_dir().join(format!("nebo-memq-test-{}.db", std::process::id()));
+        let path_str = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+        let store = Store::new(&path_str).unwrap();
+
+        store
+            .upsert_memory("daily/2026-04-14", "old-fact", "v", None, None, "u1")
+            .unwrap();
+        store
+            .upsert_memory("daily/2026-06-12", "new-fact", "v", None, None, "u2:agent:x")
+            .unwrap();
+        store
+            .upsert_memory("tacit/preferences", "keep-me", "v", None, None, "u1")
+            .unwrap();
+
+        // Deletes across ALL user scopes, prefix-bounded
+        let deleted = store.delete_memories_by_namespace_prefix("daily/").unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(store.count_memories_by_namespace("daily/").unwrap(), 0);
+        assert_eq!(store.count_memories_by_namespace("tacit/").unwrap(), 1);
+
+        let _ = std::fs::remove_file(&path);
     }
 }

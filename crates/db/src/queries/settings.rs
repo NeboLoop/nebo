@@ -8,7 +8,7 @@ impl Store {
     pub fn get_settings(&self) -> Result<Option<Setting>, NeboError> {
         let conn = self.conn()?;
         match conn.query_row(
-            "SELECT id, autonomous_mode, auto_approve_read, auto_approve_write,
+            "SELECT id, auto_install_deps, auto_approve_read, auto_approve_write,
                     auto_approve_bash, heartbeat_interval_minutes, comm_enabled,
                     comm_plugin, developer_mode, auto_update, updated_at
              FROM settings WHERE id = 1",
@@ -16,7 +16,7 @@ impl Store {
             |row| {
                 Ok(Setting {
                     id: row.get(0)?,
-                    autonomous_mode: row.get(1)?,
+                    auto_install_deps: row.get(1)?,
                     auto_approve_read: row.get(2)?,
                     auto_approve_write: row.get(3)?,
                     auto_approve_bash: row.get(4)?,
@@ -37,7 +37,7 @@ impl Store {
 
     pub fn update_settings(
         &self,
-        autonomous_mode: Option<bool>,
+        auto_install_deps: Option<bool>,
         auto_approve_read: Option<bool>,
         auto_approve_write: Option<bool>,
         auto_approve_bash: Option<bool>,
@@ -67,7 +67,7 @@ impl Store {
             };
         }
 
-        maybe_set!(autonomous_mode, "autonomous_mode");
+        maybe_set!(auto_install_deps, "auto_install_deps");
         maybe_set!(auto_approve_read, "auto_approve_read");
         maybe_set!(auto_approve_write, "auto_approve_write");
         maybe_set!(auto_approve_bash, "auto_approve_bash");
@@ -90,7 +90,7 @@ impl Store {
 
         // Build params dynamically
         let mut idx = 1;
-        if let Some(v) = autonomous_mode {
+        if let Some(v) = auto_install_deps {
             stmt.raw_bind_parameter(idx, v as i64)
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             idx += 1;
@@ -316,5 +316,43 @@ impl Store {
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+
+    fn temp_store() -> Store {
+        let path = std::env::temp_dir().join(format!(
+            "nebo-settings-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        Store::new(path.to_str().unwrap()).unwrap()
+    }
+
+    /// Proves the `autonomous_mode` → `auto_install_deps` column rename: the
+    /// 0104 migration applied, and the field round-trips through update/get.
+    #[test]
+    fn auto_install_deps_round_trips() {
+        let store = temp_store();
+
+        // Default OFF.
+        let s = store.get_settings().unwrap().unwrap();
+        assert_eq!(s.auto_install_deps, 0);
+
+        // Setting only this flag persists it without touching the others.
+        store
+            .update_settings(
+                Some(true),
+                None, None, None, None, None, None, None, None,
+            )
+            .unwrap();
+        let s = store.get_settings().unwrap().unwrap();
+        assert_eq!(s.auto_install_deps, 1);
     }
 }

@@ -70,7 +70,7 @@ impl AgentWorker {
     /// When `config` is `Some`, uses the pre-parsed agent config directly (avoids
     /// redundant DB reads and `parse_agent_config` calls during startup).
     /// When `None`, falls back to loading and parsing from DB.
-    pub fn start(
+    pub async fn start(
         agent_id: String,
         name: String,
         store: Arc<Store>,
@@ -127,6 +127,17 @@ impl AgentWorker {
         workflow::triggers::register_agent_triggers(&agent_id, &bindings, &store);
 
         for binding in &bindings {
+            // Toggled-off bindings must not start trigger loops. Schedule
+            // bindings are gated at dispatch time by the cron scheduler;
+            // heartbeat/watch/folder/event are gated here.
+            if binding.is_active == 0 {
+                debug!(
+                    agent = %agent_id,
+                    binding = %binding.binding_name,
+                    "binding inactive, skipping trigger registration"
+                );
+                continue;
+            }
             // Look up the WorkflowBinding from agent config to get activities
             let wf_binding = agent_config
                 .as_ref()
@@ -179,12 +190,25 @@ impl AgentWorker {
                         loop {
                             tokio::select! {
                                 _ = interval.tick() => {
-                                    // Check time window if configured
+                                    // Check time window if configured. A window with
+                                    // start > end wraps past midnight (e.g. 22:00-06:00).
                                     if let Some((start, end)) = &window {
                                         let now = chrono::Local::now().time();
-                                        if now < *start || now > *end {
+                                        let in_window = if start <= end {
+                                            now >= *start && now <= *end
+                                        } else {
+                                            now >= *start || now <= *end
+                                        };
+                                        if !in_window {
                                             continue;
                                         }
+                                    }
+
+                                    // Honor the workflow toggle without requiring a
+                                    // worker restart.
+                                    if let Ok(false) = hb_store.is_agent_workflow_active(&agent, &bname) {
+                                        debug!(agent = %agent, binding = %bname, "heartbeat skipped: binding inactive");
+                                        continue;
                                     }
 
                                     // Skip if a previous run for this binding is still active
@@ -266,7 +290,6 @@ impl AgentWorker {
                         if pattern.is_empty() {
                             continue;
                         }
-                        let dispatcher = event_dispatcher.clone();
                         let sub = EventSubscription {
                             pattern,
                             default_inputs: inputs.clone(),
@@ -275,9 +298,11 @@ impl AgentWorker {
                             definition_json: def_json.clone(),
                             emit_source: event_emit_source.clone(),
                         };
-                        tokio::spawn(async move {
-                            dispatcher.subscribe(sub).await;
-                        });
+                        // Inline (not spawned): subscriptions must be in place
+                        // before start() returns, so a restart's awaited stop →
+                        // start sequence can never interleave unsubscribes with
+                        // these registrations.
+                        event_dispatcher.subscribe(sub).await;
                     }
                 }
                 "watch" => {
@@ -651,21 +676,20 @@ impl AgentWorker {
     }
 
     /// Stop the worker: cancel all spawned tasks, running workflows, cron jobs and event subscriptions.
-    pub fn stop(&self, store: &Store) {
+    ///
+    /// Fully awaited — when this returns, every event subscription is gone.
+    /// (The old fire-and-forget unsubscribe raced restarts: it could execute
+    /// AFTER the replacement worker subscribed, silently killing the new
+    /// worker's event triggers.)
+    pub async fn stop(&self, store: &Store) {
         self.cancel.cancel();
         workflow::triggers::unregister_agent_triggers(&self.agent_id, store);
-        // Cancel any running workflows spawned by this agent
-        let mgr = self.workflow_manager.clone();
-        let agent_id_wf = self.agent_id.clone();
-        tokio::spawn(async move {
-            mgr.cancel_runs_for_agent(&agent_id_wf).await;
-        });
-        // Clean up event subscriptions (async, fire-and-forget)
-        let dispatcher = self.event_dispatcher.clone();
-        let agent_id = self.agent_id.clone();
-        tokio::spawn(async move {
-            dispatcher.unsubscribe_agent(&agent_id).await;
-        });
+        self.workflow_manager
+            .cancel_runs_for_agent(&self.agent_id)
+            .await;
+        self.event_dispatcher
+            .unsubscribe_agent(&self.agent_id)
+            .await;
         info!(agent = %self.agent_id, "agent worker stopped");
     }
 }
@@ -827,11 +851,13 @@ impl AgentWorkerRegistry {
         name: &str,
         config: Option<napp::agent::AgentConfig>,
     ) {
-        // Stop existing worker if any
+        // Stop existing worker if any — AWAITED, so its unsubscribes finish
+        // before the new worker registers (no restart race). The write lock
+        // is held across the await to serialize same-agent restarts.
         {
             let mut workers = self.workers.write().await;
             if let Some(old) = workers.remove(agent_id) {
-                old.stop(&self.store);
+                old.stop(&self.store).await;
             }
         }
 
@@ -848,7 +874,8 @@ impl AgentWorkerRegistry {
             self.watch_semaphore.clone(),
             self.channel_dispatch.get().cloned(),
             self.shared_bridges.clone(),
-        );
+        )
+        .await;
 
         self.workers
             .write()
@@ -860,7 +887,7 @@ impl AgentWorkerRegistry {
     pub async fn stop_agent(&self, agent_id: &str) {
         let mut workers = self.workers.write().await;
         if let Some(worker) = workers.remove(agent_id) {
-            worker.stop(&self.store);
+            worker.stop(&self.store).await;
         }
     }
 
@@ -869,7 +896,7 @@ impl AgentWorkerRegistry {
         self.shared_bridges.stop_all().await;
         let mut workers = self.workers.write().await;
         for (_, worker) in workers.drain() {
-            worker.stop(&self.store);
+            worker.stop(&self.store).await;
         }
     }
 }
@@ -897,32 +924,7 @@ fn parse_heartbeat(
 
 /// Parse a duration string like "30m", "1h", "5s", "2h30m".
 fn parse_duration(s: &str) -> std::time::Duration {
-    let s = s.trim();
-    let mut total_secs: u64 = 0;
-    let mut num_buf = String::new();
-
-    for c in s.chars() {
-        if c.is_ascii_digit() {
-            num_buf.push(c);
-        } else {
-            let n: u64 = num_buf.parse().unwrap_or(0);
-            num_buf.clear();
-            match c {
-                'h' => total_secs += n * 3600,
-                'm' => total_secs += n * 60,
-                's' => total_secs += n,
-                _ => {}
-            }
-        }
-    }
-
-    // If there's a trailing number with no unit, treat as minutes
-    if !num_buf.is_empty() {
-        let n: u64 = num_buf.parse().unwrap_or(0);
-        total_secs += n * 60;
-    }
-
-    std::time::Duration::from_secs(total_secs)
+    types::timeutil::parse_duration(s)
 }
 
 /// Parse a time window like "08:00-18:00".
