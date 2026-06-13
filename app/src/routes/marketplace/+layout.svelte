@@ -7,7 +7,7 @@
   import { installItem } from '$lib/stores/marketplace.js';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { dispatchInstallStart } from '$lib/marketplace/installCodes';
-  import CodeInstallModal from '$lib/components/chat/CodeInstallModal.svelte';
+  import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   import { slugify } from '$lib/data/categories';
@@ -361,4 +361,4 @@
   </div>
 </div>
 
-<CodeInstallModal bind:show={showInstallModal} />
+<InstallFlowModal bind:show={showInstallModal} mode="code" />

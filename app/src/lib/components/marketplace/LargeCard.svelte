@@ -3,9 +3,9 @@
 	import InstallCode from '$lib/components/InstallCode.svelte';
 	import PricePill from './PricePill.svelte';
 	import ArtifactIcon from './ArtifactIcon.svelte';
-	import AgentSetupModal from '$lib/components/agent-setup/AgentSetupModal.svelte';
+	import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
 	import { type AppItem, itemHref } from '$lib/types/marketplace';
-	import { installStoreProduct, listAgents, activateAgent } from '$lib/api/nebo';
+	import { installStoreProduct } from '$lib/api/nebo';
 	import webapi from '$lib/api/gocliRequest';
 	import { CheckCircle } from 'lucide-svelte';
 
@@ -26,36 +26,19 @@
 		e.stopPropagation();
 		if (installing || item.installed) return;
 
+		// Agents/apps install + configure + activate through the unified flow.
+		if (item.type === 'agent' || item.type === 'app') {
+			const detail = await webapi.get<any>(`/api/v1/store/products/${item.id}`).catch(() => null);
+			setupInputs = detail?.typeConfig?.inputs || detail?.inputs || {};
+			showSetupModal = true;
+			return;
+		}
+
+		// Non-agent artifacts (skill/plugin/connector/workflow/collection) install directly;
+		// their declared deps force-cascade on the backend.
 		installing = true;
 		try {
-			if (item.type === 'agent') {
-				const detail = await webapi.get<any>(`/api/v1/store/products/${item.id}`).catch(() => null);
-				const inputs = detail?.typeConfig?.inputs || detail?.inputs || {};
-
-				if (Object.keys(inputs).length > 0) {
-					setupInputs = inputs;
-					showSetupModal = true;
-					installing = false;
-					return;
-				}
-			}
-
 			await installStoreProduct(item.id);
-
-			if (item.type === 'agent') {
-				const agentsRes = await listAgents();
-				const allAgents = (agentsRes?.agents || []) as Array<{ id: string; name?: string }>;
-				const matched = allAgents.find(
-					(r) => r.name?.toLowerCase() === item.name.toLowerCase()
-				);
-
-				if (matched) {
-					await activateAgent(matched.id);
-					goto(`/agent/persona/${matched.id}/chat`);
-					return;
-				}
-			}
-
 			item.installed = true;
 		} catch {
 			// ignore
@@ -64,13 +47,9 @@
 		}
 	}
 
-	function handleSetupComplete(agentId: string) {
+	function handleSetupComplete(agentId?: string) {
 		showSetupModal = false;
-		goto(`/agent/persona/${agentId}/chat`);
-	}
-
-	function handleSetupCancel() {
-		showSetupModal = false;
+		if (agentId) goto(`/${agentId}/threads`);
 	}
 </script>
 
@@ -118,13 +97,14 @@
 </a>
 
 {#if showSetupModal}
-	<AgentSetupModal
+	<InstallFlowModal
+		mode="product"
+		bind:show={showSetupModal}
 		appId={item.id}
 		agentName={item.name}
 		agentDescription={item.description}
-		inputs={setupInputs}
+		seedInputs={setupInputs}
 		dependencies={(item as any)?.dependencies ?? (item as any)?.typeConfig?.dependencies}
-		onComplete={handleSetupComplete}
-		onCancel={handleSetupCancel}
+		oncomplete={handleSetupComplete}
 	/>
 {/if}

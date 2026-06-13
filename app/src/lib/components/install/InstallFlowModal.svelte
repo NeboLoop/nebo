@@ -1,0 +1,975 @@
+<!--
+  InstallFlowModal — the ONE install + setup flow for every entry point.
+
+  Replaces the old CodeInstallModal (paste-a-code) and AgentSetupModal (marketplace
+  wizard). Three launch modes converge on one phase machine:
+
+    • code      — WS-driven: opens on a pasted install code (nebo:code_processing).
+    • product   — API-driven: caller sets appId + show; we call installStoreProduct.
+    • configure — edit an already-installed agent (existingAgentId); no install.
+
+  Phase machine (conditional steps shown only when applicable):
+    installing → [confirm → processing]            (payment, code mode only)
+              → loadSetup(agentId)                  (the join point)
+              → [inputs] → [auth] → [schedule] → finalize → done
+
+  The backend force-installs declared deps at install time, so the dependency
+  cascade always settles via dep_* events — this modal just renders progress; it
+  never force-installs (the only retry path is the per-row Install button →
+  approveDeps for a failed dep). "Skip setup" activates immediately with defaults
+  and leaves any unfilled inputs / missing plugin auth flagged in Settings.
+-->
+
+<script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
+  import { goto } from '$app/navigation';
+  import {
+    approveDeps,
+    authLogin,
+    neboAIBillingPaymentMethods,
+    installStoreProduct,
+    activateAgent,
+    getAgent,
+    updateAgentInputs,
+    listAgentWorkflows,
+    updateAgentWorkflow,
+  } from '$lib/api/nebo';
+  import { createMarketplaceSubscription } from '$lib/api/index';
+  import type { PaymentMethodInfo, AgentWorkflow } from '$lib/api/neboComponents';
+  import type { AgentInputField } from '$lib/types/agentPage';
+  import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
+
+  type Phase =
+    | 'installing'
+    | 'confirm'
+    | 'processing'
+    | 'inputs'
+    | 'auth'
+    | 'schedule'
+    | 'done'
+    | 'error';
+  type Mode = 'code' | 'product' | 'configure';
+
+  type DepItem = {
+    reference: string;
+    type: string;
+    name?: string;
+    slug?: string;
+    status: 'pending' | 'installing' | 'installed' | 'failed';
+    error?: string;
+  };
+  type TierInfo = {
+    name?: string;
+    recurringPriceCents?: number;
+    billingInterval?: string;
+    pricingModel?: string;
+  };
+  type AuthEntry = { slug: string; label: string; description: string; authType?: string };
+
+  let {
+    show = $bindable(false),
+    mode = 'code',
+    appId = '',
+    existingAgentId = '',
+    agentName = '',
+    agentDescription = '',
+    seedInputs = {},
+    dependencies = undefined,
+    onclose,
+    oncomplete,
+    onUninstall,
+  }: {
+    show?: boolean;
+    mode?: Mode;
+    appId?: string;
+    existingAgentId?: string;
+    agentName?: string;
+    agentDescription?: string;
+    seedInputs?: Record<string, unknown> | Record<string, unknown>[];
+    dependencies?: unknown;
+    onclose?: () => void;
+    oncomplete?: (agentId?: string) => void;
+    onUninstall?: () => void;
+  } = $props();
+
+  const configuring = $derived(mode === 'configure');
+
+  let phase = $state<Phase>('installing');
+  let code = $state('');
+  let codeType = $state('');
+  let artifactName = $state('');
+  let artifactType = $state('');
+  let statusMessage = $state('');
+  let errorMessage = $state('');
+  let interactive = $state(true);
+
+  // The installed agent we configure + activate. Set from code_result (code),
+  // installStoreProduct (product), or existingAgentId (configure).
+  let agentId = $state('');
+
+  // Dependency cascade rendering.
+  let deps = $state<DepItem[]>([]);
+  let depTotal = $state(0);
+  let copiedRef = $state('');
+  let needsSetup = $state<Array<{ slug: string; label: string; description: string }>>([]);
+
+  // Inputs / auth / schedule setup.
+  let inputFields = $state<AgentInputField[]>([]);
+  let inputValues = $state<Record<string, unknown>>({});
+  let inputsCollected = $state(false);
+  let workflows = $state<AgentWorkflow[]>([]);
+  let scheduleOverrides = $state<Record<string, string>>({});
+  let needsSetupFlag = $state(false);
+
+  // Plugin auth queue.
+  let authQueue = $state<AuthEntry[]>([]);
+  let authIndex = $state(0);
+  let authInProgress = $state(false);
+
+  // Payment (code mode only).
+  let tier = $state<TierInfo | null>(null);
+  let paymentMethod = $state<PaymentMethodInfo | null>(null);
+  let paymentMethodLoading = $state(false);
+  let confirmLoading = $state(false);
+  let artifactId = $state('');
+
+  // Guards.
+  let launched = false;
+  let installTimeout: ReturnType<typeof setTimeout> | null = null;
+  let copyTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  const typeLabel = $derived(codeType ? codeType.charAt(0).toUpperCase() + codeType.slice(1) : 'Agent');
+  const installedCount = $derived(deps.filter((d) => d.status === 'installed').length);
+  const failedCount = $derived(deps.filter((d) => d.status === 'failed').length);
+  const settledCount = $derived(installedCount + failedCount);
+  const progressTotal = $derived(Math.max(depTotal, deps.length));
+  const currentAuth = $derived(authQueue[authIndex]);
+  const currentAuthNeedsKeys = $derived(authQueue[authIndex]?.authType === 'env');
+  const hasSchedules = $derived(
+    Array.isArray(workflows) &&
+      workflows.some((w) => w.isActive && (w.triggerType === 'schedule' || w.triggerType === 'heartbeat')),
+  );
+
+  const title = $derived(
+    phase === 'done'
+      ? configuring ? 'Saved' : `${artifactName || typeLabel} Installed`
+      : phase === 'error'
+        ? 'Install Failed'
+        : phase === 'confirm'
+          ? 'Confirm Purchase'
+          : phase === 'processing'
+            ? 'Processing Payment'
+            : phase === 'inputs'
+              ? configuring ? `Configure ${agentName || ''}` : `Set up ${artifactName || agentName || ''}`
+              : phase === 'auth'
+                ? `Connect ${currentAuth?.label || 'Account'}`
+                : phase === 'schedule'
+                  ? 'How often should it run?'
+                  : `Installing ${typeLabel}`,
+  );
+
+  const intervalOptions = [
+    { value: '5m', label: 'Every 5 minutes' },
+    { value: '10m', label: 'Every 10 minutes' },
+    { value: '15m', label: 'Every 15 minutes' },
+    { value: '30m', label: 'Every 30 minutes' },
+    { value: '1h', label: 'Every hour' },
+    { value: '2h', label: 'Every 2 hours' },
+    { value: '4h', label: 'Every 4 hours' },
+    { value: '8h', label: 'Every 8 hours' },
+    { value: '24h', label: 'Every 24 hours' },
+  ];
+
+  function formatPrice(cents: number, interval?: string): string {
+    const amount = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'usd',
+      minimumFractionDigits: 0,
+    }).format(cents / 100);
+    if (interval === 'year') return `${amount}/yr`;
+    if (interval === 'month') return `${amount}/mo`;
+    return amount;
+  }
+
+  /** Normalize a marketplace inputs blob (array or object) into AgentInputField[]. */
+  function normalizeInputs(raw: Record<string, unknown> | Record<string, unknown>[]): AgentInputField[] {
+    if (Array.isArray(raw)) {
+      return raw.map((f: any) => ({
+        key: f.key || f.name || '',
+        label:
+          f.label ||
+          (f.name || '').replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+        description: f.description || '',
+        type: f.type || 'text',
+        required: f.required || false,
+        default: f.default,
+        placeholder: f.placeholder || '',
+        options: Array.isArray(f.options)
+          ? f.options.map((o: any) =>
+              typeof o === 'string'
+                ? { value: o, label: o.replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) }
+                : o,
+            )
+          : f.options,
+      }));
+    }
+    return Object.keys(raw || {}).map((key) => ({
+      key,
+      label: key.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+      description: '',
+      type: 'text',
+      required: false,
+    }));
+  }
+
+  function reset() {
+    phase = 'installing';
+    code = '';
+    codeType = '';
+    artifactName = '';
+    artifactType = '';
+    statusMessage = '';
+    errorMessage = '';
+    interactive = true;
+    agentId = '';
+    deps = [];
+    depTotal = 0;
+    needsSetup = [];
+    inputFields = [];
+    inputValues = {};
+    inputsCollected = false;
+    workflows = [];
+    scheduleOverrides = {};
+    needsSetupFlag = false;
+    authQueue = [];
+    authIndex = 0;
+    authInProgress = false;
+    tier = null;
+    paymentMethod = null;
+    paymentMethodLoading = false;
+    confirmLoading = false;
+    artifactId = '';
+  }
+
+  function close() {
+    if (installTimeout) {
+      clearTimeout(installTimeout);
+      installTimeout = null;
+    }
+    show = false;
+    launched = false;
+    onclose?.();
+  }
+
+  function autoCloseIfRemote(delay = 1500) {
+    if (!interactive) setTimeout(close, delay);
+  }
+
+  function notifySidebarRefresh() {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('nebo:agent_installed', { detail: {} }));
+    }
+  }
+
+  // ── Launch (product / configure modes are caller-driven) ──────────────────
+  $effect(() => {
+    if (!show || launched) return;
+    if (mode === 'product' || mode === 'configure') {
+      launched = true;
+      interactive = true;
+      codeType = 'agent';
+      void startCallerDriven();
+    }
+  });
+
+  async function startCallerDriven() {
+    reset();
+    launched = true;
+    show = true;
+    artifactName = agentName;
+    // Prefill inputs immediately from the seed so the form has labels to render.
+    inputValues = Array.isArray(seedInputs) ? {} : { ...(seedInputs as Record<string, unknown>) };
+    try {
+      if (mode === 'configure') {
+        agentId = existingAgentId;
+      } else {
+        statusMessage = 'Installing…';
+        phase = 'installing';
+        if (dependencies) seedDepRows(dependencies);
+        const res = await installStoreProduct(appId);
+        agentId = (res as any)?.agentId || appId;
+        notifySidebarRefresh();
+      }
+      await loadSetup(agentId);
+    } catch (e: any) {
+      errorMessage = e?.error || e?.message || 'Failed to install';
+      phase = 'error';
+    }
+  }
+
+  /** Seed dep rows from a marketplace `dependencies` object so rows appear instantly. */
+  function seedDepRows(dep: unknown) {
+    const d = dep as any;
+    if (!d || typeof d !== 'object') return;
+    for (const [key, type] of [
+      ['agents', 'agent'],
+      ['skills', 'skill'],
+      ['plugins', 'plugin'],
+      ['workflows', 'workflow'],
+    ] as const) {
+      const arr = d[key];
+      if (!Array.isArray(arr)) continue;
+      for (const item of arr) {
+        const reference = typeof item === 'string' ? item : item?.qualifiedName || item?.id || '';
+        if (!reference) continue;
+        const name = item && typeof item === 'object' ? item.name : undefined;
+        findOrAddDep(reference, type, name);
+      }
+    }
+  }
+
+  // ── The join point: load setup data, then route through the wizard ────────
+  async function loadSetup(id: string) {
+    agentId = id;
+    try {
+      const a = await getAgent(id);
+      if (Array.isArray(a?.inputFields) && a.inputFields.length > 0) {
+        inputFields = a.inputFields as AgentInputField[];
+      } else if (!Array.isArray(seedInputs) && Object.keys(seedInputs).length > 0) {
+        inputFields = normalizeInputs(seedInputs);
+      } else if (Array.isArray(seedInputs) && seedInputs.length > 0) {
+        inputFields = normalizeInputs(seedInputs);
+      }
+      needsSetupFlag = !!(a as any)?.needsSetup;
+      const pna = (a as any)?.pluginsNeedingAuth;
+      authQueue = Array.isArray(pna) ? pna : [];
+    } catch {
+      /* getAgent may not be ready; fall back to seeds */
+      if (!Array.isArray(seedInputs) && Object.keys(seedInputs).length > 0) {
+        inputFields = normalizeInputs(seedInputs);
+      }
+    }
+    try {
+      const wf = await listAgentWorkflows(id);
+      workflows = Array.isArray(wf?.workflows) ? (wf.workflows as AgentWorkflow[]) : [];
+    } catch {
+      workflows = [];
+    }
+    routeAfterInstall();
+  }
+
+  /** After install + loadSetup: show inputs, then auth, then schedule, then finalize. */
+  function routeAfterInstall() {
+    if (inputFields.length > 0 && !inputsCollected) {
+      phase = 'inputs';
+      return;
+    }
+    continueAfterInputs();
+  }
+
+  function continueAfterInputs() {
+    if (authQueue.length > 0) {
+      authIndex = 0;
+      phase = 'auth';
+      return;
+    }
+    if (hasSchedules) {
+      phase = 'schedule';
+      return;
+    }
+    void finalize();
+  }
+
+  async function submitInputs() {
+    inputsCollected = true;
+    if (agentId && Object.keys(inputValues).length > 0) {
+      await updateAgentInputs(agentId, inputValues).catch(() => {});
+    }
+    continueAfterInputs();
+  }
+
+  async function finalize() {
+    if (agentId) await activateAgent(agentId).catch(() => {});
+    notifySidebarRefresh();
+    statusMessage = configuring ? 'Saved' : `${artifactName || typeLabel} installed`;
+    phase = 'done';
+    if (interactive) {
+      // Wait for the user to dismiss (footer Done button).
+    } else {
+      autoCloseIfRemote();
+    }
+  }
+
+  /** Skip the remaining setup: activate now with defaults; flag the rest for later. */
+  async function skipSetup() {
+    if (agentId) await activateAgent(agentId).catch(() => {});
+    notifySidebarRefresh();
+    phase = 'done';
+  }
+
+  // ── Schedule step ─────────────────────────────────────────────────────────
+  function summarizeTrigger(wf: AgentWorkflow): string {
+    if (wf.triggerType === 'heartbeat') {
+      const interval = wf.triggerConfig.split('|')[0] || '30m';
+      return intervalOptions.find((o) => o.value === interval)?.label || `Every ${interval}`;
+    }
+    if (wf.triggerType === 'schedule') return `Scheduled: ${wf.triggerConfig}`;
+    return wf.triggerType;
+  }
+
+  async function applySchedules() {
+    for (const [bindingName, interval] of Object.entries(scheduleOverrides)) {
+      const wf = workflows.find((w) => w.bindingName === bindingName);
+      if (!wf || wf.triggerType !== 'heartbeat') continue;
+      const parts = wf.triggerConfig.split('|');
+      await updateAgentWorkflow(agentId, bindingName, {
+        triggerType: 'heartbeat',
+        triggerConfig: { interval, ...(parts[1] ? { window: parts[1] } : {}) },
+      }).catch(() => {});
+    }
+    await finalize();
+  }
+
+  // ── Plugin auth step ───────────────────────────────────────────────────────
+  async function startAuth() {
+    if (!currentAuth) return;
+    authInProgress = true;
+    try {
+      await authLogin(currentAuth.slug);
+    } catch {
+      authInProgress = false;
+      errorMessage = 'Failed to start authentication';
+      phase = 'error';
+    }
+  }
+
+  function advanceAuth() {
+    authInProgress = false;
+    if (authIndex + 1 < authQueue.length) {
+      authIndex++;
+      return;
+    }
+    if (hasSchedules) {
+      phase = 'schedule';
+      return;
+    }
+    void finalize();
+  }
+
+  function openPluginSettings() {
+    close();
+    goto('/settings/plugins');
+  }
+
+  // ── Code-mode WS handlers ───────────────────────────────────────────────────
+  function handleCodeProcessing(e: Event) {
+    if (mode !== 'code') return;
+    const data = (e as CustomEvent).detail;
+    reset();
+    code = (data?.code as string) || '';
+    codeType = (data?.code_type as string) || '';
+    statusMessage = (data?.status_message as string) || 'Processing…';
+    interactive = data?.interactive !== false;
+    show = true;
+
+    if (installTimeout) clearTimeout(installTimeout);
+    installTimeout = setTimeout(() => {
+      if (phase === 'installing') {
+        statusMessage = `${typeLabel} installed — finalizing…`;
+        phase = 'done';
+        notifySidebarRefresh();
+        autoCloseIfRemote(2000);
+      }
+    }, 30_000);
+  }
+
+  async function handleCodeResult(e: Event) {
+    if (mode !== 'code') return;
+    if (installTimeout) {
+      clearTimeout(installTimeout);
+      installTimeout = null;
+    }
+    const data = (e as CustomEvent).detail;
+    const success = data?.success as boolean;
+    const paymentRequired = data?.payment_required as boolean;
+    const name = (data?.artifact_name as string) || '';
+    const id = (data?.artifact_id as string) || '';
+    const aType = (data?.artifact_type as string) || '';
+    const message = (data?.message as string) || '';
+    const tierData = data?.tier as TierInfo | undefined;
+
+    if (name) artifactName = name;
+    if (id) artifactId = id;
+    if (aType) artifactType = aType;
+
+    if (paymentRequired) {
+      if (tierData) tier = tierData;
+      void fetchPaymentMethodAndConfirm();
+      return;
+    }
+    if (!success) {
+      errorMessage = (data?.error as string) || 'Installation failed';
+      phase = 'error';
+      return;
+    }
+
+    notifySidebarRefresh();
+
+    // Only agents/apps have a setup wizard. Everything else just finishes.
+    if ((codeType === 'agent' || codeType === 'app') && id) {
+      await loadSetup(id);
+    } else {
+      statusMessage = message || `${artifactName || typeLabel} installed`;
+      phase = 'done';
+      autoCloseIfRemote();
+    }
+  }
+
+  async function fetchPaymentMethodAndConfirm() {
+    paymentMethodLoading = true;
+    phase = 'confirm';
+    try {
+      const resp = await neboAIBillingPaymentMethods();
+      const methods = (resp as any)?.methods as PaymentMethodInfo[] | undefined;
+      paymentMethod = methods?.find((m) => m.isDefault) || methods?.[0] || null;
+    } catch {
+      paymentMethod = null;
+    } finally {
+      paymentMethodLoading = false;
+    }
+  }
+
+  async function confirmPurchase() {
+    confirmLoading = true;
+    try {
+      const resp = await createMarketplaceSubscription({
+        targetId: artifactId,
+        targetType: artifactType || codeType,
+        botCount: 1,
+      });
+      if (resp.checkoutUrl) {
+        window.open(resp.checkoutUrl, '_blank');
+        phase = 'processing';
+        statusMessage = 'Complete payment in your browser…';
+      } else {
+        phase = 'processing';
+        statusMessage = 'Finalizing…';
+      }
+    } catch (e: any) {
+      errorMessage = e?.message || 'Failed to start checkout';
+      phase = 'error';
+    } finally {
+      confirmLoading = false;
+    }
+  }
+
+  // ── Dependency cascade rendering (shared by all modes) ───────────────────────
+  function findOrAddDep(reference: string, type: string, name?: string, slug?: string): number {
+    const idx = deps.findIndex((d) => d.reference === reference);
+    if (idx >= 0) {
+      if ((name && !deps[idx].name) || (slug && !deps[idx].slug)) {
+        deps[idx] = { ...deps[idx], name: deps[idx].name ?? name, slug: deps[idx].slug ?? slug };
+      }
+      return idx;
+    }
+    deps = [...deps, { reference, type, name, slug, status: 'pending' }];
+    return deps.length - 1;
+  }
+
+  function handleDepCascadeStart(e: Event) {
+    if (!show) return;
+    const total = Number((e as CustomEvent).detail?.total ?? 0);
+    if (total > 0) depTotal = total;
+  }
+  function handleDepStarted(e: Event) {
+    if (!show) return;
+    const d = (e as CustomEvent).detail;
+    if (!d?.reference) return;
+    const idx = findOrAddDep(d.reference, (d.depType || 'skill').toLowerCase(), d.name, d.slug);
+    if (deps[idx].status === 'pending') deps[idx] = { ...deps[idx], status: 'installing' };
+  }
+  function handleDepPending(e: Event) {
+    if (!show) return;
+    const d = (e as CustomEvent).detail;
+    if (d?.reference) findOrAddDep(d.reference, (d.depType || 'skill').toLowerCase(), d.name, d.slug);
+  }
+  function handleDepInstalled(e: Event) {
+    if (!show) return;
+    const d = (e as CustomEvent).detail;
+    if (!d?.reference) return;
+    const idx = findOrAddDep(d.reference, (d.depType || 'skill').toLowerCase(), d.name, d.slug);
+    deps[idx] = { ...deps[idx], status: 'installed', error: undefined };
+  }
+  function handleDepFailed(e: Event) {
+    if (!show) return;
+    const d = (e as CustomEvent).detail;
+    if (!d?.reference) return;
+    const idx = findOrAddDep(d.reference, (d.depType || 'skill').toLowerCase(), d.name, d.slug);
+    deps[idx] = { ...deps[idx], status: 'failed', error: (d.error as string) || 'Unknown error' };
+  }
+  function handlePluginInstalling(e: Event) {
+    if (!show) return;
+    const plugin = (e as CustomEvent).detail?.plugin as string;
+    if (!plugin) return;
+    const idx = findOrAddDep(plugin, 'plugin');
+    deps[idx] = { ...deps[idx], status: 'installing' };
+  }
+  function handlePluginInstalled(e: Event) {
+    if (!show) return;
+    const plugin = (e as CustomEvent).detail?.plugin as string;
+    if (!plugin) return;
+    const idx = findOrAddDep(plugin, 'plugin');
+    deps[idx] = { ...deps[idx], status: 'installed' };
+  }
+  function handleDepNeedsSetup(e: Event) {
+    if (!show) return;
+    const items = ((e as CustomEvent).detail?.items as typeof needsSetup) || [];
+    if (Array.isArray(items) && items.length > 0) needsSetup = items;
+  }
+
+  async function retryDep(dep: DepItem) {
+    const idx = deps.findIndex((d) => d.reference === dep.reference);
+    if (idx < 0) return;
+    deps[idx] = { ...deps[idx], status: 'installing', error: undefined };
+    try {
+      await approveDeps({
+        deps: [{ depType: dep.type, reference: dep.reference, name: dep.name, slug: dep.slug }],
+      });
+    } catch {
+      deps[idx] = { ...deps[idx], status: 'failed', error: 'Retry failed to start' };
+    }
+  }
+
+  // ── Plugin auth WS handlers ─────────────────────────────────────────────────
+  function handlePluginAuthUrl(e: Event) {
+    const url = (e as CustomEvent).detail?.url as string;
+    if (url && show && phase === 'auth') window.open(url, '_blank');
+  }
+  function handlePluginAuthComplete() {
+    if (!show || phase !== 'auth') return;
+    advanceAuth();
+  }
+  function handlePluginAuthError(e: Event) {
+    if (!show || phase !== 'auth') return;
+    authInProgress = false;
+    errorMessage = ((e as CustomEvent).detail?.error as string) || 'Authentication failed';
+    phase = 'error';
+  }
+
+  // ── Misc UI ─────────────────────────────────────────────────────────────────
+  function depLabel(dep: DepItem): string {
+    if (dep.name) return dep.name;
+    const ref = dep.reference;
+    if (ref.startsWith('@') && ref.includes('/')) return ref.split('/').pop() || ref;
+    return ref;
+  }
+  async function copyCode(reference: string) {
+    try {
+      await navigator.clipboard.writeText(reference);
+      copiedRef = reference;
+      if (copyTimeout) clearTimeout(copyTimeout);
+      copyTimeout = setTimeout(() => (copiedRef = ''), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') close();
+  }
+
+  onMount(() => {
+    window.addEventListener('nebo:code_processing', handleCodeProcessing);
+    window.addEventListener('nebo:code_result', handleCodeResult);
+    window.addEventListener('nebo:plugin_installing', handlePluginInstalling);
+    window.addEventListener('nebo:plugin_installed', handlePluginInstalled);
+    window.addEventListener('nebo:dep_cascade_start', handleDepCascadeStart);
+    window.addEventListener('nebo:dep_needs_setup', handleDepNeedsSetup);
+    window.addEventListener('nebo:dep_started', handleDepStarted);
+    window.addEventListener('nebo:dep_pending', handleDepPending);
+    window.addEventListener('nebo:dep_installed', handleDepInstalled);
+    window.addEventListener('nebo:dep_failed', handleDepFailed);
+    window.addEventListener('nebo:plugin_auth_url', handlePluginAuthUrl);
+    window.addEventListener('nebo:plugin_auth_complete', handlePluginAuthComplete);
+    window.addEventListener('nebo:plugin_auth_error', handlePluginAuthError);
+  });
+  onDestroy(() => {
+    window.removeEventListener('nebo:code_processing', handleCodeProcessing);
+    window.removeEventListener('nebo:code_result', handleCodeResult);
+    window.removeEventListener('nebo:plugin_installing', handlePluginInstalling);
+    window.removeEventListener('nebo:plugin_installed', handlePluginInstalled);
+    window.removeEventListener('nebo:dep_cascade_start', handleDepCascadeStart);
+    window.removeEventListener('nebo:dep_needs_setup', handleDepNeedsSetup);
+    window.removeEventListener('nebo:dep_started', handleDepStarted);
+    window.removeEventListener('nebo:dep_pending', handleDepPending);
+    window.removeEventListener('nebo:dep_installed', handleDepInstalled);
+    window.removeEventListener('nebo:dep_failed', handleDepFailed);
+    window.removeEventListener('nebo:plugin_auth_url', handlePluginAuthUrl);
+    window.removeEventListener('nebo:plugin_auth_complete', handlePluginAuthComplete);
+    window.removeEventListener('nebo:plugin_auth_error', handlePluginAuthError);
+    if (installTimeout) clearTimeout(installTimeout);
+    if (copyTimeout) clearTimeout(copyTimeout);
+  });
+
+  const showSkip = $derived(!configuring && (phase === 'inputs' || phase === 'auth' || phase === 'schedule'));
+</script>
+
+{#if show}
+  <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true" data-modal-open>
+    <div
+      class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+      role="presentation"
+      onclick={close}
+      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); close(); } }}
+    ></div>
+
+    <div
+      class="relative w-full max-w-sm max-h-[85vh] flex flex-col rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden"
+      role="presentation"
+      onkeydown={handleKeydown}
+    >
+      <!-- Header -->
+      <div class="shrink-0 flex items-center justify-between px-5 py-4 border-b border-base-content/10">
+        <h3 class="text-sm font-semibold">{title}</h3>
+        <button
+          class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/50 hover:text-base-content transition-colors"
+          onclick={close}
+          title="Close"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <!-- Body -->
+      <div class="px-5 py-6 overflow-y-auto">
+        {#if phase === 'installing'}
+          <div class="flex flex-col items-center gap-4">
+            {#if progressTotal > 1}
+              <div class="w-full">
+                <div class="flex items-baseline justify-between mb-2">
+                  <p class="text-sm font-medium">{statusMessage}</p>
+                  <span class="text-xs text-base-content/50 font-mono">{settledCount}/{progressTotal}</span>
+                </div>
+                <progress class="progress progress-primary w-full" value={settledCount} max={progressTotal}></progress>
+              </div>
+            {:else}
+              <span class="loading loading-spinner loading-lg text-primary"></span>
+              <div class="text-center">
+                <p class="text-sm font-medium">{statusMessage}</p>
+                {#if code}<p class="text-xs text-base-content/50 mt-1.5 font-mono">{code}</p>{/if}
+              </div>
+            {/if}
+          </div>
+
+        {:else if phase === 'inputs'}
+          <div class="flex flex-col gap-4">
+            {#if agentDescription}<p class="text-sm text-base-content/70">{agentDescription}</p>{/if}
+            {#if inputFields.length > 0}
+              <AgentInputForm fields={inputFields} bind:values={inputValues} onchange={(v) => (inputValues = v)} />
+            {:else}
+              <p class="text-sm text-base-content/70 text-center">No configuration needed — ready to go!</p>
+            {/if}
+            <button type="button" class="btn btn-primary btn-sm w-full" onclick={submitInputs}>
+              {configuring ? 'Save changes' : 'Continue'}
+            </button>
+            {#if configuring && onUninstall}
+              <button type="button" class="btn btn-ghost btn-sm text-error/80 hover:text-error" onclick={onUninstall}>
+                Uninstall {agentName}
+              </button>
+            {/if}
+          </div>
+
+        {:else if phase === 'auth'}
+          <div class="flex flex-col items-center gap-4">
+            {#if authQueue.length > 1}
+              <p class="text-xs text-base-content/50">Step {authIndex + 1} of {authQueue.length}</p>
+            {/if}
+            {#if authInProgress}
+              <span class="loading loading-spinner loading-lg text-primary"></span>
+              <div class="text-center">
+                <p class="text-sm font-medium">Waiting for authorization…</p>
+                <p class="text-xs text-base-content/50 mt-1.5">Complete the sign-in in your browser, then return here.</p>
+              </div>
+              <button type="button" class="btn btn-sm btn-ghost mt-2" onclick={() => (authInProgress = false)}>Cancel</button>
+            {:else}
+              <div class="w-12 h-12 rounded-full bg-primary/15 flex items-center justify-center">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+              </div>
+              {#if currentAuth?.description}<p class="text-xs text-base-content/70 text-center">{currentAuth.description}</p>{/if}
+              {#if currentAuthNeedsKeys}
+                <button type="button" class="btn btn-primary btn-sm mt-2" onclick={openPluginSettings}>
+                  Set up {currentAuth?.label || 'plugin'} in Settings
+                </button>
+              {:else}
+                <button type="button" class="btn btn-primary btn-sm mt-2" onclick={startAuth}>
+                  Connect {currentAuth?.label || 'Account'}
+                </button>
+              {/if}
+            {/if}
+          </div>
+
+        {:else if phase === 'schedule'}
+          <div class="flex flex-col gap-4">
+            <p class="text-sm text-base-content/70 text-center">You can change these anytime in the Automate tab.</p>
+            {#each workflows.filter((w) => w.isActive && (w.triggerType === 'schedule' || w.triggerType === 'heartbeat')) as wf}
+              <div class="rounded-xl border border-base-content/10 p-4">
+                <p class="text-sm font-medium mb-1">{wf.description || wf.bindingName}</p>
+                <p class="text-xs text-base-content/70 mb-3">Currently: {summarizeTrigger(wf)}</p>
+                {#if wf.triggerType === 'heartbeat'}
+                  <select
+                    class="select select-bordered select-sm w-full"
+                    value={scheduleOverrides[wf.bindingName] || wf.triggerConfig.split('|')[0] || '30m'}
+                    onchange={(e) => (scheduleOverrides[wf.bindingName] = (e.target as HTMLSelectElement).value)}
+                  >
+                    {#each intervalOptions as opt}<option value={opt.value}>{opt.label}</option>{/each}
+                  </select>
+                {:else}
+                  <p class="text-xs text-base-content/70">This runs on a fixed schedule.</p>
+                {/if}
+              </div>
+            {/each}
+            <button type="button" class="btn btn-primary btn-sm w-full" onclick={applySchedules}>Start working</button>
+          </div>
+
+        {:else if phase === 'done'}
+          <div class="flex flex-col items-center gap-4">
+            <div class="w-12 h-12 rounded-full bg-success/15 flex items-center justify-center">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-success"><polyline points="20 6 9 17 4 12"/></svg>
+            </div>
+            <p class="text-sm font-medium">{configuring ? 'Saved!' : `${artifactName || typeLabel} installed!`}</p>
+            {#if needsSetupFlag && agentId}
+              <button type="button" class="btn btn-xs btn-outline" onclick={() => { const id = agentId; close(); goto(`/${id}/settings/configure`); }}>
+                Finish setup in Settings
+              </button>
+            {/if}
+          </div>
+
+        {:else if phase === 'error'}
+          <div class="flex flex-col items-center gap-4">
+            <div class="w-12 h-12 rounded-full bg-error/15 flex items-center justify-center">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-error"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            </div>
+            <div class="text-center">
+              <p class="text-sm font-medium">Failed to install</p>
+              <p class="text-xs text-error/80 mt-2 max-w-[280px]">{errorMessage}</p>
+            </div>
+          </div>
+
+        {:else if phase === 'confirm'}
+          <div class="flex flex-col items-center gap-4">
+            <div class="w-12 h-12 rounded-full bg-primary/15 flex items-center justify-center">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+            </div>
+            <div class="text-center">
+              <p class="text-sm font-medium">{artifactName || typeLabel}</p>
+              <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70 mt-1 inline-block">{artifactType || codeType}</span>
+            </div>
+            {#if tier}
+              <div class="w-full rounded-xl bg-base-200/50 border border-base-content/10 p-4">
+                {#if tier.name}<p class="text-xs text-base-content/50 mb-1">{tier.name}</p>{/if}
+                <p class="text-xl font-bold text-base-content">{formatPrice(tier.recurringPriceCents || 0, tier.billingInterval)}</p>
+                {#if tier.pricingModel === 'perBot'}<p class="text-xs text-base-content/50 mt-1">per agent</p>{/if}
+              </div>
+            {/if}
+            <div class="w-full rounded-xl bg-base-200/50 border border-base-content/10 p-4">
+              {#if paymentMethodLoading}
+                <div class="flex items-center gap-2"><span class="loading loading-spinner loading-xs text-base-content/50"></span><span class="text-xs text-base-content/50">Loading payment info…</span></div>
+              {:else if paymentMethod}
+                <div class="flex items-center gap-2"><span class="text-sm text-base-content">{paymentMethod.brand || paymentMethod.type} ending in {paymentMethod.lastFour || '****'}</span></div>
+              {:else}
+                <p class="text-xs text-base-content/50">Payment method will be collected at checkout</p>
+              {/if}
+            </div>
+            <div class="flex flex-col gap-2 w-full mt-1">
+              <button type="button" class="btn btn-primary btn-sm w-full" onclick={confirmPurchase} disabled={confirmLoading || paymentMethodLoading}>
+                {#if confirmLoading}<span class="loading loading-spinner loading-xs"></span>{:else}Confirm Purchase{tier ? ` — ${formatPrice(tier.recurringPriceCents || 0, tier.billingInterval)}` : ''}{/if}
+              </button>
+              <button type="button" class="btn btn-sm btn-ghost w-full" onclick={close}>Cancel</button>
+            </div>
+          </div>
+
+        {:else if phase === 'processing'}
+          <div class="flex flex-col items-center gap-4">
+            <span class="loading loading-spinner loading-lg text-primary"></span>
+            <div class="text-center">
+              <p class="text-sm font-medium">{statusMessage || 'Processing payment…'}</p>
+              <p class="text-xs text-base-content/50 mt-1.5">This may take a moment</p>
+            </div>
+            <button type="button" class="btn btn-sm btn-ghost" onclick={close}>Cancel</button>
+          </div>
+        {/if}
+
+        <!-- Dependency list (shared; visible whenever there are deps) -->
+        {#if deps.length > 0}
+          <div class="border-t border-base-content/10 pt-4 mt-5">
+            <p class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">
+              Dependencies ({installedCount}/{progressTotal})
+              {#if failedCount > 0}<span class="text-error/70 normal-case font-medium"> · {failedCount} failed</span>{/if}
+            </p>
+            <ul class="flex flex-col gap-2">
+              {#each deps as dep}
+                {@const label = depLabel(dep)}
+                <li class="flex items-center gap-2.5 text-xs">
+                  {#if dep.status === 'installed'}
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-success shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
+                  {:else if dep.status === 'installing'}
+                    <span class="loading loading-spinner loading-xs text-primary shrink-0"></span>
+                  {:else if dep.status === 'failed'}
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-error shrink-0"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                  {:else}
+                    <div class="w-4 h-4 rounded-full border-2 border-base-content/20 shrink-0"></div>
+                  {/if}
+                  <div class="flex-1 min-w-0">
+                    <div class="truncate font-medium {dep.status === 'failed' ? 'text-error/90' : ''}">{label}</div>
+                    {#if dep.reference !== label}
+                      <button type="button" class="font-mono text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none p-0" title="Copy install code" onclick={() => copyCode(dep.reference)}>
+                        {copiedRef === dep.reference ? 'Copied ✓' : dep.reference}
+                      </button>
+                    {/if}
+                  </div>
+                  <span class="text-xs text-base-content/40 shrink-0">{dep.type}</span>
+                  {#if dep.status === 'failed'}
+                    <button type="button" class="btn btn-xs btn-primary shrink-0" onclick={() => retryDep(dep)} title={dep.error}>Install</button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+
+        <!-- Needs setup: installed items still missing credentials/config -->
+        {#if needsSetup.length > 0}
+          <div class="border-t border-base-content/10 pt-4 mt-5">
+            <p class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">Needs setup</p>
+            <ul class="flex flex-col gap-2">
+              {#each needsSetup as item}
+                <li class="flex items-center gap-2.5 text-xs">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-warning shrink-0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  <div class="flex-1 min-w-0">
+                    <div class="truncate font-medium">{item.label || item.slug}</div>
+                    {#if item.description}<div class="text-base-content/50 truncate">{item.description}</div>{/if}
+                  </div>
+                </li>
+              {/each}
+            </ul>
+            <button type="button" class="btn btn-xs btn-outline mt-3" onclick={openPluginSettings}>Configure in Settings</button>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Footer -->
+      {#if phase === 'error'}
+        <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
+          <button type="button" class="btn btn-sm btn-ghost" onclick={close}>Close</button>
+        </div>
+      {:else if phase === 'done' && interactive}
+        <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
+          <button type="button" class="btn btn-sm btn-primary" onclick={() => { const id = agentId; close(); oncomplete?.(id || undefined); }}>Done</button>
+        </div>
+      {:else if showSkip}
+        <div class="shrink-0 flex justify-between px-5 py-3 border-t border-base-content/10">
+          <button type="button" class="btn btn-sm btn-ghost" onclick={skipSetup}>Skip setup</button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}

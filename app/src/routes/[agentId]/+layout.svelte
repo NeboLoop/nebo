@@ -5,8 +5,7 @@
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
-  import AgentSetupModal from '$lib/components/agent-setup/AgentSetupModal.svelte';
-  import CodeInstallModal from '$lib/components/chat/CodeInstallModal.svelte';
+  import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   const sidebarCollapsed = sidebarCollapsedFor('agents');
@@ -813,22 +812,18 @@
 <!-- Columns 2+3: rendered by child routes -->
 {@render children()}
 
+<!-- Configure-existing wizard, auto-opened when an installed agent still needs setup. -->
 {#if showSetupModal}
-  <AgentSetupModal
-    appId=""
+  <InstallFlowModal
+    mode="configure"
+    bind:show={showSetupModal}
+    existingAgentId={$page.params.agentId}
     agentName={setupAgentName}
     agentDescription={setupAgentDesc}
-    inputs={setupInputFields}
-    existingAgentId={$page.params.agentId}
-    onComplete={(id) => { showSetupModal = false; loadAgentData(id); }}
-    onCancel={() => { showSetupModal = false; }}
+    seedInputs={setupInputFields}
+    oncomplete={(id) => { showSetupModal = false; const target = id ?? $page.params.agentId; if (target) loadAgentData(target); }}
   />
 {/if}
 
-<CodeInstallModal
-  bind:show={showInstallModal}
-  onAgentSetup={(agentId, agentName) => {
-    setupAgentName = agentName;
-    showSetupModal = true;
-  }}
-/>
+<!-- Paste-a-code install door (WS-driven; opens itself on nebo:code_processing). -->
+<InstallFlowModal bind:show={showInstallModal} mode="code" />

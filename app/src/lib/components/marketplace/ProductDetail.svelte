@@ -19,7 +19,7 @@
 	import MediaGallery from '$lib/components/marketplace/MediaGallery.svelte';
 	import SimilarGrid from '$lib/components/marketplace/SimilarGrid.svelte';
 	import FeedbackSection from '$lib/components/marketplace/FeedbackSection.svelte';
-	import AgentSetupModal from '$lib/components/agent-setup/AgentSetupModal.svelte';
+	import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
 
 	type ArtifactType = 'skill' | 'agent' | 'plugin' | 'connector' | 'app' | 'collection';
 
@@ -230,9 +230,9 @@
 		setTimeout(() => (codeCopied = false), 2000);
 	}
 
-	function handleSetupComplete(newAgentId: string) {
+	function handleSetupComplete(newAgentId?: string) {
 		showSetupModal = false;
-		goto(`/${newAgentId}/threads`);
+		if (newAgentId) goto(`/${newAgentId}/threads`);
 	}
 
 	function formatNumber(n: number) {
@@ -548,15 +548,16 @@
 {/if}
 
 {#if showSetupModal && skill}
-	<AgentSetupModal
+	<InstallFlowModal
+		mode={configureExisting ? 'configure' : 'product'}
+		bind:show={showSetupModal}
 		appId={itemId}
+		existingAgentId={configureExisting ? itemId : ''}
 		agentName={skill.name}
 		agentDescription={skill.description || ''}
-		inputs={setupInputs}
+		seedInputs={setupInputs}
 		dependencies={skill?.dependencies ?? skill?.typeConfig?.dependencies}
-		existingAgentId={configureExisting ? itemId : undefined}
-		onComplete={handleSetupComplete}
-		onCancel={() => (showSetupModal = false)}
+		oncomplete={handleSetupComplete}
 		onUninstall={configureExisting ? uninstallProduct : undefined}
 	/>
 {/if}
