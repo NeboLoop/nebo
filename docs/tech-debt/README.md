@@ -14,24 +14,6 @@ Conventions:
 
 ## Open
 
-### TD-003 — Two competing chat-title generators race on every run
-- **Severity:** maintainability · **Status:** open · **Found:** 2026-06-13
-- **Where:** `crates/agent/src/runner.rs:880` and `crates/server/src/chat_dispatch.rs:1141`
-  (`generate_chat_title_if_needed`)
-- **What:** Both spawn a background title generator after a run completes, both check the same
-  "is the title still a placeholder" condition, and both call `update_chat_title`. The runner
-  one stores silently (no `chat_title_updated` broadcast, no loop push); the dispatch one
-  stores **and** broadcasts + pushes to the loop (commit `c0e03144`). For a `run_chat` run both
-  fire and race; whichever wins, the other no-ops.
-- **Correction (not a simple delete):** `runner.run` is called from 5 paths — `chat_dispatch`
-  (run_chat), `scheduler`, `handlers/voice`, `handlers/mcp_server`, `orchestrator`. The
-  runner-side generator is the ONLY titler for the 4 non-dispatch paths; deleting it would
-  drop their auto-titling. The race is exclusive to `run_chat`.
-- **Fix:** add `skip_title_gen: bool` to `RunRequest` (default false). `run_chat` sets it
-  `true` (it titles + broadcasts + loop-pushes itself); the runner-side generator guards on
-  `!req.skip_title_gen`. No coverage loss, race eliminated. (Loop-push must stay dispatch-side
-  — the runner crate can't reach the server's ClientHub / `codes::push_chat_title_to_loop`.)
-
 ### TD-004 — `discover` and `discover_summaries` are near-duplicate functions
 - **Severity:** maintainability · **Status:** open · **Found:** 2026-06-13
 - **Where:** `crates/tools/src/skills/loader.rs` (`discover` returns `Vec<Skill>`,
@@ -59,3 +41,10 @@ Conventions:
 - `check_path_scope` now matches `"os"` and dispatches by `resource` (`file`/`shell`) to the
   existing scope checks; `test_os_tool_path_scope_enforced` added. `allowed_paths` restrictions
   are enforced for `os(file/shell)` again.
+
+### TD-003 — Two competing chat-title generators raced on every run
+- **Severity:** maintainability · **Resolved:** 2026-06-13
+- Added `skip_title_gen: bool` to `RunRequest`; `run_chat` sets it `true` (it titles +
+  broadcasts + loop-pushes itself) and the runner-side generator now guards on
+  `!skip_memory && !skip_title_gen`. The 4 non-dispatch run paths (scheduler, voice,
+  mcp_server, orchestrator) keep the runner-side titler — no coverage loss, race gone.

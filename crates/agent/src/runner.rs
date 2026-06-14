@@ -179,6 +179,11 @@ pub struct RunRequest {
     pub model_override: String,
     pub user_id: String,
     pub skip_memory_extract: bool,
+    /// Skip the runner-side background title generator. Set by callers that
+    /// generate the chat title themselves (run_chat broadcasts + pushes the
+    /// title to the loop), so the two don't race. Other run paths (scheduler,
+    /// voice, mcp_server, orchestrator) leave it false and the runner titles.
+    pub skip_title_gen: bool,
     pub origin: Origin,
     pub channel: String,
     pub force_skill: String,
@@ -632,6 +637,7 @@ impl Runner {
         let user_id = req.user_id.clone();
         let origin = req.origin;
         let skip_memory = req.skip_memory_extract;
+        let skip_title_gen = req.skip_title_gen;
         let user_prompt = req.prompt.clone();
         let force_skill = req.force_skill.clone();
         let skill_loader = self.skill_loader.clone();
@@ -876,9 +882,11 @@ impl Runner {
             }
             let _ = tx.send(StreamEvent::done()).await;
 
-            if !skip_memory {
+            if !skip_memory && !skip_title_gen {
                 // Auto-generate session title after first exchange.
                 // Only runs when the chat title is still a default placeholder.
+                // Skipped when the caller titles the chat itself (run_chat) so
+                // the two generators don't race — see RunRequest.skip_title_gen.
                 let providers_title = providers.clone();
                 let store_title = store.clone();
                 let session_mgr_title = session_mgr.clone();

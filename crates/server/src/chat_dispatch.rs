@@ -398,6 +398,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             mention_context,
             tool_scope,
             plan_mode,
+            // run_chat generates the chat title itself (broadcasts + pushes it
+            // to the loop), so skip the runner-side generator to avoid the race.
+            skip_title_gen: true,
             ..Default::default()
         };
 
