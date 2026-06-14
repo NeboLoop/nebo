@@ -647,6 +647,76 @@ impl Provider for OpenAIProvider {
             }
         }
 
+        // LLM payload breakdown — logged on every request so we can MEASURE where the
+        // input tokens actually go (tool defs vs system vs conversation) instead of
+        // assuming. Set NEBO_LLM_DUMP=<dir> to ALSO write the full request JSON there.
+        {
+            let dump = std::env::var("NEBO_LLM_DUMP").unwrap_or_default();
+            let sz = |v: &serde_json::Value| serde_json::to_string(v).map(|s| s.len()).unwrap_or(0);
+            let tools_chars = body_val.get("tools").map(&sz).unwrap_or(0);
+            let msgs = body_val.get("messages");
+            let msgs_chars = msgs.map(&sz).unwrap_or(0);
+            let sys_chars = msgs
+                .and_then(|m| m.as_array())
+                .and_then(|a| {
+                    a.iter()
+                        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+                })
+                .map(&sz)
+                .unwrap_or(0);
+            let total_chars = sz(&body_val);
+            let tool_count = body_val
+                .get("tools")
+                .and_then(|t| t.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            // Biggest tool defs first — the clearest signal for tool-def bloat.
+            let top_tools = body_val
+                .get("tools")
+                .and_then(|t| t.as_array())
+                .map(|arr| {
+                    let mut s: Vec<(String, usize)> = arr
+                        .iter()
+                        .map(|t| {
+                            let n = t
+                                .pointer("/function/name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("?")
+                                .to_string();
+                            (n, serde_json::to_string(t).map(|x| x.len()).unwrap_or(0))
+                        })
+                        .collect();
+                    s.sort_by(|a, b| b.1.cmp(&a.1));
+                    s.into_iter()
+                        .take(10)
+                        .map(|(n, c)| format!("{n}={c}c"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            info!(
+                target: "llm_dump",
+                tool_count,
+                tools_chars,
+                tools_tok_est = tools_chars / 4,
+                system_chars = sys_chars,
+                system_tok_est = sys_chars / 4,
+                messages_chars = msgs_chars,
+                total_chars,
+                total_tok_est = total_chars / 4,
+                top_tools = %top_tools,
+                "LLM request payload breakdown"
+            );
+            if dump != "1" && !dump.is_empty() {
+                let dir = std::path::Path::new(&dump);
+                let _ = std::fs::create_dir_all(dir);
+                let fname = format!("llm-m{}-t{tool_count}-{total_chars}c.json", api_req.messages.len());
+                if let Ok(pretty) = serde_json::to_string_pretty(&body_val) {
+                    let _ = std::fs::write(dir.join(fname), pretty);
+                }
+            }
+        }
+
         // Debug: log the full request body on first few requests to diagnose Janus errors
         if let Ok(body_json) = serde_json::to_string(&body_val) {
             debug!(body = %body_json, "OpenAI request body");
