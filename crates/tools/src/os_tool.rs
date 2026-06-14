@@ -283,6 +283,13 @@ impl DynTool for OsTool {
 
     fn description(&self) -> String {
         "Local machine operations — files, shell, apps, desktop automation, settings, media, credentials, search, PIM.\n\n\
+         Rules:\n\
+         - ALWAYS call this tool for file/system facts — NEVER answer from memory or training data. To read a file, call os(resource: \"file\", action: \"read\"); do NOT claim a file is missing or report its contents without calling first.\n\
+         - Prefer file actions over shell: use file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find.\n\
+         - Include ALL required params on every call (always pass resource AND action). Missing params cause errors.\n\
+         - Before edit or overwrite of an EXISTING file, read it first (edit/overwrite are rejected without a prior read). A brand-new file needs no prior read.\n\
+         - glob = find files by NAME pattern (*.md, src/**/*.rs); grep = match text INSIDE files by regex. Do not confuse them.\n\
+         - NEVER use sudo without asking the user first; on permission denied, explain and offer alternatives.\n\n\
          Resources:\n\
          - file: read, write, edit, glob, grep, convert — to list a directory, glob its path (pattern defaults to *); convert generates documents via embedded engines: .md→pdf/docx, .csv→xlsx, .jsx/.tsx→html (interactive React) (never use host binaries like wkhtmltopdf/pandoc)\n\
          - shell: exec, list, poll, log, write, kill, info\n\

@@ -1,5 +1,5 @@
 use chrono::Offset;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Controls how much of the system prompt is assembled.
 #[derive(Debug, Clone, Default)]
@@ -256,8 +256,6 @@ fn comm_style(mode: tools::ExecutionMode) -> &'static str {
         tools::ExecutionMode::Autonomous => COMM_STYLE_AUTONOMOUS,
     }
 }
-
-const SECTION_STRAP_HEADER: &str = "## Tool Documentation";
 
 const SECTION_MEDIA: &str = r#"## Inline Media — Images & Video Embeds
 
@@ -537,52 +535,24 @@ pub fn strap_context_doc(context_name: &str) -> Option<&'static str> {
     }
 }
 
-/// Build the STRAP documentation section for the specified tools and active contexts.
-/// Called per-iteration with the filtered tool list and keyword-matched contexts.
-/// Tool names drive which core STRAP docs load; active_contexts drive which
-/// OS sub-docs (desktop, app, music, etc.) get injected.
-/// Tools whose STRAP docs are always-on core tools. Their schemas already contain
-/// enough info for the model to call them. STRAP docs are only injected when
-/// the tool is contextually activated (keyword match or called_tools).
-const STRAP_DEFERRED_DOCS: &[&str] = &["agent", "skill", "event", "message", "plugin"];
-
+/// Build the per-iteration STRAP discovery section. Tools document themselves via
+/// their provider `tools`-field declarations (description + JSON schema) — the single
+/// source, like Claude's `## Tool Definitions`. This emits ONLY connected-MCP-server
+/// discovery, which is the one thing not already in the `tools` field.
 pub fn build_strap_section(
     tool_names: &[String],
-    active_contexts: &[String],
-    called_tools: &[String],
+    _active_contexts: &[String],
+    _called_tools: &[String],
 ) -> String {
-    let mut sb = String::from(SECTION_STRAP_HEADER);
-    let mut seen = HashSet::new();
-    let called: HashSet<&str> = called_tools.iter().map(|s| s.as_str()).collect();
+    // Each native tool carries its own full declaration (description + JSON schema)
+    // in the provider `tools` field — that is the single source, like Claude's
+    // `## Tool Definitions`. We do NOT re-document tools in prose here; doing so
+    // declared every tool twice and rebuilt per-turn, busting the prefix cache.
+    // The only thing that isn't already in the tools field is discovery of
+    // connected MCP servers, so that is all this section emits.
+    let mut sb = String::new();
 
-    // 1. Tool docs — only inject for tools that are contextually active.
-    //    Core always-on tools (agent, skill, event, message) defer their STRAP
-    //    docs until the tool is actually called — their schemas are sufficient.
-    for name in tool_names {
-        let n = name.as_str();
-        if seen.insert(n) {
-            // Skip deferred-doc tools unless they've been called this session
-            if STRAP_DEFERRED_DOCS.contains(&n) && !called.contains(n) {
-                continue;
-            }
-            if let Some(doc) = strap_tool_doc(n) {
-                sb.push_str("\n\n");
-                sb.push_str(doc);
-            }
-        }
-    }
-
-    // 2. OS sub-context docs — keyword-activated extensions (desktop, music, etc.).
-    for ctx in active_contexts {
-        if seen.insert(ctx.as_str()) {
-            if let Some(doc) = strap_context_doc(ctx) {
-                sb.push_str("\n\n");
-                sb.push_str(doc);
-            }
-        }
-    }
-
-    // 3. Connected MCP server tools — group by server name
+    // Connected MCP server tools — group by server name
     let mcp_tools: Vec<&String> = tool_names
         .iter()
         .filter(|n| n.starts_with("mcp__"))
@@ -648,21 +618,11 @@ pub fn build_deferred_listing(stubs: &[(String, String)]) -> String {
 
 /// Build the registered tools list for only the specified tools.
 /// Called per-iteration with the filtered tool list.
-pub fn build_tools_list(tool_names: &[String]) -> String {
-    if tool_names.is_empty() {
-        return String::new();
-    }
-    let tool_list = tool_names.join(", ");
-    format!(
-        "## Active Tools\nTool names are case-sensitive. Call tools exactly as listed: {}\nThese are your ONLY tools for this turn. Do not reference or attempt to call any tool not in this list.",
-        tool_list
-    )
-}
-
 /// Build the cacheable static portion of the system prompt.
 /// Called once per Run(), reused across iterations.
-/// Does NOT include STRAP docs or tool list — those are injected per-iteration
-/// via build_strap_section() and build_tools_list() to keep context minimal.
+/// Does NOT include STRAP docs — MCP/deferred discovery is injected per-iteration
+/// via build_strap_section() to keep context minimal. Tools document themselves
+/// via their provider `tools`-field declarations (description + schema).
 ///
 /// Prompt assembly varies by `PromptMode`:
 /// - `Full`: All sections (identity, memory docs, tool routing, behavior, etiquette, etc.)
@@ -1029,70 +989,31 @@ mod tests {
     }
 
     #[test]
-    fn test_strap_defers_core_tool_docs() {
-        // Core tool docs (agent, skill, event, message) are deferred until called.
-        // Web is NOT deferred (it's contextually activated, not always-on).
+    fn test_strap_no_prose_tool_docs() {
+        // build_strap_section never re-documents tools in prose — each tool's full
+        // declaration lives in the provider `tools` field (single source, like
+        // Claude). With no MCP tools present, the section is empty.
         let result = build_strap_section(
-            &["web".to_string(), "agent".to_string()],
-            &[],
-            &[],
-        );
-        assert!(result.contains("Tool Documentation"));
-        assert!(result.contains("### web"), "web doc should be injected (not deferred)");
-        assert!(!result.contains("### agent"), "agent doc deferred until called");
-    }
-
-    #[test]
-    fn test_strap_core_docs_load_when_called() {
-        // When a core tool is called, its STRAP doc loads
-        let result = build_strap_section(
-            &["agent".to_string(), "skill".to_string()],
-            &[],
-            &["agent".to_string()],
-        );
-        assert!(result.contains("### agent"), "agent doc loads when called");
-        assert!(!result.contains("### skill"), "skill not called yet, stays deferred");
-    }
-
-    #[test]
-    fn test_strap_empty_is_header_only() {
-        let result = build_strap_section(&[], &[], &[]);
-        assert!(result.contains("Tool Documentation"));
-        assert!(!result.contains("### "));
-    }
-
-    #[test]
-    fn test_strap_includes_os_sub_contexts() {
-        let result = build_strap_section(
+            &["web".to_string(), "os".to_string(), "agent".to_string()],
+            &["app".to_string(), "music".to_string()],
             &["os".to_string()],
-            &[
-                "app".to_string(),
-                "music".to_string(),
-                "keychain".to_string(),
-                "settings".to_string(),
-                "spotlight".to_string(),
-            ],
+        );
+        assert!(result.is_empty(), "no prose tool/sub-context docs emitted");
+        assert!(!result.contains("### "));
+        assert!(!result.contains("Tool Documentation"));
+    }
+
+    #[test]
+    fn test_strap_emits_only_mcp_discovery() {
+        // The one thing not already in the `tools` field is MCP-server discovery.
+        let result = build_strap_section(
+            &["os".to_string(), "mcp__monument_sh__comment".to_string()],
+            &[],
             &[],
         );
-        // Sub-context docs should be included (keyword-activated)
-        assert!(result.contains("App Lifecycle"));
-        assert!(result.contains("Media Playback"));
-        assert!(result.contains("Credential Storage"));
-        assert!(result.contains("System Settings"));
-        assert!(result.contains("File Search"));
-    }
-
-    #[test]
-    fn test_tools_list() {
-        let result = build_tools_list(&["os".to_string(), "web".to_string(), "agent".to_string()]);
-        assert!(result.contains("os, web, agent"));
-        assert!(result.contains("Active Tools"));
-    }
-
-    #[test]
-    fn test_tools_list_empty() {
-        let result = build_tools_list(&[]);
-        assert!(result.is_empty());
+        assert!(result.contains("Connected MCP Servers"));
+        assert!(result.contains("monument.sh"));
+        assert!(!result.contains("### os"), "os not re-documented in prose");
     }
 
     #[test]

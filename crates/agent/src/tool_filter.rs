@@ -506,12 +506,14 @@ mod tests {
     }
 
     #[test]
-    fn test_os_adjacency_activates_sub_contexts() {
+    fn test_os_does_not_blanket_activate_sub_contexts() {
         let tools = vec![make_tool("os")];
         let (_, contexts) = filter_tools_with_context(&tools, &[], &["os".to_string()], &HashSet::new());
-        // "os" in called_tools should activate os sub-contexts
-        assert!(contexts.contains(&"desktop".to_string()));
-        assert!(contexts.contains(&"music".to_string()));
+        // Calling "os" must NOT blanket-activate every os sub-context — that injected
+        // ~12K chars of irrelevant prose for a simple file read. Sub-contexts activate
+        // only on their own keywords (see test_organizer_keyword/test_keychain_keyword).
+        assert!(!contexts.contains(&"desktop".to_string()));
+        assert!(!contexts.contains(&"music".to_string()));
     }
 
     #[test]

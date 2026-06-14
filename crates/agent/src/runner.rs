@@ -2013,11 +2013,10 @@ async fn run_loop(
             vec![]
         };
 
-        // Build per-iteration STRAP docs + tool list based on filtered tools
+        // Build per-iteration STRAP discovery (MCP servers) based on filtered tools.
         let filtered_tool_names: Vec<String> = tool_defs.iter().map(|t| t.name.clone()).collect();
         let strap_section =
             prompt::build_strap_section(&filtered_tool_names, &active_contexts, &called_tools);
-        let tools_list = prompt::build_tools_list(&filtered_tool_names);
 
         // Build compact listing of deferred (not yet discovered) tools
         let deferred_stubs = tools.list_deferred_stubs(&active_deferred).await;
@@ -2165,20 +2164,19 @@ async fn run_loop(
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
-        // When a custom system prompt is provided, it already contains the STRAP
-        // section (the caller is responsible for including it). Skip appending a
-        // second copy so overrides from the eval harness take effect.
+        // Each tool's full declaration (description + JSON schema) lives in the
+        // provider `tools` field — the single source, like Claude. We do NOT add a
+        // prose tool roster ("these are your ONLY tools this turn") or re-document
+        // tools here; the model reads its tools natively. The system prompt only
+        // carries behavior + MCP-server discovery + deferred-tool discovery.
         let full_system = if !system_prompt.is_empty() {
-            format!("{}\n\n{}{}", static_system, tools_list, dynamic_suffix)
+            format!("{}{}", static_system, dynamic_suffix)
         } else if deferred_listing.is_empty() {
-            format!(
-                "{}\n\n{}\n\n{}{}",
-                static_system, strap_section, tools_list, dynamic_suffix
-            )
+            format!("{}\n\n{}{}", static_system, strap_section, dynamic_suffix)
         } else {
             format!(
-                "{}\n\n{}\n\n{}\n\n{}{}",
-                static_system, strap_section, tools_list, deferred_listing, dynamic_suffix
+                "{}\n\n{}\n\n{}{}",
+                static_system, strap_section, deferred_listing, dynamic_suffix
             )
         };
 
@@ -2204,7 +2202,6 @@ async fn run_loop(
                 iteration,
                 static_system_chars = static_system.len(),
                 strap_chars = strap_section.len(),
-                tools_list_chars = tools_list.len(),
                 deferred_listing_chars = deferred_listing.len(),
                 dynamic_suffix_chars = dynamic_suffix.len(),
                 full_system_chars = full_system.len(),

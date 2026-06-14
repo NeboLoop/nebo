@@ -1739,7 +1739,13 @@ impl DynTool for WebTool {
     fn description(&self) -> String {
         format!(
         "Web operations — HTTP requests, search, and browser automation.\n\n\
+         Use this when the user mentions a URL, asks to look something up, browse, search the web, fetch a page, or interact with a website.\n\n\
          Decision: API/static HTML → fetch/search. Rendered page or user sessions → browser actions.\n\n\
+         ## HTTP & Search\n\
+         - web(resource: \"http\", action: \"fetch\", url: \"https://...\") — GET (also: get, post, put, delete, head)\n\
+         - web(resource: \"http\", action: \"post\", url: \"https://...\", body: \"...\", headers: {{...}})\n\
+         - web(resource: \"http\", action: \"sanitize\", url: \"https://...\") — fetch HTML, extract text\n\
+         - web(action: \"search\", query: \"...\") — web search returning structured results\n\n\
          ## Browser — Controls the user's real Chrome browser\n\
          Every mutation action (click, type, fill, press, scroll, etc.) returns a page snapshot automatically — \
          you do NOT need to call read_page after actions. The snapshot shows interactive elements with refs.\n\n\
