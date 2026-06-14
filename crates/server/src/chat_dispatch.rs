@@ -1606,15 +1606,25 @@ fn version_app_artifacts(
                     }
                 }
 
-                let n = doc.latest_version + 1;
-                let rel = format!("work/{}/v{}/{}", doc.id, n, filename);
+                // Content-addressed blob: store the bytes ONCE keyed by hash, so a
+                // revert or the same content across documents reuses one file. The
+                // ext keeps serve_file's content-type detection working.
+                let blob_name = if ext.is_empty() {
+                    hash.clone()
+                } else {
+                    format!("{}.{}", hash, ext)
+                };
+                let rel = format!("work/blobs/{}", blob_name);
                 let dest = files_dir.join(&rel);
-                if let Some(parent) = dest.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| types::NeboError::Internal(format!("mkdir versioned dir: {e}")))?;
+                if !dest.exists() {
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| types::NeboError::Internal(format!("mkdir blobs dir: {e}")))?;
+                    }
+                    std::fs::copy(&flat_path, &dest)
+                        .map_err(|e| types::NeboError::Internal(format!("copy blob: {e}")))?;
                 }
-                std::fs::copy(&flat_path, &dest)
-                    .map_err(|e| types::NeboError::Internal(format!("copy versioned file: {e}")))?;
+                let _ = store.register_content_blob(&hash, &ext, bytes.len() as i64);
                 let versioned_url = format!("/api/v1/files/{}", rel);
                 let parent_id = latest.as_ref().map(|v| v.id.as_str());
                 let version = store.add_work_version(

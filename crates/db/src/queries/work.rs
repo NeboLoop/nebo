@@ -169,6 +169,25 @@ impl Store {
         Ok(version)
     }
 
+    /// Register a content-addressed blob (idempotent). The bytes themselves live
+    /// on disk at <data_dir>/files/work/blobs/<hash>.<ext>; this is the registry
+    /// many versions dedup against.
+    pub fn register_content_blob(
+        &self,
+        hash: &str,
+        ext: &str,
+        size_bytes: i64,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO work_content_blobs (hash, ext, size_bytes, created_at)
+             VALUES (?1, ?2, ?3, unixepoch())",
+            params![hash, ext, size_bytes],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// All versions of a document, oldest first.
     pub fn list_work_versions(
         &self,
@@ -249,5 +268,9 @@ mod tests {
             .upsert_work_document("c1", "data.csv", "table")
             .unwrap();
         assert_ne!(other.id, doc.id);
+
+        // content-blob registry is idempotent (migration 0107 applied)
+        store.register_content_blob("deadbeef", "html", 100).unwrap();
+        store.register_content_blob("deadbeef", "html", 100).unwrap();
     }
 }
