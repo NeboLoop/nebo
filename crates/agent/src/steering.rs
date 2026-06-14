@@ -138,6 +138,7 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(NarrationSuppressor),
         Box::new(RepetitionDetector),
         Box::new(ToolResultGrounding),
+        Box::new(ToolResultHonesty),
         Box::new(ResearchDelegationNudge),
         Box::new(TaskTrackingNudge),
         Box::new(TaskCompletionNudge),
@@ -1151,6 +1152,65 @@ impl Reminder for ToolResultGrounding {
     }
 }
 
+/// Honesty about tool results — the general case the web-only ToolResultGrounding
+/// above misses. Weak models have, on the loop, RECEIVED real tool output (e.g. a
+/// glob that returned 33 files) yet narrated a false story that the tool "returned
+/// nothing" and credited the data to a screenshot/image that contained none of it.
+/// The model confessed it had the data and fabricated the failure narrative. This
+/// fires in-stream right after a successful, content-bearing tool result — where
+/// the model attends — to forbid that fabrication for ALL tools (os/file/shell/glob).
+struct ToolResultHonesty;
+impl Reminder for ToolResultHonesty {
+    fn name(&self) -> &'static str {
+        "tool_result_honesty"
+    }
+    fn priority(&self) -> u8 {
+        9
+    }
+    fn min_turns_between(&self) -> usize {
+        2
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        // Claude self-regulates; only weak models need this.
+        if ctx.is_claude() || ctx.recent_tool_names.is_empty() {
+            return None;
+        }
+        // Fire only when a recent tool call actually SUCCEEDED with content — so this
+        // reinforces honesty precisely when the model HAS real data it might misreport,
+        // and never contradicts a genuine empty/failed result.
+        let has_real_result = ctx.messages.iter().rev().take(8).any(|msg| {
+            if msg.role != "tool" {
+                return false;
+            }
+            msg.tool_results
+                .as_deref()
+                .and_then(|tr| serde_json::from_str::<Vec<serde_json::Value>>(tr).ok())
+                .is_some_and(|results| {
+                    results.iter().any(|r| {
+                        let is_error = r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let len = r
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.len())
+                            .unwrap_or(0);
+                        !is_error && len > 40
+                    })
+                })
+        });
+        if !has_real_result {
+            return None;
+        }
+        Some(
+            "Your tool results are real. Report exactly what the tool returned. NEVER \
+             claim a tool \"returned nothing\", \"isn't working\", or \"failed\" when it \
+             returned data, and NEVER attribute a tool's data to a screenshot, an image, \
+             or a guess — that is fabrication. If you have the data, state it plainly and \
+             move on. Inventing a reason the tools failed is never acceptable."
+                .to_string(),
+        )
+    }
+}
+
 /// Capability-unavailable verdict — when discovery (skill/plugin) reports that a
 /// requested capability does not exist, the verdict is final. Without this, models
 /// intermittently keep hunting: trial-executing plugins, spawning sub-agents, or
@@ -1406,6 +1466,62 @@ mod tests {
             ..base_rctx()
         };
         assert!(IdentityReinforce.check(&claude).is_none());
+    }
+
+    #[test]
+    fn test_tool_result_honesty_fires_on_successful_result() {
+        let names = vec!["os".to_string()];
+
+        // A tool message carrying a successful, content-bearing result → fires.
+        let mut tool_msg = make_msg("tool", "");
+        tool_msg.tool_results = Some(
+            serde_json::json!([{
+                "tool_call_id": "c1",
+                "content": "Found 33 files matching \"*\"\nJanusStats.html\nJanusStats.jsx",
+                "is_error": false
+            }])
+            .to_string(),
+        );
+        let messages = vec![make_msg("user", "list my desktop"), tool_msg];
+        let ctx = ReminderContext {
+            messages: &messages,
+            recent_tool_names: &names,
+            ..base_rctx()
+        };
+        let out = ToolResultHonesty
+            .check(&ctx)
+            .expect("fires after a successful tool result");
+        assert!(out.contains("Report exactly what the tool returned"));
+
+        // Direct Claude self-regulates → skipped.
+        let claude = ReminderContext {
+            messages: &messages,
+            recent_tool_names: &names,
+            provider_id: "anthropic",
+            ..base_rctx()
+        };
+        assert!(ToolResultHonesty.check(&claude).is_none());
+
+        // No tools used → no fire (nothing to be honest about).
+        let no_tools = ReminderContext {
+            recent_tool_names: &[],
+            ..base_rctx()
+        };
+        assert!(ToolResultHonesty.check(&no_tools).is_none());
+
+        // Only a (long) ERROR result → no fire, so it never contradicts a real failure.
+        let mut err_msg = make_msg("tool", "");
+        err_msg.tool_results = Some(
+            serde_json::json!([{ "tool_call_id": "c2", "content": "x".repeat(100), "is_error": true }])
+                .to_string(),
+        );
+        let err_msgs = vec![err_msg];
+        let err_ctx = ReminderContext {
+            messages: &err_msgs,
+            recent_tool_names: &names,
+            ..base_rctx()
+        };
+        assert!(ToolResultHonesty.check(&err_ctx).is_none());
     }
 
     fn rctx_presence(presence: &'static str, mode: tools::ExecutionMode) -> ReminderContext<'static> {
