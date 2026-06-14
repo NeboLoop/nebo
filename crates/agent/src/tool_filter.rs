@@ -332,13 +332,14 @@ pub fn filter_tools_with_context(
         .join(" ");
 
     for (context_name, keywords) in CONTEXTUAL_GROUPS {
+        // A context's prose docs activate on a keyword match, or when its own tool
+        // was called (loop/work/etc.). Previously, calling `os` for ANYTHING also
+        // blanket-activated EVERY os sub-context (desktop, music, keychain, PIM,
+        // search) — so a one-line file read injected ~23K chars of irrelevant prose.
+        // os sub-context docs now activate only on their own keywords; the os tool
+        // schema + main file/shell doc are always present (ALWAYS_INCLUDE_TOOLS).
         let matched = keywords.iter().any(|kw| recent_text.contains(kw))
-            || called_tools.iter().any(|ct| {
-                // Match on tool name (for tool contexts like "loop", "work")
-                ct == *context_name
-                // Also match "os" called_tool for any os sub-context
-                || (ct == "os" && !TOOL_CONTEXTS.contains(context_name))
-            });
+            || called_tools.iter().any(|ct| ct == *context_name);
 
         if matched {
             active_contexts.push(context_name.to_string());
