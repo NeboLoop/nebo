@@ -2493,6 +2493,21 @@ async fn try_handle_comm_control(
     false
 }
 
+/// Origin for an inbound NeboLoop message. The owner operating their own machine
+/// from the mobile app (their personal loop — `is_personal`) is a present,
+/// interactive session over a different transport, so it gets full capability
+/// like the desktop (`Origin::User`): no shell-deny, interactive prompt style,
+/// and the ask tool available (the loop already forwards AskRequest to the
+/// conversation). Shared-loop / third-party traffic stays `Origin::Comm`
+/// (autonomous, shell-restricted). See docs/plans/owner-full-access-from-comm.md.
+fn comm_origin(is_personal: bool) -> tools::Origin {
+    if is_personal {
+        tools::Origin::User
+    } else {
+        tools::Origin::Comm
+    }
+}
+
 async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     tracing::info!(
         target: "neboai_identity",
@@ -2719,7 +2734,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             system: String::new(),
             user_id: String::new(),
             channel: "neboai".to_string(),
-            origin: tools::Origin::Comm,
+            origin: comm_origin(is_personal),
             agent_id,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -3099,7 +3114,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 system: String::new(),
                 user_id: String::new(),
                 channel: "neboai".to_string(),
-                origin: tools::Origin::Comm,
+                origin: comm_origin(is_personal),
                 agent_id,
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),

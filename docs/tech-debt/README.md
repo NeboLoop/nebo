@@ -14,39 +14,6 @@ Conventions:
 
 ## Open
 
-### TD-001 — Origin deny-list keys are stale after the `system → os` rename
-- **Severity:** security · **Status:** open · **Found:** 2026-06-13
-- **Where:** `crates/tools/src/policy.rs` (`default_origin_deny_list`, `is_denied_for_origin`)
-- **What:** The per-origin deny-list keys the `shell` tool as `"shell"` / `"system:shell"`,
-  but after the tool rename the live tool name is `"os"` and the call site
-  (`registry.rs:495`) passes `name = "os"`, `resource = Some("shell")`. `is_denied_for_origin`
-  checks `denied.contains("os")` and `denied.contains("os:shell")` — neither matches the
-  stored keys. **Result: the intended shell-deny for `Origin::Comm` / `App` / `Skill` never
-  fires.** A remote/comm sender (or app, or skill) can currently invoke `os(resource:"shell")`
-  on the owner's machine despite the deny-list.
-- **Why it hid:** the unit test `test_origin_deny` (`policy.rs:324`) calls
-  `is_denied_for_origin(Origin::Comm, "shell", None)` and `(Origin::App, "system", Some("shell"))`
-  — i.e. the **pre-rename** names — so it stays green while production is broken. False
-  confidence.
-- **Fix:** update the deny keys to the `os` namespace (`"os:shell"`, and bare `"os"` is too
-  broad — must be the compound), and rewrite the test to call with the real registered tool
-  name (`"os"`, `Some("shell")`). Audit for any other origin-keyed entries that assume old
-  names.
-- **Related:** blocks the "third-party stays restricted" half of
-  `docs/plans/owner-full-access-from-comm.md`.
-
-### TD-002 — `check_path_scope` does not match the renamed `os` tool
-- **Severity:** security · **Status:** open · **Found:** 2026-06-13
-- **Where:** `crates/tools/src/safeguard.rs` (`check_path_scope`)
-- **What:** The path-scope guard matches `tool_name` against `"system" | "file" | "shell"`,
-  but the registry calls it with `name = "os"` (`registry.rs:486`). So `os` falls through to
-  `_ => None` and **file/shell path scoping is silently disabled for the `os` tool** whenever
-  `allowed_paths` is set. `allowed_paths` restrictions are not enforced for any `os(file,…)`
-  or `os(shell,…)` call.
-- **Fix:** match `"os"` and dispatch by `resource` (`file`/`shell`) instead of by the old
-  per-tool names. Add a test that an out-of-scope `os(file, write)` is blocked when
-  `allowed_paths` is non-empty.
-
 ### TD-003 — Two competing chat-title generators race on every run
 - **Severity:** maintainability · **Status:** open · **Found:** 2026-06-13
 - **Where:** `crates/agent/src/runner.rs:880` and `crates/server/src/chat_dispatch.rs:1141`
@@ -54,15 +21,41 @@ Conventions:
 - **What:** Both spawn a background title generator after a run completes, both check the same
   "is the title still a placeholder" condition, and both call `update_chat_title`. The runner
   one stores silently (no `chat_title_updated` broadcast, no loop push); the dispatch one
-  stores **and** broadcasts (and now pushes to the loop — see commit `c0e03144`). They race;
-  whichever wins, the other no-ops. This is a competing pathway (CLAUDE.md Rule 8): two ways
-  to do one thing.
-- **Fix:** delete the runner-side generator (`runner.rs:880-914`) and keep the
-  dispatch-side one as the single canonical title finalizer (it broadcasts + propagates to
-  the loop). Verify no non-dispatch run path relied on the runner-side generator for titles.
+  stores **and** broadcasts + pushes to the loop (commit `c0e03144`). For a `run_chat` run both
+  fire and race; whichever wins, the other no-ops.
+- **Correction (not a simple delete):** `runner.run` is called from 5 paths — `chat_dispatch`
+  (run_chat), `scheduler`, `handlers/voice`, `handlers/mcp_server`, `orchestrator`. The
+  runner-side generator is the ONLY titler for the 4 non-dispatch paths; deleting it would
+  drop their auto-titling. The race is exclusive to `run_chat`.
+- **Fix:** add `skip_title_gen: bool` to `RunRequest` (default false). `run_chat` sets it
+  `true` (it titles + broadcasts + loop-pushes itself); the runner-side generator guards on
+  `!req.skip_title_gen`. No coverage loss, race eliminated. (Loop-push must stay dispatch-side
+  — the runner crate can't reach the server's ClientHub / `codes::push_chat_title_to_loop`.)
+
+### TD-004 — `discover` and `discover_summaries` are near-duplicate functions
+- **Severity:** maintainability · **Status:** open · **Found:** 2026-06-13
+- **Where:** `crates/tools/src/skills/loader.rs` (`discover` returns `Vec<Skill>`,
+  `discover_summaries` returns `Vec<SkillSummary>`)
+- **What:** Two ~40-line functions with identical tokenization, field-matching, and scoring
+  logic. The hyphenated-name bug (fixed in `452ef881`) existed in BOTH and had to be patched
+  twice — exactly the failure mode duplicated logic invites.
+- **Fix:** extract the match/score core into one helper that both thin wrappers call (one maps
+  to `Skill`, the other to `SkillSummary`), so matching logic lives in one place.
 
 ---
 
 ## Resolved
 
-_(none yet)_
+### TD-001 — Origin deny-list keys stale after `system → os` rename
+- **Severity:** security · **Resolved:** 2026-06-13 (owner-full-access change)
+- Deny key changed `"shell"`/`"system:shell"` → `"os:shell"` in `default_origin_deny_list`
+  (`policy.rs`); `test_origin_deny` rewritten to use the real `"os"` tool name (it previously
+  passed against pre-rename names, masking the break). Shell-deny for `Comm`/`App`/`Skill` now
+  actually fires. Landed together with owner-full-access so the owner (`is_personal` →
+  `Origin::User`) keeps full shell while third-party comm is restricted.
+
+### TD-002 — `check_path_scope` didn't match the renamed `os` tool
+- **Severity:** security · **Resolved:** 2026-06-13 (owner-full-access change)
+- `check_path_scope` now matches `"os"` and dispatches by `resource` (`file`/`shell`) to the
+  existing scope checks; `test_os_tool_path_scope_enforced` added. `allowed_paths` restrictions
+  are enforced for `os(file/shell)` again.

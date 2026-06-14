@@ -27,6 +27,15 @@ pub fn check_path_scope(
     match tool_name {
         "system" | "file" => check_file_path_scope(input, allowed_paths),
         "shell" => check_shell_path_scope(input, allowed_paths),
+        // The STRAP `os` tool carries the real category in `resource`; scope its
+        // file and shell sub-resources the same as the legacy standalone tools.
+        // (Pre-rename this match never saw "os", so path scoping was silently
+        // disabled for all os file/shell calls — TD-002.)
+        "os" => match input.get("resource").and_then(|v| v.as_str()) {
+            Some("file") => check_file_path_scope(input, allowed_paths),
+            Some("shell") => check_shell_path_scope(input, allowed_paths),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -534,5 +543,33 @@ mod tests {
             "command": "ls -la"
         });
         assert!(check_shell_safeguard(&safe).is_none());
+    }
+
+    #[test]
+    fn test_os_tool_path_scope_enforced() {
+        // TD-002: path scoping must apply to the renamed `os` tool (it carries
+        // the category in `resource`), not just the legacy "file"/"shell" names.
+        let allowed = vec!["/Users/me/workspace".to_string()];
+
+        // os file write OUTSIDE the allowed dir is blocked.
+        let outside = serde_json::json!({
+            "resource": "file", "action": "write", "path": "/etc/passwd"
+        });
+        assert!(check_path_scope("os", &outside, &allowed).is_some());
+
+        // os file write INSIDE the allowed dir is permitted.
+        let inside = serde_json::json!({
+            "resource": "file", "action": "write", "path": "/Users/me/workspace/report.md"
+        });
+        assert!(check_path_scope("os", &inside, &allowed).is_none());
+
+        // Reads are never path-scoped.
+        let read = serde_json::json!({
+            "resource": "file", "action": "read", "path": "/etc/hosts"
+        });
+        assert!(check_path_scope("os", &read, &allowed).is_none());
+
+        // Empty allowed_paths = no scoping (must not block).
+        assert!(check_path_scope("os", &outside, &[]).is_none());
     }
 }

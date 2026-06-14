@@ -268,10 +268,11 @@ pub fn is_privilege_escalation(cmd: &str) -> bool {
 
 /// Default per-origin tool restrictions.
 fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
-    let shell_deny: HashSet<String> = ["shell", "system:shell"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    // The shell pathway is `os(resource:"shell")`, matched by the `os:shell`
+    // compound key in is_denied_for_origin. A bare `os` key would deny the whole
+    // os tool (file, capture, everything) — far too broad. (Pre-rename keys
+    // "shell"/"system:shell" never matched the renamed `os` tool — TD-001.)
+    let shell_deny: HashSet<String> = ["os:shell"].iter().map(|s| s.to_string()).collect();
 
     let mut deny_list = HashMap::new();
     deny_list.insert(Origin::Comm, shell_deny.clone());
@@ -323,10 +324,18 @@ mod tests {
     #[test]
     fn test_origin_deny() {
         let p = Policy::new();
-        assert!(p.is_denied_for_origin(Origin::Comm, "shell", None));
-        assert!(p.is_denied_for_origin(Origin::App, "system", Some("shell")));
-        assert!(!p.is_denied_for_origin(Origin::User, "shell", None));
-        assert!(!p.is_denied_for_origin(Origin::System, "shell", None));
+        // The shell pathway is os(resource:"shell"); the deny matches on the
+        // os:shell compound key, not a bare/old tool name. (Must use the real
+        // registered tool name "os" — the bug was that pre-rename names like
+        // "shell"/"system" silently stopped matching.)
+        assert!(p.is_denied_for_origin(Origin::Comm, "os", Some("shell")));
+        assert!(p.is_denied_for_origin(Origin::App, "os", Some("shell")));
+        assert!(p.is_denied_for_origin(Origin::Skill, "os", Some("shell")));
+        // Non-shell os resources (e.g. file) are NOT denied.
+        assert!(!p.is_denied_for_origin(Origin::Comm, "os", Some("file")));
+        // User/System origins are unrestricted.
+        assert!(!p.is_denied_for_origin(Origin::User, "os", Some("shell")));
+        assert!(!p.is_denied_for_origin(Origin::System, "os", Some("shell")));
     }
 
     #[test]
