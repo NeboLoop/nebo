@@ -133,6 +133,7 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
     vec![
         Box::new(SilenceBreaker),
         Box::new(ActionConfirm),
+        Box::new(ExecuteIntent),
         Box::new(OutputDiscipline),
         Box::new(NarrationSuppressor),
         Box::new(RepetitionDetector),
@@ -853,6 +854,45 @@ impl Reminder for ErrorRecovery {
 /// the goal over a long run. Claude Code does the analogue (todo/task re-injection on a
 /// cadence, never every turn). Content template mirrors the recap: goal → stay on it.
 const OBJECTIVE_REINFORCE_EVERY: usize = 8;
+/// ExecuteIntent — weak models narrate a next step ("Now I'll create the file") and end the
+/// turn without the tool call ("promise-then-stop"). The static comm-style binds intent to a
+/// same-response tool call, but a high-salience stream reminder mid-task makes it stick. Fires
+/// on task-bearing turns from iteration 2 on — INCLUDING right after a tool call, which is
+/// exactly where the stall happens — so it's present in the stream when the model decides, not
+/// after it already stopped (a reactive reminder can't fire then: the loop has exited). Skipped
+/// for direct Claude (binds intent natively). Restores the cut PendingTaskAction with the right
+/// trigger (no "no-recent-tool-use" gate that made the original miss the post-tool stall).
+struct ExecuteIntent;
+impl Reminder for ExecuteIntent {
+    fn name(&self) -> &'static str {
+        "execute_intent"
+    }
+    fn priority(&self) -> u8 {
+        8 // high — stranding the user on an unkept promise is a core failure
+    }
+    fn min_turns_between(&self) -> usize {
+        2
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        if ctx.is_claude() || ctx.iteration < 2 {
+            return None;
+        }
+        // Only mid-task: an active objective, or incomplete tracked work tasks. Simple Q&A
+        // completes at iteration 1 and never reaches here, so this won't nag conversation.
+        let mid_task = !ctx.active_task.is_empty()
+            || ctx.work_tasks.iter().any(|t| t.status != "completed");
+        if !mid_task {
+            return None;
+        }
+        Some(
+            "If the task isn't finished, this turn must include a tool call. Don't write \
+             \"Now I'll…\" or \"Let me…\" without doing it in the same response. If it's done, \
+             give the result."
+                .to_string(),
+        )
+    }
+}
+
 struct ObjectiveReinforce;
 impl Reminder for ObjectiveReinforce {
     fn name(&self) -> &'static str {
@@ -1889,6 +1929,57 @@ mod tests {
             .check(&ReminderContext { iteration: 8, active_task: "Plan the Tokyo trip", ..base_rctx() })
             .expect("fires");
         assert!(out.contains("Plan the Tokyo trip"));
+    }
+
+    #[test]
+    fn test_execute_intent_fires_mid_task_not_chitchat() {
+        // Mid-task (active objective), iteration ≥ 2, non-Claude → fires with the bind rule.
+        let out = ExecuteIntent
+            .check(&ReminderContext {
+                iteration: 2,
+                active_task: "Write the Janus dashboard to the desktop",
+                ..base_rctx()
+            })
+            .expect("fires mid-task");
+        assert!(out.contains("tool call"));
+
+        // Fires on an incomplete tracked work task even with no active_task.
+        let tasks = vec![WorkTask {
+            id: "1".into(),
+            subject: "create file".into(),
+            status: "in_progress".into(),
+            details: None,
+        }];
+        assert!(
+            ExecuteIntent
+                .check(&ReminderContext { iteration: 3, work_tasks: &tasks, ..base_rctx() })
+                .is_some(),
+            "fires when work tasks are incomplete"
+        );
+
+        // Iteration 1 (first turn) → never fires; the static prompt binds intent there.
+        assert!(
+            ExecuteIntent
+                .check(&ReminderContext { iteration: 1, active_task: "X", ..base_rctx() })
+                .is_none()
+        );
+        // No task context (plain chat) → never fires.
+        assert!(
+            ExecuteIntent
+                .check(&ReminderContext { iteration: 5, ..base_rctx() })
+                .is_none()
+        );
+        // Direct Claude → skipped (binds intent natively).
+        assert!(
+            ExecuteIntent
+                .check(&ReminderContext {
+                    iteration: 5,
+                    active_task: "X",
+                    provider_id: "anthropic",
+                    ..base_rctx()
+                })
+                .is_none()
+        );
     }
 
     // --- Reminder engine tests ---
