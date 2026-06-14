@@ -535,70 +535,18 @@ impl Loader {
     /// Splits query into tokens and matches each independently (AND logic).
     /// Tokens match against name, description, and triggers with hyphens
     /// treated as word separators.
-    pub async fn discover_summaries(&self, query: &str) -> Vec<SkillSummary> {
+    /// Shared match+score core for `discover` / `discover_summaries`. Returns the
+    /// matching enabled skills (cloned) sorted by relevance (name > triggers >
+    /// description); every query token must match at least one field (AND logic).
+    ///
+    /// Hyphens in the query are normalized to spaces exactly as the skill name is
+    /// (`name_lower`), so a query for the exact hyphenated name (e.g.
+    /// "nebo-design") tokenizes to ["nebo", "design"] and matches the
+    /// de-hyphenated name "nebo design". Without this a `-` stayed in the token
+    /// and could never match — discover missed installed skills looked up by
+    /// their exact hyphenated name.
+    async fn discover_scored(&self, query: &str) -> Vec<Skill> {
         let skills = self.skills.read().await;
-        // Hyphens are normalized to spaces here exactly as in `name_lower` below,
-        // so a query for the exact hyphenated skill name (e.g. "nebo-design")
-        // tokenizes to ["nebo", "design"] and matches the de-hyphenated name
-        // "nebo design". Without this, a `-` stayed in the token and could never
-        // match the de-hyphenated name — discover missed installed skills looked
-        // up by their exact name.
-        let tokens: Vec<String> = query
-            .to_lowercase()
-            .replace('-', " ")
-            .split_whitespace()
-            .map(|t| t.to_string())
-            .collect();
-        if tokens.is_empty() {
-            return Vec::new();
-        }
-        let mut matches: Vec<(usize, SkillSummary)> = skills
-            .values()
-            .filter(|s| s.enabled)
-            .filter_map(|s| {
-                let name_lower = s.name.to_lowercase().replace('-', " ");
-                let desc_lower = s.description.to_lowercase();
-                let triggers_lower: Vec<String> = s
-                    .triggers
-                    .iter()
-                    .map(|t| t.to_lowercase())
-                    .collect();
-                // Every token must match at least one field
-                let all_match = tokens.iter().all(|tok| {
-                    name_lower.contains(tok.as_str())
-                        || desc_lower.contains(tok.as_str())
-                        || triggers_lower.iter().any(|t| t.contains(tok.as_str()))
-                });
-                if !all_match {
-                    return None;
-                }
-                // Score: reward name matches highest
-                let mut score: usize = 0;
-                for tok in &tokens {
-                    if name_lower.contains(tok.as_str()) {
-                        score += 3;
-                    }
-                    if triggers_lower.iter().any(|t| t.contains(tok.as_str())) {
-                        score += 2;
-                    }
-                    if desc_lower.contains(tok.as_str()) {
-                        score += 1;
-                    }
-                }
-                Some((score, s.to_summary()))
-            })
-            .collect();
-        matches.sort_by(|a, b| b.0.cmp(&a.0));
-        matches.into_iter().map(|(_, s)| s).collect()
-    }
-
-    /// Search skills by query (name or description match).
-    /// Returns matching skills sorted by relevance.
-    /// Splits query into tokens and matches each independently (AND logic).
-    pub async fn discover(&self, query: &str) -> Vec<Skill> {
-        let skills = self.skills.read().await;
-        // Normalize hyphens to spaces so an exact hyphenated name query matches
-        // the de-hyphenated `name_lower` below (see discover_summaries).
         let tokens: Vec<String> = query
             .to_lowercase()
             .replace('-', " ")
@@ -614,11 +562,9 @@ impl Loader {
             .filter_map(|s| {
                 let name_lower = s.name.to_lowercase().replace('-', " ");
                 let desc_lower = s.description.to_lowercase();
-                let triggers_lower: Vec<String> = s
-                    .triggers
-                    .iter()
-                    .map(|t| t.to_lowercase())
-                    .collect();
+                let triggers_lower: Vec<String> =
+                    s.triggers.iter().map(|t| t.to_lowercase()).collect();
+                // Every token must match at least one field.
                 let all_match = tokens.iter().all(|tok| {
                     name_lower.contains(tok.as_str())
                         || desc_lower.contains(tok.as_str())
@@ -627,6 +573,7 @@ impl Loader {
                 if !all_match {
                     return None;
                 }
+                // Score: name matches highest, then triggers, then description.
                 let mut score: usize = 0;
                 for tok in &tokens {
                     if name_lower.contains(tok.as_str()) {
@@ -644,6 +591,19 @@ impl Loader {
             .collect();
         matches.sort_by(|a, b| b.0.cmp(&a.0));
         matches.into_iter().map(|(_, s)| s).collect()
+    }
+
+    pub async fn discover_summaries(&self, query: &str) -> Vec<SkillSummary> {
+        self.discover_scored(query)
+            .await
+            .iter()
+            .map(|s| s.to_summary())
+            .collect()
+    }
+
+    /// Search skills by query (name/description/trigger match), sorted by relevance.
+    pub async fn discover(&self, query: &str) -> Vec<Skill> {
+        self.discover_scored(query).await
     }
 
     /// Build a compact plugin inventory for the system prompt.

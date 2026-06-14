@@ -14,15 +14,7 @@ Conventions:
 
 ## Open
 
-### TD-004 — `discover` and `discover_summaries` are near-duplicate functions
-- **Severity:** maintainability · **Status:** open · **Found:** 2026-06-13
-- **Where:** `crates/tools/src/skills/loader.rs` (`discover` returns `Vec<Skill>`,
-  `discover_summaries` returns `Vec<SkillSummary>`)
-- **What:** Two ~40-line functions with identical tokenization, field-matching, and scoring
-  logic. The hyphenated-name bug (fixed in `452ef881`) existed in BOTH and had to be patched
-  twice — exactly the failure mode duplicated logic invites.
-- **Fix:** extract the match/score core into one helper that both thin wrappers call (one maps
-  to `Skill`, the other to `SkillSummary`), so matching logic lives in one place.
+_No open items._
 
 ---
 
@@ -48,3 +40,9 @@ Conventions:
   broadcasts + loop-pushes itself) and the runner-side generator now guards on
   `!skip_memory && !skip_title_gen`. The 4 non-dispatch run paths (scheduler, voice,
   mcp_server, orchestrator) keep the runner-side titler — no coverage loss, race gone.
+
+### TD-004 — `discover` and `discover_summaries` were near-duplicate functions
+- **Severity:** maintainability · **Resolved:** 2026-06-13
+- Extracted the shared tokenize/match/score logic into one private `discover_scored` helper
+  returning sorted `Vec<Skill>`; `discover` returns it directly and `discover_summaries` maps
+  to `SkillSummary`. Matching logic (incl. the hyphen normalization) now lives in one place.
