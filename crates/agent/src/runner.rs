@@ -897,12 +897,14 @@ impl Runner {
                     let chat_id = session_mgr_title.active_chat_id(&session_id_title);
                     let needs_title = match store_title.get_chat(&chat_id) {
                         Ok(Some(chat)) => {
-                            let t = &chat.title;
+                            // Case-insensitive: loop chats use "New chat" (lowercase),
+                            // desktop "New Chat" — the mismatch blocked auto-naming.
+                            let t = chat.title.to_lowercase();
                             t.is_empty()
-                                || t == "New Chat"
-                                || t == "Untitled"
-                                || *t == chat_id
-                                || t.starts_with("Chat ")
+                                || t == "new chat"
+                                || t == "untitled"
+                                || t == chat_id.to_lowercase()
+                                || t.starts_with("chat ")
                         }
                         _ => false,
                     };

@@ -3015,7 +3015,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                             &format!("thread:{}", chat_id),
                         );
                         let title = if chat_title.is_empty() {
-                            "New chat".to_string()
+                            // "New Chat" (capital C) to match the default-title gate the
+                            // auto-namer uses — lowercase here blocked loop chats from
+                            // ever being LLM-named.
+                            "New Chat".to_string()
                         } else {
                             chat_title.clone()
                         };

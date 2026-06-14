@@ -1726,19 +1726,29 @@ async fn generate_chat_title_if_needed(
         .get_chat(&chat_id)?
         .ok_or(types::NeboError::NotFound)?;
 
-    // Skip if already has a real title
-    let title = &chat.title;
-    let is_default = title.is_empty()
-        || title == "New Chat"
-        || title == "Untitled"
-        || title.starts_with("Chat ");
-    if !is_default {
+    // Need a user+assistant exchange to name from.
+    let messages = store.get_recent_chat_messages(&chat_id, 8)?;
+    if messages.len() < 2 {
         return Ok(());
     }
 
-    // Need at least 2 messages (user + assistant) for a meaningful title
-    let messages = store.get_recent_chat_messages(&chat_id, 6)?;
-    if messages.len() < 2 {
+    // Decide whether this chat still needs an auto-name WITHOUT matching the title
+    // string against per-locale defaults — that string match ("New Chat" vs the
+    // loop's "New chat" vs a localized "Nuevo chat" / "新しいチャット") is exactly
+    // what blocked loop and non-English chats from ever being named. Primary signal
+    // is language-independent: name on the chat's FIRST exchange (a single user turn
+    // so far). The case-insensitive default-title check is kept only as a fallback
+    // so already-default-titled chats and naming retries are still covered.
+    let user_turns = messages.iter().filter(|m| m.role == "user").count();
+    let first_exchange = user_turns <= 1;
+    let title_lc = chat.title.to_lowercase();
+    let title_is_default = title_lc.is_empty()
+        || title_lc == "new chat"
+        || title_lc == "untitled"
+        || title_lc == chat_id.to_lowercase()
+        || title_lc.starts_with("chat ")
+        || title_lc.starts_with("agent: ");
+    if !first_exchange && !title_is_default {
         return Ok(());
     }
 
