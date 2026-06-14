@@ -20,7 +20,11 @@
   });
 
   interface Artifact {
+    /** Stable container id — same across every version of this document. */
     id: string;
+    documentId: string;
+    /** 1-based version number of this write. */
+    version: number;
     messageId?: string;
     title: string;
     kind: 'document' | 'code' | 'table' | 'slides';
@@ -88,6 +92,8 @@
   let creationsOpen = $state(false);
   let creationsTitle = $state('Work');
   let activeArtifactId = $state<string | null>(null);
+  // Pinned version of the active document; null = follow the latest version.
+  let activeVersion = $state<number | null>(null);
 
   // Replace <@id> tokens (already HTML-escaped) with styled mention chips
   function renderMentionChips(escapedHtml: string): string {
@@ -133,13 +139,43 @@
   const artifacts = $derived<Artifact[]>(
     (messages as any[]).flatMap((m) =>
       (m.workItems ?? []).map((w: any) => ({
-        id: w.id, messageId: m.id, title: w.title, kind: w.kind, url: w.url, codeUrl: w.codeUrl,
+        id: w.documentId ?? w.id, documentId: w.documentId ?? w.id, version: w.version ?? 1,
+        messageId: m.id, title: w.title, kind: w.kind, url: w.url, codeUrl: w.codeUrl,
       }))
     )
   );
 
+  // Group versions per document container (oldest → newest), deduped by version.
+  const documentVersions = $derived.by(() => {
+    const map = new Map<string, Artifact[]>();
+    for (const a of artifacts) {
+      const list = map.get(a.documentId) ?? [];
+      const existing = list.findIndex((v) => v.version === a.version);
+      if (existing >= 0) list[existing] = a; else list.push(a);
+      map.set(a.documentId, list);
+    }
+    for (const list of map.values()) list.sort((x, y) => x.version - y.version);
+    return map;
+  });
+  // Distinct documents, represented by their latest version.
+  const documents = $derived<Artifact[]>(
+    [...documentVersions.values()].map((vs) => vs[vs.length - 1])
+  );
+  // Versions of the currently-open document (for the version dropdown + badge).
+  const activeVersionList = $derived<Artifact[]>(
+    documentVersions.get(activeArtifactId ?? '') ?? []
+  );
+
   const artifactIcons = { document: FileText, code: Code, table: Table, slides: Presentation };
-  const activeArtifact = $derived(artifacts.find(a => a.id === activeArtifactId));
+  // The shown artifact = the pinned version (activeVersion) or, by default, the
+  // latest — so a new version produced by the AI refreshes the open viewer in place.
+  const activeArtifact = $derived.by(() => {
+    if (activeVersionList.length === 0) return undefined;
+    if (activeVersion != null) {
+      return activeVersionList.find((v) => v.version === activeVersion) ?? activeVersionList[activeVersionList.length - 1];
+    }
+    return activeVersionList[activeVersionList.length - 1];
+  });
 
   // Turn an inline `filename` mention (rendered as <code>filename</code>) into a clickable
   // chip when that filename is one of the message's produced Work items.
@@ -190,9 +226,10 @@
 
   function openArtifact(id: string) {
     activeArtifactId = id;
+    activeVersion = null; // follow latest; the version dropdown pins an older one
     viewSource = false;
     openWorkPanel();
-    const a = artifacts.find(x => x.id === id);
+    const a = artifacts.find(x => x.documentId === id);
     if (a) creationsTitle = a.title;
     // WorkViewer owns fetching + rendering (text/binary/media per format).
     // Opening the panel narrows the chat column and reflows the transcript —
@@ -236,8 +273,9 @@
   // never auto-pick a file the user didn't ask for.
   function openWorkPanel() {
     creationsOpen = true;
-    if (activeArtifactId && !artifacts.some((a) => a.id === activeArtifactId)) {
+    if (activeArtifactId && !documentVersions.has(activeArtifactId)) {
       activeArtifactId = null; // stale selection from another thread
+      activeVersion = null;
     }
     if (!userResized && containerEl) {
       const w = containerEl.getBoundingClientRect().width;
@@ -1009,24 +1047,49 @@
           <div tabindex="0" role="button" class="flex items-center gap-1.5 py-1 px-2 rounded-md text-xs font-medium cursor-pointer hover:bg-base-200 transition-colors max-w-full w-fit">
             {#if ActiveIcon}<ActiveIcon class="w-3 h-3 shrink-0" />{/if}
             <span class="truncate">{activeArtifact.title}</span>
-            {#if artifacts.length > 1}
-              <span class="text-xs text-base-content/50 font-mono shrink-0">{artifacts.length}</span>
+            {#if activeVersionList.length > 1}
+              <span class="text-xs text-base-content/50 font-mono shrink-0">v{activeArtifact.version}</span>
             {/if}
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-base-content/50"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
           <ul class="dropdown-content menu menu-sm bg-base-100 border border-base-300 rounded-box z-50 w-72 max-h-80 overflow-y-auto flex-nowrap p-1 shadow-md">
-            {#each artifacts as a}
-              {@const ArtIcon2 = artifactIcons[a.kind]}
+            {#if documents.length > 1}
+              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Documents</span></li>
+            {/if}
+            {#each documents as d}
+              {@const ArtIcon2 = artifactIcons[d.kind]}
               <li>
                 <button
-                  class="flex items-center gap-2 {activeArtifactId === a.id ? 'bg-base-200 font-medium' : ''}"
-                  onclick={() => { openArtifact(a.id); (document.activeElement as HTMLElement | null)?.blur(); }}
+                  class="flex items-center gap-2 {activeArtifactId === d.documentId ? 'bg-base-200 font-medium' : ''}"
+                  onclick={() => { openArtifact(d.documentId); (document.activeElement as HTMLElement | null)?.blur(); }}
                 >
                   {#if ArtIcon2}<ArtIcon2 class="w-3.5 h-3.5 shrink-0 text-base-content/70" />{/if}
-                  <span class="truncate text-xs">{a.title}</span>
+                  <span class="truncate text-xs">{d.title}</span>
                 </button>
               </li>
             {/each}
+            {#if activeVersionList.length > 1}
+              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Versions</span></li>
+              <li>
+                <button
+                  class="flex items-center justify-between gap-2 {activeVersion == null ? 'bg-base-200 font-medium' : ''}"
+                  onclick={() => { activeVersion = null; (document.activeElement as HTMLElement | null)?.blur(); }}
+                >
+                  <span class="text-xs">Latest</span>
+                  <span class="text-xs text-base-content/50 font-mono">v{activeVersionList.length}</span>
+                </button>
+              </li>
+              {#each [...activeVersionList].reverse() as v}
+                <li>
+                  <button
+                    class="flex items-center gap-2 {activeVersion === v.version ? 'bg-base-200 font-medium' : ''}"
+                    onclick={() => { activeVersion = v.version; (document.activeElement as HTMLElement | null)?.blur(); }}
+                  >
+                    <span class="text-xs">Version {v.version}</span>
+                  </button>
+                </li>
+              {/each}
+            {/if}
           </ul>
         </div>
       {:else}
@@ -1066,7 +1129,9 @@
     <!-- Creations content — one renderer for every format, routed by extension -->
     <div class="flex-1 overflow-y-auto">
       {#if activeArtifact?.url}
-        {#key `${activeArtifact.id}:${viewSource}`}
+        <!-- Key on documentId:version so a new version re-mounts the viewer in
+             place (and the version-specific URL also defeats the browser cache). -->
+        {#key `${activeArtifact.documentId}:${activeArtifact.version}:${viewSource}`}
           <WorkViewer
             url={activeArtifact.url}
             title={activeArtifact.title}
@@ -1076,11 +1141,11 @@
             codeUrl={activeArtifact.codeUrl}
           />
         {/key}
-      {:else if artifacts.length > 0}
-        <!-- No file selected yet: list every artifact in the thread to pick from. -->
+      {:else if documents.length > 0}
+        <!-- No file selected yet: list each distinct document to pick from. -->
         <div class="p-3 flex flex-col gap-1.5">
           <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-1 pt-1 pb-2">Files in this thread</div>
-          {#each artifacts as a}
+          {#each documents as a}
             {@const ListIcon = artifactIcons[a.kind]}
             <button
               class="flex items-center gap-3 w-full p-3 rounded-xl border border-base-content/10 bg-base-200/30 hover:border-base-content/20 hover:bg-base-200/50 cursor-pointer transition-colors text-left"

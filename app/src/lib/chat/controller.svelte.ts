@@ -35,9 +35,14 @@ export interface AgentInfo {
 
 /** A produced document/report/sheet/design surfaced in the "Work" panel (click to open). */
 export interface WorkItem {
+  /** Stable container id — same across every version of this document. */
   id: string;
+  /** Same as id; the document container this version belongs to. */
+  documentId: string;
   title: string;
   kind: 'document' | 'code' | 'table' | 'slides';
+  /** 1-based version number of this write (legacy artifacts are version 1). */
+  version: number;
   url: string;
   /** Source file behind a compiled artifact (e.g. the .jsx behind a .html) —
    *  the viewer offers a Preview/Code toggle instead of two separate items. */
@@ -139,31 +144,57 @@ export function artifactsToAttachments(artifacts: unknown): UploadedAttachment[]
     });
 }
 
-/** Map run-produced DOCUMENT URLs to "Work" items (reports/sheets/code → clickable cards
- *  that open + render in the Work panel). Media is excluded (rendered inline instead). */
+/** Kind by extension. Mirrors the backend's artifact_kind(). */
+function kindForExt(ext: string): WorkItem['kind'] {
+  if (ext === 'csv' || ext === 'xlsx' || ext === 'xls') return 'table';
+  if (ext === 'pptx' || ext === 'ppt') return 'slides';
+  if (['js', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'json', 'sh', 'css'].includes(ext)) return 'code';
+  return 'document';
+}
+
+/** Map run-produced DOCUMENT artifacts to "Work" items (reports/sheets/code → clickable
+ *  cards that open + render in the Work panel). Media is excluded (rendered inline).
+ *  Each artifact is a versioned object `{ documentId, filename, kind, version, url }`;
+ *  a legacy bare string (pre-versioning chats) is tolerated as a single version-1 doc. */
 export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
   if (!Array.isArray(artifacts)) return [];
-  const urls = artifacts.filter(
-    (u): u is string => typeof u === 'string' && u.length > 0 && !isMedia(u)
+  // Normalize objects + legacy strings into a single shape.
+  const docs = artifacts
+    .map((a): WorkItem | null => {
+      if (a && typeof a === 'object' && 'documentId' in (a as Record<string, unknown>)) {
+        const o = a as Record<string, unknown>;
+        const url = String(o.url ?? '');
+        if (!url) return null;
+        const filename = String(o.filename ?? url.split('/').pop() ?? 'file');
+        return {
+          id: String(o.documentId),
+          documentId: String(o.documentId),
+          title: filename,
+          kind: (o.kind as WorkItem['kind']) ?? kindForExt(urlExt(url)),
+          version: Number(o.version ?? 1),
+          url,
+        };
+      }
+      if (typeof a === 'string' && a.length > 0 && !isMedia(a)) {
+        const filename = a.split('/').pop() || 'file';
+        return { id: a, documentId: a, title: filename, kind: kindForExt(urlExt(a)), version: 1, url: a };
+      }
+      return null;
+    })
+    .filter((w): w is WorkItem => w !== null);
+
+  // Pair a compiled .html with its .jsx/.tsx source (same stem): ONE item with a
+  // Preview/Code toggle, not two cards for the same deliverable.
+  const stem = (f: string) => f.replace(/\.[^.]+$/, '');
+  const fileExt = (f: string) => f.split('.').pop()?.toLowerCase() || '';
+  const sourceFor = (d: WorkItem) =>
+    docs.find((s) => ['jsx', 'tsx'].includes(fileExt(s.title)) && stem(s.title) === stem(d.title));
+  const pairedUrls = new Set(
+    docs.filter((d) => fileExt(d.title) === 'html').map((d) => sourceFor(d)?.url).filter(Boolean)
   );
-  // Pair a compiled .html with its .jsx/.tsx source (same stem): ONE item with
-  // a Preview/Code toggle, not two cards for the same deliverable.
-  const stem = (u: string) => (u.split('/').pop() || '').replace(/\.[^.]+$/, '');
-  const sourceFor = (u: string) =>
-    urls.find((s) => ['jsx', 'tsx'].includes(urlExt(s)) && stem(s) === stem(u));
-  const paired = new Set(urls.filter((u) => urlExt(u) === 'html').map(sourceFor).filter(Boolean));
-  return urls
-    .filter((url) => !paired.has(url))
-    .map((url) => {
-      const title = url.split('/').pop() || 'file';
-      const ext = urlExt(url);
-      const kind: WorkItem['kind'] =
-        ext === 'csv' || ext === 'xlsx' || ext === 'xls' ? 'table'
-          : ext === 'pptx' || ext === 'ppt' ? 'slides'
-            : ['js', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'json', 'sh', 'css'].includes(ext) ? 'code'
-              : 'document';
-      return { id: url, title, kind, url, codeUrl: ext === 'html' ? sourceFor(url) : undefined };
-    });
+  return docs
+    .filter((d) => !pairedUrls.has(d.url))
+    .map((d) => ({ ...d, codeUrl: fileExt(d.title) === 'html' ? sourceFor(d)?.url : undefined }));
 }
 
 /** Format a timestamp for display. */
