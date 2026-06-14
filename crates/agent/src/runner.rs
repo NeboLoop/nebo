@@ -3787,6 +3787,20 @@ async fn run_loop(
             continue;
         }
 
+        // DEFERRED BACKSTOP — promise-then-stop forced continuation (do NOT enable yet).
+        // We first try to fix promise-then-stop ("Now I'll create the file." then exit with
+        // no tool call) via the static prompt binding (prompt.rs COMM_STYLE) + the ExecuteIntent
+        // stream reminder (steering.rs). If a weak model STILL stalls in live testing, add a
+        // branch HERE mirroring the lost-tool-call retry above: if the assistant text shows
+        // forward-intent ("I'll…", "Now I'll…", "Let me…") with no tool call — and it is NOT a
+        // question/permission-seek (don't continue past a genuine ask; the ask tool handles those)
+        // — re-enter the loop with a pushed `pending_stream_reminders` reminder ("carry out exactly
+        // what you just said — call the tool now") + `continue`. Gate it with a cycle guard
+        // (`prev_auto_content` near-duplicate) and budget (`max_auto_continuations`, ~line 4051) to
+        // avoid the old 5x-loop on "would you like me to…?". NOTE: `auto_continuations` /
+        // `prev_auto_content` (~line 1092) are currently immutable — flip them back to `mut` when
+        // enabling this.
+
         // Conversation turn complete — normal exit with text response
         turn_exit_reason = format!("text_response(stop_reason={:?})", stop_reason);
         info!(iteration, session_id, exit_reason = %turn_exit_reason, "agentic loop complete");
