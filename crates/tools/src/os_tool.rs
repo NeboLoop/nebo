@@ -286,7 +286,7 @@ impl DynTool for OsTool {
          Rules:\n\
          - ALWAYS call this tool for file/system facts — NEVER answer from memory or training data. To read a file, call os(resource: \"file\", action: \"read\"); do NOT claim a file is missing or report its contents without calling first.\n\
          - Prefer file actions over shell: use file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find.\n\
-         - Include ALL required params on every call (always pass resource AND action). Missing params cause errors.\n\
+         - Always pass `action`. `resource` is usually inferred from the action (read→file, exec→shell, play→music); pass it ONLY to disambiguate actions shared across resources (e.g. create, list).\n\
          - Before edit or overwrite of an EXISTING file, read it first (edit/overwrite are rejected without a prior read). A brand-new file needs no prior read.\n\
          - glob = find files by NAME pattern (*.md, src/**/*.rs); grep = match text INSIDE files by regex. Do not confuse them.\n\
          - NEVER use sudo without asking the user first; on permission denied, explain and offer alternatives.\n\n\
@@ -340,7 +340,7 @@ impl DynTool for OsTool {
             "resource".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "REQUIRED. The resource category — determines which actions are available. Always specify resource FIRST, then action.",
+                "description": "Optional. The resource category — usually inferred from the action (read→file, exec→shell). Specify it only to disambiguate actions shared across resources (e.g. create, list).",
                 "enum": [
                     "file", "shell",
                     "window", "input", "clipboard", "capture", "notification",
@@ -548,7 +548,7 @@ impl DynTool for OsTool {
         serde_json::json!({
             "type": "object",
             "properties": serde_json::Value::Object(props),
-            "required": ["resource", "action"]
+            "required": ["action"]
         })
     }
 
@@ -991,8 +991,14 @@ mod tests {
         let schema = tool.schema();
         let required = schema["required"].as_array().unwrap();
         let required_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(required_strs.contains(&"resource"), "schema must require 'resource'");
+        // One precise calling convention: `action` is the only required field.
+        // `resource` is optional — inferred from the action (read→file), passed
+        // only to disambiguate shared actions (create, list). See infer_resource.
         assert!(required_strs.contains(&"action"), "schema must require 'action'");
+        assert!(
+            !required_strs.contains(&"resource"),
+            "resource must NOT be required — it is inferred from action"
+        );
     }
 
     #[test]

@@ -28,7 +28,7 @@ prompt_assertions:
       text: "Model calls 'os', not 'read', 'file', 'bash', 'shell', or 'system'"
       severity: critical
     - id: correct-resource
-      text: "Model uses resource: 'file', not resource: 'shell'"
+      text: "Resource routes to file: the model passes resource: 'file' OR omits resource (action: 'read' infers 'file' — one precise convention, both correct). FAIL only on a wrong resource like 'shell'."
       severity: critical
     - id: correct-action
       text: "Model uses action: 'read'"
