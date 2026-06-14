@@ -79,9 +79,10 @@ pub async fn update_chat(
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     if let Some(title) = body["title"].as_str() {
+        // User rename → mark custom so the auto-namer never overwrites it.
         state
             .store
-            .update_chat_title(&id, title)
+            .update_chat_title(&id, title, true)
             .map_err(to_error_response)?;
     }
     Ok(Json(serde_json::json!({"success": true})))

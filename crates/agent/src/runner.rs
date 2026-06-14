@@ -896,9 +896,11 @@ impl Runner {
                 tokio::spawn(async move {
                     let chat_id = session_mgr_title.active_chat_id(&session_id_title);
                     let needs_title = match store_title.get_chat(&chat_id) {
-                        Ok(Some(chat)) => {
-                            // Case-insensitive: loop chats use "New chat" (lowercase),
-                            // desktop "New Chat" — the mismatch blocked auto-naming.
+                        // Never overwrite a title the user explicitly set. Otherwise
+                        // case-insensitive default match (loop chats use "New chat"
+                        // lowercase, desktop "New Chat"). This is the non-dispatch run
+                        // path (scheduler/voice/mcp); run_chat titles via chat_dispatch.
+                        Ok(Some(chat)) if !chat.title_custom => {
                             let t = chat.title.to_lowercase();
                             t.is_empty()
                                 || t == "new chat"
@@ -916,7 +918,7 @@ impl Runner {
                         )
                         .await
                         {
-                            let _ = store_title.update_chat_title(&chat_id, &title);
+                            let _ = store_title.update_chat_title(&chat_id, &title, false);
                             info!(chat_id = %chat_id, title = %title, "auto-generated session title");
                         }
                     }

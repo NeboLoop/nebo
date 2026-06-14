@@ -1732,36 +1732,30 @@ async fn generate_chat_title_if_needed(
         return Ok(());
     }
 
-    // Decide whether this chat still needs an auto-name WITHOUT matching the title
-    // string against per-locale defaults — that string match ("New Chat" vs the
-    // loop's "New chat" vs a localized "Nuevo chat" / "新しいチャット") is exactly
-    // what blocked loop and non-English chats from ever being named. Primary signal
-    // is language-independent: name on the chat's FIRST exchange (a single user turn
-    // so far). The case-insensitive default-title check is kept only as a fallback
-    // so already-default-titled chats and naming retries are still covered.
+    // Skip chats the user explicitly renamed — never clobber a chosen name (mirrors
+    // Claude desktop's explicit-title check instead of matching default strings).
+    if chat.title_custom {
+        return Ok(());
+    }
+    // Trigger by USER-MESSAGE COUNT — language-independent. Name on the first
+    // exchange, then re-refine ONCE at the third user turn over the fuller
+    // conversation (Claude desktop's count-1 / count-3 behavior). Fires at most
+    // twice and never depends on a per-locale default-title string ("New Chat" vs
+    // the loop's "New chat" vs "Nuevo chat" / "新しいチャット").
     let user_turns = messages.iter().filter(|m| m.role == "user").count();
-    let first_exchange = user_turns <= 1;
-    let title_lc = chat.title.to_lowercase();
-    let title_is_default = title_lc.is_empty()
-        || title_lc == "new chat"
-        || title_lc == "untitled"
-        || title_lc == chat_id.to_lowercase()
-        || title_lc.starts_with("chat ")
-        || title_lc.starts_with("agent: ");
-    if !first_exchange && !title_is_default {
+    if user_turns != 1 && user_turns != 3 {
         return Ok(());
     }
 
-    // Build a compact transcript from the first few messages
+    // Build a compact transcript. Use more of the conversation on the count-3
+    // refinement so the regenerated title reflects fuller context. Char-safe
+    // truncation — content may be non-ASCII.
+    let take_n = if user_turns >= 3 { 8 } else { 4 };
     let transcript: String = messages
         .iter()
-        .take(4)
+        .take(take_n)
         .map(|m| {
-            let snippet = if m.content.len() > 200 {
-                &m.content[..200]
-            } else {
-                &m.content
-            };
+            let snippet: String = m.content.chars().take(200).collect();
             format!("{}: {}", m.role, snippet)
         })
         .collect::<Vec<_>>()
@@ -1820,7 +1814,7 @@ async fn generate_chat_title_if_needed(
         return Ok(());
     }
 
-    store.update_chat_title(&chat_id, &new_title)?;
+    store.update_chat_title(&chat_id, &new_title, false)?;
 
     hub.broadcast(
         "chat_title_updated",

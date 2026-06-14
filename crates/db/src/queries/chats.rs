@@ -43,11 +43,13 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    pub fn update_chat_title(&self, id: &str, title: &str) -> Result<(), NeboError> {
+    /// Update a chat's title. `custom` marks it as a user rename (the auto-namer
+    /// skips title_custom chats so it never clobbers a chosen name).
+    pub fn update_chat_title(&self, id: &str, title: &str, custom: bool) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE chats SET title = ?2, updated_at = unixepoch() WHERE id = ?1",
-            params![id, title],
+            "UPDATE chats SET title = ?2, title_custom = ?3, updated_at = unixepoch() WHERE id = ?1",
+            params![id, title, custom as i64],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -703,6 +705,7 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
         updated_at: row.get("updated_at")?,
         user_id: row.get("user_id")?,
         session_name: row.get("session_name")?,
+        title_custom: row.get("title_custom")?,
     })
 }
 

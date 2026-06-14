@@ -151,6 +151,11 @@ pub struct Chat {
     pub updated_at: i64,
     pub user_id: Option<String>,
     pub session_name: Option<String>,
+    /// True when the user explicitly renamed this chat. The auto-namer skips
+    /// these so it never clobbers a chosen name. Internal — not exposed over the
+    /// API (skip_serializing keeps the response shape unchanged).
+    #[serde(default, skip_serializing)]
+    pub title_custom: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
