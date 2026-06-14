@@ -408,12 +408,20 @@ impl FileTool {
                     self.record_read(session, &path, m);
                 }
                 let action = if input.append { "Appended" } else { "Wrote" };
-                let result = ToolResult::ok(format!(
-                    "{} {} bytes to {}",
-                    action,
-                    input.content.len(),
-                    path
-                ));
+                let mut msg = format!("{} {} bytes to {}", action, input.content.len(), path);
+                // Raw JSX in a .html with no transpiler renders blank in every browser.
+                // Redirect to the canonical pathway: write a .jsx, then convert to html
+                // (Nebo's SWC engine produces a self-contained, renderable page).
+                if html_has_untranspiled_jsx(&path, &input.content) {
+                    msg.push_str(
+                        "\n\nWARNING: this .html contains raw JSX (e.g. className=, <Component/>) \
+                         with no transpiler, so it renders BLANK in a browser. To build an \
+                         interactive React artifact, write the component as a .jsx file, then \
+                         os(resource: \"file\", action: \"convert\", path: \"<file>.jsx\", to: \"html\"). \
+                         Never put JSX or CDN-loaded React directly in a .html.",
+                    );
+                }
+                let result = ToolResult::ok(msg);
                 // Surface user-facing documents (reports/sheets/designs) as "Work"
                 // artifacts so they're clickable + viewable in the Work panel. Scratch/
                 // code/config writes are NOT artifacts — gate on a work-product extension.
@@ -785,6 +793,28 @@ fn is_work_document(path: &str) -> bool {
         .is_some_and(|e| WORK_EXTS.contains(&e.as_str()))
 }
 
+/// Detect a .html written with raw JSX but no transpiler — the agent's common
+/// "React + CDN + JSX-in-a-<script>" mistake, which renders blank because browsers
+/// can't parse JSX. `className=` is the tell: plain HTML uses `class=`, and Nebo's
+/// SWC-compiled output uses `className:` (an object property) — only raw JSX writes
+/// `className=`. We don't fire when a transpiler is present (Babel standalone) or
+/// when it's Nebo's own converted shell (blob-module loader).
+fn html_has_untranspiled_jsx(path: &str, content: &str) -> bool {
+    let is_html = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+        .unwrap_or(false);
+    if !is_html {
+        return false;
+    }
+    let has_jsx = content.contains("className=") || content.contains("React.Fragment");
+    let has_transpiler = content.contains("text/babel")
+        || content.contains("babel/standalone")
+        || content.contains("URL.createObjectURL"); // Nebo's converted blob-module shell
+    has_jsx && !has_transpiler
+}
+
 /// Sensitive paths that the agent should never access.
 fn sensitive_paths() -> Vec<String> {
     let home = match dirs::home_dir() {
@@ -890,6 +920,32 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext::new(Origin::User)
+    }
+
+    #[test]
+    fn detects_untranspiled_jsx_html() {
+        // raw JSX in a .html, no transpiler → flagged
+        assert!(html_has_untranspiled_jsx(
+            "dash.html",
+            "<div id=root></div><script>function App(){return <div className=\"p\">hi</div>}</script>"
+        ));
+        // plain HTML (class=, not className=) → not flagged
+        assert!(!html_has_untranspiled_jsx(
+            "page.html",
+            "<div class=\"p\">hi</div>"
+        ));
+        // Babel standalone present → transpiler handles it, not flagged
+        assert!(!html_has_untranspiled_jsx(
+            "ok.html",
+            "<script src=\"babel/standalone\"></script><script type=\"text/babel\">const x=<div className=\"p\"/>;</script>"
+        ));
+        // Nebo's converted shell (blob-module loader) → not flagged
+        assert!(!html_has_untranspiled_jsx(
+            "conv.html",
+            "<script type=module>const m=await import(URL.createObjectURL(new Blob([s])));</script> className="
+        ));
+        // not html → never flagged
+        assert!(!html_has_untranspiled_jsx("a.jsx", "return <div className=\"p\"/>"));
     }
 
     /// Create a subdirectory with a non-dot name inside the tempdir.
