@@ -537,8 +537,15 @@ impl Loader {
     /// treated as word separators.
     pub async fn discover_summaries(&self, query: &str) -> Vec<SkillSummary> {
         let skills = self.skills.read().await;
+        // Hyphens are normalized to spaces here exactly as in `name_lower` below,
+        // so a query for the exact hyphenated skill name (e.g. "nebo-design")
+        // tokenizes to ["nebo", "design"] and matches the de-hyphenated name
+        // "nebo design". Without this, a `-` stayed in the token and could never
+        // match the de-hyphenated name — discover missed installed skills looked
+        // up by their exact name.
         let tokens: Vec<String> = query
             .to_lowercase()
+            .replace('-', " ")
             .split_whitespace()
             .map(|t| t.to_string())
             .collect();
@@ -590,8 +597,11 @@ impl Loader {
     /// Splits query into tokens and matches each independently (AND logic).
     pub async fn discover(&self, query: &str) -> Vec<Skill> {
         let skills = self.skills.read().await;
+        // Normalize hyphens to spaces so an exact hyphenated name query matches
+        // the de-hyphenated `name_lower` below (see discover_summaries).
         let tokens: Vec<String> = query
             .to_lowercase()
+            .replace('-', " ")
             .split_whitespace()
             .map(|t| t.to_string())
             .collect();
@@ -1619,6 +1629,43 @@ Windows specific instructions.
 
         let no_match = loader.match_triggers("unrelated message", 3).await;
         assert!(no_match.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_discover_matches_hyphenated_name() {
+        // Regression: discover for the exact hyphenated skill name must match.
+        // The name is de-hyphenated to "nebo design" internally; the query token
+        // must normalize the same way or it never matches (the bug that made
+        // discover("nebo-design") miss an installed nebo-design skill).
+        const HYPHEN_SKILL: &str = r#"---
+name: nebo-design
+description: UI/UX and brand design capability
+priority: 5
+---
+
+Design instructions.
+"#;
+        let installed = TempDir::new().unwrap();
+        let tmp = TempDir::new().unwrap();
+        create_skill_md(tmp.path(), "nebo-design", HYPHEN_SKILL);
+
+        let loader = Loader::new(installed.path().to_path_buf(), tmp.path().to_path_buf());
+        loader.load_all().await;
+
+        // Assert the exact-named skill is PRESENT (the bug was that it was
+        // missing), not an exact count — the loader also pulls in bundled skills,
+        // some of which legitimately match these tokens.
+        let has = |v: Vec<SkillSummary>| v.iter().any(|s| s.name == "nebo-design");
+        assert!(
+            has(loader.discover_summaries("nebo-design").await),
+            "exact hyphenated name should be found (was the bug)"
+        );
+        assert!(has(loader.discover_summaries("nebo design").await));
+        assert!(has(loader.discover_summaries("design").await));
+        assert!(
+            !has(loader.discover_summaries("unrelated").await),
+            "unrelated query must not surface nebo-design"
+        );
     }
 
     /// Create a skill inside a plugin's skills/ subdirectory (simulates embedded plugin skill).
