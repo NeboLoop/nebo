@@ -106,6 +106,50 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// A work-document container by id.
+    pub fn get_work_document(&self, id: &str) -> Result<Option<WorkDocument>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT * FROM work_documents WHERE id = ?1",
+            params![id],
+            row_to_document,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Restore an earlier version: append a NEW version whose content is the chosen
+    /// version's (content-addressed → no copy, just reference the same blob),
+    /// parented off the current latest. Non-destructive — full history is kept.
+    pub fn restore_work_version(
+        &self,
+        document_id: &str,
+        version_number: i64,
+    ) -> Result<WorkDocumentVersion, NeboError> {
+        let target = {
+            let conn = self.conn()?;
+            conn.query_row(
+                "SELECT * FROM work_document_versions
+                 WHERE document_id = ?1 AND version_number = ?2",
+                params![document_id, version_number],
+                row_to_version,
+            )
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?
+            .ok_or(NeboError::NotFound)?
+        };
+        let latest = self.latest_work_version(document_id)?;
+        let parent_id = latest.as_ref().map(|v| v.id.as_str());
+        self.add_work_version(
+            document_id,
+            parent_id,
+            &target.url,
+            target.content_hash.as_deref(),
+            target.content_type.as_deref(),
+            None,
+        )
+    }
+
     /// The most recent version of a document, if any.
     pub fn latest_work_version(
         &self,
@@ -272,5 +316,12 @@ mod tests {
         // content-blob registry is idempotent (migration 0107 applied)
         store.register_content_blob("deadbeef", "html", 100).unwrap();
         store.register_content_blob("deadbeef", "html", 100).unwrap();
+
+        // restore v1 → appends v3 with v1's content/url, parented off latest (v2)
+        let restored = store.restore_work_version(&doc.id, 1).unwrap();
+        assert_eq!(restored.version_number, 3);
+        assert_eq!(restored.url, v1.url);
+        assert_eq!(restored.content_hash.as_deref(), Some("hashA"));
+        assert_eq!(restored.parent_version_id.as_deref(), Some(v2.id.as_str()));
     }
 }

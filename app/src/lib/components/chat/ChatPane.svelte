@@ -60,7 +60,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], activityStatus = '', tokenUsage = null, quotaWarning = '', onsend, onstop, onedit, onredo, onasksubmit, ondismisswarning, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], activityStatus = '', tokenUsage = null, quotaWarning = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
     messages?: Message[];
     agentName?: string;
     agentId?: string;
@@ -81,6 +81,7 @@
     onedit?: (msgIndex: number, newContent: string) => void;
     onredo?: (msgIndex: number) => void;
     onasksubmit?: (requestId: string, value: string) => void;
+    onrestoreversion?: (documentId: string, version: number) => void;
     ondismisswarning?: () => void;
     onloadmore?: () => void;
     isLoading?: boolean;
@@ -1109,6 +1110,13 @@
             onclick={() => viewSource = true}
           >Code</button>
         </div>
+      {/if}
+      {#if activeArtifact && activeVersion != null && activeVersionList.length > 0 && activeArtifact.version < activeVersionList[activeVersionList.length - 1].version}
+        <button
+          class="py-1 px-2 rounded-md text-xs font-medium cursor-pointer bg-base-200 hover:bg-base-300 text-base-content/80 hover:text-base-content transition-colors shrink-0 border-none"
+          onclick={() => { if (activeArtifact) onrestoreversion?.(activeArtifact.documentId, activeArtifact.version); activeVersion = null; }}
+          title="Make this version current"
+        >Restore</button>
       {/if}
       {#if activeArtifact?.url}
         <a

@@ -283,6 +283,7 @@
   onedit={(idx, text) => chat.edit(idx, text)}
   onredo={(idx) => chat.redo(idx)}
   onasksubmit={(id, val) => chat.submitAsk(id, val)}
+  onrestoreversion={(docId, v) => chat.restoreVersion(docId, v)}
   ondismisswarning={() => chat.dismissWarning()}
   isLoading={chat.isLoading}
 />

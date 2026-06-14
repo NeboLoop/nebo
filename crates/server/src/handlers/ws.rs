@@ -432,6 +432,71 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         "session_id": "all",
                                     }));
                                 }
+                                "restore_version" => {
+                                    // Restore an earlier version of a work document: append a
+                                    // new version (= the chosen version's content) and surface it
+                                    // as a "Restored …" assistant message so it joins the chain.
+                                    let data = &parsed["data"];
+                                    let document_id =
+                                        data["document_id"].as_str().unwrap_or("").to_string();
+                                    let version = data["version"].as_i64().unwrap_or(0);
+                                    let agent_id =
+                                        data["agent_id"].as_str().unwrap_or("").to_string();
+                                    let session_id =
+                                        data["session_id"].as_str().map(|s| s.to_string());
+                                    if document_id.is_empty() || version <= 0 {
+                                        debug!("restore_version: missing document_id/version");
+                                    } else if let Ok(Some(doc)) =
+                                        state.store.get_work_document(&document_id)
+                                    {
+                                        match state.store.restore_work_version(&document_id, version) {
+                                            Ok(new_v) => {
+                                                let artifact = serde_json::json!({
+                                                    "documentId": doc.id,
+                                                    "filename": doc.filename,
+                                                    "kind": doc.kind,
+                                                    "version": new_v.version_number,
+                                                    "url": new_v.url,
+                                                });
+                                                let content = format!(
+                                                    "Restored {} to version {}",
+                                                    doc.filename, version
+                                                );
+                                                let msg_id = uuid::Uuid::new_v4().to_string();
+                                                let metadata = serde_json::json!({
+                                                    "artifacts": [artifact.clone()]
+                                                })
+                                                .to_string();
+                                                let created_at = state
+                                                    .store
+                                                    .create_chat_message(
+                                                        &msg_id,
+                                                        &doc.chat_id,
+                                                        "assistant",
+                                                        &content,
+                                                        Some(&metadata),
+                                                    )
+                                                    .map(|m| m.created_at)
+                                                    .unwrap_or(0);
+                                                state.hub.broadcast(
+                                                    "chat_message",
+                                                    serde_json::json!({
+                                                        "id": msg_id,
+                                                        "content": content,
+                                                        "createdAt": created_at * 1000,
+                                                        "agentId": agent_id,
+                                                        "session_id": session_id,
+                                                        "artifacts": [artifact],
+                                                    }),
+                                                );
+                                            }
+                                            Err(e) => warn!(
+                                                error = %e, document_id = %document_id, version,
+                                                "restore_version failed"
+                                            ),
+                                        }
+                                    }
+                                }
                                 "auth" | "connect" => {
                                     info!("ws received '{}' message, sending auth_ok", msg_type);
                                     let auth_ok = serde_json::json!({"type": "auth_ok"});

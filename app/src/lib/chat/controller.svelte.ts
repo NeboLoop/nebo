@@ -352,12 +352,14 @@ export function createChatController(config: ChatControllerConfig) {
     if (!content) return;
     const isDelegate = aid !== agentId;
     const delegateAgent = isDelegate ? allAgents.find(a => a.id === aid) : null;
+    const workItems = artifactsToWorkItems(data.artifacts);
     messages = [...messages, {
       id: data.id || 'msg-' + Date.now(),
       type: 'assistant' as const,
       content,
       html: data.html || undefined,
       time: formatTime(data.createdAt || Date.now()),
+      ...(workItems.length ? { workItems } : {}),
       ...(delegateAgent ? {
         delegateAgentId: delegateAgent.id,
         delegateAgentName: delegateAgent.name,
@@ -592,6 +594,15 @@ export function createChatController(config: ChatControllerConfig) {
     }
   }
 
+  function restoreVersion(documentId: string, version: number) {
+    ws.send('restore_version', {
+      document_id: documentId,
+      version,
+      agent_id: agentId,
+      ...(activeSessionKey ? { session_id: activeSessionKey } : {}),
+    });
+  }
+
   function submitAsk(requestId: string, value: string) {
     ws.send('ask_response', { request_id: requestId, value });
     messages = messages.map(msg =>
@@ -681,6 +692,7 @@ export function createChatController(config: ChatControllerConfig) {
     stop,
     newThread,
     submitAsk,
+    restoreVersion,
     edit,
     redo,
     clearMessages,
