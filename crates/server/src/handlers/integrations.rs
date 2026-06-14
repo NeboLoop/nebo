@@ -185,41 +185,21 @@ async fn sync_bridge(state: &AppState) {
         if i.auth_type == "oauth" && i.connection_status.is_none() {
             continue;
         }
-        let access_token = if i.auth_type == "oauth" {
-            match state.store.get_mcp_credential_full(&i.id, "oauth_token") {
-                Ok(Some(cred)) => {
-                    if tools::mcp_tool::is_token_expired(cred.expires_at)
-                        && cred.refresh_token.is_some()
-                    {
-                        match tools::mcp_tool::refresh_mcp_token(
-                            &state.store,
-                            state.bridge.client(),
-                            &i.id,
-                        )
-                        .await
-                        {
-                            Ok(new_token) => Some(new_token),
-                            Err(e) => {
-                                warn!(name = %i.name, error = %e, "MCP token refresh failed during sync");
-                                state
-                                    .bridge
-                                    .client()
-                                    .decrypt_token(&cred.credential_value)
-                                    .ok()
-                            }
-                        }
-                    } else {
-                        state
-                            .bridge
-                            .client()
-                            .decrypt_token(&cred.credential_value)
-                            .ok()
-                    }
-                }
-                _ => None,
+        let access_token = match tools::mcp_tool::resolve_mcp_token(
+            &state.store,
+            state.bridge.client(),
+            i,
+        )
+        .await
+        {
+            tools::mcp_tool::TokenResolution::Ready(t) => t,
+            tools::mcp_tool::TokenResolution::NeedsReauth => {
+                // Don't connect with a stale token (it would 401 and drop). Surface
+                // needs_reauth; the proactive refresher will retry on its next tick.
+                let _ = state.store.set_mcp_connection_status(&i.id, "needs_reauth", 0);
+                warn!(name = %i.name, "MCP token needs reauth during sync — skipping connect");
+                continue;
             }
-        } else {
-            None
         };
         let tool_prefix = slugify_name(&i.name);
         match state
@@ -246,6 +226,53 @@ async fn sync_bridge(state: &AppState) {
             }
         }
     }
+}
+
+/// Spawn a background task that keeps OAuth MCP tokens fresh — refreshing any token
+/// expiring within the window so it never reaches expiry (and never 401s / drops a
+/// server on reconnect or restart). This is the "fresh 100% of the time" guarantee:
+/// renew proactively rather than reactively at connect time. Runs on an interval.
+pub fn spawn_mcp_token_refresher(state: AppState) {
+    const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300); // 5 min
+    const REFRESH_WINDOW_SECS: i64 = 900; // renew when < 15 min to expiry
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(REFRESH_INTERVAL);
+        loop {
+            tick.tick().await; // first tick fires immediately, so we also catch startup
+            let integrations = match state.store.list_mcp_integrations() {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(error = %e, "token refresher: failed to list MCP integrations");
+                    continue;
+                }
+            };
+            for i in &integrations {
+                if i.auth_type != "oauth" || i.is_enabled.unwrap_or(0) == 0 {
+                    continue;
+                }
+                let cred = match state.store.get_mcp_credential_full(&i.id, "oauth_token") {
+                    Ok(Some(c)) => c,
+                    _ => continue,
+                };
+                if cred.refresh_token.is_some()
+                    && tools::mcp_tool::token_expires_within(cred.expires_at, REFRESH_WINDOW_SECS)
+                {
+                    match tools::mcp_tool::refresh_mcp_token(
+                        &state.store,
+                        state.bridge.client(),
+                        &i.id,
+                    )
+                    .await
+                    {
+                        Ok(_) => info!(name = %i.name, "proactively refreshed MCP OAuth token"),
+                        Err(e) => {
+                            warn!(name = %i.name, error = %e, "proactive MCP token refresh failed")
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// GET /api/v1/integrations
@@ -378,28 +405,67 @@ pub async fn test_integration(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    // If a URL is provided, always try to reach it regardless of server_type
-    let (success, message) = if let Some(ref url) = integration.server_url {
-        if url.starts_with("http://") || url.starts_with("https://") {
-            match reqwest::Client::new()
-                .get(url.as_str())
-                .timeout(std::time::Duration::from_secs(10))
-                .send()
-                .await
-            {
-                Ok(resp) => (true, format!("Server reachable (HTTP {})", resp.status())),
-                Err(e) => (false, format!("Cannot reach server: {}", e)),
-            }
+    let server_url = integration.server_url.clone().unwrap_or_default();
+    let is_stdio = metadata_is_stdio(integration.metadata.as_deref())
+        || integration.server_type == "stdio";
+
+    // stdio servers can't be probed without launching — report config validity only.
+    if server_url.is_empty() {
+        let (success, message) = if is_stdio {
+            (true, "Configuration looks valid (stdio server starts on demand)".to_string())
         } else {
-            (true, "Configuration looks valid".to_string())
+            (false, "No server URL configured".to_string())
+        };
+        return Ok(Json(serde_json::json!({
+            "success": success,
+            "integration": integration.name,
+            "message": message,
+        })));
+    }
+
+    // Real test: resolve the token (refresh if expired) and do the authenticated MCP
+    // connect — exactly what production uses — instead of an unauthenticated GET that
+    // calls a 401 "reachable". Status mirrors reality: connected ⇒ success, auth/
+    // protocol failure ⇒ failure with the actual reason.
+    let access_token = match tools::mcp_tool::resolve_mcp_token(
+        &state.store,
+        state.bridge.client(),
+        &integration,
+    )
+    .await
+    {
+        tools::mcp_tool::TokenResolution::Ready(t) => t,
+        tools::mcp_tool::TokenResolution::NeedsReauth => {
+            let _ = state.store.set_mcp_connection_status(&id, "needs_reauth", 0);
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "needsReauth": true,
+                "integration": integration.name,
+                "message": "Authentication expired — re-authorize this server (click the key / Reconnect).",
+            })));
         }
-    } else {
-        match integration.server_type.as_str() {
-            "stdio" => (
-                true,
-                "Configuration looks valid (stdio server will be started on demand)".to_string(),
-            ),
-            _ => (false, "No server URL configured".to_string()),
+    };
+
+    let tool_prefix = slugify_name(&integration.name);
+    let (success, message) = match state
+        .bridge
+        .connect(
+            &id,
+            &tool_prefix,
+            &server_url,
+            access_token.as_deref(),
+            integration.metadata.as_deref(),
+        )
+        .await
+    {
+        Ok(tools_list) => {
+            let n = tools_list.len();
+            let _ = state.store.set_mcp_connection_status(&id, "connected", n as i64);
+            (true, format!("Connected — {} tools available", n))
+        }
+        Err(e) => {
+            let _ = state.store.set_mcp_connection_status(&id, "error", 0);
+            (false, format!("Connection failed: {}", e))
         }
     };
 
@@ -430,45 +496,24 @@ pub async fn connect_integration(
         )));
     }
 
-    // Get stored OAuth token, refreshing if expired
-    let access_token = if integration.auth_type == "oauth" {
-        match state.store.get_mcp_credential_full(&id, "oauth_token") {
-            Ok(Some(cred)) => {
-                if tools::mcp_tool::is_token_expired(cred.expires_at)
-                    && cred.refresh_token.is_some()
-                {
-                    // Token expired — try to refresh before connecting
-                    info!(integration = %id, "MCP token expired on connect, attempting refresh");
-                    match tools::mcp_tool::refresh_mcp_token(
-                        &state.store,
-                        state.bridge.client(),
-                        &id,
-                    )
-                    .await
-                    {
-                        Ok(new_token) => Some(new_token),
-                        Err(e) => {
-                            warn!(integration = %id, error = %e, "MCP token refresh on connect failed");
-                            // Fall through with possibly-expired token
-                            state
-                                .bridge
-                                .client()
-                                .decrypt_token(&cred.credential_value)
-                                .ok()
-                        }
-                    }
-                } else {
-                    state
-                        .bridge
-                        .client()
-                        .decrypt_token(&cred.credential_value)
-                        .ok()
-                }
-            }
-            _ => None,
+    // Resolve the OAuth token (refreshing if expired). On failure, surface
+    // "needs reauth" instead of connecting with a stale token that would 401.
+    let access_token = match tools::mcp_tool::resolve_mcp_token(
+        &state.store,
+        state.bridge.client(),
+        &integration,
+    )
+    .await
+    {
+        tools::mcp_tool::TokenResolution::Ready(t) => t,
+        tools::mcp_tool::TokenResolution::NeedsReauth => {
+            let _ = state.store.set_mcp_connection_status(&id, "needs_reauth", 0);
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "needsReauth": true,
+                "message": "Authentication expired — re-authorize this server (click the key / Reconnect).",
+            })));
         }
-    } else {
-        None
     };
 
     // Use integration name (slugified) as server_type for tool naming

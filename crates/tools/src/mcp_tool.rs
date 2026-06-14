@@ -16,15 +16,66 @@ pub struct McpTool {
 
 /// Check if a stored OAuth token is expired (with 60s buffer).
 pub fn is_token_expired(expires_at: Option<i64>) -> bool {
+    token_expires_within(expires_at, 60)
+}
+
+/// Whether a stored OAuth token expires within `secs` from now. The proactive
+/// refresher uses a wide window so tokens are renewed well before expiry and
+/// never reach a 401 at connect time.
+pub fn token_expires_within(expires_at: Option<i64>, secs: i64) -> bool {
     match expires_at {
         Some(exp) => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
-            now >= (exp - 60)
+            now >= (exp - secs)
         }
         None => false, // no expiry info = assume valid
+    }
+}
+
+/// Outcome of resolving an OAuth MCP integration's access token for a connect attempt.
+pub enum TokenResolution {
+    /// Connect with this token. `None` = non-OAuth / no token needed.
+    Ready(Option<String>),
+    /// Token is expired and could not be refreshed (refresh failed, no refresh
+    /// token, or no stored token). Surface "needs reauth" — do NOT connect with a
+    /// stale token, which would 401 and silently drop the server.
+    NeedsReauth,
+}
+
+/// Resolve the access token to connect an MCP integration with — the single
+/// canonical path for startup reconnect, manual connect, sync, and the test
+/// button. Refreshes an expired token when possible; on failure returns
+/// `NeedsReauth` instead of falling through to the stale token.
+pub async fn resolve_mcp_token(
+    store: &db::Store,
+    client: &mcp::McpClient,
+    integration: &db::models::McpIntegration,
+) -> TokenResolution {
+    if integration.auth_type != "oauth" {
+        return TokenResolution::Ready(None);
+    }
+    let cred = match store.get_mcp_credential_full(&integration.id, "oauth_token") {
+        Ok(Some(c)) => c,
+        _ => return TokenResolution::NeedsReauth, // OAuth but no stored token
+    };
+    if !is_token_expired(cred.expires_at) {
+        return match client.decrypt_token(&cred.credential_value) {
+            Ok(t) => TokenResolution::Ready(Some(t)),
+            Err(_) => TokenResolution::NeedsReauth,
+        };
+    }
+    if cred.refresh_token.is_none() {
+        return TokenResolution::NeedsReauth;
+    }
+    match refresh_mcp_token(store, client, &integration.id).await {
+        Ok(new_token) => TokenResolution::Ready(Some(new_token)),
+        Err(e) => {
+            warn!(integration = %integration.id, error = %e, "MCP token refresh failed — needs reauth");
+            TokenResolution::NeedsReauth
+        }
     }
 }
 

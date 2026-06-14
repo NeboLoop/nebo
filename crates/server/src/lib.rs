@@ -983,41 +983,23 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     if i.auth_type == "oauth" && i.connection_status.is_none() {
                         continue;
                     }
-                    // Retrieve stored OAuth token, refreshing if expired
-                    let access_token = if i.auth_type == "oauth" {
-                        match store_init.get_mcp_credential_full(&i.id, "oauth_token") {
-                            Ok(Some(cred)) => {
-                                if tools::mcp_tool::is_token_expired(cred.expires_at)
-                                    && cred.refresh_token.is_some()
-                                {
-                                    info!(name = %i.name, "MCP token expired on startup, attempting refresh");
-                                    match tools::mcp_tool::refresh_mcp_token(
-                                        &store_init,
-                                        bridge_init.client(),
-                                        &i.id,
-                                    )
-                                    .await
-                                    {
-                                        Ok(new_token) => Some(new_token),
-                                        Err(e) => {
-                                            warn!(name = %i.name, error = %e, "MCP token refresh on startup failed");
-                                            bridge_init
-                                                .client()
-                                                .decrypt_token(&cred.credential_value)
-                                                .ok()
-                                        }
-                                    }
-                                } else {
-                                    bridge_init
-                                        .client()
-                                        .decrypt_token(&cred.credential_value)
-                                        .ok()
-                                }
-                            }
-                            _ => None,
+                    // Resolve the OAuth token (refresh if expired). On failure, surface
+                    // needs_reauth and skip — never reconnect with a stale token (the
+                    // bug that silently dropped servers to 401 on restart).
+                    let access_token = match tools::mcp_tool::resolve_mcp_token(
+                        &store_init,
+                        bridge_init.client(),
+                        i,
+                    )
+                    .await
+                    {
+                        tools::mcp_tool::TokenResolution::Ready(t) => t,
+                        tools::mcp_tool::TokenResolution::NeedsReauth => {
+                            let _ =
+                                store_init.set_mcp_connection_status(&i.id, "needs_reauth", 0);
+                            warn!(name = %i.name, "MCP token needs reauth on startup — skipping connect");
+                            continue;
                         }
-                    } else {
-                        None
                     };
                     let tool_prefix = i
                         .name
@@ -1609,6 +1591,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Wire the channel-bridge registry into the tools crate so plugin_tool and
     // agent_worker can reach the same registry without an AppState back-reference.
     tools::set_channel_bridges(state.channel_bridges.clone());
+
+    // Keep OAuth MCP tokens fresh continuously so they never expire and drop a
+    // server on reconnect/restart (renew proactively, not reactively at connect).
+    crate::handlers::integrations::spawn_mcp_token_refresher(state.clone());
 
     // Wire channel dispatcher into agent workers (late binding via OnceLock).
     // Workers started before this point have channel_dispatch = None, so channels
