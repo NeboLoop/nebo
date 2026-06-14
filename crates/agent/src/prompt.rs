@@ -343,15 +343,6 @@ fn channel_guidance(channel: &str) -> String {
         return format!("\n\n## Channel\n{fmt}");
     }
 
-    if channel == "neboai" {
-        return "\n\n## Channel\nYou're in a shared NeboAI loop. When the user references a local file \
-                or asks you to share/send/upload one, share it by calling \
-                `loop(resource: \"channel\", action: \"share\", path: \"<abs_path>\")` \
-                (or `resource: \"dm\"` for a direct message) — it attaches to your reply \
-                automatically. You do NOT need a plugin for this."
-            .to_string();
-    }
-
     // Desktop/web surfaces have the Work panel — steer substantial deliverables
     // into rendered documents instead of walls of text in chat. (Terse channels
     // returned above; loop/plugin channels attach files instead.)
@@ -362,7 +353,7 @@ fn channel_guidance(channel: &str) -> String {
         let out_dir = config::data_dir()
             .map(|d| d.join("files").to_string_lossy().to_string())
             .unwrap_or_else(|_| "~/Documents".to_string());
-        return format!(
+        let mut guidance = format!(
             "\n\n## Work Documents\n\
              The app renders documents you produce in a side Work panel. When the substance \
              of a reply is a self-contained deliverable — a report, table, plan, puzzle, \
@@ -400,6 +391,18 @@ fn channel_guidance(channel: &str) -> String {
              document itself (e.g. a \"Sample data\" subtitle) — never present invented \
              numbers as real."
         );
+        // Loop conversations also need to share EXISTING files the user points
+        // at (a deliverable the agent writes uploads automatically per above;
+        // this covers a pre-existing local file the user references).
+        if channel == "neboai" {
+            guidance.push_str(
+                " To share an EXISTING local file the user points you at (not a deliverable \
+                 you write — those upload automatically), call `loop(resource: \"channel\", \
+                 action: \"share\", path: \"<abs_path>\")` (or `resource: \"dm\"` for a direct \
+                 message). You do NOT need a plugin for this.",
+            );
+        }
+        return guidance;
     }
 
     // Plugin-backed channel (slack/discord/teams/…). No hardcoded slugs — `{channel}`
