@@ -2924,7 +2924,12 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         };
         if convmap_slug.is_some() || durable_agent_id.is_some() {
             let text = extract_message_text(&msg.content);
-            if text.is_empty() {
+            // Control frames (e.g. the loop Stop button) are intentionally empty
+            // and carry a metadata `kind` — do NOT drop them here. Dropping the
+            // empty stop frame before try_handle_comm_control (below) is why Stop
+            // did nothing. Only genuinely empty chat messages are discarded.
+            let is_control = msg.metadata.get("kind").map(String::as_str) == Some("stop");
+            if text.is_empty() && !is_control {
                 return;
             }
             // Resolve to a stable local agent id. Never drops: bot_* handles and
