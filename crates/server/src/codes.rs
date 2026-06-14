@@ -1343,6 +1343,46 @@ pub(crate) fn build_api_client(state: &AppState) -> Result<NeboAIApi, NeboError>
     ))
 }
 
+/// Push a single chat's (possibly newly-generated) title to its NeboLoop
+/// agent-space conversation, so a title generated mid-session appears remotely
+/// right away instead of only after the next reconnect-time reconcile. Uses the
+/// same canonical `chats/sync` upsert as `reconcile_agents` — this is just the
+/// incremental, one-chat case of that bulk push. Best-effort: silently skips
+/// when the agent isn't loop-registered or the bot isn't connected to NeboAI.
+pub(crate) async fn push_chat_title_to_loop(
+    state: &AppState,
+    local_agent_id: &str,
+    chat_id: &str,
+    title: &str,
+) {
+    let loop_agent_id = match state.store.get_agent(local_agent_id) {
+        Ok(Some(agent)) => match agent.loop_agent_id {
+            Some(id) => id,
+            None => return, // agent not registered on the loop
+        },
+        _ => return,
+    };
+    let api = match build_api_client(state) {
+        Ok(a) => a,
+        Err(_) => return, // not connected to NeboAI
+    };
+    let chats = vec![comm::api::AgentChatSync {
+        chat_id: chat_id.to_string(),
+        title: title.to_string(),
+        last_activity_at: None,
+    }];
+    match api.sync_agent_chats(&loop_agent_id, &chats).await {
+        Ok(_) => info!(
+            target: "neboai_identity",
+            chat_id = %chat_id, loop_agent_id = %loop_agent_id, "loop chat title pushed"
+        ),
+        Err(e) => warn!(
+            target: "neboai_identity",
+            chat_id = %chat_id, error = %e, "loop chat title push failed"
+        ),
+    }
+}
+
 // ── Artifact Persistence ────────────────────────────────────────────
 //
 // After redeem_code() registers the install in the NeboAI cloud DB,

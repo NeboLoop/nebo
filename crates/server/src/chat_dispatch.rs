@@ -265,6 +265,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let agent_id = config.agent_id.clone();
     let cancel_token = config.cancel_token.clone();
     let lane = config.lane.clone();
+    // Owned AppState clone moved into the run task so the background title
+    // generator can propagate the generated title to the loop (chats/sync).
+    let task_state = state.clone();
 
     // Determine entity_id for the registry
     let entity_id = if !agent_id.is_empty() {
@@ -440,6 +443,21 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // round when the segment is flushed as a Message).
                 let mut comm_segment = String::new();
 
+                // Keepalive: refresh the remote "is typing…" indicator on a
+                // timer, independent of stream-event flow. Without this, any
+                // silent gap in the event stream lets the loop/DM typing signal
+                // lapse so the remote appears stalled — most importantly during
+                // a provider 502 being retried: the runner's transient/retryable
+                // retries sleep 2s and emit NOTHING to the stream until they
+                // succeed or exhaust, so a flapping gateway leaves the remote
+                // dark for the whole window even though the run is still going
+                // and will complete. The desktop is unaffected (it holds its
+                // last rendered state across the gap). 4s stays well inside any
+                // reasonable client-side typing TTL and bridges the 2s retry
+                // steps. No-op when there's no comm reply (local-only chat).
+                let mut comm_keepalive = tokio::time::interval(std::time::Duration::from_secs(4));
+                comm_keepalive.tick().await; // consume the immediate first tick
+
                 loop {
                     let event = tokio::select! {
                         _ = cancel_token.cancelled() => {
@@ -457,6 +475,19 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 }
                             }
                             break;
+                        }
+                        _ = comm_keepalive.tick() => {
+                            // Bridge silent gaps (e.g. a 502 being retried): keep
+                            // the remote typing indicator alive and mark the run
+                            // active so neither the indicator nor stale-run cleanup
+                            // lapses while the run is mid-flight with no events.
+                            _run_handle.touch();
+                            if let Some(ref cm) = comm_manager {
+                                if let Some(ref cr) = comm_reply {
+                                    let _ = cm.send_typing(&cr.conversation_id, true, None).await;
+                                }
+                            }
+                            continue;
                         }
                         ev = rx.recv() => match ev {
                             Some(e) => e,
@@ -1113,10 +1144,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // Auto-generate a descriptive chat title in the background
                 let title_runner = runner.clone();
                 let title_hub = hub.clone();
+                let title_state = task_state.clone();
                 let title_sid = sid.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        generate_chat_title_if_needed(&title_runner, &title_hub, &title_sid).await
+                    if let Err(e) = generate_chat_title_if_needed(
+                        &title_runner,
+                        &title_hub,
+                        &title_state,
+                        &title_sid,
+                    )
+                    .await
                     {
                         tracing::debug!(error = %e, "chat title generation skipped");
                     }
@@ -1673,6 +1710,7 @@ async fn send_to_channel(
 async fn generate_chat_title_if_needed(
     runner: &Arc<agent::Runner>,
     hub: &Arc<crate::handlers::ws::ClientHub>,
+    state: &AppState,
     session_key: &str,
 ) -> Result<(), types::NeboError> {
     let store = runner.store();
@@ -1780,6 +1818,18 @@ async fn generate_chat_title_if_needed(
     );
 
     info!(chat_id = %chat_id, title = %new_title, "auto-generated chat title");
+
+    // Propagate the new title to the loop so a remote (NeboLoop) reader sees the
+    // chat get named just like the desktop does — without waiting for the next
+    // reconnect-time reconcile. local_agent_id is the `agent:<id>:` segment of
+    // the session key ("assistant" for the primary companion). No-op for
+    // non-agent sessions or agents not registered on the loop.
+    if let Some(local_agent_id) = session_key
+        .strip_prefix("agent:")
+        .and_then(|s| s.split(':').next())
+    {
+        crate::codes::push_chat_title_to_loop(state, local_agent_id, &chat_id, &new_title).await;
+    }
 
     Ok(())
 }

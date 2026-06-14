@@ -257,10 +257,10 @@ const SECTION_STRAP_HEADER: &str = "## Tool Documentation";
 
 const SECTION_MEDIA: &str = r#"## Inline Media — Images & Video Embeds
 
-**Inline Images:**
-- os(resource: "screenshot", action: "capture", format: "file") saves to data directory, returns ![Screenshot](/api/v1/files/filename.png) which renders inline
-- For any image: copy it to the data files directory and use ![description](/api/v1/files/filename.png)
-- Supports PNG, JPEG, GIF, WebP, SVG
+**Inline Images** — for embedding an image you genuinely have: a photo, a chart image, or a capture of on-screen/external state the user asked to see.
+- Reference any image in the data files directory with ![description](/api/v1/files/filename.png) and it renders inline. Supports PNG, JPEG, GIF, WebP, SVG.
+- To capture the screen or a specific app window, use os(resource: "capture", action: "screenshot") — it saves an image and returns its inline reference.
+- Do NOT screenshot a file you created to "show" it. A deliverable you write (document, dashboard, .html, .jsx) is presented by writing it as an artifact (see the file-writing guidance above) — it uploads automatically and renders as a card, inline locally and for remote readers. Screenshotting your own output is redundant and wrong: share the file, not a picture of it.
 
 **Video Embeds:**
 Paste a YouTube, Vimeo, or X/Twitter URL on its own line — the frontend auto-embeds it.
