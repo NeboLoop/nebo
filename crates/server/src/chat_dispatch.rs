@@ -1127,7 +1127,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // frontend splits by type. Falls back to the bare URL on any error.
                 let chat_artifacts: Vec<serde_json::Value> = match &chat_id_for_artifacts {
                     Some(chat_id) if !app_file_artifacts.is_empty() => {
-                        version_app_artifacts(runner.store(), chat_id, &app_file_artifacts)
+                        let message_id = runner
+                            .store()
+                            .latest_assistant_message_id(chat_id)
+                            .ok()
+                            .flatten();
+                        version_app_artifacts(
+                            runner.store(),
+                            chat_id,
+                            message_id.as_deref(),
+                            &app_file_artifacts,
+                        )
                     }
                     _ => app_file_artifacts
                         .iter()
@@ -1554,6 +1564,7 @@ fn artifact_kind(ext: &str) -> &'static str {
 fn version_app_artifacts(
     store: &Arc<db::Store>,
     chat_id: &str,
+    message_id: Option<&str>,
     flat_urls: &[String],
 ) -> Vec<serde_json::Value> {
     use sha2::{Digest, Sha256};
@@ -1633,7 +1644,7 @@ fn version_app_artifacts(
                     &versioned_url,
                     Some(&hash),
                     None,
-                    None,
+                    message_id,
                 )?;
                 Ok(serde_json::json!({
                     "documentId": doc.id,

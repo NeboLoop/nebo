@@ -594,6 +594,21 @@ impl Store {
     /// message (metadata.artifacts). Artifacts are otherwise only carried on
     /// the live chat_complete event — without this they vanish from the Work
     /// panel on history reload.
+    /// Id of the chat's most recent assistant message (the one run-produced
+    /// artifacts attach to). Used to record per-version provenance.
+    pub fn latest_assistant_message_id(&self, chat_id: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT id FROM chat_messages
+             WHERE chat_id = ?1 AND role = 'assistant'
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            params![chat_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn attach_artifacts_to_latest_assistant_message(
         &self,
         chat_id: &str,

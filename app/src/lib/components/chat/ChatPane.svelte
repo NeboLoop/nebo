@@ -26,6 +26,8 @@
     /** 1-based version number of this write. */
     version: number;
     messageId?: string;
+    /** Timestamp of the turn that produced this version (provenance). */
+    time?: string;
     title: string;
     kind: 'document' | 'code' | 'table' | 'slides';
     url?: string;
@@ -140,7 +142,7 @@
     (messages as any[]).flatMap((m) =>
       (m.workItems ?? []).map((w: any) => ({
         id: w.documentId ?? w.id, documentId: w.documentId ?? w.id, version: w.version ?? 1,
-        messageId: m.id, title: w.title, kind: w.kind, url: w.url, codeUrl: w.codeUrl,
+        messageId: m.id, time: m.time, title: w.title, kind: w.kind, url: w.url, codeUrl: w.codeUrl,
       }))
     )
   );
@@ -1082,10 +1084,11 @@
               {#each [...activeVersionList].reverse() as v}
                 <li>
                   <button
-                    class="flex items-center gap-2 {activeVersion === v.version ? 'bg-base-200 font-medium' : ''}"
+                    class="flex items-center justify-between gap-2 {activeVersion === v.version ? 'bg-base-200 font-medium' : ''}"
                     onclick={() => { activeVersion = v.version; (document.activeElement as HTMLElement | null)?.blur(); }}
                   >
                     <span class="text-xs">Version {v.version}</span>
+                    {#if v.time}<span class="text-xs text-base-content/50 font-mono">{v.time}</span>{/if}
                   </button>
                 </li>
               {/each}
