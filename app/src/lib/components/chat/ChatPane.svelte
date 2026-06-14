@@ -155,12 +155,29 @@
     return out;
   }
 
+  // Full-size image viewer (lightbox) — opens images IN the app instead of an
+  // external browser window (Tauri opens <a target="_blank"> in the system browser).
+  let lightboxUrl = $state<string | null>(null);
+
   function handleWorkMentionClick(e: MouseEvent) {
     if (copyCodeBlock(e.target as HTMLElement)) {
       e.preventDefault();
       return;
     }
-    const el = (e.target as HTMLElement)?.closest?.('[data-work-id]');
+    const t = e.target as HTMLElement;
+    // Markdown screenshots/images → open in the in-app lightbox, never external.
+    if (t?.tagName === 'IMG' && (t as HTMLImageElement).src) {
+      e.preventDefault();
+      lightboxUrl = (t as HTMLImageElement).src;
+      return;
+    }
+    const link = t?.closest?.('a') as HTMLAnchorElement | null;
+    if (link?.href && /\.(png|jpe?g|gif|webp|svg|bmp)(\?|#|$)/i.test(link.href)) {
+      e.preventDefault();
+      lightboxUrl = link.href;
+      return;
+    }
+    const el = t?.closest?.('[data-work-id]');
     if (el) {
       e.preventDefault();
       openArtifact(el.getAttribute('data-work-id') || '');
@@ -643,14 +660,14 @@
                   {#each msg.attachments as att}
                     {@const attType = getAttachmentType(att.mimeType)}
                     {#if attType === 'image'}
-                      <a href={att.url} target="_blank" rel="noopener" class="block">
+                      <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = att.url)} aria-label="View image">
                         <img
                           src={att.thumbnailUrl || att.url}
                           alt={att.filename}
                           class="max-w-[240px] max-h-[180px] rounded-lg border border-base-content/15 object-cover"
                           loading="lazy"
                         />
-                      </a>
+                      </button>
                     {:else if attType === 'video'}
                       <video
                         src={att.url}
@@ -833,14 +850,14 @@
               {#each msg.attachments as att}
                 {@const attType = getAttachmentType(att.mimeType)}
                 {#if attType === 'image'}
-                  <a href={att.url} target="_blank" rel="noopener" class="block">
+                  <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = att.url)} aria-label="View image">
                     <img
                       src={att.thumbnailUrl || att.url}
                       alt={att.filename}
                       class="max-w-[240px] max-h-[180px] rounded-lg border border-base-content/15 object-cover"
                       loading="lazy"
                     />
-                  </a>
+                  </button>
                 {:else if attType === 'video'}
                   <video
                     src={att.url}
@@ -1090,5 +1107,16 @@
       {/if}
     </div>
   </div>
+{/if}
+
+{#if lightboxUrl}
+  <button
+    type="button"
+    class="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-6 border-0 cursor-zoom-out"
+    onclick={() => (lightboxUrl = null)}
+    aria-label="Close image"
+  >
+    <img src={lightboxUrl} alt="Full size" class="max-w-full max-h-full rounded-lg object-contain" />
+  </button>
 {/if}
 </div>
