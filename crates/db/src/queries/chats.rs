@@ -597,7 +597,7 @@ impl Store {
     pub fn attach_artifacts_to_latest_assistant_message(
         &self,
         chat_id: &str,
-        artifacts: &[String],
+        artifacts: &[serde_json::Value],
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         let json = serde_json::to_string(artifacts)

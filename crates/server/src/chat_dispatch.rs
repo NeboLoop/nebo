@@ -1113,31 +1113,47 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     }
                 }
 
-                // Always send chat_complete (with any run-produced media artifacts
-                // so the app renders them inline). Carries NO message content:
-                // streamed blocks finalize in place on the frontend — a final
-                // payload that re-carried the turn text is what caused segments
-                // to render twice.
+                // Resolve the active chat so run-produced documents can be
+                // versioned + persisted under a stable container.
+                let chat_id_for_artifacts = runner
+                    .sessions()
+                    .resolve_session_id_by_key(&sid)
+                    .ok()
+                    .map(|session_id| runner.sessions().active_chat_id(&session_id));
+
+                // Version each run-produced DOCUMENT (non-media) into its
+                // append-only chain and emit structured artifact objects; media
+                // stays a plain URL string (rendered inline). Mixed array — the
+                // frontend splits by type. Falls back to the bare URL on any error.
+                let chat_artifacts: Vec<serde_json::Value> = match &chat_id_for_artifacts {
+                    Some(chat_id) if !app_file_artifacts.is_empty() => {
+                        version_app_artifacts(runner.store(), chat_id, &app_file_artifacts)
+                    }
+                    _ => app_file_artifacts
+                        .iter()
+                        .map(|u| serde_json::Value::String(u.clone()))
+                        .collect(),
+                };
+
+                // Always send chat_complete (with any run-produced artifacts so
+                // the app renders them). Carries NO message content: streamed
+                // blocks finalize in place on the frontend — a final payload that
+                // re-carried the turn text is what caused segments to render twice.
                 hub.broadcast(
                     "chat_complete",
                     ws_payload!(
-                        "artifacts": &app_file_artifacts,
+                        "artifacts": &chat_artifacts,
                     ),
                 );
 
-                // Persist the artifacts onto the turn's final assistant message
-                // so Work items survive history reload (the live event above is
-                // the only other carrier).
-                if !app_file_artifacts.is_empty() {
-                    let chat_id = runner
-                        .sessions()
-                        .resolve_session_id_by_key(&sid)
-                        .ok()
-                        .map(|session_id| runner.sessions().active_chat_id(&session_id));
-                    if let Some(chat_id) = chat_id {
+                // Persist the artifacts onto the turn's final assistant message so
+                // Work items + their version chain survive history reload (the live
+                // event above is the only other carrier).
+                if !chat_artifacts.is_empty() {
+                    if let Some(chat_id) = &chat_id_for_artifacts {
                         if let Err(e) = runner
                             .store()
-                            .attach_artifacts_to_latest_assistant_message(&chat_id, &app_file_artifacts)
+                            .attach_artifacts_to_latest_assistant_message(chat_id, &chat_artifacts)
                         {
                             warn!(error = %e, chat_id = %chat_id, "failed to persist artifacts on message");
                         }
@@ -1505,6 +1521,128 @@ fn to_app_artifact_url(image_url: &str) -> Option<String> {
     let dest = files_dir.join(&filename);
     std::fs::copy(p, &dest).ok()?;
     Some(format!("/api/v1/files/{}", filename))
+}
+
+/// Media (image/video) artifacts render inline and are never versioned.
+const MEDIA_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "mov"];
+
+fn artifact_ext(url: &str) -> String {
+    url.rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit('.').next())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default()
+}
+
+/// Work-panel kind by extension. Mirrors the frontend's `artifactsToWorkItems`.
+fn artifact_kind(ext: &str) -> &'static str {
+    match ext {
+        "csv" | "xlsx" | "xls" => "table",
+        "pptx" | "ppt" => "slides",
+        "js" | "ts" | "jsx" | "tsx" | "py" | "rs" | "go" | "json" | "sh" | "css" => "code",
+        _ => "document",
+    }
+}
+
+/// Version each run-produced DOCUMENT into its append-only chain (a `work_documents`
+/// container keyed by (chat_id, filename) + a `work_document_versions` row), copying
+/// the bytes to a version-specific path so old versions stay viewable and the open
+/// viewer refreshes in place. Returns structured artifact objects
+/// `{ documentId, filename, kind, version, url }`. Media artifacts pass through as a
+/// plain URL string (rendered inline). Any per-artifact failure degrades to the bare
+/// URL so the document still appears.
+fn version_app_artifacts(
+    store: &Arc<db::Store>,
+    chat_id: &str,
+    flat_urls: &[String],
+) -> Vec<serde_json::Value> {
+    use sha2::{Digest, Sha256};
+
+    let files_dir = match config::data_dir() {
+        Ok(d) => d.join("files"),
+        Err(_) => {
+            return flat_urls
+                .iter()
+                .map(|u| serde_json::Value::String(u.clone()))
+                .collect();
+        }
+    };
+
+    flat_urls
+        .iter()
+        .map(|url| {
+            let bare = serde_json::Value::String(url.clone());
+            let ext = artifact_ext(url);
+            // Media renders inline — never versioned.
+            if MEDIA_EXTS.contains(&ext.as_str()) {
+                return bare;
+            }
+            // Only flat /api/v1/files/<name> artifacts are local + versionable.
+            let Some(name) = url.strip_prefix("/api/v1/files/") else {
+                return bare;
+            };
+            let filename = name.rsplit('/').next().unwrap_or(name).to_string();
+            let flat_path = files_dir.join(name);
+            let Ok(bytes) = std::fs::read(&flat_path) else {
+                return bare;
+            };
+            let hash = hex::encode(Sha256::digest(&bytes));
+            let kind = artifact_kind(&ext);
+
+            let built = (|| -> Result<serde_json::Value, types::NeboError> {
+                let doc = store.upsert_work_document(chat_id, &filename, kind)?;
+                let latest = store.latest_work_version(&doc.id)?;
+
+                // Identical content → reuse the current version (no spurious bump).
+                if let Some(ref v) = latest {
+                    if v.content_hash.as_deref() == Some(hash.as_str()) {
+                        return Ok(serde_json::json!({
+                            "documentId": doc.id,
+                            "filename": filename,
+                            "kind": kind,
+                            "version": v.version_number,
+                            "url": v.url,
+                        }));
+                    }
+                }
+
+                let n = doc.latest_version + 1;
+                let rel = format!("work/{}/v{}/{}", doc.id, n, filename);
+                let dest = files_dir.join(&rel);
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| types::NeboError::Internal(format!("mkdir versioned dir: {e}")))?;
+                }
+                std::fs::copy(&flat_path, &dest)
+                    .map_err(|e| types::NeboError::Internal(format!("copy versioned file: {e}")))?;
+                let versioned_url = format!("/api/v1/files/{}", rel);
+                let parent_id = latest.as_ref().map(|v| v.id.as_str());
+                let version = store.add_work_version(
+                    &doc.id,
+                    parent_id,
+                    &versioned_url,
+                    Some(&hash),
+                    None,
+                    None,
+                )?;
+                Ok(serde_json::json!({
+                    "documentId": doc.id,
+                    "filename": filename,
+                    "kind": kind,
+                    "version": version.version_number,
+                    "url": versioned_url,
+                }))
+            })();
+
+            match built {
+                Ok(obj) => obj,
+                Err(e) => {
+                    warn!(error = %e, url = %url, "failed to version work document; using bare url");
+                    bare
+                }
+            }
+        })
+        .collect()
 }
 
 /// Save a `data:` URI (base64 image) to `<data_dir>/files/` and return the

@@ -24,6 +24,7 @@ mod sessions;
 mod settings;
 mod user_profile;
 mod users;
+mod work;
 mod workflows;
 
 pub use license_keys::LicenseKeyRow;
