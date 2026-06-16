@@ -464,7 +464,7 @@ async fn resolve_marketplace_code(
     }
     let slug = extract_simple_name(reference);
     let products = api
-        .list_products(Some(artifact_type), Some(slug), None, Some(50))
+        .list_products(Some(artifact_type), Some(slug), None, None, Some(50))
         .await
         .map_err(|e| format!("resolve code for '{reference}': {e}"))?;
     let arr = products
