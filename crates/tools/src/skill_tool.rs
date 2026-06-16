@@ -17,6 +17,9 @@ pub struct SkillTool {
     /// for a skill name and redirect to the `plugin` tool instead of
     /// returning a dead "not found." Runtime-driven — no hardcoded slugs.
     plugin_store: Option<Arc<napp::plugin::PluginStore>>,
+    /// Shared canonical-installer cell (server-injected). `install` delegates here so it
+    /// goes through the ONE `codes::handle_code` pathway — never a direct API bypass.
+    code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
 }
 
 impl SkillTool {
@@ -25,11 +28,21 @@ impl SkillTool {
             loader,
             store: None,
             plugin_store: None,
+            code_installer: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
     pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Inject the shared canonical-installer cell (from the `Registry`).
+    pub fn with_code_installer(
+        mut self,
+        installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+    ) -> Self {
+        self.code_installer = installer;
         self
     }
 
@@ -782,57 +795,15 @@ impl DynTool for SkillTool {
                             "'code' is required and must start with SKIL- (e.g. SKIL-XXXX-XXXX)",
                         );
                     }
-
-                    let store = match &self.store {
-                        Some(s) => s,
-                        None => {
-                            return ToolResult::error(
-                                "install not available — store not configured. The user needs to restart Nebo so the database initializes.",
-                            );
-                        }
-                    };
-
-                    let api = match crate::build_neboai_api(store) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            return ToolResult::error(format!(
-                                "NeboAI connection required: {}",
-                                e
-                            ));
-                        }
-                    };
-
-                    match api.install_skill(code).await {
-                        Ok(resp) => {
-                            if resp.status == "payment_required" {
-                                return ToolResult::ok(format!(
-                                    "Skill requires payment. Checkout: {}",
-                                    resp.checkout_url.unwrap_or_default()
-                                ));
-                            }
-
-                            let name = resp.artifact.name.clone();
-                            let artifact_id = resp.artifact.id.clone();
-
-                            // Fetch and persist artifact content
-                            if let Err(e) = crate::persist_skill_from_api(
-                                &api,
-                                &artifact_id,
-                                &name,
-                                code,
-                                self.store.as_deref(),
-                            )
-                            .await
-                            {
-                                tracing::warn!(code, error = %e, "failed to persist skill after install");
-                            }
-
-                            // Force reload so skill appears in catalog immediately
-                            self.loader.load_all().await;
-
-                            ToolResult::ok(format!("Installed skill: {}", name))
-                        }
-                        Err(e) => ToolResult::error(format!("install failed: {}. Do not retry — this is an API error.", e)),
+                    // Delegate to the ONE canonical install pathway (`codes::handle_code`):
+                    // redeem + persist + reload + cascade deps, identical to the WS code flow.
+                    // No direct API bypass.
+                    let installer = self.code_installer.read().unwrap().clone();
+                    match installer {
+                        Some(installer) => ToolResult::ok(installer.install(code).await),
+                        None => ToolResult::error(
+                            "install requires the running app (no installer configured).",
+                        ),
                     }
                 }
                 "reviews" => {

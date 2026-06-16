@@ -58,8 +58,6 @@
 	let installedLocal = $state(false);
 	let showSetupModal = $state(false);
 	let setupInputs = $state<Record<string, unknown>>({});
-	// Configure mode reuses the setup modal against the already-installed agent.
-	let configureExisting = $state(false);
 	// Uninstall is destructive — require an inline confirm before removing.
 	let confirmUninstall = $state(false);
 	let uninstalling = $state(false);
@@ -174,7 +172,6 @@
 		// install directly.
 		if (artifactType === 'agent') {
 			setupInputs = skill?.typeConfig?.inputs || skill?.inputs || {};
-			configureExisting = false;
 			showSetupModal = true;
 			return;
 		}
@@ -186,12 +183,11 @@
 		installing = false;
 	}
 
-	// Re-open the setup modal against the installed agent (the installed agent id
-	// equals the product id), so users can edit inputs / reschedule / uninstall.
+	// Configure routes to the agent's Settings → Configure page (the one canonical
+	// place to edit inputs post-install). The install modal is first-run only — it's
+	// not reused for editing (that caused a competing configure surface + a reopen loop).
 	function configureAgent() {
-		setupInputs = skill?.typeConfig?.inputs || skill?.inputs || {};
-		configureExisting = true;
-		showSetupModal = true;
+		goto(`/${itemId}/settings/configure`);
 	}
 
 	async function uninstallProduct() {
@@ -202,7 +198,6 @@
 		installedLocal = false;
 		if (skill) skill = { ...skill, installed: false };
 		showSetupModal = false;
-		configureExisting = false;
 		confirmUninstall = false;
 		uninstalling = false;
 	}
@@ -570,15 +565,13 @@
 
 {#if showSetupModal && skill}
 	<InstallFlowModal
-		mode={configureExisting ? 'configure' : 'product'}
+		mode="product"
 		bind:show={showSetupModal}
 		appId={itemId}
-		existingAgentId={configureExisting ? itemId : ''}
 		agentName={skill.name}
 		agentDescription={skill.description || ''}
 		seedInputs={setupInputs}
 		dependencies={skill?.dependencies ?? skill?.typeConfig?.dependencies}
 		oncomplete={handleSetupComplete}
-		onUninstall={configureExisting ? uninstallProduct : undefined}
 	/>
 {/if}

@@ -32,12 +32,8 @@
   let agentsLoading = $state(true);
   let threadsLoading = $state<Record<string, boolean>>({});
 
-  // Onboarding modal state
-  let showSetupModal = $state(false);
+  // Paste-a-code install modal (first-run only; opens itself on nebo:code_processing).
   let showInstallModal = $state(false);
-  let setupAgentName = $state('');
-  let setupAgentDesc = $state('');
-  let setupInputFields = $state<Record<string, unknown>[]>([]);
 
   const DEFAULT_CONFIG = { persona: '', agentMd: '', soul: '', rules: '', model: 'claude-sonnet-4-6', inputs: [] as unknown[], workflows: {} as Record<string, WorkflowConfig> };
 
@@ -312,16 +308,10 @@
         const inputs = Array.isArray(ar.inputFields) ? ar.inputFields as Record<string, unknown>[] : [];
         // Workflows from separate endpoint — merged below
         apiConfig[id] = { persona, agentMd, soul, rules, model, inputs, workflows: apiConfig[id]?.workflows ?? {} };
-
-        // Auto-trigger onboarding if agent has unconfigured required inputs
-        if (ar.needsSetup) {
-          setupAgentName = ar.displayName || ar.agent?.name || '';
-          setupAgentDesc = ar.agent?.description || '';
-          setupInputFields = inputs;
-          showSetupModal = true;
-        } else {
-          showSetupModal = false;
-        }
+        // Post-install configuration lives in Settings → Configure (the one canonical
+        // surface). We do NOT auto-open a setup modal here: doing so created an endless
+        // loop (modal close → reload → needsSetup still true → reopen). First-run setup
+        // happens in the install flow; unfinished required inputs are edited in Settings.
       }
       // Workflows — backend returns a map keyed by binding name, not an array
       const wfMap = mapWorkflows(workflowsResp?.workflows);
@@ -683,7 +673,7 @@
 {/if}
 
 <!-- Column 1: Agent roster -->
-<div class="{$sidebarCollapsed ? 'w-12 min-w-12' : 'w-[260px] min-w-[260px]'} border-r border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150">
+<div data-tour="agents" class="{$sidebarCollapsed ? 'w-12 min-w-12' : 'w-[260px] min-w-[260px]'} border-r border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150">
   <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed ? 'justify-center' : 'px-3.5 justify-between'}">
     {#if !$sidebarCollapsed}
       <span class="text-sm font-semibold flex-1">Agents</span>
@@ -811,19 +801,6 @@
 
 <!-- Columns 2+3: rendered by child routes -->
 {@render children()}
-
-<!-- Configure-existing wizard, auto-opened when an installed agent still needs setup. -->
-{#if showSetupModal}
-  <InstallFlowModal
-    mode="configure"
-    bind:show={showSetupModal}
-    existingAgentId={$page.params.agentId}
-    agentName={setupAgentName}
-    agentDescription={setupAgentDesc}
-    seedInputs={setupInputFields}
-    oncomplete={(id) => { showSetupModal = false; const target = id ?? $page.params.agentId; if (target) loadAgentData(target); }}
-  />
-{/if}
 
 <!-- Paste-a-code install door (WS-driven; opens itself on nebo:code_processing). -->
 <InstallFlowModal bind:show={showInstallModal} mode="code" />

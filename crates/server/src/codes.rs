@@ -803,19 +803,14 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         }
     }
 
-    // Sweep installed plugins for pending auth requirements
+    // Sweep installed plugins for pending auth requirements. Gates auto-activation
+    // below (defer activation while a plugin still needs connecting). The frontend
+    // discovers what to connect via getAgent().pluginsNeedingAuth (the one canonical
+    // pull) — there is intentionally no separate auth event broadcast here.
     let auth_required = sweep_plugin_auth(state).await;
     let has_auth_requirements = !auth_required.is_empty();
-
     if has_auth_requirements {
-        info!(agent = %artifact_name, plugins = auth_required.len(), "agent install: plugins need auth");
-        state.hub.broadcast(
-            "agent_auth_required",
-            serde_json::json!({
-                "agentId": artifact_id,
-                "plugins": auth_required,
-            }),
-        );
+        info!(agent = %artifact_name, plugins = auth_required.len(), "agent install: plugins need auth (deferring activation)");
     }
 
     // Process workflow bindings — from persist result or from existing frontmatter in DB

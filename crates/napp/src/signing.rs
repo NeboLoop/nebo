@@ -121,13 +121,22 @@ pub struct SignaturesFile {
 ///   `binarySha256` + `binarySignature` — full ED25519 verification.
 /// - Non-binary artifacts (skills, agents, UI-only apps) carry only the
 ///   `files` integrity map; their origin is proven by the `.napp` envelope
-///   signature, so here we integrity-check each extracted file against its
-///   recorded hash.
-pub fn verify_signatures(key: &VerifyingKey, app_dir: &std::path::Path) -> Result<(), NappError> {
-    let sigs_path = app_dir.join("signatures.json");
-    let sigs_data = std::fs::read_to_string(&sigs_path)
+///   signature, so here we integrity-check each file against its recorded hash.
+///
+/// `signatures.json` and the non-binary content files are read from the sealed
+/// `.napp` at `napp_path` (via `read_napp_entry`, which verifies the envelope),
+/// NOT from disk: non-binary content is never extracted (it would be copyable),
+/// and reading from the signed archive roots the whole check in the NeboAI
+/// envelope signature. `app_dir` is used only for the binary (which must be on
+/// disk to execute) and the manifest.
+pub fn verify_signatures(
+    key: &VerifyingKey,
+    app_dir: &std::path::Path,
+    napp_path: &std::path::Path,
+) -> Result<(), NappError> {
+    let sigs_data = crate::reader::read_napp_entry(napp_path, "signatures.json")
         .map_err(|e| NappError::Signing(format!("read signatures.json: {}", e)))?;
-    let sigs: SignaturesFile = serde_json::from_str(&sigs_data)
+    let sigs: SignaturesFile = serde_json::from_slice(&sigs_data)
         .map_err(|e| NappError::Signing(format!("parse signatures.json: {}", e)))?;
 
     use base64::Engine;
@@ -174,8 +183,10 @@ pub fn verify_signatures(key: &VerifyingKey, app_dir: &std::path::Path) -> Resul
         // 3. Non-binary artifact — integrity-check each recorded file. Origin
         // authenticity is established by the .napp envelope signature.
         for (rel, expected) in &sigs.files {
-            let path = app_dir.join(rel);
-            let data = std::fs::read(&path)
+            // Read the signed file from inside the .napp — non-binary content is
+            // never extracted to disk (it would be copyable); the envelope
+            // signature already authenticates these bytes.
+            let data = crate::reader::read_napp_entry(napp_path, rel)
                 .map_err(|e| NappError::Signing(format!("read {}: {}", rel, e)))?;
             let mut hasher = Sha256::new();
             hasher.update(&data);
@@ -353,31 +364,63 @@ mod tests {
         assert_eq!(sigs.files.len(), 2);
     }
 
-    // A non-binary artifact verifies via the files integrity map: matching
-    // hashes pass, a tampered file fails. (Origin is proven by the envelope.)
+    // A non-binary artifact verifies via the files integrity map, reading both
+    // signatures.json and each file from inside the sealed .napp (never disk —
+    // non-binary content is not extracted). Matching hashes pass; a file in the
+    // archive that doesn't match its recorded hash fails. Origin is proven by
+    // the envelope.
     #[test]
     fn files_map_integrity_check_detects_tampering() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
         let dir = std::env::temp_dir().join(format!("nebo-sig-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+
+        // Build a raw tar.gz .napp (gzip magic → read without an envelope) holding
+        // signatures.json + SKILL.md, where signatures.json records `recorded_hash`.
+        let build_napp = |path: &std::path::Path, skill_body: &[u8], recorded_hash: &str| {
+            let sigs = format!(
+                r#"{{ "keyId": "k", "algorithm": "ed25519", "files": {{ "SKILL.md": "{recorded_hash}" }} }}"#
+            );
+            let entries: [(&str, &[u8]); 2] =
+                [("signatures.json", sigs.as_bytes()), ("SKILL.md", skill_body)];
+            let file = std::fs::File::create(path).unwrap();
+            let gz = GzEncoder::new(file, Compression::default());
+            let mut builder = tar::Builder::new(gz);
+            for (name, data) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append_data(&mut header, name, data).unwrap();
+            }
+            builder.finish().unwrap();
+        };
 
         let body = b"hello world";
         let mut hasher = Sha256::new();
         hasher.update(body);
         let hash = hex::encode(hasher.finalize());
-        std::fs::write(dir.join("SKILL.md"), body).unwrap();
-
-        let sigs = format!(
-            r#"{{ "keyId": "k", "algorithm": "ed25519", "files": {{ "SKILL.md": "{hash}" }} }}"#
-        );
-        std::fs::write(dir.join("signatures.json"), &sigs).unwrap();
 
         // Key is unused on the files-map path, but the API requires one.
         let key = builtin_verifying_key().expect("embedded key");
-        assert!(verify_signatures(&key, &dir).is_ok(), "matching hash must pass");
 
-        // Tamper with the file → hash mismatch → failure.
-        std::fs::write(dir.join("SKILL.md"), b"tampered").unwrap();
-        assert!(verify_signatures(&key, &dir).is_err(), "tampered file must fail");
+        // Archive content matches the recorded hash → passes.
+        let ok_napp = dir.join("ok.napp");
+        build_napp(&ok_napp, body, &hash);
+        assert!(
+            verify_signatures(&key, &dir, &ok_napp).is_ok(),
+            "matching hash must pass"
+        );
+
+        // Archive holds different bytes than the recorded hash → mismatch → fails.
+        let bad_napp = dir.join("bad.napp");
+        build_napp(&bad_napp, b"tampered", &hash);
+        assert!(
+            verify_signatures(&key, &dir, &bad_napp).is_err(),
+            "tampered file must fail"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

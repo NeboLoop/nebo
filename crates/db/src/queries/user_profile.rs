@@ -35,7 +35,7 @@ impl Store {
             "SELECT user_id, display_name, bio, location, timezone, occupation,
                     interests, communication_style, goals, context,
                     onboarding_completed, onboarding_step, created_at, updated_at,
-                    tool_permissions, terms_accepted_at
+                    tool_permissions, terms_accepted_at, account_type
              FROM user_profiles LIMIT 1",
             [],
             |row| {
@@ -56,6 +56,7 @@ impl Store {
                     updated_at: row.get(13)?,
                     tool_permissions: row.get(14)?,
                     terms_accepted_at: row.get(15)?,
+                    account_type: row.get(16)?,
                 })
             },
         ) {
@@ -76,6 +77,7 @@ impl Store {
         communication_style: Option<&str>,
         goals: Option<&str>,
         context: Option<&str>,
+        account_type: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         let user_id = self.ensure_local_user_id()?;
@@ -127,6 +129,10 @@ impl Store {
         }
         if let Some(v) = context {
             conn.execute("UPDATE user_profiles SET context = ?1, updated_at = unixepoch() WHERE user_id = ?2", params![v, user_id])
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+        }
+        if let Some(v) = account_type {
+            conn.execute("UPDATE user_profiles SET account_type = ?1, updated_at = unixepoch() WHERE user_id = ?2", params![v, user_id])
                 .map_err(|e| NeboError::Database(e.to_string()))?;
         }
 

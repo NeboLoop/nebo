@@ -10,6 +10,7 @@
   import NotificationBell from '$lib/components/NotificationBell.svelte';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
   import UpgradeSuccessModal from '$lib/components/UpgradeSuccessModal.svelte';
+  import OnboardingTour from '$lib/components/onboarding/OnboardingTour.svelte';
   let { children } = $props();
 
   let showCommandPalette = $state(false);
@@ -188,6 +189,7 @@
           {#each sections as s}
             <a
               href={s.path}
+              data-tour={s.id}
               class="px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors {activeSection === s.id
                 ? 'border-primary text-base-content'
                 : 'border-transparent text-base-content/70 hover:text-base-content'}"
@@ -197,6 +199,7 @@
         <div class="flex-1"></div>
         <button
           onclick={() => (showCommandPalette = true)}
+          data-tour="search"
           class="flex items-center h-8 w-48 rounded-field px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
         >
           <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200">&#x2318;K</span>
@@ -208,6 +211,7 @@
     <div class="flex-1 flex min-h-0">
       {@render children()}
     </div>
+    <OnboardingTour />
   </div>
 {/if}
 {#if !isEmbed}

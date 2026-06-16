@@ -43,7 +43,21 @@ impl WorkTool {
         Self { manager }
     }
 
-    async fn execute_inner(&self, _ctx: &ToolContext, input: serde_json::Value) -> ToolResult {
+    /// Derive the calling agent's id from the session key ("agent:{id}:{channel}").
+    /// Workflows are agent-owned, so creation/listing is always scoped to the
+    /// agent whose session invoked the tool.
+    fn calling_agent_id(ctx: &ToolContext) -> &str {
+        if ctx.session_key.starts_with("agent:") {
+            if let Some(id) = ctx.session_key.split(':').nth(1) {
+                if !id.is_empty() {
+                    return id;
+                }
+            }
+        }
+        ""
+    }
+
+    async fn execute_inner(&self, ctx: &ToolContext, input: serde_json::Value) -> ToolResult {
         let parsed: WorkInput = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
@@ -54,10 +68,12 @@ impl WorkTool {
             return self.dispatch_to_workflow(&parsed).await;
         }
 
+        let agent_id = Self::calling_agent_id(ctx);
+
         // Otherwise, handle lifecycle actions
         match parsed.action.as_str() {
             "list" => {
-                let workflows = self.manager.list().await;
+                let workflows = self.manager.list(agent_id).await;
                 let json = serde_json::json!({
                     "workflows": workflows,
                     "total": workflows.len(),
@@ -109,7 +125,16 @@ impl WorkTool {
                 if parsed.name.is_empty() {
                     return ToolResult::error("name is required");
                 }
-                match self.manager.create(&parsed.name, &parsed.definition).await {
+                if agent_id.is_empty() {
+                    return ToolResult::error(
+                        "workflow creation must be scoped to an agent (no agent in this session)",
+                    );
+                }
+                match self
+                    .manager
+                    .create(agent_id, &parsed.name, &parsed.definition)
+                    .await
+                {
                     Ok(info) => {
                         let json = serde_json::json!({
                             "created": true,
@@ -204,8 +229,8 @@ impl DynTool for WorkTool {
         "Workflow management & execution.\n\
          USE THIS when: user wants to manage or run automated workflows.\n\n\
          Lifecycle actions (no resource):\n\
-         - work(action: \"list\") — List installed workflows and their status\n\
-         - work(action: \"create\", name: \"My Workflow\", definition: \"{...}\") — Create a new workflow\n\
+         - work(action: \"list\") — List this agent's workflows and their status\n\
+         - work(action: \"create\", name: \"My Workflow\", definition: \"{...}\") — Create a workflow this agent owns (appears in its Workflows panel and fires on its trigger). The definition JSON may carry a `trigger` ({type, cron/interval/sources/...}) or top-level `schedule`; omit for a manual workflow.\n\
          - work(action: \"install\", code: \"WORK-XXXX-XXXX\") — Install from marketplace\n\
          - work(action: \"uninstall\", id: \"workflow-id\") — Uninstall a workflow\n\n\
          Dispatch to workflow (set resource = workflow name):\n\

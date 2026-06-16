@@ -159,6 +159,7 @@ var extraInterfaces = map[string]string{
 	onboardingStep?: number
 	toolPermissions?: string
 	termsAcceptedAt?: number
+	accountType?: string
 	createdAt: number
 	updatedAt: number
 }`,

@@ -1419,6 +1419,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(worker_notify_fn),
     ));
 
+    // Late-wire the worker registry into the workflow manager (circular dep:
+    // the registry was just built FROM the manager). Lets `work create` restart
+    // an agent's worker so a new binding's live triggers register immediately.
+    workflow_manager.set_agent_workers(agent_workers.clone());
+
     // Auth cache is populated lazily on first access (check_auth_lazy).
     // Watch processes handle auth failures at runtime via stderr detection,
     // so they don't need the cache pre-populated. This eliminates ~61s of
@@ -1602,6 +1607,18 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     state.agent_workers.set_channel_dispatch(Arc::new(
         channel_dispatch::ChannelDispatchImpl::new(state.clone()),
     ));
+
+    // Wire the canonical marketplace-code installer into the agent's `registry` install
+    // action (late, like the channel dispatcher above — both need `AppState`, built
+    // after tool registration). With this set, `agent(resource:"registry",
+    // action:"install", code:"<ANY>")` routes through `codes::handle_code`, so skills,
+    // plugins (binary + re-registration), agents, apps, and collections all install AND
+    // cascade through the ONE canonical pathway — no per-type bypass.
+    state
+        .tools
+        .set_code_installer(Arc::new(channel_dispatch::CodeInstallerImpl::new(
+            state.clone(),
+        )));
 
     // Restart workers that have DB channel bindings (they were started before the
     // channel dispatcher was wired, so channels didn't start).

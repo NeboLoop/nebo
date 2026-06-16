@@ -10,14 +10,18 @@
 ///
 /// Loaded directly by the skill `Loader` — no filesystem extraction.
 pub const BUNDLED_SKILLS: &[(&str, &str)] = &[
+    // Knowledge-work core (self-contained, offline) + system self-management.
+    // copy-editing was removed — it's marketing-specific (belongs in a Marketer
+    // pack, not the universal default). Reference-heavy skills (nebo-design) and
+    // binary-backed ones (nebo-office, neboai) install on first run instead.
     ("deep-research", include_str!("deep-research.md")),
-    ("copy-editing", include_str!("copy-editing.md")),
     (
         "context-compression",
         include_str!("context-compression.md"),
     ),
     ("evaluation", include_str!("evaluation.md")),
     ("brainstorming", include_str!("brainstorming.md")),
+    ("nebo-onboarding", include_str!("nebo-onboarding.md")),
 ];
 
 // ── Bundled Agents ──────────────────────────────────────────────────

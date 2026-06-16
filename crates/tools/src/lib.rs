@@ -67,7 +67,9 @@ pub use agent_tool::{
     ActiveAgent, ActiveAgentState, AgentRegistry, PersonaTool, validate_agent_dependencies,
 };
 pub use app_tool::AppTool;
-pub use bot_tool::{AdvisorDeliberator, AgentTool, HybridSearchResult, HybridSearcher};
+pub use bot_tool::{
+    AdvisorDeliberator, AgentTool, CodeInstaller, HybridSearchResult, HybridSearcher,
+};
 pub use channel_bridge::{
     ChannelBridgeHandle, ChannelBridgeRegistry, OpResult, PendingOps, channel_bridge_key,
     channel_bridges, new_channel_bridge_registry, new_pending_ops, set_channel_bridges,

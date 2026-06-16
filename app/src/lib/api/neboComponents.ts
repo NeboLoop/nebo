@@ -663,6 +663,7 @@ export interface UserProfile {
 	updatedAt: number
 	toolPermissions?: string
 	termsAcceptedAt?: number
+	accountType?: string
 }
 
 export interface Workflow {
@@ -1776,6 +1777,7 @@ export interface UserProfileFull {
 	onboardingStep?: number
 	toolPermissions?: string
 	termsAcceptedAt?: number
+	accountType?: string
 	createdAt: number
 	updatedAt: number
 }
@@ -1787,6 +1789,7 @@ export type WSServerEventType =
 	| "app_action"
 	| "app_ping"
 	| "chat_cancelled"
+	| "chat_message"
 	| "session_reset"
 	| "session_compact"
 	| "chat_complete"
@@ -1808,6 +1811,15 @@ export interface AppPingEvent {
 
 export interface ChatCancelledEvent {
 	session_id: string
+}
+
+export interface ChatMessageEvent {
+	id: string
+	content: unknown
+	createdAt: unknown
+	agentId: string
+	session_id: string
+	artifacts: unknown
 }
 
 export interface SessionCompactEvent {

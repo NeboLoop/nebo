@@ -272,7 +272,7 @@ export function attachWebSocketListeners(): void {
   }
 
   // --- Plugin auth lifecycle ---
-  for (const evt of ['plugin_auth_started', 'plugin_auth_url', 'plugin_auth_complete', 'plugin_auth_error', 'agent_auth_required'] as const) {
+  for (const evt of ['plugin_auth_started', 'plugin_auth_url', 'plugin_auth_complete', 'plugin_auth_error'] as const) {
     unsubs.push(
       ws.on(evt, (data: any) => {
         if (typeof window !== 'undefined') {
