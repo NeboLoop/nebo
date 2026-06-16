@@ -70,7 +70,7 @@ dev: stage-obscura
 	@echo "  Ctrl-C to stop all processes."
 	@echo "  RUST_LOG=$${RUST_LOG:-info,nebo_agent=debug,nebo_server::channel_dispatch=debug}"
 	@echo ""
-	@RUST_LOG=$${RUST_LOG:-info,nebo_agent=debug,nebo_server::channel_dispatch=debug} cargo tauri dev; \
+	@RUST_LOG=$${RUST_LOG:-info,nebo_agent=debug,nebo_server::channel_dispatch=debug} cargo tauri dev 2>&1 | tee /tmp/nebo-dev.log; \
 		lsof -ti :5173 -ti :27895 2>/dev/null | xargs kill -9 2>/dev/null; \
 		pkill -9 -f "cargo-tauri" 2>/dev/null; \
 		pkill -9 -f "target/debug/nebo" 2>/dev/null; \

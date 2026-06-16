@@ -41,6 +41,12 @@ pub struct WorkflowManagerImpl {
     /// Per-binding concurrency semaphores. Key: "agent:{agent_id}:{binding}".
     /// Allows up to BINDING_CONCURRENCY concurrent runs; additional events wait.
     binding_semaphores: Arc<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>>,
+    /// Late-injected agent worker registry. The registry is constructed AFTER
+    /// this manager (it depends on us), so it's wired in via `set_agent_workers`
+    /// once both exist. Used by `create` to restart the owning agent's worker so
+    /// a new binding's live triggers (event/heartbeat/watch/folder) register
+    /// immediately — schedule triggers fire via the cron scheduler regardless.
+    agent_workers: std::sync::OnceLock<Arc<agent::AgentWorkerRegistry>>,
 }
 
 impl WorkflowManagerImpl {
@@ -64,7 +70,14 @@ impl WorkflowManagerImpl {
             event_bus,
             skill_loader,
             binding_semaphores: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            agent_workers: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Wire in the agent worker registry once it has been constructed (it
+    /// depends on this manager, so it can't be passed to `new`).
+    pub fn set_agent_workers(&self, workers: Arc<agent::AgentWorkerRegistry>) {
+        let _ = self.agent_workers.set(workers);
     }
 
     /// Cancel a running workflow by run_id.
@@ -201,21 +214,70 @@ impl WorkflowManagerImpl {
     }
 }
 
+/// Map an agent-owned binding row to the tool-facing WorkflowInfo shape.
+fn agent_workflow_to_info(wf: &db::models::AgentWorkflow) -> WorkflowInfo {
+    let activity_count = wf
+        .activities
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    WorkflowInfo {
+        id: wf.binding_name.clone(),
+        name: wf.binding_name.clone(),
+        version: "1.0".to_string(),
+        description: wf.description.clone().unwrap_or_default(),
+        is_enabled: wf.is_active != 0,
+        trigger_count: if wf.trigger_type == "manual" { 0 } else { 1 },
+        activity_count,
+    }
+}
+
+/// Slugify a display name into a binding key: lowercase, spaces→hyphens,
+/// keep alphanumerics and hyphens, collapse repeats.
+fn slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_dash = false;
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if ch.is_whitespace() || ch == '-' || ch == '_' {
+            if !prev_dash && !out.is_empty() {
+                out.push('-');
+                prev_dash = true;
+            }
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
 impl WorkflowManager for WorkflowManagerImpl {
-    fn list(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<WorkflowInfo>> + Send + '_>> {
+    fn list<'a>(
+        &'a self,
+        agent_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<WorkflowInfo>> + Send + 'a>> {
         Box::pin(async move {
-            match self.store.list_workflows(100, 0) {
-                Ok(workflows) => workflows
-                    .iter()
-                    .map(|wf| self.workflow_to_info(wf))
-                    .collect(),
-                Err(e) => {
-                    warn!(error = %e, "failed to list workflows");
-                    Vec::new()
+            let mut out = Vec::new();
+
+            // The agent's own bindings — the canonical store the panel reads.
+            if !agent_id.is_empty() {
+                match self.store.list_agent_workflows(agent_id) {
+                    Ok(bindings) => out.extend(bindings.iter().map(agent_workflow_to_info)),
+                    Err(e) => warn!(agent_id, error = %e, "failed to list agent workflows"),
                 }
             }
+
+            // Standalone marketplace-installed workflows (shared, not agent-owned).
+            match self.store.list_workflows(100, 0) {
+                Ok(workflows) => out.extend(workflows.iter().map(|wf| self.workflow_to_info(wf))),
+                Err(e) => warn!(error = %e, "failed to list workflows"),
+            }
+
+            out
         })
     }
 
@@ -610,44 +672,160 @@ impl WorkflowManager for WorkflowManagerImpl {
 
     fn create<'a>(
         &'a self,
+        agent_id: &'a str,
         name: &'a str,
         definition: &'a str,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
     > {
         Box::pin(async move {
-            // Validate the workflow definition
-            let _def = workflow::parser::parse_workflow(definition)
-                .map_err(|e| format!("invalid workflow definition: {}", e))?;
+            use crate::handlers::agents::{
+                build_trigger_json, flatten_trigger_config, write_agent_json_to_fs,
+            };
 
-            let id = uuid::Uuid::new_v4().to_string();
+            if agent_id.is_empty() {
+                return Err("workflow creation must be scoped to an agent".to_string());
+            }
 
-            let wf = self
-                .store
-                .create_workflow(&id, None, name, "1.0", definition, None, None)
-                .map_err(|e| format!("create_workflow: {}", e))?;
+            // The definition is agent-authored JSON; accept it loosely and pull
+            // out the binding fields. (parse_workflow is too strict — it drops
+            // unknown fields silently, which is how orphans were born.)
+            let def: serde_json::Value = serde_json::from_str(definition)
+                .map_err(|e| format!("invalid workflow definition (not JSON): {}", e))?;
 
-            // Write workflow.json to user/workflows/{name}/ for filesystem-based loading
-            if let Ok(user_dir) = config::user_dir() {
-                let wf_dir = user_dir.join("workflows").join(name);
-                if std::fs::create_dir_all(&wf_dir).is_ok() {
-                    let json_path = wf_dir.join("workflow.json");
-                    if std::fs::write(&json_path, definition).is_ok() {
-                        let _ = self
-                            .store
-                            .set_workflow_napp_path(&id, &wf_dir.to_string_lossy());
+            // Resolve the trigger. Accept either a `trigger` object ({type, ...})
+            // or a top-level `schedule` cron string; default to manual.
+            let (trigger_type, trigger_config): (String, serde_json::Value) =
+                if let Some(t) = def.get("trigger").filter(|t| t.is_object()) {
+                    let ty = t
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("manual")
+                        .to_string();
+                    (ty, t.clone())
+                } else if let Some(cron) = def.get("schedule").and_then(|v| v.as_str()) {
+                    if cron.is_empty() {
+                        ("manual".to_string(), serde_json::json!({}))
+                    } else {
+                        ("schedule".to_string(), serde_json::json!({ "cron": cron }))
                     }
-                }
+                } else {
+                    ("manual".to_string(), serde_json::json!({}))
+                };
+
+            let binding_name = slug(name);
+            if binding_name.is_empty() {
+                return Err("name must contain at least one alphanumeric character".to_string());
+            }
+
+            let agent = self
+                .store
+                .get_agent(agent_id)
+                .map_err(|e| format!("get_agent: {}", e))?
+                .ok_or_else(|| format!("agent '{}' not found", agent_id))?;
+
+            // Merge the binding into the agent's frontmatter (source of truth).
+            let mut fm: serde_json::Value =
+                serde_json::from_str(&agent.frontmatter).unwrap_or_else(|_| serde_json::json!({}));
+            if fm.get("workflows").is_none() {
+                fm["workflows"] = serde_json::json!({});
+            }
+            let mut binding_val = serde_json::json!({
+                "trigger": build_trigger_json(&trigger_type, &trigger_config),
+            });
+            if let Some(d) = def.get("description") {
+                binding_val["description"] = d.clone();
+            }
+            if let Some(i) = def.get("inputs") {
+                binding_val["inputs"] = i.clone();
+            }
+            if let Some(a) = def.get("activities") {
+                binding_val["activities"] = a.clone();
+            }
+            if let Some(c) = def.get("connections") {
+                binding_val["connections"] = c.clone();
+            }
+            if let Some(e) = def.get("emit") {
+                binding_val["emit"] = e.clone();
+            }
+            fm["workflows"][binding_name.as_str()] = binding_val;
+
+            self.store
+                .update_agent(
+                    agent_id,
+                    &agent.name,
+                    &agent.description,
+                    &agent.agent_md,
+                    &fm.to_string(),
+                    agent.pricing_model.as_deref(),
+                    agent.pricing_cost,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(|e| format!("update_agent: {}", e))?;
+
+            // Tracking row — the canonical store the UI panel reads.
+            let desc = def.get("description").and_then(|v| v.as_str());
+            let inputs_json = def.get("inputs").and_then(|v| serde_json::to_string(v).ok());
+            let emit = def.get("emit").and_then(|v| v.as_str());
+            let activities_json = def
+                .get("activities")
+                .and_then(|v| serde_json::to_string(v).ok());
+            let connections_json = def
+                .get("connections")
+                .and_then(|v| serde_json::to_string(v).ok());
+            self.store
+                .upsert_agent_workflow(
+                    agent_id,
+                    &binding_name,
+                    &trigger_type,
+                    &flatten_trigger_config(&trigger_type, &trigger_config),
+                    desc,
+                    inputs_json.as_deref(),
+                    emit,
+                    activities_json.as_deref(),
+                    connections_json.as_deref(),
+                )
+                .map_err(|e| format!("upsert_agent_workflow: {}", e))?;
+
+            // Register schedule cron rows now so the scheduler fires them within
+            // a minute, even if the worker isn't restarted below.
+            if let Ok(bindings) = self.store.list_agent_workflows(agent_id) {
+                workflow::triggers::register_agent_triggers(agent_id, &bindings, &self.store);
+            }
+
+            write_agent_json_to_fs(&agent.napp_path, &fm);
+
+            // Restart the owning agent's worker so live triggers (event/heartbeat/
+            // watch/folder) register immediately. Schedule triggers already went
+            // live via register_agent_triggers above.
+            if let Some(workers) = self.agent_workers.get() {
+                workers.start_agent(agent_id, &agent.name, None).await;
             }
 
             self.hub.broadcast(
-                "workflow_installed",
-                serde_json::json!({ "workflowId": wf.id, "name": wf.name }),
+                "agent_workflow_created",
+                serde_json::json!({ "agentId": agent_id, "binding": binding_name }),
             );
+            info!(agent_id, binding = %binding_name, trigger = %trigger_type, "agent workflow created via tool");
 
-            info!(workflow_id = %wf.id, name = %wf.name, "workflow created via agent");
-
-            Ok(self.workflow_to_info(&wf))
+            let activity_count = def
+                .get("activities")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Ok(WorkflowInfo {
+                id: binding_name.clone(),
+                name: name.to_string(),
+                version: "1.0".to_string(),
+                description: desc.unwrap_or("").to_string(),
+                is_enabled: true,
+                trigger_count: if trigger_type == "manual" { 0 } else { 1 },
+                activity_count,
+            })
         })
     }
 

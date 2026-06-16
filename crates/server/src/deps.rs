@@ -290,6 +290,14 @@ fn is_plugin_installed(state: &AppState, dep: &DepRef) -> bool {
     if state.plugin_store.resolve(&dep.reference, "*").is_some() {
         return true;
     }
+    // A qualified marketplace ref (`@neboloop/plugins/gws`) doesn't resolve as a
+    // slug — fall back to its simple name (last segment = the plugin slug), so a
+    // dep listed by qualified name is recognised as the same installed plugin
+    // instead of looking absent and failing to install.
+    let simple = extract_simple_name(&dep.reference);
+    if simple != dep.reference && state.plugin_store.resolve(simple, "*").is_some() {
+        return true;
+    }
     dep.slug
         .as_deref()
         .is_some_and(|slug| state.plugin_store.resolve(slug, "*").is_some())
@@ -438,6 +446,52 @@ async fn install_dep(state: &AppState, dep: &DepRef) -> Result<Vec<DepRef>, Stri
     }
 }
 
+/// Resolve a dependency reference to a redeemable install code.
+///
+/// Marketplace agents declare deps as qualified names (`@org/plugins/gws`) or
+/// ids, but the redeem endpoint (`api.install_skill`) only accepts install codes
+/// (`PLUG-/SKIL-/AGNT-XXXX`). This bridges the two: a value that already IS a code
+/// passes through; a qualified name / id is looked up in the marketplace product
+/// list (match by slug = last segment, then qualifiedName) to get its `code`.
+/// Without this, every qualified-name dep 404s "invalid code" and never installs.
+async fn resolve_marketplace_code(
+    api: &NeboAIApi,
+    artifact_type: &str,
+    reference: &str,
+) -> Result<String, String> {
+    if crate::codes::detect_code(reference).is_some() {
+        return Ok(reference.to_string()); // already an install code
+    }
+    let slug = extract_simple_name(reference);
+    let products = api
+        .list_products(Some(artifact_type), Some(slug), None, Some(50))
+        .await
+        .map_err(|e| format!("resolve code for '{reference}': {e}"))?;
+    let arr = products
+        .get("products")
+        .or_else(|| products.get("skills"))
+        .and_then(|v| v.as_array());
+    if let Some(arr) = arr {
+        let matched = arr
+            .iter()
+            .find(|i| i.get("slug").and_then(|s| s.as_str()) == Some(slug))
+            .or_else(|| {
+                arr.iter()
+                    .find(|i| i.get("qualifiedName").and_then(|s| s.as_str()) == Some(reference))
+            });
+        if let Some(code) = matched
+            .and_then(|i| i.get("code"))
+            .and_then(|c| c.as_str())
+            .filter(|c| !c.is_empty())
+        {
+            return Ok(code.to_string());
+        }
+    }
+    Err(format!(
+        "no marketplace install code found for '{reference}' (type {artifact_type})"
+    ))
+}
+
 /// Install an agent dependency via the same redeem→persist pathway used for the
 /// top-level agent install (no parallel installer). Returns the new agent's own
 /// dependencies so the cascade can recurse.
@@ -446,8 +500,9 @@ async fn install_agent(
     api: &NeboAIApi,
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
+    let code = resolve_marketplace_code(api, "agent", reference).await?;
     let resp = api
-        .install_skill(reference)
+        .install_skill(&code)
         .await
         .map_err(|e| format!("install_agent: {}", e))?;
 
@@ -478,9 +533,10 @@ async fn install_skill(
     api: &NeboAIApi,
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
-    // Redeem the code with NeboAI to register the install
+    // Resolve qualified name → code, then redeem with NeboAI to register the install
+    let code = resolve_marketplace_code(api, "skill", reference).await?;
     let resp = api
-        .install_skill(reference)
+        .install_skill(&code)
         .await
         .map_err(|e| format!("install_skill: {}", e))?;
 
@@ -560,9 +616,10 @@ async fn install_plugin(
     api: &NeboAIApi,
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
-    // Redeem the install code (plugins use the same redeem endpoint)
+    // Resolve qualified name → code (plugins use the same redeem endpoint)
+    let code = resolve_marketplace_code(api, "plugin", reference).await?;
     let resp = api
-        .install_skill(reference)
+        .install_skill(&code)
         .await
         .map_err(|e| format!("redeem plugin code: {e}"))?;
 
@@ -601,22 +658,51 @@ async fn install_plugin(
 /// Workflows are now inline (no external refs). Only skill dependencies are extracted
 /// from both the top-level `skills` array and from inline activity skill references.
 pub fn extract_agent_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef> {
-    let mut deps = Vec::new();
-    let mut seen = HashSet::new();
-    let mut push = |dep_type: DepType, reference: String| {
+    let mut deps: Vec<DepRef> = Vec::new();
+    let mut push = |dep_type: DepType, reference: String, name: Option<String>, slug: Option<String>| {
         if reference.is_empty() {
             return;
         }
-        let key = format!("{:?}:{}", dep_type, reference);
-        if seen.insert(key) {
-            deps.push(DepRef::new(dep_type, reference));
+        // Canonical slug = the caller's, else the simple name (last segment) for any
+        // non-code ref. This is the identity the cascade emits and the UI dedups on,
+        // so `gws` and `@neboloop/plugins/gws` collapse to one row.
+        let slug = slug.or_else(|| {
+            if crate::codes::detect_code(&reference).is_some() {
+                None
+            } else {
+                Some(extract_simple_name(&reference).to_string())
+            }
+        });
+        // Dedup by (type, simple-name): the same artifact is often listed two ways —
+        // a bare slug in `requires.plugins` AND a qualified `@org/plugins/name` in
+        // `dependencies.plugins`. Collapse to one entry, BACKFILLING the richer
+        // display name / slug from whichever shape carries it (the bare-slug entry
+        // has no display name; the qualified one does).
+        let key = format!("{:?}:{}", dep_type, extract_simple_name(&reference));
+        if let Some(existing) = deps
+            .iter_mut()
+            .find(|d| format!("{:?}:{}", d.dep_type, extract_simple_name(&d.reference)) == key)
+        {
+            if existing.name.is_none() {
+                existing.name = name;
+            }
+            if existing.slug.is_none() {
+                existing.slug = slug;
+            }
+            return;
         }
+        deps.push(DepRef {
+            dep_type,
+            reference,
+            name,
+            slug,
+        });
     };
 
     // 1. Runtime AgentConfig shape: requires.plugins, top-level skills, inline activities.
     if let Ok(config) = napp::agent::parse_agent_config(frontmatter_json) {
         for d in extract_agent_deps(&config) {
-            push(d.dep_type, d.reference);
+            push(d.dep_type, d.reference, d.name, d.slug);
         }
     }
 
@@ -633,8 +719,8 @@ pub fn extract_agent_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef
         ] {
             if let Some(arr) = dependencies[key].as_array() {
                 for item in arr {
-                    if let Some(reference) = dep_ref_from_value(item) {
-                        push(dep_type.clone(), reference);
+                    if let Some((reference, name)) = dep_ref_from_value(item) {
+                        push(dep_type.clone(), reference, name, None);
                     }
                 }
             }
@@ -642,14 +728,14 @@ pub fn extract_agent_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef
         if let Some(plugins) = val["requires"]["plugins"].as_array() {
             for p in plugins {
                 if let Some(p) = p.as_str() {
-                    push(DepType::Plugin, p.to_string());
+                    push(DepType::Plugin, p.to_string(), None, None);
                 }
             }
         }
         if let Some(skills) = val["skills"].as_array() {
             for s in skills {
                 if let Some(s) = s.as_str() {
-                    push(DepType::Skill, s.to_string());
+                    push(DepType::Skill, s.to_string(), None, None);
                 }
             }
         }
@@ -660,16 +746,18 @@ pub fn extract_agent_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef
 }
 
 /// A marketplace dependency entry is either a plain reference string or an object
-/// `{ qualifiedName, id, name }`. Prefer the qualified name (a marketplace ref),
-/// then the id.
-fn dep_ref_from_value(item: &serde_json::Value) -> Option<String> {
+/// `{ qualifiedName, id, name }`. Returns (reference, display name). Prefer the
+/// qualified name (a marketplace ref), then the id; carry the display `name` so
+/// the cascade and UI can show "Google Workspace" instead of the bare slug.
+fn dep_ref_from_value(item: &serde_json::Value) -> Option<(String, Option<String>)> {
     if let Some(s) = item.as_str() {
-        return Some(s.to_string());
+        return Some((s.to_string(), None));
     }
-    item["qualifiedName"]
+    let reference = item["qualifiedName"]
         .as_str()
-        .or_else(|| item["id"].as_str())
-        .map(String::from)
+        .or_else(|| item["id"].as_str())?
+        .to_string();
+    Some((reference, item["name"].as_str().map(String::from)))
 }
 
 /// Extract dependencies from an agent config.

@@ -11,6 +11,8 @@
   import SetupWizard from '$lib/components/SetupWizard.svelte';
   import Check from 'lucide-svelte/icons/check';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
+  import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
+  import type { AgentInputField } from '$lib/types/agentPage';
   import type { PluginAccount } from '$lib/api/pluginAccounts';
 
   const ctx = getContext<AgentPageContext>('agentPage');
@@ -220,6 +222,47 @@
       await api.updateAgent(agentId, { rules: editRules });
       rulesSaved = true;
       setTimeout(() => rulesSaved = false, 2000);
+    } catch { /* silent */ }
+  }
+
+  // --- Configure (agent.json inputs) auto-save ---
+  // The one canonical place to edit an agent's inputs post-install. Seeds from the
+  // SAVED values (getAgent().inputValues), not agent.json defaults, so what the user
+  // saved is what shows; debounce-saves via updateAgentInputs.
+  let configValues = $state<Record<string, unknown>>({});
+  let configSaved = $state(false);
+  let configSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let loadedConfigFor = $state('');
+  $effect(() => {
+    if (!agentId || agentId === loadedConfigFor) return;
+    loadedConfigFor = agentId;
+    const id = agentId;
+    (async () => {
+      try {
+        const api = await import('$lib/api/nebo');
+        const res = await api.getAgent(id);
+        const raw = (res as { inputValues?: unknown })?.inputValues;
+        const parsed = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw ?? {});
+        configValues = parsed && typeof parsed === 'object' ? parsed : {};
+      } catch {
+        configValues = {};
+      }
+    })();
+  });
+
+  function debounceConfigSave(values: Record<string, unknown>) {
+    configValues = values;
+    if (configSaveTimer) clearTimeout(configSaveTimer);
+    configSaveTimer = setTimeout(() => saveConfig(), 800);
+  }
+
+  async function saveConfig() {
+    if (!agentId) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgentInputs(agentId, configValues);
+      configSaved = true;
+      setTimeout(() => (configSaved = false), 2000);
     } catch { /* silent */ }
   }
 
@@ -679,37 +722,21 @@
       ></textarea>
 
     {:else if section === 'configure'}
-      <div class="text-sm mb-1">Configuration from <span class="font-mono">agent.json</span>. These inputs customize how {agent?.name} operates.</div>
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-sm">Configuration from <span class="font-mono">agent.json</span>. These inputs customize how {agent?.name} operates.</div>
+        {#if configSaved}
+          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+        {/if}
+      </div>
 
       {#if config.inputs.length === 0}
         <div class="text-center py-6 text-sm">No configurable inputs for this agent.</div>
       {:else}
-        {#each config.inputs as _input}
-          {@const input = _input as { key?: string; label?: string; required?: boolean; description?: string; type?: string; placeholder?: string; default?: string; options?: { value: string; label: string }[] }}
-          <label class="block">
-            <span class="block text-xs font-semibold uppercase tracking-wider mb-1">
-              {input.label ?? input.key}
-              {#if input.required}<span class="text-error">*</span>{/if}
-            </span>
-            {#if input.description}
-              <span class="block text-sm mb-1.5">{input.description}</span>
-            {/if}
-
-            {#if input.type === 'textarea'}
-              <textarea rows="3" placeholder={input.placeholder ?? ''}
-                class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-body leading-relaxed">{input.default ?? ''}</textarea>
-            {:else if input.type === 'select'}
-              <select class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body">
-                {#each input.options ?? [] as opt}
-                  <option value={opt.value} selected={opt.value === input.default}>{opt.label}</option>
-                {/each}
-              </select>
-            {:else}
-              <input type="text" placeholder={input.placeholder ?? ''} value={input.default ?? ''}
-                class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body" />
-            {/if}
-          </label>
-        {/each}
+        <AgentInputForm
+          fields={config.inputs as AgentInputField[]}
+          bind:values={configValues}
+          onchange={debounceConfigSave}
+        />
       {/if}
 
     {:else if section === 'workflows'}

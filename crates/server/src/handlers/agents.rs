@@ -2137,7 +2137,10 @@ fn heartbeat_window_str(trigger_config: &serde_json::Value) -> Option<String> {
 }
 
 /// Build trigger JSON for agent.json from flat (type, config) pair.
-fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn build_trigger_json(
+    trigger_type: &str,
+    trigger_config: &serde_json::Value,
+) -> serde_json::Value {
     match trigger_type {
         "schedule" => {
             let cron = trigger_config
@@ -2206,7 +2209,10 @@ fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) ->
 }
 
 /// Flatten trigger config for DB storage (flat string).
-fn flatten_trigger_config(trigger_type: &str, trigger_config: &serde_json::Value) -> String {
+pub(crate) fn flatten_trigger_config(
+    trigger_type: &str,
+    trigger_config: &serde_json::Value,
+) -> String {
     match trigger_type {
         "schedule" => {
             let raw = trigger_config
@@ -2249,7 +2255,7 @@ fn flatten_trigger_config(trigger_type: &str, trigger_config: &serde_json::Value
 }
 
 /// Write updated frontmatter back to filesystem agent.json if napp_path exists.
-fn write_agent_json_to_fs(napp_path: &Option<String>, frontmatter: &serde_json::Value) {
+pub(crate) fn write_agent_json_to_fs(napp_path: &Option<String>, frontmatter: &serde_json::Value) {
     if let Some(path) = napp_path {
         let agent_json_path = std::path::Path::new(path).join("agent.json");
         if let Ok(pretty) = serde_json::to_string_pretty(frontmatter) {

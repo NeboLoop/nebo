@@ -823,17 +823,34 @@ impl PluginStore {
         status
     }
 
-    /// Get plugins that need auth (authenticated = false). Pure in-memory read.
+    /// Get installed plugins that need auth (authenticated = false).
+    ///
+    /// Walks every installed plugin that declares an auth status command and
+    /// resolves its status via `check_auth_lazy` (cached after first check).
+    /// This is the single source of truth for "what still needs connecting" —
+    /// it must NOT be a pure cache read: nothing seeds the cache for a plugin
+    /// until it's checked, so a freshly-installed (or never-logged-in) plugin
+    /// like gws would otherwise be invisible here. Env-type auth (channel bot
+    /// tokens) is per-agent and resolved against bindings elsewhere, so it has
+    /// no status command and is intentionally skipped here.
     pub async fn plugins_needing_auth(&self) -> Vec<(String, PluginAuth)> {
-        let cache = self.auth_cache.read().unwrap();
+        let mut seen = HashSet::new();
         let mut result = Vec::new();
-        for (slug, authed) in cache.iter() {
-            if !authed {
-                if let Some(manifest) = self.get_manifest(slug) {
-                    if let Some(auth) = manifest.auth {
-                        result.push((slug.clone(), auth));
-                    }
-                }
+        for (slug, _, _, _) in self.list_installed() {
+            if !seen.insert(slug.clone()) {
+                continue;
+            }
+            let Some(manifest) = self.get_manifest(&slug) else {
+                continue;
+            };
+            let Some(auth) = manifest.auth else {
+                continue;
+            };
+            if auth.commands.status.is_none() {
+                continue;
+            }
+            if !self.check_auth_lazy(&slug).await {
+                result.push((slug, auth));
             }
         }
         result
@@ -2359,9 +2376,47 @@ async fn run_auth_status_check(store: &PluginStore, slug: &str, path_env: &str) 
         cmd.env(key, value);
     }
     match cmd.output().await {
-        Ok(output) => output.status.success(),
+        Ok(output) => {
+            // A non-zero exit means the status command itself failed (or signals
+            // "not authenticated" for CLIs that follow the exit-code convention).
+            if !output.status.success() {
+                return false;
+            }
+            // Many status commands are *reporters*: they exit 0 and describe the
+            // auth state in a JSON body (e.g. gws prints
+            // {"auth_method":"none","credential_source":"none",...} when not
+            // connected). Trust the body over the exit code when it's parseable.
+            interpret_auth_status_output(&output.stdout)
+        }
         Err(_) => false,
     }
+}
+
+/// Decide whether an auth `status` command's stdout reports an authenticated
+/// state. Generic — keyed on conventional fields, not any one plugin's schema:
+/// an explicit boolean wins; otherwise a "none" credential/method/storage value
+/// means not connected; otherwise (no negative signal, or non-JSON output) we
+/// trust the successful exit and treat it as authenticated.
+fn interpret_auth_status_output(stdout: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(stdout) else {
+        return true;
+    };
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+        return true;
+    };
+    for key in ["authenticated", "isAuthenticated", "logged_in", "loggedIn"] {
+        if let Some(b) = val.get(key).and_then(|v| v.as_bool()) {
+            return b;
+        }
+    }
+    for key in ["credential_source", "auth_method", "storage", "status"] {
+        if let Some(s) = val.get(key).and_then(|v| v.as_str()) {
+            if s.eq_ignore_ascii_case("none") {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -2382,6 +2437,24 @@ mod tests {
         assert_eq!(plugin_env_var("gws"), "GWS_BIN");
         assert_eq!(plugin_env_var("my-tool"), "MY_TOOL_BIN");
         assert_eq!(plugin_env_var("ffmpeg"), "FFMPEG_BIN");
+    }
+
+    #[test]
+    fn auth_status_output_interpretation() {
+        // gws-style reporter that exits 0 but says "not connected" in the body.
+        assert!(!interpret_auth_status_output(
+            br#"{"auth_method":"none","credential_source":"none","storage":"none"}"#
+        ));
+        // Same reporter once connected.
+        assert!(interpret_auth_status_output(
+            br#"{"auth_method":"oauth2","credential_source":"keyring","storage":"keyring"}"#
+        ));
+        // Explicit boolean wins regardless of other fields.
+        assert!(!interpret_auth_status_output(br#"{"authenticated":false}"#));
+        assert!(interpret_auth_status_output(br#"{"logged_in":true}"#));
+        // Non-JSON / no negative signal → trust the successful exit.
+        assert!(interpret_auth_status_output(b"ok"));
+        assert!(interpret_auth_status_output(b"{}"));
     }
 
     #[test]

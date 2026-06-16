@@ -2142,6 +2142,11 @@ async fn run_loop(
             });
         }
 
+        // (First-run onboarding is handled proactively + deterministically by the
+        // frontend OnboardingTour — the old reactive LLM-reminder kickoff was removed so
+        // there's one onboarding pathway. The `nebo-onboarding` skill remains for an
+        // explicit "help me get set up" request, matched by its description.)
+
         let proactive_text = if proactive_context.is_empty() {
             String::new()
         } else {

@@ -66,6 +66,13 @@ export async function checkOnboardingStatus(): Promise<boolean> {
     const { status } = await import('$lib/api/nebo');
     const statusResp = await status() as { setupComplete?: boolean };
     const complete = !!statusResp?.setupComplete;
+    if (!complete && typeof localStorage !== 'undefined') {
+      // Backend reports a fresh profile (data dir was wiped / first ever run), but
+      // localStorage lives in the webview and survives that wipe. Clear stale UI prefs
+      // so "fresh" is truly fresh — the tour re-runs and the sidebar starts expanded.
+      localStorage.removeItem('nebo:tour-done');
+      localStorage.removeItem('nebo:sidebar-collapsed');
+    }
     onboardingComplete.set(complete);
     onboardingChecked.set(true);
     backendReady.set(true);

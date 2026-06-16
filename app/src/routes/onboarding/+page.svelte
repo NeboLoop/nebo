@@ -49,6 +49,20 @@
     system: { label: 'System', desc: 'Access system information and settings' },
   };
 
+  // Safe-by-default for a brand-new, non-technical user: core low-risk capabilities ON,
+  // powerful / privacy-sensitive ones OFF (opt-in). The "Acting With Care" layer still
+  // confirms individual sensitive actions, so this is the coarse gate, not a usability tax.
+  const DEFAULT_ENABLED: Record<string, boolean> = {
+    chat: true,
+    file: true,
+    web: true,
+    shell: false,
+    desktop: false,
+    media: false,
+    contacts: false,
+    system: false,
+  };
+
   let permissions = $state<{ key: string; label: string; desc: string; enabled: boolean; locked: boolean }[]>([]);
   let capStates = $state<boolean[]>([]);
 
@@ -66,7 +80,7 @@
         key,
         label: CAPABILITY_LABELS[key]?.label || key.charAt(0).toUpperCase() + key.slice(1),
         desc: CAPABILITY_LABELS[key]?.desc || '',
-        enabled: permObj[key] ?? true,
+        enabled: permObj[key] ?? DEFAULT_ENABLED[key] ?? false,
         locked: false,
       }));
       capStates = permissions.map(p => p.enabled);
@@ -399,7 +413,7 @@
     </div>
 
     {#if !autonomous}
-      <div class="divide-y divide-base-content/10 mb-5 max-w-md mx-auto text-left">
+      <div class="divide-y divide-base-content/10 mb-5 max-w-md mx-auto text-left max-h-[40vh] overflow-y-auto pr-1">
         {#each permissions as perm, i}
           <div class="flex items-center justify-between py-3">
             <div>

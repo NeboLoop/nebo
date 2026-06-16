@@ -30,6 +30,40 @@ impl ChannelDispatchImpl {
     }
 }
 
+/// Server-side implementation of [`tools::CodeInstaller`] — routes any marketplace code
+/// through the canonical `codes::handle_code` pathway (the same one this dispatcher and
+/// the WS code-install flow use). Injected into the agent's `registry` install action so
+/// `agent(resource:"registry", action:"install", code:…)` installs AND cascades every
+/// artifact type (skills, plugins, agents, apps, collections) correctly.
+pub struct CodeInstallerImpl {
+    state: AppState,
+}
+
+impl CodeInstallerImpl {
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+impl tools::CodeInstaller for CodeInstallerImpl {
+    fn install<'a>(
+        &'a self,
+        code: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        Box::pin(async move {
+            match crate::codes::detect_code(code) {
+                Some((code_type, validated)) => {
+                    crate::codes::handle_code_text(&self.state, code_type, validated).await
+                }
+                None => format!(
+                    "'{code}' is not a valid install code — expected PREFIX-XXXX-XXXX \
+                     (e.g. SKIL-/PLUG-/AGNT-/APPS-/COLL-)."
+                ),
+            }
+        })
+    }
+}
+
 impl agent::ChannelDispatcher for ChannelDispatchImpl {
     fn dispatch<'a>(
         &'a self,

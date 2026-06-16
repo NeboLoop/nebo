@@ -323,7 +323,10 @@
         const reference = typeof item === 'string' ? item : item?.qualifiedName || item?.id || '';
         if (!reference) continue;
         const name = item && typeof item === 'object' ? item.name : undefined;
-        findOrAddDep(reference, type, name);
+        // Seed the canonical slug so a later cascade event (keyed by bare slug)
+        // updates THIS row instead of creating a duplicate.
+        const slug = item && typeof item === 'object' && item.slug ? item.slug : simpleName(reference);
+        findOrAddDep(reference, type, name, slug);
       }
     }
   }
@@ -571,9 +574,21 @@
   }
 
   // ── Dependency cascade rendering (shared by all modes) ───────────────────────
+  /** Last segment of a qualified ref (@org/plugins/gws → gws); else the ref itself. */
+  function simpleName(ref: string): string {
+    return ref.startsWith('@') && ref.includes('/') ? ref.split('/').pop() || ref : ref;
+  }
+  /** Canonical identity for a dep — its slug if known, else the simple name. The seed
+   *  (qualified ref) and the cascade event (bare slug) for the same plugin must share
+   *  this key, or they'd render as two rows (one stuck pending). */
+  function depKey(reference: string, slug?: string): string {
+    return slug && slug.length ? slug : simpleName(reference);
+  }
   function findOrAddDep(reference: string, type: string, name?: string, slug?: string): number {
-    const idx = deps.findIndex((d) => d.reference === reference);
+    const key = depKey(reference, slug);
+    const idx = deps.findIndex((d) => depKey(d.reference, d.slug) === key);
     if (idx >= 0) {
+      // Backfill richer metadata (display name / slug) from whichever source has it.
       if ((name && !deps[idx].name) || (slug && !deps[idx].slug)) {
         deps[idx] = { ...deps[idx], name: deps[idx].name ?? name, slug: deps[idx].slug ?? slug };
       }

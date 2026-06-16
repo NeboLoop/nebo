@@ -18,6 +18,21 @@ pub trait AdvisorDeliberator: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>;
 }
 
+/// Installs a marketplace code through the ONE canonical server pathway
+/// (`server::codes::handle_code`). Defined here (tools crate) and implemented in the
+/// server — which owns `AppState` — to avoid a tools→server crate cycle, the same
+/// pattern as [`AdvisorDeliberator`]/[`StructuredAgent`]. Routing every install through
+/// this single pathway means skills, plugins (binary download + tool/hook
+/// re-registration), agents, apps, and collections all install AND cascade correctly —
+/// instead of the per-type API shortcuts that bypass the cascade.
+pub trait CodeInstaller: Send + Sync {
+    /// Install any `PREFIX-XXXX-XXXX` code; returns a human-readable result string.
+    fn install<'a>(
+        &'a self,
+        code: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>>;
+}
+
 /// One structured sub-agent request for the deep-research harness. The agent does free
 /// tool work with the named `aux_tools`, then is FORCED through a schema-validated
 /// `StructuredOutput` call (see `agent::structured::agent_structured`).

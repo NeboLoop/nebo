@@ -34,8 +34,13 @@ pub struct WorkflowRunInfo {
 ///
 /// Defined in tools crate, implemented in server crate.
 pub trait WorkflowManager: Send + Sync {
-    /// List all installed workflows.
-    fn list(&self) -> Pin<Box<dyn Future<Output = Vec<WorkflowInfo>> + Send + '_>>;
+    /// List workflows visible to an agent: its own `agent_workflows` bindings
+    /// (what the Settings → Workflows panel shows) plus any standalone
+    /// marketplace-installed workflows.
+    fn list<'a>(
+        &'a self,
+        agent_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Vec<WorkflowInfo>> + Send + 'a>>;
 
     /// Install a workflow from a marketplace code (WORK-XXXX-XXXX).
     fn install<'a>(
@@ -82,9 +87,14 @@ pub trait WorkflowManager: Send + Sync {
         id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
 
-    /// Create a new workflow from a name and JSON definition.
+    /// Create a workflow the calling agent owns, as an `agent_workflows`
+    /// binding — the canonical store the UI panel and the AgentWorker trigger
+    /// system both read. This is the ONLY way an agent gives itself a workflow;
+    /// it never writes the standalone `workflows` table (that path produced
+    /// orphans invisible to the panel and never fired by the engine).
     fn create<'a>(
         &'a self,
+        agent_id: &'a str,
         name: &'a str,
         definition: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;

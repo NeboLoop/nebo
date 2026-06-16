@@ -76,6 +76,8 @@ pub struct UserProfile {
     pub updated_at: i64,
     pub tool_permissions: Option<String>,
     pub terms_accepted_at: Option<i64>,
+    /// "personal" | "business" — captured during onboarding; drives welcome copy + emphasis.
+    pub account_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

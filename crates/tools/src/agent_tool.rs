@@ -129,6 +129,8 @@ pub struct PersonaTool {
     agent_registry: AgentRegistry,
     agent_loader: Arc<napp::AgentLoader>,
     orchestrator: crate::orchestrator::OrchestratorHandle,
+    /// Shared cell holding the canonical code installer (filled late by the server).
+    code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
 }
 
 impl PersonaTool {
@@ -143,7 +145,19 @@ impl PersonaTool {
             agent_registry,
             agent_loader,
             orchestrator,
+            code_installer: Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Inject the shared canonical-installer cell (from the `Registry`). When set, the
+    /// `install` action routes ANY code through the server's `codes::handle_code`
+    /// pathway (skills/plugins/agents/apps/collections, with cascade + binary download).
+    pub fn with_code_installer(
+        mut self,
+        installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+    ) -> Self {
+        self.code_installer = installer;
+        self
     }
 
     pub async fn handle_action(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
@@ -1163,47 +1177,20 @@ impl PersonaTool {
 
     async fn handle_install(&self, input: &serde_json::Value) -> ToolResult {
         let code = input["code"].as_str().unwrap_or("");
-        if code.is_empty() || !code.starts_with("AGNT-") {
+        if code.is_empty() {
             return ToolResult::error(
-                "'code' is required and must start with AGNT- (e.g. AGNT-ABCD-1234)",
+                "'code' is required (e.g. AGNT-XXXX-XXXX, SKIL-…, PLUG-…, COLL-…)",
             );
         }
-
-        // Check if already installed
-        if let Ok(agents) = self.store.list_agents(100, 0) {
-            if agents.iter().any(|r| r.kind.as_deref() == Some(code)) {
-                return ToolResult::ok(format!("Agent {} is already installed.", code));
-            }
-        }
-
-        let api = match crate::build_neboai_api(&self.store) {
-            Ok(a) => a,
-            Err(e) => return ToolResult::error(format!("NeboAI connection required: {}", e)),
-        };
-
-        match api.install_agent(code).await {
-            Ok(resp) => {
-                if resp.status == "payment_required" {
-                    return ToolResult::ok(format!(
-                        "Agent requires payment. Checkout: {}",
-                        resp.checkout_url.unwrap_or_default()
-                    ));
-                }
-
-                let name = resp.artifact.name.clone();
-                let artifact_id = resp.artifact.id.clone();
-
-                // Fetch and persist artifact content
-                if let Err(e) =
-                    crate::persist_agent_from_api(&api, &artifact_id, &name, code, &self.store)
-                        .await
-                {
-                    warn!(code, error = %e, "failed to persist agent after install");
-                }
-
-                ToolResult::ok(format!("Installed agent: {}", name))
-            }
-            Err(e) => ToolResult::error(format!("install failed: {}", e)),
+        // ONE canonical install pathway (`codes::handle_code`): redeem + persist + reload,
+        // cascade dependencies, download plugin binaries, re-register tools/hooks, payment
+        // + auth handling. Routes ANY code type. No direct-API bypass.
+        let installer = self.code_installer.read().unwrap().clone();
+        match installer {
+            Some(installer) => ToolResult::ok(installer.install(code).await),
+            None => ToolResult::error(
+                "install requires the running app (no installer configured).",
+            ),
         }
     }
 

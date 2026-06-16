@@ -590,7 +590,7 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<div class="flex-1 flex min-w-0 min-h-0 overflow-hidden {resizing ? 'select-none' : ''}" bind:this={containerEl}>
+<div data-tour="chat" class="flex-1 flex min-w-0 min-h-0 overflow-hidden {resizing ? 'select-none' : ''}" bind:this={containerEl}>
 <!-- Chat column -->
 <div
   class="flex-1 flex flex-col bg-base-100 min-w-0 min-h-0 relative"
@@ -613,6 +613,7 @@
       <span class="text-sm font-semibold truncate min-w-0">{headerTitle}</span>
       {#if headerRight}
         <button
+          data-tour="work"
           class="text-sm ml-auto shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
           onclick={() => creationsOpen ? (creationsOpen = false) : openWorkPanel()}
           title={creationsOpen ? 'Close Work panel' : 'Open Work panel'}

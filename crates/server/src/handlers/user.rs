@@ -116,6 +116,7 @@ pub async fn update_profile(
             body["communicationStyle"].as_str(),
             body["goals"].as_str(),
             body["context"].as_str(),
+            body["accountType"].as_str(),
         )
         .map_err(to_error_response)?;
     let profile = state.store.get_user_profile().map_err(to_error_response)?;
@@ -140,6 +141,7 @@ fn profile_to_json(profile: Option<db::models::UserProfile>) -> serde_json::Valu
             "context": p.context,
             "onboardingCompleted": p.onboarding_completed.map_or(false, |v| v != 0),
             "onboardingStep": p.onboarding_step,
+            "accountType": p.account_type,
             "toolPermissions": p.tool_permissions,
             "termsAcceptedAt": p.terms_accepted_at,
             "createdAt": p.created_at,
@@ -183,10 +185,22 @@ pub async fn update_preferences(
 /// GET /api/v1/user/me/permissions
 pub async fn get_permissions(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let profile = state.store.get_user_profile().map_err(to_error_response)?;
-    let permissions = profile
+    let raw = profile
         .and_then(|p| p.tool_permissions)
         .unwrap_or_else(|| "{}".to_string());
-    Ok(Json(serde_json::json!({"permissions": permissions})))
+    // `tool_permissions` is stored as a JSON object map `{tool: allowed}`. The API contract
+    // (`UserGetPermissionsResponse`) declares `permissions: ToolPermission[]`, so emit that
+    // array shape. Returning the raw string made clients iterate it character-by-character,
+    // producing a phantom `"undefined"` key → the bogus "Undefined" toggle.
+    let map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&raw).unwrap_or_default();
+    let permissions: Vec<serde_json::Value> = map
+        .into_iter()
+        .map(|(tool, allowed)| {
+            serde_json::json!({ "tool": tool, "allowed": allowed.as_bool().unwrap_or(false) })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "permissions": permissions })))
 }
 
 /// PUT /api/v1/user/me/permissions
@@ -194,10 +208,14 @@ pub async fn update_permissions(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    let permissions = body.to_string();
+    // Clients send `{ permissions: { tool: allowed, … } }`. Persist the INNER flat map —
+    // the canonical `{tool: bool}` shape that enforcement (`entity_config`) and
+    // `get_permissions` both read. Storing the whole wrapper persisted `{"permissions":{…}}`,
+    // which fails to parse as `{tool: bool}` downstream (permissions silently lost).
+    let map = body.get("permissions").cloned().unwrap_or(body);
     state
         .store
-        .update_tool_permissions(&permissions)
+        .update_tool_permissions(&map.to_string())
         .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"success": true})))
 }

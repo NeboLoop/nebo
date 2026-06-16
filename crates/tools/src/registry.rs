@@ -179,6 +179,10 @@ pub struct Registry {
     store: std::sync::RwLock<Option<Arc<db::Store>>>,
     /// Browser manager, for closing a session's tab/page when a sub-agent finishes.
     browser_manager: std::sync::RwLock<Option<Arc<browser::Manager>>>,
+    /// Canonical marketplace-code installer (server-implemented). `Arc`-wrapped so the
+    /// SAME cell is shared with `PersonaTool` at registration and filled LATE by the
+    /// server once `AppState` exists (registration runs before `AppState` is built).
+    code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
     resource_permits: ResourcePermits,
 }
 
@@ -196,6 +200,7 @@ impl Registry {
             agent_loader: std::sync::RwLock::new(None),
             store: std::sync::RwLock::new(None),
             browser_manager: std::sync::RwLock::new(None),
+            code_installer: Arc::new(std::sync::RwLock::new(None)),
             resource_permits: ResourcePermits::new(),
         }
     }
@@ -225,6 +230,13 @@ impl Registry {
     /// Set the plugin store for injecting plugin binary env vars into subprocesses.
     pub fn set_plugin_store(&self, ps: Arc<napp::plugin::PluginStore>) {
         *self.plugin_store.write().unwrap() = Some(ps);
+    }
+
+    /// Set the canonical marketplace-code installer. Called LATE by the server (after
+    /// `AppState` is built) — `PersonaTool` already shares this cell, so its `install`
+    /// action picks up the installer at runtime.
+    pub fn set_code_installer(&self, installer: Arc<dyn crate::bot_tool::CodeInstaller>) {
+        *self.code_installer.write().unwrap() = Some(installer);
     }
 
     /// Set the agent loader for PersonaTool filesystem access.
@@ -730,7 +742,8 @@ impl Registry {
                 agent_reg,
                 agent_loader,
                 orchestrator.clone(),
-            );
+            )
+            .with_code_installer(self.code_installer.clone());
             agent_tool = agent_tool.with_persona(persona);
         }
 
@@ -745,8 +758,9 @@ impl Registry {
 
         // Skill tool (skill management) — always registered (core)
         if let Some(ref loader) = skill_loader {
-            let mut skill_tool =
-                crate::skill_tool::SkillTool::new(loader.clone()).with_store(store.clone());
+            let mut skill_tool = crate::skill_tool::SkillTool::new(loader.clone())
+                .with_store(store.clone())
+                .with_code_installer(self.code_installer.clone());
             // Wire the plugin registry so skill discover/help can redirect
             // when the LLM confuses a plugin slug for a skill name.
             let ps_opt = self.plugin_store.read().unwrap().clone();
@@ -759,7 +773,8 @@ impl Registry {
             let installed_dir = data.join("nebo").join("skills");
             let user_dir = data.join("user").join("skills");
             let loader_default = Arc::new(crate::skills::Loader::new(installed_dir, user_dir));
-            let mut skill_tool = crate::skill_tool::SkillTool::new(loader_default);
+            let mut skill_tool = crate::skill_tool::SkillTool::new(loader_default)
+                .with_code_installer(self.code_installer.clone());
             let ps_opt = self.plugin_store.read().unwrap().clone();
             if let Some(ps) = ps_opt {
                 skill_tool = skill_tool.with_plugin_store(ps);

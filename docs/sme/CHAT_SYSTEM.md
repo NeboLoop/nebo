@@ -1305,6 +1305,34 @@ Per-type handlers:
 - **PLUG**: `install_plugin()` → download .napp → install via plugin_store → register structured tools → cascade deps
 - **APP**: `install_app()` → same as AGNT with app flag
 
+### Programmatic Entry — `handle_code_text()`
+
+`handle_code_text(state, code_type, code) -> String` runs the **same** per-type handlers
+as `handle_code` but returns the result as a string instead of broadcasting WS events —
+for non-WS callers. Two callers:
+- **`channel_dispatch.rs`** — a code sent as a message on an external channel
+  (NeboLoop/Slack) installs through this, identical to the web-UI path.
+- **`channel_dispatch::CodeInstallerImpl`** — implements the tools-crate
+  `tools::CodeInstaller` trait (defined in `tools` to avoid a tools→server crate cycle).
+  Late-injected into the tool `Registry` via `set_code_installer()` *after* `AppState` is
+  built (tool registration runs before `AppState`), and shared with `PersonaTool` +
+  `SkillTool` through an `Arc<RwLock<Option<…>>>` cell.
+
+### Agent-Tool Install Routing — ONE pathway, no bypass
+
+The agent's `install` tool actions delegate to `CodeInstaller` (→ `handle_code_text`), so
+they install + cascade through this canonical pathway exactly like the WS / channel flows
+— they do **not** call the NeboAI API directly:
+- `agent(resource:"registry", action:"install", code:"<ANY-PREFIX>")` — any artifact type
+  (skill/plugin/agent/app/collection).
+- `skill(action:"install", code:"SKIL-…")` — same pathway, SKIL- typed entry.
+
+Multiple typed entry points, ONE implementation. (Historical: these previously called
+`api.install_skill`/`install_agent` and persisted locally, bypassing dep cascade +
+plugin-binary download + tool/hook re-registration — that bypass was removed so nothing
+installs outside `handle_code`. When no installer is injected, e.g. headless CLI/tests,
+the actions return an explicit error rather than silently doing a degraded install.)
+
 ### Payment Support
 
 If API returns `status == "payment_required"`, the result includes `checkout_url`
