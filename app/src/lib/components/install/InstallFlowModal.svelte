@@ -360,6 +360,13 @@
 
   /** After install + loadSetup: show inputs, then auth, then schedule, then finalize. */
   function routeAfterInstall() {
+    // Configure mode always lands on the editable step — even with no input
+    // fields — so the Uninstall action and a Save are reachable (otherwise
+    // "Configure" on a no-config agent would skip straight to a pointless "Saved!").
+    if (configuring) {
+      phase = 'inputs';
+      return;
+    }
     if (inputFields.length > 0 && !inputsCollected) {
       phase = 'inputs';
       return;

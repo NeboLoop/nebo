@@ -60,6 +60,9 @@
 	let setupInputs = $state<Record<string, unknown>>({});
 	// Configure mode reuses the setup modal against the already-installed agent.
 	let configureExisting = $state(false);
+	// Uninstall is destructive — require an inline confirm before removing.
+	let confirmUninstall = $state(false);
+	let uninstalling = $state(false);
 
 	const itemId = $derived($page.params.id ?? '');
 	const installed = $derived(Boolean(skill?.installed) || installedLocal);
@@ -192,6 +195,7 @@
 	}
 
 	async function uninstallProduct() {
+		uninstalling = true;
 		try {
 			await uninstallStoreProduct(itemId);
 		} catch { /* ignore */ }
@@ -199,6 +203,8 @@
 		if (skill) skill = { ...skill, installed: false };
 		showSetupModal = false;
 		configureExisting = false;
+		confirmUninstall = false;
+		uninstalling = false;
 	}
 
 	async function updateProduct() {
@@ -359,6 +365,21 @@
 						{#if artifactType === 'agent'}
 							<button type="button" onclick={configureAgent} class="btn btn-outline rounded-xl h-11">
 								Configure
+							</button>
+						{/if}
+						{#if confirmUninstall}
+							<div class="flex flex-col gap-2 rounded-xl border border-error/30 bg-error/5 p-3">
+								<p class="text-xs text-base-content/70 text-center">Remove {skill.name} from this companion?</p>
+								<div class="flex gap-2">
+									<button type="button" onclick={() => (confirmUninstall = false)} class="btn btn-ghost btn-sm rounded-lg flex-1">Cancel</button>
+									<button type="button" onclick={uninstallProduct} disabled={uninstalling} class="btn btn-error btn-sm rounded-lg flex-1 disabled:opacity-50">
+										{uninstalling ? 'Removing…' : 'Uninstall'}
+									</button>
+								</div>
+							</div>
+						{:else}
+							<button type="button" onclick={() => (confirmUninstall = true)} class="btn btn-ghost rounded-xl h-11 text-error/80 hover:text-error">
+								Uninstall
 							</button>
 						{/if}
 					{:else}
