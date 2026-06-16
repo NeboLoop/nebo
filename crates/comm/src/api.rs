@@ -463,7 +463,107 @@ impl NeboAIApi {
             format!("{}{}", self.api_server, url)
         };
         debug!(url = %full_url, "downloading .napp archive");
-        self.fetch_raw(&full_url).await
+        // The plugin CDN (EdgeLB) intermittently drops connections — a single send
+        // failure shouldn't kill an install when a retry succeeds in ~1s. Retry with a
+        // short backoff, but ONLY for transient failures (send errors, 5xx). A 4xx like
+        // 404 "binary not found" is permanent — retrying it just wastes time.
+        let mut last_err: Option<CommError> = None;
+        for attempt in 1..=3u32 {
+            match self.resolve_and_fetch_napp(&full_url).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) => {
+                    let permanent = e.to_string().contains("returned 4");
+                    tracing::warn!(url = %full_url, attempt, permanent, error = %e, "napp download attempt failed");
+                    last_err = Some(e);
+                    if permanent || attempt >= 3 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
+                        .await;
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| CommError::Other("download failed".into())))
+    }
+
+    /// Resolve one download attempt to `.napp` bytes.
+    ///
+    /// The API download endpoint now returns `{ "downloadUrl": ... }` JSON (a CDN
+    /// link) instead of streaming the package; older servers and direct CDN links
+    /// return the `.napp` bytes directly. This tolerates both during the cutover.
+    ///
+    /// Auth: the bearer is attached only when calling our own API host. The CDN
+    /// blob is fetched WITHOUT it — the token must never cross to another host.
+    /// (That is also why the server returns a 200 JSON URL rather than a 302
+    /// redirect, which reqwest would follow with the Authorization header attached.)
+    async fn resolve_and_fetch_napp(&self, full_url: &str) -> Result<Vec<u8>, CommError> {
+        let same_origin = full_url.starts_with(self.api_server.as_str());
+        let mut req = self.client.get(full_url);
+        if same_origin {
+            req = req.bearer_auth(self.token());
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| CommError::Other(format!("fetch failed: {}", e)))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CommError::Other(format!(
+                "NeboAI returned {}: {}",
+                status, body
+            )));
+        }
+
+        let is_json = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.contains("application/json"))
+            .unwrap_or(false);
+
+        if is_json {
+            #[derive(serde::Deserialize)]
+            struct DownloadUrlResponse {
+                #[serde(rename = "downloadUrl")]
+                download_url: String,
+            }
+            let parsed: DownloadUrlResponse = resp
+                .json()
+                .await
+                .map_err(|e| CommError::Other(format!("parse download url: {}", e)))?;
+            return self.fetch_no_auth(&parsed.download_url).await;
+        }
+
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| CommError::Other(format!("read body: {}", e)))
+    }
+
+    /// GET raw bytes with no Authorization header — for cross-host CDN blob URLs.
+    async fn fetch_no_auth(&self, url: &str) -> Result<Vec<u8>, CommError> {
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| CommError::Other(format!("cdn fetch failed: {}", e)))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CommError::Other(format!(
+                "CDN returned {}: {}",
+                status, body
+            )));
+        }
+
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| CommError::Other(format!("read cdn body: {}", e)))
     }
 
     /// Uninstall a skill for this bot.
