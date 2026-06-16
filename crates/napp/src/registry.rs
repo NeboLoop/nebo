@@ -284,7 +284,7 @@ impl Registry {
             if let Some(ref napp) = napp_path {
                 if let Some(ref signing) = self.signing {
                     let key = signing.get_key().await?;
-                    if let Err(e) = crate::signing::verify_signatures(&key, tool_dir) {
+                    if let Err(e) = crate::signing::verify_signatures(&key, tool_dir, napp) {
                         self.quarantine(
                             manifest.id(),
                             tool_dir,
