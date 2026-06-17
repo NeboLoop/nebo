@@ -45,7 +45,6 @@
     | 'confirm'
     | 'processing'
     | 'inputs'
-    | 'auth'
     | 'schedule'
     | 'done'
     | 'error';
@@ -101,7 +100,6 @@
   let deps = $state<DepItem[]>([]);
   let depTotal = $state(0);
   let copiedRef = $state('');
-  let needsSetup = $state<Array<{ slug: string; label: string; description: string }>>([]);
   // Cascade lifecycle: the modal only declares success once the backend's terminal
   // `dep_cascade_complete` arrives — never at 0/N while deps are still installing.
   let cascadeStarted = $state(false);
@@ -115,10 +113,13 @@
   let scheduleOverrides = $state<Record<string, string>>({});
   let needsSetupFlag = $state(false);
 
-  // Plugin auth queue.
-  let authQueue = $state<AuthEntry[]>([]);
-  let authIndex = $state(0);
-  let authInProgress = $state(false);
+  // Plugin auth — per-row on the review (done) screen, recomputed after the cascade.
+  // authNeeded: slug → entry for installed plugins still needing auth.
+  // authState: slug → connection state. connectingSlug: the one OAuth flow in flight
+  // (the plugin_auth_* WS events carry no slug, so only one runs at a time).
+  let authNeeded = $state<Record<string, AuthEntry>>({});
+  let authState = $state<Record<string, 'idle' | 'connecting' | 'connected' | 'failed'>>({});
+  let connectingSlug = $state<string | null>(null);
 
   // Payment (code mode only).
   let tier = $state<TierInfo | null>(null);
@@ -140,8 +141,6 @@
   // True while a cascade has begun but not yet reported complete — gates the
   // "installed!" success state so it never shows at 0/N.
   const cascadePending = $derived(cascadeStarted && !cascadeComplete);
-  const currentAuth = $derived(authQueue[authIndex]);
-  const currentAuthNeedsKeys = $derived(authQueue[authIndex]?.authType === 'env');
   const hasSchedules = $derived(
     Array.isArray(workflows) &&
       workflows.some((w) => w.isActive && (w.triggerType === 'schedule' || w.triggerType === 'heartbeat')),
@@ -158,11 +157,9 @@
             ? 'Processing Payment'
             : phase === 'inputs'
               ? configuring ? `Configure ${agentName || ''}` : `Set up ${artifactName || agentName || ''}`
-              : phase === 'auth'
-                ? `Connect ${currentAuth?.label || 'Account'}`
-                : phase === 'schedule'
-                  ? 'How often should it run?'
-                  : `Installing ${typeLabel}`,
+              : phase === 'schedule'
+                ? 'How often should it run?'
+                : `Installing ${typeLabel}`,
   );
 
   const intervalOptions = [
@@ -233,16 +230,15 @@
     depTotal = 0;
     cascadeStarted = false;
     cascadeComplete = false;
-    needsSetup = [];
     inputFields = [];
     inputValues = {};
     inputsCollected = false;
     workflows = [];
     scheduleOverrides = {};
     needsSetupFlag = false;
-    authQueue = [];
-    authIndex = 0;
-    authInProgress = false;
+    authNeeded = {};
+    authState = {};
+    connectingSlug = null;
     tier = null;
     paymentMethod = null;
     paymentMethodLoading = false;
@@ -365,8 +361,9 @@
         inputValues = { ...inputValues, ...(saved as Record<string, unknown>) };
       }
       needsSetupFlag = !!(a as any)?.needsSetup;
-      const pna = (a as any)?.pluginsNeedingAuth;
-      authQueue = Array.isArray(pna) ? pna : [];
+      // Auth is recomputed AFTER the cascade installs the plugins (see
+      // refreshAuthNeeded / handleDepCascadeComplete) — checking here is too early,
+      // the just-cascaded plugins aren't installed yet, so their auth never showed.
     } catch {
       /* getAgent may not be ready; fall back to seeds */
       if (!Array.isArray(seedInputs) && Object.keys(seedInputs).length > 0) {
@@ -399,11 +396,8 @@
   }
 
   function continueAfterInputs() {
-    if (authQueue.length > 0) {
-      authIndex = 0;
-      phase = 'auth';
-      return;
-    }
+    // No sequential auth phase any more — plugin connect happens per-row on the
+    // review (done) screen, the single auth surface (CODE_AUDITOR Rule 8).
     if (hasSchedules) {
       phase = 'schedule';
       return;
@@ -424,6 +418,9 @@
     notifySidebarRefresh();
     statusMessage = configuring ? 'Saved' : `${artifactName || typeLabel} installed`;
     phase = 'done';
+    // Surface any plugins still needing auth on the review screen. (Also refreshed
+    // on dep_cascade_complete; this covers agents with no cascade.)
+    void refreshAuthNeeded();
     if (interactive) {
       // Wait for the user to dismiss (footer Done button).
     } else {
@@ -436,6 +433,43 @@
     if (agentId) await activateAgent(agentId).catch(() => {});
     notifySidebarRefresh();
     phase = 'done';
+    void refreshAuthNeeded();
+  }
+
+  /** Re-fetch which installed plugins still need auth (after the cascade installs
+   *  them). The pre-cascade check in loadSetup missed just-installed plugins. */
+  async function refreshAuthNeeded() {
+    if (!agentId) return;
+    try {
+      const a = await getAgent(agentId);
+      const pna = (a as { pluginsNeedingAuth?: AuthEntry[] })?.pluginsNeedingAuth;
+      if (!Array.isArray(pna)) return;
+      const needed: Record<string, AuthEntry> = {};
+      const next = { ...authState };
+      for (const e of pna) {
+        if (!e?.slug) continue;
+        needed[e.slug] = e;
+        if (!next[e.slug]) next[e.slug] = 'idle';
+      }
+      authNeeded = needed;
+      authState = next;
+    } catch {
+      /* leave existing auth state */
+    }
+  }
+
+  /** Connect one plugin's account via OAuth. Only one flow runs at a time — the
+   *  plugin_auth_* WS events carry no slug, so we map completion to connectingSlug. */
+  async function connectPlugin(slug: string) {
+    if (connectingSlug) return;
+    connectingSlug = slug;
+    authState = { ...authState, [slug]: 'connecting' };
+    try {
+      await authLogin(slug);
+    } catch {
+      authState = { ...authState, [slug]: 'failed' };
+      connectingSlug = null;
+    }
   }
 
   // ── Schedule step ─────────────────────────────────────────────────────────
@@ -461,32 +495,8 @@
     await finalize();
   }
 
-  // ── Plugin auth step ───────────────────────────────────────────────────────
-  async function startAuth() {
-    if (!currentAuth) return;
-    authInProgress = true;
-    try {
-      await authLogin(currentAuth.slug);
-    } catch {
-      authInProgress = false;
-      errorMessage = 'Failed to start authentication';
-      phase = 'error';
-    }
-  }
-
-  function advanceAuth() {
-    authInProgress = false;
-    if (authIndex + 1 < authQueue.length) {
-      authIndex++;
-      return;
-    }
-    if (hasSchedules) {
-      phase = 'schedule';
-      return;
-    }
-    void finalize();
-  }
-
+  // ── Plugin auth ────────────────────────────────────────────────────────────
+  // (connectPlugin + refreshAuthNeeded live above; per-row on the review screen.)
   function openPluginSettings() {
     close();
     goto('/settings/plugins');
@@ -628,6 +638,8 @@
   function handleDepCascadeComplete() {
     if (!show) return;
     cascadeComplete = true;
+    // Plugins are installed now — surface any that still need auth on the review row.
+    void refreshAuthNeeded();
   }
   function handleDepStarted(e: Event) {
     if (!show) return;
@@ -671,8 +683,19 @@
   }
   function handleDepNeedsSetup(e: Event) {
     if (!show) return;
-    const items = ((e as CustomEvent).detail?.items as typeof needsSetup) || [];
-    if (Array.isArray(items) && items.length > 0) needsSetup = items;
+    // Collections surface plugins-needing-auth via this event (no single agent to
+    // getAgent). Merge into the same per-row auth model so there's ONE auth surface.
+    const items = ((e as CustomEvent).detail?.items as AuthEntry[]) || [];
+    if (!Array.isArray(items) || items.length === 0) return;
+    const needed = { ...authNeeded };
+    const next = { ...authState };
+    for (const it of items) {
+      if (!it?.slug) continue;
+      needed[it.slug] = it;
+      if (!next[it.slug]) next[it.slug] = 'idle';
+    }
+    authNeeded = needed;
+    authState = next;
   }
 
   async function retryDep(dep: DepItem) {
@@ -691,17 +714,19 @@
   // ── Plugin auth WS handlers ─────────────────────────────────────────────────
   function handlePluginAuthUrl(e: Event) {
     const url = (e as CustomEvent).detail?.url as string;
-    if (url && show && phase === 'auth') window.open(url, '_blank');
+    if (url && show && connectingSlug) window.open(url, '_blank');
   }
   function handlePluginAuthComplete() {
-    if (!show || phase !== 'auth') return;
-    advanceAuth();
+    if (!show || !connectingSlug) return;
+    authState = { ...authState, [connectingSlug]: 'connected' };
+    connectingSlug = null;
   }
-  function handlePluginAuthError(e: Event) {
-    if (!show || phase !== 'auth') return;
-    authInProgress = false;
-    errorMessage = ((e as CustomEvent).detail?.error as string) || 'Authentication failed';
-    phase = 'error';
+  function handlePluginAuthError() {
+    if (!show || !connectingSlug) return;
+    // A failed connect marks just that row failed (retryable) — it never blocks
+    // the install or errors the whole modal.
+    authState = { ...authState, [connectingSlug]: 'failed' };
+    connectingSlug = null;
   }
 
   // ── Misc UI ─────────────────────────────────────────────────────────────────
@@ -760,7 +785,7 @@
     if (copyTimeout) clearTimeout(copyTimeout);
   });
 
-  const showSkip = $derived(!configuring && (phase === 'inputs' || phase === 'auth' || phase === 'schedule'));
+  const showSkip = $derived(!configuring && (phase === 'inputs' || phase === 'schedule'));
 </script>
 
 {#if show}
@@ -825,35 +850,6 @@
               <button type="button" class="btn btn-ghost btn-sm text-error/80 hover:text-error" onclick={onUninstall}>
                 Uninstall {agentName}
               </button>
-            {/if}
-          </div>
-
-        {:else if phase === 'auth'}
-          <div class="flex flex-col items-center gap-4">
-            {#if authQueue.length > 1}
-              <p class="text-xs text-base-content/50">Step {authIndex + 1} of {authQueue.length}</p>
-            {/if}
-            {#if authInProgress}
-              <span class="loading loading-spinner loading-lg text-primary"></span>
-              <div class="text-center">
-                <p class="text-sm font-medium">Waiting for authorization…</p>
-                <p class="text-xs text-base-content/50 mt-1.5">Complete the sign-in in your browser, then return here.</p>
-              </div>
-              <button type="button" class="btn btn-sm btn-ghost mt-2" onclick={() => (authInProgress = false)}>Cancel</button>
-            {:else}
-              <div class="w-12 h-12 rounded-full bg-primary/15 flex items-center justify-center">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-              </div>
-              {#if currentAuth?.description}<p class="text-xs text-base-content/70 text-center">{currentAuth.description}</p>{/if}
-              {#if currentAuthNeedsKeys}
-                <button type="button" class="btn btn-primary btn-sm mt-2" onclick={openPluginSettings}>
-                  Set up {currentAuth?.label || 'plugin'} in Settings
-                </button>
-              {:else}
-                <button type="button" class="btn btn-primary btn-sm mt-2" onclick={startAuth}>
-                  Connect {currentAuth?.label || 'Account'}
-                </button>
-              {/if}
             {/if}
           </div>
 
@@ -965,6 +961,9 @@
             <ul class="flex flex-col gap-2">
               {#each deps as dep}
                 {@const label = depLabel(dep)}
+                {@const slug = dep.slug ?? simpleName(dep.reference)}
+                {@const auth = dep.type === 'plugin' ? authNeeded[slug] : undefined}
+                {@const aState = authState[slug] ?? 'idle'}
                 <li class="flex items-center gap-2.5 text-xs">
                   {#if dep.status === 'installed'}
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-success shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
@@ -983,32 +982,25 @@
                       </button>
                     {/if}
                   </div>
-                  <span class="text-xs text-base-content/40 shrink-0">{dep.type}</span>
+                  {#if auth && aState === 'connected'}
+                    <span class="text-xs text-success shrink-0">Connected</span>
+                  {:else}
+                    <span class="text-xs text-base-content/40 shrink-0">{dep.type}</span>
+                  {/if}
                   {#if dep.status === 'failed'}
                     <button type="button" class="btn btn-xs btn-primary shrink-0" onclick={() => retryDep(dep)} title={dep.error}>Install</button>
+                  {:else if auth && aState !== 'connected'}
+                    {#if aState === 'connecting'}
+                      <span class="loading loading-spinner loading-xs text-primary shrink-0"></span>
+                    {:else if auth.authType === 'env'}
+                      <button type="button" class="btn btn-xs btn-outline shrink-0" onclick={openPluginSettings}>Set up</button>
+                    {:else}
+                      <button type="button" class="btn btn-xs btn-primary shrink-0" disabled={!!connectingSlug} onclick={() => connectPlugin(slug)}>{aState === 'failed' ? 'Retry' : 'Connect'}</button>
+                    {/if}
                   {/if}
                 </li>
               {/each}
             </ul>
-          </div>
-        {/if}
-
-        <!-- Needs setup: installed items still missing credentials/config -->
-        {#if needsSetup.length > 0}
-          <div class="border-t border-base-content/10 pt-4 mt-5">
-            <p class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">Needs setup</p>
-            <ul class="flex flex-col gap-2">
-              {#each needsSetup as item}
-                <li class="flex items-center gap-2.5 text-xs">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-warning shrink-0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                  <div class="flex-1 min-w-0">
-                    <div class="truncate font-medium">{item.label || item.slug}</div>
-                    {#if item.description}<div class="text-base-content/50 truncate">{item.description}</div>{/if}
-                  </div>
-                </li>
-              {/each}
-            </ul>
-            <button type="button" class="btn btn-xs btn-outline mt-3" onclick={openPluginSettings}>Configure in Settings</button>
           </div>
         {/if}
       </div>
