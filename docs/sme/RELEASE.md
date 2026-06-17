@@ -104,8 +104,9 @@ macOS critical path is `build-macos → notarize-macos → release`.
 > a Gatekeeper warning. Add `- arch: amd64` to the `notarize-macos` matrix if Intel Macs are
 > still supported.
 
-**Total pipeline time: ~37 minutes** (macOS path ≈ build-macos ~22m + notarize ~8m; Windows
-path ≈ build ~27m + sign ~6m — both gate `release`).
+**Total wall-clock: ~58 minutes** (observed: v0.11.0 and v0.11.1 each ran 58m38s end-to-end,
+including runner queue time). The critical path is the Windows leg (build ~27m + sign ~6m) and
+the macOS leg (build ~22m + notarize ~8m), both of which gate `release`.
 
 ### Release Assets (13 files)
 
