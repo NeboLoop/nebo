@@ -240,6 +240,7 @@ pub async fn consolidate_scope(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
+        trace: None,
     };
 
     let mut rx = provider

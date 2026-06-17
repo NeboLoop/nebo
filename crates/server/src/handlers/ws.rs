@@ -631,6 +631,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             metadata: None,
                                             cache_breakpoints: vec![],
                                             cancel_token: None,
+                                            trace: None,
                                         };
 
                                         let mut rx = match provider.stream(&req).await {
@@ -1040,6 +1041,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             metadata: None,
                                             cache_breakpoints: vec![],
                                             cancel_token: None,
+                                            trace: None,
                                         };
 
                                         let mut rx = match provider.stream(&req).await {
@@ -1417,6 +1419,7 @@ async fn handle_builtin_slash(
                     metadata: None,
                     cache_breakpoints: vec![],
                     cancel_token: None,
+                    trace: None,
                 };
 
                 let mut rx = match provider.stream(&req).await {

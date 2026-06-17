@@ -1947,6 +1947,7 @@ async fn generate_chat_title_if_needed(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
+        trace: None,
     };
 
     let mut rx = provider

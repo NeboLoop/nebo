@@ -87,6 +87,7 @@ pub async fn summarize_tool_batch(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
+        trace: None,
     };
 
     match provider.stream(&req).await {
@@ -153,6 +154,7 @@ pub async fn generate_session_title(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
+        trace: None,
     };
 
     let mut rx = match provider.stream(&request).await {

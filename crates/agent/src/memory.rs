@@ -215,6 +215,7 @@ pub async fn extract_facts(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
+        trace: None,
     };
 
     let mut rx = match provider.stream(&req).await {
