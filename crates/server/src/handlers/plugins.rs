@@ -613,6 +613,26 @@ pub async fn auth_logout(
     }
 }
 
+/// Remove a plugin and all its versions from disk + DB registry, and unregister
+/// its hooks. The ONE canonical plugin-removal path — shared by the settings
+/// DELETE /plugins/{slug} handler and the marketplace uninstall flow, so both
+/// uninstall a plugin identically (CODE_AUDITOR Rule 8). Disk removal is the
+/// critical path; the DB delete is best-effort.
+pub fn remove_plugin_by_slug(state: &AppState, slug: &str) -> Result<(), NeboError> {
+    state
+        .plugin_store
+        .remove(slug)
+        .map_err(|e| NeboError::Internal(e.to_string()))?;
+
+    if let Err(e) = state.store.delete_installed_plugin(slug) {
+        warn!(plugin = %slug, error = %e, "failed to delete plugin from DB registry");
+    }
+
+    state.hooks.unregister_app(slug);
+    info!(plugin = %slug, "plugin removed");
+    Ok(())
+}
+
 /// DELETE /plugins/{slug}
 ///
 /// Removes a plugin and all its versions from disk and DB registry.
@@ -620,20 +640,7 @@ pub async fn remove_plugin(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    state
-        .plugin_store
-        .remove(&slug)
-        .map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?;
-
-    // Remove from DB registry (best-effort — disk removal is the critical path).
-    if let Err(e) = state.store.delete_installed_plugin(&slug) {
-        warn!(plugin = %slug, error = %e, "failed to delete plugin from DB registry");
-    }
-
-    // Unregister any hooks this plugin had registered.
-    state.hooks.unregister_app(&slug);
-
-    info!(plugin = %slug, "plugin removed via settings");
+    remove_plugin_by_slug(&state, &slug).map_err(to_error_response)?;
     Ok(Json(serde_json::json!({ "message": "Plugin removed" })))
 }
 
