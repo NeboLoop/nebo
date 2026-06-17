@@ -122,6 +122,19 @@ impl Loader {
         count
     }
 
+    /// Force a full reload from the filesystem, discarding the warm-start
+    /// manifest first so it gets rebuilt from current on-disk state.
+    ///
+    /// `load_all()` prefers the cached manifest, which is stale right after a
+    /// skill is installed or removed — a warm load would resurrect a
+    /// just-deleted skill (its directory is gone but the manifest still lists
+    /// it). Mutating paths must call this, not `load_all()`, so the in-memory
+    /// set and the manifest both reflect the filesystem.
+    pub async fn reload_from_disk(&self) -> usize {
+        let _ = std::fs::remove_file(self.manifest_path());
+        self.load_all().await
+    }
+
     /// Derive the manifest file path.
     /// Placed inside installed_dir so it lives within the data tree and doesn't
     /// leak into shared temp directories during tests.

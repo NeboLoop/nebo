@@ -428,7 +428,9 @@ pub async fn uninstall_store_product(
             );
         }
     } else {
-        state.skill_loader.load_all().await;
+        // Force a cold reload — a warm load_all() would resurrect the just-removed
+        // skill from the stale manifest (see SkillLoader::reload_from_disk).
+        state.skill_loader.reload_from_disk().await;
     }
 
     Ok(Json(serde_json::json!({ "success": true })))

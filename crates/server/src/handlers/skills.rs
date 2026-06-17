@@ -260,7 +260,7 @@ pub async fn update_skill(
 
 /// DELETE /api/v1/skills/:name
 pub async fn delete_skill(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
     // Delete from user/skills/
@@ -278,6 +278,12 @@ pub async fn delete_skill(
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
+
+    // Reconcile the in-memory loader (which list_extensions reads from) with the
+    // filesystem. Without this the skill stays loaded and reappears on refresh;
+    // a warm load_all() would resurrect it from the stale manifest, so force a
+    // cold reload that rebuilds the manifest too.
+    state.skill_loader.reload_from_disk().await;
 
     Ok(Json(serde_json::json!({"success": true})))
 }

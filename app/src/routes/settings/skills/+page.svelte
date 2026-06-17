@@ -49,6 +49,8 @@
       selected = null;
       confirming = false;
     } catch {
+      /* keep the selection so the user can retry */
+    } finally {
       removing = false;
     }
   }
