@@ -1590,6 +1590,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
+    // Install the chat-title sink: the runner generates+persists titles for every
+    // run path, then this broadcasts the change + propagates it to the loop. One
+    // generator, set once (CODE_AUDITOR Rule 8).
+    state
+        .runner
+        .set_title_sink(std::sync::Arc::new(chat_dispatch::TitleBroadcaster::new(
+            state.clone(),
+        )));
+
     // Wire RunRegistry into the tool-layer run querier (late binding via OnceLock)
     let _ = run_querier_handle.set(Box::new(state.run_registry.clone()));
 

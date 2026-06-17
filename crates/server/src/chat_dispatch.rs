@@ -273,6 +273,31 @@ async fn register_run(
     (agent_display_name, run_handle)
 }
 
+/// Derive the per-run permission / grant / model / personality / path values from
+/// an entity's resolved config. Identical in both run entrypoints (the RunRequest
+/// literal differs per entrypoint, so it stays inline). CODE_AUDITOR Rule 8.
+type EntityRunParams = (
+    Option<std::collections::HashMap<String, bool>>,
+    Option<std::collections::HashMap<String, String>>,
+    Option<String>,
+    Option<String>,
+    Vec<String>,
+);
+fn entity_run_params(
+    entity_config: Option<&crate::entity_config::ResolvedEntityConfig>,
+) -> EntityRunParams {
+    match entity_config {
+        Some(ec) => (
+            Some(ec.permissions.clone()),
+            Some(ec.resource_grants.clone()),
+            ec.model_preference.clone(),
+            ec.personality_snippet.clone(),
+            ec.allowed_paths.clone(),
+        ),
+        None => (None, None, None, None, Vec::new()),
+    }
+}
+
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let hub = state.hub.clone();
     let runner = state.runner.clone();
@@ -366,21 +391,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         }
 
         // Extract per-entity overrides from resolved config
-        let (permissions, resource_grants, model_preference, personality_snippet) =
-            if let Some(ref ec) = entity_cfg {
-                (
-                    Some(ec.permissions.clone()),
-                    Some(ec.resource_grants.clone()),
-                    ec.model_preference.clone(),
-                    ec.personality_snippet.clone(),
-                )
-            } else {
-                (None, None, None, None)
-            };
-        let allowed_paths = entity_cfg
-            .as_ref()
-            .map(|ec| ec.allowed_paths.clone())
-            .unwrap_or_default();
+        let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths) =
+            entity_run_params(entity_cfg.as_ref());
 
         // Build progress tracker from RunHandle's shared Arcs
         let progress = agent::RunProgress {
@@ -411,9 +423,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             mention_context,
             tool_scope,
             plan_mode,
-            // run_chat generates the chat title itself (broadcasts + pushes it
-            // to the loop), so skip the runner-side generator to avoid the race.
-            skip_title_gen: true,
             ..Default::default()
         };
 
@@ -1183,23 +1192,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     }
                 }
 
-                // Auto-generate a descriptive chat title in the background
-                let title_runner = runner.clone();
-                let title_hub = hub.clone();
-                let title_state = task_state.clone();
-                let title_sid = sid.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = generate_chat_title_if_needed(
-                        &title_runner,
-                        &title_hub,
-                        &title_state,
-                        &title_sid,
-                    )
-                    .await
-                    {
-                        tracing::debug!(error = %e, "chat title generation skipped");
-                    }
-                });
+                // Chat-title generation now happens once in the runner for every run
+                // path; the ChatTitleSink installed at startup broadcasts it + pushes
+                // it to the loop. (Was a duplicate generator coordinated by
+                // skip_title_gen — see Runner::ChatTitleSink.)
             }
             Err(e) => {
                 warn!(error = %e, "agent run failed");
@@ -1257,22 +1253,8 @@ pub async fn run_chat_events(
     // Resolve display name + register the run (shared with run_chat).
     let (_agent_display_name, run_handle) = register_run(state, &config).await;
 
-    let (permissions, resource_grants, model_preference, personality_snippet) =
-        if let Some(ref ec) = config.entity_config {
-            (
-                Some(ec.permissions.clone()),
-                Some(ec.resource_grants.clone()),
-                ec.model_preference.clone(),
-                ec.personality_snippet.clone(),
-            )
-        } else {
-            (None, None, None, None)
-        };
-    let allowed_paths = config
-        .entity_config
-        .as_ref()
-        .map(|ec| ec.allowed_paths.clone())
-        .unwrap_or_default();
+    let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths) =
+        entity_run_params(config.entity_config.as_ref());
 
     let progress = agent::RunProgress {
         run_id: run_handle.run_id.clone(),
@@ -1846,95 +1828,43 @@ async fn send_to_channel(
     )))
 }
 
-/// Generate a descriptive chat title from the conversation's first messages.
-/// Spawned as a background task after chat_complete — failures are non-fatal.
-async fn generate_chat_title_if_needed(
-    runner: &Arc<agent::Runner>,
-    hub: &Arc<crate::handlers::ws::ClientHub>,
-    state: &AppState,
-    session_key: &str,
-) -> Result<(), types::NeboError> {
-    let store = runner.store();
+/// The one chat-title side-effect sink (CODE_AUDITOR Rule 8). The runner generates
+/// and persists the title for every run path, then calls this to broadcast the
+/// change to connected clients and propagate it to the loop — the server concerns
+/// the agent crate can't reach. Replaces the old dispatch-side generator + the
+/// `skip_title_gen` flag that coordinated the two.
+pub struct TitleBroadcaster {
+    state: AppState,
+}
 
-    // Resolve session key → internal session ID → active chat ID
-    let session_id = runner.sessions().resolve_session_id_by_key(session_key)?;
-    let chat_id = runner.sessions().active_chat_id(&session_id);
-
-    let chat = store
-        .get_chat(&chat_id)?
-        .ok_or(types::NeboError::NotFound)?;
-
-    // Need a user+assistant exchange to name from.
-    let messages = store.get_recent_chat_messages(&chat_id, 8)?;
-    if messages.len() < 2 {
-        return Ok(());
+impl TitleBroadcaster {
+    pub fn new(state: AppState) -> Self {
+        Self { state }
     }
+}
 
-    // Skip chats the user explicitly renamed — never clobber a chosen name (mirrors
-    // Claude desktop's explicit-title check instead of matching default strings).
-    if chat.title_custom {
-        return Ok(());
+impl agent::ChatTitleSink for TitleBroadcaster {
+    fn on_title(&self, session_key: String, chat_id: String, title: String) {
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            state.hub.broadcast(
+                "chat_title_updated",
+                serde_json::json!({ "chatId": chat_id, "title": title }),
+            );
+            // Propagate to the loop so a remote (NeboLoop) reader sees the rename
+            // immediately, without waiting for the reconnect-time reconcile.
+            // local_agent_id is the `agent:<id>:` segment of the session key
+            // ("assistant" for the primary companion). No-op for non-agent
+            // sessions or agents not registered on the loop.
+            if let Some(local_agent_id) = session_key
+                .strip_prefix("agent:")
+                .and_then(|s| s.split(':').next())
+            {
+                crate::codes::push_chat_title_to_loop(&state, local_agent_id, &chat_id, &title)
+                    .await;
+            }
+        });
     }
-    // Trigger by USER-MESSAGE COUNT — language-independent. Name on the first
-    // exchange, then re-refine ONCE at the third user turn over the fuller
-    // conversation (Claude desktop's count-1 / count-3 behavior). Fires at most
-    // twice and never depends on a per-locale default-title string ("New Chat" vs
-    // the loop's "New chat" vs "Nuevo chat" / "新しいチャット").
-    let user_turns = messages.iter().filter(|m| m.role == "user").count();
-    if user_turns != 1 && user_turns != 3 {
-        return Ok(());
-    }
-
-    // Build a compact transcript. Use more of the conversation on the count-3
-    // refinement so the regenerated title reflects fuller context. Char-safe
-    // truncation — content may be non-ASCII.
-    let take_n = if user_turns >= 3 { 8 } else { 4 };
-    let transcript: String = messages
-        .iter()
-        .take(take_n)
-        .map(|m| {
-            let snippet: String = m.content.chars().take(200).collect();
-            format!("{}: {}", m.role, snippet)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Generate the title via the one shared title-LLM primitive
-    // (summarizer::generate_session_title) — the same call the runner's background
-    // path uses, so there's a single title-generation implementation. The compact
-    // transcript is the prompt; the gating (count 1/3), store write, broadcast and
-    // loop-push stay here (server concerns). Empty model = provider default.
-    let Some(new_title) =
-        agent::summarizer::generate_session_title(&runner.providers(), &transcript, "").await
-    else {
-        return Ok(());
-    };
-
-    store.update_chat_title(&chat_id, &new_title, false)?;
-
-    hub.broadcast(
-        "chat_title_updated",
-        serde_json::json!({
-            "chatId": chat_id,
-            "title": new_title,
-        }),
-    );
-
-    info!(chat_id = %chat_id, title = %new_title, "auto-generated chat title");
-
-    // Propagate the new title to the loop so a remote (NeboLoop) reader sees the
-    // chat get named just like the desktop does — without waiting for the next
-    // reconnect-time reconcile. local_agent_id is the `agent:<id>:` segment of
-    // the session key ("assistant" for the primary companion). No-op for
-    // non-agent sessions or agents not registered on the loop.
-    if let Some(local_agent_id) = session_key
-        .strip_prefix("agent:")
-        .and_then(|s| s.split(':').next())
-    {
-        crate::codes::push_chat_title_to_loop(state, local_agent_id, &chat_id, &new_title).await;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
