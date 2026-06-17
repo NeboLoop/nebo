@@ -727,7 +727,8 @@
       {:else}
         <dl class="flex flex-col gap-3 mt-3">
           {#each configFields as field (field.key)}
-            {@const val = configValues[field.key]}
+            {@const saved = configValues[field.key]}
+            {@const val = saved === undefined || saved === null || saved === '' ? field.default : saved}
             {@const isEmpty = val === undefined || val === null || val === ''}
             <div class="border-b border-base-content/10 pb-3 last:border-0">
               <dt class="text-sm font-medium">{field.label || field.key}</dt>

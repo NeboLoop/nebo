@@ -356,6 +356,14 @@
       } else if (Array.isArray(seedInputs) && seedInputs.length > 0) {
         inputFields = normalizeInputs(seedInputs);
       }
+      // Pre-fill the form with the agent's SAVED inputs so configure mode shows
+      // what's stored (not blank/placeholders). getAgent returns inputValues at
+      // the top level; merge over any seed defaults.
+      const savedRaw = (a as { inputValues?: unknown })?.inputValues;
+      const saved = typeof savedRaw === 'string' ? JSON.parse(savedRaw || '{}') : (savedRaw ?? {});
+      if (saved && typeof saved === 'object') {
+        inputValues = { ...inputValues, ...(saved as Record<string, unknown>) };
+      }
       needsSetupFlag = !!(a as any)?.needsSetup;
       const pna = (a as any)?.pluginsNeedingAuth;
       authQueue = Array.isArray(pna) ? pna : [];
