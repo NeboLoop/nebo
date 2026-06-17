@@ -716,59 +716,29 @@ pub(crate) async fn check_plugin_auth(
     plugin_store: &std::sync::Arc<napp::plugin::PluginStore>,
     slug: &str,
 ) -> Option<bool> {
-    let (binary_path, _auth) = plugin_store.get_auth_info(slug)?;
-    let status_cmd = _auth.commands.status.as_deref()?;
-    let runtime = napp::PluginRuntime::new(slug, binary_path, plugin_store.clone());
-    let mut cmd = runtime.command(status_cmd);
-    match cmd.output().await {
-        Ok(output) => Some(output.status.success()),
-        Err(_) => Some(false),
-    }
+    let (_binary_path, auth) = plugin_store.get_auth_info(slug)?;
+    // None = no status command → nothing to check (caller treats as "no auth needed").
+    auth.commands.status.as_deref()?;
+    // Delegate the decision to the one canonical check (rich interpretation, cached).
+    Some(plugin_store.check_auth_lazy(slug).await)
 }
 
 /// GET /plugins/{slug}/auth/status
 ///
-/// Runs the plugin's auth status command. Exit code 0 = authenticated.
-/// Returns `{ "authenticated": bool }` plus any JSON the plugin outputs.
+/// Returns `{ "authenticated": bool }`. The decision is computed by the one
+/// canonical check (`PluginStore::check_auth_now` → `run_auth_status_check`),
+/// which interprets reporter-style status output (explicit boolean / "none"
+/// credential signals) rather than the raw exit code, and refreshes the cache.
 pub async fn auth_status(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let (binary_path, auth) = state
-        .plugin_store
-        .get_auth_info(&slug)
-        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
-
-    let status_cmd = match auth.commands.status.as_deref() {
-        Some(cmd) => cmd,
-        None => {
-            // No status command → plugin doesn't require auth checks
-            return Ok(Json(serde_json::json!({ "authenticated": true })));
-        }
-    };
-
-    let runtime = napp::PluginRuntime::new(&slug, binary_path, state.plugin_store.clone());
-    let mut cmd = runtime.command(status_cmd);
-
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?;
-
-    let authenticated = output.status.success();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Include any plugin-specific details if it outputs JSON
-    let mut result = serde_json::json!({ "authenticated": authenticated });
-    if let Ok(plugin_data) = serde_json::from_str::<serde_json::Value>(&stdout) {
-        if let Some(obj) = plugin_data.as_object() {
-            for (k, v) in obj {
-                result[k] = v.clone();
-            }
-        }
+    // 404 only when the plugin isn't installed at all.
+    if state.plugin_store.get_auth_info(&slug).is_none() {
+        return Err(to_error_response(NeboError::NotFound));
     }
-
-    Ok(Json(result))
+    let authenticated = state.plugin_store.check_auth_now(&slug).await;
+    Ok(Json(serde_json::json!({ "authenticated": authenticated })))
 }
 
 /// GET /plugins/events

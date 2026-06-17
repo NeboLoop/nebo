@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Bug, Lightbulb, HelpCircle } from 'lucide-svelte';
-	import webapi from '$lib/api/gocliRequest';
+	import { getStoreProductFeedback, submitStoreProductFeedback } from '$lib/api/nebo';
 
 	interface FeedbackItem {
 		id: string;
@@ -73,12 +73,12 @@
 		if (!fbTitle.trim()) return;
 		submitting = true;
 		try {
-			await webapi.post(`/api/v1/store/products/${targetId}/feedback`, { type: fbType, title: fbTitle, body: fbBody });
+			await submitStoreProductFeedback(targetId, { type: fbType, title: fbTitle, body: fbBody });
 			showForm = false;
 			fbTitle = '';
 			fbBody = '';
-			const res = await webapi.get(`/api/v1/store/products/${targetId}/feedback`);
-			items = (res as any).feedback ?? [];
+			const res = await getStoreProductFeedback(targetId);
+			items = (res as { feedback?: FeedbackItem[] }).feedback ?? [];
 		} catch { /* ignore */ }
 		submitting = false;
 	}

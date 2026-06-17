@@ -804,9 +804,20 @@ impl PluginStore {
 
     /// Update a single plugin's auth status (call after login/logout).
     pub async fn update_auth_status(&self, slug: &str) {
+        let _ = self.check_auth_now(slug).await;
+    }
+
+    /// Run the plugin's auth `status` command NOW and update the cache, returning
+    /// whether it's authenticated (true when the plugin needs no auth). This is
+    /// the ONE fresh auth-decision entry point — the rich interpretation (explicit
+    /// boolean / "none" credential signals over raw exit code) lives only in
+    /// `run_auth_status_check`, so every caller agrees. Use this for a definitive
+    /// post-login check; use `check_auth_lazy` for a cached read.
+    pub async fn check_auth_now(&self, slug: &str) -> bool {
         let path_env = self.path_with_plugins();
         let authed = run_auth_status_check(self, slug, &path_env).await;
         self.auth_cache.write().unwrap().insert(slug.to_string(), authed);
+        authed
     }
 
     /// Check auth status for a single plugin on first access. Caches the result.

@@ -6,7 +6,6 @@
 	import ArtifactIcon from '$lib/components/marketplace/ArtifactIcon.svelte';
 	import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
 	import { Trash2, RefreshCw, PackageCheck, ExternalLink } from 'lucide-svelte';
-	import webapi from '$lib/api/gocliRequest';
 	import * as api from '$lib/api/nebo';
 	import { type AppItem, toAppItem, itemHref } from '$lib/types/marketplace';
 
@@ -30,11 +29,11 @@
 		error = '';
 		try {
 			// Fetch all products and filter to installed
-			const [skillsRes, agentsRes, workflowsRes] = await Promise.all([
-				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ products: [] })),
-				webapi.get<any>('/api/v1/store/products', { type: 'agent', pageSize: 100 }).catch(() => ({ products: [] })),
-				webapi.get<any>('/api/v1/store/products', { type: 'workflow', pageSize: 100 }).catch(() => ({ products: [] }))
-			]);
+			const [skillsRes, agentsRes, workflowsRes] = (await Promise.all([
+				api.listStoreProducts(undefined, undefined, undefined, 100, 'skill').catch(() => ({ products: [] })),
+				api.listStoreProducts(undefined, undefined, undefined, 100, 'agent').catch(() => ({ products: [] })),
+				api.listStoreProducts(undefined, undefined, undefined, 100, 'workflow').catch(() => ({ products: [] }))
+			])) as { products?: any[] }[];
 
 			const all = [
 				...(skillsRes.products || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'skill' }, i)),

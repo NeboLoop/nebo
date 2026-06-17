@@ -222,6 +222,57 @@ pub struct CommReplyConfig {
 /// Callers configure behavior via [`ChatConfig`] decorators. Every run is
 /// automatically registered in the global [`RunRegistry`] for visibility and
 /// cancellation — no opt-in required.
+/// Shared dispatch preamble for both run entrypoints — `run_chat` (broadcast
+/// sink) and `run_chat_events` (returned-channel sink). Resolves the agent
+/// display name, derives the entity id + origin label, and registers the run in
+/// the global RunRegistry. This identical setup lived in both functions and had
+/// started to drift; keeping it here is the one canonical path (CODE_AUDITOR
+/// Rule 8). Returns the display name (for outbound comm) and the run handle.
+async fn register_run(
+    state: &AppState,
+    config: &ChatConfig,
+) -> (String, crate::run_registry::RunHandle) {
+    let agent_display_name = if !config.entity_name.is_empty() {
+        config.entity_name.clone()
+    } else if !config.agent_id.is_empty() {
+        let registry = state.agent_registry.read().await;
+        registry
+            .get(&config.agent_id)
+            .map(|r| r.name.clone())
+            .unwrap_or_default()
+    } else {
+        state
+            .store
+            .get_agent_profile()
+            .ok()
+            .flatten()
+            .map(|p| p.name)
+            .unwrap_or_else(|| "Nebo".to_string())
+    };
+
+    let entity_id = if !config.agent_id.is_empty() {
+        config.agent_id.clone()
+    } else {
+        "main".to_string()
+    };
+    let origin_label = format!("{:?}", config.origin).to_lowercase();
+
+    let run_handle = state
+        .run_registry
+        .register(RegisterParams {
+            session_key: config.session_key.clone(),
+            entity_id,
+            entity_name: agent_display_name.clone(),
+            origin: origin_label,
+            channel: config.channel.clone(),
+            cancel_token: config.cancel_token.clone(),
+            parent_run_id: None,
+        })
+        .await;
+
+    (agent_display_name, run_handle)
+}
+
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let hub = state.hub.clone();
     let runner = state.runner.clone();
@@ -242,25 +293,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         None
     };
 
-    // Resolve agent display name for outbound comm messages
-    let agent_display_name = if !config.entity_name.is_empty() {
-        config.entity_name.clone()
-    } else if !config.agent_id.is_empty() {
-        let registry = state.agent_registry.read().await;
-        registry
-            .get(&config.agent_id)
-            .map(|r| r.name.clone())
-            .unwrap_or_default()
-    } else {
-        state
-            .store
-            .get_agent_profile()
-            .ok()
-            .flatten()
-            .map(|p| p.name)
-            .unwrap_or_else(|| "Nebo".to_string())
-    };
-
     let sid = config.session_key.clone();
     let agent_id = config.agent_id.clone();
     let cancel_token = config.cancel_token.clone();
@@ -269,27 +301,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     // generator can propagate the generated title to the loop (chats/sync).
     let task_state = state.clone();
 
-    // Determine entity_id for the registry
-    let entity_id = if !agent_id.is_empty() {
-        agent_id.clone()
-    } else {
-        "main".to_string()
-    };
-    let origin_label = format!("{:?}", config.origin).to_lowercase();
-
-    // Register in the global RunRegistry — ALL run paths go through here.
-    let run_handle = state
-        .run_registry
-        .register(RegisterParams {
-            session_key: sid.clone(),
-            entity_id,
-            entity_name: agent_display_name.clone(),
-            origin: origin_label,
-            channel: config.channel.clone(),
-            cancel_token: cancel_token.clone(),
-            parent_run_id: None,
-        })
-        .await;
+    // Resolve display name + register the run (shared with run_chat_events).
+    let (agent_display_name, run_handle) = register_run(state, &config).await;
 
     // Destructure config fields before moving into closure
     let prompt = config.prompt;
@@ -1236,47 +1249,13 @@ pub async fn run_chat_events(
     let proactive_inbox = state.proactive_inbox.clone();
     let cleanup_tools = state.tools.clone();
 
-    let agent_display_name = if !config.entity_name.is_empty() {
-        config.entity_name.clone()
-    } else if !config.agent_id.is_empty() {
-        let registry = state.agent_registry.read().await;
-        registry
-            .get(&config.agent_id)
-            .map(|r| r.name.clone())
-            .unwrap_or_default()
-    } else {
-        state
-            .store
-            .get_agent_profile()
-            .ok()
-            .flatten()
-            .map(|p| p.name)
-            .unwrap_or_else(|| "Nebo".to_string())
-    };
-
     let sid = config.session_key.clone();
     let agent_id = config.agent_id.clone();
     let cancel_token = config.cancel_token.clone();
     let lane = config.lane.clone();
-    let entity_id = if !agent_id.is_empty() {
-        agent_id.clone()
-    } else {
-        "main".to_string()
-    };
-    let origin_label = format!("{:?}", config.origin).to_lowercase();
 
-    let run_handle = state
-        .run_registry
-        .register(RegisterParams {
-            session_key: sid.clone(),
-            entity_id,
-            entity_name: agent_display_name,
-            origin: origin_label,
-            channel: config.channel.clone(),
-            cancel_token: cancel_token.clone(),
-            parent_run_id: None,
-        })
-        .await;
+    // Resolve display name + register the run (shared with run_chat).
+    let (_agent_display_name, run_handle) = register_run(state, &config).await;
 
     let (permissions, resource_grants, model_preference, personality_snippet) =
         if let Some(ref ec) = config.entity_config {
@@ -1920,59 +1899,16 @@ async fn generate_chat_title_if_needed(
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Use the cheapest available provider
-    let providers_lock = runner.providers();
-    let providers = providers_lock.read().await;
-    let provider = providers
-        .first()
-        .ok_or_else(|| types::NeboError::Internal("no providers available".into()))?;
-
-    let req = ai::ChatRequest {
-        tool_choice: Default::default(),
-        messages: vec![ai::Message {
-            role: "user".into(),
-            content: format!(
-                "Generate a short title (3-8 words) for this conversation. Reply with ONLY the title, no quotes or punctuation.\n\n{}",
-                transcript
-            ),
-            ..Default::default()
-        }],
-        max_tokens: 30,
-        temperature: 0.3,
-        model: String::new(),
-        system: String::new(),
-        static_system: String::new(),
-        tools: vec![],
-        enable_thinking: false,
-        metadata: None,
-        cache_breakpoints: vec![],
-        cancel_token: None,
-        trace: None,
-    };
-
-    let mut rx = provider
-        .stream(&req)
-        .await
-        .map_err(|e| types::NeboError::Internal(format!("provider error: {}", e)))?;
-
-    let mut new_title = String::new();
-    while let Some(event) = rx.recv().await {
-        match event.event_type {
-            StreamEventType::Text => new_title.push_str(&event.text),
-            StreamEventType::Error => {
-                return Err(types::NeboError::Internal(
-                    event.error.unwrap_or_else(|| "LLM error".into()),
-                ));
-            }
-            StreamEventType::Done => break,
-            _ => {}
-        }
-    }
-
-    let new_title = new_title.trim().to_string();
-    if new_title.is_empty() || new_title.len() > 100 {
+    // Generate the title via the one shared title-LLM primitive
+    // (summarizer::generate_session_title) — the same call the runner's background
+    // path uses, so there's a single title-generation implementation. The compact
+    // transcript is the prompt; the gating (count 1/3), store write, broadcast and
+    // loop-push stay here (server concerns). Empty model = provider default.
+    let Some(new_title) =
+        agent::summarizer::generate_session_title(&runner.providers(), &transcript, "").await
+    else {
         return Ok(());
-    }
+    };
 
     store.update_chat_title(&chat_id, &new_title, false)?;
 

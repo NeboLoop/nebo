@@ -5,8 +5,7 @@
 	import ArtifactIcon from './ArtifactIcon.svelte';
 	import { installFlow } from '$lib/stores/installFlow';
 	import { type AppItem, itemHref } from '$lib/types/marketplace';
-	import { installStoreProduct } from '$lib/api/nebo';
-	import webapi from '$lib/api/gocliRequest';
+	import { installStoreProduct, getStoreProduct } from '$lib/api/nebo';
 	import { CheckCircle } from 'lucide-svelte';
 
 	let { item, label }: { item: AppItem; label?: string } = $props();
@@ -26,7 +25,11 @@
 
 		// Agents/apps install + configure + activate through the one shared modal.
 		if (item.type === 'agent' || item.type === 'app') {
-			const detail = await webapi.get<any>(`/api/v1/store/products/${item.id}`).catch(() => null);
+			const detail = (await getStoreProduct(item.id).catch(() => null)) as {
+				typeConfig?: { inputs?: Record<string, unknown>; dependencies?: unknown };
+				inputs?: Record<string, unknown>;
+				dependencies?: unknown;
+			} | null;
 			installFlow.open({
 				mode: 'product',
 				appId: item.id,

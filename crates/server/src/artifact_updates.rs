@@ -307,43 +307,21 @@ pub(crate) async fn apply_plugin_update_pub(
     api: &comm::api::NeboAIApi,
     slug: &str,
 ) -> Result<(), String> {
-    let platform = current_platform();
-    let manifest = api
-        .get_plugin(slug, &platform)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let platform_bin = manifest
-        .platforms
-        .get(&platform)
-        .ok_or_else(|| format!("no binary for platform {}", platform))?;
-
-    let napp_data = api
-        .download_napp(&platform_bin.download_url)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    state
-        .plugin_store
-        .install_from_napp(slug, &manifest.version, &napp_data)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Update plugin_registry in DB
-    state
+    // Updating a plugin is just re-installing its latest version. Delegate to the
+    // ONE plugin-install core so binary resolution, real sha256/signature DB
+    // registration, skill-watcher pausing, and tool/hook re-registration can't
+    // drift from the install path (CODE_AUDITOR Rule 8). The previous inline copy
+    // skipped plugin_store.remove(), the loader cycle, tool/hook re-register, and
+    // wrote empty binary_path/hash into the registry.
+    let name = state
         .store
-        .upsert_installed_plugin(
-            slug,
-            &manifest.name,
-            &manifest.version,
-            &manifest.author,
-            "",  // binary_path updated by install_from_napp
-            "",  // manifest_hash
-            "verified",
-        )
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+        .list_installed_plugins()
+        .ok()
+        .and_then(|ps| ps.into_iter().find(|p| p.slug == slug).map(|p| p.name))
+        .unwrap_or_else(|| slug.to_string());
+    crate::codes::fetch_and_install_plugin(state, api, slug, &name)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn current_platform() -> String {
