@@ -157,8 +157,12 @@ fn resolve_cascade_inner<'a>(
                 continue;
             }
 
-            // Simple names (no @ prefix, no install code) are built-in — mark unresolvable
-            if !is_marketplace_ref(&dep.reference) {
+            // Bare names (no @ prefix, no install code) are built-in tool bindings —
+            // mark unresolvable. EXCEPT plugins: manifests reference plugins by bare
+            // slug (e.g. `gws`, `google-analytics`), which install_plugin resolves to
+            // an install code via the marketplace. Skipping those left every declared
+            // plugin uninstalled (the "0/N, nothing installs" bug).
+            if !is_marketplace_ref(&dep.reference) && !matches!(dep.dep_type, DepType::Plugin) {
                 let reason = format!(
                     "'{}' is a built-in or simple name, not a marketplace ref",
                     dep.reference
@@ -463,20 +467,29 @@ async fn resolve_marketplace_code(
         return Ok(reference.to_string()); // already an install code
     }
     let slug = extract_simple_name(reference);
-    // Fetch the type's products and match by slug locally. We must NOT pass `slug`
-    // as the query: the marketplace `q` param is a fuzzy NAME search, so a hyphenated
-    // multi-word slug (e.g. "google-search-console") matches nothing, while single-word
-    // slugs ("wordpress") happen to work — an inconsistency that left multi-word deps
-    // stuck. No query also returns `qualifiedName`, which the query path omits.
-    let products = api
-        .list_products(Some(artifact_type), None, None, None, None)
-        .await
-        .map_err(|e| format!("resolve code for '{reference}': {e}"))?;
-    let arr = products
-        .get("products")
-        .or_else(|| products.get("skills"))
-        .and_then(|v| v.as_array());
-    if let Some(arr) = arr {
+    // Page through the type's products and match by slug (then qualifiedName) locally.
+    // Two traps avoided:
+    //  - Don't pass `slug` as the query `q`: it's a fuzzy NAME search, so a hyphenated
+    //    multi-word slug ("google-search-console") matches nothing.
+    //  - Don't fetch one default page: the marketplace caps pageSize at 20, so deps
+    //    beyond the first 20 (sentry, google-analytics) were never found. Paginate by
+    //    `page` (which the backend honors only alongside pageSize) until matched/empty.
+    const PAGE_SIZE: i64 = 20;
+    const MAX_PAGES: i64 = 100; // safety bound (2000 items) against a non-paging backend
+    let mut page = 1;
+    while page <= MAX_PAGES {
+        let products = api
+            .list_products(Some(artifact_type), None, None, Some(page), Some(PAGE_SIZE))
+            .await
+            .map_err(|e| format!("resolve code for '{reference}': {e}"))?;
+        let arr = match products
+            .get("products")
+            .or_else(|| products.get("skills"))
+            .and_then(|v| v.as_array())
+        {
+            Some(a) if !a.is_empty() => a.clone(),
+            _ => break, // no more results
+        };
         let matched = arr
             .iter()
             .find(|i| i.get("slug").and_then(|s| s.as_str()) == Some(slug))
@@ -491,6 +504,10 @@ async fn resolve_marketplace_code(
         {
             return Ok(code.to_string());
         }
+        if (arr.len() as i64) < PAGE_SIZE {
+            break; // last (partial) page
+        }
+        page += 1;
     }
     Err(format!(
         "no marketplace install code found for '{reference}' (type {artifact_type})"
