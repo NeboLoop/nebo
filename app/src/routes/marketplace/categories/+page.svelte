@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { t } from 'svelte-i18n';
 	import { Grid3x3 } from 'lucide-svelte';
-	import webapi from '$lib/api/gocliRequest';
+	import { listStoreCategories } from '$lib/api/nebo';
 	interface CategoryItem {
 		name: string;
 		slug: string;
@@ -19,7 +19,7 @@
 
 	onMount(async () => {
 		try {
-			const res = await webapi.get<any>('/api/v1/store/categories');
+			const res = (await listStoreCategories()) as { categories?: CategoryItem[] };
 			categories = res.categories || [];
 		} catch { /* ignore */ }
 		loading = false;

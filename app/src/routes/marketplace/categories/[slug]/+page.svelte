@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 	import { t } from 'svelte-i18n';
 	import { ChevronLeft, Check, Sparkles } from 'lucide-svelte';
-	import webapi from '$lib/api/gocliRequest';
+	import { listStoreCategories, listStoreProducts } from '$lib/api/nebo';
 	import { type AppItem, toAppItem, itemHref } from '$lib/types/marketplace';
 	import { slugify } from '$lib/data/categories';
 
@@ -19,7 +19,7 @@
 	onMount(async () => {
 		// Fetch category metadata from API
 		try {
-			const res = await webapi.get<any>('/api/v1/store/categories');
+			const res = (await listStoreCategories()) as { categories?: any[] };
 			const apiCats: any[] = res.categories || [];
 			const match = apiCats.find((c: any) => c.slug === slug || slugify(c.name) === slug);
 			if (match) {
@@ -37,7 +37,9 @@
 		}
 
 		try {
-			const productsRes = await webapi.get<any>('/api/v1/store/products', { category: catMeta.name, pageSize: 100 }).catch(() => ({ products: [] }));
+			const productsRes = (await listStoreProducts(undefined, catMeta.name, undefined, 100).catch(
+				() => ({ products: [] })
+			)) as { products?: any[] };
 
 			const rawProducts = productsRes.products || [];
 

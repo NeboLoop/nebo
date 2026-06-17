@@ -11,6 +11,8 @@
 	// output cache. Callers provide `slug`, `setup`, and a callback for
 	// when the user completes the credentials save.
 
+	import { pluginSetupRun } from '$lib/api/nebo';
+
 	interface SetupField {
 		key: string;
 		label: string;
@@ -125,19 +127,15 @@
 		runningGenerate = true;
 		generateError = null;
 		try {
-			const res = await fetch(`/api/v1/plugins/${slug}/setup`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ stepIndex, values })
-			});
-			const data = await res.json();
-			if (!res.ok || data.ok === false) {
+			const data = await pluginSetupRun(slug, { stepIndex, values });
+			if (data.ok === false) {
+				const d = data as { error?: string; stderr?: string };
 				generateError =
-					data.error || data.stderr || `Failed (HTTP ${res.status}). Check that the plugin is installed.`;
+					d.error || d.stderr || 'Setup step failed. Check that the plugin is installed.';
 				return;
 			}
-			generatedOutputs[stepIndex] = data.output ?? '';
-			generatedFormats[stepIndex] = data.outputFormat ?? currentStep.outputFormat ?? 'text';
+			generatedOutputs[stepIndex] = (data.output as string) ?? '';
+			generatedFormats[stepIndex] = (data.outputFormat as string) ?? currentStep.outputFormat ?? 'text';
 		} catch (err) {
 			generateError = (err as Error).message || 'Request failed.';
 		} finally {

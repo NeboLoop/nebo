@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
-  import webapi from '$lib/api/gocliRequest';
+  import { listStoreProducts, listStoreCategories } from '$lib/api/nebo';
   import { installItem } from '$lib/stores/marketplace.js';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { dispatchInstallStart } from '$lib/marketplace/installCodes';
@@ -28,7 +28,9 @@
   onMount(async () => {
     // Categories for the sidebar — fetched directly with their server-side counts.
     try {
-      const catRes = await webapi.get<any>('/api/v1/store/categories').catch(() => ({ categories: [] }));
+      const catRes = (await listStoreCategories().catch(() => ({ categories: [] }))) as {
+        categories?: Record<string, unknown>[];
+      };
       const cats = (catRes.categories || []) as Record<string, unknown>[];
       if (cats.length) {
         categories = cats.map((c) => ({
@@ -68,11 +70,10 @@
       return;
     }
     searchLoading = true;
-    webapi
-      .get<any>('/api/v1/store/products', { q, pageSize: 8 })
-      .then((res: any) => {
+    listStoreProducts(q, undefined, undefined, 8)
+      .then((res) => {
         if (debouncedQuery.trim() !== q) return;
-        searchResults = ((res?.products as Record<string, unknown>[]) || []).map((a) => {
+        searchResults = (((res as { products?: Record<string, unknown>[] })?.products as Record<string, unknown>[]) || []).map((a) => {
           const tp = String(a.type || a.category || 'skill');
           const typeMap: Record<string, string> = { agent: 'agents', skill: 'skills', plugin: 'plugins', connector: 'connectors', app: 'apps', collection: 'collections' };
           return {

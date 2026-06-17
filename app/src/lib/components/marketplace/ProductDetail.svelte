@@ -13,8 +13,17 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { marked } from 'marked';
-	import webapi from '$lib/api/gocliRequest';
-	import { installStoreProduct, uninstallStoreProduct } from '$lib/api/nebo';
+	import {
+		installStoreProduct,
+		uninstallStoreProduct,
+		getStoreProduct,
+		getStoreProductReviews,
+		getStoreProductMedia,
+		getStoreProductFeedback,
+		getStoreProductSimilar,
+		submitStoreProductReview,
+		applyUpdate,
+	} from '$lib/api/nebo';
 	import { type AppItem, toAppItem, itemHref, gradients } from '$lib/types/marketplace';
 	import MediaGallery from '$lib/components/marketplace/MediaGallery.svelte';
 	import SimilarGrid from '$lib/components/marketplace/SimilarGrid.svelte';
@@ -142,23 +151,22 @@
 	onMount(async () => {
 		try {
 			const [skillRes, reviewsRes, mediaRes, feedbackRes] = await Promise.all([
-				webapi.get<any>(`/api/v1/store/products/${itemId}`),
-				webapi.get<any>(`/api/v1/store/products/${itemId}/reviews`).catch(() => ({ reviews: [] })),
-				webapi.get<any>(`/api/v1/store/products/${itemId}/media`).catch(() => ({ media: [] })),
-				webapi.get<any>(`/api/v1/store/products/${itemId}/feedback`).catch(() => ({ feedback: [] }))
+				getStoreProduct(itemId),
+				getStoreProductReviews(itemId).catch(() => ({ reviews: [] })),
+				getStoreProductMedia(itemId).catch(() => ({ media: [] })),
+				getStoreProductFeedback(itemId).catch(() => ({ feedback: [] }))
 			]);
-			skill = skillRes?.id ? skillRes : null;
-			reviews = reviewsRes.reviews ?? [];
-			screenshots = mediaRes.media ?? [];
-			feedbackItems = feedbackRes.feedback ?? [];
+			skill = (skillRes as { id?: string })?.id ? skillRes : null;
+			reviews = (reviewsRes as { reviews?: any[] }).reviews ?? [];
+			screenshots = (mediaRes as { media?: any[] }).media ?? [];
+			feedbackItems = (feedbackRes as { feedback?: any[] }).feedback ?? [];
 		} catch {
 			skill = null;
 		}
 		loading = false;
-		webapi
-			.get<any>(`/api/v1/store/products/${itemId}/similar`)
-			.then((res: any) => {
-				similarItems = (res.products || []).map((a: any, i: number) => toAppItem(a, i));
+		getStoreProductSimilar(itemId)
+			.then((res) => {
+				similarItems = (((res as { products?: any[] }).products) || []).map((a: any, i: number) => toAppItem(a, i));
 			})
 			.catch(() => {});
 	});
@@ -214,9 +222,9 @@
 	async function updateProduct() {
 		updating = true;
 		try {
-			await webapi.post(`/api/v1/artifacts/${itemId}/apply-update`, {});
-			const skillRes = await webapi.get<any>(`/api/v1/store/products/${itemId}`);
-			skill = skillRes?.id ? skillRes : skill;
+			await applyUpdate(itemId, {});
+			const skillRes = await getStoreProduct(itemId);
+			skill = (skillRes as { id?: string })?.id ? skillRes : skill;
 		} catch { /* ignore */ }
 		updating = false;
 	}
@@ -224,11 +232,11 @@
 	async function submitReview() {
 		submittingReview = true;
 		try {
-			await webapi.post(`/api/v1/store/products/${itemId}/reviews`, { rating: reviewRating, body: reviewText });
+			await submitStoreProductReview(itemId, { rating: reviewRating, body: reviewText });
 			showReview = false;
 			reviewText = '';
-			const res = await webapi.get<any>(`/api/v1/store/products/${itemId}/reviews`);
-			reviews = res.reviews ?? [];
+			const res = await getStoreProductReviews(itemId);
+			reviews = (res as { reviews?: any[] }).reviews ?? [];
 		} catch { /* ignore */ }
 		submittingReview = false;
 	}

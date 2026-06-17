@@ -8,7 +8,7 @@
 	import SectionListGrid from '$lib/components/marketplace/sections/SectionListGrid.svelte';
 	import MarketplaceGrid from '$lib/components/MarketplaceGrid.svelte';
 	import ListCard from '$lib/components/marketplace/ListCard.svelte';
-	import webapi from '$lib/api/gocliRequest';
+	import { listStoreProducts, listStoreFeatured, listStoreCategories } from '$lib/api/nebo';
 	import { type AppItem, toAppItem } from '$lib/types/marketplace';
 	import { slugify, categoryMeta } from '$lib/data/categories';
 
@@ -38,15 +38,13 @@
 		const PAGES = 6;
 		const results = await Promise.all(
 			Array.from({ length: PAGES }, (_, i) =>
-				webapi
-					.get<any>('/api/v1/store/products', { page: i + 1, pageSize: 100 })
-					.catch(() => ({ products: [] }))
+				listStoreProducts(undefined, undefined, i + 1, 100).catch(() => ({ products: [] }))
 			)
 		);
 		const seen = new Set<string>();
 		const out: AppItem[] = [];
 		for (const res of results) {
-			for (const r of (res?.products as any[]) || []) {
+			for (const r of ((res as { products?: any[] })?.products as any[]) || []) {
 				const id = String(r?.id ?? '');
 				if (!id || seen.has(id)) continue;
 				seen.add(id);
@@ -60,12 +58,12 @@
 		try {
 			const [products, featuredRes, catsRes] = await Promise.all([
 				fetchAllProducts(),
-				webapi.get<any>('/api/v1/store/featured', {}).catch(() => ({ products: [] })),
-				webapi.get<any>('/api/v1/store/categories', {}).catch(() => ({ categories: [] }))
+				listStoreFeatured().catch(() => ({ products: [] })),
+				listStoreCategories().catch(() => ({ categories: [] }))
 			]);
 			items = products;
-			featured = ((featuredRes?.products as any[]) || []).map((r, i) => toAppItem(r, i));
-			const cats = (catsRes?.categories as any[]) || [];
+			featured = (((featuredRes as { products?: any[] })?.products as any[]) || []).map((r, i) => toAppItem(r, i));
+			const cats = ((catsRes as { categories?: any[] })?.categories as any[]) || [];
 			categoryOrder = cats.map((c) => String(c.name || ''));
 		} catch { /* ignore */ }
 		loading = false;

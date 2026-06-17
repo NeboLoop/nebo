@@ -124,19 +124,6 @@ export function togglePlugin(id: string, req: TogglePluginRequest): Promise<GetP
 	return webapi.put<GetPluginResponse>(`/api/v1/plugins/${id}/toggle`, req);
 }
 
-// NeboAI Marketplace — query-param variants (generated API lacks param support)
-
-export function listStoreProducts(params?: Record<string, string | number>): Promise<unknown> {
-	return webapi.get<unknown>('/api/v1/store/products', params);
-}
-
-export function getStoreProduct(id: string): Promise<unknown> {
-	return webapi.get<unknown>(`/api/v1/store/products/${id}`);
-}
-
-export function getStoreProductReviews(id: string): Promise<unknown> {
-	return webapi.get<unknown>(`/api/v1/store/products/${id}/reviews`);
-}
 
 // NeboAI OAuth with Janus opt-in
 export function neboAIOAuthStartWithJanus(janus: boolean) {

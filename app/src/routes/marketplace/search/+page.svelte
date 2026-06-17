@@ -3,7 +3,7 @@
 	import Search from 'lucide-svelte/icons/search';
 	import MarketplaceGrid from '$lib/components/MarketplaceGrid.svelte';
 	import ListCard from '$lib/components/marketplace/ListCard.svelte';
-	import webapi from '$lib/api/gocliRequest';
+	import { listStoreProducts } from '$lib/api/nebo';
 	import { type AppItem, toAppItem } from '$lib/types/marketplace';
 
 	const query = $derived(($page.url.searchParams.get('q') ?? '').trim());
@@ -23,11 +23,10 @@
 		}
 		loading = true;
 		lastQuery = q;
-		webapi
-			.get<any>('/api/v1/store/products', { q, pageSize: 60 })
-			.then((res: any) => {
+		listStoreProducts(q, undefined, undefined, 60)
+			.then((res) => {
 				if (lastQuery !== q) return; // a newer query superseded this one
-				results = ((res?.products as any[]) || []).map((r, i) => toAppItem(r, i));
+				results = (((res as { products?: any[] })?.products as any[]) || []).map((r, i) => toAppItem(r, i));
 			})
 			.catch(() => {
 				if (lastQuery === q) results = [];
