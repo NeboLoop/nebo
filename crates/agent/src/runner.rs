@@ -179,11 +179,6 @@ pub struct RunRequest {
     pub model_override: String,
     pub user_id: String,
     pub skip_memory_extract: bool,
-    /// Skip the runner-side background title generator. Set by callers that
-    /// generate the chat title themselves (run_chat broadcasts + pushes the
-    /// title to the loop), so the two don't race. Other run paths (scheduler,
-    /// voice, mcp_server, orchestrator) leave it false and the runner titles.
-    pub skip_title_gen: bool,
     pub origin: Origin,
     pub channel: String,
     pub force_skill: String,
@@ -299,6 +294,16 @@ impl RunState {
 ///
 /// Providers are wrapped in `Arc` so they can be shared across concurrent runs
 /// spawned via `tokio::spawn`.
+/// Sink for a freshly auto-generated chat title. The runner writes the title to
+/// the store itself; the server installs a sink (`set_title_sink`) that
+/// broadcasts the change to connected clients and propagates it to the loop —
+/// concerns the agent crate can't reach. ONE sink, set once at startup, used by
+/// every run path (replaces the per-path title generators + the skip_title_gen
+/// flag). Implementations must not block (spawn for async work).
+pub trait ChatTitleSink: Send + Sync {
+    fn on_title(&self, session_key: String, chat_id: String, title: String);
+}
+
 pub struct Runner {
     sessions: SessionManager,
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
@@ -312,6 +317,8 @@ pub struct Runner {
     skill_loader: Option<Arc<tools::skills::Loader>>,
     ask_channels: Option<tools::AskChannels>,
     embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    /// Optional broadcast/loop-push sink for auto-generated chat titles.
+    title_sink: std::sync::OnceLock<Arc<dyn ChatTitleSink>>,
 }
 
 impl Runner {
@@ -339,7 +346,14 @@ impl Runner {
             agent_registry,
             skill_loader,
             embedding_provider: None,
+            title_sink: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Install the chat-title sink (broadcast + loop propagation). Set once at
+    /// startup after AppState exists; no-op if already set.
+    pub fn set_title_sink(&self, sink: Arc<dyn ChatTitleSink>) {
+        let _ = self.title_sink.set(sink);
     }
 
     /// Get the shared providers Arc (for workflow execution).
@@ -637,7 +651,7 @@ impl Runner {
         let user_id = req.user_id.clone();
         let origin = req.origin;
         let skip_memory = req.skip_memory_extract;
-        let skip_title_gen = req.skip_title_gen;
+        let title_sink = self.title_sink.get().cloned();
         let user_prompt = req.prompt.clone();
         let force_skill = req.force_skill.clone();
         let skill_loader = self.skill_loader.clone();
@@ -882,44 +896,64 @@ impl Runner {
             }
             let _ = tx.send(StreamEvent::done()).await;
 
-            if !skip_memory && !skip_title_gen {
-                // Auto-generate session title after first exchange.
-                // Only runs when the chat title is still a default placeholder.
-                // Skipped when the caller titles the chat itself (run_chat) so
-                // the two generators don't race — see RunRequest.skip_title_gen.
+            if !skip_memory {
+                // The ONE chat-title generator for every run path (CODE_AUDITOR Rule 8;
+                // replaces the old dispatch-side copy + the RunRequest.skip_title_gen
+                // flag that coordinated the two). Name on the first user turn, refine
+                // once at the third — language-independent (by message count, not a
+                // default-title string). The store write happens here; the optional
+                // title_sink (set by the server) broadcasts the change + propagates it
+                // to the loop. Background paths (scheduler/voice/mcp) simply have no
+                // sink, so they title without broadcasting — same as before.
                 let providers_title = providers.clone();
                 let store_title = store.clone();
                 let session_mgr_title = session_mgr.clone();
                 let session_id_title = session_id.clone();
-                let user_prompt_title = user_prompt.clone();
                 let cheap_model_title = selector.get_cheapest_model();
+                let title_sink = title_sink.clone();
                 tokio::spawn(async move {
                     let chat_id = session_mgr_title.active_chat_id(&session_id_title);
-                    let needs_title = match store_title.get_chat(&chat_id) {
-                        // Never overwrite a title the user explicitly set. Otherwise
-                        // case-insensitive default match (loop chats use "New chat"
-                        // lowercase, desktop "New Chat"). This is the non-dispatch run
-                        // path (scheduler/voice/mcp); run_chat titles via chat_dispatch.
-                        Ok(Some(chat)) if !chat.title_custom => {
-                            let t = chat.title.to_lowercase();
-                            t.is_empty()
-                                || t == "new chat"
-                                || t == "untitled"
-                                || t == chat_id.to_lowercase()
-                                || t.starts_with("chat ")
-                        }
-                        _ => false,
+                    let chat = match store_title.get_chat(&chat_id) {
+                        Ok(Some(c)) => c,
+                        _ => return,
                     };
-                    if needs_title {
-                        if let Some(title) = crate::summarizer::generate_session_title(
-                            &providers_title,
-                            &user_prompt_title,
-                            &cheap_model_title,
-                        )
-                        .await
-                        {
-                            let _ = store_title.update_chat_title(&chat_id, &title, false);
-                            info!(chat_id = %chat_id, title = %title, "auto-generated session title");
+                    // Never clobber a title the user explicitly set.
+                    if chat.title_custom {
+                        return;
+                    }
+                    let messages = match store_title.get_recent_chat_messages(&chat_id, 8) {
+                        Ok(m) => m,
+                        _ => return,
+                    };
+                    if messages.len() < 2 {
+                        return; // need a user+assistant exchange to name from
+                    }
+                    let user_turns = messages.iter().filter(|m| m.role == "user").count();
+                    if user_turns != 1 && user_turns != 3 {
+                        return; // name once, refine once — at most twice
+                    }
+                    // Use more of the conversation on the count-3 refinement.
+                    let take_n = if user_turns >= 3 { 8 } else { 4 };
+                    let transcript: String = messages
+                        .iter()
+                        .take(take_n)
+                        .map(|m| {
+                            let snippet: String = m.content.chars().take(200).collect();
+                            format!("{}: {}", m.role, snippet)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if let Some(title) = crate::summarizer::generate_session_title(
+                        &providers_title,
+                        &transcript,
+                        &cheap_model_title,
+                    )
+                    .await
+                    {
+                        let _ = store_title.update_chat_title(&chat_id, &title, false);
+                        info!(chat_id = %chat_id, title = %title, "auto-generated chat title");
+                        if let Some(sink) = title_sink {
+                            sink.on_title(session_id_title.clone(), chat_id.clone(), title);
                         }
                     }
                 });
