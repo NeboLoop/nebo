@@ -70,29 +70,42 @@ Cargo.toml [workspace.package]
 
 **Trigger:** Push a `v*` tag → `.github/workflows/release.yml`
 
-### 10 Jobs (in dependency order)
+### 9 jobs (in dependency order)
 
 ```
-frontend ─────────┬─→ build-macos (arm64 + amd64)  ─┐
-                   ├─→ build-linux (arm64 + amd64)   ├─→ release ──→ update-homebrew
-                   └─→ build-windows ─→ sign-windows ┘       │
-                                                              └──→ update-apt (from build-linux)
+frontend ─┬─→ build-macos (arm64,amd64) ─→ notarize-macos (arm64 only) ─┐
+          ├─→ build-linux (amd64,arm64) ──────────────────────┬─────────┼─→ release ─→ update-homebrew
+          └─→ build-windows ─→ sign-windows ···(cache, best-effort)·····┘    │
+                                          update-apt ←── build-linux ────────┘
 ```
 
-| Job | Runner | Duration | Output |
-|-----|--------|----------|--------|
-| frontend | ubuntu-latest | ~1m | SvelteKit build artifact |
-| build-macos (arm64) | macos-latest | ~22m | `nebo-darwin-arm64` + `Nebo-X.Y.Z-arm64.dmg` |
-| build-macos (amd64) | macos-latest | ~20m | `nebo-darwin-amd64` + `Nebo-X.Y.Z-amd64.dmg` |
-| build-linux (amd64) | ubuntu-latest | ~23m | `nebo-linux-amd64` + headless + `.deb` |
-| build-linux (arm64) | ubuntu-24.04-arm | ~23m | `nebo-linux-arm64` + headless + `.deb` |
-| build-windows | windows-latest | ~27m | `Nebo-X.Y.Z-setup.exe` + `.msi` |
-| sign-windows | windows-latest | ~6m | Signed `.exe` + `.msi` |
-| release | ubuntu-latest | ~1m | GitHub Release + CDN upload |
-| update-homebrew | ubuntu-latest | ~30s | `neboloop/homebrew-tap` push |
-| update-apt | ubuntu-latest | ~40s | `neboloop/apt` push |
+`release` has `needs: [notarize-macos, build-linux]`. It does NOT `need` `sign-windows`:
+it restores the signed Windows artifacts from cache with `fail-on-cache-miss: false`
+(best-effort), so a slow `sign-windows` can't block the release but a Windows asset could
+be missing if signing lags. `update-apt` keys off `build-linux`, not `release`.
 
-**Total pipeline time: ~37 minutes**
+| Job | Runner | Matrix | Output |
+|-----|--------|--------|--------|
+| frontend | ubuntu-latest | — | SvelteKit build artifact |
+| build-macos | macos-latest | arm64, amd64 | `nebo-darwin-{arch}` + signed `Nebo-X.Y.Z-{arch}.dmg` |
+| notarize-macos | macos-latest | **arm64 only** | notarized + stapled `Nebo-X.Y.Z-arm64.dmg` |
+| build-linux | ubuntu-latest / ubuntu-24.04-arm | amd64, arm64 | `nebo-linux-{arch}` + headless + `.deb` |
+| build-windows | windows-latest | — | `Nebo-X.Y.Z-setup.exe` + `.msi` |
+| sign-windows | windows-latest | — | signed `.exe` + `.msi` |
+| release | ubuntu-latest | — | GitHub Release + CDN upload |
+| update-homebrew | ubuntu-latest | — | `neboloop/homebrew-tap` push |
+| update-apt | ubuntu-latest | — | `neboloop/apt` push |
+
+9 distinct jobs; `build-macos` and `build-linux` each fan out to 2 arches → 11 job runs.
+macOS critical path is `build-macos → notarize-macos → release`.
+
+> **⚠️ amd64 DMG is NOT notarized.** `notarize-macos` only includes `arch: arm64`, so the
+> Intel (`Nebo-X.Y.Z-amd64.dmg`) installer is signed but unnotarized — Intel-Mac users get
+> a Gatekeeper warning. Add `- arch: amd64` to the `notarize-macos` matrix if Intel Macs are
+> still supported.
+
+**Total pipeline time: ~37 minutes** (macOS path ≈ build-macos ~22m + notarize ~8m; Windows
+path ≈ build ~27m + sign ~6m — both gate `release`).
 
 ### Release Assets (13 files)
 
