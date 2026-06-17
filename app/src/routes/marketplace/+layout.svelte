@@ -3,7 +3,6 @@
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
   import webapi from '$lib/api/gocliRequest';
-  import { collections } from '$lib/stores/collections.js';
   import { installItem } from '$lib/stores/marketplace.js';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { dispatchInstallStart } from '$lib/marketplace/installCodes';
