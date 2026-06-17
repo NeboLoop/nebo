@@ -16,9 +16,12 @@
 - [ ] **Push commits** to `main`: `git push origin main`
 - [ ] **Tag** the release: `git tag vX.Y.Z`
 - [ ] **Push tag** to trigger pipeline: `git push origin vX.Y.Z`
-- [ ] **Monitor pipeline** — `gh run list --limit 1` should show the release run
+- [ ] **Monitor pipeline** — `gh run list --limit 1` should show the release run (Linux + Windows only)
+- [ ] **Build + publish macOS locally** (CI skips mac — runners cost ~10x; see "Local macOS Build"):
+  - `make release-macos` — builds the signed + notarized arm64 binary + DMG
+  - `make publish-macos TAG=vX.Y.Z` — attaches them to the release + CDN, merges checksums
 - [ ] **Verify CDN** after pipeline completes: `curl -s https://cdn.neboai.com/releases/version.json`
-- [ ] **Verify GitHub Release** — `gh release view vX.Y.Z` should list all 13 assets
+- [ ] **Verify GitHub Release** — `gh release view vX.Y.Z` should list all assets (incl. the mac pair)
 - [ ] **Smoke test** — install on at least one platform and confirm:
   - About page shows correct version
   - Marketplace loads
@@ -70,54 +73,54 @@ Cargo.toml [workspace.package]
 
 **Trigger:** Push a `v*` tag → `.github/workflows/release.yml`
 
-### 9 jobs (in dependency order)
+### Jobs (in dependency order)
+
+**macOS is built LOCALLY, not in CI** — `macos-latest` runners bill at ~10x Linux. The
+`build-macos` + `notarize-macos` jobs are gated `if: ${{ vars.BUILD_MACOS_IN_CI == 'true' }}`
+and skipped by default; set that repo variable to `true` to build mac in CI again. By default
+CI runs the Linux + Windows legs and the mac arm64 assets are produced on a dev Mac
+(see "Local macOS Build") and attached to the release + CDN afterward.
 
 ```
-frontend ─┬─→ build-macos (arm64,amd64) ─→ notarize-macos (arm64 only) ─┐
-          ├─→ build-linux (amd64,arm64) ──────────────────────┬─────────┼─→ release ─→ update-homebrew
-          └─→ build-windows ─→ sign-windows ···(cache, best-effort)·····┘    │
-                                          update-apt ←── build-linux ────────┘
+CI (Linux + Windows):
+frontend ─┬─→ build-linux (amd64,arm64) ─────────────┬─→ release ─→ update-homebrew
+          └─→ build-windows ─→ sign-windows ··(cache)·┘     │
+                              update-apt ←── build-linux ────┘
+
+Local (dev Mac, arm64): make release-macos → make publish-macos TAG=vX.Y.Z
 ```
 
-`release` has `needs: [notarize-macos, build-linux]`. It does NOT `need` `sign-windows`:
-it restores the signed Windows artifacts from cache with `fail-on-cache-miss: false`
-(best-effort), so a slow `sign-windows` can't block the release but a Windows asset could
-be missing if signing lags. `update-apt` keys off `build-linux`, not `release`.
+`release` has `needs: [build-linux]` (Linux is the gate). It does NOT `need` `sign-windows`
+or mac — it restores Windows from cache best-effort (`fail-on-cache-miss: false`), and the mac
+assets are uploaded locally. `update-apt` keys off `build-linux`, not `release`.
 
-| Job | Runner | Matrix | Output |
-|-----|--------|--------|--------|
-| frontend | ubuntu-latest | — | SvelteKit build artifact |
-| build-macos | macos-latest | arm64, amd64 | `nebo-darwin-{arch}` + signed `Nebo-X.Y.Z-{arch}.dmg` |
-| notarize-macos | macos-latest | **arm64 only** | notarized + stapled `Nebo-X.Y.Z-arm64.dmg` |
-| build-linux | ubuntu-latest / ubuntu-24.04-arm | amd64, arm64 | `nebo-linux-{arch}` + headless + `.deb` |
-| build-windows | windows-latest | — | `Nebo-X.Y.Z-setup.exe` + `.msi` |
-| sign-windows | windows-latest | — | signed `.exe` + `.msi` |
-| release | ubuntu-latest | — | GitHub Release + CDN upload |
-| update-homebrew | ubuntu-latest | — | `neboloop/homebrew-tap` push |
-| update-apt | ubuntu-latest | — | `neboloop/apt` push |
+| Job | Runner | Default | Output |
+|-----|--------|---------|--------|
+| frontend | ubuntu-latest | runs | SvelteKit build artifact |
+| build-linux | ubuntu-latest / ubuntu-24.04-arm | runs (amd64, arm64) | `nebo-linux-{arch}` + headless + `.deb` |
+| build-windows | windows-latest | runs | `Nebo-X.Y.Z-setup.exe` + `.msi` |
+| sign-windows | windows-latest | runs | signed `.exe` + `.msi` |
+| release | ubuntu-latest | runs | GitHub Release + CDN upload (Linux + Windows) |
+| update-homebrew | ubuntu-latest | runs | `neboloop/homebrew-tap` push |
+| update-apt | ubuntu-latest | runs | `neboloop/apt` push |
+| build-macos | macos-latest | **SKIPPED** (`BUILD_MACOS_IN_CI`) | arm64 binary + signed DMG |
+| notarize-macos | macos-latest | **SKIPPED** | notarized + stapled arm64 DMG |
 
-9 distinct jobs; `build-macos` and `build-linux` each fan out to 2 arches → 11 job runs.
-macOS critical path is `build-macos → notarize-macos → release`.
+> **macOS is arm64 (Apple Silicon) only.** There is no Intel/amd64 mac build — the
+> `build-macos` matrix and `make release-macos` produce arm64 exclusively.
 
-> **⚠️ amd64 DMG is NOT notarized.** `notarize-macos` only includes `arch: arm64`, so the
-> Intel (`Nebo-X.Y.Z-amd64.dmg`) installer is signed but unnotarized — Intel-Mac users get
-> a Gatekeeper warning. Add `- arch: amd64` to the `notarize-macos` matrix if Intel Macs are
-> still supported.
+**CI wall-clock (Linux + Windows): ~35–40 min** (Windows leg build ~27m + sign ~6m is the
+critical path). The local mac build runs in parallel (~15–20 min on a dev Mac), so total
+human wall-clock is roughly the CI time.
 
-**Total wall-clock: ~58 minutes** (observed: v0.11.0 and v0.11.1 each ran 58m38s end-to-end,
-including runner queue time). The critical path is the Windows leg (build ~27m + sign ~6m) and
-the macOS leg (build ~22m + notarize ~8m), both of which gate `release`.
-
-### Release Assets (13 files)
+### Release Assets
 
 ```
-checksums.txt
-Nebo-X.Y.Z-amd64.dmg          # macOS Intel installer
-Nebo-X.Y.Z-arm64.dmg          # macOS Apple Silicon installer
+checksums.txt                  # SHA256 of every asset (CI writes Linux+Windows; mac merged locally)
+Nebo-X.Y.Z-arm64.dmg          # macOS Apple Silicon installer (signed + notarized, built locally)
+nebo-darwin-arm64              # macOS Apple Silicon bare binary (built locally)
 Nebo-X.Y.Z-amd64.msi          # Windows MSI installer
 Nebo-X.Y.Z-setup.exe          # Windows EXE installer
-nebo-darwin-amd64              # macOS Intel bare binary
-nebo-darwin-arm64              # macOS Apple Silicon bare binary
 nebo-linux-amd64               # Linux x86_64 desktop (Tauri)
 nebo-linux-arm64               # Linux ARM64 desktop (Tauri)
 nebo-linux-amd64-headless      # Linux x86_64 CLI-only

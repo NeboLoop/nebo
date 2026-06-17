@@ -10,7 +10,7 @@ permissions:
 
 env:
   RUST_VERSION: "1.95"
-  NODE_VERSION: "20"
+  NODE_VERSION: "22"
   # Obscura tier-2 browser ships as a Tauri externalBin sidecar (NOT a marketplace
   # .napp). It is BUILT FROM OUR FORK in CI on each platform's runner (upstream lacks
   # the CDP fixes new_page needs), so no pre-published per-platform assets are required.
@@ -53,6 +53,10 @@ jobs:
   # migration, so we switched to cross-build.
   build-macos:
     needs: frontend
+    # macOS runners bill at ~10x Linux. By default the macOS assets are built
+    # LOCALLY (`make release-macos && make publish-macos TAG=vX.Y.Z`) and this
+    # job is skipped. Set repo variable BUILD_MACOS_IN_CI=true to build in CI.
+    if: ${{ vars.BUILD_MACOS_IN_CI == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -274,6 +278,7 @@ jobs:
   # release job (gated on success()) publishes nothing — un-notarized never ships.
   notarize-macos:
     needs: build-macos
+    if: ${{ vars.BUILD_MACOS_IN_CI == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -646,12 +651,12 @@ jobs:
   # `needs:` — they're gated by `WINDOWS_BUILD_ENABLED` and the release
   # step gracefully omits Windows assets when the cache restore misses.
   release:
-    needs: [notarize-macos, build-linux]
-    # MUST require both desktop builds to fully succeed. build-macos now hard-fails
-    # if notarization doesn't pass, so this gate is what stops a failed notarization
-    # from publishing a release (and the version.json bump) anyway. Windows is
-    # intentionally absent from `needs` and remains optional. `success()` runs only
-    # when every job in `needs` succeeded.
+    needs: [build-linux]
+    # Linux is the required gate. macOS assets are built and published LOCALLY
+    # (see `make release-macos` / `make publish-macos`) so they are intentionally
+    # not a dependency here; the macOS-restore steps below are best-effort and
+    # no-op when CI didn't build mac (BUILD_MACOS_IN_CI unset). Windows is
+    # optional too. `success()` runs only when every job in `needs` succeeded.
     if: ${{ success() }}
     runs-on: ubuntu-latest
     env:

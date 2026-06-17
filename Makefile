@@ -21,7 +21,7 @@ else
     ARCH = $(UNAME_M)
 endif
 
-.PHONY: help dev run build build-desktop test clean clean-cache seed-plugins stage-obscura bundle-napps plugin-status release release-darwin release-linux release-windows app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test clean clean-cache seed-plugins stage-obscura bundle-napps plugin-status release release-darwin release-linux release-windows release-macos publish-macos app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -303,16 +303,41 @@ release-windows: stage-obscura
 
 # Re-sign the Tauri-produced .app bundle with our Developer ID + entitlements
 app-bundle: build-desktop
-	@echo "Re-signing Nebo.app with Developer ID..."
+	@echo "Re-signing Nebo.app with Developer ID (inside-out)..."
 	@rm -rf dist/Nebo.app
 	@mkdir -p dist
 	@cp -R "$(TAURI_BUNDLE)/macos/Nebo.app" dist/Nebo.app
+	@# 1. Embedded frameworks/dylibs first (inside-out signing order).
+	@find "dist/Nebo.app/Contents/Frameworks" -type f \( -perm +111 -o -name '*.dylib' \) 2>/dev/null | while read -r f; do \
+		codesign --force --sign "$(SIGN_IDENTITY)" --timestamp --options runtime "$$f"; \
+	done
+	@# 2. Bundled Obscura sidecars BEFORE the main executable. Tauri leaves
+	@#    externalBin sidecars ad-hoc signed — that passes `codesign --verify` but
+	@#    is REJECTED by notarization (nested Mach-O execs must be Developer-ID
+	@#    signed). obscura.entitlements grants the V8 JIT entitlements they need.
+	@for sidecar in obscura obscura-worker; do \
+		p="dist/Nebo.app/Contents/MacOS/$$sidecar"; \
+		if [ -f "$$p" ]; then \
+			codesign --force --sign "$(SIGN_IDENTITY)" \
+				--entitlements assets/macos/obscura.entitlements \
+				--timestamp --options runtime "$$p" && echo "  signed sidecar: $$sidecar"; \
+		fi; \
+	done
+	@# 3. Main executable.
 	codesign --force --sign "$(SIGN_IDENTITY)" \
 		--identifier dev.neboai.nebo \
 		--entitlements assets/macos/nebo.entitlements \
-		--options runtime \
+		--timestamp --options runtime \
+		"dist/Nebo.app/Contents/MacOS/nebo"
+	@# 4. The .app bundle.
+	codesign --force --sign "$(SIGN_IDENTITY)" \
+		--identifier dev.neboai.nebo \
+		--entitlements assets/macos/nebo.entitlements \
+		--timestamp --options runtime \
 		dist/Nebo.app
-	@echo "Built: dist/Nebo.app (Developer ID signed)"
+	@# 5. Verify the full nested signature.
+	codesign --verify --deep --strict dist/Nebo.app
+	@echo "Built: dist/Nebo.app (Developer ID signed, inside-out incl. Obscura sidecars)"
 
 # Create .dmg from signed .app
 dmg: app-bundle
@@ -358,3 +383,29 @@ github-release:
 	@if [ -z "$(TAG)" ]; then echo "Usage: make github-release TAG=v0.1.0"; exit 1; fi
 	@echo "Creating GitHub release $(TAG)..."
 	gh release create $(TAG) dist/* --title "Nebo $(TAG)" --generate-notes --repo NeboLoop/nebo
+
+# ─── Local macOS Release ─────────────────────────────────────────────────────
+# macOS runners on GitHub Actions bill at ~10x Linux, so CI skips the mac jobs
+# (BUILD_MACOS_IN_CI unset) and we build the arm64 mac assets locally instead.
+# Produces, into dist/, names matching the CI/CDN convention:
+#   nebo-darwin-arm64                  (bare binary)
+#   Nebo-$(RELEASE_VERSION)-arm64.dmg  (Developer ID signed + notarized + stapled)
+#   checksums-macos.txt                (sha256 of the two assets, for the merge)
+RELEASE_VERSION := $(shell grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+
+release-macos:
+	@echo "Building macOS arm64 release assets locally (v$(RELEASE_VERSION))..."
+	@$(MAKE) notarize VERSION=$(RELEASE_VERSION)
+	@cp "$(TAURI_RELEASE)/nebo" dist/nebo-darwin-arm64
+	@chmod +x dist/nebo-darwin-arm64
+	@cd dist && shasum -a 256 nebo-darwin-arm64 "Nebo-$(RELEASE_VERSION)-arm64.dmg" > checksums-macos.txt
+	@echo "macOS assets ready in dist/:"
+	@ls -1 "dist/nebo-darwin-arm64" "dist/Nebo-$(RELEASE_VERSION)-arm64.dmg"
+
+# Attach locally-built mac assets to an existing GitHub release + CDN, merging
+# their checksums into the release's checksums.txt. Run after `make release-macos`
+# and after the CI release for TAG exists.
+#   make publish-macos TAG=v0.12.0
+publish-macos:
+	@if [ -z "$(TAG)" ]; then echo "Usage: make publish-macos TAG=v0.12.0"; exit 1; fi
+	@RELEASE_VERSION="$(RELEASE_VERSION)" TAG="$(TAG)" bash scripts/publish-macos.sh
