@@ -8,6 +8,8 @@
  * modal never opened.
  */
 
+import { installFlow } from '$lib/stores/installFlow';
+
 /** PREFIX-XXXX-XXXX (Crockford Base32). Covers every install-code family. */
 export const CODE_RE = /^(NEBO|SKIL|WORK|AGNT|LOOP|PLUG|APPS|COLL|CONN)-[0-9A-Z]{4}-[0-9A-Z]{4}$/i;
 
@@ -44,25 +46,20 @@ export function matchInstallCode(text: string): { code: string; codeType: string
 }
 
 /**
- * Open the install modal immediately by dispatching the same `code_processing`
- * event the backend will later emit — closing the gap between submit and the
- * WS round-trip. Returns true if `text` was an install code (modal opened).
+ * Open the install modal immediately via the installFlow store — closing the gap
+ * between submit and the backend's `code_processing` WS frame (which drives the
+ * rest of the flow once it arrives). Returns true if `text` was an install code
+ * (modal opened).
  */
 export function dispatchInstallStart(text: string): boolean {
   const match = matchInstallCode(text);
   if (!match) return false;
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(
-      new CustomEvent('nebo:code_processing', {
-        detail: {
-          code: match.code,
-          code_type: match.codeType,
-          status_message: STATUS_BY_TYPE[match.codeType] || 'Processing...',
-          // User-initiated from the desktop UI — the modal stays open until dismissed.
-          interactive: true,
-        },
-      }),
-    );
-  }
+  installFlow.openCode({
+    code: match.code,
+    codeType: match.codeType,
+    statusMessage: STATUS_BY_TYPE[match.codeType] || 'Processing...',
+    // User-initiated from the desktop UI — the modal stays open until dismissed.
+    interactive: true,
+  });
   return true;
 }

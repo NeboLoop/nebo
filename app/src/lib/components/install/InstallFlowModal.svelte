@@ -262,19 +262,26 @@
     if (!interactive) setTimeout(close, delay);
   }
 
-  function notifySidebarRefresh() {
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('nebo:agent_installed', { detail: {} }));
-    }
-  }
-
   // ── Launch ──────────────────────────────────────────────────────────────
-  // Product/configure opens arrive via the installFlow store: copy the payload
-  // in and launch once. (Code-paste installs arrive via window `nebo:code_*`
-  // events, handled separately and independent of the store.)
+  // Every open arrives via the installFlow store. Code-paste opens optimistically
+  // (mode 'code') and then the backend's code_*/dep_* WS events drive progress;
+  // product/configure copy the payload in and launch once. The roster updates
+  // itself off the backend's agent_installed/uninstalled WS broadcast — no local
+  // refresh dispatch needed (one pathway, CODE_AUDITOR Rule 8).
   $effect(() => {
     const f = $installFlow;
     if (!f.show || launched) return;
+    if (f.mode === 'code') {
+      launched = true;
+      mode = 'code';
+      openCodeFlow({
+        code: f.code,
+        code_type: f.codeType,
+        status_message: f.statusMessage,
+        interactive: f.interactive,
+      });
+      return;
+    }
     if (f.mode !== 'product' && f.mode !== 'configure') return;
     mode = f.mode;
     appId = f.appId ?? '';
@@ -308,7 +315,6 @@
         if (dependencies) seedDepRows(dependencies);
         const res = await installStoreProduct(appId);
         agentId = (res as any)?.agentId || appId;
-        notifySidebarRefresh();
       }
       await loadSetup(agentId);
     } catch (e: any) {
@@ -416,7 +422,6 @@
 
   async function finalize() {
     if (agentId) await activateAgent(agentId).catch(() => {});
-    notifySidebarRefresh();
     statusMessage = configuring ? 'Saved' : `${artifactName || typeLabel} installed`;
     phase = 'done';
     // Surface any plugins still needing auth on the review screen. (Also refreshed
@@ -432,7 +437,6 @@
   /** Skip the remaining setup: activate now with defaults; flag the rest for later. */
   async function skipSetup() {
     if (agentId) await activateAgent(agentId).catch(() => {});
-    notifySidebarRefresh();
     phase = 'done';
     void refreshAuthNeeded();
   }
@@ -503,14 +507,20 @@
     goto('/settings/plugins');
   }
 
-  // ── Code-mode WS handlers ───────────────────────────────────────────────────
-  function handleCodeProcessing(e: Event) {
+  // ── Code-mode flow ──────────────────────────────────────────────────────────
+  // Shared by the optimistic store open (installFlow.openCode) and the backend's
+  // `code_processing` WS frame — both converge here so there's one open path.
+  function openCodeFlow(data: {
+    code?: string;
+    code_type?: string;
+    status_message?: string;
+    interactive?: boolean;
+  }) {
     if (mode !== 'code') return;
-    const data = (e as CustomEvent).detail;
     reset();
-    code = (data?.code as string) || '';
-    codeType = (data?.code_type as string) || '';
-    statusMessage = (data?.status_message as string) || 'Processing…';
+    code = data?.code || '';
+    codeType = data?.code_type || '';
+    statusMessage = data?.status_message || 'Processing…';
     interactive = data?.interactive !== false;
     show = true;
 
@@ -519,10 +529,13 @@
       if (phase === 'installing') {
         statusMessage = `${typeLabel} installed — finalizing…`;
         phase = 'done';
-        notifySidebarRefresh();
         autoCloseIfRemote(2000);
       }
     }, 30_000);
+  }
+
+  function handleCodeProcessing(e: Event) {
+    openCodeFlow((e as CustomEvent).detail);
   }
 
   async function handleCodeResult(e: Event) {
@@ -554,8 +567,6 @@
       phase = 'error';
       return;
     }
-
-    notifySidebarRefresh();
 
     // Only agents/apps have a setup wizard. Everything else just finishes.
     if ((codeType === 'agent' || codeType === 'app') && id) {
