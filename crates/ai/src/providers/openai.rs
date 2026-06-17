@@ -772,6 +772,22 @@ impl Provider for OpenAIProvider {
                 headers.insert(reqwest::header::HeaderName::from_static("x-lane"), val);
             }
         }
+        // Workflow trace headers — let Janus attribute usage to the run/workflow/
+        // action/step that produced this request. Empty fields are skipped.
+        if let Some(ref trace) = req.trace {
+            for (name, val) in [
+                ("x-run-id", &trace.run_id),
+                ("x-workflow-id", &trace.workflow_id),
+                ("x-action-id", &trace.action_id),
+                ("x-step-id", &trace.step_id),
+            ] {
+                if !val.is_empty() {
+                    if let Ok(hv) = val.parse() {
+                        headers.insert(reqwest::header::HeaderName::from_static(name), hv);
+                    }
+                }
+            }
+        }
 
         let client = self
             .http_client

@@ -166,6 +166,7 @@ pub async fn summarize(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
+        trace: None,
     };
 
     let mut rx = provider

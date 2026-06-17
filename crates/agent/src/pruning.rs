@@ -904,6 +904,7 @@ Anything else essential for resuming this work that doesn't fit above.";
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
+        trace: None,
     };
 
     let mut rx = provider

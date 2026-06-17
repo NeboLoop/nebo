@@ -380,6 +380,18 @@ pub struct Message {
     pub images: Option<Vec<ImageContent>>,
 }
 
+/// Trace IDs linking an LLM request to the Nebo run that produced it. The Janus
+/// provider reads these and emits `X-Run-ID`/`X-Workflow-ID`/`X-Action-ID`/`X-Step-ID`
+/// headers so usage can be attributed per workflow/action/step. Chat runs set only
+/// `run_id`; the rest stay empty. Never serialized into the request body.
+#[derive(Debug, Clone, Default)]
+pub struct RequestTrace {
+    pub run_id: String,
+    pub workflow_id: String,
+    pub action_id: String,
+    pub step_id: String,
+}
+
 /// A request to an AI provider.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -414,6 +426,10 @@ pub struct ChatRequest {
     /// kill their child process when the user hits stop.
     #[serde(skip)]
     pub cancel_token: Option<CancellationToken>,
+    /// Trace linking this request to a Nebo run/workflow/action/step. Consumed by
+    /// the Janus provider to emit usage-attribution headers; never serialized.
+    #[serde(skip)]
+    pub trace: Option<RequestTrace>,
 }
 
 /// Sender half of a streaming event channel.

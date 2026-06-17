@@ -198,6 +198,7 @@ pub async fn execute_workflow(
             activity_emit,
             store,
             &run_id,
+            &def.id,
             progress_tx.as_ref(),
             &mut activity_spent,
         )
@@ -393,6 +394,7 @@ pub(crate) async fn execute_activity_with_retry(
     emit_source: Option<&str>,
     store: &Arc<Store>,
     run_id: &str,
+    workflow_id: &str,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     spent: &mut u32,
 ) -> Result<(String, u32), WorkflowError> {
@@ -409,6 +411,7 @@ pub(crate) async fn execute_activity_with_retry(
             emit_source,
             store,
             run_id,
+            workflow_id,
             progress_tx,
             spent,
         )
@@ -448,6 +451,7 @@ pub async fn execute_activity(
     emit_source: Option<&str>,
     store: &Arc<Store>,
     run_id: &str,
+    workflow_id: &str,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     spent: &mut u32,
 ) -> Result<(String, u32), WorkflowError> {
@@ -464,6 +468,16 @@ pub async fn execute_activity(
             input_schema: t.schema(),
         })
         .collect();
+
+    // Trace builder — links every LLM call to this run/workflow/action/step so
+    // Janus can attribute usage per workflow. step_id is the step index ("" when
+    // the activity has no steps).
+    let make_trace = |step_id: String| ai::RequestTrace {
+        run_id: run_id.to_string(),
+        workflow_id: workflow_id.to_string(),
+        action_id: activity.id.clone(),
+        step_id,
+    };
 
     // If activity has steps, execute per-step. Otherwise, single-turn legacy path.
     if activity.steps.is_empty() {
@@ -488,7 +502,7 @@ pub async fn execute_activity(
             },
             ..Default::default()
         }];
-        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent).await;
+        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent, make_trace(String::new())).await;
     }
 
     // --- Per-step execution ---
@@ -551,6 +565,7 @@ pub async fn execute_activity(
             &system,
             messages.clone(),
             spent,
+            make_trace(i.to_string()),
         )
         .await
         .map_err(|e| {
@@ -582,6 +597,7 @@ pub async fn execute_activity(
             &step_result,
             i,
             total_steps,
+            make_trace(i.to_string()),
         )
         .await?;
         *spent += eval_tokens;
@@ -678,6 +694,7 @@ async fn evaluate_step(
     step_output: &str,
     step_index: usize,
     total_steps: usize,
+    trace: ai::RequestTrace,
 ) -> Result<(EvalDecision, u32), WorkflowError> {
     let eval_system = format!(
         "{}\n\n## Step Evaluation Mode\n\
@@ -711,6 +728,7 @@ async fn evaluate_step(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
+        trace: Some(trace),
     };
 
     let mut rx = provider
@@ -755,6 +773,7 @@ async fn run_llm_loop(
     system: &str,
     mut messages: Vec<ai::Message>,
     spent: &mut u32,
+    trace: ai::RequestTrace,
 ) -> Result<(String, u32), WorkflowError> {
     let mut tokens_used: u32 = 0;
     let mut iterations: u32 = 0;
@@ -779,6 +798,7 @@ async fn run_llm_loop(
             metadata: None,
             cache_breakpoints: vec![],
             cancel_token: None,
+            trace: Some(trace.clone()),
         };
 
         let mut rx = provider

@@ -7,7 +7,7 @@ use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use ai::{ChatRequest, Message, Provider, ProviderError, StreamEvent, StreamEventType};
+use ai::{ChatRequest, Message, Provider, ProviderError, RequestTrace, StreamEvent, StreamEventType};
 use db::Store;
 use db::models::ChatMessage;
 use tools::{Origin, Registry, ToolContext, ToolResult};
@@ -955,6 +955,7 @@ impl Runner {
             metadata: None,
             cache_breakpoints: vec![],
             cancel_token: None,
+            trace: None,
         };
 
         let mut rx = prov_lock[0].stream(&req).await?;
@@ -2269,6 +2270,12 @@ async fn run_loop(
             metadata: sticky_metadata.clone(),
             cache_breakpoints,
             cancel_token: Some(cancel_token.clone()),
+            // Tag this chat run so Janus attributes its usage (no workflow_id —
+            // chat runs are excluded from per-workflow rollups by design).
+            trace: Some(RequestTrace {
+                run_id: progress.map(|p| p.run_id.clone()).unwrap_or_default(),
+                ..Default::default()
+            }),
         };
 
         let pre_llm_ms = t_iter_start.elapsed().as_millis() as u64;
@@ -3867,6 +3874,7 @@ async fn run_loop(
                     metadata: sticky_metadata.clone(),
                     cache_breakpoints: vec![],
                     cancel_token: Some(cancel_token.clone()),
+                    trace: None,
                 };
 
                 if let Ok(mut rx) = summary_provider.stream(&summary_req).await {
@@ -4470,6 +4478,7 @@ The "mode" field (required for "set" and "update") classifies HOW the agent shou
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
+        trace: None,
     };
 
     let stream_result = provider.stream(&req).await;
