@@ -601,6 +601,11 @@ pub async fn get_agent(
     // Only return what the frontend needs for display and configuration.
     let is_app = agent.is_app.unwrap_or(0) != 0;
 
+    // Surface saved inputs at top level too (consistent with list_agents), so the
+    // Configure form reads getAgent().inputValues directly instead of digging into
+    // the nested agent object.
+    let input_values_json = agent.input_values.clone();
+
     if is_app {
         Ok(Json(serde_json::json!({
             "agent": {
@@ -620,6 +625,7 @@ pub async fn get_agent(
             "displayName": display_name,
             "version": version,
             "inputFields": input_fields,
+            "inputValues": input_values_json,
             "pluginsNeedingAuth": plugins_needing_auth,
             "needsSetup": needs_setup,
         })))
@@ -629,6 +635,7 @@ pub async fn get_agent(
             "displayName": display_name,
             "version": version,
             "inputFields": input_fields,
+            "inputValues": input_values_json,
             "personaProperties": persona_properties,
             "persona": persona_body,
             "model": model,

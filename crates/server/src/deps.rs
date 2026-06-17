@@ -463,8 +463,13 @@ async fn resolve_marketplace_code(
         return Ok(reference.to_string()); // already an install code
     }
     let slug = extract_simple_name(reference);
+    // Fetch the type's products and match by slug locally. We must NOT pass `slug`
+    // as the query: the marketplace `q` param is a fuzzy NAME search, so a hyphenated
+    // multi-word slug (e.g. "google-search-console") matches nothing, while single-word
+    // slugs ("wordpress") happen to work — an inconsistency that left multi-word deps
+    // stuck. No query also returns `qualifiedName`, which the query path omits.
     let products = api
-        .list_products(Some(artifact_type), Some(slug), None, None, Some(50))
+        .list_products(Some(artifact_type), None, None, None, None)
         .await
         .map_err(|e| format!("resolve code for '{reference}': {e}"))?;
     let arr = products
