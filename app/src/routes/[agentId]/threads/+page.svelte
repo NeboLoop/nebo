@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { getContext, onMount, onDestroy } from 'svelte';
+  import { getContext, onMount } from 'svelte';
+  import { onWsEvent } from '$lib/websocket/subscribe';
   import { goto } from '$app/navigation';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext } from '$lib/types/agentPage';
@@ -25,7 +26,10 @@
   let allAgents = $state<{ id: string; name: string; role: string; initial: string; status: string; color: string }[]>([]);
   let quotaWarning = $state<string | undefined>(undefined);
 
-  let cleanupQuotaWarning: (() => void) | null = null;
+  // Quota warnings: idiomatic WS subscription, auto-cleaned up on destroy.
+  onWsEvent<{ text?: string }>('quota_warning', (d) => {
+    if (d?.text) quotaWarning = d.text;
+  });
 
   onMount(async () => {
     try {
@@ -42,17 +46,6 @@
         }));
       }
     } catch { /* keep empty */ }
-
-    function onQuotaWarning(e: Event) {
-      const data = (e as CustomEvent).detail;
-      if (data?.text) quotaWarning = data.text;
-    }
-    window.addEventListener('nebo:quota_warning', onQuotaWarning);
-    cleanupQuotaWarning = () => window.removeEventListener('nebo:quota_warning', onQuotaWarning);
-  });
-
-  onDestroy(() => {
-    cleanupQuotaWarning?.();
   });
 
   async function handleSend(text: string) {

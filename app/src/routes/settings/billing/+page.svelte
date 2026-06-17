@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { onWsEvent } from '$lib/websocket/subscribe';
   import { goto } from '$app/navigation';
   import CreditCard from 'lucide-svelte/icons/credit-card';
   import Receipt from 'lucide-svelte/icons/receipt';
@@ -59,14 +60,10 @@
       }
     })();
 
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.plan && status) {
-        status = { ...status, plan: detail.plan };
-      }
-    };
-    window.addEventListener('nebo:plan_changed', handler);
-    return () => window.removeEventListener('nebo:plan_changed', handler);
+  });
+
+  onWsEvent<{ plan?: string }>('plan_changed', (d) => {
+    if (d?.plan && status) status = { ...status, plan: d.plan };
   });
 
   const currentPlan = $derived((subscription?.plan || status?.plan || 'free').toLowerCase());

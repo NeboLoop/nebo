@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
+  import { onWsEvent } from '$lib/websocket/subscribe';
   import { AGENT_COLORS, AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { AGENTS } from '$lib/data.js';
   import { getScheduleAgents, runsPerWeek as storeRunsPerWeek, userScheduleItems } from '$lib/stores/schedule.js';
@@ -30,26 +31,16 @@
     }
   }
 
-  // Agent roster changes arrive over the WebSocket (install/uninstall/activate/deactivate)
-  // and are re-dispatched as window events by lib/websocket/listeners.ts. Refresh the roster
-  // live — event-driven, never poll.
-  const AGENT_EVENTS = [
-    'nebo:agent_installed',
-    'nebo:agent_uninstalled',
-    'nebo:agent_activated',
-    'nebo:agent_deactivated',
-  ];
-  function onAgentsChanged() {
-    loadAgents();
+  // Agent roster changes arrive over the WebSocket (install/uninstall/activate/
+  // deactivate). Refresh the roster live via one idiomatic WS subscription each
+  // (auto-cleaned up on destroy) — event-driven, never poll.
+  for (const e of ['agent_installed', 'agent_uninstalled', 'agent_activated', 'agent_deactivated']) {
+    onWsEvent(e, () => loadAgents());
   }
-  onDestroy(() => {
-    AGENT_EVENTS.forEach((e) => window.removeEventListener(e, onAgentsChanged));
-  });
 
   onMount(async () => {
     try {
       await loadAgents();
-      AGENT_EVENTS.forEach((e) => window.addEventListener(e, onAgentsChanged));
       const api = await import('$lib/api/nebo');
       const chatResp = await api.listChats().catch(() => null);
 

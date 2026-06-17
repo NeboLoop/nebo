@@ -4,6 +4,7 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
+  import { onWsEvent } from '$lib/websocket/subscribe';
   import { theme } from '$lib/stores/theme.js';
   import { onboardingComplete, onboardingChecked, backendReady, backendChecking, checkOnboardingStatus, retryBackendConnection } from '$lib/stores/onboarding';
   import Toast from '$lib/components/Toast.svelte';
@@ -17,6 +18,14 @@
   let showCommandPalette = $state(false);
   let showUpgradeSuccess = $state(false);
   let upgradedPlan = $state('');
+
+  // Show the upgrade-success modal when the plan changes (idiomatic WS subscription).
+  onWsEvent<{ plan?: string }>('plan_changed', (d) => {
+    if (d?.plan) {
+      upgradedPlan = d.plan;
+      showUpgradeSuccess = true;
+    }
+  });
 
   // Check onboarding status and initialize WebSocket on mount
   onMount(() => {
@@ -58,19 +67,8 @@
       }
     });
 
-    // Listen for plan_changed events to show upgrade success modal
-    const handlePlanChanged = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.plan) {
-        upgradedPlan = detail.plan;
-        showUpgradeSuccess = true;
-      }
-    };
-    window.addEventListener('nebo:plan_changed', handlePlanChanged);
-
     return () => {
       unsub();
-      window.removeEventListener('nebo:plan_changed', handlePlanChanged);
       delete (window as any).__NEBO_CHECK_UPDATE__;
       import('$lib/websocket/listeners').then(({ detachWebSocketListeners }) => {
         detachWebSocketListeners();

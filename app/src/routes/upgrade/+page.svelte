@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { onWsEvent } from '$lib/websocket/subscribe';
   import { goto } from '$app/navigation';
   import Check from 'lucide-svelte/icons/check';
   import ArrowRight from 'lucide-svelte/icons/arrow-right';
@@ -61,12 +62,10 @@
       finally { isLoading = false; }
     })();
 
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.plan && status) status = { ...status, plan: detail.plan };
-    };
-    window.addEventListener('nebo:plan_changed', handler);
-    return () => window.removeEventListener('nebo:plan_changed', handler);
+  });
+
+  onWsEvent<{ plan?: string }>('plan_changed', (d) => {
+    if (d?.plan && status) status = { ...status, plan: d.plan };
   });
 
   onDestroy(() => {

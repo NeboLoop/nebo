@@ -285,10 +285,7 @@
     if (section !== 'channels') return;
     const ws = getWebSocketClient();
     channelAuthUnsubs.push(
-      ws.on('plugin_auth_url', (data: Record<string, unknown>) => {
-        const url = data.url as string;
-        if (url) window.open(url, '_blank');
-      }),
+      // plugin_auth_url is opened once, globally, in listeners.ts — not here.
       ws.on('plugin_auth_complete', (data: Record<string, unknown>) => {
         const slug = data.plugin as string;
         if (slug) {
@@ -443,10 +440,7 @@
     if (section !== 'accounts') return;
     const ws = getWebSocketClient();
     accountAuthUnsubs.push(
-      ws.on('plugin_auth_url', (data: Record<string, unknown>) => {
-        const url = data.url as string;
-        if (url) window.open(url, '_blank');
-      }),
+      // plugin_auth_url is opened once, globally, in listeners.ts — not here.
       ws.on('plugin_auth_complete', (data: Record<string, unknown>) => {
         const slug = data.plugin as string;
         if (slug && slug === addAccountConnectingSlug) {

@@ -39,6 +39,7 @@
   import type { AgentInputField } from '$lib/types/agentPage';
   import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
   import { installFlow } from '$lib/stores/installFlow';
+  import { getWebSocketClient } from '$lib/websocket/client';
 
   type Phase =
     | 'installing'
@@ -712,10 +713,8 @@
   }
 
   // ── Plugin auth WS handlers ─────────────────────────────────────────────────
-  function handlePluginAuthUrl(e: Event) {
-    const url = (e as CustomEvent).detail?.url as string;
-    if (url && show && connectingSlug) window.open(url, '_blank');
-  }
+  // The auth URL is opened ONCE, globally, in listeners.ts. The modal only tracks
+  // per-row connect state (connectPlugin) and completion/failure below.
   function handlePluginAuthComplete() {
     if (!show || !connectingSlug) return;
     authState = { ...authState, [connectingSlug]: 'connected' };
@@ -750,37 +749,33 @@
     if (e.key === 'Escape') close();
   }
 
+  // Subscribe to install/cascade/auth WS events on the single ws.on pathway.
+  // These handlers read `(e as CustomEvent).detail`, so adapt the raw payload to
+  // that shape. (Set up in onMount, so cleanup is via collected unsubscribes.)
+  const wsUnsubs: (() => void)[] = [];
+  function subModal(event: string, handler: (e: Event) => void) {
+    wsUnsubs.push(
+      getWebSocketClient().on(event, (data: unknown) => handler({ detail: data } as unknown as CustomEvent)),
+    );
+  }
+
   onMount(() => {
-    window.addEventListener('nebo:code_processing', handleCodeProcessing);
-    window.addEventListener('nebo:code_result', handleCodeResult);
-    window.addEventListener('nebo:plugin_installing', handlePluginInstalling);
-    window.addEventListener('nebo:plugin_installed', handlePluginInstalled);
-    window.addEventListener('nebo:dep_cascade_start', handleDepCascadeStart);
-    window.addEventListener('nebo:dep_cascade_complete', handleDepCascadeComplete);
-    window.addEventListener('nebo:dep_needs_setup', handleDepNeedsSetup);
-    window.addEventListener('nebo:dep_started', handleDepStarted);
-    window.addEventListener('nebo:dep_pending', handleDepPending);
-    window.addEventListener('nebo:dep_installed', handleDepInstalled);
-    window.addEventListener('nebo:dep_failed', handleDepFailed);
-    window.addEventListener('nebo:plugin_auth_url', handlePluginAuthUrl);
-    window.addEventListener('nebo:plugin_auth_complete', handlePluginAuthComplete);
-    window.addEventListener('nebo:plugin_auth_error', handlePluginAuthError);
+    subModal('code_processing', handleCodeProcessing);
+    subModal('code_result', handleCodeResult);
+    subModal('plugin_installing', handlePluginInstalling);
+    subModal('plugin_installed', handlePluginInstalled);
+    subModal('dep_cascade_start', handleDepCascadeStart);
+    subModal('dep_cascade_complete', handleDepCascadeComplete);
+    subModal('dep_needs_setup', handleDepNeedsSetup);
+    subModal('dep_started', handleDepStarted);
+    subModal('dep_pending', handleDepPending);
+    subModal('dep_installed', handleDepInstalled);
+    subModal('dep_failed', handleDepFailed);
+    subModal('plugin_auth_complete', handlePluginAuthComplete);
+    subModal('plugin_auth_error', handlePluginAuthError);
   });
   onDestroy(() => {
-    window.removeEventListener('nebo:code_processing', handleCodeProcessing);
-    window.removeEventListener('nebo:code_result', handleCodeResult);
-    window.removeEventListener('nebo:plugin_installing', handlePluginInstalling);
-    window.removeEventListener('nebo:plugin_installed', handlePluginInstalled);
-    window.removeEventListener('nebo:dep_cascade_start', handleDepCascadeStart);
-    window.removeEventListener('nebo:dep_cascade_complete', handleDepCascadeComplete);
-    window.removeEventListener('nebo:dep_needs_setup', handleDepNeedsSetup);
-    window.removeEventListener('nebo:dep_started', handleDepStarted);
-    window.removeEventListener('nebo:dep_pending', handleDepPending);
-    window.removeEventListener('nebo:dep_installed', handleDepInstalled);
-    window.removeEventListener('nebo:dep_failed', handleDepFailed);
-    window.removeEventListener('nebo:plugin_auth_url', handlePluginAuthUrl);
-    window.removeEventListener('nebo:plugin_auth_complete', handlePluginAuthComplete);
-    window.removeEventListener('nebo:plugin_auth_error', handlePluginAuthError);
+    for (const off of wsUnsubs) off();
     if (installTimeout) clearTimeout(installTimeout);
     if (copyTimeout) clearTimeout(copyTimeout);
   });

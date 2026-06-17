@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getContext } from 'svelte';
   import { page } from '$app/stores';
+  import { getWebSocketClient } from '$lib/websocket/client';
   import type { AgentPageContext, AgentRun, WorkflowActivity } from '$lib/types/agentPage';
   import type { WorkflowRun, WorkflowActivityResult, PendingTask } from '$lib/api/neboComponents';
 
@@ -49,8 +50,7 @@
     const rid = runId;
     if (!rid || typeof window === 'undefined') return;
 
-    function handleTaskUpdated(e: Event) {
-      const data = (e as CustomEvent).detail;
+    function handleTaskUpdated(data: any) {
       if (!data?.listId || !data.listId.startsWith(`run:${rid}:`)) return;
       // Extract activityId from listId format: "run:{runId}:{activityId}"
       const parts = data.listId.split(':');
@@ -69,8 +69,7 @@
       taskItems = { ...taskItems, [activityId]: [...items] };
     }
 
-    window.addEventListener('nebo:task_updated', handleTaskUpdated);
-    return () => window.removeEventListener('nebo:task_updated', handleTaskUpdated);
+    return getWebSocketClient().on('task_updated', handleTaskUpdated);
   });
 
   const workflowDef = $derived.by(() => {

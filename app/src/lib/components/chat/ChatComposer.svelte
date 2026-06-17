@@ -414,9 +414,8 @@
     // [VOICE DISABLED] document.addEventListener('visibilitychange', dictationStore.handleVisibilityChange);
     // [VOICE DISABLED] document.addEventListener('keydown', handleDictationHotkey);
 
-    // Ghost text listener
-    function onGhostText(e: Event) {
-      const data = (e as CustomEvent).detail;
+    // Ghost text: subscribe directly to the WS event (single pathway).
+    function onGhostText(data: any) {
       if (data?.request_id !== ghostRequestId) return; // stale response
       const suggestion = data?.suggestion || '';
       ghostText = suggestion;
@@ -424,8 +423,7 @@
         updateGhostDecoration(suggestion);
       }
     }
-    window.addEventListener('nebo:ghost_text', onGhostText);
-    ghostCleanup = () => window.removeEventListener('nebo:ghost_text', onGhostText);
+    ghostCleanup = getWebSocketClient().on('ghost_text', onGhostText);
 
     editor = new Editor({
       element: editorElement,

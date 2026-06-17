@@ -2,6 +2,7 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { setContext, onMount } from 'svelte';
+  import { getWebSocketClient } from '$lib/websocket/client';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
@@ -160,13 +161,13 @@
     } catch { /* silent */ }
   }
 
-  // WS event handlers — kept as named functions so we can remove them on destroy
-  const wsHandlers: { event: string; handler: (e: Event) => void }[] = [];
+  // WS subscriptions on the single ws.on pathway (no window-event bridge). These
+  // are set up in onMount, so we collect unsubscribes and tear them down in the
+  // onMount return. (The shared onWsEvent helper is for top-level subscriptions.)
+  const wsUnsubs: (() => void)[] = [];
 
   function onWsEvent(event: string, handler: (data: any) => void) {
-    const wrapped = (e: Event) => handler((e as CustomEvent).detail);
-    wsHandlers.push({ event, handler: wrapped });
-    window.addEventListener(event, wrapped);
+    wsUnsubs.push(getWebSocketClient().on(event.replace(/^nebo:/, ''), handler));
   }
 
   onMount(() => {
@@ -234,11 +235,8 @@
     onWsEvent('nebo:workflow_run_failed', () => refreshRuns());
 
     return () => {
-      // Cleanup all WS event listeners
-      for (const { event, handler } of wsHandlers) {
-        window.removeEventListener(event, handler);
-      }
-      wsHandlers.length = 0;
+      for (const off of wsUnsubs) off();
+      wsUnsubs.length = 0;
     };
   });
 
