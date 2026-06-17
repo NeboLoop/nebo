@@ -597,8 +597,10 @@ async fn install_skill(
         let _ = state.store.upsert_artifact_update_pref(&artifact_id, "skill", &version);
     }
 
-    // Reload skill loader so it appears immediately
-    state.skill_loader.load_all().await;
+    // Reload skill loader so it appears immediately. Cold reload — load_all()'s
+    // warm path trusts the stale manifest and would miss the just-installed skill
+    // (see SkillLoader::reload_from_disk).
+    state.skill_loader.reload_from_disk().await;
 
     // Extract child deps from the newly installed skill
     if let Some(skill_dir) = skill_dir {

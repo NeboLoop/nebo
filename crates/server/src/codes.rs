@@ -350,8 +350,10 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         let _ = state.store.upsert_artifact_update_pref(&artifact_id, "skill", &version);
     }
 
-    // Reload skill loader so skill appears in catalog immediately
-    state.skill_loader.load_all().await;
+    // Reload skill loader so skill appears in catalog immediately. Cold reload —
+    // load_all()'s warm path trusts the stale manifest and would miss the
+    // just-written skill (see SkillLoader::reload_from_disk).
+    state.skill_loader.reload_from_disk().await;
 
     // Cascade: resolve skill deps (tools[], dependencies[])
     if let Some(skill_dir) = skill_dir {

@@ -647,12 +647,13 @@ impl PluginTool {
         if result.is_error {
             if let Some((binary, auth)) = self.plugin_store.get_auth_info(&pi.resource) {
                 if is_auth_error(&result.content) {
-                    // Confirm with auth status if the command is available
-                    if let Some(ref _status_cmd) = auth.commands.status {
-                        if self.run_auth_status(&pi.resource, &binary, &auth).await {
-                            // Status says authenticated — false positive, return original error
-                            return result;
-                        }
+                    // Confirm with a fresh auth-status check (the one canonical
+                    // decision, via PluginStore) if the command is available.
+                    if auth.commands.status.is_some()
+                        && self.plugin_store.check_auth_now(&pi.resource).await
+                    {
+                        // Status says authenticated — false positive, return original error
+                        return result;
                     }
 
                     info!(plugin = %pi.resource, "auth failure detected, triggering re-authentication");
@@ -1043,36 +1044,6 @@ impl PluginTool {
         }
     }
 
-    /// Run the plugin's `auth status` command. Returns `true` if authenticated.
-    async fn run_auth_status(
-        &self,
-        slug: &str,
-        binary: &Path,
-        auth: &napp::plugin::PluginAuth,
-    ) -> bool {
-        let status_cmd = match auth.commands.status.as_deref() {
-            Some(c) => c,
-            None => return false,
-        };
-
-        let runtime = napp::PluginRuntime::new(slug, binary.to_path_buf(), self.plugin_store.clone());
-        let mut cmd = runtime.command(status_cmd);
-        process::hide_window(&mut cmd);
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
-
-        match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
-            Ok(Ok(output)) => {
-                let authenticated = output.status.success();
-                debug!(plugin = %slug, authenticated, "plugin auth status check");
-                authenticated
-            }
-            _ => {
-                warn!(plugin = %slug, "plugin auth status check failed or timed out");
-                false
-            }
-        }
-    }
 
     /// Run the plugin's `auth login` command to trigger OAuth re-authentication.
     /// Opens the browser for the user to complete the OAuth flow.
