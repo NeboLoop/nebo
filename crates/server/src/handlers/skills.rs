@@ -195,7 +195,7 @@ pub async fn list_extensions(
 
 /// POST /api/v1/skills
 pub async fn create_skill(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     let name = body["name"]
@@ -206,6 +206,10 @@ pub async fn create_skill(
     let dir = skills_dir()?;
     let path = tools::skills::write_skill(&dir, name, content)
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+
+    // Reconcile the in-memory loader (which list_extensions/get read from) so the
+    // new skill is visible immediately instead of after the watcher's debounce.
+    state.skill_loader.reload_from_disk().await;
 
     Ok(Json(serde_json::json!({
         "name": name,
@@ -242,7 +246,7 @@ pub async fn get_skill_content(
 
 /// PUT /api/v1/skills/:name
 pub async fn update_skill(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
@@ -253,6 +257,8 @@ pub async fn update_skill(
 
     if let Some(content) = body["content"].as_str() {
         std::fs::write(&path, content).map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+        // Reconcile the in-memory loader so the edit is reflected immediately.
+        state.skill_loader.reload_from_disk().await;
     }
 
     Ok(Json(serde_json::json!({"name": name, "success": true})))
