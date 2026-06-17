@@ -100,7 +100,7 @@
     { href: '/marketplace', page: 'marketplace', icon: '◈', label: 'Marketplace' },
     { href: '/schedule', page: 'schedule', icon: '▦', label: 'Schedule' },
     { href: '/events', page: 'events', icon: '↯', label: 'Events' },
-    { href: '/skills', page: 'skills', icon: '⚡', label: 'Skills' },
+    { href: '/settings/skills', page: 'skills', icon: '⚡', label: 'Skills' },
   ];
 
   const marketplaceLinks = [

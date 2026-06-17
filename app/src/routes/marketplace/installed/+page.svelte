@@ -61,7 +61,10 @@
 		if (!item) return;
 		uninstallingId = item.id;
 		try {
-			await api.removePlugin(item.id);
+			// Canonical uninstall: routes through /store/products/{id}/install which
+			// branches on artifact_type (agent/skill/plugin) and fully tears down.
+			// removePlugin took a slug and no-op'd on the product id used here.
+			await api.uninstallStoreProduct(item.id);
 			installed = installed.filter(i => i.id !== item.id);
 			pendingUninstall = null;
 		} catch (err: any) {
