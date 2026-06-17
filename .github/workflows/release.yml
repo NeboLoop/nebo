@@ -30,7 +30,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Install pnpm
-        run: npm install -g pnpm
+        run: npm install -g pnpm@10.33.2
 
       - name: Build frontend
         run: |
@@ -508,7 +508,7 @@ jobs:
       - name: Build frontend
         shell: bash
         run: |
-          npm install -g pnpm
+          npm install -g pnpm@10.33.2
           cd app
           pnpm install --frozen-lockfile
           pnpm exec svelte-kit sync
