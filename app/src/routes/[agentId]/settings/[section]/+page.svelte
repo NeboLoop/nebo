@@ -11,8 +11,8 @@
   import SetupWizard from '$lib/components/SetupWizard.svelte';
   import Check from 'lucide-svelte/icons/check';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
-  import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
+  import { installFlow } from '$lib/stores/installFlow';
   import type { PluginAccount } from '$lib/api/pluginAccounts';
 
   const ctx = getContext<AgentPageContext>('agentPage');
@@ -225,45 +225,38 @@
     } catch { /* silent */ }
   }
 
-  // --- Configure (agent.json inputs) auto-save ---
-  // The one canonical place to edit an agent's inputs post-install. Seeds from the
-  // SAVED values (getAgent().inputValues), not agent.json defaults, so what the user
-  // saved is what shows; debounce-saves via updateAgentInputs.
+  // --- Configure (agent.json inputs) ---
+  // Read-only display of the agent's saved inputs. Editing happens in the ONE
+  // shared install/configure modal (installFlow store) — the same modal used
+  // for install everywhere, so there's a single edit surface and a clear Save.
   let configValues = $state<Record<string, unknown>>({});
-  let configSaved = $state(false);
-  let configSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const configFields = $derived((config.inputs ?? []) as AgentInputField[]);
   let loadedConfigFor = $state('');
+  async function loadConfigValues(id: string) {
+    try {
+      const api = await import('$lib/api/nebo');
+      const res = await api.getAgent(id);
+      const raw = (res as { inputValues?: unknown })?.inputValues;
+      const parsed = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw ?? {});
+      configValues = parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      configValues = {};
+    }
+  }
   $effect(() => {
     if (!agentId || agentId === loadedConfigFor) return;
     loadedConfigFor = agentId;
-    const id = agentId;
-    (async () => {
-      try {
-        const api = await import('$lib/api/nebo');
-        const res = await api.getAgent(id);
-        const raw = (res as { inputValues?: unknown })?.inputValues;
-        const parsed = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw ?? {});
-        configValues = parsed && typeof parsed === 'object' ? parsed : {};
-      } catch {
-        configValues = {};
-      }
-    })();
+    void loadConfigValues(agentId);
   });
 
-  function debounceConfigSave(values: Record<string, unknown>) {
-    configValues = values;
-    if (configSaveTimer) clearTimeout(configSaveTimer);
-    configSaveTimer = setTimeout(() => saveConfig(), 800);
-  }
-
-  async function saveConfig() {
-    if (!agentId) return;
-    try {
-      const api = await import('$lib/api/nebo');
-      await api.updateAgentInputs(agentId, configValues);
-      configSaved = true;
-      setTimeout(() => (configSaved = false), 2000);
-    } catch { /* silent */ }
+  function openConfigure() {
+    const id = agentId;
+    installFlow.open({
+      mode: 'configure',
+      existingAgentId: id,
+      agentName: agent?.name ?? '',
+      oncomplete: () => void loadConfigValues(id),
+    });
   }
 
   // --- Channels ---
@@ -722,21 +715,27 @@
       ></textarea>
 
     {:else if section === 'configure'}
-      <div class="flex items-center justify-between mb-1">
-        <div class="text-sm">Configuration from <span class="font-mono">agent.json</span>. These inputs customize how {agent?.name} operates.</div>
-        {#if configSaved}
-          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+      <div class="flex items-center justify-between gap-3 mb-1">
+        <div class="text-sm">These inputs customize how {agent?.name} operates.</div>
+        {#if configFields.length > 0}
+          <button type="button" class="btn btn-sm btn-primary shrink-0" onclick={openConfigure}>Configure</button>
         {/if}
       </div>
 
-      {#if config.inputs.length === 0}
+      {#if configFields.length === 0}
         <div class="text-center py-6 text-sm">No configurable inputs for this agent.</div>
       {:else}
-        <AgentInputForm
-          fields={config.inputs as AgentInputField[]}
-          bind:values={configValues}
-          onchange={debounceConfigSave}
-        />
+        <dl class="flex flex-col gap-3 mt-3">
+          {#each configFields as field (field.key)}
+            {@const val = configValues[field.key]}
+            {@const isEmpty = val === undefined || val === null || val === ''}
+            <div class="border-b border-base-content/10 pb-3 last:border-0">
+              <dt class="text-sm font-medium">{field.label || field.key}</dt>
+              {#if field.description}<dd class="text-xs text-base-content/50 mt-0.5">{field.description}</dd>{/if}
+              <dd class="text-sm mt-1 whitespace-pre-wrap {isEmpty ? 'text-base-content/40 italic' : ''}">{isEmpty ? 'Not set' : String(val)}</dd>
+            </div>
+          {/each}
+        </dl>
       {/if}
 
     {:else if section === 'workflows'}

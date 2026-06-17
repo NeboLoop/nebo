@@ -5,7 +5,6 @@
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
-  import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   const sidebarCollapsed = sidebarCollapsedFor('agents');
@@ -32,8 +31,6 @@
   let agentsLoading = $state(true);
   let threadsLoading = $state<Record<string, boolean>>({});
 
-  // Paste-a-code install modal (first-run only; opens itself on nebo:code_processing).
-  let showInstallModal = $state(false);
 
   const DEFAULT_CONFIG = { persona: '', agentMd: '', soul: '', rules: '', model: 'claude-sonnet-4-6', inputs: [] as unknown[], workflows: {} as Record<string, WorkflowConfig> };
 
@@ -801,6 +798,3 @@
 
 <!-- Columns 2+3: rendered by child routes -->
 {@render children()}
-
-<!-- Paste-a-code install door (WS-driven; opens itself on nebo:code_processing). -->
-<InstallFlowModal bind:show={showInstallModal} mode="code" />

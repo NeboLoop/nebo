@@ -3,7 +3,7 @@
 	import InstallCode from '$lib/components/InstallCode.svelte';
 	import PricePill from './PricePill.svelte';
 	import ArtifactIcon from './ArtifactIcon.svelte';
-	import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
+	import { installFlow } from '$lib/stores/installFlow';
 	import { type AppItem, itemHref } from '$lib/types/marketplace';
 	import { installStoreProduct } from '$lib/api/nebo';
 	import webapi from '$lib/api/gocliRequest';
@@ -18,19 +18,24 @@
 	const typeLabel = $derived(label || TYPE_NAMES[item.type] || 'ITEM');
 
 	let installing = $state(false);
-	let showSetupModal = $state(false);
-	let setupInputs = $state<Record<string, unknown>>({});
 
 	async function handleGetClick(e: MouseEvent) {
 		e.preventDefault();
 		e.stopPropagation();
 		if (installing || item.installed) return;
 
-		// Agents/apps install + configure + activate through the unified flow.
+		// Agents/apps install + configure + activate through the one shared modal.
 		if (item.type === 'agent' || item.type === 'app') {
 			const detail = await webapi.get<any>(`/api/v1/store/products/${item.id}`).catch(() => null);
-			setupInputs = detail?.typeConfig?.inputs || detail?.inputs || {};
-			showSetupModal = true;
+			installFlow.open({
+				mode: 'product',
+				appId: item.id,
+				agentName: item.name,
+				agentDescription: item.description,
+				seedInputs: detail?.typeConfig?.inputs || detail?.inputs || {},
+				dependencies: detail?.dependencies ?? detail?.typeConfig?.dependencies ?? (item as any)?.dependencies,
+				oncomplete: (id) => goto(`/${id ?? item.id}/threads`),
+			});
 			return;
 		}
 
@@ -45,11 +50,6 @@
 		} finally {
 			installing = false;
 		}
-	}
-
-	function handleSetupComplete(agentId?: string) {
-		showSetupModal = false;
-		if (agentId) goto(`/${agentId}/threads`);
 	}
 </script>
 
@@ -95,16 +95,3 @@
 		</div>
 	</div>
 </a>
-
-{#if showSetupModal}
-	<InstallFlowModal
-		mode="product"
-		bind:show={showSetupModal}
-		appId={item.id}
-		agentName={item.name}
-		agentDescription={item.description}
-		seedInputs={setupInputs}
-		dependencies={(item as any)?.dependencies ?? (item as any)?.typeConfig?.dependencies}
-		oncomplete={handleSetupComplete}
-	/>
-{/if}

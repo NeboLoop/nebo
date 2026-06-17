@@ -19,7 +19,7 @@
 	import MediaGallery from '$lib/components/marketplace/MediaGallery.svelte';
 	import SimilarGrid from '$lib/components/marketplace/SimilarGrid.svelte';
 	import FeedbackSection from '$lib/components/marketplace/FeedbackSection.svelte';
-	import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
+	import { installFlow } from '$lib/stores/installFlow';
 
 	type ArtifactType = 'skill' | 'agent' | 'plugin' | 'connector' | 'app' | 'collection';
 
@@ -56,8 +56,6 @@
 	let installing = $state(false);
 	let updating = $state(false);
 	let installedLocal = $state(false);
-	let showSetupModal = $state(false);
-	let setupInputs = $state<Record<string, unknown>>({});
 	// Uninstall is destructive — require an inline confirm before removing.
 	let confirmUninstall = $state(false);
 	let uninstalling = $state(false);
@@ -171,8 +169,15 @@
 		// "ready to go" step when there's nothing to configure). Non-agents
 		// install directly.
 		if (artifactType === 'agent') {
-			setupInputs = skill?.typeConfig?.inputs || skill?.inputs || {};
-			showSetupModal = true;
+			installFlow.open({
+				mode: 'product',
+				appId: itemId,
+				agentName: skill?.name ?? '',
+				agentDescription: skill?.description ?? '',
+				seedInputs: skill?.typeConfig?.inputs || skill?.inputs || {},
+				dependencies: skill?.dependencies ?? skill?.typeConfig?.dependencies,
+				oncomplete: (id) => goto(`/${id ?? itemId}/threads`),
+			});
 			return;
 		}
 		installing = true;
@@ -183,11 +188,15 @@
 		installing = false;
 	}
 
-	// Configure routes to the agent's Settings → Configure page (the one canonical
-	// place to edit inputs post-install). The install modal is first-run only — it's
-	// not reused for editing (that caused a competing configure surface + a reopen loop).
+	// Configure opens the single shared install/configure modal (installFlow store)
+	// in configure mode — the same modal used everywhere, so there's one edit surface.
 	function configureAgent() {
-		goto(`/${itemId}/settings/configure`);
+		installFlow.open({
+			mode: 'configure',
+			existingAgentId: itemId,
+			agentName: skill?.name ?? '',
+			onUninstall: uninstallProduct,
+		});
 	}
 
 	async function uninstallProduct() {
@@ -197,7 +206,7 @@
 		} catch { /* ignore */ }
 		installedLocal = false;
 		if (skill) skill = { ...skill, installed: false };
-		showSetupModal = false;
+		installFlow.close();
 		confirmUninstall = false;
 		uninstalling = false;
 	}
@@ -229,11 +238,6 @@
 		await navigator.clipboard.writeText(skill.code);
 		codeCopied = true;
 		setTimeout(() => (codeCopied = false), 2000);
-	}
-
-	function handleSetupComplete(newAgentId?: string) {
-		showSetupModal = false;
-		if (newAgentId) goto(`/${newAgentId}/threads`);
 	}
 
 	function formatNumber(n: number) {
@@ -561,17 +565,4 @@
 			</div>
 		</div>
 	</div>
-{/if}
-
-{#if showSetupModal && skill}
-	<InstallFlowModal
-		mode="product"
-		bind:show={showSetupModal}
-		appId={itemId}
-		agentName={skill.name}
-		agentDescription={skill.description || ''}
-		seedInputs={setupInputs}
-		dependencies={skill?.dependencies ?? skill?.typeConfig?.dependencies}
-		oncomplete={handleSetupComplete}
-	/>
 {/if}

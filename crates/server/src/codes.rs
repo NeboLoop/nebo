@@ -300,8 +300,9 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             .await
             .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
         let items = products
-            .get("results")
+            .get("products")
             .and_then(|v| v.as_array())
+            .or_else(|| products.get("results").and_then(|v| v.as_array()))
             .or_else(|| products.get("skills").and_then(|v| v.as_array()));
         let found = items.and_then(|arr| {
             arr.iter()
@@ -413,8 +414,9 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
             .await
             .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
         let items = products
-            .get("results")
+            .get("products")
             .and_then(|v| v.as_array())
+            .or_else(|| products.get("results").and_then(|v| v.as_array()))
             .or_else(|| products.get("workflows").and_then(|v| v.as_array()));
         let found = items.and_then(|arr| {
             arr.iter()
@@ -695,8 +697,9 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             .await
             .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
         let items = products
-            .get("results")
+            .get("products")
             .and_then(|v| v.as_array())
+            .or_else(|| products.get("results").and_then(|v| v.as_array()))
             .or_else(|| products.get("skills").and_then(|v| v.as_array()));
         let found = items.and_then(|arr| {
             arr.iter()
@@ -964,8 +967,9 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
             .await
             .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
         let items = products
-            .get("results")
+            .get("products")
             .and_then(|v| v.as_array())
+            .or_else(|| products.get("results").and_then(|v| v.as_array()))
             .or_else(|| products.get("plugins").and_then(|v| v.as_array()));
         let found = items.and_then(|arr| {
             arr.iter()

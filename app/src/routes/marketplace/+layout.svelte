@@ -7,7 +7,6 @@
   import { installItem } from '$lib/stores/marketplace.js';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { dispatchInstallStart } from '$lib/marketplace/installCodes';
-  import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   import { slugify } from '$lib/data/categories';
@@ -160,7 +159,6 @@
   let codeInput = $state('');
   let codeStatus = $state('idle'); // idle | processing | error
   let codeMessage = $state('');
-  let showInstallModal = $state(false);
   function redeemCode() {
     const code = codeInput.trim().toUpperCase();
     // dispatchInstallStart opens the modal instantly AND validates the format.
@@ -360,5 +358,3 @@
     {@render children()}
   </div>
 </div>
-
-<InstallFlowModal bind:show={showInstallModal} mode="code" />

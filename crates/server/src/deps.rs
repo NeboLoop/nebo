@@ -739,7 +739,9 @@ pub fn extract_agent_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef
         }
         if let Some(skills) = val["skills"].as_array() {
             for s in skills {
-                if let Some(s) = s.as_str() {
+                // Only marketplace-referenced skills are installs; bare tool-binding
+                // names are provided by the agent's plugins (see extract_agent_deps).
+                if let Some(s) = s.as_str().filter(|s| is_marketplace_ref(s)) {
                     push(DepType::Skill, s.to_string(), None, None);
                 }
             }
@@ -766,8 +768,11 @@ fn dep_ref_from_value(item: &serde_json::Value) -> Option<(String, Option<String
 }
 
 /// Extract dependencies from an agent config.
-/// Extracts plugin deps from `requires.plugins` and skill deps from
-/// the top-level `skills` array and inline activity skill references.
+/// Plugin deps come from `requires.plugins`. Skill deps come from the top-level
+/// `skills` array and inline activities — but ONLY marketplace-referenced skills
+/// (`@org/skills/x`, `SKIL-…`). Bare names (e.g. `gws-docs-write`) are tool
+/// bindings the agent's plugins provide, not separate installs — counting them
+/// inflated the dependency total (Chief of Staff showed 9 instead of 1).
 pub fn extract_agent_deps(config: &napp::agent::AgentConfig) -> Vec<DepRef> {
     let mut deps = Vec::new();
 
@@ -777,13 +782,17 @@ pub fn extract_agent_deps(config: &napp::agent::AgentConfig) -> Vec<DepRef> {
     }
 
     for skill_ref in &config.skills {
-        deps.push(DepRef::new(DepType::Skill, skill_ref.clone()));
+        if is_marketplace_ref(skill_ref) {
+            deps.push(DepRef::new(DepType::Skill, skill_ref.clone()));
+        }
     }
-    // Also extract skill refs from inline activities
+    // Also extract marketplace skill refs from inline activities
     for binding in config.workflows.values() {
         for activity in &binding.activities {
             for skill_name in &activity.skills {
-                deps.push(DepRef::new(DepType::Skill, skill_name.clone()));
+                if is_marketplace_ref(skill_name) {
+                    deps.push(DepRef::new(DepType::Skill, skill_name.clone()));
+                }
             }
         }
     }

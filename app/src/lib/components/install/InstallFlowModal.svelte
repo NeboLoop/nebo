@@ -38,6 +38,7 @@
   import type { PaymentMethodInfo, AgentWorkflow } from '$lib/api/neboComponents';
   import type { AgentInputField } from '$lib/types/agentPage';
   import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
+  import { installFlow } from '$lib/stores/installFlow';
 
   type Phase =
     | 'installing'
@@ -66,31 +67,20 @@
   };
   type AuthEntry = { slug: string; label: string; description: string; authType?: string };
 
-  let {
-    show = $bindable(false),
-    mode = 'code',
-    appId = '',
-    existingAgentId = '',
-    agentName = '',
-    agentDescription = '',
-    seedInputs = {},
-    dependencies = undefined,
-    onclose,
-    oncomplete,
-    onUninstall,
-  }: {
-    show?: boolean;
-    mode?: Mode;
-    appId?: string;
-    existingAgentId?: string;
-    agentName?: string;
-    agentDescription?: string;
-    seedInputs?: Record<string, unknown> | Record<string, unknown>[];
-    dependencies?: unknown;
-    onclose?: () => void;
-    oncomplete?: (agentId?: string) => void;
-    onUninstall?: () => void;
-  } = $props();
+  // ── Single global instance: no props ────────────────────────────────────────
+  // Product/configure opens arrive through the installFlow store; code-paste
+  // installs arrive through window `nebo:code_*` events. Either way this one
+  // mounted modal owns its own visibility, so two modals can never stack.
+  let show = $state(false);
+  let mode = $state<Mode>('code');
+  let appId = $state('');
+  let existingAgentId = $state('');
+  let agentName = $state('');
+  let agentDescription = $state('');
+  let seedInputs = $state<Record<string, unknown> | Record<string, unknown>[]>({});
+  let dependencies = $state<unknown>(undefined);
+  let oncomplete = $state<((agentId?: string) => void) | undefined>(undefined);
+  let onUninstall = $state<(() => void) | undefined>(undefined);
 
   const configuring = $derived(mode === 'configure');
 
@@ -112,6 +102,10 @@
   let depTotal = $state(0);
   let copiedRef = $state('');
   let needsSetup = $state<Array<{ slug: string; label: string; description: string }>>([]);
+  // Cascade lifecycle: the modal only declares success once the backend's terminal
+  // `dep_cascade_complete` arrives — never at 0/N while deps are still installing.
+  let cascadeStarted = $state(false);
+  let cascadeComplete = $state(false);
 
   // Inputs / auth / schedule setup.
   let inputFields = $state<AgentInputField[]>([]);
@@ -143,6 +137,9 @@
   const failedCount = $derived(deps.filter((d) => d.status === 'failed').length);
   const settledCount = $derived(installedCount + failedCount);
   const progressTotal = $derived(Math.max(depTotal, deps.length));
+  // True while a cascade has begun but not yet reported complete — gates the
+  // "installed!" success state so it never shows at 0/N.
+  const cascadePending = $derived(cascadeStarted && !cascadeComplete);
   const currentAuth = $derived(authQueue[authIndex]);
   const currentAuthNeedsKeys = $derived(authQueue[authIndex]?.authType === 'env');
   const hasSchedules = $derived(
@@ -234,6 +231,8 @@
     agentId = '';
     deps = [];
     depTotal = 0;
+    cascadeStarted = false;
+    cascadeComplete = false;
     needsSetup = [];
     inputFields = [];
     inputValues = {};
@@ -258,7 +257,8 @@
     }
     show = false;
     launched = false;
-    onclose?.();
+    mode = 'code'; // back to default so a later code-paste install is handled
+    installFlow.close();
   }
 
   function autoCloseIfRemote(delay = 1500) {
@@ -271,15 +271,28 @@
     }
   }
 
-  // ── Launch (product / configure modes are caller-driven) ──────────────────
+  // ── Launch ──────────────────────────────────────────────────────────────
+  // Product/configure opens arrive via the installFlow store: copy the payload
+  // in and launch once. (Code-paste installs arrive via window `nebo:code_*`
+  // events, handled separately and independent of the store.)
   $effect(() => {
-    if (!show || launched) return;
-    if (mode === 'product' || mode === 'configure') {
-      launched = true;
-      interactive = true;
-      codeType = 'agent';
-      void startCallerDriven();
-    }
+    const f = $installFlow;
+    if (!f.show || launched) return;
+    if (f.mode !== 'product' && f.mode !== 'configure') return;
+    mode = f.mode;
+    appId = f.appId ?? '';
+    existingAgentId = f.existingAgentId ?? '';
+    agentName = f.agentName ?? '';
+    agentDescription = f.agentDescription ?? '';
+    seedInputs = f.seedInputs ?? {};
+    dependencies = f.dependencies;
+    oncomplete = f.oncomplete;
+    onUninstall = f.onUninstall;
+    launched = true;
+    interactive = true;
+    codeType = 'agent';
+    show = true;
+    void startCallerDriven();
   });
 
   async function startCallerDriven() {
@@ -600,8 +613,13 @@
 
   function handleDepCascadeStart(e: Event) {
     if (!show) return;
+    cascadeStarted = true;
     const total = Number((e as CustomEvent).detail?.total ?? 0);
     if (total > 0) depTotal = total;
+  }
+  function handleDepCascadeComplete() {
+    if (!show) return;
+    cascadeComplete = true;
   }
   function handleDepStarted(e: Event) {
     if (!show) return;
@@ -705,6 +723,7 @@
     window.addEventListener('nebo:plugin_installing', handlePluginInstalling);
     window.addEventListener('nebo:plugin_installed', handlePluginInstalled);
     window.addEventListener('nebo:dep_cascade_start', handleDepCascadeStart);
+    window.addEventListener('nebo:dep_cascade_complete', handleDepCascadeComplete);
     window.addEventListener('nebo:dep_needs_setup', handleDepNeedsSetup);
     window.addEventListener('nebo:dep_started', handleDepStarted);
     window.addEventListener('nebo:dep_pending', handleDepPending);
@@ -720,6 +739,7 @@
     window.removeEventListener('nebo:plugin_installing', handlePluginInstalling);
     window.removeEventListener('nebo:plugin_installed', handlePluginInstalled);
     window.removeEventListener('nebo:dep_cascade_start', handleDepCascadeStart);
+    window.removeEventListener('nebo:dep_cascade_complete', handleDepCascadeComplete);
     window.removeEventListener('nebo:dep_needs_setup', handleDepNeedsSetup);
     window.removeEventListener('nebo:dep_started', handleDepStarted);
     window.removeEventListener('nebo:dep_pending', handleDepPending);
@@ -854,14 +874,21 @@
 
         {:else if phase === 'done'}
           <div class="flex flex-col items-center gap-4">
-            <div class="w-12 h-12 rounded-full bg-success/15 flex items-center justify-center">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-success"><polyline points="20 6 9 17 4 12"/></svg>
-            </div>
-            <p class="text-sm font-medium">{configuring ? 'Saved!' : `${artifactName || typeLabel} installed!`}</p>
-            {#if needsSetupFlag && agentId}
-              <button type="button" class="btn btn-xs btn-outline" onclick={() => { const id = agentId; close(); goto(`/${id}/settings/configure`); }}>
-                Finish setup in Settings
-              </button>
+            {#if cascadePending}
+              <span class="loading loading-spinner loading-lg text-primary"></span>
+              <p class="text-sm font-medium">
+                Installing dependencies… <span class="font-mono text-base-content/50">{settledCount}/{progressTotal}</span>
+              </p>
+            {:else}
+              <div class="w-12 h-12 rounded-full bg-success/15 flex items-center justify-center">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-success"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>
+              <p class="text-sm font-medium">{configuring ? 'Saved!' : `${artifactName || typeLabel} installed!`}</p>
+              {#if needsSetupFlag && agentId}
+                <button type="button" class="btn btn-xs btn-outline" onclick={() => { const id = agentId; close(); goto(`/${id}/settings/configure`); }}>
+                  Finish setup in Settings
+                </button>
+              {/if}
             {/if}
           </div>
 
@@ -985,7 +1012,7 @@
         </div>
       {:else if phase === 'done' && interactive}
         <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
-          <button type="button" class="btn btn-sm btn-primary" onclick={() => { const id = agentId; close(); oncomplete?.(id || undefined); }}>Done</button>
+          <button type="button" class="btn btn-sm btn-primary" disabled={cascadePending} onclick={() => { const id = agentId; close(); oncomplete?.(id || undefined); }}>Done</button>
         </div>
       {:else if showSkip}
         <div class="shrink-0 flex justify-between px-5 py-3 border-t border-base-content/10">

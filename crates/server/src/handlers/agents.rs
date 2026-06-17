@@ -422,10 +422,14 @@ pub async fn create_agent(
         serde_json::json!({ "agentId": agent.id, "name": agent.name }),
     );
 
-    // Cascade: resolve skill dependencies
+    // Cascade: resolve skill dependencies. Only marketplace-referenced skills are
+    // separate installs — bare names are plugin-provided tool bindings (see
+    // deps::extract_agent_deps).
     let mut deps = Vec::new();
     for s in &fm.skills {
-        deps.push(crate::deps::DepRef::new(crate::deps::DepType::Skill, s.clone()));
+        if crate::deps::is_marketplace_ref(s) {
+            deps.push(crate::deps::DepRef::new(crate::deps::DepType::Skill, s.clone()));
+        }
     }
     // Also pull skill deps from agent.json if provided
     if let Some(agent_json_str) = extract_agent_json_str(&body) {

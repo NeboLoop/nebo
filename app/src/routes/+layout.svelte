@@ -11,6 +11,7 @@
   import CommandPalette from '$lib/components/CommandPalette.svelte';
   import UpgradeSuccessModal from '$lib/components/UpgradeSuccessModal.svelte';
   import OnboardingTour from '$lib/components/onboarding/OnboardingTour.svelte';
+  import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
   let { children } = $props();
 
   let showCommandPalette = $state(false);
@@ -216,6 +217,10 @@
 {/if}
 {#if !isEmbed}
   <Toast />
+  <!-- The ONE install/configure modal for the whole app. Opened via the
+       installFlow store (product/configure) or window nebo:code_* events (code
+       paste). Mounted once here so two install modals can never stack. -->
+  <InstallFlowModal />
   <CommandPalette bind:show={showCommandPalette} />
   <UpgradeSuccessModal
     bind:show={showUpgradeSuccess}
