@@ -321,6 +321,9 @@ impl OpenAIProvider {
         let mut text_chunks = 0u32;
         let mut chunk_count = 0u32;
         let mut finished = false;
+        // True once we've already surfaced an error to the caller, so the
+        // post-loop truncation guard doesn't double-report.
+        let mut errored = false;
         let mut last_finish_reason: Option<String> = None;
         let mut last_provider_metadata: Option<HashMap<String, String>> = None;
 
@@ -332,6 +335,7 @@ impl OpenAIProvider {
                     let _ = tx
                         .send(StreamEvent::error(format!("stream read error: {e}")))
                         .await;
+                    errored = true;
                     break;
                 }
             };
@@ -373,6 +377,7 @@ impl OpenAIProvider {
                                 );
                                 let _ = tx.send(StreamEvent::error(msg.to_string())).await;
                                 finished = true;
+                                errored = true;
                                 break 'outer;
                             }
                         }
@@ -514,6 +519,30 @@ impl OpenAIProvider {
                     _ => {}
                 }
             }
+        }
+
+        // Truncation guard. A complete OpenAI-compatible stream always ends with
+        // a chunk carrying finish_reason (and usually a [DONE] sentinel), both of
+        // which set `finished`. If the byte stream reached EOF without either and
+        // we didn't already surface an error, the connection was cut mid-response
+        // — e.g. an edge/proxy idle timeout during a long tool-call generation.
+        // Emitting a clean done() here would let the runner treat a truncated
+        // (often tool-call-less) turn as finished. Surface a retryable error
+        // instead so the runner's transient-retry path re-runs the turn.
+        if !finished && !errored {
+            warn!(
+                chunk_count,
+                text_chunks,
+                tool_calls = tool_calls.len(),
+                "stream truncated before completion (EOF with no finish_reason / [DONE])"
+            );
+            let _ = tx
+                .send(StreamEvent::error(
+                    "stream truncated before completion (unexpected EOF before finish_reason)"
+                        .to_string(),
+                ))
+                .await;
+            return;
         }
 
         if text_chunks == 0 && tool_calls.is_empty() {
@@ -950,4 +979,94 @@ struct SessionToolResult {
     is_error: bool,
     #[serde(default)]
     image_url: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // Serves one SSE response: a single content chunk, then closes the
+    // connection WITHOUT a finish_reason or [DONE] sentinel — exactly what an
+    // edge/proxy idle-timeout cut looks like (a graceful close → clean EOF).
+    // handle_stream must surface a retryable error, not a clean Done.
+    #[tokio::test]
+    async fn truncated_stream_surfaces_retryable_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await; // drain the request
+            let chunk = "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"On it\"},\"finish_reason\":null}]}\n\n";
+            // Close-delimited body (no Content-Length, Connection: close): the
+            // connection close IS the end of the stream → clean EOF for the client.
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{chunk}"
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+            // Drop the socket — no finish_reason, no [DONE].
+        });
+
+        let response = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        OpenAIProvider::handle_stream(response, tx).await;
+        server.await.unwrap();
+
+        let mut saw_error = false;
+        let mut saw_done = false;
+        while let Ok(ev) = rx.try_recv() {
+            match ev.event_type {
+                StreamEventType::Error => saw_error = true,
+                StreamEventType::Done => saw_done = true,
+                _ => {}
+            }
+        }
+        assert!(saw_error, "truncated stream must emit a retryable Error event");
+        assert!(!saw_done, "truncated stream must NOT emit a clean Done");
+    }
+
+    // A well-formed stream that ends with finish_reason + [DONE] must still emit
+    // a clean Done and no Error (the truncation guard must not false-positive).
+    #[tokio::test]
+    async fn complete_stream_emits_done_not_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let body = concat!(
+                "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+
+        let response = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        OpenAIProvider::handle_stream(response, tx).await;
+        server.await.unwrap();
+
+        let mut saw_error = false;
+        let mut saw_done = false;
+        while let Ok(ev) = rx.try_recv() {
+            match ev.event_type {
+                StreamEventType::Error => saw_error = true,
+                StreamEventType::Done => saw_done = true,
+                _ => {}
+            }
+        }
+        assert!(saw_done, "complete stream must emit Done");
+        assert!(!saw_error, "complete stream must NOT emit an Error");
+    }
 }

@@ -546,6 +546,10 @@ pub fn is_transient_error(err: &ProviderError) -> bool {
             "tls handshake",
             "timeout",
             "no such host",
+            // Mid-stream cut: the byte stream ended without a finish_reason /
+            // [DONE] (e.g. an edge/proxy idle timeout during a long tool call).
+            // Retrying re-runs the turn rather than silently dropping it.
+            "truncated",
             // Upstream LLM hiccups that clear on retry — e.g. dashscope/Janus
             // returning a completion with no text and no tool calls.
             "empty response",
