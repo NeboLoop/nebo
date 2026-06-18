@@ -696,10 +696,13 @@ impl PluginTool {
                         );
                     }
 
-                    return ToolResult::error(format!(
-                        "Plugin '{}' authentication expired. Re-authentication was attempted but failed. \
-                         The user must re-authenticate in Settings > Plugins. \
-                         Do NOT call this plugin again until re-authenticated.",
+                    // Terminal: auth genuinely expired and reauth failed. End the
+                    // turn and surface to the user — do not let the agent keep
+                    // retrying/improvising (FRAMES.md Phase 1).
+                    return ToolResult::terminal(format!(
+                        "I couldn't reach **{}** — it isn't authenticated and automatic \
+                         re-authentication didn't work. Please reconnect this account in the \
+                         agent's Connected Accounts (Settings), then ask me again.",
                         pi.resource
                     ));
                 }
@@ -762,6 +765,25 @@ impl PluginTool {
         // service "gws" → "Unknown service 'gws'". Drop it so both forms work.
         if args.first().map(|a| a.eq_ignore_ascii_case(&pi.resource)) == Some(true) {
             args.remove(0);
+        }
+
+        // Agents must NEVER self-initiate an auth flow. `auth login`/`logout`/`setup`
+        // are privileged, interactive, account-mutating actions that belong to the
+        // user — when an agent ran `gws auth login` on a (syntax) error it spiraled
+        // into endless browser/curl/re-auth attempts (see FRAMES.md). Refuse, and
+        // make it terminal so the turn ends instead of the agent improvising. Read-only
+        // `auth status`/`export` stay allowed (the host uses them to verify auth).
+        if args.first().map(|a| a.eq_ignore_ascii_case("auth")) == Some(true) {
+            if let Some(sub) = args.get(1).map(|s| s.to_ascii_lowercase()) {
+                if sub == "login" || sub == "logout" || sub == "setup" {
+                    return ToolResult::terminal(format!(
+                        "I can't sign in to or re-authenticate **{}** on my own — that's \
+                         handled for you. If this account needs reconnecting, you can do it \
+                         in this agent's Connected Accounts (Settings).",
+                        pi.resource
+                    ));
+                }
+            }
         }
 
         // Append named args directly — no shell parsing, special characters preserved.

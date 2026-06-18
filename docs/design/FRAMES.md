@@ -70,11 +70,28 @@ Nebo already has **four** run-lifecycle-ish models. The single biggest risk of "
 
 ## 4. Migration phases
 
-**Phase 1 — terminal-error slice (ships the death-spiral fix; first brick of frames).**
-Does NOT require the full table yet. Establishes "a chat run can end in a terminal `failed`":
-1. **Classify terminal tool errors** (auth/permission/connection) by extending `plugin_tool.rs`'s existing `is_auth_error` handler into a small `classify_tool_error` → `Terminal`/`Retryable`. Terminal → stop the agentic loop, mark the run failed, surface a plain user message + reconnect affordance. No counter.
-2. **Block agent self-auth.** Intercept `auth login` / `auth logout` (and equivalent) at the single plugin-dispatch point — refuse and return "authentication is handled for you; a reconnect will be surfaced if needed." (This is what *fed* the spiral.)
-3. *(Refinement)* make Nebo's existing system reauth (`run_auth_login`) **HIL-surfaced** (user triggers reconnect) rather than auto-launching OAuth.
+**Phase 1 — terminal-error slice (SHIPPED; first brick of frames).**
+
+> **Why "ask permission" is the wrong model here, and "stop" is right.** Most of
+> what Nebo does runs **autonomously in workflows** — there is no human to pause
+> for, and permission is granted up-front at agent/workflow setup. So Claude
+> Code's interactive `ask` permission flow does not apply to the autonomous
+> majority. A workflow that hits a dead account **cannot ask** and **must not
+> spiral** (no one to hit stop). The correct behavior is therefore: **deny the
+> futile action, classify the error as terminal, and stop the run** — surfaced in
+> chat, recorded + notified in a workflow.
+
+What landed (`ToolResult.terminal` + runner + plugin_tool):
+1. **`ToolResult::terminal(content)`** — a terminal (unrecoverable) error flag. Set ONLY here (narrow): healthy long-running tasks never trip it, so this is classification, not a counter, and does not kill legitimate multi-step work.
+2. **Agent self-auth is denied.** `auth login`/`logout`/`setup` are refused at the plugin-dispatch point with a terminal "reconnect in Connected Accounts" message — deny, not ask (futile in a workflow; the user's out-of-band action in chat). This is the spiral's fuel, removed. Read-only `auth status`/`export` stay allowed.
+3. **Auth-expired + system reauth failed → terminal.** Surfaced as "reconnect this account," not retried.
+4. **Runner stops the run on a terminal result** — emit the message, break the agentic loop (mirrors the existing circuit-breaker's emit-then-break). No human needed → safe for autonomous workflows.
+5. **Front-end prevention (prompt steering).** A `prompt.rs` bullet tells the agent up front it cannot sign in/re-authenticate plugins itself — so it never starts down the auth path. The dispatch-side deny (item 2) becomes a rarely-hit backstop instead of the only thing stopping the spiral. (Live harness evidence: `fixtures/tools/plugin-auth-no-self-reauth.yaml` went 2/5 → **5/5**, 4.0 → **0.0** tool calls, pollution 0.87 → **0.00**, once the bullet was added — the deny alone left the model spiraling *up to* the deny.)
+
+Deferred to Phase 2/3 (frames proper):
+- **Granular multi-part handling** — one sub-capability failing shouldn't fail a whole multi-step run. Needs the frame *tree* (a child frame fails; the parent decides). Phase 1 stops the common single-purpose run cleanly.
+- **`run_auth_login` auto-launch → HIL/notify** — for chat, surface a reconnect prompt; for workflows, fail + notify rather than auto-spawning an OAuth flow no one completes.
+- The real `failed` frame **state** + async workflow notification.
 
 **Phase 2 — promote `workflow_runs` → `frames`.** Generalize the table + transition API; route chat runs through it (root frames). Delete `register_run`'s ad-hoc handle.
 
