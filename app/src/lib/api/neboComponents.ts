@@ -979,6 +979,7 @@ export interface GetAgentResponse {
 	displayName: string
 	version: string
 	inputFields: unknown[]
+	inputValues: unknown
 	personaProperties: unknown
 	persona: unknown
 	model: unknown
@@ -1630,6 +1631,7 @@ export interface UserGetCurrentUserResponse {
 
 export interface UserGetPermissionsResponse {
 	permissions: ToolPermission[]
+	capabilities: Capability[]
 }
 
 export interface UserGetPreferencesResponse {
@@ -1725,6 +1727,12 @@ export interface AgentWorkflowTrigger {
 export interface AliasEntry {
 	alias: string
 	command: string
+}
+
+export interface Capability {
+	key: string
+	label: string
+	desc: string
 }
 
 export interface CommanderNode {

@@ -4,6 +4,7 @@ pub mod a2ui_tool;
 pub mod agent_tool;
 pub mod app_tool;
 pub mod bot_tool;
+pub mod capabilities;
 pub mod channel_bridge;
 pub mod deep_research;
 pub mod desktop_daemon;

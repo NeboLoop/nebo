@@ -38,16 +38,9 @@
   let neboAIPollInterval: ReturnType<typeof setInterval> | null = null;
   let neboAITimeout: ReturnType<typeof setTimeout> | null = null;
 
-  const CAPABILITY_LABELS: Record<string, { label: string; desc: string }> = {
-    chat: { label: 'Chat', desc: 'Respond to messages and conversations' },
-    file: { label: 'File Access', desc: 'Read and write files on your system' },
-    shell: { label: 'Shell Commands', desc: 'Execute terminal commands' },
-    web: { label: 'Web Access', desc: 'Make HTTP requests and browse the web' },
-    contacts: { label: 'Contacts', desc: 'Access your contacts and address book' },
-    desktop: { label: 'Desktop', desc: 'Control mouse, keyboard, and windows' },
-    media: { label: 'Media', desc: 'Access camera, microphone, and screen' },
-    system: { label: 'System', desc: 'Access system information and settings' },
-  };
+  // Capability labels come from the backend canonical list
+  // (userGetPermissions().capabilities) — see tools::capabilities. Not hardcoded
+  // here, so onboarding can't drift from Settings or the gate.
 
   // Safe-by-default for a brand-new, non-technical user: core low-risk capabilities ON,
   // powerful / privacy-sensitive ones OFF (opt-in). The "Acting With Care" layer still
@@ -75,12 +68,11 @@
           permObj[tp.tool] = tp.allowed;
         }
       }
-      const allKeys = new Set([...Object.keys(CAPABILITY_LABELS), ...Object.keys(permObj)]);
-      permissions = Array.from(allKeys).map(key => ({
-        key,
-        label: CAPABILITY_LABELS[key]?.label || key.charAt(0).toUpperCase() + key.slice(1),
-        desc: CAPABILITY_LABELS[key]?.desc || '',
-        enabled: permObj[key] ?? DEFAULT_ENABLED[key] ?? false,
+      permissions = (res?.capabilities ?? []).map(cap => ({
+        key: cap.key,
+        label: cap.label,
+        desc: cap.desc,
+        enabled: permObj[cap.key] ?? DEFAULT_ENABLED[cap.key] ?? false,
         locked: false,
       }));
       capStates = permissions.map(p => p.enabled);

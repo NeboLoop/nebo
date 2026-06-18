@@ -200,7 +200,14 @@ pub async fn get_permissions(State(state): State<AppState>) -> HandlerResult<ser
             serde_json::json!({ "tool": tool, "allowed": allowed.as_bool().unwrap_or(false) })
         })
         .collect();
-    Ok(Json(serde_json::json!({ "permissions": permissions })))
+    // `capabilities` is the canonical toggle list (key/label/desc) from the
+    // single source of truth in `tools::capabilities`. The frontend renders its
+    // Settings → Permissions switches from this instead of a hardcoded list, so
+    // the UI, the persisted keys, and the backend gate cannot drift apart.
+    Ok(Json(serde_json::json!({
+        "permissions": permissions,
+        "capabilities": tools::capabilities::CAPABILITIES,
+    })))
 }
 
 /// PUT /api/v1/user/me/permissions

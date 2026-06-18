@@ -6,17 +6,9 @@
   import Eye from 'lucide-svelte/icons/eye';
   import X from 'lucide-svelte/icons/x';
 
-  const CAPABILITY_LABELS: Record<string, { label: string; desc: string }> = {
-    chat: { label: 'Chat', desc: 'Respond to messages and conversations' },
-    file: { label: 'File Access', desc: 'Read and write files on your system' },
-    shell: { label: 'Shell Commands', desc: 'Execute terminal commands' },
-    web: { label: 'Web Access', desc: 'Make HTTP requests and browse the web' },
-    contacts: { label: 'Contacts', desc: 'Access your contacts and address book' },
-    desktop: { label: 'Desktop', desc: 'Control mouse, keyboard, and windows' },
-    media: { label: 'Media', desc: 'Access camera, microphone, and screen' },
-    system: { label: 'System', desc: 'Access system information and settings' },
-  };
-
+  // The capability list + labels come from the backend (tools::capabilities,
+  // the single source of truth) via userGetPermissions().capabilities — NOT a
+  // hardcoded list here, so the UI cannot drift from the gate's vocabulary.
   let permissions = $state<{ key: string; label: string; desc: string; enabled: boolean }[]>([]);
   let autonomous = $state(false);
 
@@ -27,20 +19,20 @@
         api.userGetPermissions(),
         api.getSettings().catch(() => null),
       ]);
-      // Convert ToolPermission[] to a keyed record
+      // Convert ToolPermission[] to a keyed record of current on/off values
       let permObj: Record<string, boolean> = {};
       if (permResp?.permissions?.length) {
         for (const tp of permResp.permissions) {
           permObj[tp.tool] = tp.allowed;
         }
       }
-      // Build capability list from known keys + any extras from backend
-      const allKeys = new Set([...Object.keys(CAPABILITY_LABELS), ...Object.keys(permObj)]);
-      permissions = Array.from(allKeys).map(key => ({
-        key,
-        label: CAPABILITY_LABELS[key]?.label || key.charAt(0).toUpperCase() + key.slice(1),
-        desc: CAPABILITY_LABELS[key]?.desc || '',
-        enabled: permObj[key] ?? true,
+      // Render the toggle list from the backend's canonical capabilities
+      // (key/label/desc). A capability with no persisted value defaults to on.
+      permissions = (permResp?.capabilities ?? []).map(cap => ({
+        key: cap.key,
+        label: cap.label,
+        desc: cap.desc,
+        enabled: permObj[cap.key] ?? true,
       }));
       if (settingsResp?.settings?.autoInstallDeps !== undefined) {
         autonomous = !!settingsResp.settings.autoInstallDeps;
