@@ -3355,6 +3355,10 @@ async fn run_loop(
             const UNIVERSAL_TOOL_RESULT_CAP: usize = 100_000;
             let mut all_errors_this_iteration = true;
             let mut had_results = false;
+            // Terminal tool error (auth/permission/connection) → end the turn after
+            // this batch and surface to the user, instead of feeding it back for the
+            // model to retry/improvise (the death-spiral fix; FRAMES.md Phase 1).
+            let mut terminal_error: Option<String> = None;
             // Highest-signal rate-limit status seen this iteration (429/403) — feeds the
             // RateLimit reminder so the model backs off instead of hammer-retrying a host.
             let mut iteration_rate_limited: Option<u16> = None;
@@ -3364,6 +3368,14 @@ async fn run_loop(
             for entry in results.into_iter().flatten() {
                 let (tc, mut result) = entry;
                 had_results = true;
+                // Terminal error (auth/permission/connection) — narrow, set only by
+                // ToolResult::terminal(). End the run after this batch instead of
+                // letting the model retry/improvise. Critical for autonomous
+                // workflows: there's no human to ask or to hit stop, so a dead
+                // account must fail the run cleanly, not spiral. (FRAMES Phase 1.)
+                if result.terminal && terminal_error.is_none() {
+                    terminal_error = Some(result.content.clone());
+                }
                 if matches!(result.http_status, Some(429) | Some(403)) {
                     iteration_rate_limited = result.http_status;
                 }
@@ -3374,6 +3386,7 @@ async fn run_loop(
                     is_error: result.is_error,
                     image_url: None,
                     http_status: None,
+                    terminal: result.terminal,
                 });
                 if !result.is_error {
                     all_errors_this_iteration = false;
@@ -3531,6 +3544,32 @@ async fn run_loop(
                 {
                     warn!(session_id = %session_id, error = %e, "failed to save tool message to DB");
                 }
+            }
+
+            // Terminal tool error → end the run now (FRAMES Phase 1). The failure is
+            // unrecoverable (auth/permission/connection) — surface it and stop rather
+            // than feed it back for the model to retry/improvise. This is the
+            // death-spiral fix: in an autonomous workflow there is no human to ask or
+            // to interrupt, so a dead account must stop the run cleanly. Mirrors the
+            // circuit-breaker's emit-text-then-break. (Narrow: only ToolResult::terminal
+            // sets this — healthy long-running tasks never trip it.)
+            if let Some(msg) = terminal_error {
+                warn!(session_id, iteration, "terminal tool error — ending run");
+                let _ = tx
+                    .send(StreamEvent {
+                        event_type: StreamEventType::Text,
+                        text: msg,
+                        tool_call: None,
+                        error: None,
+                        usage: None,
+                        rate_limit: None,
+                        widgets: None,
+                        provider_metadata: None,
+                        stop_reason: None,
+                        image_url: None,
+                    })
+                    .await;
+                break;
             }
 
             // Compute tool call hashes for loop detection (OpenClaw-style).

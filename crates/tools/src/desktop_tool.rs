@@ -654,6 +654,7 @@ async fn handle_input(
                     is_error: type_result.is_error,
                     image_url: None,
                     http_status: None,
+                    terminal: false,
                 };
             }
             input_type(text).await
@@ -693,6 +694,7 @@ async fn handle_input(
                 is_error: r.is_error,
                 image_url: None,
                 http_status: None,
+                terminal: false,
             }
         }
         "move" => {
@@ -1484,6 +1486,7 @@ async fn capture_see(
         is_error: false,
         image_url: screenshot.image_url,
         http_status: None,
+        terminal: false,
     }
 }
 
@@ -1744,6 +1747,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, summary: &str) -> ToolResult {
         is_error: false,
         image_url: Some(data_uri),
         http_status: None,
+        terminal: false,
     }
 }
 

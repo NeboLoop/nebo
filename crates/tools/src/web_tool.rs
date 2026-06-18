@@ -1201,6 +1201,7 @@ impl WebTool {
                         is_error: cached.is_error,
                         image_url: None,
                         http_status: None,
+                        terminal: false,
                     };
                 }
             }
@@ -1596,6 +1597,7 @@ impl WebTool {
                                     is_error: false,
                                     image_url: None,
                                     http_status: None,
+                                    terminal: false,
                                 };
                             }
                         }
@@ -1724,6 +1726,7 @@ impl WebTool {
                     is_error: false,
                     image_url: screenshot_b64,
                     http_status: None,
+                    terminal: false,
                 }
             }
             Err(e) => ToolResult::error(friendly_browser_error(action, &e.to_string())),
@@ -2535,6 +2538,7 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
         is_error: cached.is_error,
         image_url: None,
         http_status: None,
+        terminal: false,
     }
 }
 

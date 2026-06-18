@@ -66,6 +66,13 @@ pub struct ToolResult {
     /// `None` for non-HTTP tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_status: Option<u16>,
+    /// Terminal error: this failure cannot be recovered by retrying or trying a
+    /// different approach (auth expired, account not connected, permission off).
+    /// The runner ends the turn and surfaces `content` to the user instead of
+    /// feeding it back for the model to improvise around — see FRAMES.md Phase 1.
+    /// This is error *classification*, not a failure counter.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terminal: bool,
 }
 
 impl ToolResult {
@@ -80,6 +87,18 @@ impl ToolResult {
         Self {
             content: content.into(),
             is_error: true,
+            ..Default::default()
+        }
+    }
+
+    /// A terminal (unrecoverable) error: ends the turn and is surfaced to the
+    /// user. Use for auth/permission/connection failures the agent cannot fix by
+    /// retrying or improvising (FRAMES.md Phase 1).
+    pub fn terminal(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            terminal: true,
             ..Default::default()
         }
     }

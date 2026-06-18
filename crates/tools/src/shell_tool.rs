@@ -203,6 +203,7 @@ impl ShellTool {
                 is_error: true,
                 image_url: None,
                 http_status: None,
+                terminal: false,
             },
             Ok(Err(e)) => {
                 let err_str = e.to_string();
@@ -251,6 +252,7 @@ impl ShellTool {
                             is_error: true,
                             image_url: None,
                             http_status: None,
+                            terminal: false,
                         };
                     }
                     // Non-error exit (e.g. grep exit 1 = no matches) — fall through to success path
