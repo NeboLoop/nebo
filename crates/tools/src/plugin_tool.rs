@@ -1226,9 +1226,21 @@ pub fn is_auth_error(output: &str) -> bool {
 /// `agent:<id>:...` and `subagent:<parentId>:...` (a subagent runs under its
 /// parent agent's credentials). Returns `None` for non-agent sessions.
 fn agent_id_from_session_key(key: &str) -> Option<String> {
-    let mut parts = key.splitn(3, ':');
+    // Delegated (subagent) runs nest the parent's FULL session key:
+    //   subagent:<parent_session_key>:<task_id>
+    // and <parent_session_key> is itself `agent:<id>:…`. So a naive split on a
+    // subagent key returns the literal token "agent" instead of the id, which
+    // means a delegated agent's per-account plugin calls resolve to no profile
+    // and fall back to the plugin's global credentials (e.g. a duplicated agent
+    // reading the original account's inbox). Strip any number of leading
+    // `subagent:` wrappers, then read the id out of the inner `agent:<id>:…` key.
+    let mut inner = key;
+    while let Some(rest) = inner.strip_prefix("subagent:") {
+        inner = rest;
+    }
+    let mut parts = inner.splitn(3, ':');
     match parts.next()? {
-        "agent" | "subagent" => parts.next().map(|s| s.to_string()),
+        "agent" => parts.next().map(|s| s.to_string()),
         _ => None,
     }
 }
@@ -1393,6 +1405,31 @@ fn build_op_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_agent_id_from_session_key_resolves_nested_subagent() {
+        // Direct agent chat.
+        assert_eq!(
+            agent_id_from_session_key("agent:abc-123:thread:t1").as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(agent_id_from_session_key("agent:abc-123").as_deref(), Some("abc-123"));
+        // Delegated run: the orchestrator nests the parent's full session key as
+        // `subagent:<parent_session_key>:<task_id>`. Must recover the agent id,
+        // NOT the literal "agent" token (the bug that made a duplicated agent
+        // read the original account's inbox).
+        assert_eq!(
+            agent_id_from_session_key("subagent:agent:abc-123:thread:t1:task-9").as_deref(),
+            Some("abc-123")
+        );
+        // Doubly-nested delegation.
+        assert_eq!(
+            agent_id_from_session_key("subagent:subagent:agent:abc-123:thread:t1:task-9:task-10")
+                .as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(agent_id_from_session_key("acp:xyz"), None);
+    }
 
     #[test]
     fn test_is_auth_error_detects_common_patterns() {

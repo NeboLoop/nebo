@@ -56,7 +56,6 @@
     { id: 'channels', label: 'Channels' },
     { id: 'accounts', label: 'Connected Accounts' },
     { id: 'memory', label: 'Memory' },
-    { id: 'permissions', label: 'Permissions' },
   ];
 
   // Delete confirmation triggered by ?delete=1 query param or button click
@@ -541,7 +540,10 @@
   }
 
   function closeAddAccount() {
-    if (addAccountConnectingSlug) return;
+    // Always allow backing out — never trap the user mid-sign-in. The backend
+    // gws login loopback times out on its own; if the OAuth happens to complete
+    // later, the plugin_auth_complete handler still refreshes the account list.
+    addAccountConnectingSlug = null;
     addAccountPlugin = null;
     addAccountLabel = '';
     addAccountError = null;
@@ -1016,24 +1018,6 @@
     {:else if section === 'memory'}
       <MemoryManager {agentId} />
 
-    {:else if section === 'permissions'}
-      <div class="text-xs text-base-content/70 mb-2">Control what {agent?.name} can access and execute.</div>
-      {#each [
-        { id: 'files', label: 'File Access', desc: 'Read and write files on disk', on: true },
-        { id: 'shell', label: 'Shell', desc: 'Execute terminal commands', on: true },
-        { id: 'web', label: 'Web', desc: 'Make HTTP requests', on: true },
-        { id: 'contacts', label: 'Contacts', desc: 'Access address book', on: false },
-        { id: 'desktop', label: 'Desktop', desc: 'Screen capture and control', on: false },
-      ] as perm}
-        <div class="flex items-center gap-3 py-2">
-          <div class="flex-1">
-            <div class="text-sm font-medium">{perm.label}</div>
-            <div class="text-xs text-base-content/70">{perm.desc}</div>
-          </div>
-          <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={perm.on} role="switch" aria-checked={perm.on} />
-        </div>
-      {/each}
-
     {:else}
       <div class="text-center py-10 text-sm">Unknown settings section.</div>
     {/if}
@@ -1175,7 +1159,7 @@
           <div class="text-base font-semibold">Add {plugin.name} account</div>
           <div class="text-xs text-base-content/50 mt-0.5">Label this account, then sign in to connect it.</div>
         </div>
-        <button class="btn btn-ghost btn-sm btn-square" onclick={closeAddAccount} aria-label="Close" disabled={connecting}>
+        <button class="btn btn-ghost btn-sm btn-square" onclick={closeAddAccount} aria-label="Close">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
         </button>
       </div>
@@ -1195,7 +1179,7 @@
         </label>
 
         {#if connecting}
-          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">A sign-in window will open. Finish signing in there &mdash; this connects automatically when it completes.</div>
+          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">A sign-in window opened in your browser. Finish there &mdash; this connects automatically when it completes. Changed your mind? Cancel sign-in to close this and ignore the window.</div>
         {/if}
 
         {#if addAccountError}
@@ -1205,7 +1189,7 @@
 
       <div class="flex items-center gap-2 p-5 border-t border-base-content/10">
         <div class="flex-1"></div>
-        <button class="btn btn-sm btn-ghost" onclick={closeAddAccount} disabled={connecting}>Cancel</button>
+        <button class="btn btn-sm btn-ghost" onclick={closeAddAccount}>{connecting ? 'Cancel sign-in' : 'Cancel'}</button>
         <button
           class="btn btn-sm btn-primary"
           disabled={connecting || !addAccountLabel.trim()}
