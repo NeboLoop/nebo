@@ -116,12 +116,17 @@ The system prompt is a **two-tier, cache-optimized structure**:
 |  Anthropic caches this prefix                              |
 |                                                            |
 |  1. DB Context (identity, persona, user, memories)         |
-|  2. Static sections (identity, capabilities, behavior)     |
-|  3. STRAP tool documentation (context-activated)           |
-|  4. Plugin inventory                                       |
-|  5. CACHE BOUNDARY marker                                  |
-|  6. Skill catalog + active skills                          |
-|  7. Model aliases                                          |
+|  2. Behavioral sections (voice, how-you-work, care,        |
+|     memory, verification, tool-use enforcement,            |
+|     execution + operational directives)                    |
+|  3. STRAP behavioral overview ("## Tools — STRAP") +       |
+|     capability-discovery pointers (tool_search /           |
+|     skill discover / plugin list) — NOT a tool roster      |
+|  4. CACHE BOUNDARY marker                                  |
+|  5. Skill catalog + active skills                          |
+|  6. Connected-MCP-server tool listing (build_strap_section)|
+|  7. Deferred-tool discovery listing                        |
+|  8. Model aliases                                          |
 +------------------------------------------------------------+
 |  DYNAMIC SUFFIX (Tier 2)                                   |
 |  Rebuilt every iteration, appended after static             |
@@ -132,14 +137,33 @@ The system prompt is a **two-tier, cache-optimized structure**:
 |  4. Background objective (soft pin)                        |
 +------------------------------------------------------------+
 |  STEERING DIRECTIVES (ephemeral, never persisted)          |
-|  Injected into the dynamic suffix, not the message array   |
-|                                                            |
-|  15 generators, formatted as [Label] content lines         |
-|  Appear in "## Agent Directives" section of system prompt  |
+|  Delivered as hidden <system-reminder> messages in the     |
+|  live message stream (NOT a prompt suffix section)         |
 +------------------------------------------------------------+
 ```
 
 The final prompt sent to the LLM: `enrichedPrompt = staticSystem + dynamicSuffix`
+
+> **⚠️ Tool declaration (corrected 2026-06-18).** The system prompt does **NOT**
+> contain "STRAP tool documentation" or a "Plugin inventory" enumerating tool
+> commands. Each tool's full declaration — **description + JSON schema** — lives in
+> the provider's native `tools` field, the single source (like Claude). The runner
+> is explicit (`runner.rs`, ~line 2207): *"We do NOT add a prose tool roster or
+> re-document tools here; the model reads its tools natively. The system prompt only
+> carries behavior + MCP-server discovery + deferred-tool discovery."* `build_strap_section`
+> emits **only connected-MCP-server** tool listings.
+>
+> Consequence: a plugin's command grammar (e.g. gws's `gmail +triage` syntax) is
+> delivered via the **`plugin` tool's `description()`** (`plugin_tool.rs`), which is
+> **budget-capped (4096 chars/plugin, 12K total)**. For command-rich plugins like gws
+> (~100 commands) the list truncates, so the model may not see exact syntax and can
+> guess — fix surfacing in `plugin_tool.rs`, not here.
+>
+> Steering is likewise delivered as hidden `<system-reminder>` messages in the live
+> message stream (see [[feedback-steering-message-stream]]), not as a "## Agent
+> Directives" suffix section. Other sections of this doc (steering generator count,
+> injection identity-slice limit, extraction gates) are also known-stale pending a
+> fuller pass.
 
 This is placed in `ChatRequest.system`. Each provider maps it to their API format:
 - **Anthropic:** `params.System = []TextBlockParam{{Text: req.System}}`

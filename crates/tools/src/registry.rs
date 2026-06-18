@@ -520,9 +520,18 @@ impl Registry {
             let category = tool_category(name);
             if let Some(&allowed) = perms.get(category) {
                 if !allowed {
+                    // Actionable, capability-named denial. Tell the model exactly
+                    // which permission is off and to surface that to the user
+                    // (Settings → Permissions) instead of silently flailing
+                    // through fallback tools. PERMISSION_REQUIRED: prefix lets the
+                    // runner/UI detect this and offer a one-tap enable.
+                    let label = capability_label(category);
                     return ToolResult::error(format!(
-                        "Tool '{}' is denied for this entity (category '{}')",
-                        name, category
+                        "PERMISSION_REQUIRED:{category} — The \"{label}\" capability is \
+                         turned off, so I can't do this. Tell the user, in plain language, \
+                         that you need the \"{label}\" permission enabled in Settings → \
+                         Permissions to continue, then stop. Do NOT try other tools or \
+                         workarounds to get around it."
                     ));
                 }
             }
@@ -957,8 +966,29 @@ fn tool_category(name: &str) -> &str {
         "skill" => "filesystem",
         "work" => "filesystem",
         "loop" => "web",
-        "plugin" => "desktop",
+        // The plugin tool runs marketplace plugins (gws, slack, …). Its real
+        // permission boundary is per-plugin install + account connection (an
+        // explicit, HIL-approved user action), NOT the coarse "desktop"
+        // (screen-capture/control) toggle. Lumping it under "desktop" meant an
+        // inbox agent with screen-control OFF couldn't use its own Gmail plugin.
+        // Give it its own category: absent from the permissions map → the
+        // runtime check treats it as allowed, and the tool is always registered.
+        "plugin" => "plugin",
         _ => "other",
+    }
+}
+
+/// User-facing label for a permission category, matching the toggles shown in
+/// Settings → Permissions. Used in denial messages so the agent can tell the
+/// user exactly which switch to flip.
+fn capability_label(category: &str) -> &str {
+    match category {
+        "web" => "Web Access",
+        "desktop" => "Desktop (screen capture & control)",
+        "memory" => "Memory",
+        "filesystem" => "File Access",
+        "plugin" => "Plugins",
+        other => other,
     }
 }
 
