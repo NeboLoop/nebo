@@ -75,6 +75,40 @@ fn should_fork_command(prompt: &str) -> bool {
 
 /// Extract file path from an os(resource: "file", action: "read") tool call.
 /// Returns None if the call is not a file read.
+/// "Approve Always" on the ApprovalModal → grant the capability category for
+/// next time (PERMISSIONS_SME §14). Flips the global `user_profiles.tool_permissions`
+/// entry ON, the same store the Settings → Permissions toggles write.
+/// The shell command a tool call would execute, if it's an `os` shell exec —
+/// used by the per-command allowlist. `None` for any non-shell tool call.
+fn shell_command_of(tc: &ai::ToolCall) -> Option<String> {
+    if tc.name != "os" {
+        return None;
+    }
+    let resource = tc.input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+    let action = tc.input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    if resource == "shell" || action == "exec" {
+        tc.input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+fn persist_capability_grant(store: &Store, category: &str) -> Result<(), String> {
+    let raw = store
+        .get_user_profile()
+        .map_err(|e| e.to_string())?
+        .and_then(|p| p.tool_permissions)
+        .unwrap_or_else(|| "{}".to_string());
+    let mut map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&raw).unwrap_or_default();
+    map.insert(category.to_string(), serde_json::Value::Bool(true));
+    let json = serde_json::to_string(&map).map_err(|e| e.to_string())?;
+    store.update_tool_permissions(&json).map_err(|e| e.to_string())
+}
+
 fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
     if call.name != "os" {
         return None;
@@ -246,6 +280,10 @@ pub struct RunRequest {
     /// plugin tool can inject `NEBO_CHANNEL_*` env vars into plugin processes
     /// (e.g. for `slack upload`). See `docs/publishers-guide/channel-plugins.md`.
     pub channel_ctx: Option<tools::ChannelContext>,
+    /// Master "Full Access" flag (settings.full_access). When true, the runner's
+    /// per-tool approval gate is bypassed entirely — the agent executes without
+    /// asking. When false, an OFF capability prompts via the Approval Modal.
+    pub full_access: bool,
 }
 
 /// Shared atomic counters for live run progress reporting.
@@ -316,6 +354,11 @@ pub struct Runner {
     agent_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
     ask_channels: Option<tools::AskChannels>,
+    /// Tool-approval channels (PERMISSIONS_SME §11). The runner inserts a
+    /// oneshot per tool_call_id, emits `approval_request`, and awaits the user's
+    /// ApprovalModal decision. Shares the map with the WS `approval_response`
+    /// handler. Set via `set_approval_channels`.
+    approval_channels: Option<tools::ApprovalChannels>,
     embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
     /// Optional broadcast/loop-push sink for auto-generated chat titles.
     title_sink: std::sync::OnceLock<Arc<dyn ChatTitleSink>>,
@@ -339,6 +382,7 @@ impl Runner {
             tools,
             store,
             ask_channels: None,
+            approval_channels: None,
             selector: Arc::new(selector),
             concurrency,
             hooks,
@@ -364,6 +408,13 @@ impl Runner {
     /// Set the shared ask channels so tools can prompt the user via `ctx.ask_user()`.
     pub fn set_ask_channels(mut self, channels: tools::AskChannels) -> Self {
         self.ask_channels = Some(channels);
+        self
+    }
+
+    /// Set the shared tool-approval channels (PERMISSIONS_SME §11) so the runner
+    /// can emit `approval_request` and await the user's ApprovalModal decision.
+    pub fn set_approval_channels(mut self, channels: tools::ApprovalChannels) -> Self {
+        self.approval_channels = Some(channels);
         self
     }
 
@@ -703,6 +754,8 @@ impl Runner {
         let prompt_mode = req.prompt_mode.clone();
         let progress = req.progress.clone();
         let ask_channels = self.ask_channels.clone();
+        let approval_channels = self.approval_channels.clone();
+        let full_access = req.full_access;
         let embedding_provider = self.embedding_provider.clone();
         let tool_scope = req.tool_scope.clone();
         let plan_mode = req.plan_mode;
@@ -800,6 +853,8 @@ impl Runner {
                         prompt::PromptMode::Minimal,
                         progress.as_ref(),
                         ask_channels.as_ref(),
+                        approval_channels.as_ref(),
+                        full_access,
                         embedding_provider.as_ref(),
                         tool_scope.as_deref(),
                         false,  // no plan_mode for forks
@@ -880,6 +935,8 @@ impl Runner {
                 prompt_mode,
                 progress.as_ref(),
                 ask_channels.as_ref(),
+                approval_channels.as_ref(),
+                full_access,
                 embedding_provider.as_ref(),
                 tool_scope.as_deref(),
                 plan_mode,
@@ -1078,6 +1135,8 @@ async fn run_loop(
     prompt_mode: prompt::PromptMode,
     progress: Option<&RunProgress>,
     ask_channels: Option<&tools::AskChannels>,
+    approval_channels: Option<&tools::ApprovalChannels>,
+    full_access: bool,
     embedding_provider: Option<&Arc<dyn ai::EmbeddingProvider>>,
     tool_scope: Option<&str>,
     plan_mode: bool,
@@ -2944,7 +3003,7 @@ async fn run_loop(
             let resolved_key = sessions
                 .resolve_session_key(session_id)
                 .unwrap_or_else(|_| session_id.to_string());
-            let ctx = ToolContext {
+            let mut ctx = ToolContext {
                 origin,
                 session_key: resolved_key,
                 session_id: session_id.to_string(),
@@ -2960,6 +3019,8 @@ async fn run_loop(
                 model_preference: (!model_override.is_empty())
                     .then(|| model_override.to_string()),
                 memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
+                // Populated by the approval gate below, before tool execution.
+                approved_categories: std::collections::HashSet::new(),
             };
 
             // Track tool names for context filtering
@@ -3062,6 +3123,130 @@ async fn run_loop(
                     }
                 }
             }
+
+            // ── Per-tool approval gate (PERMISSIONS_SME §11) ──────────────────
+            // A capability that's OFF means ASK the user, not hard-fail. We wire
+            // the previously-dangling producer: emit `approval_request` and await
+            // the ApprovalModal decision via the shared `approval_channels`
+            // round-trip (the SAME pathway plan-mode uses). Autonomous mode and
+            // pre-granted (ON) categories proceed without asking; Deny returns a
+            // clean declined result; "Always" flips the capability ON for next
+            // time. Categories cleared here are recorded on the ToolContext so the
+            // registry permission gate (Phase 1c) treats them as allowed.
+            let mut approved_cats: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            // Per-command allowlist: prefixes the user chose "Approve Always" for.
+            // Loaded once; appended on an "always" decision for a shell command.
+            let mut approved_cmds: Vec<String> = store.get_approved_commands().unwrap_or_default();
+            for idx in 0..tool_calls.len() {
+                if blocked_results[idx].is_some() {
+                    continue;
+                }
+                let category = match tools::capabilities::gating_capability(
+                    &tool_calls[idx].name,
+                    &tool_calls[idx].input,
+                ) {
+                    Some(c) => c,
+                    None => continue, // ungated (installed extension / non-ambient tool)
+                };
+                let cap_off = entity_permissions
+                    .map(|p| p.get(category) == Some(&false))
+                    .unwrap_or(false);
+                // The shell command this call would run, if any (for the per-command
+                // allowlist). None for non-shell tools.
+                let shell_cmd = shell_command_of(&tool_calls[idx]);
+                if !cap_off || full_access {
+                    // Pre-granted (capability ON), no permission map, or Full Access
+                    // → proceed without asking.
+                    approved_cats.insert(category.to_string());
+                    continue;
+                }
+                // Capability OFF, but this exact shell command was "approved always"
+                // (matched by prefix; compound/interpreter commands never match) →
+                // run without asking. Hard safeguards still apply unconditionally.
+                if let Some(ref c) = shell_cmd {
+                    if tools::policy::command_matches(&approved_cmds, c) {
+                        approved_cats.insert(category.to_string());
+                        continue;
+                    }
+                }
+                // Capability OFF + not Full Access + not pre-approved → ask, but ONLY
+                // when a human is present. Unattended runs (cron/heartbeat/workflow/
+                // comm/subagent) have no one to answer, so it's denied (left ungranted
+                // → Phase 1c blocks) rather than hanging on a prompt nobody sees.
+                if tools::ExecutionMode::from(origin) != tools::ExecutionMode::Interactive {
+                    continue;
+                }
+                let chs = match approval_channels {
+                    Some(c) => c,
+                    // No channel to ask through: leave the category ungranted so
+                    // registry Phase 1c hard-blocks (safe).
+                    None => continue,
+                };
+                let request_id = tool_calls[idx].id.clone();
+                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                chs.lock().await.insert(request_id.clone(), resp_tx);
+                let _ = tx
+                    .send(StreamEvent::approval_request(tool_calls[idx].clone()))
+                    .await;
+                info!(
+                    session_id,
+                    request_id = %request_id,
+                    category,
+                    tool = %tool_calls[idx].name,
+                    "tool approval: waiting for user decision"
+                );
+                let decision = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        chs.lock().await.remove(&request_id);
+                        "deny".to_string()
+                    }
+                    result = resp_rx => result.unwrap_or_else(|_| "deny".to_string()),
+                };
+                match decision.as_str() {
+                    "always" => {
+                        approved_cats.insert(category.to_string());
+                        match &shell_cmd {
+                            // Shell command → remember just this command's PREFIX
+                            // (not all of Shell). Interpreters/compound commands
+                            // yield None → no durable grant (approved once only).
+                            Some(c) => {
+                                if let Some(prefix) = tools::policy::command_prefix(c) {
+                                    if !approved_cmds.iter().any(|p| p == &prefix) {
+                                        approved_cmds.push(prefix.clone());
+                                        if let Err(e) = store.set_approved_commands(&approved_cmds) {
+                                            warn!(session_id, error = %e, "failed to persist approved command");
+                                        }
+                                    }
+                                }
+                            }
+                            // Non-shell capability → grant the whole capability for
+                            // next time (per-item grants aren't meaningful there).
+                            None => {
+                                if let Err(e) = persist_capability_grant(store, category) {
+                                    warn!(session_id, category, error = %e, "failed to persist capability grant");
+                                }
+                            }
+                        }
+                    }
+                    "once" | "approve" | "approved" | "yes" | "true" => {
+                        approved_cats.insert(category.to_string());
+                    }
+                    _ => {
+                        // Deny → skip execution with a clean, non-spiraling result.
+                        blocked_results[idx] = Some((
+                            tool_calls[idx].clone(),
+                            ToolResult::error(format!(
+                                "The user declined to allow this action (the \"{}\" capability \
+                                 is off). Tell the user it needs their approval and stop — do \
+                                 not retry or work around it.",
+                                tools::capabilities::capability_label(category)
+                            )),
+                        ));
+                    }
+                }
+            }
+            ctx.approved_categories = approved_cats;
 
             // Partition tool calls into concurrent-safe (read-only) and sequential (writes).
             // Concurrent-safe tools run in parallel via FuturesUnordered, then

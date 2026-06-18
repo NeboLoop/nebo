@@ -31,6 +31,10 @@ pub fn public_routes() -> Router<AppState> {
             axum::routing::put(handlers::user::update_permissions),
         )
         .route(
+            "/user/me/approved-commands",
+            axum::routing::put(handlers::user::update_approved_commands),
+        )
+        .route(
             "/user/me/accept-terms",
             axum::routing::post(handlers::user::accept_terms),
         )

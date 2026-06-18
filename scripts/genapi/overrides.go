@@ -34,8 +34,9 @@ var typeOverrides = map[string]string{
 	"userGetProfile.profile": "UserProfileFull",
 
 	// ── User permissions ──
-	"userGetPermissions.permissions":  "ToolPermission[]",
-	"userGetPermissions.capabilities": "Capability[]",
+	"userGetPermissions.permissions":      "ToolPermission[]",
+	"userGetPermissions.capabilities":     "Capability[]",
+	"userGetPermissions.approvedCommands": "string[]",
 
 	// ── Agent workflows (map keyed by binding name, NOT an array) ──
 	"list_agent_workflows.workflows": "Record<string, AgentWorkflowEntry>",

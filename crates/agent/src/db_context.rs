@@ -615,6 +615,7 @@ mod tests {
             tool_permissions: None,
             terms_accepted_at: None,
             account_type: None,
+            approved_commands: None,
         };
 
         let ctx = DBContext {

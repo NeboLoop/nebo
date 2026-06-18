@@ -10,6 +10,7 @@
     actionDetail?: string;
     actionKey?: string;
     onApprove?: () => void;
+    onApproveAlways?: () => void;
     onDeny?: () => void;
     onclose?: () => void;
   }
@@ -21,6 +22,7 @@
     actionDetail = 'rm -rf /tmp/cache',
     actionKey = '',
     onApprove,
+    onApproveAlways,
     onDeny,
     onclose,
   }: Props = $props();
@@ -48,7 +50,8 @@
   function handleApproveAlways() {
     if (actionKey) approveAlways(actionKey);
     show = false;
-    onApprove?.();
+    // Distinct from "once": callers persist the grant (e.g. flip the capability ON).
+    (onApproveAlways ?? onApprove)?.();
     onclose?.();
   }
 

@@ -180,10 +180,32 @@ fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
     }
 
     let cmd = command.trim();
-    let cmd_lower = cmd.to_lowercase();
 
-    // Block sudo
-    if has_sudo(&cmd_lower) {
+    // Scan the command string itself.
+    if let Some(reason) = scan_command_text(cmd) {
+        return Some(reason);
+    }
+
+    // Defense-in-depth: if the command runs a LOCAL shell script
+    // (`bash X.sh`, `./X.sh`, `source X.sh`, …), scan the script's contents with
+    // the same checks — the command string alone (`bash X.sh`) hides whatever the
+    // script does. Best-effort: a static scan catches obvious destructive content
+    // (rm -rf /, sudo, dd-to-device); it cannot beat obfuscation/indirection, so
+    // it's a speed bump, not a guarantee. The command still requires approval
+    // anyway (interpreters are never allowlisted).
+    if let Some(reason) = scan_referenced_script(cmd) {
+        return Some(reason);
+    }
+
+    None
+}
+
+/// Run the unconditional dangerous-pattern checks over a piece of command text
+/// (the command itself, or a script's contents). Returns a BLOCK reason if any
+/// hard-safety pattern is present.
+fn scan_command_text(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    if has_sudo(&lower) {
         return Some(
             "BLOCKED: sudo is not permitted. \
              Nebo must never run commands with elevated privileges. \
@@ -192,9 +214,7 @@ fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
                 .to_string(),
         );
     }
-
-    // Block su
-    if has_su(&cmd_lower) {
+    if has_su(&lower) {
         return Some(
             "BLOCKED: su is not permitted. \
              Nebo must never run commands as another user. \
@@ -202,9 +222,7 @@ fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
                 .to_string(),
         );
     }
-
-    // Block destructive operations targeting root or system paths
-    if let Some(reason) = check_destructive_command(cmd, &cmd_lower) {
+    if let Some(reason) = check_destructive_command(text, &lower) {
         return Some(format!(
             "BLOCKED: {}. \
              This is a hard safety limit that cannot be overridden. \
@@ -212,7 +230,39 @@ fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
             reason
         ));
     }
+    None
+}
 
+/// If `cmd` invokes a local shell script, read it and scan its contents. Returns
+/// a BLOCK reason naming the script when dangerous content is found.
+fn scan_referenced_script(cmd: &str) -> Option<String> {
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    let path = referenced_script_path(&parts)?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    // Skip pathologically large files (not worth the scan; not a typical script).
+    if content.len() > 1_000_000 {
+        return None;
+    }
+    scan_command_text(&content)
+        .map(|reason| format!("{} (found inside the script {})", reason, path))
+}
+
+/// The local shell-script path a command would execute, if any:
+/// `./x.sh` / `/abs/x.sh` / `../x.sh`, or `bash|sh|zsh|dash|ksh|source|. <script>`.
+fn referenced_script_path(parts: &[&str]) -> Option<String> {
+    let first = *parts.first()?;
+    if first.starts_with("./") || first.starts_with('/') || first.starts_with("../") {
+        return Some(first.to_string());
+    }
+    const SHELL_INTERPS: &[&str] = &["bash", "sh", "zsh", "dash", "ksh", "source", "."];
+    if SHELL_INTERPS.contains(&first) {
+        // First non-flag argument is the script.
+        return parts
+            .iter()
+            .skip(1)
+            .find(|a| !a.starts_with('-'))
+            .map(|s| s.to_string());
+    }
     None
 }
 

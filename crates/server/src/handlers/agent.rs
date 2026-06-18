@@ -134,6 +134,7 @@ pub async fn update_settings(
             body["commPlugin"].as_str(),
             body["developerMode"].as_bool(),
             body["autoUpdate"].as_bool(),
+            body["fullAccess"].as_bool(),
         )
         .map_err(to_error_response)?;
 

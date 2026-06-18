@@ -201,6 +201,81 @@ impl Policy {
     }
 }
 
+/// Shell interpreters / arbitrary-code wrappers. "Approve Always" must NEVER
+/// allowlist these — their prefix says nothing about what they execute, so
+/// allowlisting `bash` would auto-approve any script. They always re-ask.
+pub const INTERPRETER_BINS: &[&str] = &[
+    "bash", "sh", "zsh", "fish", "dash", "ksh", "csh", "tcsh", "env", "command", "nohup",
+    "xargs", "watch", "time", "eval", "exec", "source", ".", "sudo", "su",
+    "python", "python2", "python3", "ruby", "perl", "node", "deno", "bun", "php", "lua",
+    "rscript", "osascript", "awk", "expect",
+];
+
+/// Subcommand-style binaries: keep the subcommand in the stored prefix so
+/// "Approve Always" on `git push …` grants `git push`, not all of git.
+const SUBCOMMAND_BINS: &[&str] = &[
+    "git", "npm", "pnpm", "yarn", "cargo", "docker", "kubectl", "brew", "go", "pip", "pip3",
+    "gh", "apt", "apt-get", "systemctl", "gws", "gcloud", "aws", "terraform",
+];
+
+/// A "simple" command — a single program invocation with no shell
+/// metacharacters that could chain or inject other commands. Only simple
+/// commands are eligible for the per-command allowlist; anything with
+/// `; | & $( ) \` < > {} \n` re-asks, so an allowlisted prefix can never
+/// smuggle a second command (`mv x y && bash evil.sh`).
+pub fn is_simple_command(cmd: &str) -> bool {
+    !cmd.chars().any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '<' | '>' | '(' | ')' | '\n'))
+}
+
+/// Derive the allowlist pattern to store for an "Approve Always" on a shell
+/// command, or `None` if the command must never be allowlisted: not simple
+/// (compound), an interpreter/wrapper, or a path-based invocation (`./x`,
+/// `/abs/x`). Pairs with [`command_matches`] (same shape).
+pub fn command_prefix(cmd: &str) -> Option<String> {
+    let cmd = cmd.trim();
+    if !is_simple_command(cmd) {
+        return None;
+    }
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    let first = *parts.first()?;
+    if first.starts_with("./") || first.starts_with('/') || first.starts_with("../") {
+        return None;
+    }
+    if INTERPRETER_BINS.contains(&first) {
+        return None;
+    }
+    if SUBCOMMAND_BINS.contains(&first) && parts.len() > 1 {
+        return Some(format!("{} {}", first, parts[1]));
+    }
+    Some(first.to_string())
+}
+
+/// Does `cmd` match any stored allowlist `pattern` (exact / first-word /
+/// two-word)? Only simple commands can match — a compound command always
+/// re-asks even if its leading binary is allowlisted.
+pub fn command_matches(patterns: &[String], cmd: &str) -> bool {
+    let cmd = cmd.trim();
+    if !is_simple_command(cmd) {
+        return false;
+    }
+    if patterns.iter().any(|p| p == cmd) {
+        return true;
+    }
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    if let Some(&first) = parts.first() {
+        if patterns.iter().any(|p| p == first) {
+            return true;
+        }
+        if parts.len() > 1 {
+            let two = format!("{} {}", first, parts[1]);
+            if patterns.iter().any(|p| p == &two) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Check if a command appears dangerous.
 pub fn is_dangerous(cmd: &str) -> bool {
     let dangerous = [

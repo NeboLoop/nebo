@@ -186,6 +186,7 @@ pub fn resolve_for_chat(
         comm_plugin: String::new(),
         developer_mode: 0,
         auto_update: 1,
+        full_access: 0,
         updated_at: 0,
     });
 
