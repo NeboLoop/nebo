@@ -962,6 +962,7 @@ export interface DisableAgentChannelResponse {
 export interface DuplicateAgentResponse {
 	agent: unknown
 	activated: boolean
+	needsAccountSetup: string[]
 }
 
 export interface EditMessageResponse {
