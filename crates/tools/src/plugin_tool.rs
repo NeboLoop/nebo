@@ -424,7 +424,7 @@ impl DynTool for PluginTool {
             "command".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "Subcommand and flags ONLY — the binary path is auto-resolved. Do NOT include the plugin name. Example: 'gmail +triage --max 5' (not 'gws gmail +triage --max 5'). Use only commands listed in this tool's description; do not guess syntax."
+                "description": "Subcommand and flags ONLY — the binary path is auto-resolved. Do NOT include the plugin name (e.g. for a plugin 'acme' with subcommand 'reports generate', pass 'reports generate --period month', NOT 'acme reports generate'). Use only commands listed in this tool's description or confirmed via a skill/help; do not guess syntax."
             }),
         );
         props.insert(

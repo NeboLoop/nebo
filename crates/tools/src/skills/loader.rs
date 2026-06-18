@@ -559,16 +559,35 @@ impl Loader {
     /// and could never match — discover missed installed skills looked up by
     /// their exact hyphenated name.
     async fn discover_scored(&self, query: &str) -> Vec<Skill> {
+        // Cap on returned matches — discovery is a search, not a dump. Callers
+        // surface the top hits; the agent loads the one it wants.
+        const MAX_RESULTS: usize = 12;
+        // Filler words carry no intent and must NOT be required to match, or a
+        // natural phrasing like "check my inbox" fails AND-logic on "my".
+        const STOPWORDS: &[&str] = &[
+            "a", "an", "and", "the", "to", "of", "for", "in", "on", "my", "me", "i", "you",
+            "your", "it", "this", "that", "with", "or", "is", "are", "can", "please", "help",
+            "want", "need", "let", "lets", "let's", "do", "get", "show",
+        ];
         let skills = self.skills.read().await;
-        let tokens: Vec<String> = query
+        let raw: Vec<String> = query
             .to_lowercase()
             .replace('-', " ")
             .split_whitespace()
             .map(|t| t.to_string())
             .collect();
-        if tokens.is_empty() {
+        if raw.is_empty() {
             return Vec::new();
         }
+        // Meaningful tokens drive matching; if the query is ALL stopwords, fall
+        // back to the raw tokens so we never search on an empty set.
+        let meaningful: Vec<String> = raw
+            .iter()
+            .filter(|t| !STOPWORDS.contains(&t.as_str()))
+            .cloned()
+            .collect();
+        let tokens: &[String] = if meaningful.is_empty() { &raw } else { &meaningful };
+
         let mut matches: Vec<(usize, Skill)> = skills
             .values()
             .filter(|s| s.enabled)
@@ -577,32 +596,42 @@ impl Loader {
                 let desc_lower = s.description.to_lowercase();
                 let triggers_lower: Vec<String> =
                     s.triggers.iter().map(|t| t.to_lowercase()).collect();
-                // Every token must match at least one field.
-                let all_match = tokens.iter().all(|tok| {
-                    name_lower.contains(tok.as_str())
-                        || desc_lower.contains(tok.as_str())
-                        || triggers_lower.iter().any(|t| t.contains(tok.as_str()))
-                });
-                if !all_match {
-                    return None;
-                }
-                // Score: name matches highest, then triggers, then description.
+                // Ranked recall (OR): a skill is a candidate if ANY token matches
+                // a field. Score by field weight (name > triggers > description)
+                // plus a coverage bonus for matching more distinct tokens, so the
+                // best multi-token match floats to the top without excluding
+                // single-token hits the way AND-logic did.
                 let mut score: usize = 0;
-                for tok in &tokens {
+                let mut matched_tokens = 0usize;
+                for tok in tokens {
+                    let mut hit = false;
                     if name_lower.contains(tok.as_str()) {
                         score += 3;
+                        hit = true;
                     }
                     if triggers_lower.iter().any(|t| t.contains(tok.as_str())) {
                         score += 2;
+                        hit = true;
                     }
                     if desc_lower.contains(tok.as_str()) {
                         score += 1;
+                        hit = true;
+                    }
+                    if hit {
+                        matched_tokens += 1;
                     }
                 }
+                if score == 0 {
+                    return None;
+                }
+                // Coverage bonus: matching N distinct tokens outranks a single
+                // repeated field hit.
+                score += matched_tokens * 2;
                 Some((score, s.clone()))
             })
             .collect();
         matches.sort_by(|a, b| b.0.cmp(&a.0));
+        matches.truncate(MAX_RESULTS);
         matches.into_iter().map(|(_, s)| s).collect()
     }
 
@@ -1638,6 +1667,39 @@ Design instructions.
         assert!(
             !has(loader.discover_summaries("unrelated").await),
             "unrelated query must not surface nebo-design"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_discover_recall_ignores_stopwords() {
+        // Natural phrasing with filler words must still surface the skill. The
+        // old AND-logic failed because EVERY token (incl. "my"/"check") had to
+        // match — so "check my inbox" found nothing even with a triage skill.
+        const TRIAGE: &str = r#"---
+name: gws-gmail-triage
+description: Triage your unread email and summarize the inbox
+priority: 5
+---
+
+Triage instructions.
+"#;
+        let installed = TempDir::new().unwrap();
+        let tmp = TempDir::new().unwrap();
+        create_skill_md(tmp.path(), "gws-gmail-triage", TRIAGE);
+        let loader = Loader::new(installed.path().to_path_buf(), tmp.path().to_path_buf());
+        loader.load_all().await;
+
+        let has = |v: Vec<SkillSummary>| v.iter().any(|s| s.name == "gws-gmail-triage");
+        // "check"/"my" are filler; "inbox" carries the intent — must still match.
+        assert!(
+            has(loader.discover_summaries("check my inbox").await),
+            "natural phrasing with stopwords should still find the triage skill"
+        );
+        assert!(has(loader.discover_summaries("inbox").await));
+        // A query with no meaningful overlap must not surface it.
+        assert!(
+            !has(loader.discover_summaries("calendar meeting room").await),
+            "unrelated query must not surface the triage skill"
         );
     }
 
