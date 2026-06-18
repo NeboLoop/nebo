@@ -163,7 +163,7 @@ impl OsTool {
     }
 
     /// Infer resource from action name when resource field is omitted.
-    fn infer_resource(action: &str) -> &str {
+    pub(crate) fn infer_resource(action: &str) -> &str {
         match action {
             // File
             "read" | "write" | "edit" | "glob" | "grep" | "convert" => "file",
@@ -192,7 +192,7 @@ impl OsTool {
 
     /// Infer resource from parameter context when action-based inference fails
     /// (e.g. "create" is shared across calendar, contacts, reminders).
-    fn infer_resource_from_context(input: &serde_json::Value) -> &'static str {
+    pub(crate) fn infer_resource_from_context(input: &serde_json::Value) -> &'static str {
         // File: "list"/"ls" with a dir/path target is a directory listing
         // (a strong model prior — routed to file, which handles it via glob).
         // Bare "list" with no target stays ambiguous (window, app, shell, ...).

@@ -6,6 +6,7 @@ use tracing::{debug, warn};
 
 use ai::ToolDefinition;
 
+use crate::capabilities;
 use crate::origin::ToolContext;
 use crate::policy::Policy;
 use crate::process::ProcessRegistry;
@@ -437,12 +438,16 @@ impl Registry {
             .values()
             .filter(|def| {
                 if let Some(perms) = permissions {
-                    let cat = tool_category(&def.name);
-                    if let Some(&allowed) = perms.get(cat) {
-                        return allowed;
+                    // Only hide pure single-capability tools whose capability is
+                    // off. Meta-tools (os) and mixed tools (organizer) stay listed
+                    // — their individual calls are gated per-resource at execution.
+                    if let Some(cat) = capabilities::whole_tool_capability(&def.name) {
+                        if let Some(&allowed) = perms.get(cat) {
+                            return allowed;
+                        }
                     }
                 }
-                true // no permission set = allowed
+                true // no permission set / ungated = allowed
             })
             .cloned()
             .collect()
@@ -536,15 +541,18 @@ impl Registry {
 
         // ── Phase 1b: Entity permission check ─────────────────────
         if let Some(ref perms) = ctx.entity_permissions {
-            let category = tool_category(name);
-            if let Some(&allowed) = perms.get(category) {
-                if !allowed {
+            // Resource-aware: `os` resolves to file/shell/system/desktop/media by
+            // the resource being used (the original bug gated all of os behind
+            // `desktop`). Installed extensions (plugin/mcp/app/skill/agent) return
+            // None here — ungated, because installation is the grant.
+            if let Some(category) = capabilities::gating_capability(name, &input) {
+                if perms.get(category) == Some(&false) {
                     // Actionable, capability-named denial. Tell the model exactly
                     // which permission is off and to surface that to the user
                     // (Settings → Permissions) instead of silently flailing
                     // through fallback tools. PERMISSION_REQUIRED: prefix lets the
                     // runner/UI detect this and offer a one-tap enable.
-                    let label = capability_label(category);
+                    let label = capabilities::capability_label(category);
                     return ToolResult::error(format!(
                         "PERMISSION_REQUIRED:{category} — The \"{label}\" capability is \
                          turned off, so I can't do this. Tell the user, in plain language, \
@@ -975,41 +983,11 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
     }
 }
 
-/// Map a tool name to its permission category.
-/// Categories match the keys used in entity_config.permissions JSON.
-fn tool_category(name: &str) -> &str {
-    match name {
-        "web" => "web",
-        "os" => "desktop",
-        "agent" => "memory",
-        "skill" => "filesystem",
-        "work" => "filesystem",
-        "loop" => "web",
-        // The plugin tool runs marketplace plugins (gws, slack, …). Its real
-        // permission boundary is per-plugin install + account connection (an
-        // explicit, HIL-approved user action), NOT the coarse "desktop"
-        // (screen-capture/control) toggle. Lumping it under "desktop" meant an
-        // inbox agent with screen-control OFF couldn't use its own Gmail plugin.
-        // Give it its own category: absent from the permissions map → the
-        // runtime check treats it as allowed, and the tool is always registered.
-        "plugin" => "plugin",
-        _ => "other",
-    }
-}
-
-/// User-facing label for a permission category, matching the toggles shown in
-/// Settings → Permissions. Used in denial messages so the agent can tell the
-/// user exactly which switch to flip.
-fn capability_label(category: &str) -> &str {
-    match category {
-        "web" => "Web Access",
-        "desktop" => "Desktop (screen capture & control)",
-        "memory" => "Memory",
-        "filesystem" => "File Access",
-        "plugin" => "Plugins",
-        other => other,
-    }
-}
+// Tool→capability mapping and labels live in `crate::capabilities` — the single
+// source of truth shared with the Settings → Permissions UI (served via the API).
+// The old `tool_category`/`capability_label` here used a drifted vocabulary
+// (filesystem/memory/plugin) that didn't match the persisted keys
+// (file/shell/system/…), so most toggles silently gated nothing.
 
 /// Strip MCP namespace prefix from tool names.
 /// `mcp__{server}__{tool}` → `{tool}`
