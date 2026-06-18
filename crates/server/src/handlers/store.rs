@@ -228,7 +228,7 @@ fn is_locally_installed(slug: &str, artifact_type: &str) -> bool {
 }
 
 /// Check if a product is installed on the filesystem.
-fn is_installed(slug: &str, _name: &str, artifact_type: &str, _store: &db::Store) -> bool {
+pub(crate) fn is_installed(slug: &str, _name: &str, artifact_type: &str, _store: &db::Store) -> bool {
     let dir_type = match artifact_type {
         "agent" => "agents",
         "skill" => "skills",

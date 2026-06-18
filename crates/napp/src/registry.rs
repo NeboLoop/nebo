@@ -522,120 +522,12 @@ impl Registry {
         }
     }
 
-    /// Download and install a .napp from a URL.
-    ///
-    /// For marketplace tools: stores sealed .napp in nebo/tools/ and extracts
-    /// only the binary (and ui/) to a version directory alongside it.
-    pub async fn install_from_url(&self, url: &str) -> Result<String, NappError> {
-        let tmp_dir = self.config.installed_tools_dir.join(".tmp");
-        std::fs::create_dir_all(&tmp_dir)?;
-
-        let tmp_file = tmp_dir.join(format!("{}.napp", uuid::Uuid::new_v4()));
-
-        // Download
-        let resp = reqwest::get(url).await?;
-        if !resp.status().is_success() {
-            return Err(NappError::Http(resp.error_for_status().unwrap_err()));
-        }
-        let bytes = resp.bytes().await?;
-
-        // 500MB limit
-        if bytes.len() > 500 * 1024 * 1024 {
-            return Err(NappError::Extraction("download exceeds 500MB limit".into()));
-        }
-
-        std::fs::write(&tmp_file, &bytes)?;
-
-        // Read manifest from the archive (don't fully extract)
-        let manifest_data = crate::reader::read_napp_entry(&tmp_file, "manifest.json")?;
-        let manifest: Manifest = serde_json::from_slice(&manifest_data)
-            .map_err(|e| NappError::Manifest(format!("invalid manifest: {}", e)))?;
-        manifest.validate()?;
-
-        // Build qualified path: nebo/tools/<tool_id>/<version>.napp
-        let tool_base = self.config.installed_tools_dir.join(manifest.id());
-        std::fs::create_dir_all(&tool_base)?;
-
-        let napp_dest = tool_base.join(format!("{}.napp", manifest.version));
-        let version_dir = tool_base.join(&manifest.version);
-
-        // Move .napp to permanent location
-        if napp_dest.exists() {
-            let _ = std::fs::remove_file(&napp_dest);
-        }
-        std::fs::rename(&tmp_file, &napp_dest)?;
-
-        // Extract only binary and ui/ to the version directory
-        if version_dir.exists() {
-            let _ = std::fs::remove_dir_all(&version_dir);
-        }
-        std::fs::create_dir_all(&version_dir)?;
-
-        // Extract binary. Plugins keep it at the root (`binary`/`app`); app
-        // sidecars live under `bin/<name>` (see NeboLoop buildBinaryNappFiles).
-        let mut extracted_root_binary = false;
-        for binary_name in &["binary", "app"] {
-            let dest = version_dir.join(binary_name);
-            match crate::reader::extract_napp_entry(&napp_dest, binary_name, &dest) {
-                Ok(()) => {
-                    info!(binary = binary_name, "extracted binary from .napp");
-                    extracted_root_binary = true;
-                    break;
-                }
-                Err(NappError::NotFound(_)) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        // App sidecars: extract the whole bin/ tree.
-        if !extracted_root_binary {
-            let _ = crate::reader::extract_napp_prefix(&napp_dest, "bin/", &version_dir);
-        }
-
-        // Extract ui/ assets if present
-        let _ = crate::reader::extract_napp_prefix(&napp_dest, "ui/", &version_dir);
-
-        // Extract signatures.json so installed-tool verification can find it on
-        // disk (verify_signatures reads <version_dir>/signatures.json).
-        let sigs_dest = version_dir.join("signatures.json");
-        match crate::reader::extract_napp_entry(&napp_dest, "signatures.json", &sigs_dest) {
-            Ok(()) | Err(NappError::NotFound(_)) => {}
-            Err(e) => return Err(e),
-        }
-
-        // Also write manifest.json to the version dir so Runtime can find it
-        std::fs::write(version_dir.join("manifest.json"), &manifest_data)?;
-
-        let tool_id = manifest.id().to_string();
-        self.launch_tool_from_dir(
-            &version_dir,
-            manifest,
-            ToolSource::Installed,
-            Some(napp_dest),
-        )
-        .await?;
-
-        info!(
-            tool = tool_id.as_str(),
-            "tool installed from URL (sealed .napp)"
-        );
-        Ok(tool_id)
-    }
-
-    /// Handle an install event from NeboAI.
+    /// Handle uninstall/revoke install events. tool_installed/tool_updated are
+    /// NOT handled here — the server routes those through the canonical install
+    /// pathway (codes::handle_code) so download + envelope + type-correct install
+    /// match the store/code path (CODE_AUDITOR Rule 8).
     pub async fn handle_install_event(&self, event: InstallEvent) -> Result<(), NappError> {
         match event.event_type.as_str() {
-            "tool_installed" => {
-                let url = event.payload["download_url"]
-                    .as_str()
-                    .filter(|u| !u.is_empty())
-                    .ok_or(NappError::Other(
-                        "missing or empty download_url in install event".into(),
-                    ))?;
-                if !url.starts_with("https://") && !url.starts_with("http://") {
-                    return Err(NappError::Other(format!("invalid download_url: {}", url)));
-                }
-                self.install_from_url(url).await?;
-            }
             "tool_uninstalled" => {
                 self.uninstall(&event.tool_id).await?;
             }
