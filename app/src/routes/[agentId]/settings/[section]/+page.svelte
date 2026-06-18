@@ -81,6 +81,43 @@
     }
   }
 
+  // Duplicate: clone this agent's persona/skills/workflows/soul/rules/config into a
+  // new agent with its own name and identity, then connect its own accounts.
+  let showDuplicate = $state(false);
+  let duplicateName = $state('');
+  let duplicating = $state(false);
+  let duplicateError = $state<string | null>(null);
+
+  function openDuplicate() {
+    duplicateName = agent?.name ? `${agent.name} (Copy)` : '';
+    duplicateError = null;
+    showDuplicate = true;
+  }
+
+  async function handleDuplicate() {
+    const name = duplicateName.trim();
+    if (!agentId || duplicating || !name) return;
+    duplicating = true;
+    duplicateError = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.duplicateAgent(agentId, { name });
+      const newId = (resp.agent as { id?: string })?.id;
+      if (!newId) throw new Error('Duplicate did not return a new agent.');
+      showDuplicate = false;
+      // If the source had per-account plugins (e.g. gws), send the copy to its
+      // Connected Accounts so the user can connect its own inbox; otherwise open it.
+      if (resp.needsAccountSetup && resp.needsAccountSetup.length > 0) {
+        goto(`/${newId}/settings/accounts`);
+      } else {
+        goto(`/${newId}/threads`);
+      }
+    } catch (e) {
+      duplicateError = (e as Error)?.message || 'Could not duplicate this agent.';
+      duplicating = false;
+    }
+  }
+
   function statusLabel(s: string) {
     if (s === 'online') return 'Online';
     if (s === 'running') return 'Running';
@@ -584,6 +621,33 @@
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Created</div>
         <div class="text-sm">Mar 12, 2026</div>
+      </div>
+
+      <!-- Duplicate -->
+      <div class="border-t border-base-300 pt-5 mt-3">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Duplicate</div>
+        {#if showDuplicate}
+          <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+            <div class="text-sm font-medium mb-1">Duplicate {agent?.name}</div>
+            <div class="text-xs text-base-content/70 mb-3">Creates a faithful copy — same persona, skills, workflows, and configuration — with its own name and identity. The copy connects its own accounts.</div>
+            <input
+              class="input input-bordered input-sm w-full mb-2"
+              placeholder="e.g. Nancy"
+              bind:value={duplicateName}
+              disabled={duplicating}
+              onkeydown={(e) => { if (e.key === 'Enter') handleDuplicate(); }}
+            />
+            {#if duplicateError}
+              <div class="text-xs text-error mb-2">{duplicateError}</div>
+            {/if}
+            <div class="flex items-center gap-2">
+              <button class="btn btn-primary btn-sm" onclick={handleDuplicate} disabled={duplicating || !duplicateName.trim()}>{duplicating ? 'Duplicating…' : 'Create Copy'}</button>
+              <button class="btn btn-ghost btn-sm" onclick={() => showDuplicate = false} disabled={duplicating}>Cancel</button>
+            </div>
+          </div>
+        {:else}
+          <button class="btn btn-sm btn-outline" onclick={openDuplicate}>Duplicate Agent</button>
+        {/if}
       </div>
 
       <!-- Danger zone -->
