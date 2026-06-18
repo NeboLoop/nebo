@@ -496,6 +496,68 @@ pub fn build_providers(
 }
 
 /// Run the Nebo HTTP server.
+/// Handle a comm "installs" event. tool_installed/tool_updated route through the
+/// canonical install pathway (`codes::handle_code`), resolving the artifact from
+/// its id — reusing the store/code install's robust download (JSON-indirection
+/// follow + retries + NAPP-envelope/sealed/license handling) and type-correct
+/// persistence, instead of a separate naive downloader. Uninstall/revoke stay on
+/// the napp registry (they don't download). One install pathway, CODE_AUDITOR
+/// Rule 8. Note: the artifact id (`tool_id`) is resolved here, so the event's
+/// `payload.download_url` is intentionally ignored.
+async fn handle_comm_install_event(
+    state: &AppState,
+    event: napp::InstallEvent,
+) -> Result<(), String> {
+    match event.event_type.as_str() {
+        "tool_installed" | "tool_updated" => {
+            let api = codes::build_api_client(state).map_err(|e| e.to_string())?;
+            let detail = api
+                .get_skill(&event.tool_id)
+                .await
+                .map_err(|e| format!("fetch artifact {}: {e}", event.tool_id))?;
+            let item = &detail.item;
+            let artifact_type = item.artifact_type.as_deref().unwrap_or("skill");
+            // Dedup the self-echo: a fresh "tool_installed" for something already
+            // present (e.g. the device that just installed it) skips the redundant
+            // re-download. Updates always re-install.
+            if event.event_type == "tool_installed"
+                && crate::handlers::store::is_installed(
+                    &item.slug,
+                    &item.name,
+                    artifact_type,
+                    &state.store,
+                )
+            {
+                tracing::debug!(tool_id = %event.tool_id, slug = %item.slug, "install event: already installed, skipping");
+                return Ok(());
+            }
+            let code = item
+                .code
+                .as_deref()
+                .filter(|c| !c.is_empty())
+                .ok_or_else(|| format!("artifact {} has no install code", event.tool_id))?;
+            let (code_type, validated) =
+                codes::detect_code(code).ok_or_else(|| format!("invalid install code: {code}"))?;
+            codes::handle_code(
+                state,
+                code_type,
+                validated,
+                &format!("install-event-{}", event.tool_id),
+            )
+            .await;
+            Ok(())
+        }
+        _ => {
+            // tool_uninstalled / tool_revoked — no download; registry path.
+            state
+                .napp_registry
+                .handle_install_event(event)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
 pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let port = cfg.port;
     let host = cfg.host.clone();
@@ -1103,52 +1165,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let loopback_plugin = Arc::new(comm::LoopbackPlugin::new());
         comm_manager.register(neboai_plugin.clone()).await;
         comm_manager.register(loopback_plugin).await;
-
-        // Wire incoming messages to ClientHub broadcast + install event routing
-        let comm_hub = hub.clone();
-        let install_registry = napp_registry.clone();
-        comm_manager
-            .set_message_handler({
-                let comm_hub = comm_hub.clone();
-                let registry = install_registry.clone();
-                Arc::new(move |msg: comm::CommMessage| {
-                    // Route install events to napp registry
-                    if msg.topic == "installs" {
-                        if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content)
-                        {
-                            let reg = registry.clone();
-                            let hub = comm_hub.clone();
-                            tokio::spawn(async move {
-                                match reg.handle_install_event(event).await {
-                                    Ok(()) => hub.broadcast(
-                                        "tool_event",
-                                        serde_json::json!({"status": "ok"}),
-                                    ),
-                                    Err(e) => {
-                                        tracing::warn!("install event handling failed: {}", e);
-                                        hub.broadcast(
-                                            "tool_error",
-                                            serde_json::json!({"error": e.to_string()}),
-                                        );
-                                    }
-                                }
-                            });
-                            return;
-                        }
-                    }
-                    // Default: broadcast to clients
-                    comm_hub.broadcast(
-                        "comm_message",
-                        serde_json::json!({
-                            "from": msg.from,
-                            "to": msg.to,
-                            "content": msg.content,
-                            "type": msg.msg_type,
-                        }),
-                    );
-                })
-            })
-            .await;
+        // The incoming-message handler (broadcast + install-event routing) is wired
+        // AFTER AppState is built so install events can route through the canonical
+        // install pathway (codes::handle_code) — see set_message_handler below.
     }
 
     // NeboAI auto-connect and reconnect watcher are spawned after AppState construction
@@ -1598,6 +1617,48 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .set_title_sink(std::sync::Arc::new(chat_dispatch::TitleBroadcaster::new(
             state.clone(),
         )));
+
+    // Wire the comm incoming-message handler now that AppState exists. Install
+    // events route through the SAME canonical install pathway as store/code
+    // installs (codes::handle_code, resolved from the artifact id) instead of a
+    // separate naive downloader — robust download + envelope/sealed handling +
+    // type-correct install, one pathway (CODE_AUDITOR Rule 8).
+    {
+        let handler_state = state.clone();
+        state
+            .comm_manager
+            .set_message_handler(Arc::new(move |msg: comm::CommMessage| {
+                let st = handler_state.clone();
+                if msg.topic == "installs" {
+                    if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_comm_install_event(&st, event).await {
+                                tracing::warn!("install event handling failed: {}", e);
+                                st.hub.broadcast(
+                                    "tool_error",
+                                    serde_json::json!({"error": e}),
+                                );
+                            } else {
+                                st.hub
+                                    .broadcast("tool_event", serde_json::json!({"status": "ok"}));
+                            }
+                        });
+                        return;
+                    }
+                }
+                // Default: broadcast to clients
+                st.hub.broadcast(
+                    "comm_message",
+                    serde_json::json!({
+                        "from": msg.from,
+                        "to": msg.to,
+                        "content": msg.content,
+                        "type": msg.msg_type,
+                    }),
+                );
+            }))
+            .await;
+    }
 
     // Wire RunRegistry into the tool-layer run querier (late binding via OnceLock)
     let _ = run_querier_handle.set(Box::new(state.run_registry.clone()));
