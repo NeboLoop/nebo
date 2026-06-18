@@ -1616,6 +1616,13 @@ export function userAcceptTerms(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "User update approved commands"
+ */
+export function userUpdateApprovedCommands(req: Record<string, unknown> = {}) {
+	return webapi.put<components.UserUpdateApprovedCommandsResponse>(`/api/v1/user/me/approved-commands`, req)
+}
+
+/**
  * @description "User change password"
  */
 export function userChangePassword(req: Record<string, unknown> = {}) {

@@ -98,6 +98,12 @@ pub fn capability_label(key: &str) -> &str {
 pub fn gating_capability(tool: &str, input: &Value) -> Option<&'static str> {
     match tool {
         "web" | "loop" => Some("web"),
+        // A file-management verb (move/copy/delete with file args) is redirected
+        // to a shell correction by the os tool — it never reaches a desktop
+        // resource, so don't gate it on Desktop here (asking/denying the wrong
+        // capability would block a file move). Ungated: the agent's shell retry
+        // gets the correct (Shell) ask.
+        "os" if OsTool::is_file_mgmt_redirect(input) => None,
         "os" => Some(os_capability(input)),
         "organizer" => match input.get("resource").and_then(|v| v.as_str()) {
             Some("contacts") => Some("contacts"),

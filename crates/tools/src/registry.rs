@@ -546,7 +546,15 @@ impl Registry {
             // `desktop`). Installed extensions (plugin/mcp/app/skill/agent) return
             // None here — ungated, because installation is the grant.
             if let Some(category) = capabilities::gating_capability(name, &input) {
-                if perms.get(category) == Some(&false) {
+                // OFF capability is a hard error ONLY when the caller hasn't
+                // cleared it. The runner clears it via the approval round-trip
+                // (user said yes / autonomous / capability pre-granted), turning
+                // "off" into "ask" rather than a dead end (PERMISSIONS_SME §11).
+                // Callers that don't run the gate leave approved_categories empty,
+                // so their OFF capabilities still hard-block.
+                if perms.get(category) == Some(&false)
+                    && !ctx.approved_categories.contains(category)
+                {
                     // Actionable, capability-named denial. Tell the model exactly
                     // which permission is off and to surface that to the user
                     // (Settings → Permissions) instead of silently flailing

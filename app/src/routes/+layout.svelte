@@ -13,6 +13,7 @@
   import UpgradeSuccessModal from '$lib/components/UpgradeSuccessModal.svelte';
   import OnboardingTour from '$lib/components/onboarding/OnboardingTour.svelte';
   import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
+  import ApprovalGate from '$lib/components/ApprovalGate.svelte';
   let { children } = $props();
 
   let showCommandPalette = $state(false);
@@ -219,6 +220,10 @@
        installFlow store (product/configure) or window nebo:code_* events (code
        paste). Mounted once here so two install modals can never stack. -->
   <InstallFlowModal />
+  <!-- The ONE tool-approval modal. Driven by the `approval_request` WS event
+       (runner pauses an OFF-capability tool call). Mounted once here so it shows
+       over any view; sends the decision back via `approval_response`. -->
+  <ApprovalGate />
   <CommandPalette bind:show={showCommandPalette} />
   <UpgradeSuccessModal
     bind:show={showUpgradeSuccess}

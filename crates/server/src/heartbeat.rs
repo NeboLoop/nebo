@@ -85,6 +85,7 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             comm_plugin: String::new(),
             developer_mode: 0,
             auto_update: 1,
+            full_access: 0,
             updated_at: 0,
         });
 

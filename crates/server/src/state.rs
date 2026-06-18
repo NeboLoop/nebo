@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::Mutex;
 
 use agent::{LaneManager, Runner};
 use auth::AuthService;
@@ -88,8 +88,10 @@ pub struct AppState {
     pub extension_bridge: Arc<browser::ExtensionBridge>,
     /// Communications plugin manager (NeboAI WebSocket, Loopback)
     pub comm_manager: Arc<PluginManager>,
-    /// Pending tool approval requests: tool_call_id -> sender
-    pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    /// Pending tool approval requests: tool_call_id -> sender. The decision
+    /// string ("once" | "always" | "deny") carries the ApprovalModal's choice
+    /// including the "Approve Always" flag. See `tools::ApprovalChannels`.
+    pub approval_channels: tools::ApprovalChannels,
     /// Pending ask requests: question_id -> sender
     pub ask_channels: tools::AskChannels,
     /// Asks forwarded to a loop/channel conversation, keyed by session key →

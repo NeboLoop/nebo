@@ -62,6 +62,16 @@ pub type AskChannels = std::sync::Arc<
     tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
 >;
 
+/// Shared tool-approval channels map (keyed by tool_call_id). The runner inserts
+/// a oneshot sender and emits a `StreamEvent::approval_request`; the WS handler
+/// resolves it from the user's ApprovalModal choice. The value is the decision:
+/// `"once"`, `"always"`, or `"deny"` (mirrors the `AskChannels` string idiom and
+/// carries the modal's "Approve Always" flag). This is the ONE tool-approval
+/// pathway (PERMISSIONS_SME §11) — do not add a parallel one.
+pub type ApprovalChannels = std::sync::Arc<
+    tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
+>;
+
 /// Sentinel value the frontend sends as the `ask_response` when the user dismisses
 /// (Skip / Esc) an ask widget instead of answering. The ask tool interprets it as
 /// "no answer — make a reasonable assumption", keeping the run from hanging.
@@ -123,6 +133,14 @@ pub struct ToolContext {
     /// `memory.topics`). The memory tool accepts these as `layer` values in
     /// addition to the built-in layers. Empty for the main bot.
     pub memory_topics: Vec<String>,
+    /// Capability categories the runner has cleared for execution this turn —
+    /// either pre-granted (capability ON), user-approved via the ApprovalModal,
+    /// or bypassed by autonomous mode. The permission gate (registry Phase 1c)
+    /// treats an OFF capability as allowed when its category is present here, so
+    /// "off" means ASK (runner round-trip) rather than a hard error. Empty for
+    /// callers that don't run the approval gate (their OFF capabilities still
+    /// hard-block, preserving enforcement).
+    pub approved_categories: std::collections::HashSet<String>,
 }
 
 impl ToolContext {

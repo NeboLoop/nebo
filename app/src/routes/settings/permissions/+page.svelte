@@ -10,7 +10,9 @@
   // the single source of truth) via userGetPermissions().capabilities — NOT a
   // hardcoded list here, so the UI cannot drift from the gate's vocabulary.
   let permissions = $state<{ key: string; label: string; desc: string; enabled: boolean }[]>([]);
-  let autonomous = $state(false);
+  let fullAccess = $state(false);
+  // "Approve Always" shell-command prefixes — shown so the user can see + revoke them.
+  let approvedCommands = $state<string[]>([]);
 
   onMount(async () => {
     try {
@@ -34,27 +36,37 @@
         desc: cap.desc,
         enabled: permObj[cap.key] ?? true,
       }));
-      if (settingsResp?.settings?.autoInstallDeps !== undefined) {
-        autonomous = !!settingsResp.settings.autoInstallDeps;
+      if (settingsResp?.settings?.fullAccess !== undefined) {
+        fullAccess = !!settingsResp.settings.fullAccess;
       }
+      approvedCommands = permResp?.approvedCommands ?? [];
     } catch { /* keep mock data */ }
   });
+
+  async function removeApprovedCommand(pattern: string) {
+    const next = approvedCommands.filter(p => p !== pattern);
+    approvedCommands = next;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.userUpdateApprovedCommands({ commands: next });
+    } catch { /* keep local state */ }
+  }
   let showPreview = $state(false);
 
-  // Autonomous activation modal state
+  // Full Access activation modal state
   let showEnableModal = $state(false);
   let termsAccepted = $state(false);
   let confirmText = $state('');
   const canConfirm = $derived(termsAccepted && confirmText === 'ENABLE');
 
-  function handleAutonomousToggle() {
-    if (!autonomous) {
+  function handleFullAccessToggle() {
+    if (!fullAccess) {
       // Turning ON — show confirmation modal
       showEnableModal = true;
     } else {
       // Turning OFF — just disable
-      autonomous = false;
-      saveAutonomousMode(false);
+      fullAccess = false;
+      saveFullAccess(false);
     }
   }
 
@@ -66,17 +78,17 @@
 
   async function confirmEnable() {
     if (!canConfirm) return;
-    autonomous = true;
+    fullAccess = true;
     showEnableModal = false;
     termsAccepted = false;
     confirmText = '';
-    await saveAutonomousMode(true);
+    await saveFullAccess(true);
   }
 
-  async function saveAutonomousMode(enabled: boolean) {
+  async function saveFullAccess(enabled: boolean) {
     try {
       const api = await import('$lib/api/nebo');
-      await api.updateSettings({ autoInstallDeps: enabled });
+      await api.updateSettings({ fullAccess: enabled });
     } catch { /* keep local state */ }
   }
 
@@ -97,21 +109,21 @@
 
 <SettingsHeader title="Permissions" description="Control what your agent can access and do." />
 
-<!-- Autonomous mode -->
+<!-- Full Access -->
 <div class="flex items-center justify-between p-4 rounded-xl border border-base-300 mb-7">
   <div>
     <div class="text-sm font-semibold flex items-center gap-2">
-      {#if autonomous}<AlertTriangle class="w-4 h-4 text-warning" />{/if}
-      Autonomous Mode
+      {#if fullAccess}<AlertTriangle class="w-4 h-4 text-warning" />{/if}
+      Full Access
     </div>
     <div class="text-xs text-base-content/70">The agent will execute all tools without asking for permission.</div>
   </div>
-  <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={autonomous} onchange={handleAutonomousToggle} />
+  <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={fullAccess} onchange={handleFullAccessToggle} />
 </div>
 
-{#if autonomous}
+{#if fullAccess}
   <div class="rounded-xl bg-warning/10 border border-warning/20 px-4 py-3 mb-7">
-    <p class="text-xs text-warning font-medium">Autonomous Mode is active</p>
+    <p class="text-xs text-warning font-medium">Full Access is active</p>
     <p class="text-xs text-base-content/70 mt-0.5">All approval prompts are bypassed. Make sure you trust the prompts you're sending.</p>
   </div>
 {/if}
@@ -128,23 +140,29 @@
       <input
         type="checkbox"
         class="toggle toggle-sm toggle-primary"
-        checked={autonomous || perm.enabled}
-        disabled={autonomous}
+        checked={fullAccess || perm.enabled}
+        disabled={fullAccess}
         onchange={() => toggleCapability(perm.key)}
       />
     </div>
   {/each}
 </div>
 
-<!-- Tool auto-approval -->
-{#if !autonomous}
-  <h3 class="text-sm font-semibold mb-1">Auto-approval</h3>
-  <p class="text-xs text-base-content/70 mb-3">Actions the agent can take without asking you first.</p>
+<!-- Always-approved commands (per-command allowlist) -->
+{#if approvedCommands.length > 0}
+  <h3 class="text-sm font-semibold mb-1">Always-approved commands</h3>
+  <p class="text-xs text-base-content/70 mb-3">Shell command prefixes you chose "Approve Always" for — they run without asking. Dangerous commands are still blocked.</p>
   <div class="divide-y divide-base-content/10 mb-7">
-    {#each ['File reads', 'File writes', 'Bash commands', 'Web requests'] as tool}
-      <div class="flex items-center justify-between py-3.5">
-        <span class="text-sm font-medium">{tool}</span>
-        <input type="checkbox" class="toggle toggle-sm toggle-primary" />
+    {#each approvedCommands as cmd}
+      <div class="flex items-center justify-between py-2.5">
+        <code class="text-sm font-mono">{cmd}</code>
+        <button
+          onclick={() => removeApprovedCommand(cmd)}
+          class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent text-base-content/60 hover:text-error"
+          aria-label="Remove {cmd}"
+        >
+          <X class="w-4 h-4" />
+        </button>
       </div>
     {/each}
   </div>
@@ -168,14 +186,14 @@
   actionKey="preview"
 />
 
-<!-- Autonomous Mode Activation Modal -->
+<!-- Full Access Activation Modal -->
 {#if showEnableModal}
   <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
     <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="0" aria-label="Close modal" onclick={cancelEnable} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cancelEnable(); } }}></div>
     <div class="relative w-full max-w-lg rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden">
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
-        <h3 class="text-sm font-bold">Enable Autonomous Mode</h3>
+        <h3 class="text-sm font-bold">Enable Full Access</h3>
         <button onclick={cancelEnable} class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent">
           <X class="w-4 h-4" />
         </button>
@@ -204,7 +222,7 @@
         <!-- Disclaimer -->
         <div class="rounded-xl bg-base-200 p-4 max-h-28 overflow-y-auto">
           <p class="text-xs text-base-content/70 leading-relaxed">
-            By enabling autonomous mode, you acknowledge that Nebo Labs, Inc. shall not be liable for any damages, losses, or consequences arising from the autonomous execution of tools by the agent. You accept full responsibility for all actions taken by the agent while autonomous mode is enabled.
+            By enabling Full Access, you acknowledge that Nebo Labs, Inc. shall not be liable for any damages, losses, or consequences arising from the unsupervised execution of tools by the agent. You accept full responsibility for all actions taken by the agent while Full Access is enabled.
           </p>
         </div>
 
@@ -241,7 +259,7 @@
           disabled={!canConfirm}
           class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-30 disabled:cursor-not-allowed"
         >
-          Enable Autonomous Mode
+          Enable Full Access
         </button>
       </div>
     </div>

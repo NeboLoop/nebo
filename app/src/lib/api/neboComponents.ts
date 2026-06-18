@@ -609,6 +609,7 @@ export interface Setting {
 	commPlugin: string
 	developerMode: boolean
 	autoUpdate: boolean
+	fullAccess: boolean
 }
 
 export interface SkillSecretInfo {
@@ -664,6 +665,7 @@ export interface UserProfile {
 	toolPermissions?: string
 	termsAcceptedAt?: number
 	accountType?: string
+	approvedCommands?: string
 }
 
 export interface Workflow {
@@ -1632,6 +1634,7 @@ export interface UserGetCurrentUserResponse {
 export interface UserGetPermissionsResponse {
 	permissions: ToolPermission[]
 	capabilities: Capability[]
+	approvedCommands: string[]
 }
 
 export interface UserGetPreferencesResponse {
@@ -1640,6 +1643,10 @@ export interface UserGetPreferencesResponse {
 
 export interface UserGetProfileResponse {
 	profile: UserProfileFull
+}
+
+export interface UserUpdateApprovedCommandsResponse {
+	success: boolean
 }
 
 export interface UserUpdateCurrentUserResponse {

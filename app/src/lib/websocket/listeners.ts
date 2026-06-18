@@ -88,11 +88,9 @@ export function attachWebSocketListeners(): void {
     })
   );
 
-  unsubs.push(
-    ws.on('approval_request', (data: any) => {
-      addToast(`${data.agentName || 'Agent'} needs approval`, 'warning');
-    })
-  );
+  // `approval_request` is handled by <ApprovalGate/> (root layout), which shows
+  // the actionable ApprovalModal and sends `approval_response`. No toast here —
+  // the modal is the single, actionable signal.
 
   unsubs.push(
     ws.on('quota_warning', (data: any) => {

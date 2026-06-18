@@ -343,6 +343,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let tool_scope = config.tool_scope;
     let plan_mode = config.plan_mode;
 
+    // "Full Access" master flag (settings.full_access) — when on, the runner's
+    // per-tool approval gate is bypassed. Loaded here (state in scope) and moved
+    // into the run closure as a plain Copy bool. Default off (safe).
+    let full_access = state
+        .store
+        .get_settings()
+        .ok()
+        .flatten()
+        .map(|s| s.full_access == 1)
+        .unwrap_or(false);
+
     // Broadcast chat_created so frontend can track new conversations
     {
         let mut created_payload = serde_json::json!({
@@ -423,6 +434,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             mention_context,
             tool_scope,
             plan_mode,
+            full_access,
             ..Default::default()
         };
 
