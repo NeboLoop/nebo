@@ -348,6 +348,10 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
             .unwrap_or_else(|| "1.0.0".to_string());
         let _ = state.store.upsert_artifact_update_pref(&artifact_id, "skill", &version);
+        // Record the marketplace id in a controlled sidecar so uninstall can find
+        // it and clean the update-tracking row. The packaged manifest.json isn't
+        // guaranteed to carry the id (.napp packages don't), so we don't rely on it.
+        let _ = std::fs::write(dir.join(".artifact_id"), &artifact_id);
     }
 
     // Reload skill loader so skill appears in catalog immediately. Cold reload —
@@ -757,6 +761,21 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     // nothing. (Apps already reload via handle_app_code; do it for plain agents too.)
     if persist_result.is_some() {
         state.agent_loader.load_all().await;
+        // Seed update tracking — same as skills and plugins — so a code-installed
+        // agent is checked for updates. Read the installed version from the loader
+        // (the canonical on-disk source check_agent also reads); agents have no
+        // .napp manifest in the DB to read a version from.
+        let version = state
+            .agent_loader
+            .get_by_name(&artifact_name)
+            .await
+            .and_then(|a| a.version)
+            .unwrap_or_default();
+        if !version.is_empty() {
+            let _ = state
+                .store
+                .upsert_artifact_update_pref(&artifact_id, "agent", &version);
+        }
     }
 
     // Notify frontend immediately so sidebar refreshes

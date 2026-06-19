@@ -222,7 +222,7 @@
 	async function updateProduct() {
 		updating = true;
 		try {
-			await applyUpdate(itemId, {});
+			await applyUpdate(skill?.updateId ?? itemId, {});
 			const skillRes = await getStoreProduct(itemId);
 			skill = (skillRes as { id?: string })?.id ? skillRes : skill;
 		} catch { /* ignore */ }

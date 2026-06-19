@@ -257,6 +257,14 @@ fn enrich_installed_item(val: &mut serde_json::Value, store: &db::Store) {
                         "remoteVersion".to_string(),
                         serde_json::Value::String(pref.remote_version.clone()),
                     );
+                    // The id apply-update keys on (pref.artifact_id: slug for plugins,
+                    // marketplace UUID for skills/agents) differs from the marketplace
+                    // UUID this page is routed by. Hand the frontend the exact key so the
+                    // apply call hits the same record this badge was derived from.
+                    obj.insert(
+                        "updateId".to_string(),
+                        serde_json::Value::String(pref.artifact_id.clone()),
+                    );
                 }
             }
         }
