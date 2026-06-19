@@ -412,6 +412,13 @@ export function checkUpdates(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List update history"
+ */
+export function listUpdateHistory() {
+	return webapi.get<components.ListUpdateHistoryResponse>(`/api/v1/artifacts/update-history`)
+}
+
+/**
  * @description "Get update settings"
  */
 export function getUpdateSettings() {
