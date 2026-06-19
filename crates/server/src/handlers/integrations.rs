@@ -275,6 +275,125 @@ pub fn spawn_mcp_token_refresher(state: AppState) {
     });
 }
 
+/// Spawn a background task that keeps OAuth *plugin* accounts fresh — the same
+/// "fresh 100% of the time" guarantee as the MCP refresher, but for multi-account
+/// plugins (e.g. Google Workspace). A plugin's access token auto-refreshes when
+/// the plugin runs, but an account that goes unused can drift to expiry, and a
+/// revoked/lapsed refresh token (Workspace RAPT reauth) silently dies until the
+/// next call. So we periodically run each connected account's manifest-declared
+/// auth `status` command (which exercises the token) and, when it reports an
+/// unrecoverable failure, mark the account `needs_reauth` + fire ONE notification
+/// so the user can reconnect — instead of discovering it mid-task.
+pub fn spawn_plugin_token_refresher(state: AppState) {
+    const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1800); // 30 min
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(REFRESH_INTERVAL);
+        loop {
+            tick.tick().await; // first tick fires immediately, so we also catch startup
+            let profiles = match state.store.list_all_plugin_account_profiles() {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(error = %e, "plugin token refresher: failed to list account profiles");
+                    continue;
+                }
+            };
+            for p in &profiles {
+                // Only plugins that declare BOTH a per-account config dir
+                // (profile_dir_env) and an auth status command can be checked
+                // per account; others are single-account / have no health probe.
+                let Some(manifest) = state.plugin_store.get_manifest(&p.plugin_slug) else {
+                    continue;
+                };
+                let Some(auth) = manifest.auth else { continue };
+                if auth.commands.status.is_none() {
+                    continue;
+                }
+                let Some(env_name) = auth.profile_dir_env.as_deref() else {
+                    continue;
+                };
+
+                // `None` = inconclusive (probe couldn't run / was reaped): leave the
+                // account's current state untouched and retry next tick — never let
+                // an unknown raise a false alarm or clear a real one.
+                let Some(healthy) = state
+                    .plugin_store
+                    .check_auth_for_profile(&p.plugin_slug, env_name, &p.config_dir)
+                    .await
+                else {
+                    continue;
+                };
+
+                if healthy {
+                    // Recovered (or still fine) — clear any prior reauth flag so a
+                    // future failure notifies again.
+                    if p.needs_reauth {
+                        if let Err(e) = state.store.set_plugin_account_reauth(&p.id, false) {
+                            warn!(error = %e, "failed to clear plugin reauth flag");
+                        } else {
+                            info!(plugin = %p.plugin_slug, account = %p.account_label, "plugin account token recovered");
+                        }
+                    }
+                    continue;
+                }
+
+                // Unhealthy: token couldn't be refreshed. Flag it for the badge.
+                if let Err(e) = state.store.set_plugin_account_reauth(&p.id, true) {
+                    warn!(error = %e, "failed to set plugin reauth flag");
+                }
+                // Notify exactly once per unhealthy spell.
+                if !p.reauth_notified {
+                    notify_plugin_needs_reauth(&state, p);
+                    let _ = state.store.mark_plugin_account_reauth_notified(&p.id);
+                }
+                warn!(plugin = %p.plugin_slug, account = %p.account_label, "plugin account needs reconnect");
+            }
+        }
+    });
+}
+
+/// Fire the one-time "reconnect this account" notification (bell + toast) and
+/// broadcast it, mirroring the canonical proactive-notification pathway.
+fn notify_plugin_needs_reauth(state: &AppState, p: &db::PluginAccountProfile) {
+    let user_id = state.store.ensure_local_user_id().unwrap_or_default();
+    // Fresh id per occurrence: the `reauth_notified` flag (reset on recovery) is
+    // the once-per-spell guard, so a unique id lets a *future* expiry notify again
+    // rather than being suppressed by a stale, already-read notification.
+    let notif_id = uuid::Uuid::new_v4().to_string();
+    let title = format!("Reconnect {}", p.account_label);
+    let body = format!(
+        "{}'s connection to {} expired. Reconnect it in the agent's Connected Accounts.",
+        p.account_label, p.plugin_slug
+    );
+    let action_url = format!("/{}/settings/accounts", p.agent_id);
+    if let Err(e) = state.store.create_notification(
+        &notif_id,
+        &user_id,
+        "warning",
+        &title,
+        Some(&body),
+        Some(&action_url),
+        None,
+    ) {
+        warn!(error = %e, "failed to create plugin reauth notification");
+        return;
+    }
+    state.hub.broadcast(
+        "notification_created",
+        serde_json::json!({
+            "id": notif_id,
+            "type": "warning",
+            "title": title,
+            "body": body,
+            "actionUrl": action_url,
+            "readAt": null,
+            "createdAt": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }),
+    );
+}
+
 /// GET /api/v1/integrations
 pub async fn list_integrations(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     // Auto-fix legacy "stdio" records that have HTTP URLs

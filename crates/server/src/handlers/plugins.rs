@@ -565,7 +565,11 @@ pub async fn list_plugin_accounts(
     let accounts: Vec<serde_json::Value> = profiles
         .iter()
         .map(|p| {
-            serde_json::json!({ "accountLabel": p.account_label, "isPrimary": p.is_primary })
+            serde_json::json!({
+                "accountLabel": p.account_label,
+                "isPrimary": p.is_primary,
+                "needsReauth": p.needs_reauth,
+            })
         })
         .collect();
     Ok(Json(serde_json::json!({ "accounts": accounts })))

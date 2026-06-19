@@ -10,6 +10,7 @@
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import SetupWizard from '$lib/components/SetupWizard.svelte';
   import Check from 'lucide-svelte/icons/check';
+  import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
@@ -549,6 +550,20 @@
     addAccountError = null;
   }
 
+  // Re-run the OAuth login for an account whose token expired. Same pathway as
+  // adding an account — the label already exists, so completion just refreshes
+  // its credentials in place (and clears needs_reauth on the next health check).
+  async function reconnectAccount(slug: string, label: string) {
+    if (addAccountConnectingSlug) return;
+    addAccountConnectingSlug = slug;
+    try {
+      const accountsApi = await import('$lib/api/pluginAccounts');
+      await accountsApi.startPluginAccountLogin(slug, agentId, label);
+    } catch {
+      addAccountConnectingSlug = null;
+    }
+  }
+
   async function submitAddAccount() {
     const p = addAccountPlugin;
     const label = addAccountLabel.trim();
@@ -997,10 +1012,22 @@
                 <div class="border-t border-base-content/10">
                   {#each plugin.accounts as acct (acct.accountLabel)}
                     <div class="flex items-center gap-2 px-3.5 py-2 border-b border-base-content/5 last:border-b-0">
-                      <Check class="w-3.5 h-3.5 text-success shrink-0" />
+                      {#if acct.needsReauth}
+                        <AlertTriangle class="w-3.5 h-3.5 text-warning shrink-0" />
+                      {:else}
+                        <Check class="w-3.5 h-3.5 text-success shrink-0" />
+                      {/if}
                       <span class="text-sm truncate flex-1">{acct.accountLabel}</span>
                       {#if acct.isPrimary}
                         <span class="py-0.5 px-2 rounded bg-accent/15 text-accent text-xs font-medium shrink-0">Primary</span>
+                      {/if}
+                      {#if acct.needsReauth}
+                        <span class="py-0.5 px-2 rounded bg-warning/15 text-warning text-xs font-medium shrink-0">Expired</span>
+                        <button
+                          class="btn btn-xs btn-warning btn-outline shrink-0"
+                          onclick={() => reconnectAccount(plugin.slug, acct.accountLabel)}
+                          disabled={addAccountConnectingSlug === plugin.slug}
+                        >Reconnect</button>
                       {/if}
                     </div>
                   {/each}

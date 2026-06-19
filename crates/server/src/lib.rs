@@ -1674,6 +1674,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // server on reconnect/restart (renew proactively, not reactively at connect).
     crate::handlers::integrations::spawn_mcp_token_refresher(state.clone());
 
+    // Same guarantee for OAuth plugin accounts (e.g. Google Workspace): probe each
+    // connected account's auth periodically so its token stays fresh, and surface a
+    // "Reconnect" prompt the moment a token can no longer be refreshed.
+    crate::handlers::integrations::spawn_plugin_token_refresher(state.clone());
+
     // Wire channel dispatcher into agent workers (late binding via OnceLock).
     // Workers started before this point have channel_dispatch = None, so channels
     // don't start yet. We restart workers that declare channels below.

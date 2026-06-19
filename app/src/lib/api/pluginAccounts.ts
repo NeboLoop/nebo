@@ -10,6 +10,9 @@ import { webapi } from './gocliRequest';
 export interface PluginAccount {
 	accountLabel: string;
 	isPrimary: boolean;
+	/** The account's OAuth token expired and can't be refreshed — the user must
+	 * reconnect it. Surfaced as a "Reconnect" badge in Connected Accounts. */
+	needsReauth?: boolean;
 }
 
 export interface ListPluginAccountsResponse {
