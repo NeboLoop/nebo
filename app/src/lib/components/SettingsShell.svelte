@@ -18,6 +18,7 @@
   import BarChart3 from 'lucide-svelte/icons/bar-chart-3';
   import Activity from 'lucide-svelte/icons/activity';
   import Info from 'lucide-svelte/icons/info';
+  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import X from 'lucide-svelte/icons/x';
   import type { SvelteComponent } from 'svelte';
 
@@ -49,6 +50,7 @@
     { id: 'plugins', path: '/settings/plugins', label: 'Plugins', icon: Puzzle },
     { id: 'mcp', path: '/settings/mcp', label: 'MCP', icon: Cable },
     { id: 'browser', path: '/settings/browser', label: 'Browser', icon: Globe },
+    { id: 'updates', path: '/settings/updates', label: 'Updates', icon: RefreshCw },
     null,
     { id: 'providers', path: '/settings/providers', label: 'Providers', icon: Key, devOnly: true },
     { id: 'routing', path: '/settings/routing', label: 'Routing', icon: Cpu, devOnly: true },

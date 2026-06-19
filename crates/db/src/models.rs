@@ -847,3 +847,17 @@ pub struct ArtifactUpdateSettings {
     #[serde(alias = "check_interval_hours")]
     pub check_interval_hours: u32,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactUpdateHistoryEntry {
+    pub id: i64,
+    pub artifact_id: String,
+    pub artifact_type: String,
+    pub name: String,
+    pub from_version: String,
+    pub to_version: String,
+    pub status: String,
+    pub detail: String,
+    pub applied_at: i64,
+}

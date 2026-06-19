@@ -33,6 +33,18 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
         .map(|p| (p.slug.clone(), p))
         .collect();
 
+    // Pending updates (slug → newer version) so the list can show an "update
+    // available" badge, keyed off the same artifact_update_prefs the Updates panel
+    // and the background checker use.
+    let pending_updates: HashMap<String, String> = state
+        .store
+        .list_artifacts_with_updates()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.artifact_type == "plugin")
+        .map(|a| (a.artifact_id, a.remote_version))
+        .collect();
+
     // Dedup by slug — list_installed sorts by slug asc, version desc,
     // so first occurrence per slug is the highest version.
     let mut seen = HashMap::new();
@@ -106,6 +118,7 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
             "signatureStatus": sig_status,
             "setup": setup,
             "multiAccount": multi_account,
+            "updateAvailable": pending_updates.get(slug.as_str()),
         }));
     }
 

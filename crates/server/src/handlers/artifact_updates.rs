@@ -57,14 +57,25 @@ pub async fn apply_update(
         )));
     }
 
-    // Apply in background
+    // Apply in background through the SINGLE shared apply core (same path the
+    // auto-update loop uses) so behavior, history logging, and broadcasts match.
     let s = state.clone();
     let art = artifact.clone();
     tokio::spawn(async move {
         let api = match crate::codes::build_api_client(&s) {
             Ok(api) => api,
             Err(e) => {
+                // Couldn't reach the marketplace — unclaim + record + broadcast.
                 let _ = s.store.unclaim_artifact_update(&art.artifact_id, &art.artifact_type);
+                let _ = s.store.record_artifact_update_history(
+                    &art.artifact_id,
+                    &art.artifact_type,
+                    "",
+                    &art.local_version,
+                    &art.remote_version,
+                    "failed",
+                    &e.to_string(),
+                );
                 s.hub.broadcast(
                     "artifact_update_failed",
                     serde_json::json!({
@@ -76,41 +87,7 @@ pub async fn apply_update(
                 return;
             }
         };
-
-        let result = match art.artifact_type.as_str() {
-            "agent" => crate::artifact_updates::apply_agent_update_pub(&s, &api, &art.artifact_id).await,
-            "plugin" => crate::artifact_updates::apply_plugin_update_pub(&s, &api, &art.artifact_id).await,
-            _ => Ok(()),
-        };
-
-        match result {
-            Ok(()) => {
-                let _ = s.store.upsert_artifact_update_pref(
-                    &art.artifact_id,
-                    &art.artifact_type,
-                    &art.remote_version,
-                );
-                s.hub.broadcast(
-                    "artifact_update_applied",
-                    serde_json::json!({
-                        "id": art.artifact_id,
-                        "type": art.artifact_type,
-                        "version": art.remote_version,
-                    }),
-                );
-            }
-            Err(e) => {
-                let _ = s.store.unclaim_artifact_update(&art.artifact_id, &art.artifact_type);
-                s.hub.broadcast(
-                    "artifact_update_failed",
-                    serde_json::json!({
-                        "id": art.artifact_id,
-                        "type": art.artifact_type,
-                        "error": e,
-                    }),
-                );
-            }
-        }
+        crate::artifact_updates::apply_claimed_update(&s, &api, &art).await;
     });
 
     Ok(Json(serde_json::json!({ "status": "applying" })))
@@ -147,8 +124,19 @@ pub async fn set_artifact_auto_update(
 ) -> HandlerResult<serde_json::Value> {
     let enabled = body["enabled"].as_bool().unwrap_or(true);
     // We need the artifact_type — check all types
-    for artifact_type in &["agent", "skill", "plugin"] {
+    for artifact_type in &["agent", "skill", "plugin", "app"] {
         let _ = state.store.set_artifact_auto_update(&id, artifact_type, enabled);
     }
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// GET /artifacts/update-history — recent applied/failed upgrades.
+pub async fn list_update_history(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let history = state
+        .store
+        .list_artifact_update_history(100)
+        .map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "history": history })))
 }

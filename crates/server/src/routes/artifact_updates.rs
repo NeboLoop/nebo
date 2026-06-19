@@ -26,4 +26,8 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::artifact_updates::get_update_settings)
                 .put(handlers::artifact_updates::set_update_settings),
         )
+        .route(
+            "/artifacts/update-history",
+            axum::routing::get(handlers::artifact_updates::list_update_history),
+        )
 }

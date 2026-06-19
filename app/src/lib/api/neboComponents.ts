@@ -115,6 +115,18 @@ export interface AgentWorkflowStats {
 	lastError?: string
 }
 
+export interface ArtifactUpdateHistoryEntry {
+	id: number
+	artifactId: string
+	artifactType: string
+	name: string
+	fromVersion: string
+	toVersion: string
+	status: string
+	detail: string
+	appliedAt: number
+}
+
 export interface ArtifactUpdatePref {
 	artifactId: string
 	artifactType: string
@@ -1294,6 +1306,10 @@ export interface ListTasksResponse {
 
 export interface ListToolsResponse {
 	tools: unknown[]
+}
+
+export interface ListUpdateHistoryResponse {
+	history: ArtifactUpdateHistoryEntry[]
 }
 
 export interface ListUpdatesResponse {
