@@ -357,7 +357,7 @@ mod tests {
         store
             .update_settings(
                 Some(true),
-                None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None,
             )
             .unwrap();
         let s = store.get_settings().unwrap().unwrap();
