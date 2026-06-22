@@ -381,11 +381,14 @@ pub struct Message {
 }
 
 /// Trace IDs linking an LLM request to the Nebo run that produced it. The Janus
-/// provider reads these and emits `X-Run-ID`/`X-Workflow-ID`/`X-Action-ID`/`X-Step-ID`
-/// headers so usage can be attributed per workflow/action/step. Chat runs set only
-/// `run_id`; the rest stay empty. Never serialized into the request body.
+/// provider reads these and emits `X-Agent-ID`/`X-Run-ID`/`X-Workflow-ID`/`X-Action-ID`/`X-Step-ID`
+/// headers so usage can be attributed per agent/workflow/action/step. `agent_id` is
+/// the rollup key that disambiguates the same workflow run by different agents; chat
+/// runs set `agent_id` + `run_id`. Empty fields stay off the wire. Never serialized
+/// into the request body.
 #[derive(Debug, Clone, Default)]
 pub struct RequestTrace {
+    pub agent_id: String,
     pub run_id: String,
     pub workflow_id: String,
     pub action_id: String,

@@ -265,6 +265,43 @@ pub async fn list_agents(
 }
 
 /// POST /agents
+/// Write a user-owned agent's files to `user/agents/<name>/` (AGENT.md, agent.json,
+/// manifest.json) and record its napp_path. Shared by create_agent and
+/// duplicate_agent so there is one filesystem-write path for user agents.
+fn write_user_agent_files(
+    store: &db::Store,
+    id: &str,
+    name: &str,
+    description: &str,
+    agent_md: &str,
+    agent_json: &str,
+) {
+    let Ok(user_dir) = config::user_dir() else {
+        return;
+    };
+    let agent_dir = user_dir.join("agents").join(name);
+    if std::fs::create_dir_all(&agent_dir).is_err() {
+        return;
+    }
+    let _ = std::fs::write(agent_dir.join("AGENT.md"), agent_md);
+    let _ = std::fs::write(agent_dir.join("agent.json"), agent_json);
+    let manifest_path = agent_dir.join("manifest.json");
+    if !manifest_path.exists() {
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": name,
+            "version": "1.0.0",
+            "type": "agent",
+            "description": description,
+        });
+        let _ = std::fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+        );
+    }
+    let _ = store.set_agent_napp_path(id, &agent_dir.to_string_lossy());
+}
+
 pub async fn create_agent(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -375,36 +412,12 @@ pub async fn create_agent(
         )
         .map_err(to_error_response)?;
 
-    // Write AGENT.md and agent.json to user/agents/{name}/ for filesystem-based loading
-    if let Ok(user_dir) = config::user_dir() {
-        let agent_dir = user_dir.join("agents").join(name);
-        if std::fs::create_dir_all(&agent_dir).is_ok() {
-            let _ = std::fs::write(agent_dir.join("AGENT.md"), agent_md);
-            // Write the original agentJson if provided (contains triggers, workflow bindings),
-            // otherwise fall back to the merged frontmatter
-            let agent_json_content =
-                extract_agent_json_str(&body).unwrap_or_else(|| frontmatter_json.to_string());
-            let _ = std::fs::write(agent_dir.join("agent.json"), &agent_json_content);
-            // Auto-generate manifest.json so version info is available
-            let manifest_path = agent_dir.join("manifest.json");
-            if !manifest_path.exists() {
-                let manifest = serde_json::json!({
-                    "id": id,
-                    "name": name,
-                    "version": "1.0.0",
-                    "type": "agent",
-                    "description": description,
-                });
-                let _ = std::fs::write(
-                    &manifest_path,
-                    serde_json::to_string_pretty(&manifest).unwrap_or_default(),
-                );
-            }
-            let _ = state
-                .store
-                .set_agent_napp_path(&id, &agent_dir.to_string_lossy());
-        }
-    }
+    // Write AGENT.md and agent.json to user/agents/{name}/ for filesystem-based
+    // loading. Prefer the original agentJson (triggers, workflow bindings) if
+    // provided, else the merged frontmatter.
+    let agent_json_content =
+        extract_agent_json_str(&body).unwrap_or_else(|| frontmatter_json.to_string());
+    write_user_agent_files(&state.store, &id, name, description, agent_md, &agent_json_content);
 
     // Process agent.json workflow bindings if provided
     let mut install_report = Vec::new();
@@ -1965,10 +1978,34 @@ pub async fn deactivate_agent(
     }
 }
 
-/// POST /agents/{id}/duplicate — create a copy of an agent and auto-activate it.
+/// Replace the first `name:` line in an AGENT.md YAML frontmatter so a copy's
+/// persona reflects its new name.
+fn rewrite_agent_md_name(agent_md: &str, new_name: &str) -> String {
+    if !agent_md.contains("name:") {
+        return agent_md.to_string();
+    }
+    let mut result = String::new();
+    let mut replaced = false;
+    for line in agent_md.lines() {
+        if !replaced && line.trim_start().starts_with("name:") {
+            result.push_str(&format!("name: \"{new_name}\"\n"));
+            replaced = true;
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    result
+}
+
+/// POST /agents/{id}/duplicate — copy an agent (persona, skills, workflows, soul,
+/// rules, entity_config) under a new name and auto-activate it. Does NOT copy
+/// channel/account bindings, chats, or memories — the copy connects its own
+/// accounts (see `needsAccountSetup` in the response). Body: `{ name?, color? }`.
 pub async fn duplicate_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     let source = state
         .store
@@ -1977,28 +2014,50 @@ pub async fn duplicate_agent(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     let new_id = uuid::Uuid::new_v4().to_string();
-    let new_name = format!("{} (Copy)", source.name);
 
-    // Update frontmatter name in agent_md
-    let new_agent_md = if source.agent_md.contains("name:") {
-        // Replace just the first name: line in the YAML frontmatter
-        let mut result = String::new();
-        let mut replaced = false;
-        for line in source.agent_md.lines() {
-            if !replaced && line.trim_start().starts_with("name:") {
-                result.push_str(&format!("name: \"{}\"\n", new_name));
-                replaced = true;
-            } else {
-                result.push_str(line);
-                result.push('\n');
+    // Resolve the new name. The loader keys by name, so it must be unique. An
+    // explicit name that collides is a 400 (let the user pick another); the default
+    // "(Copy)" auto-suffixes so it always succeeds.
+    let explicit = body
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let new_name = match explicit {
+        Some(requested) => {
+            if state
+                .store
+                .get_agent_by_name(requested)
+                .map_err(to_error_response)?
+                .is_some()
+            {
+                return Err(to_error_response(types::NeboError::Validation(format!(
+                    "an agent named \"{requested}\" already exists"
+                ))));
             }
+            requested.to_string()
         }
-        result
-    } else {
-        source.agent_md.clone()
+        None => {
+            let base = format!("{} (Copy)", source.name);
+            let mut candidate = base.clone();
+            let mut n = 2;
+            while state
+                .store
+                .get_agent_by_name(&candidate)
+                .map_err(to_error_response)?
+                .is_some()
+            {
+                candidate = format!("{base} {n}");
+                n += 1;
+            }
+            candidate
+        }
     };
+    let color = body.get("color").and_then(|v| v.as_str());
 
-    let agent = state
+    let new_agent_md = rewrite_agent_md_name(&source.agent_md, &new_name);
+
+    state
         .store
         .create_agent(
             &new_id,
@@ -2012,7 +2071,34 @@ pub async fn duplicate_agent(
         )
         .map_err(to_error_response)?;
 
-    // Copy agent_workflow bindings from source
+    // create_agent doesn't carry soul/rules/color — copy them from the source.
+    // handle = None so the copy gets a fresh id-based loop handle (avoids a 409).
+    let _ = state.store.update_agent(
+        &new_id,
+        &new_name,
+        &source.description,
+        &new_agent_md,
+        &source.frontmatter,
+        source.pricing_model.as_deref(),
+        source.pricing_cost,
+        source.soul.as_deref(),
+        source.rules.as_deref(),
+        None,
+        color.or(source.color.as_deref()),
+        None,
+    );
+
+    // Persist to user/agents/<name>/ (+ napp_path) so it loads and survives restart.
+    write_user_agent_files(
+        &state.store,
+        &new_id,
+        &new_name,
+        &source.description,
+        &new_agent_md,
+        &source.frontmatter,
+    );
+
+    // Copy agent_workflow bindings from source.
     let source_workflows = state
         .store
         .list_agent_workflows(&id)
@@ -2033,36 +2119,77 @@ pub async fn duplicate_agent(
         );
     }
 
-    // Auto-activate
+    // Clone entity_config (heartbeat / permissions / model / personality / paths).
+    if let Ok(Some(cfg)) = state.store.get_entity_config("agent", &id) {
+        let patch = serde_json::json!({
+            "heartbeatEnabled": cfg.heartbeat_enabled,
+            "heartbeatIntervalMinutes": cfg.heartbeat_interval_minutes,
+            "heartbeatContent": cfg.heartbeat_content,
+            "heartbeatWindowStart": cfg.heartbeat_window_start,
+            "heartbeatWindowEnd": cfg.heartbeat_window_end,
+            "permissions": cfg.permissions,
+            "resourceGrants": cfg.resource_grants,
+            "modelPreference": cfg.model_preference,
+            "personalitySnippet": cfg.personality_snippet,
+            "allowedPaths": cfg.allowed_paths,
+            "pinned": cfg.pinned,
+            "multiChat": cfg.multi_chat,
+        });
+        let _ = state.store.upsert_entity_config("agent", &new_id, &patch);
+    }
+
+    // Reload the loader so the copy enumerates immediately (filesystem source).
+    state.agent_loader.load_all().await;
+
+    // Auto-activate (use the source's soul/rules — the fresh agent row has none yet
+    // in this in-memory snapshot).
     let active = tools::ActiveAgent {
         agent_id: new_id.clone(),
-        name: agent.name.clone(),
-        agent_md: agent.agent_md.clone(),
+        name: new_name.clone(),
+        agent_md: new_agent_md.clone(),
         config: None,
         channel_id: None,
         degraded: None,
-                    soul: agent.soul.clone(),
-                    rules: agent.rules.clone(),
+        soul: source.soul.clone(),
+        rules: source.rules.clone(),
     };
     state
         .agent_registry
         .write()
         .await
         .insert(new_id.clone(), active);
-    state.agent_workers.start_agent(&new_id, &agent.name, None).await;
+    state
+        .agent_workers
+        .start_agent(&new_id, &new_name, None)
+        .await;
 
     state.hub.broadcast(
         "agent_installed",
-        serde_json::json!({ "agentId": &new_id, "name": &agent.name }),
+        serde_json::json!({ "agentId": &new_id, "name": &new_name }),
     );
     state.hub.broadcast(
         "agent_activated",
-        serde_json::json!({ "agentId": &new_id, "name": &agent.name }),
+        serde_json::json!({ "agentId": &new_id, "name": &new_name }),
     );
 
+    // Plugins the source had per-account profiles for — the copy starts with none,
+    // so the UI prompts the user to connect the copy's own accounts.
+    let needs_account_setup: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        state
+            .store
+            .list_all_plugin_account_profiles_for_agent(&id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| seen.insert(p.plugin_slug.clone()))
+            .map(|p| p.plugin_slug)
+            .collect()
+    };
+
     Ok(Json(serde_json::json!({
-        "agent": { "id": new_id, "name": agent.name },
+        "agent": { "id": new_id, "name": new_name },
         "activated": true,
+        "needsAccountSetup": needs_account_setup,
     })))
 }
 

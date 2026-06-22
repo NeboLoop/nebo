@@ -239,6 +239,14 @@ Nebo's plugin tool routes these calls through the running bridge's stdin — see
 
 ---
 
+## Approval behavior for channel-triggered runs
+
+Channel plugins do not implement Nebo's approval modal. The agent run behind an inbound Slack/Discord/Teams message receives the same global Full Access setting as app chat. When Full Access is on, runner approval prompts are bypassed while hard safeguards and origin policy still apply.
+
+When Full Access is off and the agent requests a gated action, Nebo cancels the channel-triggered run and sends a clear text fallback telling the user to enable Full Access or continue in the Nebo app. The bridge should simply post that text like any other reply. Do not invent a platform-specific approve/deny CLI path unless Nebo adds an explicit approval protocol for channels.
+
+---
+
 ## How AppState routes ops
 
 The handle that connects the agent side to the bridge stdin lives in `AppState.channel_bridges`:

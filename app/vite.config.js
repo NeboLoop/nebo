@@ -31,7 +31,11 @@ export default defineConfig({
 				target: 'http://localhost:27895',
 				changeOrigin: true
 			},
-			'/apps': {
+			// Only proxy app-sidecar sub-paths (/apps/<agent_id>/ui|api|storage|…) to
+			// the backend. Bare `/apps` is the SvelteKit installed-apps grid route —
+			// proxying it (the old `'/apps'` prefix) shadowed that page in dev. The
+			// `^` key is a regex, so it matches /apps/<seg>/… but not bare /apps.
+			'^/apps/[^/]+/': {
 				target: 'http://localhost:27895',
 				changeOrigin: true
 			},

@@ -269,6 +269,50 @@ pub async fn delete_skill(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
+    // Resolve the skill's marketplace id from its manifest.json BEFORE removing the
+    // dir, so we can also drop its artifact-update-tracking row (keyed by that id)
+    // and not leave an orphan the update checker keeps polling. Best-effort: the
+    // manifest may sit at <dir>/manifest.json or <dir>/<version>/manifest.json.
+    // The install writes a controlled `.artifact_id` sidecar (preferred), and some
+    // skills also carry an `id` in manifest.json. A `.napp` skill extracts into a
+    // versioned subdir (`<name>/<version>/`), so we check the root AND one level
+    // deep for both files.
+    let mut artifact_id: Option<String> = None;
+    'outer: for base in [config::user_dir().ok(), config::nebo_dir().ok()]
+        .into_iter()
+        .flatten()
+    {
+        let root = base.join("skills").join(&name);
+        // Collect the root dir + its immediate subdirs.
+        let mut dirs = vec![root.clone()];
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for e in entries.flatten() {
+                if e.path().is_dir() {
+                    dirs.push(e.path());
+                }
+            }
+        }
+        for d in &dirs {
+            // Preferred: the controlled sidecar.
+            if let Ok(id) = std::fs::read_to_string(d.join(".artifact_id")) {
+                let id = id.trim();
+                if !id.is_empty() {
+                    artifact_id = Some(id.to_string());
+                    break 'outer;
+                }
+            }
+            // Fallback: an id embedded in manifest.json.
+            if let Ok(txt) = std::fs::read_to_string(d.join("manifest.json")) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                        artifact_id = Some(id.to_string());
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+
     // Delete from user/skills/
     if let Ok(user_dir) = config::user_dir() {
         let dir = user_dir.join("skills").join(&name);
@@ -283,6 +327,11 @@ pub async fn delete_skill(
         if dir.is_dir() {
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    // Drop the orphaned update-tracking row if we resolved an id.
+    if let Some(id) = artifact_id {
+        let _ = state.store.delete_artifact_update_pref(&id, "skill");
     }
 
     // Reconcile the in-memory loader (which list_extensions reads from) with the

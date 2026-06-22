@@ -14,6 +14,12 @@ pub struct PluginAccountProfile {
     pub account_label: String,
     pub config_dir: String,
     pub is_primary: bool,
+    /// The account's OAuth token can no longer be refreshed and the user must
+    /// reconnect interactively. Set by the proactive token refresher.
+    pub needs_reauth: bool,
+    /// Whether the one-time "needs reconnect" notification has already fired for
+    /// the current unhealthy spell (so the user isn't notified every tick).
+    pub reauth_notified: bool,
 }
 
 impl Store {
@@ -26,7 +32,8 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, agent_id, plugin_slug, account_label, config_dir, is_primary
+                "SELECT id, agent_id, plugin_slug, account_label, config_dir, is_primary,
+                        needs_reauth, reauth_notified
                  FROM plugin_account_profiles
                  WHERE agent_id = ?1 AND plugin_slug = ?2
                  ORDER BY is_primary DESC, account_label ASC",
@@ -51,7 +58,8 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, agent_id, plugin_slug, account_label, config_dir, is_primary
+                "SELECT id, agent_id, plugin_slug, account_label, config_dir, is_primary,
+                        needs_reauth, reauth_notified
                  FROM plugin_account_profiles
                  WHERE agent_id = ?1
                  ORDER BY plugin_slug ASC, is_primary DESC, account_label ASC",
@@ -65,6 +73,71 @@ impl Store {
             out.push(r.map_err(|e| NeboError::Database(e.to_string()))?);
         }
         Ok(out)
+    }
+
+    /// List every account profile across ALL agents, ordered by agent then
+    /// plugin. Used by the background token refresher, which has no single agent
+    /// context — it must keep every connected account's OAuth token fresh.
+    pub fn list_all_plugin_account_profiles(
+        &self,
+    ) -> Result<Vec<PluginAccountProfile>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, agent_id, plugin_slug, account_label, config_dir, is_primary,
+                        needs_reauth, reauth_notified
+                 FROM plugin_account_profiles
+                 ORDER BY agent_id ASC, plugin_slug ASC, account_label ASC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![], row_to_profile)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| NeboError::Database(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Record an account's OAuth health. When healthy again (`needs_reauth =
+    /// false`), the one-time-notification flag is also reset so a future failure
+    /// notifies again. Keyed by the profile's stable `id`.
+    pub fn set_plugin_account_reauth(
+        &self,
+        id: &str,
+        needs_reauth: bool,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        if needs_reauth {
+            conn.execute(
+                "UPDATE plugin_account_profiles
+                 SET needs_reauth = 1, updated_at = unixepoch()
+                 WHERE id = ?1",
+                params![id],
+            )
+        } else {
+            conn.execute(
+                "UPDATE plugin_account_profiles
+                 SET needs_reauth = 0, reauth_notified = 0, updated_at = unixepoch()
+                 WHERE id = ?1",
+                params![id],
+            )
+        }
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Mark that the "needs reconnect" notification has fired for this account,
+    /// so the refresher doesn't notify again until the account recovers.
+    pub fn mark_plugin_account_reauth_notified(&self, id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE plugin_account_profiles SET reauth_notified = 1 WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
     }
 
     /// Resolve a specific account for an agent+plugin. When `account_label` is
@@ -159,5 +232,7 @@ fn row_to_profile(row: &rusqlite::Row) -> rusqlite::Result<PluginAccountProfile>
         account_label: row.get(3)?,
         config_dir: row.get(4)?,
         is_primary: row.get::<_, i32>(5)? != 0,
+        needs_reauth: row.get::<_, i32>(6)? != 0,
+        reauth_notified: row.get::<_, i32>(7)? != 0,
     })
 }

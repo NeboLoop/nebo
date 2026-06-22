@@ -18,7 +18,8 @@
 - [ ] **Push tag** to trigger pipeline: `git push origin vX.Y.Z`
 - [ ] **Monitor pipeline** — `gh run list --limit 1` should show the release run (Linux + Windows only)
 - [ ] **Build + publish macOS locally** (CI skips mac — runners cost ~10x; see "Local macOS Build"):
-  - `make release-macos` — builds the signed + notarized arm64 binary + DMG
+  - `make release-darwin` — builds both macOS bare binaries (`nebo-darwin-arm64` + `nebo-darwin-amd64`)
+  - `make release-macos` — builds the signed + notarized macOS DMG flow
   - `make publish-macos TAG=vX.Y.Z` — attaches them to the release + CDN, merges checksums
 - [ ] **Verify CDN** after pipeline completes: `curl -s https://cdn.neboai.com/releases/version.json`
 - [ ] **Verify GitHub Release** — `gh release view vX.Y.Z` should list all assets (incl. the mac pair)
@@ -78,7 +79,7 @@ Cargo.toml [workspace.package]
 **macOS is built LOCALLY, not in CI** — `macos-latest` runners bill at ~10x Linux. The
 `build-macos` + `notarize-macos` jobs are gated `if: ${{ vars.BUILD_MACOS_IN_CI == 'true' }}`
 and skipped by default; set that repo variable to `true` to build mac in CI again. By default
-CI runs the Linux + Windows legs and the mac arm64 assets are produced on a dev Mac
+CI runs the Linux + Windows legs and the mac arm64 + amd64 assets are produced on a dev Mac
 (see "Local macOS Build") and attached to the release + CDN afterward.
 
 ```
@@ -87,7 +88,7 @@ frontend ─┬─→ build-linux (amd64,arm64) ──────────�
           └─→ build-windows ─→ sign-windows ··(cache)·┘     │
                               update-apt ←── build-linux ────┘
 
-Local (dev Mac, arm64): make release-macos → make publish-macos TAG=vX.Y.Z
+Local (dev Mac, arm64 + amd64): make release-darwin + make release-macos → make publish-macos TAG=vX.Y.Z
 ```
 
 `release` has `needs: [build-linux]` (Linux is the gate). It does NOT `need` `sign-windows`
@@ -103,11 +104,12 @@ assets are uploaded locally. `update-apt` keys off `build-linux`, not `release`.
 | release | ubuntu-latest | runs | GitHub Release + CDN upload (Linux + Windows) |
 | update-homebrew | ubuntu-latest | runs | `neboloop/homebrew-tap` push |
 | update-apt | ubuntu-latest | runs | `neboloop/apt` push |
-| build-macos | macos-latest | **SKIPPED** (`BUILD_MACOS_IN_CI`) | arm64 binary + signed DMG |
-| notarize-macos | macos-latest | **SKIPPED** | notarized + stapled arm64 DMG |
+| build-macos | macos-latest | **SKIPPED** (`BUILD_MACOS_IN_CI`) | macOS binaries + signed DMGs |
+| notarize-macos | macos-latest | **SKIPPED** | notarized + stapled macOS DMGs |
 
-> **macOS is arm64 (Apple Silicon) only.** There is no Intel/amd64 mac build — the
-> `build-macos` matrix and `make release-macos` produce arm64 exclusively.
+> **macOS ships both arm64 (Apple Silicon) and amd64 (Intel) assets.** Do not
+> consider a release complete until both mac architectures are represented in
+> GitHub Release assets, CDN assets, and `checksums.txt`.
 
 **CI wall-clock (Linux + Windows): ~35–40 min** (Windows leg build ~27m + sign ~6m is the
 critical path). The local mac build runs in parallel (~15–20 min on a dev Mac), so total
@@ -118,7 +120,9 @@ human wall-clock is roughly the CI time.
 ```
 checksums.txt                  # SHA256 of every asset (CI writes Linux+Windows; mac merged locally)
 Nebo-X.Y.Z-arm64.dmg          # macOS Apple Silicon installer (signed + notarized, built locally)
+Nebo-X.Y.Z-amd64.dmg          # macOS Intel installer (signed + notarized, built locally)
 nebo-darwin-arm64              # macOS Apple Silicon bare binary (built locally)
+nebo-darwin-amd64              # macOS Intel bare binary (built locally)
 Nebo-X.Y.Z-amd64.msi          # Windows MSI installer
 Nebo-X.Y.Z-setup.exe          # Windows EXE installer
 nebo-linux-amd64               # Linux x86_64 desktop (Tauri)

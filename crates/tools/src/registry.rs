@@ -6,6 +6,7 @@ use tracing::{debug, warn};
 
 use ai::ToolDefinition;
 
+use crate::capabilities;
 use crate::origin::ToolContext;
 use crate::policy::Policy;
 use crate::process::ProcessRegistry;
@@ -66,6 +67,13 @@ pub struct ToolResult {
     /// `None` for non-HTTP tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_status: Option<u16>,
+    /// Terminal error: this failure cannot be recovered by retrying or trying a
+    /// different approach (auth expired, account not connected, permission off).
+    /// The runner ends the turn and surfaces `content` to the user instead of
+    /// feeding it back for the model to improvise around — see FRAMES.md Phase 1.
+    /// This is error *classification*, not a failure counter.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terminal: bool,
 }
 
 impl ToolResult {
@@ -80,6 +88,18 @@ impl ToolResult {
         Self {
             content: content.into(),
             is_error: true,
+            ..Default::default()
+        }
+    }
+
+    /// A terminal (unrecoverable) error: ends the turn and is surfaced to the
+    /// user. Use for auth/permission/connection failures the agent cannot fix by
+    /// retrying or improvising (FRAMES.md Phase 1).
+    pub fn terminal(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            terminal: true,
             ..Default::default()
         }
     }
@@ -418,12 +438,16 @@ impl Registry {
             .values()
             .filter(|def| {
                 if let Some(perms) = permissions {
-                    let cat = tool_category(&def.name);
-                    if let Some(&allowed) = perms.get(cat) {
-                        return allowed;
+                    // Only hide pure single-capability tools whose capability is
+                    // off. Meta-tools (os) and mixed tools (organizer) stay listed
+                    // — their individual calls are gated per-resource at execution.
+                    if let Some(cat) = capabilities::whole_tool_capability(&def.name) {
+                        if let Some(&allowed) = perms.get(cat) {
+                            return allowed;
+                        }
                     }
                 }
-                true // no permission set = allowed
+                true // no permission set / ungated = allowed
             })
             .cloned()
             .collect()
@@ -517,12 +541,32 @@ impl Registry {
 
         // ── Phase 1b: Entity permission check ─────────────────────
         if let Some(ref perms) = ctx.entity_permissions {
-            let category = tool_category(name);
-            if let Some(&allowed) = perms.get(category) {
-                if !allowed {
+            // Resource-aware: `os` resolves to file/shell/system/desktop/media by
+            // the resource being used (the original bug gated all of os behind
+            // `desktop`). Installed extensions (plugin/mcp/app/skill/agent) return
+            // None here — ungated, because installation is the grant.
+            if let Some(category) = capabilities::gating_capability(name, &input) {
+                // OFF capability is a hard error ONLY when the caller hasn't
+                // cleared it. The runner clears it via the approval round-trip
+                // (user said yes / autonomous / capability pre-granted), turning
+                // "off" into "ask" rather than a dead end (PERMISSIONS_SME §11).
+                // Callers that don't run the gate leave approved_categories empty,
+                // so their OFF capabilities still hard-block.
+                if perms.get(category) == Some(&false)
+                    && !ctx.approved_categories.contains(category)
+                {
+                    // Actionable, capability-named denial. Tell the model exactly
+                    // which permission is off and to surface that to the user
+                    // (Settings → Permissions) instead of silently flailing
+                    // through fallback tools. PERMISSION_REQUIRED: prefix lets the
+                    // runner/UI detect this and offer a one-tap enable.
+                    let label = capabilities::capability_label(category);
                     return ToolResult::error(format!(
-                        "Tool '{}' is denied for this entity (category '{}')",
-                        name, category
+                        "PERMISSION_REQUIRED:{category} — The \"{label}\" capability is \
+                         turned off, so I can't do this. Tell the user, in plain language, \
+                         that you need the \"{label}\" permission enabled in Settings → \
+                         Permissions to continue, then stop. Do NOT try other tools or \
+                         workarounds to get around it."
                     ));
                 }
             }
@@ -947,20 +991,11 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
     }
 }
 
-/// Map a tool name to its permission category.
-/// Categories match the keys used in entity_config.permissions JSON.
-fn tool_category(name: &str) -> &str {
-    match name {
-        "web" => "web",
-        "os" => "desktop",
-        "agent" => "memory",
-        "skill" => "filesystem",
-        "work" => "filesystem",
-        "loop" => "web",
-        "plugin" => "desktop",
-        _ => "other",
-    }
-}
+// Tool→capability mapping and labels live in `crate::capabilities` — the single
+// source of truth shared with the Settings → Permissions UI (served via the API).
+// The old `tool_category`/`capability_label` here used a drifted vocabulary
+// (filesystem/memory/plugin) that didn't match the persisted keys
+// (file/shell/system/…), so most toggles silently gated nothing.
 
 /// Strip MCP namespace prefix from tool names.
 /// `mcp__{server}__{tool}` → `{tool}`

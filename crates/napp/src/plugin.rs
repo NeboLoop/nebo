@@ -820,6 +820,24 @@ impl PluginStore {
         authed
     }
 
+    /// Run a plugin's auth `status` command for ONE account, injecting that
+    /// account's config directory under the manifest's `profile_dir_env`.
+    /// `Some(true)` = authenticated, `Some(false)` = definitively not (e.g. an
+    /// `invalid_rapt` reauth lapse), `None` = inconclusive (probe couldn't run or
+    /// was reaped) → the caller must skip rather than decide. Does NOT touch the
+    /// slug-level auth cache (which is global/single-account). Used by the
+    /// proactive token refresher to keep each connected account fresh and detect
+    /// dead tokens.
+    pub async fn check_auth_for_profile(
+        &self,
+        slug: &str,
+        profile_dir_env: &str,
+        config_dir: &str,
+    ) -> Option<bool> {
+        let path_env = self.path_with_plugins();
+        run_auth_status_check_inner(self, slug, &path_env, Some((profile_dir_env, config_dir))).await
+    }
+
     /// Check auth status for a single plugin on first access. Caches the result.
     /// Subsequent calls for the same slug return the cached value immediately.
     pub async fn check_auth_lazy(&self, slug: &str) -> bool {
@@ -2372,11 +2390,37 @@ pub fn plugin_env_var(slug: &str) -> String {
 
 /// Run a single plugin's auth status command. Returns `true` if authenticated.
 async fn run_auth_status_check(store: &PluginStore, slug: &str, path_env: &str) -> bool {
+    // The slug-level auth cache is a plain bool; an inconclusive probe maps to
+    // `false` here (the prior behavior for a failed/killed status command) so a
+    // never-checked plugin still surfaces as "needs connecting" rather than
+    // silently appearing authenticated.
+    run_auth_status_check_inner(store, slug, path_env, None)
+        .await
+        .unwrap_or(false)
+}
+
+/// Run a plugin's auth `status` command, optionally pointing it at a specific
+/// per-account config directory via the manifest's `profile_dir_env`. Without an
+/// injection it checks the plugin's global credentials (single-account / startup
+/// cache); with one it checks exactly that account's tokens — the path the
+/// proactive refresher uses to keep each connected account fresh.
+/// Returns `Some(true)` authenticated, `Some(false)` definitively not
+/// authenticated, `None` inconclusive (couldn't spawn, or the probe was
+/// signal-killed — typically reaped by the child guard mid-flight). Callers that
+/// take action on the result (the proactive refresher) MUST treat `None` as
+/// "skip / retry next tick" — never as a verdict — so a reaped probe can't raise
+/// a false reconnect alarm OR clear a real one.
+async fn run_auth_status_check_inner(
+    store: &PluginStore,
+    slug: &str,
+    path_env: &str,
+    profile_dir: Option<(&str, &str)>,
+) -> Option<bool> {
     let Some((binary_path, auth)) = store.get_auth_info(slug) else {
-        return true; // no auth config → treat as authenticated
+        return Some(true); // no auth config → treat as authenticated
     };
     let Some(status_cmd) = auth.commands.status.as_deref() else {
-        return true; // no status command → treat as authenticated
+        return Some(true); // no status command → treat as authenticated
     };
     let resolved_env = store.resolved_auth_env(slug);
     let args: Vec<&str> = status_cmd.split_whitespace().collect();
@@ -2386,20 +2430,50 @@ async fn run_auth_status_check(store: &PluginStore, slug: &str, path_env: &str) 
     for (key, value) in &resolved_env {
         cmd.env(key, value);
     }
-    match cmd.output().await {
+    // Per-account isolation: set last so it wins over any global config-dir value.
+    if let Some((env_name, config_dir)) = profile_dir {
+        cmd.env(env_name, config_dir);
+    }
+    // Register the probe with the child guard. Otherwise the guard's reaper
+    // (`reap_existing_for`, run before every plugin runtime spawn) SIGKILLs any
+    // *untracked* process running this binary — so a concurrent gws spawn (e.g. an
+    // email-watcher restart) would kill this short-lived `auth status` mid-flight,
+    // and a signal-killed probe looks exactly like "not authenticated". Tracking
+    // the pid makes the reaper skip it.
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => return None, // couldn't spawn → inconclusive
+    };
+    let pid = child.id();
+    if let Some(p) = pid {
+        crate::child_guard::register_child(p);
+    }
+    let result = child.wait_with_output().await;
+    if let Some(p) = pid {
+        crate::child_guard::unregister_child(p);
+    }
+    match result {
         Ok(output) => {
+            // Terminated by a signal (no exit code) — almost always our own reaper
+            // racing the spawn, NOT an auth verdict. Inconclusive: don't decide.
+            #[cfg(unix)]
+            if output.status.code().is_none() {
+                return None;
+            }
             // A non-zero exit means the status command itself failed (or signals
             // "not authenticated" for CLIs that follow the exit-code convention).
             if !output.status.success() {
-                return false;
+                return Some(false);
             }
             // Many status commands are *reporters*: they exit 0 and describe the
             // auth state in a JSON body (e.g. gws prints
             // {"auth_method":"none","credential_source":"none",...} when not
             // connected). Trust the body over the exit code when it's parseable.
-            interpret_auth_status_output(&output.stdout)
+            Some(interpret_auth_status_output(&output.stdout))
         }
-        Err(_) => false,
+        Err(_) => None, // couldn't collect output → inconclusive
     }
 }
 
@@ -2415,9 +2489,20 @@ fn interpret_auth_status_output(stdout: &[u8]) -> bool {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
         return true;
     };
-    for key in ["authenticated", "isAuthenticated", "logged_in", "loggedIn"] {
+    // An explicit token-liveness verdict is the strongest signal: a CLI that
+    // *has* credentials but whose token can no longer be refreshed (e.g. Google
+    // Workspace's `invalid_rapt` reauth lapse) reports `token_valid: false` even
+    // though `auth_method`/`credential_source` still look connected. Honor it —
+    // otherwise such an account reads as healthy while every real API call 401s.
+    for key in ["authenticated", "isAuthenticated", "logged_in", "loggedIn", "token_valid"] {
         if let Some(b) = val.get(key).and_then(|v| v.as_bool()) {
             return b;
+        }
+    }
+    // A populated token error is an unauthenticated signal even without a boolean.
+    if let Some(s) = val.get("token_error").and_then(|v| v.as_str()) {
+        if !s.is_empty() {
+            return false;
         }
     }
     for key in ["credential_source", "auth_method", "storage", "status"] {
@@ -2463,6 +2548,20 @@ mod tests {
         // Explicit boolean wins regardless of other fields.
         assert!(!interpret_auth_status_output(br#"{"authenticated":false}"#));
         assert!(interpret_auth_status_output(br#"{"logged_in":true}"#));
+        // token_valid is the token-liveness verdict: a Google Workspace account
+        // whose refresh token lapsed (invalid_rapt) still LOOKS connected
+        // (auth_method/credential_source set) but must read as NOT authenticated.
+        assert!(!interpret_auth_status_output(
+            br#"{"auth_method":"oauth2","credential_source":"client_secret.json","token_valid":false,"token_error":"reauth related error (invalid_rapt)"}"#
+        ));
+        // Healthy token with the same connected fields.
+        assert!(interpret_auth_status_output(
+            br#"{"auth_method":"oauth2","credential_source":"client_secret.json","token_valid":true}"#
+        ));
+        // A populated token_error alone (no boolean) is an unauthenticated signal.
+        assert!(!interpret_auth_status_output(
+            br#"{"auth_method":"oauth2","token_error":"invalid_grant"}"#
+        ));
         // Non-JSON / no negative signal → trust the successful exit.
         assert!(interpret_auth_status_output(b"ok"));
         assert!(interpret_auth_status_output(b"{}"));

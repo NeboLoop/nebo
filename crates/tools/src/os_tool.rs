@@ -162,8 +162,34 @@ impl OsTool {
         self
     }
 
+    /// True when the call is a file-management verb (move/copy/rename/delete/
+    /// mkdir) shaped like a file op (has `path`, no explicit resource) rather
+    /// than a mouse `move`. The file tool has no such actions (they go through
+    /// the shell, matching Claude Code), so these are redirected to a shell
+    /// correction — and the permission gate must NOT treat them as desktop
+    /// control. One detection, shared by `execute` (the redirect) and
+    /// `capabilities::gating_capability` (skip the wrong-capability ask).
+    pub(crate) fn is_file_mgmt_redirect(input: &serde_json::Value) -> bool {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let has_explicit_resource = input
+            .get("resource")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty());
+        let has_path = input.get("path").and_then(|v| v.as_str()).is_some();
+        let has_dest = input
+            .get("destination")
+            .or_else(|| input.get("to"))
+            .and_then(|v| v.as_str())
+            .is_some();
+        let file_mgmt_verb = matches!(
+            action,
+            "move" | "copy" | "rename" | "delete" | "remove" | "mkdir" | "rmdir" | "trash"
+        );
+        !has_explicit_resource && file_mgmt_verb && has_path && (has_dest || action != "move")
+    }
+
     /// Infer resource from action name when resource field is omitted.
-    fn infer_resource(action: &str) -> &str {
+    pub(crate) fn infer_resource(action: &str) -> &str {
         match action {
             // File
             "read" | "write" | "edit" | "glob" | "grep" | "convert" => "file",
@@ -192,7 +218,7 @@ impl OsTool {
 
     /// Infer resource from parameter context when action-based inference fails
     /// (e.g. "create" is shared across calendar, contacts, reminders).
-    fn infer_resource_from_context(input: &serde_json::Value) -> &'static str {
+    pub(crate) fn infer_resource_from_context(input: &serde_json::Value) -> &'static str {
         // File: "list"/"ls" with a dir/path target is a directory listing
         // (a strong model prior — routed to file, which handles it via glob).
         // Bare "list" with no target stays ambiguous (window, app, shell, ...).
@@ -647,6 +673,38 @@ impl DynTool for OsTool {
             ];
 
             let mut input = input;
+
+            // File-management verbs (move/copy/rename/delete/mkdir) with file-shaped
+            // args are file operations, NOT a mouse "move" — but action-name inference
+            // resolves bare "move" to the desktop "input" resource, which then gated on
+            // the wrong (Desktop) capability and surfaced a misleading "need Desktop".
+            // The file tool has no move/copy/delete (matching Claude Code: those go
+            // through the shell), so steer the agent to shell `mv`/`cp`/`rm` instead of
+            // misrouting. Disambiguated by file args: a real mouse move never carries
+            // `path` + `destination`.
+            {
+                let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                if Self::is_file_mgmt_redirect(&input) {
+                    let src = input.get("path").and_then(|v| v.as_str()).unwrap_or("<src>");
+                    let dst = input
+                        .get("destination")
+                        .or_else(|| input.get("to"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<dst>");
+                    let cmd = match action {
+                        "copy" => format!("cp {src} {dst}"),
+                        "delete" | "remove" | "trash" => format!("rm {src}"),
+                        "mkdir" => format!("mkdir -p {src}"),
+                        "rmdir" => format!("rmdir {src}"),
+                        _ => format!("mv {src} {dst}"),
+                    };
+                    return ToolResult::error(format!(
+                        "The file tool only reads/writes/edits files — it has no '{action}'. \
+                         To move, copy, rename, or delete files, run the shell command directly: \
+                         os(resource: \"shell\", action: \"exec\", command: \"{cmd}\")"
+                    ));
+                }
+            }
 
             let resource = {
                 let corrected = crate::domain::auto_correct_resource(

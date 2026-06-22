@@ -200,7 +200,40 @@ pub async fn get_permissions(State(state): State<AppState>) -> HandlerResult<ser
             serde_json::json!({ "tool": tool, "allowed": allowed.as_bool().unwrap_or(false) })
         })
         .collect();
-    Ok(Json(serde_json::json!({ "permissions": permissions })))
+    // `capabilities` is the canonical toggle list (key/label/desc) from the
+    // single source of truth in `tools::capabilities`. The frontend renders its
+    // Settings → Permissions switches from this instead of a hardcoded list, so
+    // the UI, the persisted keys, and the backend gate cannot drift apart.
+    // `approvedCommands` are the "Approve Always" shell-command prefixes — surfaced
+    // so Settings can show + revoke them (no invisible durable grants).
+    let approved_commands = state.store.get_approved_commands().unwrap_or_default();
+    Ok(Json(serde_json::json!({
+        "permissions": permissions,
+        "capabilities": tools::capabilities::CAPABILITIES,
+        "approvedCommands": approved_commands,
+    })))
+}
+
+/// PUT /api/v1/user/me/approved-commands — replace the "Approve Always" prefix
+/// list (used by Settings to remove an entry).
+pub async fn update_approved_commands(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    let commands: Vec<String> = body
+        .get("commands")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    state
+        .store
+        .set_approved_commands(&commands)
+        .map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "success": true })))
 }
 
 /// PUT /api/v1/user/me/permissions

@@ -181,7 +181,7 @@ pub struct AppState {
     pub bridge: Arc<mcp::Bridge>,
     pub models_config: Arc<config::ModelsConfig>,
     pub cli_statuses: Arc<config::AllCliStatuses>,
-    pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
     pub ask_channels: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
 }
 ```

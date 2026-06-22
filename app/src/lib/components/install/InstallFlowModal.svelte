@@ -525,13 +525,15 @@
     show = true;
 
     if (installTimeout) clearTimeout(installTimeout);
+    // ponytail: 10s, not 30s — this only fires when code_result is lost; a normal
+    // round-trip is <3s. Real cause of a slow spinner is a missing/late code_result.
     installTimeout = setTimeout(() => {
       if (phase === 'installing') {
         statusMessage = `${typeLabel} installed — finalizing…`;
         phase = 'done';
         autoCloseIfRemote(2000);
       }
-    }, 30_000);
+    }, 10_000);
   }
 
   function handleCodeProcessing(e: Event) {

@@ -512,9 +512,16 @@ impl FileTool {
     }
 
     fn handle_glob(&self, input: &FileInput) -> ToolResult {
-        // The `glob` action takes its expression in `pattern` (the one way). The separate `glob`
-        // field is reserved for grep's file-filter.
-        let pattern = &input.pattern;
+        // The expression goes in `pattern`. But the action is *named* "glob", so models
+        // predictably pass it as `glob:` and then waste a call recovering from the error.
+        // Accept `glob` as a synonym here (input tolerance — same precedent as memory
+        // accepting `save` for `store`). The `glob` field is grep's file-filter for the grep
+        // action; this fallback is scoped to handle_glob, so there is no collision.
+        let pattern: &String = if input.pattern.is_empty() && !input.glob.is_empty() {
+            &input.glob
+        } else {
+            &input.pattern
+        };
 
         // If pattern/glob are empty but path contains glob metacharacters,
         // treat path as the full glob expression (e.g. "/Users/x/Desktop/*.{png,jpg}").

@@ -14,3 +14,5 @@ fixtures:
   - ../fixtures/tools/os-file-discovery-spiral.yaml
   - ../fixtures/tools/os-shell-retry-spiral.yaml
   - ../fixtures/tools/os-file-search-loop.yaml
+  # FRAMES Phase 1 — terminal-error classification (auth self-reauth deny + no spiral)
+  - ../fixtures/tools/plugin-auth-no-self-reauth.yaml

@@ -10,7 +10,7 @@ impl Store {
         match conn.query_row(
             "SELECT id, auto_install_deps, auto_approve_read, auto_approve_write,
                     auto_approve_bash, heartbeat_interval_minutes, comm_enabled,
-                    comm_plugin, developer_mode, auto_update, updated_at
+                    comm_plugin, developer_mode, auto_update, full_access, updated_at
              FROM settings WHERE id = 1",
             [],
             |row| {
@@ -25,7 +25,8 @@ impl Store {
                     comm_plugin: row.get(7)?,
                     developer_mode: row.get(8)?,
                     auto_update: row.get(9)?,
-                    updated_at: row.get(10)?,
+                    full_access: row.get(10)?,
+                    updated_at: row.get(11)?,
                 })
             },
         ) {
@@ -46,6 +47,7 @@ impl Store {
         comm_plugin: Option<&str>,
         developer_mode: Option<bool>,
         auto_update: Option<bool>,
+        full_access: Option<bool>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         // Ensure settings row exists
@@ -76,6 +78,7 @@ impl Store {
         maybe_set!(comm_plugin, "comm_plugin");
         maybe_set!(developer_mode, "developer_mode");
         maybe_set!(auto_update, "auto_update");
+        maybe_set!(full_access, "full_access");
 
         if updates.is_empty() {
             return Ok(());
@@ -131,6 +134,11 @@ impl Store {
             idx += 1;
         }
         if let Some(v) = auto_update {
+            stmt.raw_bind_parameter(idx, v as i64)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            idx += 1;
+        }
+        if let Some(v) = full_access {
             stmt.raw_bind_parameter(idx, v as i64)
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let _ = idx + 1;

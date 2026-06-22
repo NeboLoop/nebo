@@ -58,6 +58,7 @@ pub enum WorkflowProgress {
 #[allow(unused_assignments)] // circuit breaker state is future-proofed for Fallback::Skip
 pub async fn execute_workflow(
     def: &WorkflowDef,
+    agent_id: &str,
     inputs: serde_json::Value,
     trigger_type: &str,
     trigger_detail: Option<&str>,
@@ -104,6 +105,7 @@ pub async fn execute_workflow(
     if !def.connections.is_empty() {
         return crate::graph::execute_graph(
             def,
+            agent_id,
             &inputs,
             store,
             provider,
@@ -197,6 +199,7 @@ pub async fn execute_workflow(
             skill_content,
             activity_emit,
             store,
+            agent_id,
             &run_id,
             &def.id,
             progress_tx.as_ref(),
@@ -393,6 +396,7 @@ pub(crate) async fn execute_activity_with_retry(
     skill_content: Option<&HashMap<String, String>>,
     emit_source: Option<&str>,
     store: &Arc<Store>,
+    agent_id: &str,
     run_id: &str,
     workflow_id: &str,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
@@ -410,6 +414,7 @@ pub(crate) async fn execute_activity_with_retry(
             skill_content,
             emit_source,
             store,
+            agent_id,
             run_id,
             workflow_id,
             progress_tx,
@@ -450,6 +455,7 @@ pub async fn execute_activity(
     skill_content: Option<&HashMap<String, String>>,
     emit_source: Option<&str>,
     store: &Arc<Store>,
+    agent_id: &str,
     run_id: &str,
     workflow_id: &str,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
@@ -469,10 +475,12 @@ pub async fn execute_activity(
         })
         .collect();
 
-    // Trace builder — links every LLM call to this run/workflow/action/step so
-    // Janus can attribute usage per workflow. step_id is the step index ("" when
+    // Trace builder — links every LLM call to this agent/run/workflow/action/step
+    // so Janus can attribute usage per agent and per workflow. agent_id is "" for
+    // standalone (non-agent-bound) workflow runs. step_id is the step index ("" when
     // the activity has no steps).
     let make_trace = |step_id: String| ai::RequestTrace {
+        agent_id: agent_id.to_string(),
         run_id: run_id.to_string(),
         workflow_id: workflow_id.to_string(),
         action_id: activity.id.clone(),

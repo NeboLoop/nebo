@@ -775,8 +775,12 @@ The agent runner calls tools via the registry. Platform tools participate in:
 1. **Tool filtering** — `tool_filter.rs` decides which tools appear in each turn
 2. **STRAP doc injection** — When an organizer/music/keychain context is active,
    the corresponding sub-documentation is injected into the system prompt
-3. **Approval flow** — `requires_approval_for()` is checked before execution;
-   if true, the agent pauses for user confirmation via `ctx.ask_user()`
+3. **Approval flow** — The runner uses
+   `tools::capabilities::gating_capability()` before registry execution to decide
+   whether the call needs an `approval_request`. `requires_approval_for()` still
+   exists on platform tools as low-level resource metadata, but the user-facing
+   approval prompt is the runner capability gate. Full Access bypasses that
+   prompt gate; hard safeguards and origin policy still run.
 
 ### Store Dependencies
 

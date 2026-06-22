@@ -1230,6 +1230,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     let ask_channels: tools::AskChannels =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+    let approval_channels: tools::ApprovalChannels =
+        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
     let mut runner_builder = agent::Runner::new(
         store.clone(),
@@ -1242,7 +1244,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         active_role_state.clone(),
         Some(skill_loader.clone()),
     )
-    .set_ask_channels(ask_channels.clone());
+    .set_ask_channels(ask_channels.clone())
+    .set_approval_channels(approval_channels.clone());
 
     if let Some(ep) = embedding_provider {
         runner_builder = runner_builder.set_embedding_provider(ep);
@@ -1579,7 +1582,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         snapshot_store,
         extension_bridge,
         comm_manager,
-        approval_channels: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        approval_channels: approval_channels.clone(),
         ask_channels: ask_channels.clone(),
         pending_comm_asks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         update_pending: Arc::new(tokio::sync::Mutex::new(None)),
@@ -1670,6 +1673,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Keep OAuth MCP tokens fresh continuously so they never expire and drop a
     // server on reconnect/restart (renew proactively, not reactively at connect).
     crate::handlers::integrations::spawn_mcp_token_refresher(state.clone());
+
+    // Same guarantee for OAuth plugin accounts (e.g. Google Workspace): probe each
+    // connected account's auth periodically so its token stays fresh, and surface a
+    // "Reconnect" prompt the moment a token can no longer be refreshed.
+    crate::handlers::integrations::spawn_plugin_token_refresher(state.clone());
 
     // Wire channel dispatcher into agent workers (late binding via OnceLock).
     // Workers started before this point have channel_dispatch = None, so channels

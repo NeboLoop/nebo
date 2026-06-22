@@ -1134,7 +1134,7 @@ pub struct AppState {
     pub run_registry: RunRegistry,              // Global run tracking
     pub comm_manager: Arc<PluginManager>,       // NeboAI comm plugin
     pub channel_providers: Arc<RwLock<HashMap<String, Arc<dyn ChannelProvider>>>>,
-    pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
     pub ask_channels: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
     pub extension_bridge: Arc<browser::ExtensionBridge>,
     pub hooks: Arc<napp::HookDispatcher>,

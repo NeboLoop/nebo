@@ -66,16 +66,15 @@ DEVELOPER: Developer
 ```
 
 ### File
-`app/src/routes/(app)/settings/+layout.svelte`
+`app/src/routes/settings/+layout.svelte`
 
 ### All Setting Routes (on disk)
 ```
-about-me, advisors, agent, apps, developer, extensions, family,
-heartbeat, identity, integrations, mcp, memories, neboai, notes,
-permissions, personality, plugins, profile, providers, routing,
-rules, sessions, skills, status, workflows
+about, account, advisors, agents, billing, browser, developer,
+events, identity, mcp, permissions, personality, plugins, profile,
+providers, routing, rules, secrets, skills, status, updates, usage
 ```
-Note: Many routes on disk are not linked in the sidebar (about-me, agent, extensions, family, mcp, personality, plugins, workflows).
+Note: The settings route set is filesystem-driven under `app/src/routes/settings`.
 
 ## Planned Settings Sidebar (Apple-style) — NOT YET IMPLEMENTED
 ```
@@ -147,13 +146,13 @@ Developer
 
 ### File Locations
 - Top nav: `app/src/lib/components/navigation/AppNav.svelte`
-- App layout: `app/src/routes/(app)/+layout.svelte`
-- Chat layout: `app/src/routes/(app)/agent/+layout.svelte`
+- App layout: `app/src/routes/+layout.svelte`
+- Agent layout: `app/src/routes/[agentId]/+layout.svelte`
 - Sidebar: `app/src/lib/components/sidebar/Sidebar.svelte`
-- Settings layout: `app/src/routes/(app)/settings/+layout.svelte`
-- Store layout: `app/src/routes/(app)/store/+layout.svelte`
-- Store home: `app/src/routes/(app)/store/+page.svelte`
-- All settings pages: `app/src/routes/(app)/settings/{section}/+page.svelte`
+- Settings layout: `app/src/routes/settings/+layout.svelte`
+- Marketplace layout: `app/src/routes/marketplace/+layout.svelte`
+- Marketplace home: `app/src/routes/marketplace/+page.svelte`
+- All settings pages: `app/src/routes/settings/{section}/+page.svelte`
 
 ### Layout Modes
 1. **Full-height** (chat): `h-dvh flex flex-col overflow-hidden` — sidebar + chat

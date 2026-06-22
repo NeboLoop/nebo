@@ -18,7 +18,7 @@
 
   let step = $state(0);
   let tcAccepted = $state(false);
-  let autonomous = $state(false);
+  let fullAccess = $state(false);
   let showApprovalPreview = $state(false);
   let showEnableModal = $state(false);
   let termsAccepted = $state(false);
@@ -38,16 +38,9 @@
   let neboAIPollInterval: ReturnType<typeof setInterval> | null = null;
   let neboAITimeout: ReturnType<typeof setTimeout> | null = null;
 
-  const CAPABILITY_LABELS: Record<string, { label: string; desc: string }> = {
-    chat: { label: 'Chat', desc: 'Respond to messages and conversations' },
-    file: { label: 'File Access', desc: 'Read and write files on your system' },
-    shell: { label: 'Shell Commands', desc: 'Execute terminal commands' },
-    web: { label: 'Web Access', desc: 'Make HTTP requests and browse the web' },
-    contacts: { label: 'Contacts', desc: 'Access your contacts and address book' },
-    desktop: { label: 'Desktop', desc: 'Control mouse, keyboard, and windows' },
-    media: { label: 'Media', desc: 'Access camera, microphone, and screen' },
-    system: { label: 'System', desc: 'Access system information and settings' },
-  };
+  // Capability labels come from the backend canonical list
+  // (userGetPermissions().capabilities) — see tools::capabilities. Not hardcoded
+  // here, so onboarding can't drift from Settings or the gate.
 
   // Safe-by-default for a brand-new, non-technical user: core low-risk capabilities ON,
   // powerful / privacy-sensitive ones OFF (opt-in). The "Acting With Care" layer still
@@ -75,12 +68,11 @@
           permObj[tp.tool] = tp.allowed;
         }
       }
-      const allKeys = new Set([...Object.keys(CAPABILITY_LABELS), ...Object.keys(permObj)]);
-      permissions = Array.from(allKeys).map(key => ({
-        key,
-        label: CAPABILITY_LABELS[key]?.label || key.charAt(0).toUpperCase() + key.slice(1),
-        desc: CAPABILITY_LABELS[key]?.desc || '',
-        enabled: permObj[key] ?? DEFAULT_ENABLED[key] ?? false,
+      permissions = (res?.capabilities ?? []).map(cap => ({
+        key: cap.key,
+        label: cap.label,
+        desc: cap.desc,
+        enabled: permObj[cap.key] ?? DEFAULT_ENABLED[cap.key] ?? false,
         locked: false,
       }));
       capStates = permissions.map(p => p.enabled);
@@ -185,6 +177,7 @@
 
     try {
       await api.userUpdatePermissions({ permissions: permObj });
+      await api.updateSettings({ fullAccess });
     } catch {
       logger.warn('Failed to save permissions to backend');
     }
@@ -395,24 +388,24 @@
     <h2 class="text-2xl font-bold mb-2">Permissions</h2>
     <p class="text-xs text-base-content/50 mb-6">Choose what your agents can access. You can change these later in Settings.</p>
 
-    <!-- Autonomous mode -->
+    <!-- Full Access -->
     <div class="flex items-center justify-between p-4 rounded-xl border border-base-300 mb-5 max-w-md mx-auto text-left">
       <div>
         <div class="text-sm font-semibold flex items-center gap-2">
-          {#if autonomous}<AlertTriangle class="w-4 h-4 text-warning" />{/if}
-          Autonomous Mode
+          {#if fullAccess}<AlertTriangle class="w-4 h-4 text-warning" />{/if}
+          Full Access
         </div>
         <div class="text-xs text-base-content/70">The agent will execute all tools without asking for permission.</div>
       </div>
       <input
         type="checkbox"
         class="toggle toggle-sm toggle-primary shrink-0 ml-4"
-        checked={autonomous}
-        onchange={() => { if (!autonomous) { showEnableModal = true; } else { autonomous = false; } }}
+        checked={fullAccess}
+        onchange={() => { if (!fullAccess) { showEnableModal = true; } else { fullAccess = false; } }}
       />
     </div>
 
-    {#if !autonomous}
+    {#if !fullAccess}
       <div class="divide-y divide-base-content/10 mb-5 max-w-md mx-auto text-left max-h-[40vh] overflow-y-auto pr-1">
         {#each permissions as perm, i}
           <div class="flex items-center justify-between py-3">
@@ -430,7 +423,7 @@
       </div>
     {:else}
       <div class="rounded-xl bg-warning/10 border border-warning/20 px-4 py-3 mb-5 max-w-md mx-auto text-left">
-        <p class="text-xs text-warning font-medium">Autonomous Mode is active</p>
+        <p class="text-xs text-warning font-medium">Full Access is active</p>
         <p class="text-xs text-base-content/70 mt-0.5">All approval prompts are bypassed. Make sure you trust the prompts you're sending.</p>
       </div>
     {/if}
@@ -451,14 +444,14 @@
       actionKey="preview"
     />
 
-    <!-- Autonomous Mode Activation Modal -->
+    <!-- Full Access Activation Modal -->
     {#if showEnableModal}
       <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
         <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="-1" aria-label="Close" onclick={() => { showEnableModal = false; termsAccepted = false; confirmText = ''; }} onkeydown={(e) => { if (e.key === 'Escape') { showEnableModal = false; termsAccepted = false; confirmText = ''; } }}></div>
         <div class="relative w-full max-w-lg rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden text-left">
           <!-- Header -->
           <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
-            <h3 class="text-sm font-bold">Enable Autonomous Mode</h3>
+            <h3 class="text-sm font-bold">Enable Full Access</h3>
             <button onclick={() => { showEnableModal = false; termsAccepted = false; confirmText = ''; }} class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent">
               <X class="w-4 h-4" />
             </button>
@@ -484,7 +477,7 @@
 
             <div class="rounded-xl bg-base-200 p-4 max-h-28 overflow-y-auto">
               <p class="text-xs text-base-content/70 leading-relaxed">
-                By enabling autonomous mode, you acknowledge that Nebo Labs, Inc. shall not be liable for any damages, losses, or consequences arising from the autonomous execution of tools by the agent. You accept full responsibility for all actions taken by the agent while autonomous mode is enabled.
+                By enabling Full Access, you acknowledge that Nebo Labs, Inc. shall not be liable for any damages, losses, or consequences arising from the unsupervised execution of tools by the agent. You accept full responsibility for all actions taken by the agent while Full Access is enabled.
               </p>
             </div>
 
@@ -501,7 +494,7 @@
                 class="w-full h-9 rounded-lg bg-base-200 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
                 placeholder="ENABLE"
                 bind:value={confirmText}
-                onkeydown={(e) => { if (e.key === 'Enter' && canConfirm) { autonomous = true; showEnableModal = false; termsAccepted = false; confirmText = ''; } }}
+                onkeydown={(e) => { if (e.key === 'Enter' && canConfirm) { fullAccess = true; showEnableModal = false; termsAccepted = false; confirmText = ''; } }}
               />
             </div>
           </div>
@@ -514,11 +507,11 @@
               Cancel
             </button>
             <button
-              onclick={() => { if (canConfirm) { autonomous = true; showEnableModal = false; termsAccepted = false; confirmText = ''; } }}
+              onclick={() => { if (canConfirm) { fullAccess = true; showEnableModal = false; termsAccepted = false; confirmText = ''; } }}
               disabled={!canConfirm}
               class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              Enable Autonomous Mode
+              Enable Full Access
             </button>
           </div>
         </div>

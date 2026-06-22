@@ -625,6 +625,27 @@ Each activity records a `workflow_activity_results` row with:
 - `error` — failure reason text (for circuit breaker pattern matching)
 - `status` — `"completed"`, `"failed"`, or `"exited"`
 
+This is the **local** step-level view (tokens, no cost). The **cost** view lives
+in Janus, joined back via trace headers.
+
+### Usage Attribution (Janus trace headers)
+
+Every workflow LLM call carries an `ai::RequestTrace` (`ChatRequest.trace`), which
+the Janus/OpenAI provider emits as request headers (`openai.rs`) so Janus can
+attribute spend without parsing the session key:
+
+| Header | Source | Meaning |
+|--------|--------|---------|
+| `X-Agent-ID` | `agent_id` threaded `execute_workflow → execute_graph/execute_activity → make_trace` | Owning agent; `""` for standalone (non-agent-bound) runs. The rollup key that disambiguates the same workflow run across different agents. |
+| `X-Run-ID` | `run_id` | The `workflow_runs.id` — joins Janus per-run cost to the local `workflow_activity_results` step tokens. |
+| `X-Workflow-ID` | `def.id` | Workflow/binding slug. |
+| `X-Action-ID` | `activity.id` | Activity within the run. |
+| `X-Step-ID` | step index | Step within a multi-step activity (`""` when the activity has no steps). |
+
+Empty fields are skipped on the wire. Chat runs set only `agent_id` + `run_id`
+(`runner.rs`) — no `workflow_id`, so they're excluded from per-workflow rollups by
+design but still attributable per agent.
+
 ### WorkflowDef Structure
 
 ```rust

@@ -10,6 +10,7 @@
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import SetupWizard from '$lib/components/SetupWizard.svelte';
   import Check from 'lucide-svelte/icons/check';
+  import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
@@ -56,7 +57,6 @@
     { id: 'channels', label: 'Channels' },
     { id: 'accounts', label: 'Connected Accounts' },
     { id: 'memory', label: 'Memory' },
-    { id: 'permissions', label: 'Permissions' },
   ];
 
   // Delete confirmation triggered by ?delete=1 query param or button click
@@ -78,6 +78,43 @@
       goto('/');
     } catch {
       deleting = false;
+    }
+  }
+
+  // Duplicate: clone this agent's persona/skills/workflows/soul/rules/config into a
+  // new agent with its own name and identity, then connect its own accounts.
+  let showDuplicate = $state(false);
+  let duplicateName = $state('');
+  let duplicating = $state(false);
+  let duplicateError = $state<string | null>(null);
+
+  function openDuplicate() {
+    duplicateName = agent?.name ? `${agent.name} (Copy)` : '';
+    duplicateError = null;
+    showDuplicate = true;
+  }
+
+  async function handleDuplicate() {
+    const name = duplicateName.trim();
+    if (!agentId || duplicating || !name) return;
+    duplicating = true;
+    duplicateError = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.duplicateAgent(agentId, { name });
+      const newId = (resp.agent as { id?: string })?.id;
+      if (!newId) throw new Error('Duplicate did not return a new agent.');
+      showDuplicate = false;
+      // If the source had per-account plugins (e.g. gws), send the copy to its
+      // Connected Accounts so the user can connect its own inbox; otherwise open it.
+      if (resp.needsAccountSetup && resp.needsAccountSetup.length > 0) {
+        goto(`/${newId}/settings/accounts`);
+      } else {
+        goto(`/${newId}/threads`);
+      }
+    } catch (e) {
+      duplicateError = (e as Error)?.message || 'Could not duplicate this agent.';
+      duplicating = false;
     }
   }
 
@@ -504,10 +541,39 @@
   }
 
   function closeAddAccount() {
-    if (addAccountConnectingSlug) return;
+    // Always allow backing out — never trap the user mid-sign-in. The backend
+    // gws login loopback times out on its own; if the OAuth happens to complete
+    // later, the plugin_auth_complete handler still refreshes the account list.
+    addAccountConnectingSlug = null;
     addAccountPlugin = null;
     addAccountLabel = '';
     addAccountError = null;
+  }
+
+  // Re-run the OAuth login for an account whose token expired. Same pathway as
+  // adding an account — the label already exists, so completion just refreshes
+  // its credentials in place (and clears needs_reauth on the next health check).
+  async function reconnectAccount(slug: string, label: string) {
+    if (addAccountConnectingSlug) return;
+    addAccountConnectingSlug = slug;
+    try {
+      const accountsApi = await import('$lib/api/pluginAccounts');
+      await accountsApi.startPluginAccountLogin(slug, agentId, label);
+    } catch {
+      addAccountConnectingSlug = null;
+    }
+  }
+
+  // Disconnect one account from this agent: removes the mapping + its credentials.
+  async function disconnectAccount(slug: string, label: string) {
+    try {
+      const accountsApi = await import('$lib/api/pluginAccounts');
+      await accountsApi.disconnectPluginAccount(slug, agentId, label);
+      // Optimistically drop it from the list; refreshPluginAccounts also re-syncs.
+      accountPlugins = accountPlugins.map(p =>
+        p.slug === slug ? { ...p, accounts: p.accounts.filter(a => a.accountLabel !== label) } : p
+      );
+    } catch { /* leave list; user can retry */ }
   }
 
   async function submitAddAccount() {
@@ -584,6 +650,33 @@
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Created</div>
         <div class="text-sm">Mar 12, 2026</div>
+      </div>
+
+      <!-- Duplicate -->
+      <div class="border-t border-base-300 pt-5 mt-3">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Duplicate</div>
+        {#if showDuplicate}
+          <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
+            <div class="text-sm font-medium mb-1">Duplicate {agent?.name}</div>
+            <div class="text-xs text-base-content/70 mb-3">Creates a faithful copy — same persona, skills, workflows, and configuration — with its own name and identity. The copy connects its own accounts.</div>
+            <input
+              class="input input-bordered input-sm w-full mb-2"
+              placeholder="e.g. Nancy"
+              bind:value={duplicateName}
+              disabled={duplicating}
+              onkeydown={(e) => { if (e.key === 'Enter') handleDuplicate(); }}
+            />
+            {#if duplicateError}
+              <div class="text-xs text-error mb-2">{duplicateError}</div>
+            {/if}
+            <div class="flex items-center gap-2">
+              <button class="btn btn-primary btn-sm" onclick={handleDuplicate} disabled={duplicating || !duplicateName.trim()}>{duplicating ? 'Duplicating…' : 'Create Copy'}</button>
+              <button class="btn btn-ghost btn-sm" onclick={() => showDuplicate = false} disabled={duplicating}>Cancel</button>
+            </div>
+          </div>
+        {:else}
+          <button class="btn btn-sm btn-outline" onclick={openDuplicate}>Duplicate Agent</button>
+        {/if}
       </div>
 
       <!-- Danger zone -->
@@ -931,11 +1024,29 @@
                 <div class="border-t border-base-content/10">
                   {#each plugin.accounts as acct (acct.accountLabel)}
                     <div class="flex items-center gap-2 px-3.5 py-2 border-b border-base-content/5 last:border-b-0">
-                      <Check class="w-3.5 h-3.5 text-success shrink-0" />
+                      {#if acct.needsReauth}
+                        <AlertTriangle class="w-3.5 h-3.5 text-warning shrink-0" />
+                      {:else}
+                        <Check class="w-3.5 h-3.5 text-success shrink-0" />
+                      {/if}
                       <span class="text-sm truncate flex-1">{acct.accountLabel}</span>
                       {#if acct.isPrimary}
                         <span class="py-0.5 px-2 rounded bg-accent/15 text-accent text-xs font-medium shrink-0">Primary</span>
                       {/if}
+                      {#if acct.needsReauth}
+                        <span class="py-0.5 px-2 rounded bg-warning/15 text-warning text-xs font-medium shrink-0">Expired</span>
+                        <button
+                          class="btn btn-xs btn-warning btn-outline shrink-0"
+                          onclick={() => reconnectAccount(plugin.slug, acct.accountLabel)}
+                          disabled={addAccountConnectingSlug === plugin.slug}
+                        >Reconnect</button>
+                      {/if}
+                      <button
+                        class="btn btn-xs btn-ghost text-error shrink-0"
+                        onclick={() => disconnectAccount(plugin.slug, acct.accountLabel)}
+                        title="Disconnect this account"
+                        aria-label="Disconnect {acct.accountLabel}"
+                      >Disconnect</button>
                     </div>
                   {/each}
                 </div>
@@ -951,24 +1062,6 @@
 
     {:else if section === 'memory'}
       <MemoryManager {agentId} />
-
-    {:else if section === 'permissions'}
-      <div class="text-xs text-base-content/70 mb-2">Control what {agent?.name} can access and execute.</div>
-      {#each [
-        { id: 'files', label: 'File Access', desc: 'Read and write files on disk', on: true },
-        { id: 'shell', label: 'Shell', desc: 'Execute terminal commands', on: true },
-        { id: 'web', label: 'Web', desc: 'Make HTTP requests', on: true },
-        { id: 'contacts', label: 'Contacts', desc: 'Access address book', on: false },
-        { id: 'desktop', label: 'Desktop', desc: 'Screen capture and control', on: false },
-      ] as perm}
-        <div class="flex items-center gap-3 py-2">
-          <div class="flex-1">
-            <div class="text-sm font-medium">{perm.label}</div>
-            <div class="text-xs text-base-content/70">{perm.desc}</div>
-          </div>
-          <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={perm.on} role="switch" aria-checked={perm.on} />
-        </div>
-      {/each}
 
     {:else}
       <div class="text-center py-10 text-sm">Unknown settings section.</div>
@@ -1111,7 +1204,7 @@
           <div class="text-base font-semibold">Add {plugin.name} account</div>
           <div class="text-xs text-base-content/50 mt-0.5">Label this account, then sign in to connect it.</div>
         </div>
-        <button class="btn btn-ghost btn-sm btn-square" onclick={closeAddAccount} aria-label="Close" disabled={connecting}>
+        <button class="btn btn-ghost btn-sm btn-square" onclick={closeAddAccount} aria-label="Close">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
         </button>
       </div>
@@ -1131,7 +1224,7 @@
         </label>
 
         {#if connecting}
-          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">A sign-in window will open. Finish signing in there &mdash; this connects automatically when it completes.</div>
+          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">A sign-in window opened in your browser. Finish there &mdash; this connects automatically when it completes. Changed your mind? Cancel sign-in to close this and ignore the window.</div>
         {/if}
 
         {#if addAccountError}
@@ -1141,7 +1234,7 @@
 
       <div class="flex items-center gap-2 p-5 border-t border-base-content/10">
         <div class="flex-1"></div>
-        <button class="btn btn-sm btn-ghost" onclick={closeAddAccount} disabled={connecting}>Cancel</button>
+        <button class="btn btn-sm btn-ghost" onclick={closeAddAccount}>{connecting ? 'Cancel sign-in' : 'Cancel'}</button>
         <button
           class="btn btn-sm btn-primary"
           disabled={connecting || !addAccountLabel.trim()}

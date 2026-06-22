@@ -35,24 +35,34 @@ pub fn md_to_html(md: &str) -> String {
     html_output
 }
 
+fn resolve_full_access(state: &AppState) -> bool {
+    state
+        .store
+        .get_settings()
+        .ok()
+        .flatten()
+        .map(|s| s.full_access == 1)
+        .unwrap_or(false)
+}
+
 fn tool_activity_label(tool_name: &str) -> Option<&'static str> {
     Some(match tool_name {
-        "bash"    => "running a command",
-        "grep"    => "searching files",
-        "glob"    => "finding files",
-        "read"    => "reading a file",
-        "write"   => "writing a file",
-        "edit"    => "editing a file",
+        "bash" => "running a command",
+        "grep" => "searching files",
+        "glob" => "finding files",
+        "read" => "reading a file",
+        "write" => "writing a file",
+        "edit" => "editing a file",
 
-        "web"     => "searching the web",
+        "web" => "searching the web",
         "browser" => "reading a page",
-        "bot"     => "thinking it through",
+        "bot" => "thinking it through",
         "desktop" => "using the desktop",
-        "event"   => "checking the schedule",
-        "loop"    => "sending a message",
+        "event" => "checking the schedule",
+        "loop" => "sending a message",
 
-        "os"      => "checking the workspace",
-        _         => return None,
+        "os" => "checking the workspace",
+        _ => return None,
     })
 }
 
@@ -61,22 +71,22 @@ fn tool_activity_label(tool_name: &str) -> Option<&'static str> {
 /// for every client — web and mobile render these verbatim.
 fn tool_outcome_label(tool_name: &str) -> Option<&'static str> {
     Some(match tool_name {
-        "bash"    => "Ran a command",
-        "grep"    => "Searched files",
-        "glob"    => "Found files",
-        "read"    => "Read a file",
-        "write"   => "Wrote a file",
-        "edit"    => "Edited a file",
+        "bash" => "Ran a command",
+        "grep" => "Searched files",
+        "glob" => "Found files",
+        "read" => "Read a file",
+        "write" => "Wrote a file",
+        "edit" => "Edited a file",
 
-        "web"     => "Searched the web",
+        "web" => "Searched the web",
         "browser" => "Read a page",
-        "bot"     => "Thought it through",
+        "bot" => "Thought it through",
         "desktop" => "Used the desktop",
-        "event"   => "Checked the schedule",
-        "loop"    => "Sent a message",
+        "event" => "Checked the schedule",
+        "loop" => "Sent a message",
 
-        "os"      => "Checked the workspace",
-        _         => return None,
+        "os" => "Checked the workspace",
+        _ => return None,
     })
 }
 
@@ -139,7 +149,10 @@ fn humanize_tool_call(tool_name: &str, input: &serde_json::Value) -> (String, St
             format!("Ran {action} on {noun}"),
         );
     }
-    match (tool_activity_label(tool_name), tool_outcome_label(tool_name)) {
+    match (
+        tool_activity_label(tool_name),
+        tool_outcome_label(tool_name),
+    ) {
         (Some(a), Some(o)) => (a.to_string(), o.to_string()),
         // Unknown tool (e.g. tool_search, a skill, a delegate) — name it
         // honestly instead of "working" / "Did a step".
@@ -322,10 +335,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let agent_id = config.agent_id.clone();
     let cancel_token = config.cancel_token.clone();
     let lane = config.lane.clone();
-    // Owned AppState clone moved into the run task so the background title
-    // generator can propagate the generated title to the loop (chats/sync).
-    let task_state = state.clone();
-
     // Resolve display name + register the run (shared with run_chat_events).
     let (agent_display_name, run_handle) = register_run(state, &config).await;
 
@@ -342,6 +351,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let mention_context = config.mention_context;
     let tool_scope = config.tool_scope;
     let plan_mode = config.plan_mode;
+
+    // "Full Access" master flag (settings.full_access) — when on, the runner's
+    // per-tool approval gate is bypassed. Loaded here (state in scope) and moved
+    // into the run closure as a plain Copy bool. Default off (safe).
+    let full_access = resolve_full_access(state);
 
     // Broadcast chat_created so frontend can track new conversations
     {
@@ -423,6 +437,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             mention_context,
             tool_scope,
             plan_mode,
+            full_access,
             ..Default::default()
         };
 
@@ -596,7 +611,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             );
                             if let Some(ref cm) = comm_manager {
                                 if let Some(ref cr) = comm_reply {
-                                    let _ = cm.send_typing(&cr.conversation_id, true, Some("thinking")).await;
+                                    let _ = cm
+                                        .send_typing(&cr.conversation_id, true, Some("thinking"))
+                                        .await;
                                 }
                             }
                         }
@@ -626,7 +643,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 if !comm_segment.trim().is_empty() {
                                     let mut seg_meta = std::collections::HashMap::new();
                                     if !agent_display_name.is_empty() {
-                                        seg_meta.insert("senderName".to_string(), agent_display_name.clone());
+                                        seg_meta.insert(
+                                            "senderName".to_string(),
+                                            agent_display_name.clone(),
+                                        );
                                     }
                                     send_comm_msg(
                                         cfg,
@@ -678,7 +698,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 }
                                 if let Some(ref cm) = comm_manager {
                                     if let Some(ref cr) = comm_reply {
-                                        let _ = cm.send_typing(&cr.conversation_id, true, Some(&activity)).await;
+                                        let _ = cm
+                                            .send_typing(&cr.conversation_id, true, Some(&activity))
+                                            .await;
                                     }
                                 }
                             }
@@ -707,7 +729,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // well under the 32KB frame) so the "Used N tools"
                             // timeline can show Request/Response like the local app.
                             if let Some(cfg) = &comm_reply {
-                                let response: String = event.text.trim().chars().take(4000).collect();
+                                let response: String =
+                                    event.text.trim().chars().take(4000).collect();
                                 let outcome = event
                                     .tool_call
                                     .as_ref()
@@ -813,7 +836,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 meta.insert("kind".to_string(), "ask".to_string());
                                 meta.insert("request_id".to_string(), request_id.to_string());
                                 if !agent_display_name.is_empty() {
-                                    meta.insert("senderName".to_string(), agent_display_name.clone());
+                                    meta.insert(
+                                        "senderName".to_string(),
+                                        agent_display_name.clone(),
+                                    );
                                 }
                                 if let Some(w) = &event.widgets {
                                     meta.insert("widgets".to_string(), w.to_string());
@@ -833,9 +859,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // typing indicator or the loop shows "thinking…"
                                 // until they answer. Resumed activity re-sets it.
                                 if let Some(ref cm) = comm_manager {
-                                    let _ = cm
-                                        .send_typing(&cfg.conversation_id, false, None)
-                                        .await;
+                                    let _ = cm.send_typing(&cfg.conversation_id, false, None).await;
                                 }
                             }
                         }
@@ -992,7 +1016,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         // blocks the text reply). Only the neboai provider supports
                         // uploads today.
                         let reply_attachments = if reply_config.provider == "neboai" {
-                            resolve_comm_attachments(&comm_manager, &plugin_store, &comm_file_artifacts).await
+                            resolve_comm_attachments(
+                                &comm_manager,
+                                &plugin_store,
+                                &comm_file_artifacts,
+                            )
+                            .await
                         } else {
                             Vec::new()
                         };
@@ -1078,7 +1107,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         // No text response. Still deliver any run-produced files as
                         // an attachments-only message so the channel gets the artifact.
                         let reply_attachments = if reply_config.provider == "neboai" {
-                            resolve_comm_attachments(&comm_manager, &plugin_store, &comm_file_artifacts).await
+                            resolve_comm_attachments(
+                                &comm_manager,
+                                &plugin_store,
+                                &comm_file_artifacts,
+                            )
+                            .await
                         } else {
                             Vec::new()
                         };
@@ -1091,10 +1125,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         } else {
                             let mut reply_meta = std::collections::HashMap::new();
                             if !agent_display_name.is_empty() {
-                                reply_meta.insert(
-                                    "senderName".to_string(),
-                                    agent_display_name.clone(),
-                                );
+                                reply_meta
+                                    .insert("senderName".to_string(), agent_display_name.clone());
                             }
                             info!(
                                 topic = %reply_config.topic,
@@ -1249,6 +1281,7 @@ pub async fn run_chat_events(
     let agent_id = config.agent_id.clone();
     let cancel_token = config.cancel_token.clone();
     let lane = config.lane.clone();
+    let full_access = resolve_full_access(state);
 
     // Resolve display name + register the run (shared with run_chat).
     let (_agent_display_name, run_handle) = register_run(state, &config).await;
@@ -1284,6 +1317,7 @@ pub async fn run_chat_events(
         mention_context: config.mention_context,
         tool_scope: config.tool_scope,
         channel_ctx: config.channel_ctx,
+        full_access,
         ..Default::default()
     };
 
@@ -1409,8 +1443,7 @@ async fn resolve_comm_attachments(
             Some("pptx" | "ppt")
         );
         if is_deck {
-            match crate::handlers::files::ensure_pptx_preview(plugin_store, &path, &files_dir)
-                .await
+            match crate::handlers::files::ensure_pptx_preview(plugin_store, &path, &files_dir).await
             {
                 Ok(cache) => match tokio::fs::read(&cache).await {
                     Ok(pdf) => {
@@ -1455,9 +1488,7 @@ fn mime_from_extension(path: &std::path::Path) -> String {
         "csv" => "text/csv",
         "json" => "application/json",
         "html" => "text/html",
-        "docx" => {
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        }
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         _ => "application/octet-stream",
     }
@@ -1495,7 +1526,9 @@ fn to_app_artifact_url(image_url: &str) -> Option<String> {
 }
 
 /// Media (image/video) artifacts render inline and are never versioned.
-const MEDIA_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "mov"];
+const MEDIA_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "mov",
+];
 
 fn artifact_ext(url: &str) -> String {
     url.rsplit('/')
@@ -1633,7 +1666,11 @@ fn version_app_artifacts(
 fn save_data_uri_to_file(data_uri: &str) -> Option<String> {
     use base64::Engine;
 
-    tracing::info!(uri_len = data_uri.len(), prefix = &data_uri[..60.min(data_uri.len())], "save_data_uri_to_file called");
+    tracing::info!(
+        uri_len = data_uri.len(),
+        prefix = &data_uri[..60.min(data_uri.len())],
+        "save_data_uri_to_file called"
+    );
 
     let (mime, b64) = if let Some(rest) = data_uri.strip_prefix("data:image/jpeg;base64,") {
         ("jpeg", rest)
@@ -1883,7 +1920,9 @@ mod tests {
     fn leaves_real_content_alone() {
         assert!(!is_progress_heartbeat("Working on the report now."));
         assert!(!is_progress_heartbeat("_emphasis_ in the reply"));
-        assert!(!is_progress_heartbeat("Here are the diligence scores: 85/90."));
+        assert!(!is_progress_heartbeat(
+            "Here are the diligence scores: 85/90."
+        ));
     }
 
     #[test]

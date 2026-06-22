@@ -57,6 +57,8 @@ struct GraphCtx<'a> {
     emit_source: Option<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     run_id: String,
+    /// Owning agent for usage attribution; "" for standalone workflow runs.
+    agent_id: String,
     by_id: HashMap<String, &'a Activity>,
     index_of: HashMap<String, usize>,
     outgoing: HashMap<String, Vec<Edge>>,
@@ -89,6 +91,7 @@ struct WalkScope {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_graph(
     def: &WorkflowDef,
+    agent_id: &str,
     inputs: &serde_json::Value,
     store: &Arc<Store>,
     provider: &dyn ai::Provider,
@@ -102,6 +105,7 @@ pub(crate) async fn execute_graph(
 ) -> Result<(String, String), WorkflowError> {
     let ctx = build_ctx(
         def,
+        agent_id,
         inputs,
         store,
         provider,
@@ -189,6 +193,7 @@ pub(crate) async fn execute_graph(
 #[allow(clippy::too_many_arguments)]
 fn build_ctx<'a>(
     def: &'a WorkflowDef,
+    agent_id: &str,
     inputs: &'a serde_json::Value,
     store: &'a Arc<Store>,
     provider: &'a dyn ai::Provider,
@@ -271,6 +276,7 @@ fn build_ctx<'a>(
         emit_source,
         progress_tx,
         run_id: run_id.to_string(),
+        agent_id: agent_id.to_string(),
         by_id,
         index_of,
         outgoing,
@@ -773,6 +779,7 @@ async fn run_llm_activity<'a>(
         ctx.skill_content,
         activity_emit,
         ctx.store,
+        &ctx.agent_id,
         &ctx.run_id,
         &ctx.def.id,
         ctx.progress_tx.as_ref(),
@@ -1145,6 +1152,7 @@ mod walk_tests {
             .expect("run row");
         let result = execute_graph(
             &def,
+            "",
             &inputs,
             &store,
             provider,
@@ -1393,6 +1401,7 @@ mod walk_tests {
             std::time::Duration::from_secs(5),
             execute_graph(
                 &def,
+                "",
                 &serde_json::json!({}),
                 &store,
                 &provider,

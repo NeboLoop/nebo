@@ -1,0 +1,37 @@
+id: proactive-multistep-action
+name: "Proactive multi-step file action — acts, doesn't just announce"
+description: |
+  The user gives a concrete multi-step execution directive. A proactive agent
+  CALLS the tool(s) to actually do the work. The regression under investigation:
+  the agent narrates ("On it — moving …") and then stops with ZERO tool calls.
+target_component: agent
+
+setup:
+  - "rm -rf /tmp/nebo-prox && mkdir -p /tmp/nebo-prox/Screenshots && touch /tmp/nebo-prox/shot1.png /tmp/nebo-prox/shot2.png /tmp/nebo-prox/notes.txt"
+teardown:
+  - "rm -rf /tmp/nebo-prox"
+
+conversation:
+  - role: user
+    content: "In /tmp/nebo-prox there are two .png screenshots and a Screenshots folder. Move both .png files into the Screenshots folder."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: acts-not-announces
+      text: "Model CALLS the os tool to move/manage the files — it does NOT just reply 'On it' with zero tool calls"
+      severity: critical
+  cost:
+    - id: completes
+      text: "The .png files are actually moved (at least one os tool call is made)"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 2000
+  narrative: |
+    The agent calls os(resource: "file", action: "move"/"exec") to move the two
+    PNGs into Screenshots. It does the work rather than announcing intent and stopping.

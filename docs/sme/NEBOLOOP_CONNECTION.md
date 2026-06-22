@@ -240,9 +240,17 @@ Single handler registration at startup — message handler is set once during `s
 
 ---
 
-## 6. Unified Chat Pipeline (`chat_dispatch.rs:56-537`)
+## 6. Unified Chat Pipeline (`chat_dispatch.rs`)
 
-**ONE function for all chat**: `run_chat(state, config)`
+Nebo has two chat-dispatch entry points:
+
+- `run_chat(state, config)` — UI and NeboAI comm path. It broadcasts frontend
+  WebSocket events and optionally streams a comm reply.
+- `run_chat_events(state, config)` — raw event receiver used by channel dispatch
+  and other callers that need to consume runner events directly.
+
+Both paths resolve entity config and `settings.full_access` before building
+`RunRequest`.
 
 ### ChatConfig Decorators
 
@@ -288,6 +296,14 @@ ChatConfig {
 8. If no stream chunks were sent (short response) → send full_response as single Message
 9. Broadcast "chat_complete"
 ```
+
+### Channel Dispatch Approval Behavior
+
+Messaging channel plugins (Slack, Discord, etc.) enter through
+`ChannelDispatchImpl`, which uses `run_chat_events()`. Channel bridges do not
+render Nebo app approval modals. If a channel-triggered run reaches an
+`ApprovalRequest`, channel dispatch cancels the run and returns a clear text
+fallback telling the user to enable Full Access or continue in the Nebo app.
 
 ### Comm Response Streaming
 

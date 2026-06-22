@@ -288,6 +288,9 @@
             {#if plugin.version}
               <span class="text-xs text-base-content/50 font-mono">{plugin.version}</span>
             {/if}
+            {#if plugin.updateAvailable}
+              <a href="/settings/updates" class="py-0.5 px-2 rounded bg-primary/15 text-primary text-xs font-medium no-underline hover:bg-primary/25 transition-colors">Update to {plugin.updateAvailable}</a>
+            {/if}
           </div>
           {#if plugin.desc}
             <div class="text-xs text-base-content/70 mt-0.5 line-clamp-1">{plugin.desc}</div>

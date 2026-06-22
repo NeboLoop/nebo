@@ -115,6 +115,18 @@ export interface AgentWorkflowStats {
 	lastError?: string
 }
 
+export interface ArtifactUpdateHistoryEntry {
+	id: number
+	artifactId: string
+	artifactType: string
+	name: string
+	fromVersion: string
+	toVersion: string
+	status: string
+	detail: string
+	appliedAt: number
+}
+
 export interface ArtifactUpdatePref {
 	artifactId: string
 	artifactType: string
@@ -609,6 +621,7 @@ export interface Setting {
 	commPlugin: string
 	developerMode: boolean
 	autoUpdate: boolean
+	fullAccess: boolean
 }
 
 export interface SkillSecretInfo {
@@ -664,6 +677,7 @@ export interface UserProfile {
 	toolPermissions?: string
 	termsAcceptedAt?: number
 	accountType?: string
+	approvedCommands?: string
 }
 
 export interface Workflow {
@@ -962,6 +976,7 @@ export interface DisableAgentChannelResponse {
 export interface DuplicateAgentResponse {
 	agent: unknown
 	activated: boolean
+	needsAccountSetup: string[]
 }
 
 export interface EditMessageResponse {
@@ -978,6 +993,7 @@ export interface GetAgentResponse {
 	displayName: string
 	version: string
 	inputFields: unknown[]
+	inputValues: unknown
 	personaProperties: unknown
 	persona: unknown
 	model: unknown
@@ -1290,6 +1306,10 @@ export interface ListTasksResponse {
 
 export interface ListToolsResponse {
 	tools: unknown[]
+}
+
+export interface ListUpdateHistoryResponse {
+	history: ArtifactUpdateHistoryEntry[]
 }
 
 export interface ListUpdatesResponse {
@@ -1629,6 +1649,8 @@ export interface UserGetCurrentUserResponse {
 
 export interface UserGetPermissionsResponse {
 	permissions: ToolPermission[]
+	capabilities: Capability[]
+	approvedCommands: string[]
 }
 
 export interface UserGetPreferencesResponse {
@@ -1637,6 +1659,10 @@ export interface UserGetPreferencesResponse {
 
 export interface UserGetProfileResponse {
 	profile: UserProfileFull
+}
+
+export interface UserUpdateApprovedCommandsResponse {
+	success: boolean
 }
 
 export interface UserUpdateCurrentUserResponse {
@@ -1724,6 +1750,12 @@ export interface AgentWorkflowTrigger {
 export interface AliasEntry {
 	alias: string
 	command: string
+}
+
+export interface Capability {
+	key: string
+	label: string
+	desc: string
 }
 
 export interface CommanderNode {

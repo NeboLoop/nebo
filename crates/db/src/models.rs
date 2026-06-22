@@ -78,6 +78,9 @@ pub struct UserProfile {
     pub terms_accepted_at: Option<i64>,
     /// "personal" | "business" — captured during onboarding; drives welcome copy + emphasis.
     pub account_type: Option<String>,
+    /// JSON array of "Approve Always" shell-command prefixes (e.g. ["mv","git push"]).
+    /// The approval gate auto-approves commands matching these (via tools::policy).
+    pub approved_commands: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +448,10 @@ pub struct Setting {
     pub developer_mode: i64,
     #[serde(serialize_with = "i64_as_bool")]
     pub auto_update: i64,
+    /// Master "execute everything without asking" flag (the "Full Access" toggle).
+    /// When ON, the runner's per-tool approval gate is bypassed.
+    #[serde(serialize_with = "i64_as_bool")]
+    pub full_access: i64,
     #[serde(skip_serializing)]
     pub updated_at: i64,
 }
@@ -839,4 +846,18 @@ pub struct ArtifactUpdateSettings {
     pub plugins: bool,
     #[serde(alias = "check_interval_hours")]
     pub check_interval_hours: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactUpdateHistoryEntry {
+    pub id: i64,
+    pub artifact_id: String,
+    pub artifact_type: String,
+    pub name: String,
+    pub from_version: String,
+    pub to_version: String,
+    pub status: String,
+    pub detail: String,
+    pub applied_at: i64,
 }

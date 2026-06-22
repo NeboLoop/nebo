@@ -35,7 +35,7 @@ impl Store {
             "SELECT user_id, display_name, bio, location, timezone, occupation,
                     interests, communication_style, goals, context,
                     onboarding_completed, onboarding_step, created_at, updated_at,
-                    tool_permissions, terms_accepted_at, account_type
+                    tool_permissions, terms_accepted_at, account_type, approved_commands
              FROM user_profiles LIMIT 1",
             [],
             |row| {
@@ -57,6 +57,7 @@ impl Store {
                     tool_permissions: row.get(14)?,
                     terms_accepted_at: row.get(15)?,
                     account_type: row.get(16)?,
+                    approved_commands: row.get(17)?,
                 })
             },
         ) {
@@ -167,6 +168,34 @@ impl Store {
         conn.execute(
             "UPDATE user_profiles SET tool_permissions = ?1, updated_at = unixepoch() WHERE user_id = ?2",
             params![permissions, user_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Read the "Approve Always" shell-command prefix list (JSON array).
+    pub fn get_approved_commands(&self) -> Result<Vec<String>, NeboError> {
+        let raw = self
+            .get_user_profile()?
+            .and_then(|p| p.approved_commands)
+            .unwrap_or_else(|| "[]".to_string());
+        Ok(serde_json::from_str(&raw).unwrap_or_default())
+    }
+
+    /// Persist the full "Approve Always" prefix list (JSON array).
+    pub fn set_approved_commands(&self, patterns: &[String]) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let user_id = self.ensure_local_user_id()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO user_profiles (user_id, created_at, updated_at) VALUES (?1, unixepoch(), unixepoch())",
+            params![user_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        let json = serde_json::to_string(patterns)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "UPDATE user_profiles SET approved_commands = ?1, updated_at = unixepoch() WHERE user_id = ?2",
+            params![json, user_id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())

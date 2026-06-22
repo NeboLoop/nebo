@@ -196,6 +196,15 @@ impl Store {
         let conn = self.conn()?;
         conn.execute("DELETE FROM agents WHERE id = ?1", params![id])
             .map_err(|e| NeboError::Database(e.to_string()))?;
+        // Clean up per-agent state with no FK cascade so deleting an agent doesn't
+        // leave orphans: its entity_config rows (tracked bug) and its
+        // artifact-update-tracking row. Best-effort — a failure here must not block
+        // the delete itself.
+        let _ = conn.execute("DELETE FROM entity_config WHERE entity_id = ?1", params![id]);
+        let _ = conn.execute(
+            "DELETE FROM artifact_update_prefs WHERE artifact_id = ?1 AND artifact_type = 'agent'",
+            params![id],
+        );
         Ok(())
     }
 

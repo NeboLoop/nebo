@@ -7,7 +7,9 @@ use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use ai::{ChatRequest, Message, Provider, ProviderError, RequestTrace, StreamEvent, StreamEventType};
+use ai::{
+    ChatRequest, Message, Provider, ProviderError, RequestTrace, StreamEvent, StreamEventType,
+};
 use db::Store;
 use db::models::ChatMessage;
 use tools::{Origin, Registry, ToolContext, ToolResult};
@@ -58,12 +60,7 @@ const FORK_OUTPUT_CAP: usize = 32_000;
 const FORK_MAX_ITERATIONS: usize = 20;
 
 /// Command prefixes eligible for forked (sub-agent) execution.
-const FORK_COMMAND_PREFIXES: &[&str] = &[
-    "/research",
-    "/analyze",
-    "/deep-dive",
-    "/investigate",
-];
+const FORK_COMMAND_PREFIXES: &[&str] = &["/research", "/analyze", "/deep-dive", "/investigate"];
 
 /// Check whether a user prompt should be forked to a sub-agent context.
 fn should_fork_command(prompt: &str) -> bool {
@@ -75,6 +72,63 @@ fn should_fork_command(prompt: &str) -> bool {
 
 /// Extract file path from an os(resource: "file", action: "read") tool call.
 /// Returns None if the call is not a file read.
+/// "Approve Always" on the ApprovalModal → grant the capability category for
+/// next time (PERMISSIONS_SME §14). Flips the global `user_profiles.tool_permissions`
+/// entry ON, the same store the Settings → Permissions toggles write.
+/// The shell command a tool call would execute, if it's an `os` shell exec —
+/// used by the per-command allowlist. `None` for any non-shell tool call.
+fn shell_command_of(tc: &ai::ToolCall) -> Option<String> {
+    if tc.name != "os" {
+        return None;
+    }
+    let resource = tc
+        .input
+        .get("resource")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let action = tc
+        .input
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if resource == "shell" || action == "exec" {
+        tc.input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+fn persist_capability_grant(store: &Store, category: &str) -> Result<(), String> {
+    let raw = store
+        .get_user_profile()
+        .map_err(|e| e.to_string())?
+        .and_then(|p| p.tool_permissions)
+        .unwrap_or_else(|| "{}".to_string());
+    let mut map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&raw).unwrap_or_default();
+    map.insert(category.to_string(), serde_json::Value::Bool(true));
+    let json = serde_json::to_string(&map).map_err(|e| e.to_string())?;
+    store
+        .update_tool_permissions(&json)
+        .map_err(|e| e.to_string())
+}
+
+/// Stable per-turn identity for spiral detection: tool name + action (e.g.
+/// "os:glob", "os:read", "web:navigate"). Resource is omitted — the action alone
+/// distinguishes glob/read/exec/navigate, and the os tool infers resource from
+/// action anyway, so this is stable whether or not `resource` was passed.
+fn action_key(call: &ai::ToolCall) -> String {
+    let action = call
+        .input
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    format!("{}:{}", call.name, action)
+}
+
 fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
     if call.name != "os" {
         return None;
@@ -246,6 +300,10 @@ pub struct RunRequest {
     /// plugin tool can inject `NEBO_CHANNEL_*` env vars into plugin processes
     /// (e.g. for `slack upload`). See `docs/publishers-guide/channel-plugins.md`.
     pub channel_ctx: Option<tools::ChannelContext>,
+    /// Master "Full Access" flag (settings.full_access). When true, the runner's
+    /// per-tool approval gate is bypassed entirely — the agent executes without
+    /// asking. When false, an OFF capability prompts via the Approval Modal.
+    pub full_access: bool,
 }
 
 /// Shared atomic counters for live run progress reporting.
@@ -316,6 +374,11 @@ pub struct Runner {
     agent_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
     ask_channels: Option<tools::AskChannels>,
+    /// Tool-approval channels (PERMISSIONS_SME §11). The runner inserts a
+    /// oneshot per tool_call_id, emits `approval_request`, and awaits the user's
+    /// ApprovalModal decision. Shares the map with the WS `approval_response`
+    /// handler. Set via `set_approval_channels`.
+    approval_channels: Option<tools::ApprovalChannels>,
     embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
     /// Optional broadcast/loop-push sink for auto-generated chat titles.
     title_sink: std::sync::OnceLock<Arc<dyn ChatTitleSink>>,
@@ -339,6 +402,7 @@ impl Runner {
             tools,
             store,
             ask_channels: None,
+            approval_channels: None,
             selector: Arc::new(selector),
             concurrency,
             hooks,
@@ -364,6 +428,13 @@ impl Runner {
     /// Set the shared ask channels so tools can prompt the user via `ctx.ask_user()`.
     pub fn set_ask_channels(mut self, channels: tools::AskChannels) -> Self {
         self.ask_channels = Some(channels);
+        self
+    }
+
+    /// Set the shared tool-approval channels (PERMISSIONS_SME §11) so the runner
+    /// can emit `approval_request` and await the user's ApprovalModal decision.
+    pub fn set_approval_channels(mut self, channels: tools::ApprovalChannels) -> Self {
+        self.approval_channels = Some(channels);
         self
     }
 
@@ -396,7 +467,12 @@ impl Runner {
     /// Returns a receiver of streaming events.
     pub async fn run(&self, req: RunRequest) -> Result<mpsc::Receiver<StreamEvent>, ProviderError> {
         let t_run_entry = std::time::Instant::now();
-        info!(session_key = %req.session_key, channel = %req.channel, "Runner.run() called");
+        info!(
+            session_key = %req.session_key,
+            channel = %req.channel,
+            full_access = req.full_access,
+            "Runner.run() called"
+        );
         {
             let lock = self.providers.read().await;
             if lock.is_empty() {
@@ -703,6 +779,8 @@ impl Runner {
         let prompt_mode = req.prompt_mode.clone();
         let progress = req.progress.clone();
         let ask_channels = self.ask_channels.clone();
+        let approval_channels = self.approval_channels.clone();
+        let full_access = req.full_access;
         let embedding_provider = self.embedding_provider.clone();
         let tool_scope = req.tool_scope.clone();
         let plan_mode = req.plan_mode;
@@ -718,27 +796,30 @@ impl Runner {
             ctx.user_id = req.user_id.clone();
             // Sub-agents spawned from this run inherit its model unless
             // explicitly overridden.
-            ctx.model_preference =
-                (!model_override.is_empty()).then(|| model_override.clone());
+            ctx.model_preference = (!model_override.is_empty()).then(|| model_override.clone());
         }
 
         tokio::spawn(async move {
             // Sub-agent runs close their own browser tab/page when the run ends
             // (normal, error, or cancellation). Top-level runs are cleaned up by
             // their dispatcher, so gate on the subagent session key.
-            let _tab_cleanup = session_key.starts_with("subagent:").then(|| {
-                SubagentTabCleanup {
+            let _tab_cleanup = session_key
+                .starts_with("subagent:")
+                .then(|| SubagentTabCleanup {
                     tools: tools.clone(),
                     session_id: session_id.clone(),
-                }
-            });
+                });
 
             // ── Forked command execution ──────────────────────────────
             // Heavy commands (e.g. /research, /analyze) run in a sub-agent
             // context so intermediate tool calls don't consume the main
             // chat's context window.
             if should_fork_command(&user_prompt) {
-                info!(session_id, "forking command to sub-agent: {}", &user_prompt[..user_prompt.len().min(50)]);
+                info!(
+                    session_id,
+                    "forking command to sub-agent: {}",
+                    &user_prompt[..user_prompt.len().min(50)]
+                );
 
                 let _ = tx
                     .send(StreamEvent::text(
@@ -746,22 +827,13 @@ impl Runner {
                     ))
                     .await;
 
-                let fork_session_key =
-                    format!("fork:{}:{}", session_id, uuid::Uuid::new_v4());
+                let fork_session_key = format!("fork:{}:{}", session_id, uuid::Uuid::new_v4());
 
-                let fork_session = session_mgr
-                    .get_or_create(&fork_session_key, &user_id)
-                    .ok();
+                let fork_session = session_mgr.get_or_create(&fork_session_key, &user_id).ok();
 
                 if let Some(ref fs) = fork_session {
-                    let _ = session_mgr.append_message(
-                        &fs.id,
-                        "user",
-                        &user_prompt,
-                        None,
-                        None,
-                        None,
-                    );
+                    let _ =
+                        session_mgr.append_message(&fs.id, "user", &user_prompt, None, None, None);
 
                     let fork_session_id = fs.id.clone();
                     let (sub_tx, mut sub_rx) = mpsc::channel::<StreamEvent>(256);
@@ -782,7 +854,7 @@ impl Runner {
                         &channel,
                         &model_aliases,
                         origin,
-                        true,  // skip_memory for forked runs
+                        true, // skip_memory for forked runs
                         FORK_MAX_ITERATIONS,
                         &cancel_token,
                         &agent_registry,
@@ -800,9 +872,11 @@ impl Runner {
                         prompt::PromptMode::Minimal,
                         progress.as_ref(),
                         ask_channels.as_ref(),
+                        approval_channels.as_ref(),
+                        full_access,
                         embedding_provider.as_ref(),
                         tool_scope.as_deref(),
-                        false,  // no plan_mode for forks
+                        false, // no plan_mode for forks
                         &preactivate_tools,
                         channel_ctx.as_ref(),
                         None, // forks carry no mention context
@@ -880,6 +954,8 @@ impl Runner {
                 prompt_mode,
                 progress.as_ref(),
                 ask_channels.as_ref(),
+                approval_channels.as_ref(),
+                full_access,
                 embedding_provider.as_ref(),
                 tool_scope.as_deref(),
                 plan_mode,
@@ -1078,6 +1154,8 @@ async fn run_loop(
     prompt_mode: prompt::PromptMode,
     progress: Option<&RunProgress>,
     ask_channels: Option<&tools::AskChannels>,
+    approval_channels: Option<&tools::ApprovalChannels>,
+    full_access: bool,
     embedding_provider: Option<&Arc<dyn ai::EmbeddingProvider>>,
     tool_scope: Option<&str>,
     plan_mode: bool,
@@ -1133,6 +1211,20 @@ async fn run_loop(
     let mut read_failures: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     const READ_FAILURE_LIMIT: usize = 3;
+    // Spiral backstop (FRAMES Phase 2): repeated calls to the SAME (tool, action)
+    // within a turn — even with different args that each "succeed" — are the
+    // wander-spiral the identical-args and read-failure guards both miss (glob
+    // hunting across dirs, browser page re-reads, shell retries). After
+    // SAME_ACTION_LIMIT, return a terminal result so the run ends and the agent
+    // reports instead of looping.
+    // ponytail: coarse name:action key — a legit task calling ONE action 8x in a
+    // single turn gets cut (reading N different files is "os:read" repeated, so the
+    // limit also bounds that). 8 clears normal multi-file work; raise it or add
+    // result-novelty keying if it ever false-trips. NOT a substitute for clear tool
+    // errors — a misleading error is what STARTS the spiral.
+    let mut action_call_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    const SAME_ACTION_LIMIT: usize = 8;
     let mut provider_idx: usize = 0;
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
@@ -1266,7 +1358,10 @@ async fn run_loop(
     let t_run_start = std::time::Instant::now();
     let db_ctx = db_context::load_db_context(store, &memory_user_id, agent_id, &inherit_scopes);
     let t_db_ctx = t_run_start.elapsed();
-    info!(ms = t_db_ctx.as_millis() as u64, session_id, "[telemetry] db_context loaded");
+    info!(
+        ms = t_db_ctx.as_millis() as u64,
+        session_id, "[telemetry] db_context loaded"
+    );
 
     // Extract user-configured timezone for date/time in the dynamic suffix
     let user_timezone = db_ctx
@@ -1336,7 +1431,10 @@ async fn run_loop(
         if !relevant.is_empty() {
             db_context_formatted.push_str(&relevant);
         }
-        info!(ms = t_fts.elapsed().as_millis() as u64, session_id, "[telemetry] FTS memory search");
+        info!(
+            ms = t_fts.elapsed().as_millis() as u64,
+            session_id, "[telemetry] FTS memory search"
+        );
     }
 
     // Get active task (mutable: refreshed periodically to catch async detect_objective)
@@ -1490,10 +1588,7 @@ async fn run_loop(
 
             // Workflows
             if !cfg.workflows.is_empty() {
-                let mut wf_lines = vec![format!(
-                    "## Your Workflows ({})\n",
-                    cfg.workflows.len()
-                )];
+                let mut wf_lines = vec![format!("## Your Workflows ({})\n", cfg.workflows.len())];
                 let mut sorted: Vec<_> = cfg.workflows.iter().collect();
                 sorted.sort_by_key(|(name, _)| name.as_str());
                 for (name, binding) in &sorted {
@@ -1549,10 +1644,7 @@ async fn run_loop(
 
             // Skills declared by this agent
             if !cfg.skills.is_empty() {
-                let mut sk_lines = vec![format!(
-                    "## Your Skills ({})\n",
-                    cfg.skills.len()
-                )];
+                let mut sk_lines = vec![format!("## Your Skills ({})\n", cfg.skills.len())];
                 for skill_ref in &cfg.skills {
                     sk_lines.push(format!("- {}", skill_ref));
                 }
@@ -1566,10 +1658,7 @@ async fn run_loop(
 
             // Sidecar tools (custom HTTP endpoint tools defined by this agent)
             if !cfg.tools.is_empty() {
-                let mut tool_lines = vec![format!(
-                    "## Your Custom Tools ({})\n",
-                    cfg.tools.len()
-                )];
+                let mut tool_lines = vec![format!("## Your Custom Tools ({})\n", cfg.tools.len())];
                 for tool_def in &cfg.tools {
                     tool_lines.push(format!(
                         "- **{}** — {}",
@@ -1767,7 +1856,13 @@ async fn run_loop(
                 .map_err(|e| format!("failed to load messages: {}", e))?,
         );
         let t_msg_load = t_iter_start.elapsed();
-        info!(ms = t_msg_load.as_millis() as u64, iteration, session_id, msg_count = all_messages.len(), "[telemetry] messages loaded");
+        info!(
+            ms = t_msg_load.as_millis() as u64,
+            iteration,
+            session_id,
+            msg_count = all_messages.len(),
+            "[telemetry] messages loaded"
+        );
 
         // Refresh active_task from DB periodically to catch:
         // 1. Background detect_objective() completing after initial read
@@ -1876,7 +1971,10 @@ async fn run_loop(
         // Stage 2: Compress tool results with informative summaries
         let (compacted, mc_saved) = pruning::micro_compact(&working, thresholds.warning);
         if mc_saved > 0 {
-            debug!(tokens_saved = mc_saved, "Stage 2: micro-compact tool results");
+            debug!(
+                tokens_saved = mc_saved,
+                "Stage 2: micro-compact tool results"
+            );
             working = compacted;
         }
 
@@ -1948,8 +2046,7 @@ async fn run_loop(
                 let sid = session_id.to_string();
                 let uid = memory_user_id.clone();
                 let handle = tokio::spawn(async move {
-                    transcript::index_compacted_messages(&store_c, ep_c.as_ref(), &sid, &uid)
-                        .await;
+                    transcript::index_compacted_messages(&store_c, ep_c.as_ref(), &sid, &uid).await;
                 });
                 crate::memory_flush::track_extraction(handle).await;
             }
@@ -1987,7 +2084,8 @@ async fn run_loop(
                     if let Some(scope) = cfg.scopes.get(scope_name) {
                         if !scope.tools.is_empty() {
                             let scope_set: HashSet<String> = scope.tools.iter().cloned().collect();
-                            agent_tool_names = agent_tool_names.intersection(&scope_set).cloned().collect();
+                            agent_tool_names =
+                                agent_tool_names.intersection(&scope_set).cloned().collect();
                             debug!(scope = %scope_name, tools = ?agent_tool_names, "scoped agent tools");
                         }
                     }
@@ -1995,8 +2093,12 @@ async fn run_loop(
             }
         }
 
-        let (mut tool_defs, active_contexts) =
-            tool_filter::filter_tools_with_context(&all_tool_defs, &window_messages, &called_tools, &agent_tool_names);
+        let (mut tool_defs, active_contexts) = tool_filter::filter_tools_with_context(
+            &all_tool_defs,
+            &window_messages,
+            &called_tools,
+            &agent_tool_names,
+        );
 
         // Pattern 3: Deterministic sort for prompt cache stability.
         // Stable alphabetical ordering ensures identical tool blocks across turns,
@@ -2057,7 +2159,13 @@ async fn run_loop(
         let deferred_stubs = tools.list_deferred_stubs(&active_deferred).await;
         let deferred_listing = prompt::build_deferred_listing(&deferred_stubs);
         let tools_ms = t_tools_start.elapsed().as_millis() as u64;
-        info!(ms = tools_ms, iteration, session_id, tool_count = tool_defs.len(), "[telemetry] tools filtered + prompt sections built");
+        info!(
+            ms = tools_ms,
+            iteration,
+            session_id,
+            tool_count = tool_defs.len(),
+            "[telemetry] tools filtered + prompt sections built"
+        );
 
         // Select model: use override if set, otherwise ask the selector
         let selected_model = if !model_override.is_empty() {
@@ -2222,11 +2330,14 @@ async fn run_loop(
 
         // Log prompt component sizes for debugging token bloat
         {
-            let mut tool_sizes: Vec<(String, usize, usize)> = tool_defs.iter().map(|t| {
-                let desc_len = t.description.len();
-                let schema_len = t.input_schema.to_string().len();
-                (t.name.clone(), desc_len, schema_len)
-            }).collect();
+            let mut tool_sizes: Vec<(String, usize, usize)> = tool_defs
+                .iter()
+                .map(|t| {
+                    let desc_len = t.description.len();
+                    let schema_len = t.input_schema.to_string().len();
+                    (t.name.clone(), desc_len, schema_len)
+                })
+                .collect();
             tool_sizes.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
             let tool_schema_chars: usize = tool_sizes.iter().map(|(_, d, s)| d + s).sum();
             for (name, desc_len, schema_len) in &tool_sizes {
@@ -2291,7 +2402,11 @@ async fn run_loop(
             tool_choice: Default::default(),
             messages: ai_messages,
             tools: tool_defs,
-            max_tokens: if output_escalated { ESCALATED_MAX_OUTPUT_TOKENS } else { DEFAULT_MAX_OUTPUT_TOKENS },
+            max_tokens: if output_escalated {
+                ESCALATED_MAX_OUTPUT_TOKENS
+            } else {
+                DEFAULT_MAX_OUTPUT_TOKENS
+            },
             temperature: 0.7,
             system: full_system,
             static_system: static_system.clone(),
@@ -2304,16 +2419,21 @@ async fn run_loop(
             metadata: sticky_metadata.clone(),
             cache_breakpoints,
             cancel_token: Some(cancel_token.clone()),
-            // Tag this chat run so Janus attributes its usage (no workflow_id —
-            // chat runs are excluded from per-workflow rollups by design).
+            // Tag this chat run so Janus attributes its usage per agent (no
+            // workflow_id — chat runs are excluded from per-workflow rollups by
+            // design; agent_id is the rollup key for chat spend).
             trace: Some(RequestTrace {
+                agent_id: agent_id.to_string(),
                 run_id: progress.map(|p| p.run_id.clone()).unwrap_or_default(),
                 ..Default::default()
             }),
         };
 
         let pre_llm_ms = t_iter_start.elapsed().as_millis() as u64;
-        info!(ms = pre_llm_ms, iteration, session_id, "[telemetry] pre-LLM overhead (msg load → request built)");
+        info!(
+            ms = pre_llm_ms,
+            iteration, session_id, "[telemetry] pre-LLM overhead (msg load → request built)"
+        );
 
         // Acquire LLM permit before provider call (blocks if at capacity)
         let t_permit_start = std::time::Instant::now();
@@ -2326,7 +2446,10 @@ async fn run_loop(
         };
         let permit_wait_ms = t_permit_start.elapsed().as_millis() as u64;
         if permit_wait_ms > 5 {
-            info!(ms = permit_wait_ms, iteration, session_id, "[telemetry] LLM permit wait");
+            info!(
+                ms = permit_wait_ms,
+                iteration, session_id, "[telemetry] LLM permit wait"
+            );
         }
 
         // Snapshot provider from lock, then release before I/O
@@ -2385,7 +2508,12 @@ async fn run_loop(
 
         let mut rx = match stream_result {
             Ok(rx) => {
-                info!(iteration, session_id, connect_ms = stream_connect_ms, "[telemetry] provider stream connected");
+                info!(
+                    iteration,
+                    session_id,
+                    connect_ms = stream_connect_ms,
+                    "[telemetry] provider stream connected"
+                );
                 rx
             }
             Err(e) => {
@@ -2870,14 +2998,10 @@ async fn run_loop(
                 };
 
                 let request_id = uuid::Uuid::new_v4().to_string();
-                let tool_names: Vec<String> =
-                    tool_calls.iter().map(|tc| tc.name.clone()).collect();
+                let tool_names: Vec<String> = tool_calls.iter().map(|tc| tc.name.clone()).collect();
 
                 let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                ask_chs
-                    .lock()
-                    .await
-                    .insert(request_id.clone(), resp_tx);
+                ask_chs.lock().await.insert(request_id.clone(), resp_tx);
 
                 let _ = tx
                     .send(StreamEvent::plan_approval_request(
@@ -2944,7 +3068,7 @@ async fn run_loop(
             let resolved_key = sessions
                 .resolve_session_key(session_id)
                 .unwrap_or_else(|_| session_id.to_string());
-            let ctx = ToolContext {
+            let mut ctx = ToolContext {
                 origin,
                 session_key: resolved_key,
                 session_id: session_id.to_string(),
@@ -2957,9 +3081,10 @@ async fn run_loop(
                 run_id: progress.map(|p| p.run_id.clone()),
                 ask_channels: ask_channels.cloned(),
                 channel: channel_ctx.cloned(),
-                model_preference: (!model_override.is_empty())
-                    .then(|| model_override.to_string()),
+                model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
                 memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
+                // Populated by the approval gate below, before tool execution.
+                approved_categories: std::collections::HashSet::new(),
             };
 
             // Track tool names for context filtering
@@ -3062,6 +3187,160 @@ async fn run_loop(
                     }
                 }
             }
+
+            // Spiral backstop (see action_call_counts): once one (tool, action) has
+            // run SAME_ACTION_LIMIT times this turn, END the run with a terminal result
+            // rather than let the model keep trying variations that each "succeed" but
+            // never converge (glob-wander / browser re-read / shell-retry). Generalizes
+            // the read-failure guard to non-failing loops. (FRAMES Phase 2.)
+            for (idx, tc) in tool_calls.iter().enumerate() {
+                if blocked_results[idx].is_some() {
+                    continue;
+                }
+                let key = action_key(tc);
+                if action_call_counts.get(&key).copied().unwrap_or(0) >= SAME_ACTION_LIMIT {
+                    warn!(
+                        session_id,
+                        action = %key,
+                        limit = SAME_ACTION_LIMIT,
+                        "spiral backstop: ending run after repeated action"
+                    );
+                    blocked_results[idx] = Some((
+                        tc.clone(),
+                        ToolResult::terminal(format!(
+                            "Stopped: '{}' has been called {} times this turn without resolving the \
+                             task. Do not retry more variations — report what you found so far and ask \
+                             the user for the missing detail (e.g. the correct path, file, or input).",
+                            key, SAME_ACTION_LIMIT
+                        )),
+                    ));
+                }
+            }
+
+            // ── Per-tool approval gate (PERMISSIONS_SME §11) ──────────────────
+            // A capability that's OFF means ASK the user, not hard-fail. We wire
+            // the previously-dangling producer: emit `approval_request` and await
+            // the ApprovalModal decision via the shared `approval_channels`
+            // round-trip (the SAME pathway plan-mode uses). Autonomous mode and
+            // pre-granted (ON) categories proceed without asking; Deny returns a
+            // clean declined result; "Always" flips the capability ON for next
+            // time. Categories cleared here are recorded on the ToolContext so the
+            // registry permission gate (Phase 1c) treats them as allowed.
+            let mut approved_cats: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            // Per-command allowlist: prefixes the user chose "Approve Always" for.
+            // Loaded once; appended on an "always" decision for a shell command.
+            let mut approved_cmds: Vec<String> = store.get_approved_commands().unwrap_or_default();
+            for idx in 0..tool_calls.len() {
+                if blocked_results[idx].is_some() {
+                    continue;
+                }
+                let category = match tools::capabilities::gating_capability(
+                    &tool_calls[idx].name,
+                    &tool_calls[idx].input,
+                ) {
+                    Some(c) => c,
+                    None => continue, // ungated (installed extension / non-ambient tool)
+                };
+                let cap_off = entity_permissions
+                    .map(|p| p.get(category) == Some(&false))
+                    .unwrap_or(false);
+                // The shell command this call would run, if any (for the per-command
+                // allowlist). None for non-shell tools.
+                let shell_cmd = shell_command_of(&tool_calls[idx]);
+                if !cap_off || full_access {
+                    // Pre-granted (capability ON), no permission map, or Full Access
+                    // → proceed without asking.
+                    approved_cats.insert(category.to_string());
+                    continue;
+                }
+                // Capability OFF, but this exact shell command was "approved always"
+                // (matched by prefix; compound/interpreter commands never match) →
+                // run without asking. Hard safeguards still apply unconditionally.
+                if let Some(ref c) = shell_cmd {
+                    if tools::policy::command_matches(&approved_cmds, c) {
+                        approved_cats.insert(category.to_string());
+                        continue;
+                    }
+                }
+                // Capability OFF + not Full Access + not pre-approved → ask, but ONLY
+                // when a human is present. Unattended runs (cron/heartbeat/workflow/
+                // comm/subagent) have no one to answer, so it's denied (left ungranted
+                // → Phase 1c blocks) rather than hanging on a prompt nobody sees.
+                if tools::ExecutionMode::from(origin) != tools::ExecutionMode::Interactive {
+                    continue;
+                }
+                let chs = match approval_channels {
+                    Some(c) => c,
+                    // No channel to ask through: leave the category ungranted so
+                    // registry Phase 1c hard-blocks (safe).
+                    None => continue,
+                };
+                let request_id = tool_calls[idx].id.clone();
+                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                chs.lock().await.insert(request_id.clone(), resp_tx);
+                let _ = tx
+                    .send(StreamEvent::approval_request(tool_calls[idx].clone()))
+                    .await;
+                info!(
+                    session_id,
+                    request_id = %request_id,
+                    category,
+                    tool = %tool_calls[idx].name,
+                    "tool approval: waiting for user decision"
+                );
+                let decision = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        chs.lock().await.remove(&request_id);
+                        "deny".to_string()
+                    }
+                    result = resp_rx => result.unwrap_or_else(|_| "deny".to_string()),
+                };
+                match decision.as_str() {
+                    "always" => {
+                        approved_cats.insert(category.to_string());
+                        match &shell_cmd {
+                            // Shell command → remember just this command's PREFIX
+                            // (not all of Shell). Interpreters/compound commands
+                            // yield None → no durable grant (approved once only).
+                            Some(c) => {
+                                if let Some(prefix) = tools::policy::command_prefix(c) {
+                                    if !approved_cmds.iter().any(|p| p == &prefix) {
+                                        approved_cmds.push(prefix.clone());
+                                        if let Err(e) = store.set_approved_commands(&approved_cmds)
+                                        {
+                                            warn!(session_id, error = %e, "failed to persist approved command");
+                                        }
+                                    }
+                                }
+                            }
+                            // Non-shell capability → grant the whole capability for
+                            // next time (per-item grants aren't meaningful there).
+                            None => {
+                                if let Err(e) = persist_capability_grant(store, category) {
+                                    warn!(session_id, category, error = %e, "failed to persist capability grant");
+                                }
+                            }
+                        }
+                    }
+                    "once" | "approve" | "approved" | "yes" | "true" => {
+                        approved_cats.insert(category.to_string());
+                    }
+                    _ => {
+                        // Deny → skip execution with a clean, non-spiraling result.
+                        blocked_results[idx] = Some((
+                            tool_calls[idx].clone(),
+                            ToolResult::error(format!(
+                                "The user declined to allow this action (the \"{}\" capability \
+                                 is off). Tell the user it needs their approval and stop — do \
+                                 not retry or work around it.",
+                                tools::capabilities::capability_label(category)
+                            )),
+                        ));
+                    }
+                }
+            }
+            ctx.approved_categories = approved_cats;
 
             // Partition tool calls into concurrent-safe (read-only) and sequential (writes).
             // Concurrent-safe tools run in parallel via FuturesUnordered, then
@@ -3355,6 +3634,10 @@ async fn run_loop(
             const UNIVERSAL_TOOL_RESULT_CAP: usize = 100_000;
             let mut all_errors_this_iteration = true;
             let mut had_results = false;
+            // Terminal tool error (auth/permission/connection) → end the turn after
+            // this batch and surface to the user, instead of feeding it back for the
+            // model to retry/improvise (the death-spiral fix; FRAMES.md Phase 1).
+            let mut terminal_error: Option<String> = None;
             // Highest-signal rate-limit status seen this iteration (429/403) — feeds the
             // RateLimit reminder so the model backs off instead of hammer-retrying a host.
             let mut iteration_rate_limited: Option<u16> = None;
@@ -3364,6 +3647,14 @@ async fn run_loop(
             for entry in results.into_iter().flatten() {
                 let (tc, mut result) = entry;
                 had_results = true;
+                // Terminal error (auth/permission/connection) — narrow, set only by
+                // ToolResult::terminal(). End the run after this batch instead of
+                // letting the model retry/improvise. Critical for autonomous
+                // workflows: there's no human to ask or to hit stop, so a dead
+                // account must fail the run cleanly, not spiral. (FRAMES Phase 1.)
+                if result.terminal && terminal_error.is_none() {
+                    terminal_error = Some(result.content.clone());
+                }
                 if matches!(result.http_status, Some(429) | Some(403)) {
                     iteration_rate_limited = result.http_status;
                 }
@@ -3374,6 +3665,7 @@ async fn run_loop(
                     is_error: result.is_error,
                     image_url: None,
                     http_status: None,
+                    terminal: result.terminal,
                 });
                 if !result.is_error {
                     all_errors_this_iteration = false;
@@ -3387,6 +3679,10 @@ async fn run_loop(
                     // counter alone misses this).
                     *read_failures.entry(p).or_insert(0) += 1;
                 }
+
+                // Spiral backstop: count every (tool, action) attempt this turn
+                // (success or failure) so the pre-dispatch guard can end a wander-loop.
+                *action_call_counts.entry(action_key(&tc)).or_insert(0) += 1;
 
                 // Empty result guard (Claude Code pattern): prevent models from
                 // interpreting empty tool_result as end-of-output.
@@ -3441,13 +3737,17 @@ async fn run_loop(
                     let last_start = result.content.len().saturating_sub(ERROR_HALF);
                     // Find char boundary for the tail
                     let mut tail_start = last_start;
-                    while tail_start < result.content.len() && !result.content.is_char_boundary(tail_start) {
+                    while tail_start < result.content.len()
+                        && !result.content.is_char_boundary(tail_start)
+                    {
                         tail_start += 1;
                     }
                     let last = &result.content[tail_start..];
                     result.content = format!(
                         "{}\n\n[{} characters truncated]\n\n{}",
-                        first, total_len - first.len() - last.len(), last
+                        first,
+                        total_len - first.len() - last.len(),
+                        last
                     );
                 }
 
@@ -3471,7 +3771,10 @@ async fn run_loop(
                     let preview = truncate_str(&result.content, 4_000);
                     result.content = format!(
                         "{}\n\n[Output too large ({} chars). Full output saved to: {}. Use os(resource: \"file\", action: \"read\", path: \"{}\") to access.]",
-                        preview, total_len, result_path.display(), result_path.display()
+                        preview,
+                        total_len,
+                        result_path.display(),
+                        result_path.display()
                     );
                 }
 
@@ -3531,6 +3834,32 @@ async fn run_loop(
                 {
                     warn!(session_id = %session_id, error = %e, "failed to save tool message to DB");
                 }
+            }
+
+            // Terminal tool error → end the run now (FRAMES Phase 1). The failure is
+            // unrecoverable (auth/permission/connection) — surface it and stop rather
+            // than feed it back for the model to retry/improvise. This is the
+            // death-spiral fix: in an autonomous workflow there is no human to ask or
+            // to interrupt, so a dead account must stop the run cleanly. Mirrors the
+            // circuit-breaker's emit-text-then-break. (Narrow: only ToolResult::terminal
+            // sets this — healthy long-running tasks never trip it.)
+            if let Some(msg) = terminal_error {
+                warn!(session_id, iteration, "terminal tool error — ending run");
+                let _ = tx
+                    .send(StreamEvent {
+                        event_type: StreamEventType::Text,
+                        text: msg,
+                        tool_call: None,
+                        error: None,
+                        usage: None,
+                        rate_limit: None,
+                        widgets: None,
+                        provider_metadata: None,
+                        stop_reason: None,
+                        image_url: None,
+                    })
+                    .await;
+                break;
             }
 
             // Compute tool call hashes for loop detection (OpenClaw-style).
@@ -3628,10 +3957,21 @@ async fn run_loop(
             if !skip_memory {
                 for tc in &tool_calls {
                     if tc.name == "agent" {
-                        let resource = tc.input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-                        let action = tc.input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                        let resource = tc
+                            .input
+                            .get("resource")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let action = tc
+                            .input
+                            .get("action")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         if resource == "memory" && action == "store" {
-                            debug!(session_id, "memory write detected — skipping post-run extraction");
+                            debug!(
+                                session_id,
+                                "memory write detected — skipping post-run extraction"
+                            );
                             skip_memory = true;
                             break;
                         }
@@ -3674,7 +4014,8 @@ async fn run_loop(
 
         // Output token escalation: on first truncation, retry with a higher cap
         // before falling through to the multi-attempt continuation recovery.
-        if (stop_reason.as_deref() == Some("length") || stop_reason.as_deref() == Some("max_tokens"))
+        if (stop_reason.as_deref() == Some("length")
+            || stop_reason.as_deref() == Some("max_tokens"))
             && !output_escalated
         {
             info!(
@@ -3799,7 +4140,9 @@ async fn run_loop(
 
         // Reset retry counter on successful non-empty content (read on next loop iteration)
         #[allow(unused_assignments)]
-        { empty_content_retries = 0; }
+        {
+            empty_content_retries = 0;
+        }
 
         // Auto-continuation: tool_use blocks are the sole continuation signal
         // (aligned with Claude Code). Text-only responses always exit the loop.
@@ -3981,8 +4324,14 @@ async fn run_loop(
                         prefer_non_gateway(&prov_lock)
                     };
                     if let Some(provider) = provider {
-                        if let Some(facts) =
-                            memory::extract_facts(provider.as_ref(), &last_exchange, Some(&store), Some(&mem_uid), &topics).await
+                        if let Some(facts) = memory::extract_facts(
+                            provider.as_ref(),
+                            &last_exchange,
+                            Some(&store),
+                            Some(&mem_uid),
+                            &topics,
+                        )
+                        .await
                         {
                             memory::store_facts(&store, &facts, &mem_uid, embed_prov, &topics);
                             debug!(
@@ -4754,5 +5103,4 @@ mod tests {
         assert_eq!(result[0].role, "user");
         assert_eq!(result[1].role, "assistant");
     }
-
 }

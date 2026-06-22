@@ -4,6 +4,7 @@ pub mod a2ui_tool;
 pub mod agent_tool;
 pub mod app_tool;
 pub mod bot_tool;
+pub mod capabilities;
 pub mod channel_bridge;
 pub mod deep_research;
 pub mod desktop_daemon;
@@ -88,7 +89,9 @@ pub use music_tool::MusicTool;
 pub use orchestrator::{
     OrchestratorHandle, SpawnRequest, SpawnResult, SubAgentOrchestrator, new_handle,
 };
-pub use origin::{AskChannels, ChannelContext, ExecutionMode, Origin, ToolContext};
+pub use origin::{
+    ApprovalChannels, AskChannels, ChannelContext, ExecutionMode, Origin, ToolContext,
+};
 pub use os_tool::OsTool;
 pub use policy::{AskMode, Policy, PolicyLevel};
 pub use process::ProcessRegistry;
@@ -291,6 +294,7 @@ pub async fn persist_skill_from_api(
         .map_err(|e| format!("write SKILL.md: {e}"))?;
 
     let manifest_json = serde_json::json!({
+        "id": artifact_id,
         "name": name,
         "version": detail.item.version,
         "type": "skill",

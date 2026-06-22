@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use crate::models::{ArtifactUpdatePref, ArtifactUpdateSettings};
+use crate::models::{ArtifactUpdateHistoryEntry, ArtifactUpdatePref, ArtifactUpdateSettings};
 use crate::Store;
 use types::NeboError;
 
@@ -74,12 +74,32 @@ impl Store {
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO artifact_update_prefs (artifact_id, artifact_type, local_version, last_checked_at)
-             VALUES (?1, ?2, ?3, unixepoch())
+            // New installs default to MANUAL updates (auto_update = 0): the user is
+            // notified and approves. On re-install/version-bump we DON'T touch
+            // auto_update — the user's per-artifact opt-in choice is preserved.
+            "INSERT INTO artifact_update_prefs (artifact_id, artifact_type, local_version, auto_update, last_checked_at)
+             VALUES (?1, ?2, ?3, 0, unixepoch())
              ON CONFLICT(artifact_id, artifact_type) DO UPDATE
              SET local_version = excluded.local_version,
                  update_available = CASE WHEN remote_version != '' AND remote_version != excluded.local_version THEN 1 ELSE 0 END",
             params![artifact_id, artifact_type, local_version],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Remove an artifact's update-tracking row — call on uninstall so a
+    /// no-longer-installed artifact doesn't leave an orphan that the checker
+    /// keeps polling (and that could surface a phantom "update available").
+    pub fn delete_artifact_update_pref(
+        &self,
+        artifact_id: &str,
+        artifact_type: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM artifact_update_prefs WHERE artifact_id = ?1 AND artifact_type = ?2",
+            params![artifact_id, artifact_type],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -181,5 +201,63 @@ impl Store {
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Append an entry to the artifact upgrade history log.
+    pub fn record_artifact_update_history(
+        &self,
+        artifact_id: &str,
+        artifact_type: &str,
+        name: &str,
+        from_version: &str,
+        to_version: &str,
+        status: &str,
+        detail: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO artifact_update_history
+                (artifact_id, artifact_type, name, from_version, to_version, status, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![artifact_id, artifact_type, name, from_version, to_version, status, detail],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Most-recent-first upgrade history (capped).
+    pub fn list_artifact_update_history(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<ArtifactUpdateHistoryEntry>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, artifact_id, artifact_type, name, from_version, to_version,
+                        status, detail, applied_at
+                 FROM artifact_update_history
+                 ORDER BY applied_at DESC, id DESC LIMIT ?1",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(ArtifactUpdateHistoryEntry {
+                    id: row.get(0)?,
+                    artifact_id: row.get(1)?,
+                    artifact_type: row.get(2)?,
+                    name: row.get(3)?,
+                    from_version: row.get(4)?,
+                    to_version: row.get(5)?,
+                    status: row.get(6)?,
+                    detail: row.get(7)?,
+                    applied_at: row.get(8)?,
+                })
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| NeboError::Database(e.to_string()))?);
+        }
+        Ok(out)
     }
 }

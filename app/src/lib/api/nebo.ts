@@ -412,6 +412,13 @@ export function checkUpdates(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List update history"
+ */
+export function listUpdateHistory() {
+	return webapi.get<components.ListUpdateHistoryResponse>(`/api/v1/artifacts/update-history`)
+}
+
+/**
  * @description "Get update settings"
  */
 export function getUpdateSettings() {
@@ -1613,6 +1620,13 @@ export function userDeleteAccount() {
  */
 export function userAcceptTerms(req: Record<string, unknown> = {}) {
 	return webapi.post<components.UserAcceptTermsResponse>(`/api/v1/user/me/accept-terms`, req)
+}
+
+/**
+ * @description "User update approved commands"
+ */
+export function userUpdateApprovedCommands(req: Record<string, unknown> = {}) {
+	return webapi.put<components.UserUpdateApprovedCommandsResponse>(`/api/v1/user/me/approved-commands`, req)
 }
 
 /**

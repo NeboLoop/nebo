@@ -424,7 +424,7 @@ impl DynTool for PluginTool {
             "command".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "Subcommand and flags ONLY — the binary path is auto-resolved. Do NOT include the plugin name. Example: 'gmail +triage --max 5' (not 'gws gmail +triage --max 5'). Use only commands listed in this tool's description; do not guess syntax."
+                "description": "Subcommand and flags ONLY — the binary path is auto-resolved. Do NOT include the plugin name (e.g. for a plugin 'acme' with subcommand 'reports generate', pass 'reports generate --period month', NOT 'acme reports generate'). Use only commands listed in this tool's description or confirmed via a skill/help; do not guess syntax."
             }),
         );
         props.insert(
@@ -696,10 +696,13 @@ impl PluginTool {
                         );
                     }
 
-                    return ToolResult::error(format!(
-                        "Plugin '{}' authentication expired. Re-authentication was attempted but failed. \
-                         The user must re-authenticate in Settings > Plugins. \
-                         Do NOT call this plugin again until re-authenticated.",
+                    // Terminal: auth genuinely expired and reauth failed. End the
+                    // turn and surface to the user — do not let the agent keep
+                    // retrying/improvising (FRAMES.md Phase 1).
+                    return ToolResult::terminal(format!(
+                        "I couldn't reach **{}** — it isn't authenticated and automatic \
+                         re-authentication didn't work. Please reconnect this account in the \
+                         agent's Connected Accounts (Settings), then ask me again.",
                         pi.resource
                     ));
                 }
@@ -762,6 +765,25 @@ impl PluginTool {
         // service "gws" → "Unknown service 'gws'". Drop it so both forms work.
         if args.first().map(|a| a.eq_ignore_ascii_case(&pi.resource)) == Some(true) {
             args.remove(0);
+        }
+
+        // Agents must NEVER self-initiate an auth flow. `auth login`/`logout`/`setup`
+        // are privileged, interactive, account-mutating actions that belong to the
+        // user — when an agent ran `gws auth login` on a (syntax) error it spiraled
+        // into endless browser/curl/re-auth attempts (see FRAMES.md). Refuse, and
+        // make it terminal so the turn ends instead of the agent improvising. Read-only
+        // `auth status`/`export` stay allowed (the host uses them to verify auth).
+        if args.first().map(|a| a.eq_ignore_ascii_case("auth")) == Some(true) {
+            if let Some(sub) = args.get(1).map(|s| s.to_ascii_lowercase()) {
+                if sub == "login" || sub == "logout" || sub == "setup" {
+                    return ToolResult::terminal(format!(
+                        "I can't sign in to or re-authenticate **{}** on my own — that's \
+                         handled for you. If this account needs reconnecting, you can do it \
+                         in this agent's Connected Accounts (Settings).",
+                        pi.resource
+                    ));
+                }
+            }
         }
 
         // Append named args directly — no shell parsing, special characters preserved.
@@ -1226,9 +1248,21 @@ pub fn is_auth_error(output: &str) -> bool {
 /// `agent:<id>:...` and `subagent:<parentId>:...` (a subagent runs under its
 /// parent agent's credentials). Returns `None` for non-agent sessions.
 fn agent_id_from_session_key(key: &str) -> Option<String> {
-    let mut parts = key.splitn(3, ':');
+    // Delegated (subagent) runs nest the parent's FULL session key:
+    //   subagent:<parent_session_key>:<task_id>
+    // and <parent_session_key> is itself `agent:<id>:…`. So a naive split on a
+    // subagent key returns the literal token "agent" instead of the id, which
+    // means a delegated agent's per-account plugin calls resolve to no profile
+    // and fall back to the plugin's global credentials (e.g. a duplicated agent
+    // reading the original account's inbox). Strip any number of leading
+    // `subagent:` wrappers, then read the id out of the inner `agent:<id>:…` key.
+    let mut inner = key;
+    while let Some(rest) = inner.strip_prefix("subagent:") {
+        inner = rest;
+    }
+    let mut parts = inner.splitn(3, ':');
     match parts.next()? {
-        "agent" | "subagent" => parts.next().map(|s| s.to_string()),
+        "agent" => parts.next().map(|s| s.to_string()),
         _ => None,
     }
 }
@@ -1393,6 +1427,31 @@ fn build_op_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_agent_id_from_session_key_resolves_nested_subagent() {
+        // Direct agent chat.
+        assert_eq!(
+            agent_id_from_session_key("agent:abc-123:thread:t1").as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(agent_id_from_session_key("agent:abc-123").as_deref(), Some("abc-123"));
+        // Delegated run: the orchestrator nests the parent's full session key as
+        // `subagent:<parent_session_key>:<task_id>`. Must recover the agent id,
+        // NOT the literal "agent" token (the bug that made a duplicated agent
+        // read the original account's inbox).
+        assert_eq!(
+            agent_id_from_session_key("subagent:agent:abc-123:thread:t1:task-9").as_deref(),
+            Some("abc-123")
+        );
+        // Doubly-nested delegation.
+        assert_eq!(
+            agent_id_from_session_key("subagent:subagent:agent:abc-123:thread:t1:task-9:task-10")
+                .as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(agent_id_from_session_key("acp:xyz"), None);
+    }
 
     #[test]
     fn test_is_auth_error_detects_common_patterns() {

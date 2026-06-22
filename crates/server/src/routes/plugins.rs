@@ -39,7 +39,8 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/plugins/{slug}/accounts",
-            axum::routing::get(handlers::plugins::list_plugin_accounts),
+            axum::routing::get(handlers::plugins::list_plugin_accounts)
+                .delete(handlers::plugins::disconnect_plugin_account),
         )
         .route(
             "/plugins/{slug}/auth/logout",

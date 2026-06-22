@@ -20,8 +20,11 @@
     { id: 'workflows', label: 'Workflows' },
     { id: 'skills', label: 'Skills' },
     { id: 'channels', label: 'Channels' },
+    { id: 'accounts', label: 'Connected Accounts' },
     { id: 'memory', label: 'Memory' },
-    { id: 'permissions', label: 'Permissions' },
+    // Permissions are managed once, globally, in Settings → Permissions and
+    // inherited by every agent. There is no per-agent permissions surface —
+    // a single source of truth is the right model for non-technical users.
   ];
 
   const activeSection = $derived($page.params.section || 'general');

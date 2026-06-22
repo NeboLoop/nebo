@@ -663,7 +663,7 @@ Declare tools in `capabilities.tools[]`. Each tool becomes a typed, schema-valid
 | `description` | string | required | Description for the model to understand when to use this tool |
 | `command` | string | required | CLI args appended to the plugin binary (e.g., `"gmail +triage"`) |
 | `inputSchema` | object | generic object | JSON Schema for typed input validation |
-| `approval` | bool | `false` | Whether this tool requires user approval before execution |
+| `approval` | bool | `true` | Whether this tool requires user approval before execution |
 | `timeoutSeconds` | number | `120` | Maximum execution time in seconds |
 
 #### How Typed Tools Work

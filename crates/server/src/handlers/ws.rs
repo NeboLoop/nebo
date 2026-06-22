@@ -731,9 +731,22 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                     let approved = parsed["data"]["approved"]
                                         .as_bool()
                                         .unwrap_or(false);
+                                    // The modal's "Approve Always" flag — previously
+                                    // dropped here. Carry it as the decision string so
+                                    // the runner can grant the capability for next time.
+                                    let always = parsed["data"]["always"]
+                                        .as_bool()
+                                        .unwrap_or(false);
+                                    let decision = if !approved {
+                                        "deny"
+                                    } else if always {
+                                        "always"
+                                    } else {
+                                        "once"
+                                    };
                                     let mut channels = state.approval_channels.lock().await;
                                     if let Some(tx) = channels.remove(&request_id) {
-                                        let _ = tx.send(approved);
+                                        let _ = tx.send(decision.to_string());
                                     }
                                 }
                                 "presence" => {

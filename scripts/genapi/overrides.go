@@ -34,7 +34,9 @@ var typeOverrides = map[string]string{
 	"userGetProfile.profile": "UserProfileFull",
 
 	// ── User permissions ──
-	"userGetPermissions.permissions": "ToolPermission[]",
+	"userGetPermissions.permissions":      "ToolPermission[]",
+	"userGetPermissions.capabilities":     "Capability[]",
+	"userGetPermissions.approvedCommands": "string[]",
 
 	// ── Agent workflows (map keyed by binding name, NOT an array) ──
 	"list_agent_workflows.workflows": "Record<string, AgentWorkflowEntry>",
@@ -71,6 +73,12 @@ var extraInterfaces = map[string]string{
 	agentId: string
 	name: string
 	status: string
+}`,
+
+	"Capability": `export interface Capability {
+	key: string
+	label: string
+	desc: string
 }`,
 
 	"AgentRunEntry": `export interface AgentRunEntry {

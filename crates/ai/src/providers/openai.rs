@@ -776,6 +776,7 @@ impl Provider for OpenAIProvider {
         // action/step that produced this request. Empty fields are skipped.
         if let Some(ref trace) = req.trace {
             for (name, val) in [
+                ("x-agent-id", &trace.agent_id),
                 ("x-run-id", &trace.run_id),
                 ("x-workflow-id", &trace.workflow_id),
                 ("x-action-id", &trace.action_id),

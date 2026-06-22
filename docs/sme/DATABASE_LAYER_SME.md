@@ -733,8 +733,8 @@ only some fields are being updated:
 ```rust
 // settings.rs -- dynamic SET clause with raw_bind_parameter
 let mut updates = Vec::new();
-if autonomous_mode.is_some() {
-    updates.push(format!("autonomous_mode = ?{}", param_idx));
+if full_access.is_some() {
+    updates.push(format!("full_access = ?{}", param_idx));
     param_idx += 1;
 }
 // ...
@@ -1385,8 +1385,8 @@ summarized:
   +-------------------+         +------------------+
   | mcp_integrations  |         |   settings       |
   |  id (PK)          |         |  id = 1 (single) |
-  |  name             |         |  autonomous_mode |
-  |  server_type      |         |  auto_approve_*  |
+  |  name             |         |  full_access     |
+  |  server_type      |         |  auto_install_deps |
   |  oauth_*          |         |  developer_mode  |
   +--------+----------+         +------------------+
            |

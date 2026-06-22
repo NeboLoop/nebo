@@ -631,12 +631,12 @@ multi-step safety confirmation.
 **State:**
 ```typescript
 let permissions = $state<{ key: string; label: string; desc: string; enabled: boolean }[]>([]);
-let autonomous = $state(false);
+let fullAccess = $state(false);
 ```
 
 **Data loaded on mount:**
-1. `api.userGetPermissions()` — returns `ToolPermission[]` with `tool` and `allowed`
-2. `api.getSettings()` — reads `autonomousMode` flag
+1. `userGetPermissions()` — returns `permissions`, backend `capabilities`, and `approvedCommands`
+2. `api.getSettings()` — reads the `fullAccess` flag
 
 **Capability labels** (8 capabilities):
 | Key | Label | Description |
@@ -650,7 +650,7 @@ let autonomous = $state(false);
 | media | Media | Access camera, microphone, and screen |
 | system | System | Access system information and settings |
 
-**Autonomous Mode activation flow:**
+**Full Access activation flow:**
 ```
 Toggle ON clicked
   |
@@ -661,13 +661,13 @@ Toggle ON clicked
         +-- Disclaimer text (Nebo Labs liability waiver)
         +-- Checkbox: "I understand the risks"
         +-- Text input: must type "ENABLE"
-        +-- [Cancel] [Enable Autonomous Mode]
+        +-- [Cancel] [Enable Full Access]
               |
-              +-- Both conditions met --> autonomous = true
-              +-- api.updateSettings({ autonomousMode: true })
+              +-- Both conditions met --> fullAccess = true
+              +-- api.updateSettings({ fullAccess: true })
 ```
 
-**When autonomous is active:**
+**When Full Access is active:**
 - All capability toggles are forced ON and disabled
 - Warning banner shown
 - Auto-approval section hidden
@@ -1049,7 +1049,7 @@ Step 3: PERMISSIONS / CAPABILITIES
 |            Permissions                             |
 |   Choose what your agents can access.              |
 |                                                    |
-|   +-- Autonomous Mode toggle --+                   |
+|   +-- Full Access toggle ------+                   |
 |   | [warning] Execute all tools|                   |
 |   +----------------------------+                   |
 |                                                    |

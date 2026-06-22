@@ -142,6 +142,7 @@
 | 60 | Auto-Updater | `updater/` | `BUILD_TOOLING_SME.md` §1 | Current |
 | 61 | API Code Generation | `scripts/genapi/` (Go) | `BUILD_TOOLING_SME.md` §2 | Current |
 | 62 | Plugin Publishing Pipeline | `scripts/publish-plugins.sh` | `BUILD_TOOLING_SME.md` §3 | Current |
+| 63 | Behavioral Testing (integration plan + prompt harness) | `tests/integration/`, `fixtures/`, `suites/`, `crates/agent/src/testing/` | `TESTING_SME.md` | Current |
 
 ## 12. Automation & Eventing Systems
 

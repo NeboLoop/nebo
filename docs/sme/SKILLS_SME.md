@@ -1117,15 +1117,15 @@ resolve_cascade(state, deps, visited):
        ├─ install_dep() → call NeboAI API
        ├─ Broadcast "dep_installed"
        └─ Recurse into child deps
-    5. If non-autonomous:
+    5. If auto_install_deps is disabled:
        ├─ Broadcast "dep_pending"
        └─ Mark PendingApproval (user must approve)
 ```
 
-### Autonomy Modes
+### Dependency Install Modes
 
-- **Autonomous** (`settings.autonomous_mode = 1`): Auto-install missing deps
-- **Non-autonomous**: Mark deps as `PendingApproval`, broadcast event, wait for user approval
+- **Auto-install enabled** (`settings.auto_install_deps = 1`): Auto-install missing deps
+- **Auto-install disabled**: Mark deps as `PendingApproval`, broadcast event, wait for user approval
 - **Force** (`POST /deps/approve`): Install regardless of autonomy setting
 
 ### Reference Types

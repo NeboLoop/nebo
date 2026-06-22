@@ -33,6 +33,18 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
         .map(|p| (p.slug.clone(), p))
         .collect();
 
+    // Pending updates (slug → newer version) so the list can show an "update
+    // available" badge, keyed off the same artifact_update_prefs the Updates panel
+    // and the background checker use.
+    let pending_updates: HashMap<String, String> = state
+        .store
+        .list_artifacts_with_updates()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.artifact_type == "plugin")
+        .map(|a| (a.artifact_id, a.remote_version))
+        .collect();
+
     // Dedup by slug — list_installed sorts by slug asc, version desc,
     // so first occurrence per slug is the highest version.
     let mut seen = HashMap::new();
@@ -106,6 +118,7 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
             "signatureStatus": sig_status,
             "setup": setup,
             "multiAccount": multi_account,
+            "updateAvailable": pending_updates.get(slug.as_str()),
         }));
     }
 
@@ -468,6 +481,11 @@ fn spawn_plugin_login(
                     ) {
                         warn!(plugin = %slug_owned, error = %e, "failed to record account profile");
                     }
+                    // A successful reconnect means the token is healthy again —
+                    // clear needs_reauth NOW so the "Expired" badge disappears
+                    // immediately, instead of lingering until the next refresher
+                    // tick. (reauth_notified is reset too, so a future expiry re-notifies.)
+                    let _ = profile_store.set_plugin_account_reauth(&id, false);
                 }
 
                 hub.broadcast(
@@ -565,10 +583,44 @@ pub async fn list_plugin_accounts(
     let accounts: Vec<serde_json::Value> = profiles
         .iter()
         .map(|p| {
-            serde_json::json!({ "accountLabel": p.account_label, "isPrimary": p.is_primary })
+            serde_json::json!({
+                "accountLabel": p.account_label,
+                "isPrimary": p.is_primary,
+                "needsReauth": p.needs_reauth,
+            })
         })
         .collect();
     Ok(Json(serde_json::json!({ "accounts": accounts })))
+}
+
+/// DELETE /plugins/{slug}/accounts?agentId=<id>&accountLabel=<label>
+///
+/// Disconnect one account from an agent for a multi-account plugin: remove the
+/// (agent, plugin, account) profile mapping and delete its credential directory
+/// (the plugin owns the tokens there). Idempotent.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisconnectAccountQuery {
+    pub agent_id: String,
+    pub account_label: String,
+}
+
+pub async fn disconnect_plugin_account(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Query(q): Query<DisconnectAccountQuery>,
+) -> HandlerResult<serde_json::Value> {
+    state
+        .store
+        .delete_plugin_account_profile(&q.agent_id, &slug, &q.account_label)
+        .map_err(to_error_response)?;
+    // Remove the account's credential directory so disconnect is a real removal.
+    let dir = plugin_profile_dir(&q.agent_id, &slug, &q.account_label);
+    if dir.is_dir() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    info!(plugin = %slug, account = %q.account_label, "disconnected plugin account");
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// POST /plugins/{slug}/auth/logout
@@ -627,6 +679,10 @@ pub fn remove_plugin_by_slug(state: &AppState, slug: &str) -> Result<(), NeboErr
     if let Err(e) = state.store.delete_installed_plugin(slug) {
         warn!(plugin = %slug, error = %e, "failed to delete plugin from DB registry");
     }
+
+    // Drop the artifact-update-tracking row (plugin prefs are keyed by slug) so
+    // the update checker doesn't keep polling an uninstalled plugin.
+    let _ = state.store.delete_artifact_update_pref(slug, "plugin");
 
     state.hooks.unregister_app(slug);
     info!(plugin = %slug, "plugin removed");

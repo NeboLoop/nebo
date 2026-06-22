@@ -528,6 +528,7 @@ impl WorkflowManager for WorkflowManagerImpl {
 
                 match workflow::engine::execute_workflow(
                     &def,
+                    "", // standalone workflow run — not bound to an agent
                     inputs,
                     &trigger,
                     None,
@@ -1106,6 +1107,7 @@ impl WorkflowManager for WorkflowManagerImpl {
 
                 match workflow::engine::execute_workflow(
                     &def,
+                    &agent_id_owned,
                     inputs,
                     &trigger,
                     None,

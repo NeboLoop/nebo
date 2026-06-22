@@ -203,6 +203,7 @@ impl ShellTool {
                 is_error: true,
                 image_url: None,
                 http_status: None,
+                terminal: false,
             },
             Ok(Err(e)) => {
                 let err_str = e.to_string();
@@ -251,6 +252,7 @@ impl ShellTool {
                             is_error: true,
                             image_url: None,
                             http_status: None,
+                            terminal: false,
                         };
                     }
                     // Non-error exit (e.g. grep exit 1 = no matches) — fall through to success path
@@ -689,7 +691,7 @@ fn extract_base_command(command: &str) -> String {
 
 /// Interpret a command's exit code using command-specific semantics.
 /// Returns (is_error, optional_message).
-fn interpret_exit_code(command: &str, exit_code: i32, _output: &str) -> (bool, Option<String>) {
+fn interpret_exit_code(command: &str, exit_code: i32, output: &str) -> (bool, Option<String>) {
     let base = extract_base_command(command);
     match base.as_str() {
         // grep/rg: 0=matches found, 1=no matches, 2+=error
@@ -724,7 +726,37 @@ fn interpret_exit_code(command: &str, exit_code: i32, _output: &str) -> (bool, O
                 (true, None)
             }
         }
-        _ => (true, None),
+        // Generic command (no exit-code convention): surface the *cause* from stderr so
+        // the model diagnoses instead of spiraling. A misleading error is what starts a
+        // search/retry loop — e.g. `convert image.png …` fails with an IMv7 deprecation
+        // banner that buries "unable to open image", and the model goes hunting for a png
+        // across the disk. The original output is kept; we only append a one-line hint.
+        _ => {
+            let lo = output.to_lowercase();
+            let hint = if lo.contains("command not found")
+                || lo.contains("not recognized as")
+                || lo.contains(&format!("{}: not found", base))
+            {
+                Some(format!(
+                    "The command '{}' is not available on this system. Tell the user it isn't \
+                     installed — do not substitute another command or install it without asking.",
+                    base
+                ))
+            } else if lo.contains("no such file")
+                || lo.contains("unable to open")
+                || lo.contains("cannot open")
+                || lo.contains("does not exist")
+            {
+                Some(
+                    "An input the command needs was not found. Verify the exact path or ask the \
+                     user for it — do not search the filesystem for a substitute."
+                        .to_string(),
+                )
+            } else {
+                None
+            };
+            (true, hint)
+        }
     }
 }
 

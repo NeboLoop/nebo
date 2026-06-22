@@ -63,6 +63,7 @@ impl NeboError {
             Self::EmailExists => 409,
             Self::RateLimit => 429,
             Self::ContextOverflow => 413,
+            Self::Validation(_) => 400,
             _ => 500,
         }
     }

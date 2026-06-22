@@ -46,10 +46,7 @@ impl CodeInstallerImpl {
 }
 
 impl tools::CodeInstaller for CodeInstallerImpl {
-    fn install<'a>(
-        &'a self,
-        code: &'a str,
-    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+    fn install<'a>(&'a self, code: &'a str) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
         Box::pin(async move {
             match crate::codes::detect_code(code) {
                 Some((code_type, validated)) => {
@@ -75,19 +72,15 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
         Box::pin(async move {
             // Intercept install codes before they reach the agent
             if let Some((code_type, code)) = crate::codes::detect_code(prompt) {
-                let response = crate::codes::handle_code_text(
-                    &self.state, code_type, code,
-                ).await;
+                let response = crate::codes::handle_code_text(&self.state, code_type, code).await;
                 return Ok(response);
             }
 
-            let entity_config = crate::entity_config::resolve_for_chat(
-                &self.state.store,
-                "agent",
-                agent_id,
-            );
+            let entity_config =
+                crate::entity_config::resolve_for_chat(&self.state.store, "agent", agent_id);
 
             let channel_kind = channel_ctx.kind.clone();
+            let cancel_token = tokio_util::sync::CancellationToken::new();
             let config = crate::chat_dispatch::ChatConfig {
                 session_key: session_key.to_string(),
                 prompt: prompt.to_string(),
@@ -96,7 +89,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 channel: channel_kind.clone(),
                 origin: tools::Origin::User,
                 agent_id: agent_id.to_string(),
-                cancel_token: tokio_util::sync::CancellationToken::new(),
+                cancel_token: cancel_token.clone(),
                 lane: types::constants::lanes::COMM.to_string(),
                 comm_reply: None,
                 entity_config,
@@ -138,6 +131,20 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                             error = %event.text,
                             "channel chat error"
                         );
+                    }
+                    StreamEventType::ApprovalRequest => {
+                        warn!(
+                            agent_id,
+                            channel,
+                            "channel chat requested approval; cancelling because channel dispatch has no approval UI"
+                        );
+                        cancel_token.cancel();
+                        if full_response.trim().is_empty() {
+                            full_response.push_str(
+                                "I need an approval before I can do that, but this channel can't show approval prompts. Enable Full Access or continue in the Nebo app.",
+                            );
+                        }
+                        break;
                     }
                     _ => {} // ToolCall, ToolResult, Usage, Stop — skip
                 }
