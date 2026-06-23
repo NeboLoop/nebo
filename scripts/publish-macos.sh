@@ -45,6 +45,8 @@ SKEY="${DO_SPACES_SECRET_KEY:-${AWS_SECRET_ACCESS_KEY:-}}"
 if [ -n "$AKEY" ] && [ -n "$SKEY" ] && command -v aws >/dev/null 2>&1; then
   echo "==> Uploading mac assets + merged checksums + version.json to CDN (DO Spaces)"
   export AWS_ACCESS_KEY_ID="$AKEY" AWS_SECRET_ACCESS_KEY="$SKEY"
+  # Use the explicit keys, not an ambient named profile (e.g. AWS_PROFILE=hp-dev).
+  unset AWS_PROFILE AWS_DEFAULT_PROFILE
   EP="https://nyc3.digitaloceanspaces.com"
 
   # version.json — the auto-updater's "latest" pointer. Generated from the tag so

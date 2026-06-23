@@ -5778,7 +5778,7 @@ dependencies = [
 
 [[package]]
 name = "nebo"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -5805,7 +5805,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-agent"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "a2ui-validation",
  "async-trait",
@@ -5842,7 +5842,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-ai"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-openai",
  "async-trait",
@@ -5865,7 +5865,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-auth"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "bcrypt",
  "chrono",
@@ -5886,7 +5886,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-browser"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "base64 0.22.1",
  "chromiumoxide",
@@ -5902,7 +5902,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-cli"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -5929,7 +5929,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-comm"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -5949,7 +5949,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-config"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "dirs 6.0.0",
  "hex",
@@ -5966,7 +5966,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-db"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "chrono",
  "nebo-types",
@@ -5983,7 +5983,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-mcp"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -6001,7 +6001,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-napp"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -6032,14 +6032,14 @@ dependencies = [
 
 [[package]]
 name = "nebo-notify"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "tracing",
 ]
 
 [[package]]
 name = "nebo-proto"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "prost",
  "tonic",
@@ -6048,7 +6048,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-render"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "docx-rs",
  "pulldown-cmark",
@@ -6063,7 +6063,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-server"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "a2ui-core",
  "a2ui-types",
@@ -6123,7 +6123,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-tools"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6174,7 +6174,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-types"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -6185,7 +6185,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-updater"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "futures",
  "hex",
@@ -6203,7 +6203,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-vm"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "dirs 6.0.0",
  "hex",
@@ -6235,7 +6235,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-voice"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "bytes",
  "dirs 6.0.0",
@@ -6251,7 +6251,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-workflow"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "chrono",
