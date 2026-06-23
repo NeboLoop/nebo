@@ -28,6 +28,11 @@ const CHROME_EXTENSION_URL =
 let attached = false;
 const unsubs: (() => void)[] = [];
 
+// Notification ids already surfaced as a native OS notification this session — so a
+// repeated broadcast of the same notification (e.g. a watcher re-emitting) doesn't
+// fire a second banner.
+const shownNotifIds = new Set<string>();
+
 export function attachWebSocketListeners(): void {
   if (attached) return;
   attached = true;
@@ -53,25 +58,19 @@ export function attachWebSocketListeners(): void {
       notifications.update(list => [n, ...list]);
       addToast(n.title || n.message, n.type === 'error' ? 'error' : 'info');
 
-      // Desktop: surface a branded, auto-dismissing HUD (replaces the osascript
-      // modal). No-ops on the web build where the Tauri import fails.
+      // Desktop: a NATIVE macOS notification — system-wide (shows over any app),
+      // auto-dismisses, and carries Nebo's icon. No webview window, so it cannot hang
+      // the app (an always-on-top transparent window did). No-ops on the web build.
       void (async () => {
+        if (shownNotifIds.has(n.id)) return; // dedupe repeated broadcasts of the same id
+        shownNotifIds.add(n.id);
         try {
-          const { invoke } = await import('@tauri-apps/api/core');
-          const KIND: Record<string, string> = {
-            agent: 'message',
-            warning: 'alert',
-            error: 'alert',
-            system: 'reminder',
-          };
-          await invoke('show_notification', {
-            title: n.title || 'Nebo',
-            body: n.message || '',
-            agent: data.agent || data.agentName || undefined,
-            kind: data.kind || KIND[n.type] || 'reminder',
-            time: data.time || undefined,
-            accent: data.accent || undefined,
-          });
+          const notif = await import('@tauri-apps/plugin-notification');
+          let granted = await notif.isPermissionGranted();
+          if (!granted) granted = (await notif.requestPermission()) === 'granted';
+          if (granted) {
+            notif.sendNotification({ title: n.title || 'Nebo', body: n.message || '' });
+          }
         } catch {
           /* web build — no Tauri runtime */
         }

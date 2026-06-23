@@ -1331,9 +1331,11 @@ async fn watch_loop(
                 );
 
                 let notif_id = format!("auth-required:{}:{}", agent_id, cfg.plugin);
+                // notifications FK to users(id); resolve the real local user ("" violates it).
+                let user_id = store.ensure_local_user_id().unwrap_or_default();
                 if let Err(e) = store.create_notification_if_not_exists(
                     &notif_id,
-                    "",
+                    &user_id,
                     "warning",
                     &format!("{} needs authentication", cfg.plugin),
                     Some(&format!(
@@ -2281,9 +2283,11 @@ async fn channel_loop(
                 );
 
                 let notif_id = format!("auth-required:{}:{}", agent_id, plugin_slug);
+                // notifications FK to users(id); resolve the real local user ("" violates it).
+                let user_id = store.ensure_local_user_id().unwrap_or_default();
                 if let Err(e) = store.create_notification_if_not_exists(
                     &notif_id,
-                    "",
+                    &user_id,
                     "warning",
                     &format!("{} needs authentication", plugin_slug),
                     Some(&format!(

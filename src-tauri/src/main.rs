@@ -3,7 +3,7 @@
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use tauri::{
@@ -192,87 +192,6 @@ fn reveal_in_file_manager(path: &std::path::Path) {
         .spawn();
     #[cfg(target_os = "linux")]
     let _ = open::that(path.parent().unwrap_or(path));
-}
-
-/// Percent-encode a query value (unreserved chars pass through). Avoids a url-crate dep.
-fn pct(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 2);
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
-}
-
-static NOTIFY_SEQ: AtomicUsize = AtomicUsize::new(0);
-
-/// Show a branded notification HUD: a frameless, transparent, always-on-top window at
-/// the top-right of the primary monitor, loading the `/notify` overlay route. Replaces
-/// the osascript `display alert` modal for owner reminders/alerts. The window
-/// auto-dismisses itself (the overlay closes its own window on timeout/dismiss).
-#[tauri::command]
-fn show_notification(
-    app: tauri::AppHandle,
-    title: String,
-    body: String,
-    agent: Option<String>,
-    kind: Option<String>,
-    time: Option<String>,
-    accent: Option<String>,
-) -> Result<(), String> {
-    let url = format!(
-        "{}/notify?title={}&body={}&agent={}&kind={}&time={}&accent={}",
-        SERVER_URL,
-        pct(&title),
-        pct(&body),
-        pct(agent.as_deref().unwrap_or("Nebo")),
-        pct(kind.as_deref().unwrap_or("reminder")),
-        pct(time.as_deref().unwrap_or("")),
-        pct(accent.as_deref().unwrap_or("violet")),
-    );
-
-    const W: f64 = 412.0;
-    const H: f64 = 200.0;
-    const MARGIN: f64 = 14.0;
-
-    // Stack newer notifications below older still-open ones (top-right column).
-    let open = app
-        .webview_windows()
-        .keys()
-        .filter(|l| l.starts_with("notify-"))
-        .count() as f64;
-    let seq = NOTIFY_SEQ.fetch_add(1, Ordering::Relaxed);
-    let label = format!("notify-{seq}");
-
-    let win = WebviewWindowBuilder::new(
-        &app,
-        &label,
-        WebviewUrl::External(url.parse().map_err(|e| format!("bad notify url: {e}"))?),
-    )
-    .title("Nebo")
-    .inner_size(W, H)
-    .resizable(false)
-    .decorations(false)
-    .transparent(true)
-    .shadow(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .focused(false)
-    .visible(false)
-    .build()
-    .map_err(|e| format!("create notify window: {e}"))?;
-
-    if let Ok(Some(mon)) = win.primary_monitor() {
-        let scale = mon.scale_factor();
-        let mon_w = mon.size().width as f64 / scale;
-        let x = (mon_w - W - MARGIN).max(MARGIN);
-        let y = MARGIN + open * (H - 24.0);
-        let _ = win.set_position(LogicalPosition::new(x, y));
-    }
-    let _ = win.show();
-    Ok(())
 }
 
 /// Open a URL in the system browser, deduplicating rapid repeats of the same URL.
@@ -506,12 +425,9 @@ fn main() {
     let saved = load_state("main");
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![
-            get_window_state,
-            save_artifact,
-            show_notification
-        ])
+        .invoke_handler(tauri::generate_handler![get_window_state, save_artifact])
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {

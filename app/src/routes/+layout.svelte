@@ -143,7 +143,7 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} oncontextmenu={handleContextMenu} />
 
-{#if isEmbed || $page.url.pathname.startsWith('/notify')}
+{#if isEmbed}
   {@render children()}
 {:else if !$backendReady && !$onboardingChecked}
   <div class="h-dvh flex flex-col items-center justify-center bg-base-100 gap-4">

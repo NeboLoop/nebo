@@ -203,6 +203,10 @@ pub struct Registry {
     /// SAME cell is shared with `PersonaTool` at registration and filled LATE by the
     /// server once `AppState` exists (registration runs before `AppState` is built).
     code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+    /// Broadcast callback (wired to ClientHub by the server), shared with MessageTool
+    /// so owner alerts reach the frontend bell + desktop HUD. Filled LATE like
+    /// `code_installer` (registration runs before `AppState`/hub exist).
+    notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
     resource_permits: ResourcePermits,
 }
 
@@ -221,6 +225,7 @@ impl Registry {
             store: std::sync::RwLock::new(None),
             browser_manager: std::sync::RwLock::new(None),
             code_installer: Arc::new(std::sync::RwLock::new(None)),
+            notify_fn: Arc::new(std::sync::RwLock::new(None)),
             resource_permits: ResourcePermits::new(),
         }
     }
@@ -257,6 +262,13 @@ impl Registry {
     /// action picks up the installer at runtime.
     pub fn set_code_installer(&self, installer: Arc<dyn crate::bot_tool::CodeInstaller>) {
         *self.code_installer.write().unwrap() = Some(installer);
+    }
+
+    /// Set the broadcast callback (wired to ClientHub). Called LATE by the server
+    /// once the hub exists; MessageTool reads it at construction to surface owner
+    /// alerts to the frontend (bell + desktop HUD).
+    pub fn set_notify_fn(&self, f: crate::message_tool::NotifyFn) {
+        *self.notify_fn.write().unwrap() = Some(f);
     }
 
     /// Set the agent loader for PersonaTool filesystem access.
@@ -843,6 +855,7 @@ impl Registry {
         // Message tool (owner notifications) — always registered (core)
         self.register(Box::new(crate::message_tool::MessageTool::new(
             store.clone(),
+            self.notify_fn.clone(),
         )))
         .await;
 

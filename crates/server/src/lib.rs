@@ -1018,6 +1018,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     tool_registry.set_bridge(bridge.clone());
     // Store is needed by MCP proxy tools for OAuth token refresh during calls.
     tool_registry.set_store(store.clone());
+    // Wire owner alerts (message notify/alert) to the frontend: the message tool
+    // broadcasts a `notification` event through this callback, which the bell + the
+    // desktop HUD pick up. Boundary-clean — crates/tools never touches ClientHub.
+    let hub_for_notify = hub.clone();
+    let alert_notify_fn: tools::message_tool::NotifyFn = Arc::new(move |event_type, payload| {
+        hub_for_notify.broadcast(event_type, payload);
+    });
+    tool_registry.set_notify_fn(alert_notify_fn);
 
     // Register the MCP enumeration tool — mcp(action:"list") lists connected servers.
     // Each server's tools are exposed as their own mcp__<server>__<tool> proxy tools.

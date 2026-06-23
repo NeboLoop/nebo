@@ -31,7 +31,6 @@
     }
   },
   "app": {
-    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }

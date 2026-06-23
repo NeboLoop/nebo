@@ -6,14 +6,23 @@ use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use db::Store;
 
+/// Broadcast callback injected by the server (wired to ClientHub). Lets the
+/// message tool surface owner notifications to the frontend (bell + desktop HUD)
+/// without crates/tools depending on the server's hub — the same boundary-clean
+/// pattern the agent worker uses (`agent::agent_worker::NotifyFn`).
+pub type NotifyFn = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 /// MessageTool handles outbound delivery to the owner (notifications, companion chat, SMS, TTS).
 pub struct MessageTool {
     store: Arc<Store>,
+    /// Shared cell (NOT a snapshot): the server late-wires the broadcaster after the
+    /// hub exists, so we read it at execution time — same pattern as `code_installer`.
+    notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>,
 }
 
 impl MessageTool {
-    pub fn new(store: Arc<Store>) -> Self {
-        Self { store }
+    pub fn new(store: Arc<Store>, notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>) -> Self {
+        Self { store, notify_fn }
     }
 
     fn infer_resource(&self, action: &str) -> &str {
@@ -133,7 +142,10 @@ impl DynTool for MessageTool {
                         Err(e) => ToolResult::error(format!("Failed to notify: {}. Do not retry — this is a database error.", e)),
                     }
                 }
-                "notify" => handle_notify(&self.store, &domain_input.action, &input).await,
+                "notify" => {
+                    let nf = self.notify_fn.read().unwrap().clone();
+                    handle_notify(&self.store, nf.as_ref(), &domain_input.action, &input).await
+                }
                 "sms" => handle_sms(&domain_input.action, &input).await,
                 other => ToolResult::error(format!(
                     "Resource {:?} not available. Available: owner, notify, sms",
@@ -148,7 +160,7 @@ impl DynTool for MessageTool {
 // Notify resource handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_notify(store: &Store, action: &str, input: &serde_json::Value) -> ToolResult {
+async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str, input: &serde_json::Value) -> ToolResult {
     match action {
         "send" => {
             let text = input["text"].as_str().unwrap_or("");
@@ -159,9 +171,11 @@ async fn handle_notify(store: &Store, action: &str, input: &serde_json::Value) -
             }
 
             let id = uuid::Uuid::new_v4().to_string();
+            // notifications FK to users(id); resolve the real local user ("" violates it).
+            let user_id = store.ensure_local_user_id().unwrap_or_default();
             match store.create_notification(
                 &id,
-                "", // user_id (single-user app)
+                &user_id,
                 "info",
                 title,
                 Some(text),
@@ -183,7 +197,7 @@ async fn handle_notify(store: &Store, action: &str, input: &serde_json::Value) -
                 return ToolResult::error(errors::missing_param("alert", "text", "message(resource: \"notify\", action: \"alert\", title: \"Warning\", text: \"Something happened\")"));
             }
 
-            handle_alert(title, text).await
+            handle_alert(store, notify_fn, title, text).await
         }
         "speak" => ToolResult::error(
             "speak has moved to the os tool: os(resource: \"tts\", action: \"speak\", text: \"...\")",
@@ -197,40 +211,48 @@ async fn handle_notify(store: &Store, action: &str, input: &serde_json::Value) -
 }
 
 // ---------------------------------------------------------------------------
-// Alert (modal/urgent notification)
+// Alert (urgent owner notification → bell + desktop HUD)
 // ---------------------------------------------------------------------------
 
-async fn handle_alert(title: &str, text: &str) -> ToolResult {
-    #[cfg(target_os = "macos")]
-    {
-        let script = format!(
-            r#"display alert "{}" message "{}""#,
-            title.replace('"', r#"\""#),
-            text.replace('"', r#"\""#),
+/// Surface an urgent alert to the owner via the canonical notification pathway:
+/// a persisted row (the bell) plus a `notification` broadcast that the desktop
+/// frontend turns into the branded auto-dismissing HUD. Replaces the old
+/// osascript `display alert` modal (blocking, generic icon, never auto-dismisses).
+/// Falls back to a persisted-only notification when no broadcaster is wired
+/// (headless / no frontend) — never a modal.
+async fn handle_alert(store: &Store, notify_fn: Option<&NotifyFn>, title: &str, text: &str) -> ToolResult {
+    let id = uuid::Uuid::new_v4().to_string();
+    // Notifications FK to users(id); resolve the real local user (same canonical
+    // resolver the proactive-update notifications use) — "" would violate the FK.
+    let user_id = store.ensure_local_user_id().unwrap_or_default();
+    // Persistence (the bell) is best-effort: the live broadcast below is what surfaces
+    // the HUD, so don't fail the alert if the row can't be written — mirrors agent_worker.
+    if let Err(e) = store.create_notification_if_not_exists(
+        &id,
+        &user_id,
+        "warning",
+        title,
+        Some(text),
+        None,
+        None,
+    ) {
+        tracing::warn!(error = %e, "alert: could not persist notification row; broadcasting anyway");
+    }
+
+    if let Some(notify) = notify_fn {
+        notify(
+            "notification",
+            serde_json::json!({
+                "id": id,
+                "type": "warning",
+                "kind": "alert",
+                "title": title,
+                "body": text,
+            }),
         );
-        return run_osascript(&script).await;
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        if which_exists("notify-send") {
-            return run_command("notify-send", &["--urgency=critical", title, text]).await;
-        }
-        return ToolResult::error("notify-send is not installed. Install libnotify (e.g. `sudo apt install libnotify-bin`) and try again.");
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let script = format!(
-            r#"Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show("{}", "{}")"#,
-            text.replace('"', "`\""),
-            title.replace('"', "`\""),
-        );
-        return run_powershell(&script).await;
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    ToolResult::error("Alert is not supported on this platform. Use message(resource: \"notify\", action: \"send\", ...) to send a standard notification instead.")
+    ToolResult::ok(format!("Alerted the owner: {}", title))
 }
 
 // ---------------------------------------------------------------------------
@@ -558,55 +580,6 @@ async fn run_osascript_stdin(script: &str) -> ToolResult {
     }
 }
 
-#[cfg(target_os = "macos")]
-async fn run_osascript(script: &str) -> ToolResult {
-    let output = tokio::process::Command::new("osascript")
-        .args(["-e", script])
-        .output()
-        .await;
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if stdout.is_empty() {
-                ToolResult::ok("OK")
-            } else {
-                ToolResult::ok(stdout)
-            }
-        }
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            ToolResult::error(format!("osascript error: {}. Do not retry — this is a system error.", stderr))
-        }
-        Err(e) => ToolResult::error(format!("Failed to run osascript: {}. Do not retry — this is a system error.", e)),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helper: run an arbitrary command
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)] // Used on Linux
-async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
-    let output = tokio::process::Command::new(cmd).args(args).output().await;
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if stdout.is_empty() {
-                ToolResult::ok("OK")
-            } else {
-                ToolResult::ok(stdout)
-            }
-        }
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            ToolResult::error(format!("{} error: {}. Do not retry — this is a system error.", cmd, stderr))
-        }
-        Err(e) => ToolResult::error(format!("Failed to run {}: {}. Do not retry — this is a system error.", cmd, e)),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helper: run PowerShell (Windows)
 // ---------------------------------------------------------------------------
@@ -635,11 +608,3 @@ async fn run_powershell(script: &str) -> ToolResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: check if a command exists on PATH (Linux/Windows)
-// ---------------------------------------------------------------------------
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn which_exists(cmd: &str) -> bool {
-    which::which(cmd).is_ok()
-}
