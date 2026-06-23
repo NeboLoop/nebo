@@ -829,6 +829,10 @@ pub struct A2UISurface {
 pub struct ArtifactUpdatePref {
     pub artifact_id: String,
     pub artifact_type: String,
+    /// Display name (e.g. "Chief of Staff"), persisted at check time so the
+    /// Updates panel never shows a raw UUID. None for legacy rows.
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(serialize_with = "i64_as_bool")]
     pub auto_update: i64,
     pub local_version: String,

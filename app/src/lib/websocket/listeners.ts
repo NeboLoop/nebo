@@ -52,6 +52,30 @@ export function attachWebSocketListeners(): void {
       };
       notifications.update(list => [n, ...list]);
       addToast(n.title || n.message, n.type === 'error' ? 'error' : 'info');
+
+      // Desktop: surface a branded, auto-dismissing HUD (replaces the osascript
+      // modal). No-ops on the web build where the Tauri import fails.
+      void (async () => {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          const KIND: Record<string, string> = {
+            agent: 'message',
+            warning: 'alert',
+            error: 'alert',
+            system: 'reminder',
+          };
+          await invoke('show_notification', {
+            title: n.title || 'Nebo',
+            body: n.message || '',
+            agent: data.agent || data.agentName || undefined,
+            kind: data.kind || KIND[n.type] || 'reminder',
+            time: data.time || undefined,
+            accent: data.accent || undefined,
+          });
+        } catch {
+          /* web build — no Tauri runtime */
+        }
+      })();
     })
   );
 

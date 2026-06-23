@@ -176,6 +176,7 @@ async fn check_agent(
                     "agent",
                     remote,
                     true,
+                    &agent.name,
                 );
                 return Some(serde_json::json!({
                     "id": agent.id,
@@ -216,6 +217,7 @@ async fn check_plugin(
                     "plugin",
                     remote,
                     true,
+                    &plugin.name,
                 );
                 return Some(serde_json::json!({
                     "id": plugin.slug,
@@ -251,7 +253,7 @@ async fn check_skill(
             if has_newer_version(local_version, remote) {
                 let _ = state
                     .store
-                    .set_artifact_remote_version(skill_id, "skill", remote, true);
+                    .set_artifact_remote_version(skill_id, "skill", remote, true, &detail.item.name);
                 return Some(serde_json::json!({
                     "id": skill_id,
                     "name": detail.item.name,

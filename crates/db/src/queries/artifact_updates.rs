@@ -20,6 +20,7 @@ impl Store {
                 Ok(ArtifactUpdatePref {
                     artifact_id: row.get(0)?,
                     artifact_type: row.get(1)?,
+                    name: None,
                     auto_update: row.get(2)?,
                     local_version: row.get(3)?,
                     remote_version: row.get(4)?,
@@ -40,7 +41,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT artifact_id, artifact_type, auto_update, local_version,
-                        remote_version, last_checked_at, update_available
+                        remote_version, last_checked_at, update_available, name
                  FROM artifact_update_prefs
                  WHERE update_available = 1
                  ORDER BY artifact_type, artifact_id",
@@ -51,6 +52,7 @@ impl Store {
                 Ok(ArtifactUpdatePref {
                     artifact_id: row.get(0)?,
                     artifact_type: row.get(1)?,
+                    name: row.get(7)?,
                     auto_update: row.get(2)?,
                     local_version: row.get(3)?,
                     remote_version: row.get(4)?,
@@ -111,13 +113,14 @@ impl Store {
         artifact_type: &str,
         remote_version: &str,
         has_update: bool,
+        name: &str,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE artifact_update_prefs
-             SET remote_version = ?3, update_available = ?4, last_checked_at = unixepoch()
+             SET remote_version = ?3, update_available = ?4, name = ?5, last_checked_at = unixepoch()
              WHERE artifact_id = ?1 AND artifact_type = ?2",
-            params![artifact_id, artifact_type, remote_version, has_update as i64],
+            params![artifact_id, artifact_type, remote_version, has_update as i64, name],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())

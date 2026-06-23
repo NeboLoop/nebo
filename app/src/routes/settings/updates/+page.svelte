@@ -10,6 +10,7 @@
   interface Pending {
     artifactId: string;
     artifactType: string;
+    name?: string;
     localVersion: string;
     remoteVersion: string;
     autoUpdate: boolean;
@@ -32,6 +33,7 @@
   let history = $state<HistoryEntry[]>([]);
   let settings = $state<UpdateSettings>({ agents: true, skills: true, plugins: true, checkIntervalHours: 6 });
   let checking = $state(false);
+  let updatingAll = $state(false);
   // artifactIds currently mid-apply (button → spinner)
   let applying = $state<Record<string, boolean>>({});
 
@@ -84,6 +86,19 @@
     }
   }
 
+  // Update all: reuse the single-item apply for each pending update (Rule 1 — one
+  // apply pathway). Completion streams back over WS and refreshes the list.
+  async function updateAll() {
+    updatingAll = true;
+    try {
+      for (const p of pending) {
+        if (!applying[p.artifactId]) await update(p);
+      }
+    } finally {
+      updatingAll = false;
+    }
+  }
+
   async function toggleAuto(p: Pending) {
     const enabled = !p.autoUpdate;
     p.autoUpdate = enabled;
@@ -120,7 +135,14 @@
 <p class="text-xs text-base-content/70 mb-6">Available updates for your installed plugins, agents, skills, and apps. You approve each update; turn on auto-update per item to apply silently.</p>
 
 <!-- Pending updates -->
-<h3 class="text-sm font-semibold mb-3">Available updates</h3>
+<div class="flex items-center justify-between mb-3">
+  <h3 class="text-sm font-semibold">Available updates</h3>
+  {#if pending.length > 0}
+    <button class="btn btn-xs btn-primary" onclick={updateAll} disabled={updatingAll}>
+      {updatingAll ? 'Updating all…' : `Update all (${pending.length})`}
+    </button>
+  {/if}
+</div>
 {#if pending.length === 0}
   <div class="rounded-xl border border-base-300 px-4 py-6 text-center text-sm text-base-content/60 mb-8">
     Everything is up to date.
@@ -130,7 +152,7 @@
     {#each pending as p (p.artifactType + ':' + p.artifactId)}
       <div class="flex items-center gap-3 px-4 py-3">
         <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium truncate">{p.artifactId}</div>
+          <div class="text-sm font-medium truncate">{p.name || p.artifactId}</div>
           <div class="text-xs text-base-content/60 flex items-center gap-1.5">
             <span class="capitalize">{p.artifactType}</span>
             <span>·</span>
