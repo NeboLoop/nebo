@@ -654,13 +654,16 @@ jobs:
   # `needs:` — they're gated by `WINDOWS_BUILD_ENABLED` and the release
   # step gracefully omits Windows assets when the cache restore misses.
   release:
-    needs: [build-linux]
+    needs: [build-linux, sign-windows]
     # Linux is the required gate. macOS assets are built and published LOCALLY
     # (see `make release-macos` / `make publish-macos`) so they are intentionally
     # not a dependency here; the macOS-restore steps below are best-effort and
-    # no-op when CI didn't build mac (BUILD_MACOS_IN_CI unset). Windows is
-    # optional too. `success()` runs only when every job in `needs` succeeded.
-    if: ${{ success() }}
+    # no-op when CI didn't build mac (BUILD_MACOS_IN_CI unset).
+    # Windows: we depend on sign-windows so the installer is reliably attached
+    # when WINDOWS_BUILD_ENABLED=true (otherwise it races linux and gets dropped).
+    # When Windows is disabled, sign-windows is skipped; the explicit
+    # build-linux==success check (not success()) lets release run anyway.
+    if: ${{ !cancelled() && needs.build-linux.result == 'success' }}
     runs-on: ubuntu-latest
     env:
       DO_SPACES_KEY_SET: ${{ secrets.DO_SPACES_ACCESS_KEY != '' && 'true' || 'false' }}
