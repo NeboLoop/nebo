@@ -70,6 +70,18 @@ EOFJ
   aws s3 cp "$work/version.json" "s3://neboloop/releases/version.json" \
     --endpoint-url "$EP" --acl public-read --content-type application/json
   echo "CDN updated: releases/${TAG}/ (${BIN}, ${DMG}, checksums.txt, version.json) + latest pointer"
+
+  # DO Spaces CDN caches with a 1h TTL, so the auto-updater's pointer would lag
+  # up to an hour after each release. Purge the mutable pointers immediately.
+  # CDN id for the neboloop Spaces bucket (stable).
+  if command -v doctl >/dev/null 2>&1; then
+    doctl compute cdn flush bcd18ff1-e5f6-48f4-8caf-b0eb0521a77c \
+      --files "releases/version.json,releases/${TAG}/version.json,releases/${TAG}/checksums.txt" \
+      >/dev/null 2>&1 && echo "CDN cache purged (version.json pointer + ${TAG} mutables)" \
+      || echo "NOTE: doctl CDN flush failed; pointer self-refreshes within the 1h TTL"
+  else
+    echo "NOTE: doctl not found — CDN pointer self-refreshes within the 1h TTL (or flush manually)"
+  fi
 else
   echo "==> Skipping CDN upload (no DO Spaces creds in env, or aws CLI missing)."
   echo "    NOTE: CI's release job already writes version.json + the latest pointer"
