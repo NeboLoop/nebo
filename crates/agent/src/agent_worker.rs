@@ -410,6 +410,41 @@ impl AgentWorker {
                         format!("{}.{}", slug, emit_name)
                     });
 
+                    // Per-account isolation: a plugin that declares a
+                    // profile_dir_env (the "resource" credential model, e.g. gws)
+                    // must watch THIS agent's own connected account, never a global
+                    // default. Resolve the agent's primary account and inject its
+                    // config dir into the watcher's env. If the agent has no
+                    // account for the plugin, there is no mailbox to watch — skip
+                    // the binding entirely rather than fall through to gws's
+                    // on-disk default (~/.config/gws), which would leak the
+                    // default account to every account-less agent.
+                    let profile_dir_inject: Option<(String, String)> = match plugin_store
+                        .get_manifest(&watch_cfg.plugin)
+                        .and_then(|m| m.auth)
+                        .and_then(|a| a.profile_dir_env)
+                    {
+                        Some(env_name) => {
+                            match store.resolve_plugin_account_profile(
+                                &agent_id,
+                                &watch_cfg.plugin,
+                                None,
+                            ) {
+                                Ok(Some(profile)) => Some((env_name, profile.config_dir)),
+                                _ => {
+                                    warn!(
+                                        agent = %agent_id,
+                                        binding = %binding.binding_name,
+                                        plugin = %watch_cfg.plugin,
+                                        "agent has no connected account for this plugin; not starting watcher"
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                        None => None,
+                    };
+
                     let token = cancel.clone();
                     let mgr = workflow_manager.clone();
                     let agent = agent_id.clone();
@@ -438,6 +473,7 @@ impl AgentWorker {
                         watch_store,
                         watch_notify,
                         watch_sem,
+                        profile_dir_inject,
                     ));
 
                     info!(
@@ -1033,6 +1069,10 @@ async fn watch_loop(
     store: Arc<Store>,
     notify_fn: Option<NotifyFn>,
     watch_semaphore: Arc<tokio::sync::Semaphore>,
+    // `(env_name, config_dir)` for the agent's connected account, injected into
+    // the watcher process so per-account plugins (e.g. gws) watch this agent's
+    // own account. `None` for plugins that don't use per-account credentials.
+    profile_dir: Option<(String, String)>,
 ) {
     let mut backoff_secs = cfg.restart_delay_secs;
     let max_backoff_secs = 300; // 5 minutes
@@ -1075,6 +1115,11 @@ async fn watch_loop(
         cmd.env_clear();
         for (k, v) in runtime.build_env() {
             cmd.env(k, v);
+        }
+        // Per-account credential isolation: point the watcher at this agent's
+        // chosen account directory (set last so it wins over any global value).
+        if let Some((env_name, config_dir)) = &profile_dir {
+            cmd.env(env_name, config_dir);
         }
 
         #[cfg(target_os = "windows")]

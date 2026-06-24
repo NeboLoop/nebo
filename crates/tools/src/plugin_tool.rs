@@ -798,24 +798,42 @@ impl PluginTool {
         // plugin only sees its profile_dir_env). Extract + strip it here.
         let selected_account = extract_and_strip_flag(&mut args, "account");
 
-        // Resolve the per-account credential directory to inject, if this
-        // plugin declares a profile_dir_env and the calling agent has a
-        // profile for the chosen account. Falls back to global creds when
-        // there's no profile (back-compat).
-        let profile_dir_injection: Option<(String, String)> = (|| {
-            let env_name = self
-                .plugin_store
-                .get_manifest(&pi.resource)?
-                .auth?
-                .profile_dir_env?;
-            let agent_id = agent_id_from_session_key(&ctx.session_key)?;
-            let profile = self
-                .db_store
-                .resolve_plugin_account_profile(&agent_id, &pi.resource, selected_account.as_deref())
-                .ok()
-                .flatten()?;
-            Some((env_name, profile.config_dir))
-        })();
+        // Resolve the per-account credential directory to inject. A plugin that
+        // declares a profile_dir_env (the "resource" credential model, e.g. gws)
+        // must use THIS agent's own connected account — never a global default.
+        // If the agent has no account for the plugin, refuse rather than fall
+        // through to the plugin's on-disk default (which would leak whichever
+        // account authed first to every account-less agent).
+        let profile_dir_injection: Option<(String, String)> = match self
+            .plugin_store
+            .get_manifest(&pi.resource)
+            .and_then(|m| m.auth)
+            .and_then(|a| a.profile_dir_env)
+        {
+            Some(env_name) => {
+                let profile = agent_id_from_session_key(&ctx.session_key).and_then(|agent_id| {
+                    self.db_store
+                        .resolve_plugin_account_profile(
+                            &agent_id,
+                            &pi.resource,
+                            selected_account.as_deref(),
+                        )
+                        .ok()
+                        .flatten()
+                });
+                match profile {
+                    Some(p) => Some((env_name, p.config_dir)),
+                    None => {
+                        return ToolResult::error(format!(
+                            "No {res} account is connected for this agent. Connect one in \
+                             this agent's Settings → Connected Accounts before using {res}.",
+                            res = pi.resource
+                        ));
+                    }
+                }
+            }
+            None => None,
+        };
 
         let runtime = napp::PluginRuntime::new(
             &pi.resource,
