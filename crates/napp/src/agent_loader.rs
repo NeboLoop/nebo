@@ -174,6 +174,18 @@ impl AgentLoader {
         self.agents.read().await.get(&name.to_lowercase()).cloned()
     }
 
+    /// Get a loaded agent by its manifest id. Used to delete filesystem agents
+    /// that exist on disk but were never written to the DB (legacy/orphaned
+    /// installs) — without this they reload on every restart and can't be removed.
+    pub async fn get_by_id(&self, id: &str) -> Option<LoadedAgent> {
+        self.agents
+            .read()
+            .await
+            .values()
+            .find(|a| a.id.as_deref() == Some(id))
+            .cloned()
+    }
+
     /// List all loaded agents.
     pub async fn list(&self) -> Vec<LoadedAgent> {
         self.agents.read().await.values().cloned().collect()

@@ -5,6 +5,7 @@
   import * as api from '$lib/api/nebo';
   import type { AccountStatusResponse, NeboAIBillingSubscriptionResponse } from '$lib/api/neboComponents';
   import Spinner from '$lib/components/ui/Spinner.svelte';
+  import { onWsEvent } from '$lib/websocket/subscribe';
 
   interface UsagePool {
     resetAt?: string;
@@ -81,6 +82,13 @@
     } catch { /* ignore */ }
     refreshing = false;
   }
+
+  // Live updates: the existing `usage` WS event carries the current Janus plan
+  // balance under `balance` (same shape as the GET endpoint), so the panel reflects
+  // new session/weekly numbers without a manual refresh — one usage channel.
+  onWsEvent<{ balance?: TypedJanusUsage | null }>('usage', (d) => {
+    if (d?.balance) usage = { session: d.balance.session, weekly: d.balance.weekly, budget: d.balance.budget, updatedAt: d.balance.updatedAt };
+  });
 
   function formatDollars(microdollars: number): string {
     const dollars = microdollars / 1_000_000;

@@ -198,7 +198,7 @@
         I live on your computer and help you organize and automate {welcomeNoun}. Let me give you a quick tour so you know where everything is.
       </p>
       <div class="flex items-center justify-center gap-2">
-        <button onclick={finish} class="px-4 py-2 rounded-lg border border-base-300 text-sm font-medium hover:bg-base-200 transition-colors cursor-pointer bg-transparent">Skip</button>
+        <button onclick={() => (phase = 'finale')} class="px-4 py-2 rounded-lg border border-base-300 text-sm font-medium hover:bg-base-200 transition-colors cursor-pointer bg-transparent">Skip tour</button>
         <button onclick={startTour} class="px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all cursor-pointer border-none">Start the tour</button>
       </div>
     </div>
@@ -225,7 +225,7 @@
       <div class="flex items-center justify-between">
         <span class="text-xs text-base-content/50 font-mono">{stepIndex + 1} / {activeSteps.length}</span>
         <div class="flex items-center gap-1.5">
-          <button onclick={finish} class="px-2.5 py-1 rounded-md text-xs font-medium text-base-content/60 hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none">Skip</button>
+          <button onclick={() => (phase = 'finale')} class="px-2.5 py-1 rounded-md text-xs font-medium text-base-content/60 hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none">Skip</button>
           {#if stepIndex > 0}
             <button onclick={back} class="px-2.5 py-1 rounded-md text-xs font-medium border border-base-300 hover:bg-base-200 transition-colors cursor-pointer bg-transparent">Back</button>
           {/if}

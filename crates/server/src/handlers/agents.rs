@@ -823,13 +823,32 @@ pub async fn delete_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let agent = state
-        .store
-        .get_agent(&id)
-        .map_err(to_error_response)?
-        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let db_agent = state.store.get_agent(&id).map_err(to_error_response)?;
 
-    let slug = agent.name.to_lowercase().replace(' ', "-");
+    // Fall back to the filesystem loader for agents that exist on disk but were
+    // never written to the DB (legacy/orphaned installs). Without this, deleting
+    // them returns NotFound and they reload from disk on every restart — the
+    // "agent won't delete" bug.
+    let loaded = if db_agent.is_none() {
+        state.agent_loader.get_by_id(&id).await
+    } else {
+        None
+    };
+
+    let (name, napp_path, source_path) = match (&db_agent, &loaded) {
+        (Some(a), _) => (a.name.clone(), a.napp_path.clone(), None),
+        (None, Some(l)) => (
+            l.agent_def.name.clone(),
+            // Loader napp_path is a PathBuf; the DB's is a String — normalize so the
+            // match arms agree (and Path::new() below works for both sources).
+            l.napp_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            Some(l.source_path.clone()),
+        ),
+        (None, None) => return Err(to_error_response(types::NeboError::NotFound)),
+    };
+    let slug = name.to_lowercase().replace(' ', "-");
 
     // Stop agent worker (cancels heartbeat, event, schedule triggers)
     state.agent_workers.stop_agent(&id).await;
@@ -843,17 +862,27 @@ pub async fn delete_agent(
     // Unsubscribe event triggers from dispatcher
     state.event_dispatcher.unsubscribe_agent(&id).await;
 
-    // agent_workflows are cascade-deleted via FK when agent is deleted
-    state.store.delete_agent(&id).map_err(to_error_response)?;
+    // DB cleanup only when the agent actually had DB rows. agent_workflows are
+    // cascade-deleted via FK; chats before sessions (chats reference session names).
+    if db_agent.is_some() {
+        state.store.delete_agent(&id).map_err(to_error_response)?;
+        let _ = state.store.delete_agent_chats(&id);
+        let _ = state.store.delete_agent_sessions(&id);
+        let _ = state.store.delete_agent_memories(&id);
+        let _ = state.store.delete_agent_workflow_runs(&id);
+    }
 
-    // Clean up agent-scoped data (chats before sessions — chats reference session names)
-    let _ = state.store.delete_agent_chats(&id);
-    let _ = state.store.delete_agent_sessions(&id);
-    let _ = state.store.delete_agent_memories(&id);
-    let _ = state.store.delete_agent_workflow_runs(&id);
-
-    // Clean up filesystem -- check napp_path, nebo/agents/, and user/agents/
-    if let Some(ref napp_path) = agent.napp_path {
+    // Clean up filesystem. Remove the exact directory the loader read from
+    // (source_path) for filesystem-only agents, plus the conventional napp /
+    // installed (nebo/agents) / user (user/agents) locations by slug.
+    if let Some(ref sp) = source_path {
+        if sp.is_dir() {
+            let _ = std::fs::remove_dir_all(sp);
+        } else if sp.is_file() {
+            let _ = std::fs::remove_file(sp);
+        }
+    }
+    if let Some(ref napp_path) = napp_path {
         let path = std::path::Path::new(napp_path);
         if path.exists() {
             let _ = std::fs::remove_dir_all(path);
@@ -883,13 +912,13 @@ pub async fn delete_agent(
     // Notify frontend — the roster is now consistent, so the refetch is correct.
     state.hub.broadcast(
         "agent_uninstalled",
-        serde_json::json!({ "agentId": id, "name": agent.name }),
+        serde_json::json!({ "agentId": id, "name": name }),
     );
 
     // Deregister agent from NeboAI (non-blocking, best-effort)
     {
         let st = state.clone();
-        let agent_name = agent.name.clone();
+        let agent_name = name.clone();
         tokio::spawn(async move {
             if let Err(e) = crate::codes::deregister_agent_from_loop(&st, &agent_name).await {
                 warn!(agent = %agent_name, error = %e, "failed to deregister agent from loop");

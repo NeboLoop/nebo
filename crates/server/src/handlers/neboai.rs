@@ -520,7 +520,7 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
 }
 
 /// Build the JSON response from a JanusUsage struct.
-fn janus_usage_response(u: &crate::state::JanusUsage) -> serde_json::Value {
+pub(crate) fn janus_usage_response(u: &crate::state::JanusUsage) -> serde_json::Value {
     let session_used = u
         .session_limit_credits
         .saturating_sub(u.session_remaining_credits);

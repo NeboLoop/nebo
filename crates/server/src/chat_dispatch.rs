@@ -786,6 +786,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::Usage => {
                             if let Some(ref usage) = event.usage {
+                                // The same `usage` event also carries the current Janus
+                                // plan balance (session/weekly/budget) so the Usage panel
+                                // updates live — one usage channel, not a second pathway.
+                                let balance = match &*janus_usage.read().await {
+                                    Some(u) => crate::handlers::neboai::janus_usage_response(u),
+                                    None => serde_json::Value::Null,
+                                };
                                 hub.broadcast(
                                     "usage",
                                     ws_payload!(
@@ -794,6 +801,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "cache_read_input_tokens": usage.cache_read_input_tokens,
                                         "cache_creation_input_tokens": usage.cache_creation_input_tokens,
                                         "overhead_tokens": usage.overhead_tokens,
+                                        "balance": balance,
                                     ),
                                 );
                             }
