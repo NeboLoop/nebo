@@ -524,7 +524,14 @@ pub async fn remove_collection_item(
 
 // ── Organizations ─────────────────────────────────────────────────
 
-/// GET /store/orgs — list organizations the user has access to.
-pub async fn list_store_orgs(State(_state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    Ok(Json(serde_json::json!({ "orgs": [] })))
+/// GET /store/orgs — organizations (namespaces) the user is a member of, each
+/// with its non-public artifacts. Proxies NeboAI's `/api/v1/store/orgs`; backs
+/// the marketplace "Shared" tab.
+pub async fn list_store_orgs(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .list_orgs()
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("list_orgs: {e}"))))?;
+    Ok(Json(resp))
 }

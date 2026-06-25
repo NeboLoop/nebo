@@ -165,6 +165,14 @@ impl NeboAIApi {
             .await
     }
 
+    /// List the organizations (namespaces) the authenticated bot's owner belongs
+    /// to, each with its non-public artifacts. Backs the marketplace "Shared" tab.
+    /// Returns NeboAI's `{ "orgs": [...] }` envelope verbatim.
+    pub async fn list_orgs(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/store/orgs", None::<&()>)
+            .await
+    }
+
     /// Get a single collection (with its items) by id.
     pub async fn get_collection(&self, id: &str) -> Result<serde_json::Value, CommError> {
         let path = format!("/api/v1/collections/{}", urlencoding::encode(id));
