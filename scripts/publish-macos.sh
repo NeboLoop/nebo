@@ -15,22 +15,27 @@ set -euo pipefail
 REPO="NeboLoop/nebo"
 TAG="${TAG:?set TAG=vX.Y.Z}"
 VER="${RELEASE_VERSION:?set RELEASE_VERSION=X.Y.Z}"
-BIN="nebo-darwin-arm64"
-DMG="Nebo-${VER}-arm64.dmg"
-
 cd "$(dirname "$0")/.."
-[ -f "dist/${BIN}" ] || { echo "missing dist/${BIN} — run 'make release-macos' first"; exit 1; }
-[ -f "dist/${DMG}" ] || { echo "missing dist/${DMG} — run 'make release-macos' first"; exit 1; }
+
+# Collect whichever mac assets were built (arm64 always; amd64 when
+# `make release-macos-amd64` also ran). Both arches publish the same way.
+MAC_ASSETS=()
+for f in "dist/nebo-darwin-arm64" "dist/nebo-darwin-amd64" \
+         "dist/Nebo-${VER}-arm64.dmg" "dist/Nebo-${VER}-amd64.dmg"; do
+  [ -f "$f" ] && MAC_ASSETS+=("$f")
+done
+[ ${#MAC_ASSETS[@]} -gt 0 ] || { echo "no mac assets in dist/ — run 'make release-macos' (and optionally release-macos-amd64) first"; exit 1; }
 
 echo "==> Uploading macOS assets to GitHub release ${TAG}"
-gh release upload "${TAG}" "dist/${BIN}" "dist/${DMG}" --clobber --repo "${REPO}"
+gh release upload "${TAG}" "${MAC_ASSETS[@]}" --clobber --repo "${REPO}"
 
 echo "==> Merging mac checksums into the release checksums.txt"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 # CI's release job writes checksums.txt for linux/windows; pull it if present,
-# strip any stale mac lines, then append the freshly-built mac sums.
+# strip any stale mac lines (any built mac basename), then append the fresh sums.
 if gh release download "${TAG}" --repo "${REPO}" -p checksums.txt -D "$work" 2>/dev/null; then
-  grep -vE " (${BIN}|${DMG})$" "$work/checksums.txt" > "$work/merged.txt" || true
+  strip_re=$(printf '%s\n' "${MAC_ASSETS[@]}" | xargs -n1 basename | paste -sd'|' -)
+  grep -vE " (${strip_re})$" "$work/checksums.txt" > "$work/merged.txt" || true
 else
   : > "$work/merged.txt"
 fi
@@ -60,7 +65,7 @@ if [ -n "$AKEY" ] && [ -n "$SKEY" ] && command -v aws >/dev/null 2>&1; then
 }
 EOFJ
 
-  for f in "dist/${BIN}" "dist/${DMG}" "$work/checksums.txt"; do
+  for f in "${MAC_ASSETS[@]}" "$work/checksums.txt"; do
     aws s3 cp "$f" "s3://neboloop/releases/${TAG}/$(basename "$f")" \
       --endpoint-url "$EP" --acl public-read
   done
@@ -69,7 +74,7 @@ EOFJ
     --endpoint-url "$EP" --acl public-read --content-type application/json
   aws s3 cp "$work/version.json" "s3://neboloop/releases/version.json" \
     --endpoint-url "$EP" --acl public-read --content-type application/json
-  echo "CDN updated: releases/${TAG}/ (${BIN}, ${DMG}, checksums.txt, version.json) + latest pointer"
+  echo "CDN updated: releases/${TAG}/ ($(printf '%s ' "${MAC_ASSETS[@]##*/}")checksums.txt, version.json) + latest pointer"
 
   # DO Spaces CDN caches with a 1h TTL, so the auto-updater's pointer would lag
   # up to an hour after each release. Purge the mutable pointers immediately.

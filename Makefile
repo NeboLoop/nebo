@@ -21,7 +21,21 @@ else
     ARCH = $(UNAME_M)
 endif
 
-.PHONY: help dev run build build-desktop test clean clean-cache seed-plugins stage-obscura bundle-napps plugin-status release release-darwin release-linux release-windows release-macos publish-macos app-bundle dmg notarize install github-release gen
+# macOS cross-build target. Empty = host build (Apple Silicon → arm64), which keeps
+# every derived value identical to the previous hardcoded arm64 behavior. Set to a
+# rust triple (e.g. x86_64-apple-darwin) to cross-build the Intel mac assets. Threads
+# through build-desktop → app-bundle → dmg → notarize so there's ONE signing chain.
+MAC_TARGET ?=
+# Obscura sidecar triple to build/stage for this mac build (host when not cross).
+MAC_OBSCURA_TRIPLE = $(if $(MAC_TARGET),$(MAC_TARGET),$(OBSCURA_TRIPLE))
+# `cargo tauri build` flag and the resulting bundle dir (target/<triple>/release vs target/release).
+MAC_TARGET_FLAG = $(if $(MAC_TARGET),--target $(MAC_TARGET),)
+MAC_BUNDLE_DIR = $(if $(MAC_TARGET),target/$(MAC_TARGET)/release/bundle,$(TAURI_BUNDLE))
+MAC_BIN_DIR = $(if $(MAC_TARGET),target/$(MAC_TARGET)/release,$(TAURI_RELEASE))
+# DMG arch suffix: amd64 for the x86_64 cross, else the host arch (arm64).
+DMG_ARCH = $(if $(MAC_TARGET),$(if $(filter x86_64-apple-darwin,$(MAC_TARGET)),amd64,arm64),$(UNAME_M))
+
+.PHONY: help dev run build build-desktop test clean clean-cache seed-plugins stage-obscura bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -95,10 +109,11 @@ build:
 	@echo "Building headless CLI binary..."
 	cargo build --release -p nebo-cli
 
-build-desktop: bundle-napps stage-obscura
-	@echo "Building Tauri desktop app..."
+build-desktop: bundle-napps
+	@echo "Building Tauri desktop app...$(if $(MAC_TARGET), (cross target $(MAC_TARGET)),)"
+	$(MAKE) stage-obscura OBSCURA_TRIPLE=$(MAC_OBSCURA_TRIPLE)
 	@cd app && pnpm build
-	cargo tauri build
+	cargo tauri build $(MAC_TARGET_FLAG)
 
 test:
 	@echo "Running tests..."
@@ -306,7 +321,7 @@ app-bundle: build-desktop
 	@echo "Re-signing Nebo.app with Developer ID (inside-out)..."
 	@rm -rf dist/Nebo.app
 	@mkdir -p dist
-	@cp -R "$(TAURI_BUNDLE)/macos/Nebo.app" dist/Nebo.app
+	@cp -R "$(MAC_BUNDLE_DIR)/macos/Nebo.app" dist/Nebo.app
 	@# 1. Embedded frameworks/dylibs first (inside-out signing order).
 	@find "dist/Nebo.app/Contents/Frameworks" -type f \( -perm +111 -o -name '*.dylib' \) 2>/dev/null | while read -r f; do \
 		codesign --force --sign "$(SIGN_IDENTITY)" --timestamp --options runtime "$$f"; \
@@ -342,7 +357,7 @@ app-bundle: build-desktop
 # Create .dmg from signed .app
 dmg: app-bundle
 	@echo "Creating .dmg installer..."
-	@rm -f "dist/Nebo-$(VERSION)-$(UNAME_M).dmg"
+	@rm -f "dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg"
 	@if command -v create-dmg >/dev/null 2>&1; then \
 		create-dmg \
 			--volname "Nebo" \
@@ -353,21 +368,21 @@ dmg: app-bundle
 			--icon "Nebo.app" 175 190 \
 			--hide-extension "Nebo.app" \
 			--app-drop-link 425 190 \
-			"dist/Nebo-$(VERSION)-$(UNAME_M).dmg" \
+			"dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg" \
 			"dist/Nebo.app"; \
 	else \
 		hdiutil create -volname "Nebo" -srcfolder dist/Nebo.app \
-			-ov -format UDZO "dist/Nebo-$(VERSION)-$(UNAME_M).dmg"; \
+			-ov -format UDZO "dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg"; \
 	fi
-	@echo "Built: dist/Nebo-$(VERSION)-$(UNAME_M).dmg"
+	@echo "Built: dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg"
 
 # Notarize the .dmg with Apple
 notarize: dmg
 	@echo "Submitting to Apple for notarization..."
-	xcrun notarytool submit "dist/Nebo-$(VERSION)-$(UNAME_M).dmg" \
+	xcrun notarytool submit "dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg" \
 		--keychain-profile "$(NOTARIZE_PROFILE)" --wait
 	@echo "Stapling notarization ticket..."
-	xcrun stapler staple "dist/Nebo-$(VERSION)-$(UNAME_M).dmg"
+	xcrun stapler staple "dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg"
 	@echo "Done! DMG is signed and notarized."
 
 # Install to /Applications (notarized)
@@ -401,6 +416,21 @@ release-macos:
 	@cd dist && shasum -a 256 nebo-darwin-arm64 "Nebo-$(RELEASE_VERSION)-arm64.dmg" > checksums-macos.txt
 	@echo "macOS assets ready in dist/:"
 	@ls -1 "dist/nebo-darwin-arm64" "dist/Nebo-$(RELEASE_VERSION)-arm64.dmg"
+
+# Intel mac (x86_64): cross-built on Apple Silicon, signed + notarized via the same
+# chain (MAC_TARGET threads through build-desktop → app-bundle → dmg → notarize).
+# Run AFTER release-macos so checksums-macos.txt accumulates both arches.
+release-macos-amd64:
+	@echo "Building macOS x86_64 (Intel) release assets locally (v$(RELEASE_VERSION))..."
+	@rustup target add x86_64-apple-darwin >/dev/null 2>&1 || true
+	@echo "Building Obscura fork sidecars for x86_64-apple-darwin..."
+	@cd $(OBSCURA_REPO) && cargo build --release -p obscura-cli --target x86_64-apple-darwin
+	@$(MAKE) notarize VERSION=$(RELEASE_VERSION) MAC_TARGET=x86_64-apple-darwin
+	@cp "target/x86_64-apple-darwin/release/nebo" dist/nebo-darwin-amd64
+	@chmod +x dist/nebo-darwin-amd64
+	@cd dist && shasum -a 256 nebo-darwin-amd64 "Nebo-$(RELEASE_VERSION)-amd64.dmg" >> checksums-macos.txt
+	@echo "macOS Intel assets ready in dist/:"
+	@ls -1 "dist/nebo-darwin-amd64" "dist/Nebo-$(RELEASE_VERSION)-amd64.dmg"
 
 # Attach locally-built mac assets to an existing GitHub release + CDN, merging
 # their checksums into the release's checksums.txt. Run after `make release-macos`

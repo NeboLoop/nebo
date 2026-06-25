@@ -350,17 +350,26 @@ jobs:
         include:
           - runner: ubuntu-latest
             arch: amd64
-          # ponytail: arm64-linux disabled — the ubuntu-24.04-arm runner OOMs/stalls
-          # on the heavy release Tauri build (blocks the whole release). Re-enable when
-          # someone needs Linux ARM64 desktop builds and the runner can take it.
-          # - runner: ubuntu-24.04-arm
-          #   arch: arm64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
     runs-on: ${{ matrix.runner }}
     env:
       HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
+
+      # The ubuntu-24.04-arm runner OOMs linking the release binary (LTO + one
+      # codegen unit on the big nebo workspace). Swap lets the linker spill
+      # instead of getting killed; it's the link step, so the slowdown is bounded.
+      - name: Add swap (arm64 LTO link OOMs without it)
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo fallocate -l 12G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
