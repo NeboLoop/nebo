@@ -644,10 +644,14 @@ jobs:
           cp nebo-windows-amd64.exe signed-artifacts/ 2>/dev/null || true
           cp Nebo-*-setup.exe signed-artifacts/ 2>/dev/null || true
 
-      - uses: actions/cache/save@v4
+      # Upload (not cache): the ubuntu release job can't read a Windows-saved
+      # cache. if-no-files-found:error catches an empty signed-artifacts/ (a glob
+      # that matched nothing) instead of silently passing with no installer.
+      - uses: actions/upload-artifact@v4
         with:
-          key: release-${{ github.run_id }}-windows-signed
+          name: windows-signed
           path: signed-artifacts/
+          if-no-files-found: error
 
   # ─── Create GitHub release with all artifacts ─────────────────────────
   # Windows jobs (build-windows, sign-windows) are intentionally NOT in
@@ -702,28 +706,17 @@ jobs:
           fail-on-cache-miss: false
       - run: cp release-artifacts/* artifacts/ 2>/dev/null || true; rm -rf release-artifacts
 
-      - name: Restore Windows artifacts (prefer signed)
-        uses: actions/cache/restore@v4
+      # Windows is built on a windows-latest runner. actions/cache is OS-scoped
+      # (the version hash differs across OS), so an ubuntu job can't read a cache
+      # saved on Windows — it silently misses and drops the installer. Artifacts
+      # are OS-agnostic and are the correct cross-job/cross-OS handoff.
+      - name: Download signed Windows artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true # no-op when Windows disabled (sign-windows skipped → no artifact)
         with:
-          key: release-${{ github.run_id }}-windows-signed
+          name: windows-signed
           path: signed-artifacts/
-          fail-on-cache-miss: false
       - run: cp signed-artifacts/* artifacts/ 2>/dev/null || true; rm -rf signed-artifacts
-
-      - name: Restore unsigned Windows (fallback)
-        uses: actions/cache/restore@v4
-        with:
-          key: release-${{ github.run_id }}-windows-amd64
-          path: release-artifacts/
-          fail-on-cache-miss: false
-      - run: |
-          # Only copy unsigned if signed versions don't exist
-          for f in release-artifacts/*; do
-            [ -f "$f" ] || continue
-            dest="artifacts/$(basename "$f")"
-            [ -f "$dest" ] || cp "$f" "$dest"
-          done
-          rm -rf release-artifacts
 
       - name: List artifacts
         run: ls -la artifacts/ 2>/dev/null || echo "No artifacts"
