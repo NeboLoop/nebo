@@ -365,7 +365,11 @@ jobs:
       - name: Add swap (arm64 LTO link OOMs without it)
         if: matrix.arch == 'arm64'
         run: |
-          sudo fallocate -l 12G /swapfile
+          # The runner ships an active /swapfile, so fallocate on it fails
+          # "Text file busy" — turn swap off and recreate it larger.
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo fallocate -l 12G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=12288
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
