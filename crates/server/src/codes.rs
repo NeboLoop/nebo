@@ -1317,6 +1317,45 @@ pub async fn submit_code(
 async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
     let mut needs_auth = Vec::new();
     let installed = state.plugin_store.list_installed();
+
+    // Map plugin slug → the agent that uses it, by scanning each agent's workflow
+    // triggers (which reference plugins by slug, not the unresolvable PLUG- codes
+    // in `requires`): an Event trigger's `sources` are "{slug}.{event}" and a Watch
+    // trigger names its `plugin` slug. Channel plugins (slack, etc.) bind per-agent,
+    // so the binding must land on the agent that watches the channel — not the
+    // primary. Prefer a non-"assistant" user so a collection's secondary agent wins
+    // over the primary fallback.
+    let mut slug_to_agent: HashMap<String, String> = HashMap::new();
+    if let Ok(agents) = state.store.list_agents(1000, 0) {
+        for agent in &agents {
+            let Ok(cfg) = napp::agent::parse_agent_config(&agent.frontmatter) else {
+                continue;
+            };
+            let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for binding in cfg.workflows.values() {
+                match &binding.trigger {
+                    napp::agent::AgentTrigger::Event { sources } => {
+                        for src in sources {
+                            if let Some((slug, _)) = src.split_once('.') {
+                                used.insert(slug.to_string());
+                            }
+                        }
+                    }
+                    napp::agent::AgentTrigger::Watch { plugin, .. } => {
+                        used.insert(plugin.clone());
+                    }
+                    _ => {}
+                }
+            }
+            for slug in used {
+                let entry = slug_to_agent.entry(slug).or_insert_with(|| agent.id.clone());
+                if *entry == "assistant" && agent.id != "assistant" {
+                    *entry = agent.id.clone();
+                }
+            }
+        }
+    }
+
     let mut seen = std::collections::HashSet::new();
     for (slug, _, _, _) in &installed {
         if !seen.insert(slug.clone()) {
@@ -1326,14 +1365,21 @@ async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
             Some(false) => {
                 if let Some(manifest) = state.plugin_store.get_manifest(slug) {
                     if let Some(auth) = &manifest.auth {
-                        needs_auth.push(serde_json::json!({
+                        let mut item = serde_json::json!({
                             "slug": slug,
                             "label": auth.label,
                             "description": auth.description,
                             // "env" = user-supplied API keys (configured via a form in
                             // Settings → Plugins), anything else = interactive OAuth login.
                             "authType": auth.auth_type,
-                        }));
+                        });
+                        // The agent that declared this plugin. The install flow binds
+                        // channel auth to this agent so a collection's secondary agent
+                        // owns its channel instead of the auth defaulting to the primary.
+                        if let Some(agent_id) = slug_to_agent.get(slug) {
+                            item["agentId"] = serde_json::json!(agent_id);
+                        }
+                        needs_auth.push(item);
                     }
                 }
             }

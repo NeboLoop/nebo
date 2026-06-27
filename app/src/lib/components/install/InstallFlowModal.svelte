@@ -65,7 +65,10 @@
     billingInterval?: string;
     pricingModel?: string;
   };
-  type AuthEntry = { slug: string; label: string; description: string; authType?: string };
+  // agentId: the agent that declared this plugin (set by the backend's
+  // sweep_plugin_auth). Channel plugins bind per-agent, so we route their setup
+  // to this agent rather than defaulting to the primary.
+  type AuthEntry = { slug: string; label: string; description: string; authType?: string; agentId?: string };
 
   // ── Single global instance: no props ────────────────────────────────────────
   // Product/configure opens arrive through the installFlow store; code-paste
@@ -502,9 +505,18 @@
 
   // ── Plugin auth ────────────────────────────────────────────────────────────
   // (connectPlugin + refreshAuthNeeded live above; per-row on the review screen.)
-  function openPluginSettings() {
+  // Channel plugins (Slack, etc.) bind per-agent, so their credentials must be
+  // entered against the agent that declared them — not the global plugins page,
+  // which would default to the primary. `sweep_plugin_auth` tags each item with
+  // the declaring `agentId`; route there so a collection's secondary agent owns
+  // its channel. Falls back to the global page when no agent is attributed.
+  function openPluginSettings(authItem?: { agentId?: string }) {
     close();
-    goto('/settings/plugins');
+    if (authItem?.agentId) {
+      goto(`/${authItem.agentId}/settings/configure`);
+    } else {
+      goto('/settings/plugins');
+    }
   }
 
   // ── Code-mode flow ──────────────────────────────────────────────────────────
@@ -1001,7 +1013,7 @@
                     {#if aState === 'connecting'}
                       <span class="loading loading-spinner loading-xs text-primary shrink-0"></span>
                     {:else if auth.authType === 'env'}
-                      <button type="button" class="btn btn-xs btn-outline shrink-0" onclick={openPluginSettings}>Set up</button>
+                      <button type="button" class="btn btn-xs btn-outline shrink-0" onclick={() => openPluginSettings(auth)}>Set up</button>
                     {:else}
                       <button type="button" class="btn btn-xs btn-primary shrink-0" disabled={!!connectingSlug} onclick={() => connectPlugin(slug)}>{aState === 'failed' ? 'Retry' : 'Connect'}</button>
                     {/if}
