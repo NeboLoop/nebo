@@ -1,0 +1,5 @@
+target/
+app/node_modules/
+**/*.db
+.git/
+dist/

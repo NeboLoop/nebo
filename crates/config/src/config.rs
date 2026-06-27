@@ -400,6 +400,13 @@ impl Config {
         if let Ok(v) = env::var("NEBOAI_COMMS_URL") {
             self.neboai.comms_url = v;
         }
+        // Bind overrides so the server can listen on 0.0.0.0 in a container.
+        if let Ok(v) = env::var("NEBO_HOST") {
+            self.host = v;
+        }
+        if let Some(n) = env::var("NEBO_PORT").ok().and_then(|v| v.parse().ok()) {
+            self.port = n;
+        }
     }
 
     pub fn is_production_mode(&self) -> bool {
