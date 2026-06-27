@@ -541,6 +541,15 @@ async fn install_agent(
     // Reload so the new agent appears immediately.
     state.agent_loader.load_all().await;
 
+    // Notify the frontend so the roster sidebar refreshes live — same event the
+    // direct single-agent install emits (codes.rs handle_agent_code). Collections
+    // install agents through this cascade, so without this the sidebar is stale
+    // until a manual page refresh.
+    state.hub.broadcast(
+        "agent_installed",
+        serde_json::json!({ "agentId": artifact_id, "name": name }),
+    );
+
     // Recurse into the agent's own dependencies.
     if let Ok(Some(agent)) = state.store.get_agent(&artifact_id) {
         if !agent.frontmatter.is_empty() {
