@@ -11,7 +11,7 @@ FROM rust:1-bookworm AS build
 # a headless build feature ever lands.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       cmake clang libclang-dev pkg-config protobuf-compiler \
-      libssl-dev libasound2-dev libdbus-1-dev \
+      libssl-dev libasound2-dev libdbus-1-dev libopenblas-dev \
       libwayland-dev libxkbcommon-dev \
       libx11-dev libxcb1-dev libxrandr-dev libxi-dev libxtst-dev libxdo-dev \
       libgtk-3-dev libayatana-appindicator3-dev \
@@ -25,7 +25,7 @@ RUN cargo build --release -p nebo-cli
 FROM debian:bookworm-slim
 # Runtime .so for the GUI crates the binary links (loaded but unused on a server).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates libssl3 libasound2 libdbus-1-3 \
+      ca-certificates libssl3 libasound2 libdbus-1-3 libopenblas0-pthread \
       libwayland-client0 libxkbcommon0 \
       libx11-6 libxcb1 libxrandr2 libxi6 libxtst6 libxdo3 \
       libgtk-3-0 libayatana-appindicator3-1 \
