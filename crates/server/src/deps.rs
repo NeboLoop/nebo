@@ -550,9 +550,18 @@ async fn install_agent(
         serde_json::json!({ "agentId": artifact_id, "name": name }),
     );
 
-    // Recurse into the agent's own dependencies.
+    // Recurse into the agent's own dependencies + materialize its workflow
+    // definitions into agent_workflows so the Workflows panel shows them. The
+    // single-agent install does this (process_agent_bindings); the cascade didn't,
+    // leaving collection-installed agents with an empty Workflows panel. Materialize
+    // ONLY (same as startup's sync_agent_workflows): the agent installs Paused, so
+    // its triggers/cron register at activation (start_agent → register_agent_triggers),
+    // not now.
     if let Ok(Some(agent)) = state.store.get_agent(&artifact_id) {
         if !agent.frontmatter.is_empty() {
+            if let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) {
+                crate::sync_agent_workflows(&state.store, &artifact_id, &config);
+            }
             return Ok(extract_agent_deps_from_frontmatter(&agent.frontmatter));
         }
     }
