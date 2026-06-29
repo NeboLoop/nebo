@@ -664,6 +664,50 @@ async fn handle_connection_code(
     })
 }
 
+/// Shared post-persist finalization for installing ONE agent — the single
+/// canonical routine BOTH install pathways call (`handle_agent_code` for the
+/// single-agent / `AGNT-` path, `deps::install_agent` for the collection
+/// cascade), so the cascade can't drift from the direct install. Divergence
+/// between the two paths was the root of the channel-auth, roster-refresh,
+/// workflows, and update-tracking bugs. Call only after a successful persist.
+pub(crate) async fn finalize_agent_install(state: &AppState, artifact_id: &str, name: &str) {
+    // Reload the in-memory AgentLoader so list_agents() enumerates the new agent
+    // immediately (it reads the loader, not the DB).
+    state.agent_loader.load_all().await;
+
+    // Seed update-tracking so the agent is checked for marketplace updates, reading
+    // the installed version from the loader (agents have no .napp manifest version).
+    let version = state
+        .agent_loader
+        .get_by_name(name)
+        .await
+        .and_then(|a| a.version)
+        .unwrap_or_default();
+    if !version.is_empty() {
+        let _ = state
+            .store
+            .upsert_artifact_update_pref(artifact_id, "agent", &version);
+    }
+
+    // Notify the frontend so the roster sidebar refreshes live.
+    state.hub.broadcast(
+        "agent_installed",
+        serde_json::json!({ "agentId": artifact_id, "name": name }),
+    );
+
+    // Materialize the agent's workflow definitions into agent_workflows so the
+    // Workflows panel shows them. Materialize-only — the single-agent path's
+    // process_agent_bindings re-materializes idempotently and registers triggers;
+    // the cascade leaves the agent Paused and triggers register at activation.
+    if let Ok(Some(agent)) = state.store.get_agent(artifact_id) {
+        if !agent.frontmatter.is_empty() {
+            if let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) {
+                crate::sync_agent_workflows(&state.store, artifact_id, &config);
+            }
+        }
+    }
+}
+
 async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
@@ -754,35 +798,14 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             }
         };
 
-    // Reload the in-memory AgentLoader so the newly-installed agent appears immediately.
-    // list_agents() enumerates the loader (filesystem source of truth) and only supplements
-    // with DB rows — a DB row with no loaded agent is never emitted. Without this reload the
-    // agent doesn't surface until a server restart, so even a frontend hard-reload shows
-    // nothing. (Apps already reload via handle_app_code; do it for plain agents too.)
+    // Shared post-persist finalization — loader reload, update-tracking seed,
+    // roster broadcast, and workflow materialization — the ONE routine the cascade
+    // (deps::install_agent) also calls, so the two install paths can't drift.
+    // process_agent_bindings below still registers this agent's triggers; its
+    // re-materialize of the same workflow rows is an idempotent upsert.
     if persist_result.is_some() {
-        state.agent_loader.load_all().await;
-        // Seed update tracking — same as skills and plugins — so a code-installed
-        // agent is checked for updates. Read the installed version from the loader
-        // (the canonical on-disk source check_agent also reads); agents have no
-        // .napp manifest in the DB to read a version from.
-        let version = state
-            .agent_loader
-            .get_by_name(&artifact_name)
-            .await
-            .and_then(|a| a.version)
-            .unwrap_or_default();
-        if !version.is_empty() {
-            let _ = state
-                .store
-                .upsert_artifact_update_pref(&artifact_id, "agent", &version);
-        }
+        finalize_agent_install(state, &artifact_id, &artifact_name).await;
     }
-
-    // Notify frontend immediately so sidebar refreshes
-    state.hub.broadcast(
-        "agent_installed",
-        serde_json::json!({ "agentId": artifact_id, "name": artifact_name }),
-    );
 
     // Cascade: resolve agent deps (plugins, skills) in background — don't block code_result
     {

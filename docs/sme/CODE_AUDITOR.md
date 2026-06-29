@@ -797,8 +797,9 @@ The #1 architecture rule: if functionality exists in one place, it must NOT be d
 | Two modules providing the same abstraction | A new `crates/utils/` when `crates/types/` already handles it |
 | Internal wrappers that duplicate a dependency's surface | Writing `fn get_user(conn: &Connection, id: &str)` when `store.get_user_by_id()` exists |
 | "Convenience" functions that reimplement imported functionality | Reimplementing JSON parsing when Axum extractors handle it |
+| **Two entry points that "finalize" the same operation differently** | Single-agent install (`codes.rs::handle_agent_code`) vs the collection cascade (`deps.rs::install_agent`) each re-implemented the post-persist sequence (loader reload, roster broadcast, workflow materialization, update-tracking seed). They drifted, and every step the cascade forgot became its own bug. Fixed by `finalize_agent_install` — the ONE routine both call. |
 
-**The auditor must flag this pattern wherever it appears.**
+**The auditor must flag this pattern wherever it appears.** When an entity (agent, skill, plugin, app) can be installed/created through more than one entry point, those entry points MUST converge on a single shared "finalize" routine — never re-implement the post-persist sequence per path, or it drifts one forgotten step at a time.
 
 ### 8.2 Know Your Boundaries
 

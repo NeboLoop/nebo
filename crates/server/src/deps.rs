@@ -538,30 +538,15 @@ async fn install_agent(
     }
     tracing::info!(reference, name = %name, "cascade: persisted agent");
 
-    // Reload so the new agent appears immediately.
-    state.agent_loader.load_all().await;
+    // Shared post-persist finalization (loader reload, update-tracking seed, roster
+    // broadcast, workflow materialization) — the SAME routine the single-agent
+    // install (codes.rs handle_agent_code) uses, so the cascade can't drift from it.
+    // The agent installs Paused; its triggers register when it's activated.
+    crate::codes::finalize_agent_install(state, &artifact_id, &name).await;
 
-    // Notify the frontend so the roster sidebar refreshes live — same event the
-    // direct single-agent install emits (codes.rs handle_agent_code). Collections
-    // install agents through this cascade, so without this the sidebar is stale
-    // until a manual page refresh.
-    state.hub.broadcast(
-        "agent_installed",
-        serde_json::json!({ "agentId": artifact_id, "name": name }),
-    );
-
-    // Recurse into the agent's own dependencies + materialize its workflow
-    // definitions into agent_workflows so the Workflows panel shows them. The
-    // single-agent install does this (process_agent_bindings); the cascade didn't,
-    // leaving collection-installed agents with an empty Workflows panel. Materialize
-    // ONLY (same as startup's sync_agent_workflows): the agent installs Paused, so
-    // its triggers/cron register at activation (start_agent → register_agent_triggers),
-    // not now.
+    // Recurse into the agent's own dependencies.
     if let Ok(Some(agent)) = state.store.get_agent(&artifact_id) {
         if !agent.frontmatter.is_empty() {
-            if let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) {
-                crate::sync_agent_workflows(&state.store, &artifact_id, &config);
-            }
             return Ok(extract_agent_deps_from_frontmatter(&agent.frontmatter));
         }
     }
