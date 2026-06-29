@@ -35,28 +35,25 @@
     codeUrl?: string;
   }
 
+  // One tool invocation in an assistant reply's timeline. Tools live ON the reply
+  // they belong to (`assistant.tools[]`) — never as sibling messages — so they
+  // can't orphan or reorder. Matches the controller's ToolUse + NeboLoop.
   interface ToolMsg {
-    type: 'tool';
     name: string;
     status: string;
-    duration: string;
     request: Record<string, unknown>;
     response: string;
     statusText?: string;
-  }
-
-  interface ToolGroup {
-    type: 'tool-group';
-    tools: ToolMsg[];
+    label?: string;     // human activity label (gerund), from the start phase
+    outcome?: string;   // past-tense outcome, from the result phase
+    durationMs?: number;
   }
 
   type Message =
     | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[] }
     | { type: 'thinking'; content: string; duration: string }
-    | ToolMsg
-    | ToolGroup
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
-    | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[] };
+    | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
@@ -513,10 +510,11 @@
   let isDragging = $state(false);
   let dragCounter = $state(0);
 
-  // Tool group collapse state
-  let collapsedToolGroups = $state<Record<number, boolean>>({});
-  function toggleToolGroup(idx: number) {
-    collapsedToolGroups[idx] = !collapsedToolGroups[idx];
+  // Tool timeline collapse state, keyed by the owning reply's id (stable across
+  // re-renders — index keys would drift as new messages stream in).
+  let collapsedToolGroups = $state<Record<string, boolean>>({});
+  function toggleToolGroup(key: string) {
+    collapsedToolGroups[key] = !collapsedToolGroups[key];
   }
 
   // Individual tool result expand state
@@ -525,32 +523,55 @@
     expandedResults[key] = !expandedResults[key];
   }
 
-  // Group consecutive tool messages together, track original indices
-  const groupedResult = $derived.by(() => {
-    const groups: Message[] = [];
-    const indices: number[] = [];
-    let i = 0;
-    while (i < messages.length) {
-      const msg = messages[i];
-      if (msg.type === 'tool') {
-        const tools: ToolMsg[] = [];
-        const firstIdx = i;
-        while (i < messages.length && messages[i].type === 'tool') {
-          tools.push(messages[i] as ToolMsg);
-          i++;
-        }
-        groups.push({ type: 'tool-group', tools });
-        indices.push(firstIdx);
-      } else {
-        groups.push(msg);
-        indices.push(i);
-        i++;
-      }
+  // Friendly tool-use display (mirrors the NeboLoop web timeline). The backend
+  // (chat_dispatch.rs humanize_tool_call) supplies `label` (gerund) + `outcome`
+  // (past-tense); these helpers turn them into a doer-flavored work line.
+  function fmtDuration(ms: number): string {
+    return ms < 1000 ? '<1s' : `${Math.round(ms / 1000)}s`;
+  }
+  function workLineDuration(tools: ToolMsg[]): string {
+    const total = tools.reduce((s, t) => s + (t.durationMs ?? 0), 0);
+    return total > 0 ? fmtDuration(total) : '';
+  }
+  function stepOutcome(t: ToolMsg): string {
+    return t.outcome ?? t.label ?? `Used ${t.name}`;
+  }
+  // Correct tool signature: MCP → "slug · tool", STRAP → "name · resource.action".
+  function strapSig(t: ToolMsg): string {
+    if (t.name.startsWith('mcp__')) {
+      return t.name.slice(5).replace('__', ' · ').replaceAll('_', ' ');
     }
-    return { groups, indices };
-  });
-  const groupedMessages = $derived(groupedResult.groups);
-  const originalIndices = $derived(groupedResult.indices);
+    const req = t.request as { resource?: string; action?: string } | undefined;
+    if (req?.resource && req?.action) return `${t.name} · ${req.resource}.${req.action}`;
+    return t.name;
+  }
+  function workLineLabel(tools: ToolMsg[]): string {
+    const running = tools.filter((t) => t.status === 'running');
+    if (running.length) {
+      const cur = running[running.length - 1];
+      return `${cur.label ?? `working with ${cur.name}`}…`;
+    }
+    // Group completed steps by outcome, preserving first-seen order.
+    const groups = new Map<string, number>();
+    for (const t of tools) groups.set(stepOutcome(t), (groups.get(stepOutcome(t)) ?? 0) + 1);
+    const parts = [...groups.entries()].map(([label, n], i) => {
+      let s = label;
+      if (n > 1) {
+        const m = label.match(/^(\w+) an? (.+)$/);
+        s = m ? `${m[1]} ${n} ${m[2]}${m[2].endsWith('s') ? '' : 's'}` : `${label} ×${n}`;
+      }
+      return i === 0 ? s : s.charAt(0).toLowerCase() + s.slice(1);
+    });
+    const line = parts.slice(0, 3).join(', ');
+    return groups.size > 3 ? `${line}, +${groups.size - 3} more` : line;
+  }
+
+  // Tools now live on the assistant message that ran them (msg.tools[]), so there
+  // are no sibling tool messages to collapse — the rendered list IS the message
+  // list, one-to-one. (Kept as derived aliases so the turn-boundary + index logic
+  // below reads unchanged.)
+  const groupedMessages = $derived(messages);
+  const originalIndices = $derived(messages.map((_, i) => i));
 
   // Drag-and-drop handlers
   function handleDragEnter(e: DragEvent) {
@@ -662,6 +683,97 @@
         <div class="loading loading-spinner loading-sm text-base-content/30"></div>
       </div>
     {/if}
+
+    <!-- Tool timeline for one reply ("Used N tools"), rendered inside the assistant
+         message that ran the tools so they can never detach. keyId = reply id. -->
+    {#snippet toolTimeline(tools: ToolMsg[], keyId: string)}
+      {@const hasRunning = tools.some((t: ToolMsg) => t.status === 'running')}
+      {@const isOpen = !!collapsedToolGroups[keyId]}
+      <div class="max-w-[640px] my-1">
+        <button
+          class="flex items-center gap-1.5 text-xs text-base-content/50 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/70 transition-colors"
+          onclick={() => toggleToolGroup(keyId)}
+        >
+          {#if hasRunning}
+            <svg width="14" height="14" viewBox="0 0 14 14" class="animate-spin text-primary shrink-0"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="20 14" stroke-linecap="round"/></svg>
+            <span class="text-xs text-base-content/70 truncate max-w-[60vw] md:max-w-md">{workLineLabel(tools)}</span>
+          {:else}
+            {@const wd = workLineDuration(tools)}
+            <svg width="13" height="13" viewBox="0 0 18 18" fill="none" class="text-base-content/50 shrink-0"><path d="M10.5 3.5C10.5 2.67 11.17 2 12 2C12.5 2 13.09 2.24 13.45 2.59L15.41 4.55C15.76 4.91 16 5.5 16 6C16 6.83 15.33 7.5 14.5 7.5C14.16 7.5 13.85 7.38 13.6 7.18L12.18 8.6C12.38 8.85 12.5 9.16 12.5 9.5C12.5 10.33 11.83 11 11 11C10.67 11 10.36 10.88 10.11 10.69L5.69 15.11C5.5 15.3 5.25 15.41 5 15.41C4.75 15.41 4.5 15.3 4.31 15.11L2.89 13.69C2.7 13.5 2.59 13.25 2.59 13C2.59 12.75 2.7 12.5 2.89 12.31L7.31 7.89C7.12 7.64 7 7.33 7 7C7 6.17 7.67 5.5 8.5 5.5C8.84 5.5 9.15 5.62 9.4 5.82L10.82 4.4C10.62 4.15 10.5 3.84 10.5 3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+            <span class="text-xs truncate max-w-[60vw] md:max-w-md">{workLineLabel(tools)}</span>
+            {#if wd}<span class="text-xs text-base-content/40">· {wd}</span>{/if}
+            <span class="text-xs transition-transform {isOpen ? 'rotate-180' : ''}">&darr;</span>
+          {/if}
+        </button>
+
+        {#if isOpen}
+          <div class="mt-2 ml-1 flex flex-col">
+            {#each tools as tool, tidx}
+              {@const resultKey = `${keyId}-${tidx}`}
+              {@const isExpanded = expandedResults[resultKey]}
+              <div class="flex items-start gap-2.5">
+                <div class="flex flex-col items-center shrink-0 w-5">
+                  {#if tool.status === 'running'}
+                    <svg width="18" height="18" viewBox="0 0 18 18" class="text-primary shrink-0 animate-spin"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="22 16" stroke-linecap="round"/></svg>
+                  {:else}
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="text-base-content shrink-0">
+                      <path d="M10.5 3.5C10.5 2.67 11.17 2 12 2C12.5 2 13.09 2.24 13.45 2.59L15.41 4.55C15.76 4.91 16 5.5 16 6C16 6.83 15.33 7.5 14.5 7.5C14.16 7.5 13.85 7.38 13.6 7.18L12.18 8.6C12.38 8.85 12.5 9.16 12.5 9.5C12.5 10.33 11.83 11 11 11C10.67 11 10.36 10.88 10.11 10.69L5.69 15.11C5.5 15.3 5.25 15.41 5 15.41C4.75 15.41 4.5 15.3 4.31 15.11L2.89 13.69C2.7 13.5 2.59 13.25 2.59 13C2.59 12.75 2.7 12.5 2.89 12.31L7.31 7.89C7.12 7.64 7 7.33 7 7C7 6.17 7.67 5.5 8.5 5.5C8.84 5.5 9.15 5.62 9.4 5.82L10.82 4.4C10.62 4.15 10.5 3.84 10.5 3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+                    </svg>
+                  {/if}
+                  {#if tidx < tools.length - 1 || isExpanded}
+                    <div class="w-px flex-1 min-h-[28px] bg-base-300"></div>
+                  {/if}
+                </div>
+                <div class="flex-1 min-w-0 pb-3">
+                  <div class="flex items-baseline gap-2 text-xs">
+                    <span class="truncate {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/50 ml-1">{tool.statusText}</span>{/if}</span>
+                    <span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>
+                    {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
+                  </div>
+                  {#if tool.status !== 'running'}
+                    {#if isExpanded}
+                      <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-hidden">
+                        <div class="px-3.5 pt-3 pb-2">
+                          <div class="text-xs font-semibold mb-1.5">Request</div>
+                          <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{JSON.stringify(tool.request, null, 2)}</pre>
+                        </div>
+                        <div class="px-3.5 pt-2 pb-3 border-t border-base-300">
+                          <div class="text-xs font-semibold mb-1.5">Response</div>
+                          <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{tool.response}</pre>
+                        </div>
+                      </div>
+                      <button
+                        class="mt-1.5 py-0.5 px-2 rounded text-xs font-medium bg-base-200 cursor-pointer border-none hover:bg-base-300 transition-colors"
+                        onclick={() => toggleResult(resultKey)}
+                      >Hide</button>
+                    {:else}
+                      <div class="mt-1">
+                        <button
+                          class="py-0.5 px-2 rounded text-xs font-medium cursor-pointer border-none transition-colors {tool.status === 'success' ? 'bg-base-200 hover:bg-base-300' : 'bg-error/10 text-error hover:bg-error/20'}"
+                          onclick={() => toggleResult(resultKey)}
+                        >Result</button>
+                      </div>
+                    {/if}
+                  {/if}
+                </div>
+              </div>
+            {/each}
+            {#if !hasRunning}
+              <div class="flex items-center gap-2.5">
+                <div class="flex items-center justify-center w-5 shrink-0">
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="text-base-content">
+                    <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.2"/>
+                    <path d="M6 9L8.25 11.25L12.25 6.75" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </div>
+                <span class="text-xs">Done</span>
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/snippet}
+
     {#each groupedMessages as msg, idx}
       {#if msg.type === 'user'}
         {@const origIdx = originalIndices[idx]}
@@ -768,86 +880,6 @@
           <div class="mt-1.5 py-2 px-3 rounded-box bg-base-200 border-l-2 border-base-content/20 text-xs leading-relaxed font-mono whitespace-pre-wrap">{msg.content}</div>
         </details>
 
-      {:else if msg.type === 'tool-group'}
-        {@const hasRunning = msg.tools.some((t: ToolMsg) => t.status === 'running')}
-        {@const isOpen = !!collapsedToolGroups[idx]}
-        <div class="max-w-[640px] my-1">
-          <button
-            class="flex items-center gap-1.5 text-xs text-base-content/50 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/70 transition-colors"
-            onclick={() => toggleToolGroup(idx)}
-          >
-            {#if hasRunning}
-              <svg width="14" height="14" viewBox="0 0 14 14" class="animate-spin text-primary shrink-0"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="20 14" stroke-linecap="round"/></svg>
-              <span class="text-xs text-base-content/70">Running {msg.tools.length} tool{msg.tools.length !== 1 ? 's' : ''}...</span>
-            {:else}
-              <span class="text-xs">Used {msg.tools.length} tool{msg.tools.length !== 1 ? 's' : ''}</span>
-              <span class="text-xs transition-transform {isOpen ? 'rotate-180' : ''}">&darr;</span>
-            {/if}
-          </button>
-
-          {#if isOpen}
-            <div class="mt-2 ml-1 flex flex-col">
-              {#each msg.tools as tool, tidx}
-                {@const resultKey = `${idx}-${tidx}`}
-                {@const isExpanded = expandedResults[resultKey]}
-                <div class="flex items-start gap-2.5">
-                  <div class="flex flex-col items-center shrink-0 w-5">
-                    {#if tool.status === 'running'}
-                      <svg width="18" height="18" viewBox="0 0 18 18" class="text-primary shrink-0 animate-spin"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="22 16" stroke-linecap="round"/></svg>
-                    {:else}
-                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="text-base-content shrink-0">
-                        <path d="M10.5 3.5C10.5 2.67 11.17 2 12 2C12.5 2 13.09 2.24 13.45 2.59L15.41 4.55C15.76 4.91 16 5.5 16 6C16 6.83 15.33 7.5 14.5 7.5C14.16 7.5 13.85 7.38 13.6 7.18L12.18 8.6C12.38 8.85 12.5 9.16 12.5 9.5C12.5 10.33 11.83 11 11 11C10.67 11 10.36 10.88 10.11 10.69L5.69 15.11C5.5 15.3 5.25 15.41 5 15.41C4.75 15.41 4.5 15.3 4.31 15.11L2.89 13.69C2.7 13.5 2.59 13.25 2.59 13C2.59 12.75 2.7 12.5 2.89 12.31L7.31 7.89C7.12 7.64 7 7.33 7 7C7 6.17 7.67 5.5 8.5 5.5C8.84 5.5 9.15 5.62 9.4 5.82L10.82 4.4C10.62 4.15 10.5 3.84 10.5 3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
-                      </svg>
-                    {/if}
-                    {#if tidx < msg.tools.length - 1 || isExpanded}
-                      <div class="w-px flex-1 min-h-[28px] bg-base-300"></div>
-                    {/if}
-                  </div>
-                  <div class="flex-1 min-w-0 pb-3">
-                    <div class="text-xs font-mono {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.name}{#if tool.status === 'running'}<span class="text-base-content/50 ml-1">{tool.statusText || 'running...'}</span>{/if}</div>
-                    {#if tool.status !== 'running'}
-                      {#if isExpanded}
-                        <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-hidden">
-                          <div class="px-3.5 pt-3 pb-2">
-                            <div class="text-xs font-semibold mb-1.5">Request</div>
-                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{JSON.stringify(tool.request, null, 2)}</pre>
-                          </div>
-                          <div class="px-3.5 pt-2 pb-3 border-t border-base-300">
-                            <div class="text-xs font-semibold mb-1.5">Response</div>
-                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{tool.response}</pre>
-                          </div>
-                        </div>
-                        <button
-                          class="mt-1.5 py-0.5 px-2 rounded text-xs font-medium bg-base-200 cursor-pointer border-none hover:bg-base-300 transition-colors"
-                          onclick={() => toggleResult(resultKey)}
-                        >Hide</button>
-                      {:else}
-                        <div class="mt-1">
-                          <button
-                            class="py-0.5 px-2 rounded text-xs font-medium cursor-pointer border-none transition-colors {tool.status === 'success' ? 'bg-base-200 hover:bg-base-300' : 'bg-error/10 text-error hover:bg-error/20'}"
-                            onclick={() => toggleResult(resultKey)}
-                          >Result</button>
-                        </div>
-                      {/if}
-                    {/if}
-                  </div>
-                </div>
-              {/each}
-              {#if !hasRunning}
-                <div class="flex items-center gap-2.5">
-                  <div class="flex items-center justify-center w-5 shrink-0">
-                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="text-base-content">
-                      <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.2"/>
-                      <path d="M6 9L8.25 11.25L12.25 6.75" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  </div>
-                  <span class="text-xs">Done</span>
-                </div>
-              {/if}
-            </div>
-          {/if}
-        </div>
-
       {:else if msg.type === 'ask'}
         <div class="max-w-[640px] mt-3">
           <AskWidget
@@ -887,6 +919,10 @@
               {@html linkWorkMentions(renderMarkdown(msg.content), (msg as any).workItems)}
             {/if}
           </div>
+          <!-- Tools this reply ran, on the message itself — never a detached sibling. -->
+          {#if msg.tools?.length}
+            {@render toolTimeline(msg.tools, msg.id ?? `m${origIdx}`)}
+          {/if}
           {#if msg.attachments?.length}
             <div class="flex flex-wrap gap-2 mt-2">
               {#each msg.attachments as att}

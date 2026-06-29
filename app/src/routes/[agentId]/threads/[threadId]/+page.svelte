@@ -143,77 +143,69 @@
       const toolCalls: ToolCallMeta[] = meta?.toolCalls || [];
       const contentBlocks: ContentBlockMeta[] = meta?.contentBlocks || [];
 
+      // Rebuild the turn as nested assistant bubbles: each narration segment owns
+      // the tools that followed it (tools live ON the message, never as sibling
+      // entries — so they can't orphan). The persisted contentBlocks preserve the
+      // exact text/tool interleaving; this mirrors the live controller + NeboLoop.
+      type AssistantMsg = Extract<ChatMessage, { type: 'assistant' }>;
+      const bubbles: AssistantMsg[] = [];
+      let cur: AssistantMsg | null = null;
+      let seq = 0;
+      const newBubble = (content: string): AssistantMsg => {
+        const b: AssistantMsg = { type: 'assistant', id: `${m.id}-${seq++}`, content, time: formatTime(m.createdAt) };
+        bubbles.push(b);
+        return b;
+      };
+      const pushTool = (target: AssistantMsg, tc: ToolCallMeta) => {
+        const request = parseToolInput(tc.input);
+        (target.tools ??= []).push({
+          // Raw name so the display formats the signature; persisted records carry
+          // no humanized outcome, so toolDisplayName is the friendly fallback label.
+          name: tc.name || 'tool',
+          label: toolDisplayName(tc.name || 'tool', request),
+          status: tc.status === 'error' ? 'error' : 'success',
+          request,
+          response: '',
+        });
+      };
+
       if (toolCalls.length && contentBlocks.length) {
         for (const block of contentBlocks) {
-          if (block.type === 'text' && (block.text || m.content)) {
-            result.push({
-              type: 'assistant' as const,
-              id: m.id,
-              content: block.text || m.content || '',
-              html: m.html || undefined,
-              time: formatTime(m.createdAt),
-            });
+          if (block.type === 'text') {
+            const text = block.text || '';
+            // Text after this bubble ran tools starts a fresh bubble.
+            if (!cur || cur.tools?.length) cur = newBubble(text);
+            else cur.content = cur.content ? `${cur.content}\n${text}` : text;
           } else if (block.type === 'tool' && block.toolCallIndex != null) {
             const tc = toolCalls[block.toolCallIndex];
-            if (tc) {
-              const request = parseToolInput(tc.input);
-              result.push({
-                type: 'tool' as const,
-                name: toolDisplayName(tc.name || 'tool', request),
-                status: tc.status === 'error' ? 'error' : 'success',
-                duration: '',
-                request,
-                response: '',
-              });
-            }
+            if (tc) { if (!cur) cur = newBubble(''); pushTool(cur, tc); }
           }
         }
       } else if (toolCalls.length) {
-        if (m.content) {
-          result.push({
-            type: 'assistant' as const,
-            id: m.id,
-            content: m.content,
-            html: m.html || undefined,
-            time: formatTime(m.createdAt),
-          });
-        }
-        for (const tc of toolCalls) {
-          const request = parseToolInput(tc.input);
-          result.push({
-            type: 'tool' as const,
-            name: tc.name || 'tool',
-            status: tc.status === 'error' ? 'error' : 'success',
-            duration: '',
-            request,
-            response: '',
-          });
-        }
+        cur = newBubble(m.content || '');
+        for (const tc of toolCalls) pushTool(cur, tc);
       } else if (m.content) {
-        result.push({
-          type: 'assistant' as const,
-          id: m.id,
-          content: m.content,
-          html: m.html || undefined,
-          time: formatTime(m.createdAt),
-        });
+        cur = newBubble(m.content);
+      }
+
+      // A single plain segment can carry the server-rendered html; multi-segment
+      // turns render each segment's markdown from its own text.
+      if (bubbles.length === 1 && !bubbles[0].tools?.length && m.html) {
+        bubbles[0].html = m.html;
       }
 
       // Persisted run artifacts (metadata.artifacts, written at chat_complete)
-      // re-attach to this message's last assistant entry so Work cards and
-      // inline media survive history reload.
-      if (meta?.artifacts?.length) {
+      // re-attach to the turn's LAST bubble so Work cards and inline media survive
+      // history reload.
+      if (meta?.artifacts?.length && bubbles.length) {
         const workItems = artifactsToWorkItems(meta.artifacts);
         const attachments = artifactsToAttachments(meta.artifacts);
-        for (let i = result.length - 1; i >= 0; i--) {
-          const entry = result[i];
-          if (entry.type === 'assistant' && entry.id === m.id) {
-            if (workItems.length) entry.workItems = workItems;
-            if (attachments.length) entry.attachments = attachments;
-            break;
-          }
-        }
+        const last = bubbles[bubbles.length - 1];
+        if (workItems.length) last.workItems = workItems;
+        if (attachments.length) last.attachments = attachments;
       }
+
+      result.push(...bubbles);
     }
     return result;
   }

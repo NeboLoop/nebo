@@ -667,17 +667,21 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 }
                             }
                             if let Some(ref tc) = event.tool_call {
+                                // Humanize once and feed every consumer: the desktop
+                                // broadcast (friendly label), the loop emission, and the
+                                // typing indicator — one tool-naming source of truth.
+                                let (activity, _) = humanize_tool_call(&tc.name, &tc.input);
                                 hub.broadcast(
                                     "tool_start",
                                     ws_payload!(
                                         "tool_id": tc.id,
                                         "tool": tc.name,
                                         "input": tc.input,
+                                        "label": activity,
                                     ),
                                 );
                                 // Mirror the tool event to the loop so it shows live
-                                // activity (and renders "Used N tools"), like the local app.
-                                let (activity, _) = humanize_tool_call(&tc.name, &tc.input);
+                                // activity, like the local app.
                                 if let Some(cfg) = &comm_reply {
                                     let request = tc.input.to_string();
                                     send_comm_tool_activity(
@@ -716,6 +720,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 .as_ref()
                                 .map(|tc| tc.id.as_str())
                                 .unwrap_or("");
+                            // Humanize once for both the desktop broadcast and the loop.
+                            let outcome = event
+                                .tool_call
+                                .as_ref()
+                                .map(|tc| humanize_tool_call(&tc.name, &tc.input).1)
+                                .unwrap_or_else(|| {
+                                    tool_outcome_label(tool_name)
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_else(|| humanize_tool_name(tool_name).1)
+                                });
                             hub.broadcast(
                                 "tool_result",
                                 ws_payload!(
@@ -723,23 +737,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "tool_name": tool_name,
                                     "result": event.text,
                                     "is_error": event.error.is_some(),
+                                    "outcome": outcome,
                                 ),
                             );
                             // Mirror the tool result to the loop (char-safe, capped
-                            // well under the 32KB frame) so the "Used N tools"
-                            // timeline can show Request/Response like the local app.
+                            // well under the 32KB frame) so the timeline can show
+                            // Request/Response like the local app.
                             if let Some(cfg) = &comm_reply {
                                 let response: String =
                                     event.text.trim().chars().take(4000).collect();
-                                let outcome = event
-                                    .tool_call
-                                    .as_ref()
-                                    .map(|tc| humanize_tool_call(&tc.name, &tc.input).1)
-                                    .unwrap_or_else(|| {
-                                        tool_outcome_label(tool_name)
-                                            .map(|s| s.to_string())
-                                            .unwrap_or_else(|| humanize_tool_name(tool_name).1)
-                                    });
                                 send_comm_tool_activity(
                                     cfg,
                                     &comm_manager,

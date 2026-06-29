@@ -49,12 +49,30 @@ export interface WorkItem {
   codeUrl?: string;
 }
 
+/** One tool invocation inside an assistant reply's timeline. Tools live ON the
+ *  reply they belong to (the message's `tools[]`), never as sibling messages —
+ *  so they can't be orphaned or reordered. Mirrors NeboLoop's ToolUse. */
+export interface ToolUse {
+  toolId?: string;
+  name: string;
+  status: 'running' | 'success' | 'error';
+  request: Record<string, unknown>;
+  response: string;
+  /** Human activity label (gerund), from the start phase. */
+  label?: string;
+  /** Past-tense outcome, from the result phase. */
+  outcome?: string;
+  /** Live sub-step text (e.g. "Initialized sub-agent"). */
+  statusText?: string;
+  startedAt?: number;
+  durationMs?: number;
+}
+
 export type ChatMessage =
   | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[] }
   | { type: 'thinking'; content: string; duration: string }
-  | { type: 'tool'; name: string; status: string; duration: string; request: Record<string, unknown>; response: string; statusText?: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
-  | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[] };
+  | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean };
 
 export interface ChatControllerConfig {
   agentId: string;
@@ -215,7 +233,6 @@ export function createChatController(config: ChatControllerConfig) {
 
   // --- Reactive state ---
   let messages = $state<ChatMessage[]>([]);
-  let streamingContent = $state<Record<string, string>>({});
   let isLoading = $state(false);
   let tokenUsage = $state<TokenUsage | null>(null);
   let quotaWarning = $state('');
@@ -223,17 +240,83 @@ export function createChatController(config: ChatControllerConfig) {
   let activityStatus = $state('');
 
   // --- Internal tracking ---
-  let pendingTools = new Map<string, { idx: number; startTime: number }>();
   let phaseStartTime = 0;
   let usageClearTimer: ReturnType<typeof setTimeout> | null = null;
   let activeSessionKey: string | undefined = config.sessionKey;
 
+  // --- In-progress reply tracking ---
+  // The streaming reply is a REAL message in `messages` (not an ephemeral overlay),
+  // so the tools it runs attach to it directly — they can never become orphaned
+  // siblings. `replyId[aid]` is the id of the open reply bubble for an agent
+  // (delegates stream under their own id). Mirrors NeboLoop's model.
+  let replyId: Record<string, string> = {};
+  let idSeq = 0;
+  const nextId = () => `msg-${Date.now()}-${++idSeq}`;
+
+  /** Index of `aid`'s open (streaming) reply bubble, or -1. Searches from the end
+   *  (the open reply is always near the tail). */
+  function replyIndex(aid: string): number {
+    const id = replyId[aid];
+    if (!id) return -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.type === 'assistant' && m.id === id) return m.streaming ? i : -1;
+    }
+    return -1;
+  }
+
+  /** Open a fresh streaming reply bubble for `aid` and return its index. */
+  function startReply(aid: string): number {
+    const isDelegate = aid !== agentId;
+    const delegateAgent = isDelegate ? allAgents.find((a) => a.id === aid) : null;
+    const msg: ChatMessage = {
+      id: nextId(),
+      type: 'assistant',
+      content: '',
+      time: '',
+      streaming: true,
+      ...(delegateAgent ? { delegateAgentId: delegateAgent.id, delegateAgentName: delegateAgent.name } : {}),
+    };
+    messages = [...messages, msg];
+    replyId[aid] = msg.id!;
+    return messages.length - 1;
+  }
+
+  /** Ensure `aid` has an open reply bubble; create one if needed. */
+  function ensureReply(aid: string): number {
+    const idx = replyIndex(aid);
+    return idx === -1 ? startReply(aid) : idx;
+  }
+
+  /** Finalize `aid`'s open reply (drop the streaming flag); drop it entirely if
+   *  it produced nothing (no text, no tools, no attachments). */
+  function finalizeReply(aid: string) {
+    const idx = replyIndex(aid);
+    delete replyId[aid];
+    if (idx === -1) return;
+    const m = messages[idx];
+    if (m.type !== 'assistant') return;
+    const empty = !m.content && !m.tools?.length && !m.attachments?.length && !m.workItems?.length;
+    if (empty) {
+      messages = messages.filter((_, i) => i !== idx);
+    } else {
+      messages[idx] = { ...m, streaming: false };
+    }
+  }
+
   // --- Fluid streaming: decouple render cadence from bursty network arrival ---
   // Incoming chunks accumulate in pendingStream; a requestAnimationFrame loop drains
-  // them into the displayed streamingContent at a steady character rate (scaling with
-  // backlog so it never falls behind), producing a smooth typewriter flow.
+  // them into the open reply bubble at a steady character rate (scaling with backlog
+  // so it never falls behind), producing a smooth typewriter flow.
   let pendingStream: Record<string, string> = {};
   let rafHandle: number | null = null;
+
+  function appendToReply(aid: string, text: string) {
+    if (!text) return;
+    const idx = ensureReply(aid);
+    const m = messages[idx];
+    if (m.type === 'assistant') messages[idx] = { ...m, content: m.content + text };
+  }
 
   function drainPending() {
     rafHandle = null;
@@ -242,7 +325,7 @@ export function createChatController(config: ChatControllerConfig) {
       const pending = pendingStream[aid];
       if (!pending) { delete pendingStream[aid]; continue; }
       const n = Math.max(2, Math.floor(pending.length / 8));
-      streamingContent[aid] = (streamingContent[aid] || '') + pending.slice(0, n);
+      appendToReply(aid, pending.slice(0, n));
       const rest = pending.slice(n);
       if (rest) { pendingStream[aid] = rest; hasMore = true; }
       else delete pendingStream[aid];
@@ -256,12 +339,12 @@ export function createChatController(config: ChatControllerConfig) {
     rafHandle = requestAnimationFrame(drainPending);
   }
 
-  // Immediately move buffered text to the display (on completion/reset) so nothing is lost.
+  // Immediately move buffered text into the reply (on completion/reset) so nothing is lost.
   function flushPending(aid?: string) {
     const keys = aid ? [aid] : Object.keys(pendingStream);
     for (const k of keys) {
       if (pendingStream[k]) {
-        streamingContent[k] = (streamingContent[k] || '') + pendingStream[k];
+        appendToReply(k, pendingStream[k]);
         delete pendingStream[k];
       }
     }
@@ -273,7 +356,10 @@ export function createChatController(config: ChatControllerConfig) {
     }
     rafHandle = null;
     pendingStream = {};
-    streamingContent = {};
+    replyId = {};
+    // Drop any abandoned streaming flag (stop/cancel/reset leave the partial reply
+    // in place) so a future render gate can't pin a dead bubble as "still live".
+    messages = messages.map((m) => (m.type === 'assistant' && m.streaming ? { ...m, streaming: false } : m));
   }
 
   // --- Event filtering ---
@@ -300,6 +386,14 @@ export function createChatController(config: ChatControllerConfig) {
       chunk = chunk.replace(STATUS_RE, '');
     }
     if (!chunk) return;
+    // Narration resuming after this reply already ran tools starts a FRESH bubble,
+    // so each segment owns exactly the tools that followed it — the same grouping
+    // history rebuilds from contentBlocks, and the way NeboLoop renders a turn.
+    const idx = replyIndex(aid);
+    if (idx !== -1) {
+      const m = messages[idx];
+      if (m.type === 'assistant' && m.tools?.length) finalizeReply(aid);
+    }
     // Buffer the chunk; the rAF drain renders it smoothly (no spurts).
     pendingStream[aid] = (pendingStream[aid] || '') + chunk;
     schedulePump();
@@ -308,37 +402,34 @@ export function createChatController(config: ChatControllerConfig) {
   function handleChatComplete(data: any) {
     if (!isMyEvent(data)) return;
     const aid = data.agentId || agentId;
-    // Flush any buffered streamed text before finalizing so nothing is lost.
+    // Flush any buffered streamed text into the open reply before finalizing.
     flushPending(aid);
-    const content = streamingContent[aid];
     const attachments = artifactsToAttachments(data.artifacts);
     const workItems = artifactsToWorkItems(data.artifacts);
-    if (content || attachments.length || workItems.length) {
-      const isDelegate = aid !== agentId;
-      const delegateAgent = isDelegate ? allAgents.find(a => a.id === aid) : null;
-      // Finalize in place: the streamed text IS the final segment —
-      // chat_complete carries no replacement content (a final payload that
-      // re-carried the whole turn made earlier segments render twice).
-      messages = [...messages, {
-        id: 'msg-' + Date.now(),
-        type: 'assistant' as const,
-        content: content || '',
-        time: formatTime(Date.now()),
-        ...(delegateAgent ? {
-          delegateAgentId: delegateAgent.id,
-          delegateAgentName: delegateAgent.name,
-        } : {}),
-        ...(attachments.length ? { attachments } : {}),
-        ...(workItems.length ? { workItems } : {}),
-      }];
-      delete streamingContent[aid];
-      config.onResponseComplete?.(content || '');
+    // Run artifacts attach to the turn's open reply; if nothing streamed but a run
+    // produced files, open a bubble to hold them. Then finalize in place — the
+    // streamed text IS the final segment (chat_complete carries no replacement
+    // content; re-carrying the whole turn made earlier segments render twice).
+    let idx = replyIndex(aid);
+    if (idx === -1 && (attachments.length || workItems.length)) idx = startReply(aid);
+    if (idx !== -1) {
+      const m = messages[idx];
+      if (m.type === 'assistant') {
+        messages[idx] = {
+          ...m,
+          time: formatTime(Date.now()),
+          ...(attachments.length ? { attachments } : {}),
+          ...(workItems.length ? { workItems } : {}),
+        };
+        const finalText = (messages[idx] as { content: string }).content;
+        finalizeReply(aid);
+        config.onResponseComplete?.(finalText || '');
+      }
     }
     if (aid === agentId) {
       isLoading = false;
       phaseStartTime = 0;
       activityStatus = '';
-      pendingTools.clear();
       if (usageClearTimer) clearTimeout(usageClearTimer);
       usageClearTimer = setTimeout(() => { tokenUsage = null; }, 5000);
     }
@@ -348,13 +439,37 @@ export function createChatController(config: ChatControllerConfig) {
     if (!isMyEvent(data)) return;
     const aid = data.agentId || agentId;
     flushPending(aid);
-    const content = data.content || data.text || streamingContent[aid] || '';
-    if (!content) return;
+    const content = data.content || data.text || '';
+    const idx = replyIndex(aid);
+
+    // An open streamed reply exists — finalize it IN PLACE (replace with the
+    // complete content when provided). Never append a duplicate bubble.
+    if (idx !== -1) {
+      const m = messages[idx];
+      if (m.type === 'assistant') {
+        const workItems = artifactsToWorkItems(data.artifacts);
+        messages[idx] = {
+          ...m,
+          ...(content ? { content } : {}),
+          ...(data.html ? { html: data.html } : {}),
+          time: formatTime(data.createdAt || Date.now()),
+          ...(workItems.length ? { workItems } : {}),
+        };
+      }
+      const finalText = messages[idx]?.type === 'assistant' ? (messages[idx] as { content: string }).content : '';
+      finalizeReply(aid);
+      if (aid === agentId) isLoading = false;
+      if (finalText) config.onResponseComplete?.(finalText);
+      return;
+    }
+
+    // No open reply: a complete (non-streamed) message — append it fresh.
+    if (!content) { if (aid === agentId) isLoading = false; return; }
     const isDelegate = aid !== agentId;
     const delegateAgent = isDelegate ? allAgents.find(a => a.id === aid) : null;
     const workItems = artifactsToWorkItems(data.artifacts);
     messages = [...messages, {
-      id: data.id || 'msg-' + Date.now(),
+      id: data.id || nextId(),
       type: 'assistant' as const,
       content,
       html: data.html || undefined,
@@ -365,7 +480,6 @@ export function createChatController(config: ChatControllerConfig) {
         delegateAgentName: delegateAgent.name,
       } : {}),
     }];
-    delete streamingContent[aid];
     if (aid === agentId) isLoading = false;
     config.onResponseComplete?.(content);
   }
@@ -390,71 +504,71 @@ export function createChatController(config: ChatControllerConfig) {
     const aid = data.agentId || agentId;
     if (aid === agentId && !isLoading) { isLoading = true; phaseStartTime = Date.now(); }
 
-    // Commit pending streaming text before the tool so tool groups from
-    // different agentic loop turns are separated by assistant text.
+    // Flush buffered narration into the open reply, then attach the tool TO that
+    // reply's timeline — tools live on the message, never as sibling entries.
     flushPending(aid);
-    const pendingText = streamingContent[aid];
-    if (pendingText) {
-      const isDelegate = aid !== agentId;
-      const delegateAgent = isDelegate ? allAgents.find(a => a.id === aid) : null;
-      messages = [...messages, {
-        id: 'msg-' + Date.now(),
-        type: 'assistant' as const,
-        content: pendingText,
-        time: '',
-        ...(delegateAgent ? {
-          delegateAgentId: delegateAgent.id,
-          delegateAgentName: delegateAgent.name,
-        } : {}),
-      }];
-      delete streamingContent[aid];
-    }
+    const idx = ensureReply(aid);
 
     let request: Record<string, unknown> = {};
     try {
       request = typeof data.input === 'string' ? JSON.parse(data.input) : (data.input || {});
     } catch { /* keep empty */ }
-    const idx = messages.length;
-    messages = [...messages, {
-      type: 'tool' as const,
-      name: toolDisplayName(data.tool || 'tool', request),
-      status: 'running',
-      duration: '...',
-      request,
-      response: '',
-    }];
-    if (data.tool_id) {
-      pendingTools.set(data.tool_id, { idx, startTime: Date.now() });
+    const m = messages[idx];
+    if (m.type === 'assistant') {
+      const tool: ToolUse = {
+        toolId: data.tool_id,
+        // Raw tool name so the display formats the signature (MCP → "slug · tool",
+        // STRAP → "name · resource.action"); label + outcome come from the backend.
+        name: data.tool || 'tool',
+        label: data.label,
+        status: 'running',
+        request,
+        response: '',
+        startedAt: Date.now(),
+      };
+      messages[idx] = { ...m, tools: [...(m.tools ?? []), tool] };
     }
-    activityStatus = toolActivityLabel(data.tool || '');
+    // Prefer the backend's humanized label so the live indicator and the
+    // persisted timeline speak the same vocabulary; static map is the fallback.
+    activityStatus = data.label || toolActivityLabel(data.tool || '');
   }
 
   function handleToolResult(data: any) {
     if (!isMyEvent(data)) return;
-    const pending = data.tool_id ? pendingTools.get(data.tool_id) : undefined;
-    if (pending) {
-      const elapsed = Math.round((Date.now() - pending.startTime) / 1000);
-      const duration = elapsed >= 60
-        ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
-        : `${elapsed}s`;
-      const updated = [...messages];
-      updated[pending.idx] = {
-        ...updated[pending.idx],
-        status: data.is_error ? 'error' : 'success',
-        duration,
-        response: typeof data.result === 'string' ? data.result : JSON.stringify(data.result, null, 2),
-      } as ChatMessage;
-      messages = updated;
-      pendingTools.delete(data.tool_id);
-    } else {
-      messages = [...messages, {
-        type: 'tool' as const,
-        name: data.tool_name || 'tool',
-        status: data.is_error ? 'error' : 'success',
-        duration: '0s',
-        request: {},
-        response: typeof data.result === 'string' ? data.result : JSON.stringify(data.result, null, 2),
-      }];
+    const toolId = data.tool_id as string | undefined;
+    const status: ToolUse['status'] = data.is_error ? 'error' : 'success';
+    const response = typeof data.result === 'string' ? data.result : JSON.stringify(data.result, null, 2);
+    // Locate the matching running tool across reply bubbles — it may live in an
+    // earlier, already-finalized segment of this same turn.
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.type !== 'assistant' || !m.tools?.length) continue;
+      const ti = toolId
+        ? m.tools.findIndex((t) => t.toolId === toolId)
+        : m.tools.findIndex((t) => t.status === 'running');
+      if (ti === -1) continue;
+      const tools = [...m.tools];
+      const started = tools[ti].startedAt;
+      tools[ti] = {
+        ...tools[ti],
+        status,
+        response,
+        outcome: data.outcome,
+        durationMs: started ? Date.now() - started : undefined,
+      };
+      messages[i] = { ...m, tools };
+      return;
+    }
+    // No matching start (replay/recovery): attach as a completed tool on the reply.
+    const idx = ensureReply(data.agentId || agentId);
+    const m = messages[idx];
+    if (m.type === 'assistant') {
+      messages[idx] = {
+        ...m,
+        tools: [...(m.tools ?? []), {
+          toolId, name: data.tool_name || 'tool', status, outcome: data.outcome, request: {}, response,
+        }],
+      };
     }
   }
 
@@ -490,15 +604,16 @@ export function createChatController(config: ChatControllerConfig) {
   function handleSubagentProgress(data: any) {
     const op = data.current_operation as string | undefined;
     if (!op) return;
-    // Find the last running tool that is a spawn (sub-agent) and update its statusText
-    const updated = [...messages];
-    for (let i = updated.length - 1; i >= 0; i--) {
-      const msg = updated[i];
-      if (msg.type === 'tool' && msg.status === 'running') {
-        updated[i] = { ...msg, statusText: op } as ChatMessage;
-        messages = updated;
-        return;
-      }
+    // Update the last running tool's live sub-step text (e.g. "Initialized sub-agent").
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.type !== 'assistant' || !m.tools?.length) continue;
+      const ti = m.tools.findIndex((t) => t.status === 'running');
+      if (ti === -1) continue;
+      const tools = [...m.tools];
+      tools[ti] = { ...tools[ti], statusText: op };
+      messages[i] = { ...m, tools };
+      return;
     }
   }
 
@@ -558,7 +673,6 @@ export function createChatController(config: ChatControllerConfig) {
 
     isLoading = true;
     phaseStartTime = Date.now();
-    pendingTools.clear();
 
     const payload: Record<string, unknown> = {
       prompt: text,
@@ -656,27 +770,9 @@ export function createChatController(config: ChatControllerConfig) {
   // Getters provide reactive reads; Svelte 5 tracks $state access through them.
 
   return {
-    get messages(): ChatMessage[] {
-      // Merge committed messages with in-progress streaming entries
-      const extra: ChatMessage[] = [];
-      for (const [aid, content] of Object.entries(streamingContent)) {
-        if (content) {
-          const isDelegate = aid !== agentId;
-          const delegateAgent = isDelegate ? allAgents.find(a => a.id === aid) : null;
-          extra.push({
-            id: `streaming-${aid}`,
-            type: 'assistant' as const,
-            content,
-            time: '',
-            ...(delegateAgent ? {
-              delegateAgentId: delegateAgent.id,
-              delegateAgentName: delegateAgent.name,
-            } : {}),
-          });
-        }
-      }
-      return [...messages, ...extra];
-    },
+    // The in-progress reply (with its tool timeline) is already a real message in
+    // `messages` — no ephemeral overlay to merge, so tools never render detached.
+    get messages(): ChatMessage[] { return messages; },
     get isLoading() { return isLoading; },
     set isLoading(v: boolean) { isLoading = v; },
     get tokenUsage() { return tokenUsage; },
@@ -700,7 +796,7 @@ export function createChatController(config: ChatControllerConfig) {
         activeSessionKey = key;
         isLoading = false;
         activityStatus = '';
-        pendingTools.clear();
+        resetStreaming();
       }
     },
     dismissWarning,
