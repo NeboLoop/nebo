@@ -68,7 +68,7 @@ Activities define the steps an agent takes when a workflow fires. Each activity 
 | `mcps` | string[] | no | MCP server slugs available to this activity |
 | `model` | string | no | Model override (`"sonnet"`, `"haiku"`, `"opus"`) |
 | `token_budget` | object | no | Per-activity token limit: `{ "max": 4096 }` |
-| `on_error` | object | no | Error handling: `{ "retry": 1, "fallback": "skip" }` |
+| `on_error` | object | no | Error handling: `{ "retry": 1, "fallback": "notify_owner" }` |
 | `min_iterations` | number | no | Force LLM to continue even if it wants to stop early |
 
 ### How Activities Execute

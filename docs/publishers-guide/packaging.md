@@ -94,9 +94,9 @@ Format: `PREFIX-XXXX-XXXX` — Crockford Base32 (`0123456789ABCDEFGHJKMNPQRSTVWX
 | `SKIL` | Install a skill | `SKIL-R7KP-2M9V` |
 | `WORK` | Install a workflow | `WORK-5TG2-XBJK` |
 | `AGNT` | Install an agent | `AGNT-9DCE-4MPA` |
-| `APPX` | Install an app | `APPX-3FKT-7WNP` |[^appx]
-
-[^appx]: The Nebo client detects the `APPX` prefix when resolving app install codes. Note a known mismatch: the marketplace backend currently mints app codes with an `APPS` prefix, which the client does not recognize. `APPX` is the value to rely on until the two are reconciled.
+| `APPS` | Install an app | `APPS-3FKT-7WNP` |
+| `COLL` | Install a collection | `COLL-6QRW-2XZ9` |
+| `CONN` | Add an MCP connector | `CONN-8JHT-5MPB` |
 | `LOOP` | Join bot to a Loop | `LOOP-7YSR-6WN3` |
 | `PLUG` | Install a plugin | `PLUG-4HVT-8KRP` |
 
@@ -611,6 +611,4 @@ Each artifact type has a clear split between identity, domain logic, and prose:
 
 `PREFIX-XXXX-XXXX` — Crockford Base32, case-insensitive. Always resolves to `@latest`.
 
-Prefixes: `NEBO`, `SKIL`, `WORK`, `AGNT`, `APPX`, `LOOP`, `PLUG`
-
-> **App prefix mismatch:** The Nebo client recognizes `APPX` for app install codes, but the marketplace backend currently mints them with an `APPS` prefix. Rely on `APPX` until this is reconciled.
+Prefixes: `NEBO`, `SKIL`, `WORK`, `AGNT`, `APPS`, `COLL`, `CONN`, `LOOP`, `PLUG`

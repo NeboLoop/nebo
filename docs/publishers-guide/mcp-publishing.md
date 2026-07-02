@@ -2,6 +2,8 @@
 
 This guide covers how to publish skills, plugins, and agents to NeboAI using the MCP tools. All publishing operations go through the NeboAI MCP server.
 
+> These publishing operations — the `skill()`/`plugin()`/`agent()` tools and the `curl` upload endpoints at `neboai.com` — target the **NeboLoop marketplace backend over HTTP**, not Nebo's local MCP server. Those endpoints live in a separate service and cannot be exercised from the local desktop.
+
 ---
 
 ## Prerequisites

@@ -2,7 +2,7 @@
 
 An Agent is a job description with a schedule. It bundles workflows and skills into a complete job profile — and it defines *when* each workflow runs. The Agent is the only artifact type that owns event bindings.
 
-An Agent is three files: `manifest.json` (identity), `agent.json` (operational wiring), and `AGENT.md` (persona).
+Only `AGENT.md` (persona) is required. `agent.json` (operational wiring) and `manifest.json` (identity metadata) are both optional — the loader checks for `AGENT.md`'s existence and loads the other two only if present.
 
 For packaging format and manifest.json, see [Packaging](packaging.md).
 
@@ -413,13 +413,19 @@ The user installs a job. Everything else cascades — plugins first, then skills
 
 ### Filesystem Watcher (Development)
 
-During development, agents placed in `~/.nebo/user/agents/` are detected automatically by the filesystem watcher:
+During development, agents placed in the platform-native `user/agents/` directory are detected automatically by the filesystem watcher. The root path is platform-native (not `~/.nebo`):
+
+- macOS: `~/Library/Application Support/Nebo/user/agents/`
+- Windows: `%APPDATA%\Nebo\user\agents\`
+- Linux: `~/.local/share/nebo/user/agents/`
+
+Setting `NEBO_HOME` overrides the root directory. Agents placed there:
 
 - **Added:** New agent directory or symlink with `AGENT.md` → appears in sidebar and Apps page
 - **Changed:** Edits to `AGENT.md`, `agent.json`, or `manifest.json` → metadata updated in DB, worker restarted if active
 - **Removed:** Deleted directory → agent soft-deactivated (DB record preserved with `is_enabled=0`)
 
-Changes are debounced at 1 second. No restart needed. Symlinks are fully supported — you can symlink an entire app directory from your source repo into `~/.nebo/user/agents/` and changes take effect immediately.
+Changes are debounced at 1 second. No restart needed. Symlinks are fully supported — you can symlink an entire app directory from your source repo into the `user/agents/` directory and changes take effect immediately.
 
 ---
 

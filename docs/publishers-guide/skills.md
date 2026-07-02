@@ -27,7 +27,7 @@ skill-name/
 
 Skills use a three-level loading system:
 
-1. **Metadata** (name + description from frontmatter) — Always in context (~100 words). This is what determines whether the skill triggers.
+1. **Metadata** (name + description from frontmatter) — Always in context (~100 words). This is what feeds skill *discovery* ranking — during a conversation the agent's own routing logic decides which skills to use.
 2. **SKILL.md body** — Loaded when the skill triggers (<500 lines ideal). This is the knowledge injected into the agent's context.
 3. **Bundled resources** — Loaded on demand. Scripts execute without being loaded into context. Reference docs are read only when the skill body points to them.
 
@@ -82,7 +82,7 @@ These fields are Nebo-specific extensions. Other platforms ignore fields they do
 | `author` | string | `""` | Skill author |
 | `tags` | string[] | `[]` | Free-form tags for categorization and search |
 | `capabilities` | string[] | `[]` | Platform capabilities the skill needs (see [Platform Capabilities](platform-capabilities.md)) |
-| `triggers` | string[] | `[]` | Phrases that activate the skill (case-insensitive substring matching) |
+| `triggers` | string[] | `[]` | Phrases used for discovery ranking (case-insensitive substring matching); they rank the skill, they do not activate it |
 | `platform` | string[] | `[]` (all) | OS filter: `macos`, `linux`, `windows` |
 | `priority` | int | `0` | Higher = matched first when multiple skills match |
 | `max_turns` | int | `0` | Max agent turns (0 = unlimited) |
@@ -183,9 +183,9 @@ theme-factory/
 
 ## Trigger Matching
 
-Triggers are matched by **case-insensitive substring** against the user's message. If the message contains any trigger phrase, the skill is activated. When multiple skills match, they are sorted by priority (highest first), then by name.
+The `triggers` and `description` fields are used for skill *discovery* ranking, not activation. They feed a scored discovery pass — `triggers` phrases are matched by **case-insensitive substring** against the user's message and, along with `description`, rank candidate skills (higher priority first, then by name). There is no trigger→activation gate: during a conversation the agent's own routing logic decides which skills to actually use.
 
-The `description` field is the primary trigger mechanism. The `triggers` field in frontmatter provides additional phrase-matching as a Nebo extension.
+The `description` field is the primary discovery signal. The `triggers` field in frontmatter provides additional phrase-matching as a Nebo extension.
 
 > **Note on "triggers":** Skill triggers are NLP phrase-matching — case-insensitive substring matching against the user's message. This is a completely different mechanism from Agent triggers (schedule, heartbeat, event), which are event bindings. Same word, different systems.
 

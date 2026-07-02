@@ -87,12 +87,12 @@ my-app/
 | `id` | Unique identifier. Must match the directory name. |
 | `name` | Qualified name (`@org/agents/name`) or display name. |
 | `version` | Semantic version (`1.0.0`). |
-| `artifact_type` | Must be `"app"`. |
 
 ### Optional Fields
 
 | Field | Description |
 |-------|-------------|
+| `artifact_type` | Should be set to `"app"` for categorization, but it is not validated as required (defaults to empty when omitted). |
 | `description` | One-line description shown in the marketplace and apps page. |
 | `permissions` | Array of permission strings (see below). |
 | `window` | Default window dimensions and title. |
