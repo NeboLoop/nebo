@@ -236,6 +236,7 @@ export function createChatController(config: ChatControllerConfig) {
   let isLoading = $state(false);
   let tokenUsage = $state<TokenUsage | null>(null);
   let quotaWarning = $state('');
+  let chatError = $state('');
   let allAgents = $state<AgentInfo[]>([]);
   let activityStatus = $state('');
 
@@ -589,6 +590,15 @@ export function createChatController(config: ChatControllerConfig) {
     quotaWarning = data.message || data.text || '';
   }
 
+  function handleChatError(data: any) {
+    if (!isMyEvent(data)) return;
+    isLoading = false;
+    resetStreaming();
+    phaseStartTime = 0;
+    activityStatus = '';
+    chatError = data.error || 'Something went wrong.';
+  }
+
   function handleAskRequest(data: any) {
     if (!isMyEvent(data)) return;
     const requestId = data.request_id as string;
@@ -644,6 +654,7 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(ws.on('tool_result', handleToolResult));
   unsubs.push(ws.on('usage', handleUsage));
   unsubs.push(ws.on('quota_warning', handleQuotaWarning));
+  unsubs.push(ws.on('chat_error', handleChatError));
   unsubs.push(ws.on('ask_request', handleAskRequest));
   unsubs.push(ws.on('subagent_progress', handleSubagentProgress));
   unsubs.push(ws.on('session_reset', handleSessionReset));
@@ -652,6 +663,7 @@ export function createChatController(config: ChatControllerConfig) {
   // --- Actions ---
 
   function send(text: string, options?: SendOptions & { attachments?: UploadedAttachment[] }) {
+    chatError = '';
     if (!options?.silent) {
       messages = [...messages, {
         id: 'msg-' + Date.now(),
@@ -761,6 +773,10 @@ export function createChatController(config: ChatControllerConfig) {
     quotaWarning = '';
   }
 
+  function dismissError() {
+    chatError = '';
+  }
+
   function destroy() {
     unsubs.forEach(fn => fn());
     if (usageClearTimer) clearTimeout(usageClearTimer);
@@ -777,6 +793,7 @@ export function createChatController(config: ChatControllerConfig) {
     set isLoading(v: boolean) { isLoading = v; },
     get tokenUsage() { return tokenUsage; },
     get quotaWarning() { return quotaWarning; },
+    get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },
     get allAgents() { return allAgents; },
 
@@ -800,6 +817,7 @@ export function createChatController(config: ChatControllerConfig) {
       }
     },
     dismissWarning,
+    dismissError,
     destroy,
   };
 }

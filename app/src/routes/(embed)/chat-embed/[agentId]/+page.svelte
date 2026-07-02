@@ -184,5 +184,7 @@
     tokenUsage={chat.tokenUsage}
     quotaWarning={chat.quotaWarning}
     ondismisswarning={() => chat.dismissWarning()}
+    chatError={chat.chatError}
+    ondismisserror={() => chat.dismissError()}
   />
 </div>

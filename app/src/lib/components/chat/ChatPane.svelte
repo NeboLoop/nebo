@@ -57,7 +57,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], activityStatus = '', tokenUsage = null, quotaWarning = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
     messages?: Message[];
     agentName?: string;
     agentId?: string;
@@ -73,6 +73,7 @@
     activityStatus?: string;
     tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number; overhead?: number } | null;
     quotaWarning?: string;
+    chatError?: string;
     onsend?: (text: string, files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[]) => void;
     onstop?: () => void;
     onedit?: (msgIndex: number, newContent: string) => void;
@@ -80,6 +81,7 @@
     onasksubmit?: (requestId: string, value: string) => void;
     onrestoreversion?: (documentId: string, version: number) => void;
     ondismisswarning?: () => void;
+    ondismisserror?: () => void;
     onloadmore?: () => void;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -1031,6 +1033,28 @@
       <div class="px-3 py-2 rounded-lg bg-warning/10 border border-warning/30 flex items-center justify-between">
         <span class="text-xs text-warning-content">{quotaWarning}</span>
         <button class="btn btn-ghost btn-xs" onclick={() => ondismisswarning?.()}>x</button>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Chat error banner (run died before producing a reply) -->
+  {#if chatError}
+    {@const isOutOfBalance = chatError.includes('USAGE_LIMIT_EXCEEDED')}
+    <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2">
+      <div class="px-3 py-2 rounded-lg bg-error/10 border border-error/30 flex items-center justify-between gap-3">
+        <span class="text-xs text-base-content">
+          {#if isOutOfBalance}
+            You're out of usage balance — your plan limits, gift tokens, and credits are used up.
+          {:else}
+            {chatError}
+          {/if}
+        </span>
+        <div class="flex items-center gap-2 shrink-0">
+          {#if isOutOfBalance}
+            <a href="/pricing" class="btn btn-primary btn-xs">View plans</a>
+          {/if}
+          <button class="btn btn-ghost btn-xs" onclick={() => ondismisserror?.()}>x</button>
+        </div>
       </div>
     </div>
   {/if}

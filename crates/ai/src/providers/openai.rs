@@ -936,6 +936,13 @@ fn map_http_error(status: u16, body: &str, model: &str, url: &str) -> ProviderEr
     };
 
     match status {
+        // Janus quota denial (all spend pools empty) — terminal, not a transient
+        // rate limit: retrying can never succeed until the user adds balance.
+        429 if code == "USAGE_LIMIT_EXCEEDED" => ProviderError::Api {
+            code,
+            message: format!("USAGE_LIMIT_EXCEEDED: {msg}"),
+            retryable: false,
+        },
         429 => ProviderError::RateLimit,
         401 => ProviderError::Auth(msg),
         _ => {

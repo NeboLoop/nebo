@@ -26,9 +26,15 @@
   let allAgents = $state<{ id: string; name: string; role: string; initial: string; status: string; color: string }[]>([]);
   let quotaWarning = $state<string | undefined>(undefined);
 
+  let chatError = $state<string | undefined>(undefined);
+
   // Quota warnings: idiomatic WS subscription, auto-cleaned up on destroy.
   onWsEvent<{ text?: string }>('quota_warning', (d) => {
     if (d?.text) quotaWarning = d.text;
+  });
+
+  onWsEvent<{ error?: string }>('chat_error', (d) => {
+    if (d?.error) { chatError = d.error; isLoading = false; }
   });
 
   onMount(async () => {
@@ -103,4 +109,6 @@
   {isLoading}
   {quotaWarning}
   ondismisswarning={() => quotaWarning = undefined}
+  {chatError}
+  ondismisserror={() => chatError = undefined}
 />

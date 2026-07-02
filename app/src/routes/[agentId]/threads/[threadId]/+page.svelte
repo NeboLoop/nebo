@@ -263,6 +263,7 @@
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
   quotaWarning={chat.quotaWarning}
+  chatError={chat.chatError}
   activityStatus={chat.activityStatus}
   {hasMore}
   {isLoadingMore}
@@ -277,5 +278,6 @@
   onasksubmit={(id, val) => chat.submitAsk(id, val)}
   onrestoreversion={(docId, v) => chat.restoreVersion(docId, v)}
   ondismisswarning={() => chat.dismissWarning()}
+  ondismisserror={() => chat.dismissError()}
   isLoading={chat.isLoading}
 />
