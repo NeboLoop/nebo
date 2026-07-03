@@ -850,6 +850,17 @@ pub async fn delete_agent(
     };
     let slug = name.to_lowercase().replace(' ', "-");
 
+    // Lifecycle event: agent is being uninstalled. Emitted BEFORE any teardown so a
+    // consumer still sees the agent (and its plugins) alive. Note: this same function
+    // then stops the worker and unsubscribes the dispatcher, so an agent cannot reliably
+    // run its OWN teardown workflow off this event during self-deletion — that cleanup
+    // path may need a synchronous hook instead (see plan Part B4).
+    state.emit_lifecycle(
+        "agent.uninstalling",
+        serde_json::json!({ "agent_id": id, "name": name }),
+        format!("uninstall:agent:{id}"),
+    );
+
     // Stop agent worker (cancels heartbeat, event, schedule triggers)
     state.agent_workers.stop_agent(&id).await;
 

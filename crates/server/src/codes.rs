@@ -716,6 +716,16 @@ pub(crate) async fn finalize_agent_install(state: &AppState, artifact_id: &str, 
             }
         }
     }
+
+    // Lifecycle event: agent installed — fires from BOTH install paths, since this shared
+    // finalizer is called by handle_agent_code and the deps cascade. Onboarding workflows
+    // subscribe via an `event` trigger on "agent.installed"; per-account onboarding keys
+    // off "account.connected".
+    state.emit_lifecycle(
+        "agent.installed",
+        serde_json::json!({ "agent_id": artifact_id, "name": name }),
+        format!("install:agent:{artifact_id}"),
+    );
 }
 
 async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
