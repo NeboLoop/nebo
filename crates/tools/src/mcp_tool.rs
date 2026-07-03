@@ -54,6 +54,17 @@ pub async fn resolve_mcp_token(
     client: &mcp::McpClient,
     integration: &db::models::McpIntegration,
 ) -> TokenResolution {
+    if integration.auth_type == "api_key" {
+        // Static bearer token — no expiry, no refresh. Missing/undecryptable key
+        // surfaces as needs-reauth so Settings → MCP prompts for it.
+        return match store.get_mcp_credential_full(&integration.id, "api_key") {
+            Ok(Some(cred)) => match client.decrypt_token(&cred.credential_value) {
+                Ok(t) => TokenResolution::Ready(Some(t)),
+                Err(_) => TokenResolution::NeedsReauth,
+            },
+            _ => TokenResolution::NeedsReauth,
+        };
+    }
     if integration.auth_type != "oauth" {
         return TokenResolution::Ready(None);
     }

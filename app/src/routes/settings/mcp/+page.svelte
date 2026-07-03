@@ -226,6 +226,34 @@
     }
   }
 
+  // API-key entry for existing integrations (connector installs arrive without a key).
+  let keyPromptId = $state<string | null>(null);
+  let keyPromptValue = $state('');
+
+  function openKeyPrompt(id: string) {
+    keyPromptId = id;
+    keyPromptValue = '';
+  }
+
+  async function submitApiKey() {
+    const id = keyPromptId;
+    const apiKey = keyPromptValue.trim();
+    if (!id || !apiKey) return;
+    keyPromptId = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateIntegration(id, { apiKey, isEnabled: true });
+      const resp = await api.connectIntegration(id) as { success?: boolean; toolCount?: number; message?: string };
+      if (resp?.success) {
+        updateIntegrationById(id, { isEnabled: true, connectionStatus: 'connected', toolCount: resp.toolCount ?? 0, lastError: null });
+      } else {
+        updateIntegrationById(id, { connectionStatus: 'error', lastError: resp?.message || 'Connection failed — check the key' });
+      }
+    } catch {
+      updateIntegrationById(id, { connectionStatus: 'error', lastError: 'Failed to save API key' });
+    }
+  }
+
   async function reauthenticate(id: string) {
     try {
       const api = await import('$lib/api/nebo');
@@ -318,6 +346,15 @@
               <KeyRound class="w-4 h-4 text-warning" />
             </button>
           {/if}
+          {#if integration.authType === 'api_key'}
+            <button
+              onclick={() => openKeyPrompt(integration.id)}
+              class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
+              title={integration.connectionStatus === 'connected' ? 'Replace API key' : 'Enter API key'}
+            >
+              <KeyRound class="w-4 h-4 {integration.connectionStatus === 'connected' ? 'text-base-content/50' : 'text-warning'}" />
+            </button>
+          {/if}
           <button
             onclick={() => toggleEnabled(integration.id)}
             class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
@@ -360,6 +397,35 @@
     </a>
   </div>
 </div>
+
+<!-- API Key Prompt Modal -->
+{#if keyPromptId}
+  <div class="fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/30" role="presentation"></div>
+    <div class="relative bg-base-100 rounded-box border border-base-300 shadow-xl w-[440px] flex flex-col z-10">
+      <div class="flex items-center justify-between px-5 py-3.5 border-b border-base-300 shrink-0">
+        <span class="text-base font-semibold">Enter API key</span>
+        <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none" onclick={() => keyPromptId = null}>
+          <X class="w-4 h-4" />
+        </button>
+      </div>
+      <div class="p-5">
+        <div class="text-xs text-base-content/70 mb-3">This server authenticates with a static API key or bearer token. It's stored encrypted on this device.</div>
+        <input
+          type="password"
+          bind:value={keyPromptValue}
+          placeholder="Paste your API key"
+          class="input input-bordered w-full text-sm font-mono"
+          onkeydown={(e) => { if (e.key === 'Enter') submitApiKey(); }}
+        />
+      </div>
+      <div class="flex justify-end gap-2 px-5 py-3.5 border-t border-base-300">
+        <button class="px-3 py-1.5 rounded-lg border border-base-300 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={() => keyPromptId = null}>Cancel</button>
+        <button class="px-3 py-1.5 rounded-lg text-sm font-medium cursor-pointer btn-primary btn" disabled={!keyPromptValue.trim()} onclick={submitApiKey}>Save & Connect</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Add Server Modal -->
 {#if showAddModal}

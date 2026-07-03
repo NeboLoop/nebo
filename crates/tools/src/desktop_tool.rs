@@ -3422,7 +3422,14 @@ mod tests {
     #[tokio::test]
     async fn test_window_list() {
         let result = handle_window("list", &serde_json::json!({})).await;
-        // Window list should succeed on macOS (may be empty in CI)
+        // Reading window geometry via System Events requires the Accessibility
+        // permission, which test runners often lack (CI, sandboxed shells).
+        // Missing permission (-25211) is a skip, not a failure — any other
+        // error is a real regression.
+        if result.is_error && result.content.contains("-25211") {
+            eprintln!("skipping test_window_list: osascript lacks assistive access");
+            return;
+        }
         assert!(!result.is_error);
     }
 

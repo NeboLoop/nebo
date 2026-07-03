@@ -455,7 +455,29 @@ pub async fn create_integration(
         )
         .map_err(to_error_response)?;
 
+    store_api_key(&state, &id, &body).map_err(to_error_response)?;
+
     Ok(Json(serde_json::json!({"integration": integration})))
+}
+
+/// Encrypt and store an `apiKey` from a request body as the integration's
+/// "api_key" credential (static bearer token). No-op when absent or empty.
+fn store_api_key(
+    state: &AppState,
+    integration_id: &str,
+    body: &serde_json::Value,
+) -> Result<(), types::NeboError> {
+    let Some(key) = body["apiKey"].as_str().filter(|k| !k.trim().is_empty()) else {
+        return Ok(());
+    };
+    let encrypted = state
+        .bridge
+        .client()
+        .encrypt_token(key.trim())
+        .map_err(|e| types::NeboError::Internal(format!("encrypt api key: {e}")))?;
+    state
+        .store
+        .store_mcp_credentials(integration_id, "api_key", &encrypted, None, None, None)
 }
 
 /// GET /api/v1/integrations/:id
@@ -488,6 +510,9 @@ pub async fn update_integration(
             body.get("metadata").map(|v| v.to_string()).as_deref(),
         )
         .map_err(to_error_response)?;
+
+    // A new/rotated API key clears any needs_reauth state on the next sync.
+    store_api_key(&state, &id, &body).map_err(to_error_response)?;
 
     // Sync bridge to reflect changes
     sync_bridge(&state).await;
