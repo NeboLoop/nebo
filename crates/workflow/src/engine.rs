@@ -13,6 +13,30 @@ use crate::parser::{Activity, WorkflowDef};
 
 const MAX_ITERATIONS: u32 = 50;
 
+/// Open a provider stream, retrying transient/retryable errors (transport
+/// blips, 5xx, rate limits) with a short backoff — the same classes the
+/// chat runner retries. Terminal errors (auth, usage limit) fail immediately.
+async fn stream_with_retry(
+    provider: &dyn ai::Provider,
+    req: &ChatRequest,
+) -> Result<tokio::sync::mpsc::Receiver<ai::StreamEvent>, ai::ProviderError> {
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 1;
+    loop {
+        match provider.stream(req).await {
+            Ok(rx) => return Ok(rx),
+            Err(e) if attempt < MAX_ATTEMPTS
+                && (e.is_retryable() || ai::is_transient_error(&e)) =>
+            {
+                warn!(attempt, error = %e, "workflow provider error, retrying");
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Decision from the step evaluator (orchestrator between steps).
 #[derive(Debug)]
 enum EvalDecision {
@@ -739,8 +763,7 @@ async fn evaluate_step(
         trace: Some(trace),
     };
 
-    let mut rx = provider
-        .stream(&req)
+    let mut rx = stream_with_retry(provider, &req)
         .await
         .map_err(|e| WorkflowError::Provider(e.to_string()))?;
 
@@ -809,8 +832,7 @@ async fn run_llm_loop(
             trace: Some(trace.clone()),
         };
 
-        let mut rx = provider
-            .stream(&req)
+        let mut rx = stream_with_retry(provider, &req)
             .await
             .map_err(|e| WorkflowError::Provider(e.to_string()))?;
 
