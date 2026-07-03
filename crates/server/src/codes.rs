@@ -641,15 +641,25 @@ async fn handle_connection_code(
         other => other,
     };
 
-    let created = crate::handlers::integrations::create_integrations_from_block(state, &block)
-        .await
-        .map_err(|e| NeboError::Internal(format!("create MCP integration(s): {e}")))?;
+    let created = crate::handlers::integrations::create_integrations_from_block(
+        state,
+        &block,
+        Some(&artifact_id),
+    )
+    .await
+    .map_err(|e| NeboError::Internal(format!("create MCP integration(s): {e}")))?;
 
     if created.is_empty() {
         return Err(NeboError::Internal(format!(
             "connector '{artifact_name}' has no valid MCP servers in its config"
         )));
     }
+
+    // Seed update tracking so Settings → Updates can check this connector for
+    // new versions — same as the agent/skill install paths.
+    let _ = state
+        .store
+        .upsert_artifact_update_pref(&artifact_id, "connector", &detail.item.version);
 
     Ok(CodeHandlerResult {
         message: format!(

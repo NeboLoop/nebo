@@ -365,6 +365,9 @@ pub struct McpIntegration {
     pub created_at: i64,
     pub updated_at: i64,
     pub tool_count: Option<i64>,
+    /// Marketplace connector artifact this integration was installed from
+    /// (CONN- code). None for manually added servers.
+    pub artifact_id: Option<String>,
 }
 
 /// Full OAuth credential data including expiry (for token refresh decisions).
@@ -848,8 +851,16 @@ pub struct ArtifactUpdateSettings {
     pub agents: bool,
     pub skills: bool,
     pub plugins: bool,
+    /// Marketplace MCP connections. Defaults on for blobs saved before the
+    /// field existed.
+    #[serde(default = "default_true")]
+    pub connectors: bool,
     #[serde(alias = "check_interval_hours")]
     pub check_interval_hours: u32,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -102,7 +102,36 @@ pub async fn check_all(state: &AppState) -> Result<(), String> {
         for pref in &skill_prefs {
             tokio::time::sleep(STAGGER).await;
             if let Some(update) =
-                check_skill(state, &api, &pref.artifact_id, &pref.local_version).await
+                check_by_artifact_id(state, &api, "skill", &pref.artifact_id, &pref.local_version)
+                    .await
+            {
+                updates_found.push(update);
+            }
+        }
+    }
+
+    // Check connectors (marketplace MCP connections). Like skills, the CONN-
+    // install path records the artifact id + version in artifact_update_prefs,
+    // and the marketplace serves connector versions from the same detail
+    // endpoint.
+    if prefs.connectors {
+        let connector_prefs: Vec<_> = state
+            .store
+            .list_artifact_update_prefs()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.artifact_type == "connector" && !p.artifact_id.is_empty())
+            .collect();
+        for pref in &connector_prefs {
+            tokio::time::sleep(STAGGER).await;
+            if let Some(update) = check_by_artifact_id(
+                state,
+                &api,
+                "connector",
+                &pref.artifact_id,
+                &pref.local_version,
+            )
+            .await
             {
                 updates_found.push(update);
             }
@@ -235,36 +264,45 @@ async fn check_plugin(
     None
 }
 
-async fn check_skill(
+/// Check one artifact whose version is served by the marketplace's skill
+/// detail endpoint (`get_skill` also serves agents and connectors) against the
+/// locally recorded version from `artifact_update_prefs`. Shared by the skill
+/// and connector checkers — they differ only in `artifact_type`.
+async fn check_by_artifact_id(
     state: &AppState,
     api: &comm::api::NeboAIApi,
-    skill_id: &str,
+    artifact_type: &str,
+    artifact_id: &str,
     local_version: &str,
 ) -> Option<serde_json::Value> {
     if local_version.is_empty() {
         return None;
     }
-    match api.get_skill(skill_id).await {
+    match api.get_skill(artifact_id).await {
         Ok(detail) => {
             let remote = &detail.item.version;
             if remote.is_empty() {
                 return None;
             }
             if has_newer_version(local_version, remote) {
-                let _ = state
-                    .store
-                    .set_artifact_remote_version(skill_id, "skill", remote, true, &detail.item.name);
+                let _ = state.store.set_artifact_remote_version(
+                    artifact_id,
+                    artifact_type,
+                    remote,
+                    true,
+                    &detail.item.name,
+                );
                 return Some(serde_json::json!({
-                    "id": skill_id,
+                    "id": artifact_id,
                     "name": detail.item.name,
-                    "type": "skill",
+                    "type": artifact_type,
                     "localVersion": local_version,
                     "remoteVersion": remote,
                 }));
             }
         }
         Err(e) => {
-            debug!(skill = %skill_id, error = %e, "skill update check failed");
+            debug!(artifact = %artifact_id, artifact_type, error = %e, "update check failed");
         }
     }
     None
@@ -364,6 +402,7 @@ pub(crate) async fn apply_claimed_update(
         "agent" => apply_agent_update_pub(state, api, id).await,
         "plugin" => apply_plugin_update_pub(state, api, id).await,
         "skill" => apply_skill_update_pub(state, api, id).await,
+        "connector" => apply_connector_update_pub(state, api, id).await,
         other => Err(format!("updates for '{other}' artifacts aren't supported yet")),
     };
     match result {
@@ -465,6 +504,35 @@ pub(crate) async fn apply_skill_update_pub(
     tools::persist_skill_from_api(api, skill_id, skill_id, "", Some(&state.store)).await?;
     state.skill_loader.reload_from_disk().await;
     Ok(())
+}
+
+pub(crate) async fn apply_connector_update_pub(
+    state: &AppState,
+    api: &comm::api::NeboAIApi,
+    connector_id: &str,
+) -> Result<(), String> {
+    // A connector's manifest IS its MCP config block — fetch the latest and
+    // reconcile the installed integrations through the ONE sync routine, which
+    // updates rows in place so stored credentials survive (Rule 8 — same
+    // parser/creation core the install path uses).
+    let detail = api
+        .get_skill(connector_id)
+        .await
+        .map_err(|e| format!("fetch connector {connector_id}: {e}"))?;
+    let raw = detail
+        .manifest
+        .ok_or_else(|| format!("connector {connector_id} has no MCP config"))?;
+    // The block may arrive as a JSON object or a JSON-encoded string (same as
+    // the CONN- install path).
+    let block = match raw {
+        serde_json::Value::String(s) => serde_json::from_str(&s)
+            .map_err(|e| format!("connector config is not valid JSON: {e}"))?,
+        other => other,
+    };
+    crate::handlers::integrations::sync_integrations_from_block(state, connector_id, &block)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn current_platform() -> String {

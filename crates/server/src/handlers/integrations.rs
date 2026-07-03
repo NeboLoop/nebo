@@ -105,10 +105,13 @@ pub(crate) fn parse_mcp_servers_block(v: &serde_json::Value) -> Vec<ParsedMcpSer
 /// Create local `mcp_integrations` from a standard config block, then connect
 /// the ones that can connect without user interaction (stdio + no-auth remote;
 /// OAuth servers wait for the user to authorize). Returns the created rows.
-/// Used by both the settings paste-import and connector code redemption.
+/// Used by both the settings paste-import and connector code redemption;
+/// `artifact_id` links marketplace-installed rows to their connector artifact
+/// for update tracking (None for manual paste-imports).
 pub(crate) async fn create_integrations_from_block(
     state: &AppState,
     block: &serde_json::Value,
+    artifact_id: Option<&str>,
 ) -> Result<Vec<db::models::McpIntegration>, types::NeboError> {
     let servers = parse_mcp_servers_block(block);
     let mut created = Vec::new();
@@ -121,12 +124,74 @@ pub(crate) async fn create_integrations_from_block(
             s.server_url.as_deref(),
             &s.auth_type,
             s.metadata.as_deref(),
+            artifact_id,
         )?;
         created.push(integration);
     }
     // Connect everything that doesn't need an OAuth round-trip.
     sync_bridge(state).await;
     Ok(created)
+}
+
+/// Reconcile a connector artifact's installed integrations against a NEW
+/// version of its config block — the connector-update apply path. Existing
+/// rows are updated IN PLACE (matched by server name) so their ids, and with
+/// them stored OAuth/API-key credentials, survive the update; servers added
+/// by the new version are created, servers it dropped are removed. Returns
+/// how many servers the new block defines.
+pub(crate) async fn sync_integrations_from_block(
+    state: &AppState,
+    artifact_id: &str,
+    block: &serde_json::Value,
+) -> Result<usize, types::NeboError> {
+    let servers = parse_mcp_servers_block(block);
+    if servers.is_empty() {
+        return Err(types::NeboError::Validation(
+            "connector config has no valid MCP servers".into(),
+        ));
+    }
+    let existing = state.store.list_mcp_integrations_by_artifact(artifact_id)?;
+
+    for s in &servers {
+        match existing.iter().find(|e| e.name == s.name) {
+            Some(row) => {
+                // Always overwrite metadata: update_mcp_integration keeps the old
+                // value on None, and a stale stdio launch spec would make the
+                // bridge treat a now-remote server as stdio.
+                state.store.update_mcp_integration(
+                    &row.id,
+                    None,
+                    Some(s.server_url.as_deref().unwrap_or("")),
+                    Some(&s.auth_type),
+                    None,
+                    Some(s.metadata.as_deref().unwrap_or("{}")),
+                )?;
+                state.store.set_mcp_server_type(&row.id, &s.server_type)?;
+            }
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                state.store.create_mcp_integration(
+                    &id,
+                    &s.name,
+                    &s.server_type,
+                    s.server_url.as_deref(),
+                    &s.auth_type,
+                    s.metadata.as_deref(),
+                    Some(artifact_id),
+                )?;
+            }
+        }
+    }
+    for stale in existing
+        .iter()
+        .filter(|e| !servers.iter().any(|s| s.name == e.name))
+    {
+        state.bridge.disconnect(&stale.id).await;
+        state.store.delete_mcp_integration(&stale.id)?;
+    }
+
+    sync_bridge(state).await;
+    Ok(servers.len())
 }
 
 /// Fix legacy integrations that were saved as "stdio" but have HTTP URLs.
@@ -414,7 +479,7 @@ pub async fn create_integration(
     // create one integration per server entry and connect them. Same parser the
     // connector (CONN-) code path uses.
     if body.get("mcpServers").is_some() || body.get("servers").is_some() {
-        let created = create_integrations_from_block(&state, &body)
+        let created = create_integrations_from_block(&state, &body, None)
             .await
             .map_err(to_error_response)?;
         return Ok(Json(serde_json::json!({
@@ -452,6 +517,7 @@ pub async fn create_integration(
             server_url,
             auth_type,
             metadata.as_deref(),
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -529,12 +595,31 @@ pub async fn delete_integration(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
+    let artifact_id = state
+        .store
+        .get_mcp_integration(&id)
+        .ok()
+        .flatten()
+        .and_then(|i| i.artifact_id);
     // Disconnect before deleting
     state.bridge.disconnect(&id).await;
     state
         .store
         .delete_mcp_integration(&id)
         .map_err(to_error_response)?;
+    // If that was the connector's last integration, drop its update-tracking
+    // row too — otherwise the update checker would re-notify (and auto-update
+    // would resurrect) a connector the user removed.
+    if let Some(aid) = artifact_id {
+        let remaining = state
+            .store
+            .list_mcp_integrations_by_artifact(&aid)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        if remaining == 0 {
+            let _ = state.store.delete_artifact_update_pref(&aid, "connector");
+        }
+    }
     Ok(Json(serde_json::json!({"success": true})))
 }
 

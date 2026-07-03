@@ -4,6 +4,28 @@ use crate::Store;
 use crate::models::{McpCredentialFull, McpIntegration, McpIntegrationOAuth, McpOAuthConfig};
 use types::NeboError;
 
+/// Map one `mcp_integrations` row (canonical 14-column SELECT order) — the
+/// single mapper shared by list/get/by-artifact so column additions can't
+/// drift between them.
+fn map_mcp_integration_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<McpIntegration> {
+    Ok(McpIntegration {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        server_type: row.get(2)?,
+        server_url: row.get(3)?,
+        auth_type: row.get(4)?,
+        is_enabled: row.get(5)?,
+        connection_status: row.get(6)?,
+        last_connected_at: row.get(7)?,
+        last_error: row.get(8)?,
+        metadata: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+        tool_count: row.get(12)?,
+        artifact_id: row.get(13)?,
+    })
+}
+
 impl Store {
     pub fn list_mcp_integrations(&self) -> Result<Vec<McpIntegration>, NeboError> {
         let conn = self.conn()?;
@@ -11,29 +33,40 @@ impl Store {
             .prepare(
                 "SELECT id, name, server_type, server_url, auth_type, is_enabled,
                         connection_status, last_connected_at, last_error, metadata,
-                        created_at, updated_at, tool_count
+                        created_at, updated_at, tool_count, artifact_id
                  FROM mcp_integrations ORDER BY name",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
 
         let rows = stmt
-            .query_map([], |row| {
-                Ok(McpIntegration {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    server_type: row.get(2)?,
-                    server_url: row.get(3)?,
-                    auth_type: row.get(4)?,
-                    is_enabled: row.get(5)?,
-                    connection_status: row.get(6)?,
-                    last_connected_at: row.get(7)?,
-                    last_error: row.get(8)?,
-                    metadata: row.get(9)?,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
-                    tool_count: row.get(12)?,
-                })
-            })
+            .query_map([], map_mcp_integration_row)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+
+        let mut integrations = Vec::new();
+        for row in rows {
+            integrations.push(row.map_err(|e| NeboError::Database(e.to_string()))?);
+        }
+        Ok(integrations)
+    }
+
+    /// List the integrations installed from a marketplace connector artifact
+    /// (CONN- code) — the rows the update system reconciles on a new version.
+    pub fn list_mcp_integrations_by_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<Vec<McpIntegration>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, server_type, server_url, auth_type, is_enabled,
+                        connection_status, last_connected_at, last_error, metadata,
+                        created_at, updated_at, tool_count, artifact_id
+                 FROM mcp_integrations WHERE artifact_id = ?1 ORDER BY name",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![artifact_id], map_mcp_integration_row)
             .map_err(|e| NeboError::Database(e.to_string()))?;
 
         let mut integrations = Vec::new();
@@ -48,26 +81,10 @@ impl Store {
         match conn.query_row(
             "SELECT id, name, server_type, server_url, auth_type, is_enabled,
                     connection_status, last_connected_at, last_error, metadata,
-                    created_at, updated_at, tool_count
+                    created_at, updated_at, tool_count, artifact_id
              FROM mcp_integrations WHERE id = ?1",
             params![id],
-            |row| {
-                Ok(McpIntegration {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    server_type: row.get(2)?,
-                    server_url: row.get(3)?,
-                    auth_type: row.get(4)?,
-                    is_enabled: row.get(5)?,
-                    connection_status: row.get(6)?,
-                    last_connected_at: row.get(7)?,
-                    last_error: row.get(8)?,
-                    metadata: row.get(9)?,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
-                    tool_count: row.get(12)?,
-                })
-            },
+            map_mcp_integration_row,
         ) {
             Ok(i) => Ok(Some(i)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -83,12 +100,13 @@ impl Store {
         server_url: Option<&str>,
         auth_type: &str,
         metadata: Option<&str>,
+        artifact_id: Option<&str>,
     ) -> Result<McpIntegration, NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO mcp_integrations (id, name, server_type, server_url, auth_type, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, name, server_type, server_url, auth_type, metadata],
+            "INSERT INTO mcp_integrations (id, name, server_type, server_url, auth_type, metadata, artifact_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, name, server_type, server_url, auth_type, metadata, artifact_id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
 

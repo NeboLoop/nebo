@@ -124,7 +124,7 @@ pub async fn set_artifact_auto_update(
 ) -> HandlerResult<serde_json::Value> {
     let enabled = body["enabled"].as_bool().unwrap_or(true);
     // We need the artifact_type — check all types
-    for artifact_type in &["agent", "skill", "plugin", "app"] {
+    for artifact_type in &["agent", "skill", "plugin", "app", "connector"] {
         let _ = state.store.set_artifact_auto_update(&id, artifact_type, enabled);
     }
     Ok(Json(serde_json::json!({ "ok": true })))

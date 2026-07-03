@@ -27,11 +27,11 @@
     detail: string;
     appliedAt: number;
   }
-  interface UpdateSettings { agents: boolean; skills: boolean; plugins: boolean; checkIntervalHours: number }
+  interface UpdateSettings { agents: boolean; skills: boolean; plugins: boolean; connectors: boolean; checkIntervalHours: number }
 
   let pending = $state<Pending[]>([]);
   let history = $state<HistoryEntry[]>([]);
-  let settings = $state<UpdateSettings>({ agents: true, skills: true, plugins: true, checkIntervalHours: 6 });
+  let settings = $state<UpdateSettings>({ agents: true, skills: true, plugins: true, connectors: true, checkIntervalHours: 6 });
   let checking = $state(false);
   let updatingAll = $state(false);
   // artifactIds currently mid-apply (button → spinner)
@@ -132,7 +132,7 @@
     {checking ? 'Checking…' : 'Check now'}
   </button>
 </div>
-<p class="text-xs text-base-content/70 mb-6">Available updates for your installed plugins, agents, skills, and apps. You approve each update; turn on auto-update per item to apply silently.</p>
+<p class="text-xs text-base-content/70 mb-6">Available updates for your installed plugins, agents, skills, MCP connectors, and apps. You approve each update; turn on auto-update per item to apply silently.</p>
 
 <!-- Pending updates -->
 <div class="flex items-center justify-between mb-3">
@@ -176,7 +176,7 @@
 <!-- Auto-check settings -->
 <h3 class="text-sm font-semibold mb-3">Automatic checks</h3>
 <div class="border border-base-300 rounded-xl divide-y divide-base-content/10 mb-8">
-  {#each [['plugins', 'Plugins'], ['agents', 'Agents'], ['skills', 'Skills']] as [key, label]}
+  {#each [['plugins', 'Plugins'], ['agents', 'Agents'], ['skills', 'Skills'], ['connectors', 'MCP Connectors']] as [key, label]}
     <div class="flex items-center justify-between px-4 py-3">
       <span class="text-sm">{label}</span>
       <input

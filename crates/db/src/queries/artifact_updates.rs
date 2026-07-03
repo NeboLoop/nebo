@@ -182,7 +182,7 @@ impl Store {
             .query_row(
                 "SELECT COALESCE(
                     (SELECT auto_update_artifacts FROM settings WHERE id = 1),
-                    '{\"agents\":true,\"skills\":true,\"plugins\":true,\"checkIntervalHours\":6}'
+                    '{\"agents\":true,\"skills\":true,\"plugins\":true,\"connectors\":true,\"checkIntervalHours\":6}'
                  )",
                 [],
                 |row| row.get(0),
