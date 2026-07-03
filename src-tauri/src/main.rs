@@ -713,6 +713,32 @@ fn main() {
                 })
                 .build(app)?;
 
+            // macOS app menu: default menu with "Check for Updates..." inserted
+            // into the application submenu, right after "About Nebo".
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::{Menu, MenuItemKind};
+                let app_menu = Menu::default(app.handle())?;
+                if let Some(MenuItemKind::Submenu(first)) = app_menu.items()?.first() {
+                    let check = MenuItemBuilder::with_id("check_update", "Check for Updates...")
+                        .build(app)?;
+                    first.insert(&check, 1)?;
+                }
+                app.set_menu(app_menu)?;
+                app.on_menu_event(|app, event| {
+                    if event.id().as_ref() == "check_update" {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.unminimize();
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                            let _ = w.eval(
+                                "if(window.__NEBO_CHECK_UPDATE__)window.__NEBO_CHECK_UPDATE__()",
+                            );
+                        }
+                    }
+                });
+            }
+
             // Global hotkey: Cmd+Shift+Space (macOS) / Ctrl+Shift+Space (others)
             // Toggles a floating prompt window for quick input
             {

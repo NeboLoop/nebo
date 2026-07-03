@@ -37,6 +37,27 @@ export const showUpdateBanner = derived(updateState, ($s) => $s.ready && !$s.app
 /** True when download is in progress */
 export const updateDownloading = derived(updateState, ($s) => $s.available && !$s.ready && $s.downloadPercent > 0 && $s.downloadPercent < 100);
 
+/**
+ * Manually check for updates (tray menu, app menu, Settings → About).
+ * Feeds the same update store the background checker uses — one pathway.
+ */
+export async function checkForUpdates(): Promise<'latest' | 'available' | 'error'> {
+  const api = await import('$lib/api/nebo');
+  const { addToast } = await import('$lib/stores/toast');
+  try {
+    const result = (await api.updateCheck()) as Record<string, unknown>;
+    if (result?.available) {
+      onUpdateAvailable(result);
+      return 'available';
+    }
+    addToast("You're on the latest version", 'info');
+    return 'latest';
+  } catch {
+    addToast('Failed to check for updates', 'error');
+    return 'error';
+  }
+}
+
 export function onUpdateAvailable(data: Record<string, unknown>) {
   updateState.update((s) => ({
     ...s,

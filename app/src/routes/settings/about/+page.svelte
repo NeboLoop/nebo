@@ -3,11 +3,30 @@
   import { onMount } from 'svelte';
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import { updateState, checkForUpdates, setApplying } from '$lib/stores/update';
+  import { addToast } from '$lib/stores/toast';
 
   let version = $state('—');
   let platform = $state('—');
   let licensesText = $state('');
   let showLicenses = $state(false);
+  let checkingUpdate = $state(false);
+
+  async function runUpdateCheck() {
+    checkingUpdate = true;
+    await checkForUpdates();
+    checkingUpdate = false;
+  }
+
+  async function installUpdate() {
+    setApplying();
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateApply();
+    } catch {
+      addToast('Failed to apply update', 'error');
+    }
+  }
 
   onMount(async () => {
     try {
@@ -62,6 +81,20 @@
       <span class="text-xs text-base-content/70">Platform</span>
       <span class="text-xs font-mono">{platform}</span>
     </div>
+    <div class="flex justify-between items-center py-1.5">
+      {#if $updateState.available}
+        <span class="text-xs text-base-content/70">v{$updateState.latestVersion} available</span>
+        <button class="btn btn-primary btn-xs" onclick={installUpdate} disabled={$updateState.applying}>
+          {$updateState.applying ? 'Restarting…' : $updateState.ready ? 'Relaunch to update' : 'Install & Restart'}
+        </button>
+      {:else}
+        <span class="text-xs text-base-content/50">{checkingUpdate ? 'Checking…' : 'Updates'}</span>
+        <button class="btn btn-ghost btn-xs" onclick={runUpdateCheck} disabled={checkingUpdate}>Check for Updates</button>
+      {/if}
+    </div>
+    {#if $updateState.error}
+      <div class="text-xs text-error">{$updateState.error}</div>
+    {/if}
   </div>
 </div>
 

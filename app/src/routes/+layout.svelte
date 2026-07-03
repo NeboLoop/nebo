@@ -32,23 +32,10 @@
   onMount(() => {
     checkOnboardingStatus();
 
-    // Expose global for Tauri tray "Check for Updates" menu item
+    // Expose global for the Tauri tray + app menu "Check for Updates" items
     (window as any).__NEBO_CHECK_UPDATE__ = async () => {
-      try {
-        const api = await import('$lib/api/nebo');
-        const result = await api.updateCheck();
-        const data = result as Record<string, unknown>;
-        if (data?.available) {
-          const { onUpdateAvailable } = await import('$lib/stores/update');
-          onUpdateAvailable(data);
-        } else {
-          const { addToast } = await import('$lib/stores/toast');
-          addToast('You\'re on the latest version', 'info');
-        }
-      } catch {
-        const { addToast } = await import('$lib/stores/toast');
-        addToast('Failed to check for updates', 'error');
-      }
+      const { checkForUpdates } = await import('$lib/stores/update');
+      await checkForUpdates();
     };
 
     // Connect WebSocket once onboarding is done, then attach event listeners

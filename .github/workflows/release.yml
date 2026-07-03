@@ -738,6 +738,9 @@ jobs:
         run: chmod +x artifacts/nebo-* 2>/dev/null || true
 
       - name: Generate checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
         run: |
           cd artifacts
           sha256sum \
@@ -748,6 +751,15 @@ jobs:
             Nebo-*.AppImage \
             *.deb \
             Nebo-*.dmg 2>/dev/null | tee checksums.txt
+          # Merge in lines from the tag's existing release checksums for assets
+          # this run did not build (macOS is published locally via
+          # `make publish-macos`). Without this, a CI re-run after the mac
+          # publish clobbers the mac entries and the fail-closed desktop
+          # updater rejects every mac update for the release (v0.12.4 bug).
+          if gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p checksums.txt -O /tmp/existing-checksums.txt 2>/dev/null; then
+            awk 'NR==FNR{seen[$2]=1;next} $2 && !seen[$2]' checksums.txt /tmp/existing-checksums.txt >> checksums.txt
+            sort -u checksums.txt -o checksums.txt
+          fi
           echo "Generated checksums:"
           cat checksums.txt
 
