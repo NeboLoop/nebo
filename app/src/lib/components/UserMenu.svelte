@@ -32,7 +32,7 @@
     { href: '/settings/profile', label: 'Settings', icon: '⚙' },
     { href: '/settings/account', label: 'Account', icon: '👤' },
     { href: '/settings/billing', label: 'Billing', icon: '💳' },
-    { href: '/upgrade', label: 'Upgrade', icon: '↑' },
+    { href: '/pricing', label: 'Upgrade', icon: '↑' },
     null,
     { href: '/settings/about', label: 'About Nebo', icon: 'ℹ' },
   ];

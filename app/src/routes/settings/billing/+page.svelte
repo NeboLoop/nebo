@@ -241,7 +241,7 @@
             {/if}
           </div>
           <button
-            onclick={() => goto('/upgrade')}
+            onclick={() => goto('/pricing')}
             class="text-sm text-primary font-medium hover:brightness-110 transition-all cursor-pointer bg-transparent border-none"
           >
             Adjust plan

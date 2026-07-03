@@ -150,7 +150,7 @@
               {/if}
             {/if}
           </div>
-          <a href="/upgrade" class="text-sm text-primary font-medium hover:brightness-110 transition-all">Change Plan</a>
+          <a href="/pricing" class="text-sm text-primary font-medium hover:brightness-110 transition-all">Change Plan</a>
         </div>
       </section>
     {/if}

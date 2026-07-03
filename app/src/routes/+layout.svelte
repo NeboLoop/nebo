@@ -217,7 +217,7 @@
     plan={upgradedPlan}
     onclose={() => {
       showUpgradeSuccess = false;
-      if ($page.url.pathname.startsWith('/upgrade')) goto('/');
+      if ($page.url.pathname.startsWith('/pricing')) goto('/');
     }}
   />
 {/if}

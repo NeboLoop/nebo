@@ -79,6 +79,16 @@
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: currency || 'usd', minimumFractionDigits: 0 }).format(cents / 100);
   }
 
+  // With Double Up attached, the plan's "Nx the usage of Lite" claim doubles
+  // (Plus 5x → 10x, Max 10x → 20x) to reflect the doubled usage envelope.
+  function displayFeatures(features: string[], doubled: boolean): string[] {
+    if (!doubled) return features;
+    return features.map((f) => {
+      const m = f.match(/^(\d+)x\b/);
+      return m ? f.replace(/^\d+x/, `${parseInt(m[1], 10) * 2}x`) : f;
+    });
+  }
+
   async function selectPlan(price: BillingPriceInfo) {
     selectedPrice = price;
     selectedBoost = boostSelections[price.id ?? ''] ? getBoostPrice(price.boostPriceId) || null : null;
@@ -166,22 +176,6 @@
       <p class="text-xs text-base-content/50 max-w-md mx-auto mt-2">AI that runs on your machine. Pick a plan, get instant access.</p>
     </div>
 
-    <div class="flex justify-center">
-      <div class="inline-flex rounded-full bg-base-200/80 p-1">
-        <button
-          onclick={() => (billingInterval = 'month')}
-          class="px-6 py-2 rounded-full text-sm font-semibold transition-all cursor-pointer bg-transparent border-none {billingInterval === 'month' ? 'bg-base-100 text-base-content shadow-sm' : 'text-base-content/40 hover:text-base-content/60'}"
-        >Monthly</button>
-        <button
-          onclick={() => (billingInterval = 'year')}
-          class="px-6 py-2 rounded-full text-sm font-semibold transition-all cursor-pointer bg-transparent border-none {billingInterval === 'year' ? 'bg-base-100 text-base-content shadow-sm' : 'text-base-content/40 hover:text-base-content/60'}"
-        >
-          Annual
-          <span class="ml-1 text-xs font-bold text-success">Save 17%</span>
-        </button>
-      </div>
-    </div>
-
     {#if visiblePrices.length > 0}
       <div class="grid sm:grid-cols-3 gap-5">
         {#each visiblePrices as price, i (price.id)}
@@ -220,7 +214,7 @@
 
             {#if price.features && price.features.length > 0}
               <ul class="space-y-2.5 mb-5 flex-1">
-                {#each price.features as feature}
+                {#each displayFeatures(price.features, boostChecked) as feature}
                   <li class="flex items-start gap-2 text-sm text-base-content/70">
                     <Check class="w-4 h-4 shrink-0 mt-0.5 {isPopular ? 'text-primary' : 'text-base-content/30'}" />
                     {feature}
@@ -235,15 +229,11 @@
                 <div class="flex-1">
                   <div class="flex items-center gap-1.5">
                     <Zap class="w-3.5 h-3.5 text-accent" />
-                    <span class="text-xs font-bold text-base-content uppercase tracking-wide">Advanced Compute</span>
+                    <span class="text-xs font-bold text-base-content uppercase tracking-wide">Double Up</span>
                   </div>
-                  <p class="text-xs text-base-content/50 mt-1">{boost.description || '3x access to frontier models.'}</p>
+                  <p class="text-xs text-base-content/50 mt-1">Same companion. Twice as much of it.</p>
                   <p class="text-xs font-bold text-accent mt-1">
-                    {#if boost.interval === 'year'}
-                      +{fmt(Math.round((boost.amountCents ?? 0) / 12), boost.currency)}/mo ({fmt(boost.amountCents ?? 0, boost.currency)}/yr)
-                    {:else}
-                      +{fmt(boost.amountCents ?? 0, boost.currency)}/mo
-                    {/if}
+                    +{fmt(boost.amountCents ?? 0, boost.currency)}/mo
                   </p>
                 </div>
               </label>

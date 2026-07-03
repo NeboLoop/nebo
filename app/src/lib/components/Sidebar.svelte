@@ -267,7 +267,7 @@
       <a href="/settings/account" class="flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors {activePage === 'settings' ? 'bg-base-content/5 text-base-content font-medium' : 'text-base-content hover:bg-base-content/5 hover:text-base-content'}">
         <span class="w-4 text-center text-sm">⚙</span> Settings
       </a>
-      <a href="/upgrade" class="flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors {activePage === 'upgrade' ? 'bg-base-content/5 text-base-content font-medium' : 'text-base-content hover:bg-base-content/5 hover:text-base-content'}">
+      <a href="/pricing" class="flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors {activePage === 'pricing' ? 'bg-base-content/5 text-base-content font-medium' : 'text-base-content hover:bg-base-content/5 hover:text-base-content'}">
         <span class="w-4 text-center text-sm">↑</span> Upgrade
       </a>
     {:else}
