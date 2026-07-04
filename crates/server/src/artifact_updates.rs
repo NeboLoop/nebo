@@ -467,6 +467,13 @@ pub(crate) async fn apply_agent_update_pub(
 
     // Reload agent loader to pick up new version from filesystem
     state.agent_loader.load_all().await;
+
+    // Lifecycle event: agent updated to a new version.
+    state.emit_lifecycle(
+        "agent.updated",
+        serde_json::json!({ "agent_id": agent_id, "version": agent.kind }),
+        format!("update:agent:{agent_id}"),
+    );
     Ok(())
 }
 

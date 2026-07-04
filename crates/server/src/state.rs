@@ -153,3 +153,21 @@ pub struct AppState {
     /// Lets the engaged user keep talking without re-mentioning the bot.
     pub channel_engagement: Arc<Mutex<HashMap<String, Engagement>>>,
 }
+
+impl AppState {
+    /// Emit a lifecycle event onto the EventBus. Workflows subscribe via an `event` trigger
+    /// whose `sources` list contains `source` (e.g. "account.connected"). Fills in the
+    /// timestamp; `payload` is an arbitrary JSON object merged into the workflow as
+    /// `_event_payload`. Best-effort — dropped if no dispatcher is listening.
+    pub fn emit_lifecycle(&self, source: &str, payload: serde_json::Value, origin: String) {
+        self.event_bus.emit(tools::events::Event {
+            source: source.to_string(),
+            payload,
+            origin,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        });
+    }
+}

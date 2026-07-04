@@ -301,6 +301,7 @@ fn spawn_plugin_login(
     let plugin_store_for_auth = state.plugin_store.clone();
     let tools_for_refresh = state.tools.clone();
     let profile_store = state.store.clone();
+    let event_bus = state.event_bus.clone();
 
     info!(plugin = %slug, account = ?profile.as_ref().map(|p| &p.account_label), "starting plugin auth login");
 
@@ -486,6 +487,24 @@ fn spawn_plugin_login(
                     // immediately, instead of lingering until the next refresher
                     // tick. (reauth_notified is reset too, so a future expiry re-notifies.)
                     let _ = profile_store.set_plugin_account_reauth(&id, false);
+
+                    // Lifecycle event: a specific account was connected. Per-account onboarding
+                    // workflows subscribe via an `event` trigger on "account.connected" and read
+                    // account/config_dir/agent_id from _event_payload.
+                    event_bus.emit(tools::events::Event {
+                        source: "account.connected".to_string(),
+                        payload: serde_json::json!({
+                            "plugin": &slug_owned,
+                            "account_label": &p.account_label,
+                            "config_dir": &p.config_dir,
+                            "agent_id": &p.agent_id,
+                        }),
+                        origin: format!("auth:plugin:{slug_owned}"),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                    });
                 }
 
                 hub.broadcast(
@@ -620,6 +639,19 @@ pub async fn disconnect_plugin_account(
         let _ = std::fs::remove_dir_all(&dir);
     }
     info!(plugin = %slug, account = %q.account_label, "disconnected plugin account");
+
+    // Lifecycle event: a specific account was disconnected — symmetric with
+    // "account.connected". Workflows subscribe via an `event` trigger on this source.
+    state.emit_lifecycle(
+        "account.disconnected",
+        serde_json::json!({
+            "plugin": &slug,
+            "account_label": &q.account_label,
+            "agent_id": &q.agent_id,
+        }),
+        format!("disconnect:plugin:{slug}"),
+    );
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
