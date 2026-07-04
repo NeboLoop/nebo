@@ -59,12 +59,20 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
         let (has_auth, auth_label, auth_type, auth_env_vars) = match &manifest {
             Some(m) => match &m.auth {
                 Some(auth) => {
-                    // Only surface env vars for env-type auth (API keys the user provides).
-                    // OAuth plugins have pre-filled client credentials — users never touch those.
+                    // env-type auth: every key is a user-provided credential.
+                    // Other types (oauth_cli): keys are publisher-prefilled client
+                    // credentials users never touch — unless the publisher shipped
+                    // them empty, in which case the user must supply their own
+                    // (per the manifest's auth.help instructions), so surface
+                    // exactly the empty ones as input fields.
                     let env_vars: Vec<String> = if auth.auth_type == "env" {
                         auth.env.keys().cloned().collect()
                     } else {
-                        Vec::new()
+                        auth.env
+                            .iter()
+                            .filter(|(_, v)| v.is_empty())
+                            .map(|(k, _)| k.clone())
+                            .collect()
                     };
                     (true, auth.label.clone(), auth.auth_type.clone(), env_vars)
                 }
