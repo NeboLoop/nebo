@@ -2831,13 +2831,26 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             return;
         }
 
+        // Webhook-originated events always run shell-restricted (Origin::Comm),
+        // even in the personal loop: the nbwh_ API key lives in external
+        // systems, so it must never confer owner-level (shell) privileges.
+        // See neboloop docs/PRD_WEBHOOKS.md §10.
+        let is_webhook = serde_json::from_str::<serde_json::Value>(&msg.content)
+            .map(|v| {
+                v.get("platformData")
+                    .and_then(|p| p.get("channel"))
+                    .and_then(|c| c.as_str())
+                    == Some("webhook")
+            })
+            .unwrap_or(false);
+
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
             system: String::new(),
             user_id: String::new(),
             channel: "neboai".to_string(),
-            origin: comm_origin(is_personal),
+            origin: comm_origin(is_personal && !is_webhook),
             agent_id,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
