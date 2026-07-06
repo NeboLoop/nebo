@@ -1132,6 +1132,14 @@ impl NeboAIApi {
             .await
     }
 
+    /// List the owner's active entitlements ("restore purchases") — what this
+    /// account owns and may re-fetch license keys for. Stable "what do I own"
+    /// list, decoupled from subscription-management details.
+    pub async fn entitlements(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/entitlements", None::<&()>)
+            .await
+    }
+
     // ── Plugins ─────────────────────────────────────────────────────
 
     /// Get plugin manifest from NeboAI for a specific platform.
