@@ -70,7 +70,7 @@ pub async fn apply_update(
                 let _ = s.store.record_artifact_update_history(
                     &art.artifact_id,
                     &art.artifact_type,
-                    "",
+                    art.name.as_deref().unwrap_or(""),
                     &art.local_version,
                     &art.remote_version,
                     "failed",

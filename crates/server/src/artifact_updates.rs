@@ -413,7 +413,7 @@ pub(crate) async fn apply_claimed_update(
             let _ = state.store.record_artifact_update_history(
                 id,
                 atype,
-                "",
+                artifact.name.as_deref().unwrap_or(""),
                 &artifact.local_version,
                 &artifact.remote_version,
                 "applied",
@@ -434,7 +434,7 @@ pub(crate) async fn apply_claimed_update(
             let _ = state.store.record_artifact_update_history(
                 id,
                 atype,
-                "",
+                artifact.name.as_deref().unwrap_or(""),
                 &artifact.local_version,
                 &artifact.remote_version,
                 "failed",
