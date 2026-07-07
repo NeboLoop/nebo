@@ -973,6 +973,17 @@ pub async fn marketplace_list_subscriptions(
     Ok(Json(resp))
 }
 
+/// GET /api/v1/neboai/entitlements — list the owner's entitlements ("restore
+/// purchases"): what this account owns, for the UI to show + re-fetch keys.
+pub async fn entitlements(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .entitlements()
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("entitlements: {e}"))))?;
+    Ok(Json(resp))
+}
+
 /// POST /api/v1/neboai/marketplace/subscriptions/:id/cancel — cancel a marketplace subscription.
 pub async fn marketplace_cancel_subscription(
     State(state): State<AppState>,

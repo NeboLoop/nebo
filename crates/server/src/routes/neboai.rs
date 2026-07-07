@@ -92,6 +92,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::neboai::marketplace_cancel_subscription),
         )
         .route(
+            "/neboai/entitlements",
+            axum::routing::get(handlers::neboai::entitlements),
+        )
+        .route(
             "/neboai/reconnect",
             axum::routing::post(handlers::neboai::force_reconnect),
         )
