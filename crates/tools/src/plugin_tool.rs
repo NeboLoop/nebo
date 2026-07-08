@@ -1469,6 +1469,11 @@ mod tests {
             Some("abc-123")
         );
         assert_eq!(agent_id_from_session_key("acp:xyz"), None);
+        // Agent-bound workflow runs — plugin tool must resolve credentials here.
+        assert_eq!(
+            agent_id_from_session_key("agent:cos-uuid:workflow:run-42").as_deref(),
+            Some("cos-uuid")
+        );
     }
 
     #[test]

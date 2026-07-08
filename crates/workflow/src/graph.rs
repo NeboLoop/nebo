@@ -752,9 +752,11 @@ async fn run_llm_activity<'a>(
         prior_context.push_str(&format!("\n[Current item]: {}\n", item));
     }
 
-    // Tool assembly mirrors the sequential path; the emit tool is injected
-    // only on terminal nodes (edge to __emit__).
-    let mut activity_tools: Vec<&Box<dyn DynTool>> = ctx.resolved_tools.iter().collect();
+    // Tool assembly mirrors the sequential path (same scoping — see
+    // scoped_activity_tools); the emit tool is injected only on terminal
+    // nodes (edge to __emit__).
+    let mut activity_tools: Vec<&Box<dyn DynTool>> =
+        crate::engine::scoped_activity_tools(activity, ctx.resolved_tools, ctx.skill_content);
     let emit_tool_box: Option<Box<dyn DynTool>> = ctx
         .event_bus
         .map(|bus| Box::new(tools::EmitTool::new(bus.clone())) as Box<dyn DynTool>);
