@@ -1111,6 +1111,11 @@ async fn watch_loop(
         cmd.args(&args);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        // Watchers self-exit on stdin EOF (orphan prevention) — spawned from
+        // the GUI app without a pipe, stdin is /dev/null → instant EOF → the
+        // watcher dies ~5s in, forever. Pipe stdin and hold the write end open
+        // for the child's lifetime, like channel_loop does.
+        cmd.stdin(Stdio::piped());
         cmd.kill_on_drop(true);
         cmd.env_clear();
         for (k, v) in runtime.build_env() {
@@ -1175,6 +1180,12 @@ async fn watch_loop(
 
         // Track spawn time so we only reset backoff if process ran long enough
         let spawn_time = std::time::Instant::now();
+
+        // Hold the stdin write end open for the child's lifetime — dropping it
+        // closes the pipe and the watcher self-exits (stdin-EOF orphan guard).
+        // Dropped naturally at the end of this loop iteration, after the child
+        // has exited.
+        let _child_stdin = child.stdin.take();
 
         let stdout = child.stdout.take().expect("stdout piped");
         let mut lines = BufReader::new(stdout).lines();

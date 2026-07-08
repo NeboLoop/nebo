@@ -91,6 +91,7 @@ pub use orchestrator::{
 };
 pub use origin::{
     ApprovalChannels, AskChannels, ChannelContext, ExecutionMode, Origin, ToolContext,
+    workflow_session_key,
 };
 pub use os_tool::OsTool;
 pub use policy::{AskMode, Policy, PolicyLevel};

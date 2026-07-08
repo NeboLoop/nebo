@@ -143,6 +143,20 @@ pub struct ToolContext {
     pub approved_categories: std::collections::HashSet<String>,
 }
 
+/// Canonical session key for an agent-bound workflow run: `agent:<id>:workflow:<run_id>`.
+///
+/// The ONE constructor for this key — tools that resolve per-agent state
+/// (plugin account profiles, memory scope) parse the `agent:<id>:` prefix, so
+/// every launch path must build it identically. Returns an empty string for
+/// standalone (non-agent) runs, which resolve no agent state by design.
+pub fn workflow_session_key(agent_id: &str, run_id: &str) -> String {
+    if agent_id.is_empty() {
+        String::new()
+    } else {
+        format!("agent:{}:workflow:{}", agent_id, run_id)
+    }
+}
+
 impl ToolContext {
     pub fn new(origin: Origin) -> Self {
         Self {
