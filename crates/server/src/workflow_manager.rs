@@ -41,6 +41,12 @@ pub struct WorkflowManagerImpl {
     /// Per-binding concurrency semaphores. Key: "agent:{agent_id}:{binding}".
     /// Allows up to BINDING_CONCURRENCY concurrent runs; additional events wait.
     binding_semaphores: Arc<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>>,
+    /// Consecutive failure counts per (agent_id, binding_name) for unattended
+    /// (non-manual) automations. The owner is notified once, at the 2nd
+    /// consecutive failure — a lone blip stays quiet, a broken automation
+    /// doesn't fail silently for days. Reset on success.
+    /// ponytail: in-memory — an app restart re-arms the 2-count; fine.
+    failure_counts: Arc<std::sync::Mutex<HashMap<(String, String), u32>>>,
     /// Late-injected agent worker registry. The registry is constructed AFTER
     /// this manager (it depends on us), so it's wired in via `set_agent_workers`
     /// once both exist. Used by `create` to restart the owning agent's worker so
@@ -70,6 +76,7 @@ impl WorkflowManagerImpl {
             event_bus,
             skill_loader,
             binding_semaphores: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
             agent_workers: std::sync::OnceLock::new(),
         }
     }
@@ -879,7 +886,10 @@ impl WorkflowManager for WorkflowManagerImpl {
 
             // Create run record using agent_id for tracking
             let run_id = uuid::Uuid::new_v4().to_string();
-            let session_key = format!("agent-{}-{}", agent_id, run_id);
+            // Canonical agent session key — tools parse the `agent:<id>:` prefix
+            // to resolve per-agent plugin accounts and memory scope. The old
+            // dash format resolved nothing (briefings ran with no account).
+            let session_key = tools::workflow_session_key(agent_id, &run_id);
             self.store
                 .create_workflow_run(
                     &run_id,
@@ -914,6 +924,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             let agent_runs = self.agent_runs.clone();
             let event_bus = self.event_bus.clone();
             let skill_loader = self.skill_loader.clone();
+            let failure_counts = self.failure_counts.clone();
             let run_id_clone = run_id.clone();
             let agent_id_owned = agent_id.to_string();
             let trigger = trigger_type.to_string();
@@ -965,15 +976,24 @@ impl WorkflowManager for WorkflowManagerImpl {
                             ),
                         );
 
-                        // Create notification deep-linked to the failed run
-                        notify_workflow_failure(
-                            &store,
-                            &hub,
+                        // Notify with the same consecutive-failure policy as
+                        // engine failures — a missing provider hits every
+                        // scheduled run and would otherwise ping on each one.
+                        if record_failure_should_notify(
+                            &failure_counts,
                             &agent_id_owned,
-                            &run_id_clone,
                             &binding_name,
-                            "no AI provider available",
-                        );
+                            &trigger,
+                        ) {
+                            notify_workflow_failure(
+                                &store,
+                                &hub,
+                                &agent_id_owned,
+                                &run_id_clone,
+                                &binding_name,
+                                "no AI provider available",
+                            );
+                        }
 
                         hub.broadcast(
                             "workflow_run_failed",
@@ -1126,6 +1146,12 @@ impl WorkflowManager for WorkflowManagerImpl {
                     Ok((_engine_run_id, output)) => {
                         // Engine already called complete_workflow_run with output
 
+                        // A working automation resets its consecutive-failure count
+                        failure_counts
+                            .lock()
+                            .unwrap()
+                            .remove(&(agent_id_owned.clone(), binding_name.clone()));
+
                         // Post completion message with output to agent chat
                         let summary = if output.is_empty() {
                             format!("**Automation completed** — {} ({})", binding_name, trigger)
@@ -1179,15 +1205,24 @@ impl WorkflowManager for WorkflowManagerImpl {
                             ),
                         );
 
-                        // Create notification deep-linked to the failed run
-                        notify_workflow_failure(
-                            &store,
-                            &hub,
+                        // Notify the owner — manual runs immediately, unattended
+                        // runs at the 2nd consecutive failure (see
+                        // record_failure_should_notify).
+                        if record_failure_should_notify(
+                            &failure_counts,
                             &agent_id_owned,
-                            &run_id_clone,
                             &binding_name,
-                            &err_msg,
-                        );
+                            &trigger,
+                        ) {
+                            notify_workflow_failure(
+                                &store,
+                                &hub,
+                                &agent_id_owned,
+                                &run_id_clone,
+                                &binding_name,
+                                &err_msg,
+                            );
+                        }
 
                         hub.broadcast(
                             "workflow_run_failed",
@@ -1272,6 +1307,29 @@ impl DynTool for RegistryTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move { self.registry.execute(ctx, &self.tool_name, input).await })
     }
+}
+
+/// Record a failure for (agent, binding) and decide whether to notify the owner.
+///
+/// Manual runs always notify — the user is watching. Unattended runs
+/// (schedule/heartbeat/event/watch) notify exactly once, at the 2nd consecutive
+/// failure: a lone blip stays quiet, and a persistently broken automation can't
+/// fail silently for days. Stays quiet past 2 until a success resets the count.
+fn record_failure_should_notify(
+    counts: &std::sync::Mutex<HashMap<(String, String), u32>>,
+    agent_id: &str,
+    binding_name: &str,
+    trigger: &str,
+) -> bool {
+    if trigger == "manual" {
+        return true;
+    }
+    let mut map = counts.lock().unwrap();
+    let count = map
+        .entry((agent_id.to_string(), binding_name.to_string()))
+        .or_insert(0);
+    *count += 1;
+    *count == 2
 }
 
 /// Create an in-app notification for a workflow run failure, deep-linked to the run.

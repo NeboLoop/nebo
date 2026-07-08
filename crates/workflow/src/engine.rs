@@ -448,8 +448,13 @@ pub(crate) async fn execute_activity_with_retry(
         {
             Ok(result) => return Ok(result),
             // Deliberate stops are not failures — retrying would re-run the
-            // activity's tool side effects from scratch.
-            Err(e @ (WorkflowError::Exited(_) | WorkflowError::Cancelled)) => return Err(e),
+            // activity's tool side effects from scratch. Blocked is terminal
+            // by definition (FRAMES): a retry hits the same wall.
+            Err(
+                e @ (WorkflowError::Exited(_)
+                | WorkflowError::Cancelled
+                | WorkflowError::Blocked(_)),
+            ) => return Err(e),
             Err(e) if attempt + 1 < max_attempts => {
                 warn!(
                     activity = activity.id.as_str(),
@@ -812,6 +817,16 @@ async fn run_llm_loop(
     let mut last_tool_name: String = String::new();
     let mut consecutive_same_tool: u32 = 0;
 
+    // Workflow activities are unattended — Origin::Workflow keeps the ask tool
+    // (and any HITL-gated capability) unavailable so the engine never blocks on
+    // a UI prompt. Carry the run's agent identity in the session key so tools
+    // resolve per-agent state (plugin account profiles, memory scope) — a bare
+    // context made every workflow run account-less and scope-less.
+    let ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
+        tools::workflow_session_key(&trace.agent_id, &trace.run_id),
+        trace.run_id.clone(),
+    );
+
     loop {
         if iterations >= MAX_ITERATIONS {
             return Err(WorkflowError::MaxIterations(activity.id.clone()));
@@ -923,10 +938,7 @@ async fn run_llm_loop(
             ..Default::default()
         });
 
-        // Execute each tool call and collect results. Workflow activities are unattended —
-        // mark the origin so the ask tool (and any HITL-gated capability) is unavailable;
-        // the engine never blocks on a UI prompt.
-        let ctx = tools::ToolContext::new(tools::Origin::Workflow);
+        // Execute each tool call and collect results (ctx built above the loop).
         let mut tool_result_entries = Vec::new();
         for tc in &tool_calls {
             let tool = tools.iter().find(|t| t.name() == tc.name)
@@ -943,6 +955,16 @@ async fn run_llm_loop(
                 Some(t) => t.execute_dyn(&ctx, tc.input.clone()).await,
                 None => tools::ToolResult::error(format!("tool not found: {}", tc.name)),
             };
+
+            // Terminal tool result (auth expired, account not connected,
+            // permission off — FRAMES classification): the run cannot do its
+            // job; end it as blocked instead of feeding the error back for the
+            // model to improvise around. The chat runner already does this —
+            // the workflow engine let the model "voluntarily" exit, which read
+            // as a clean stop and hid hard failures for days.
+            if result.terminal {
+                return Err(WorkflowError::Blocked(result.content.clone()));
+            }
 
             // Check for exit sentinel
             if !result.is_error {

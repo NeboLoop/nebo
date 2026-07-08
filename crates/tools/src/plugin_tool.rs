@@ -1472,6 +1472,19 @@ mod tests {
     }
 
     #[test]
+    fn test_workflow_session_key_round_trips_to_agent_id() {
+        // The workflow engine builds its session key with this constructor;
+        // per-agent plugin account resolution must recover the id from it.
+        // (The old dash format `agent-<id>-<run>` parsed to None — every
+        // workflow run lost its account.)
+        let key = crate::origin::workflow_session_key("abc-123", "run-9");
+        assert_eq!(agent_id_from_session_key(&key).as_deref(), Some("abc-123"));
+        // Standalone (non-agent) runs carry no identity by design.
+        assert_eq!(crate::origin::workflow_session_key("", "run-9"), "");
+        assert_eq!(agent_id_from_session_key(""), None);
+    }
+
+    #[test]
     fn test_is_auth_error_detects_common_patterns() {
         assert!(is_auth_error("Error: unauthorized"));
         assert!(is_auth_error("token expired, please re-authenticate"));

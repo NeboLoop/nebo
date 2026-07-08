@@ -563,7 +563,10 @@ async fn run_http<'a>(
         "body": param_str(activity, "body"),
     });
 
-    let tool_ctx = tools::ToolContext::default();
+    let tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
+        tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
+        ctx.run_id.clone(),
+    );
     let result = web_tool.execute_dyn(&tool_ctx, input).await;
     if result.is_error {
         return fail(result.content);

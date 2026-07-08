@@ -37,6 +37,12 @@ pub enum WorkflowError {
     /// Workflow exited early by agent decision — not a failure.
     #[error("workflow exited: {0}")]
     Exited(String),
+    /// A tool returned a terminal error (auth expired, account not connected,
+    /// permission off — see FRAMES.md): the run cannot do its job and retrying
+    /// or improvising won't help. Unlike `Exited`, this IS a failure — it must
+    /// surface to the owner, not read as a clean stop.
+    #[error("blocked: {0}")]
+    Blocked(String),
     #[error("workflow cancelled")]
     Cancelled,
     #[error("circuit breaker tripped: {0}")]
