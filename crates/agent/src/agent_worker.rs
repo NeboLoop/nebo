@@ -818,6 +818,19 @@ impl SharedBridgeRegistry {
             .unwrap_or_default()
     }
 
+    /// Force-stop a shared bridge for a plugin slug, regardless of remaining agents.
+    /// Used on plugin update: cancel the running process and drop the entry so it
+    /// respawns against the NEW binary when its agents' workers re-register.
+    pub async fn stop(&self, plugin_slug: &str) {
+        let mut bridges = self.bridges.write().await;
+        if let Some(bridge) = bridges.remove(plugin_slug) {
+            if let Some(cancel) = bridge.cancel {
+                cancel.cancel();
+            }
+            info!(plugin = %plugin_slug, "shared bridge stopped (plugin update)");
+        }
+    }
+
     /// Stop all shared bridges (server shutdown).
     pub async fn stop_all(&self) {
         let mut bridges = self.bridges.write().await;
@@ -925,6 +938,12 @@ impl AgentWorkerRegistry {
         if let Some(worker) = workers.remove(agent_id) {
             worker.stop(&self.store).await;
         }
+    }
+
+    /// Shared-bridge registry — lets callers force-stop a plugin's shared bridge
+    /// (e.g. on plugin update) so it respawns against the new binary.
+    pub fn shared_bridges(&self) -> &Arc<SharedBridgeRegistry> {
+        &self.shared_bridges
     }
 
     /// Stop all workers (shutdown).

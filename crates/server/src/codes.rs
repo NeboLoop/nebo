@@ -1237,7 +1237,56 @@ pub(crate) async fn fetch_and_install_plugin(
             }
         }
     }
+
+    // The old binary may still be running inside per-agent channel/watch bridges or a
+    // shared bridge. Stop the shared bridge and restart every agent worker that uses
+    // this plugin so their loops respawn against the NEW binary. (child_guard's reaper
+    // skips our own registered children, so cancelling+restarting the owning workers is
+    // the lever — the loops already auto-respawn their child on death.)
+    state.agent_workers.shared_bridges().stop(slug).await;
+    for (agent_id, agent_name) in find_agents_using_plugin(&state.store, slug).await {
+        info!(plugin = %slug, agent = %agent_id, "restarting agent worker after plugin update");
+        state
+            .agent_workers
+            .start_agent(&agent_id, &agent_name, None)
+            .await;
+    }
     Ok(())
+}
+
+/// True if a watch workflow's trigger config targets this plugin slug.
+fn workflow_targets_plugin(trigger_type: &str, trigger_config: &str, slug: &str) -> bool {
+    trigger_type == "watch"
+        && serde_json::from_str::<serde_json::Value>(trigger_config)
+            .ok()
+            .and_then(|v| v.get("plugin").and_then(|p| p.as_str()).map(String::from))
+            .as_deref()
+            == Some(slug)
+}
+
+/// Agents whose triggers reference this plugin slug — channel bindings
+/// (`plugin_slug`) or watch workflows (`trigger_config.plugin`). Returned as
+/// (agent_id, agent_name) so their workers can be restarted after a binary swap.
+async fn find_agents_using_plugin(store: &db::Store, slug: &str) -> Vec<(String, String)> {
+    let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for agent in store.list_agents(1000, 0).unwrap_or_default() {
+        let uses_channel = store
+            .list_channel_bindings_for_agent(&agent.id)
+            .map(|bs| bs.iter().any(|b| b.plugin_slug == slug))
+            .unwrap_or(false);
+        let uses_watch = !uses_channel
+            && store
+                .list_agent_workflows(&agent.id)
+                .map(|ws| {
+                    ws.iter()
+                        .any(|w| workflow_targets_plugin(&w.trigger_type, &w.trigger_config, slug))
+                })
+                .unwrap_or(false);
+        if uses_channel || uses_watch {
+            out.insert(agent.id.clone(), agent.name.clone());
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// Detect and persist app-specific fields (ui/, bin/, window config) for every
@@ -2332,6 +2381,31 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_workflow_targets_plugin() {
+        // watch trigger whose config names the plugin → match
+        assert!(workflow_targets_plugin(
+            "watch",
+            r#"{"plugin":"gws","command":"watch"}"#,
+            "gws"
+        ));
+        // different plugin → no match
+        assert!(!workflow_targets_plugin(
+            "watch",
+            r#"{"plugin":"slack"}"#,
+            "gws"
+        ));
+        // non-watch trigger type → never matches (channel bindings are matched separately)
+        assert!(!workflow_targets_plugin(
+            "event",
+            r#"{"plugin":"gws"}"#,
+            "gws"
+        ));
+        // malformed / missing plugin field → no match, no panic
+        assert!(!workflow_targets_plugin("watch", "not json", "gws"));
+        assert!(!workflow_targets_plugin("watch", "{}", "gws"));
+    }
 
     #[test]
     fn test_detect_code_valid() {

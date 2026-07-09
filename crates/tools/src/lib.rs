@@ -649,8 +649,59 @@ pub async fn persist_agent_from_api(
         }
     }
 
+    // Keep only the version we just installed. The loader walks every AGENT.md and
+    // last-writes by name (no version preference), so leftover sibling version dirs
+    // make it non-deterministically report a stale version — and the agent/app can
+    // run old code. Reached only once the new version is validated on disk above.
+    prune_other_versions(&napp_dir, &version);
+
     tracing::info!(agent = name, dir = %version_dir.display(), "persisted agent artifact");
     Ok(PersistAgentResult { type_config })
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::prune_other_versions;
+
+    #[test]
+    fn keeps_only_current_version() {
+        let root = tempfile::tempdir().unwrap();
+        let slug = root.path();
+        // Two version dirs + their sealed .napp siblings; keep 0.1.2.
+        for v in ["0.1.1", "0.1.2"] {
+            std::fs::create_dir_all(slug.join(v)).unwrap();
+            std::fs::write(slug.join(v).join("AGENT.md"), "x").unwrap();
+            std::fs::write(slug.join(format!("{v}.napp")), b"x").unwrap();
+        }
+        prune_other_versions(slug, "0.1.2");
+
+        assert!(slug.join("0.1.2").is_dir());
+        assert!(slug.join("0.1.2.napp").exists());
+        assert!(!slug.join("0.1.1").exists());
+        assert!(!slug.join("0.1.1.napp").exists());
+    }
+}
+
+/// Remove sibling version dirs and `.napp` files under `agents/<slug>/` that aren't
+/// the version we just installed. ponytail: prune, not GC — one version per agent.
+fn prune_other_versions(napp_dir: &std::path::Path, keep: &str) {
+    let keep_napp = format!("{keep}.napp");
+    let Ok(entries) = std::fs::read_dir(napp_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == keep || name == keep_napp {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("napp") {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Generate a minimal AGENT.md from metadata.
