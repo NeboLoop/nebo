@@ -59,12 +59,14 @@
   let confirmText = $state('');
   const canConfirm = $derived(termsAccepted && confirmText === 'ENABLE');
 
-  function handleFullAccessToggle() {
-    if (!fullAccess) {
-      // Turning ON — show confirmation modal
+  function handleFullAccessToggle(e: Event) {
+    const el = e.currentTarget as HTMLInputElement;
+    const enabling = el.checked;
+    // Browser already flipped the DOM; snap back to committed state until confirm.
+    el.checked = fullAccess;
+    if (enabling && !fullAccess) {
       showEnableModal = true;
-    } else {
-      // Turning OFF — just disable
+    } else if (!enabling && fullAccess) {
       fullAccess = false;
       saveFullAccess(false);
     }

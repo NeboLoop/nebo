@@ -26,6 +26,33 @@
   const canConfirm = $derived(termsAccepted && confirmText === 'ENABLE');
   let selectedLocale = $state('en');
 
+  /** Full Access toggle: modal only when turning ON. Deselect just clears. */
+  function handleFullAccessToggle(e: Event) {
+    const el = e.currentTarget as HTMLInputElement;
+    const enabling = el.checked;
+    // Browser already flipped the DOM; snap back to committed state until confirm.
+    el.checked = fullAccess;
+    if (enabling && !fullAccess) {
+      showEnableModal = true;
+    } else if (!enabling && fullAccess) {
+      fullAccess = false;
+    }
+  }
+
+  function cancelFullAccessEnable() {
+    showEnableModal = false;
+    termsAccepted = false;
+    confirmText = '';
+  }
+
+  function confirmFullAccessEnable() {
+    if (!canConfirm) return;
+    fullAccess = true;
+    showEnableModal = false;
+    termsAccepted = false;
+    confirmText = '';
+  }
+
   // Language picker hidden for v0.10.0. Set SHOW_LANGUAGE_STEP=true to re-enable.
   const SHOW_LANGUAGE_STEP = false;
 
@@ -401,7 +428,7 @@
         type="checkbox"
         class="toggle toggle-sm toggle-primary shrink-0 ml-4"
         checked={fullAccess}
-        onchange={() => { if (!fullAccess) { showEnableModal = true; } else { fullAccess = false; } }}
+        onchange={handleFullAccessToggle}
       />
     </div>
 
@@ -447,12 +474,12 @@
     <!-- Full Access Activation Modal -->
     {#if showEnableModal}
       <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="-1" aria-label="Close" onclick={() => { showEnableModal = false; termsAccepted = false; confirmText = ''; }} onkeydown={(e) => { if (e.key === 'Escape') { showEnableModal = false; termsAccepted = false; confirmText = ''; } }}></div>
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="-1" aria-label="Close" onclick={cancelFullAccessEnable} onkeydown={(e) => { if (e.key === 'Escape') cancelFullAccessEnable(); }}></div>
         <div class="relative w-full max-w-lg rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden text-left">
           <!-- Header -->
           <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
             <h3 class="text-sm font-bold">Enable Full Access</h3>
-            <button onclick={() => { showEnableModal = false; termsAccepted = false; confirmText = ''; }} class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent">
+            <button onclick={cancelFullAccessEnable} class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent">
               <X class="w-4 h-4" />
             </button>
           </div>
@@ -494,20 +521,20 @@
                 class="w-full h-9 rounded-lg bg-base-200 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
                 placeholder="ENABLE"
                 bind:value={confirmText}
-                onkeydown={(e) => { if (e.key === 'Enter' && canConfirm) { fullAccess = true; showEnableModal = false; termsAccepted = false; confirmText = ''; } }}
+                onkeydown={(e) => { if (e.key === 'Enter') confirmFullAccessEnable(); }}
               />
             </div>
           </div>
 
           <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-base-content/10">
             <button
-              onclick={() => { showEnableModal = false; termsAccepted = false; confirmText = ''; }}
+              onclick={cancelFullAccessEnable}
               class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent"
             >
               Cancel
             </button>
             <button
-              onclick={() => { if (canConfirm) { fullAccess = true; showEnableModal = false; termsAccepted = false; confirmText = ''; } }}
+              onclick={confirmFullAccessEnable}
               disabled={!canConfirm}
               class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-30 disabled:cursor-not-allowed"
             >
