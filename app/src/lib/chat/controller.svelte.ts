@@ -777,6 +777,14 @@ export function createChatController(config: ChatControllerConfig) {
     chatError = '';
   }
 
+  function setError(message: string) {
+    isLoading = false;
+    resetStreaming();
+    phaseStartTime = 0;
+    activityStatus = '';
+    chatError = message || 'Something went wrong.';
+  }
+
   function destroy() {
     unsubs.forEach(fn => fn());
     if (usageClearTimer) clearTimeout(usageClearTimer);
@@ -818,6 +826,7 @@ export function createChatController(config: ChatControllerConfig) {
     },
     dismissWarning,
     dismissError,
+    setError,
     destroy,
   };
 }

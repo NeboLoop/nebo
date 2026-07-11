@@ -69,24 +69,23 @@
       return;
     }
 
-    messages = [{ id: 'msg-' + Date.now(), type: 'user' as const, content: text, time: 'now' }];
     isLoading = true;
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.createNewAgentChat(agentId);
       const newChatId = (resp as Record<string, any>)?.chat?.id;
-      if (!newChatId) return;
-
-      const sessionKey = `agent:${agentId}:thread:${newChatId}`;
-      console.log('[THREAD-DEBUG] new thread send:', { sessionKey, newChatId, agentId });
-      const { getWebSocketClient } = await import('$lib/websocket/client');
-      const ws = getWebSocketClient();
-      if (ws.isConnected()) {
-        ws.send('chat', { prompt: text, agent_id: agentId, session_id: sessionKey });
-      } else {
-        await api.chatWithAgent(agentId, { prompt: text });
+      if (!newChatId) {
+        isLoading = false;
+        return;
       }
 
+      // Create the thread, then navigate — the thread page sends the prompt after
+      // its chat controller is subscribed. Sending here raced navigation and the
+      // optimistic bubble (and often the whole turn) disappeared on the new page.
+      sessionStorage.setItem(
+        `nebo:pending-send:${newChatId}`,
+        JSON.stringify({ text, ts: Date.now() }),
+      );
       goto(`/${agentId}/threads/${newChatId}?active=1`);
     } catch (e) {
       console.warn('[nebo] Failed to create thread', e);

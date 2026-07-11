@@ -1,7 +1,6 @@
 <script lang="ts">
   import { getContext, onMount, onDestroy } from 'svelte';
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext, EnrichedChat } from '$lib/types/agentPage';
   import { createChatController, toolDisplayName, formatTime, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
@@ -9,6 +8,11 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
   import { uploadFiles } from '$lib/api/upload';
+
+  const PENDING_SEND_PREFIX = 'nebo:pending-send:';
+  const PENDING_ERROR_PREFIX = 'nebo:pending-error:';
+
+  type PendingSend = { text: string; sent?: boolean; ts?: number };
 
   // --- Metadata shapes embedded in API ChatMessage.metadata ---
   interface ToolCallMeta {
@@ -48,20 +52,73 @@
   const initialThreadId = $page.params.threadId ?? '';
   const chat = createChatController({ agentId: initialAgentId, sessionKey: `agent:${initialAgentId}:thread:${initialThreadId}` });
 
-  // When navigated from a fresh send, the run is in-flight under the default session.
-  // Listen for its completion by agentId to clear loading and reload messages.
-  let activeRunUnsub: (() => void) | null = null;
+  // When navigated from a fresh send, the run is started on THIS page (after
+  // subscribe). Settle listeners clear the pending-send stash and strip ?active=1
+  // without a SvelteKit goto (goto can remount and drop chat_error / the bubble).
+  let activeRunUnsubs: Array<() => void> = [];
+  let pendingSendStarted = false;
+  let firstRunSettled = false;
+
+  function pendingSendKey(id: string) {
+    return `${PENDING_SEND_PREFIX}${id}`;
+  }
+  function pendingErrorKey(id: string) {
+    return `${PENDING_ERROR_PREFIX}${id}`;
+  }
+
+  function clearActiveQueryParam() {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('active')) return;
+    url.searchParams.delete('active');
+    const next = url.pathname + (url.search ? url.search : '');
+    history.replaceState(history.state, '', next);
+  }
+
+  function settleFirstRun(opts?: { clearPendingSend?: boolean }) {
+    if (firstRunSettled) return;
+    firstRunSettled = true;
+    if (opts?.clearPendingSend !== false && initialThreadId) {
+      sessionStorage.removeItem(pendingSendKey(initialThreadId));
+    }
+    clearActiveQueryParam();
+    for (const off of activeRunUnsubs) off();
+    activeRunUnsubs = [];
+  }
+
+  function isFirstRunEvent(data: { agentId?: string; session_id?: string }) {
+    const sk = `agent:${initialAgentId}:thread:${initialThreadId}`;
+    if (data.session_id && data.session_id !== sk) return false;
+    if (data.agentId && data.agentId !== initialAgentId) return false;
+    return true;
+  }
+
   if (startActive) {
     chat.isLoading = true;
     const ws = getWebSocketClient();
-    activeRunUnsub = ws.on<{ agentId: string }>('chat_complete', (data) => {
-      if (data.agentId === agentId) {
-        chat.isLoading = false;
+    activeRunUnsubs.push(ws.on<{ agentId?: string; session_id?: string; error?: string }>('chat_error', (data) => {
+      if (!isFirstRunEvent(data)) return;
+      const message = data.error || 'Something went wrong.';
+      // Survive a remount: keep pending-send + stash the error so a new page
+      // instance can restore the bubble and the provider banner.
+      sessionStorage.setItem(pendingErrorKey(initialThreadId), message);
+      chat.setError(message);
+      settleFirstRun({ clearPendingSend: false });
+    }));
+    activeRunUnsubs.push(ws.on<{ agentId?: string; session_id?: string }>('chat_complete', (data) => {
+      if (!isFirstRunEvent(data)) return;
+      chat.isLoading = false;
+      // Successful runs persist messages — reload so IDs match the DB.
+      // Provider errors reject before persistence; skip reload so we keep the
+      // optimistic user bubble + error banner.
+      if (!chat.chatError) {
+        sessionStorage.removeItem(pendingErrorKey(initialThreadId));
         loadMessages();
-        activeRunUnsub?.();
-        activeRunUnsub = null;
+        settleFirstRun({ clearPendingSend: true });
+      } else {
+        settleFirstRun({ clearPendingSend: false });
       }
-    });
+    }));
   }
 
   // Pagination state
@@ -72,11 +129,6 @@
   const hasMore = $derived(loadedRawCount < totalMessages);
 
   onMount(async () => {
-    // Clean up ?active=1 query param so refresh doesn't re-trigger loading
-    if (startActive) {
-      goto(`/${agentId}/threads/${threadId}`, { replaceState: true, keepFocus: true, noScroll: true });
-    }
-
     // Load agents for @mention chips
     try {
       const api = await import('$lib/api/nebo');
@@ -96,16 +148,65 @@
   });
 
   onDestroy(() => {
-    activeRunUnsub?.();
+    for (const off of activeRunUnsubs) off();
+    activeRunUnsubs = [];
     chat.destroy();
   });
 
   $effect(() => {
     if (threadId && agentId) {
       const sk = `agent:${agentId}:thread:${threadId}`;
-      console.log('[THREAD-DEBUG] setting session key:', sk, 'threadId:', threadId);
       chat.setSessionKey(sk);
-      loadMessages();
+
+      // Restore a chat_error stashed when the first-send page instance was torn
+      // down before the banner could render.
+      const errKey = pendingErrorKey(threadId);
+      const stashedError = sessionStorage.getItem(errKey);
+      if (stashedError) {
+        chat.setError(stashedError);
+        sessionStorage.removeItem(errKey);
+      }
+
+      // Fresh send from /threads: prompt was stashed so we send only after this
+      // page's controller is subscribed (avoids the disappearing first message).
+      // Keep the stash until settled so a remount can restore the bubble without
+      // double-sending.
+      if (!pendingSendStarted) {
+        const key = pendingSendKey(threadId);
+        const raw = sessionStorage.getItem(key);
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw) as PendingSend;
+            if (parsed.text?.trim()) {
+              pendingSendStarted = true;
+              if (!parsed.sent) {
+                sessionStorage.setItem(key, JSON.stringify({ ...parsed, sent: true }));
+                chat.send(parsed.text);
+                return;
+              }
+              // Remount after send already went out — restore bubble, keep waiting.
+              if (chat.messages.length === 0) {
+                chat.setMessages([{
+                  id: 'msg-pending',
+                  type: 'user',
+                  content: parsed.text,
+                  time: formatTime(Date.now()),
+                }]);
+              }
+              chat.isLoading = !chat.chatError;
+              if (chat.chatError) sessionStorage.removeItem(key);
+              return;
+            }
+          } catch {
+            /* fall through to history load */
+          }
+        }
+      }
+
+      // Don't clobber an in-flight first send with an empty/partial history fetch.
+      if (!pendingSendStarted) {
+        loadMessages();
+      }
     }
   });
 
@@ -269,6 +370,10 @@
   {isLoadingMore}
   onloadmore={loadOlderMessages}
   onsend={async (text, files) => {
+    if (threadId) {
+      sessionStorage.removeItem(pendingSendKey(threadId));
+      sessionStorage.removeItem(pendingErrorKey(threadId));
+    }
     const attachments = files?.length ? await uploadFiles(files.map(f => f.file)) : undefined;
     chat.send(text, { attachments });
   }}
@@ -278,6 +383,12 @@
   onasksubmit={(id, val) => chat.submitAsk(id, val)}
   onrestoreversion={(docId, v) => chat.restoreVersion(docId, v)}
   ondismisswarning={() => chat.dismissWarning()}
-  ondismisserror={() => chat.dismissError()}
+  ondismisserror={() => {
+    if (threadId) {
+      sessionStorage.removeItem(pendingErrorKey(threadId));
+      sessionStorage.removeItem(pendingSendKey(threadId));
+    }
+    chat.dismissError();
+  }}
   isLoading={chat.isLoading}
 />
