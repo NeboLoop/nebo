@@ -459,6 +459,7 @@ impl ShellTool {
 
         #[cfg(windows)]
         {
+            let _ = signal;
             let result = std::process::Command::new("taskkill")
                 .args(["/PID", &pid.to_string(), "/F"])
                 .output();

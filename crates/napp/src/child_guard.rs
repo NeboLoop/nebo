@@ -47,8 +47,10 @@
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
+#[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 use tracing::{info, warn};
 
 static REGISTRY: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();

@@ -595,7 +595,7 @@ fn escape_powershell(s: &str) -> String {
     s.replace('\'', "''")
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 fn which(cmd: &str) -> bool {
     std::process::Command::new("which")
         .arg(cmd)

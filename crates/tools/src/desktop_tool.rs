@@ -3,8 +3,9 @@ use crate::desktop_daemon::DesktopDaemon;
 use crate::errors;
 use crate::desktop_snapshot::{
     self, Snapshot, SnapshotStore, UIElement, assign_element_ids, generate_snapshot_id,
-    parse_ax_output,
 };
+#[cfg(target_os = "macos")]
+use crate::desktop_snapshot::parse_ax_output;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use std::collections::HashMap;
@@ -1541,7 +1542,9 @@ end tell"#,
 
 async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
     let quality = input["quality"].as_str().unwrap_or("medium");
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let app = input["app"].as_str().unwrap_or("");
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let region = input["region"].as_str();
 
     // Use JPEG capture on macOS for low/medium to skip PNG decode overhead
@@ -3204,7 +3207,7 @@ async fn run_powershell(script: &str) -> ToolResult {
     run_command("powershell", &["-NoProfile", "-Command", script]).await
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 fn which(cmd: &str) -> bool {
     std::process::Command::new("which")
         .arg(cmd)
@@ -3215,7 +3218,7 @@ fn which(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 async fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> ToolResult {
     let mut child = match tokio::process::Command::new(cmd)
         .args(args)

@@ -470,6 +470,14 @@ pub async fn proxy_to_sidecar(
         }
     }
 
+    #[cfg(not(unix))]
+    {
+        let _ = req;
+        return (StatusCode::SERVICE_UNAVAILABLE, "sidecar proxy requires Unix sockets").into_response();
+    }
+
+    #[cfg(unix)]
+    {
     // Extract HTTP request parts for gRPC
     let method = req.method().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -484,13 +492,6 @@ pub async fn proxy_to_sidecar(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    #[cfg(not(unix))]
-    {
-        return (StatusCode::SERVICE_UNAVAILABLE, "sidecar proxy requires Unix sockets").into_response();
-    }
-
-    #[cfg(unix)]
-    {
         let channel = tonic::transport::Endpoint::from_static("http://[::]:50051")
             .connect_with_connector_lazy(tower::service_fn(move |_: tonic::transport::Uri| {
                 let sock = sock_path.clone();
