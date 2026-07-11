@@ -369,15 +369,13 @@ impl Runtime {
             .collect();
 
         for entry in pid_files {
+            #[cfg(unix)]
             if let Ok(pid_str) = std::fs::read_to_string(entry.path()) {
                 if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                    #[cfg(unix)]
-                    {
-                        unsafe {
-                            if libc::kill(pid, 0) == 0 {
-                                libc::kill(pid, libc::SIGTERM);
-                                info!(pid, "killed stale tool process");
-                            }
+                    unsafe {
+                        if libc::kill(pid, 0) == 0 {
+                            libc::kill(pid, libc::SIGTERM);
+                            info!(pid, "killed stale tool process");
                         }
                     }
                 }

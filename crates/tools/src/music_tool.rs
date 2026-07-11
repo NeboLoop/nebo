@@ -440,7 +440,7 @@ async fn run_powershell(script: &str) -> ToolResult {
     run_command("powershell", &["-NoProfile", "-Command", script]).await
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 fn which(cmd: &str) -> bool {
     std::process::Command::new("which")
         .arg(cmd)

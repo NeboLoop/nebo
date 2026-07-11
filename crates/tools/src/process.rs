@@ -375,7 +375,6 @@ pub fn clean_powershell_stderr(stderr: &str) -> String {
 /// No-op on non-Windows platforms.
 #[cfg(target_os = "windows")]
 pub fn hide_window(cmd: &mut tokio::process::Command) {
-    use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     cmd.creation_flags(CREATE_NO_WINDOW);
 }

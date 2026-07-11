@@ -154,6 +154,7 @@ pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, Nap
 
         // Capture the archived mode before the mutable read borrow — a binary
         // packaged as rwxr-xr-x must stay executable after extraction.
+        #[cfg(unix)]
         let entry_mode = entry.header().mode().unwrap_or(0o644);
 
         let mut content = Vec::new();
@@ -168,12 +169,7 @@ pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, Nap
         // creates 0644, which would otherwise strip the +x off a packaged
         // binary named after its slug (e.g. "stadium-ops").
         #[cfg(unix)]
-        if entry_mode & 0o111 != 0
-            || normalized == "binary"
-            || normalized == "app"
-            || normalized.starts_with("bin/")
-            || normalized.starts_with("scripts/")
-        {
+        if entry_mode & 0o111 != 0 || is_executable_entry(&normalized) {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&dest_path, std::fs::Permissions::from_mode(0o755))?;
         }
@@ -449,11 +445,7 @@ fn is_executable_entry(name: &str) -> bool {
 /// Check if a tar entry should be extracted during partial extraction.
 /// Includes executables (not readable IP) and metadata (needed for discovery).
 fn is_partial_extract_entry(name: &str) -> bool {
-    // Executables — compiled code, not readable IP
-    name == "binary"
-        || name == "app"
-        || name.starts_with("scripts/")
-        || name.starts_with("bin/")
+    is_executable_entry(name)
         // Metadata — needed for discovery and artifact_id lookup
         || name == "manifest.json"
         || name == "plugin.json"

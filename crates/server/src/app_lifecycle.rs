@@ -1,7 +1,8 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(unix)]
+use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -80,6 +81,7 @@ impl SidecarCaller for GrpcSidecarCaller {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<SidecarResponse, String>> + Send + '_>,
     > {
+        let _ = &self.sock_path;
         Box::pin(async { Err("gRPC sidecar requires Unix sockets".to_string()) })
     }
 }

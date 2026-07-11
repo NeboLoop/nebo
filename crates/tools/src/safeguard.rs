@@ -476,17 +476,20 @@ fn is_protected_path_windows(abs_path: &str) -> Option<String> {
         }
     }
 
-    None
+    is_protected_user_path(abs_path)
 }
 
 fn is_protected_user_path(abs_path: &str) -> Option<String> {
+    use std::path::Path;
+
     let home = dirs::home_dir()?;
-    let home_str = home.to_string_lossy();
+    let abs = Path::new(abs_path);
 
     // Protect Nebo's own data directory (database, config, etc.)
     // Nebo must never delete or overwrite its own database — this is catastrophic self-harm.
     for (path, reason) in nebo_data_dirs() {
-        if abs_path == path || abs_path.starts_with(&format!("{}/", path)) {
+        let protected = Path::new(&path);
+        if abs == protected || abs.starts_with(protected) {
             return Some(reason);
         }
     }
@@ -501,8 +504,8 @@ fn is_protected_user_path(abs_path: &str) -> Option<String> {
     ];
 
     for (rel, reason) in &sensitive {
-        let protected = format!("{}/{}", home_str, rel);
-        if abs_path == protected || abs_path.starts_with(&format!("{}/", protected)) {
+        let protected = home.join(rel);
+        if abs == protected.as_path() || abs.starts_with(&protected) {
             return Some(reason.to_string());
         }
     }

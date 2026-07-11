@@ -93,6 +93,7 @@ pub struct OrganizerInput {
 
     // Calendar fields
     #[serde(default)]
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub calendar: String,
     #[serde(default)]
     pub date: String,
@@ -105,12 +106,16 @@ pub struct OrganizerInput {
     #[serde(default)]
     pub days: Option<i64>,
     #[serde(default)]
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub repeat: String,
     #[serde(default)]
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub interval: Option<i32>,
     #[serde(default)]
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub end_repeat: String,
     #[serde(default, alias = "weekdays")]
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub repeat_days: String,
 
     // Reminder fields

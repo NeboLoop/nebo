@@ -10,6 +10,7 @@ static PRE_APPLY_HOOK: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
 /// The (restored, working) app reads this on the next WS client connect and toasts it.
 /// NOTE: must contain no single-quote — it is embedded in a single-quoted `printf` in the
 /// POSIX helper script.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const ROLLBACK_MARKER_JSON: &str =
     r#"{"error":"Update failed and was rolled back to the previous version."}"#;
 

@@ -524,6 +524,7 @@ async fn detect_default_browser() -> String {
     "unknown".to_string()
 }
 
+#[cfg(target_os = "macos")]
 fn bundle_id_to_name(bundle_id: &str) -> String {
     let lower = bundle_id.to_lowercase();
     if lower.contains("chrome") {

@@ -119,12 +119,13 @@ pub fn path_not_found(path: &str) -> String {
 
 /// Build a "permission denied" error with context.
 pub fn permission_denied(path: &str, operation: &str) -> String {
-    let p = Path::new(path);
     let mut msg = format!("Permission denied: cannot {} {}", operation, path);
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        use std::path::Path;
+        let p = Path::new(path);
         if let Ok(meta) = p.metadata() {
             let mode = meta.mode();
             let owner_uid = meta.uid();

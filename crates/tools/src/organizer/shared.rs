@@ -141,7 +141,7 @@ pub async fn run_osascript(script: &str) -> ToolResult {
 
 /// Run a command with arguments and return a ToolResult.
 /// Uses direct exec (no shell) — safe from shell injection.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     let child = match tokio::process::Command::new(cmd)
         .args(args)
@@ -182,7 +182,7 @@ pub async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
 
 /// Run a command piping data to stdin. Safer than shell interpolation for
 /// user-supplied content (email bodies, vCard data, calcurse appointments).
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub async fn run_command_with_stdin(cmd: &str, args: &[&str], stdin_data: &str) -> ToolResult {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
