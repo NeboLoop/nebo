@@ -11,8 +11,10 @@ use axum::response::Html;
 /// * `message` — detail line; escaped, so it may carry raw provider error text.
 ///
 /// Self-contained (no external assets) since the browser navigates here directly.
-/// Auto-closes the tab after a few seconds, with a manual button as a fallback
-/// (browsers often block `window.close()` on user-opened tabs).
+///
+/// NeboAI OAuth is opened with the system browser (`open::that`), not `window.open`,
+/// so browsers block `window.close()`. The CTA therefore returns to the app; close
+/// is best-effort only for rare script-opened popups (e.g. some MCP flows).
 pub fn auth_result_page(success: bool, heading: &str, message: &str) -> Html<String> {
     // Brand palette (matches app.css): green success, red error.
     let accent = if success { "#138a4a" } else { "#cc2222" };
@@ -61,11 +63,27 @@ h1{{margin:0 0 8px;font-size:22px;font-weight:650;letter-spacing:-.01em}}
   <div class="ring"><svg viewBox="0 0 52 52">{glyph}</svg></div>
   <h1>{safe_heading}</h1>
   <p class="msg">{safe_message}</p>
-  <button class="btn" onclick="window.close()">Close window</button>
-  <p class="hint">You can close this tab and return to Nebo.</p>
+  <button class="btn" type="button" id="done">Return to Nebo</button>
+  <p class="hint" id="hint">Returning to Nebo…</p>
   <div class="wordmark">Nebo</div>
 </div>
-<script>setTimeout(function(){{window.close()}},4000)</script>
+<script>
+(function(){{
+  var returned = false;
+  function returnToNebo(){{
+    if (returned) return;
+    returned = true;
+    // Best-effort: only works when this tab was opened via window.open().
+    try {{ window.close(); }} catch (e) {{}}
+    // System-browser OAuth (open::that) cannot be closed by script — go home.
+    setTimeout(function(){{
+      if (!window.closed) window.location.replace('/');
+    }}, 150);
+  }}
+  document.getElementById('done').addEventListener('click', returnToNebo);
+  setTimeout(returnToNebo, 2500);
+}})();
+</script>
 </body></html>"#
     ))
 }
