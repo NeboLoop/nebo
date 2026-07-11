@@ -26,17 +26,15 @@
   const canConfirm = $derived(termsAccepted && confirmText === 'ENABLE');
   let selectedLocale = $state('en');
 
-  /** Full Access toggle: modal only when turning ON. Deselect just clears. */
-  function handleFullAccessToggle(e: Event) {
-    const el = e.currentTarget as HTMLInputElement;
-    const enabling = el.checked;
-    // Browser already flipped the DOM; snap back to committed state until confirm.
-    el.checked = fullAccess;
-    if (enabling && !fullAccess) {
-      showEnableModal = true;
-    } else if (!enabling && fullAccess) {
+  /** Full Access: modal only when enabling. Turning off is immediate.
+   *  Implemented as a button (not checkbox) so DaisyUI/browser checkbox
+   *  change events can't double-fire and reopen the enable modal. */
+  function handleFullAccessToggle() {
+    if (fullAccess) {
       fullAccess = false;
+      return;
     }
+    showEnableModal = true;
   }
 
   function cancelFullAccessEnable() {
@@ -424,12 +422,18 @@
         </div>
         <div class="text-xs text-base-content/70">The agent will execute all tools without asking for permission.</div>
       </div>
-      <input
-        type="checkbox"
-        class="toggle toggle-sm toggle-primary shrink-0 ml-4"
-        checked={fullAccess}
-        onchange={handleFullAccessToggle}
-      />
+      <button
+        type="button"
+        role="switch"
+        aria-checked={fullAccess}
+        aria-label="Full Access"
+        class="relative inline-flex h-5 w-8 shrink-0 cursor-pointer items-center rounded-full transition-colors {fullAccess ? 'bg-primary' : 'bg-base-300'}"
+        onclick={handleFullAccessToggle}
+      >
+        <span
+          class="pointer-events-none inline-block size-3.5 rounded-full bg-base-100 shadow transition-transform {fullAccess ? 'translate-x-[14px]' : 'translate-x-0.5'}"
+        ></span>
+      </button>
     </div>
 
     {#if !fullAccess}
