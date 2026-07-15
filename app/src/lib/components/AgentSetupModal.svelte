@@ -64,7 +64,7 @@
         <div class="flex items-center gap-2">
           {#each steps as s, i}
             <div class="flex items-center gap-1.5">
-              <div class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold {i < step ? 'bg-success text-success-content' : i === step ? 'bg-primary text-primary-content' : 'bg-base-200 text-base-content/40'}">
+              <div class="w-5 h-5 rounded-full flex items-center justify-center text-[0.625rem] font-bold {i < step ? 'bg-success text-success-content' : i === step ? 'bg-primary text-primary-content' : 'bg-base-200 text-base-content/40'}">
                 {#if i < step}<Check class="w-3 h-3" />{:else}{i + 1}{/if}
               </div>
               {#if i < steps.length - 1}

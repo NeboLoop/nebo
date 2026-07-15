@@ -620,6 +620,14 @@ pub fn survives(votes: &[Vote], refutations_required: usize) -> bool {
     valid >= refutations_required && refutes < refutations_required
 }
 
+/// A claim is refuted ON MERIT iff a quorum of valid votes refuted it. A claim that
+/// neither survives nor is refuted is UNVERIFIED — its verifier panel errored/abstained.
+/// The three-way split matters: infra failure (rate limits, API errors) must never be
+/// reported as a research finding (mirrors the reference's 2.1.206 fix, go/ccissue/69883).
+pub fn is_refuted(votes: &[Vote], refutations_required: usize) -> bool {
+    votes.iter().flatten().filter(|v| v.refuted).count() >= refutations_required
+}
+
 // ─── Final report + salvage paths ───
 
 /// Source row in the final report's source list.
@@ -648,6 +656,9 @@ pub struct Stats {
     pub claims_verified: usize,
     pub confirmed: usize,
     pub killed: usize,
+    /// Claims whose verifier panel errored/abstained below quorum — NOT adjudicated.
+    #[serde(default)]
+    pub unverified: usize,
     pub after_synthesis: usize,
     pub url_dupes: usize,
     pub budget_dropped: usize,
@@ -661,6 +672,10 @@ pub struct ResearchReport {
     pub summary: String,
     pub findings: Vec<ReportFinding>,
     pub refuted: Vec<RefutedRow>,
+    /// Claims that could not be adjudicated (verifier panel errored) — reported
+    /// separately so infra failure never reads as a refutation.
+    #[serde(default)]
+    pub unverified: Vec<RefutedRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirmed: Option<Vec<RefutedRow>>,
     pub sources: Vec<SourceRow>,
@@ -683,28 +698,46 @@ pub fn salvage_no_claims(
         summary,
         findings: Vec::new(),
         refuted: Vec::new(),
+        unverified: Vec::new(),
         confirmed: None,
         sources,
         stats,
     }
 }
 
-/// Salvage: every claim was refuted by adversarial verification. Inconclusive.
-pub fn salvage_all_refuted(
+/// Salvage: no claim survived verification. Distinguishes "refuted on merit" from
+/// "could not verify (verifier panels errored)" — an all-errored run is an
+/// infrastructure failure, not a research finding (go/ccissue/69883).
+pub fn salvage_none_confirmed(
     question: &str,
     killed: Vec<RefutedRow>,
+    unverified: Vec<RefutedRow>,
     sources: Vec<SourceRow>,
     stats: Stats,
 ) -> ResearchReport {
-    let summary = format!(
-        "All {} claims refuted by adversarial verification. Research inconclusive — sources may be low-quality or claims overstated.",
-        killed.len()
-    );
+    let summary = if killed.is_empty() && !unverified.is_empty() {
+        format!(
+            "Could not verify any claims — all {} verifier panels failed (likely rate-limiting or API errors). This is an infrastructure failure, not a research finding; retry or verify the extracted claims manually.",
+            unverified.len()
+        )
+    } else if !unverified.is_empty() {
+        format!(
+            "{} claims refuted by adversarial verification; {} could not be verified (verifier agents failed). No claims survived. Research inconclusive.",
+            killed.len(),
+            unverified.len()
+        )
+    } else {
+        format!(
+            "All {} claims refuted by adversarial verification. Research inconclusive — sources may be low-quality or claims overstated.",
+            killed.len()
+        )
+    };
     ResearchReport {
         question: question.to_string(),
         summary,
         findings: Vec::new(),
         refuted: killed,
+        unverified,
         confirmed: None,
         sources,
         stats,
@@ -717,6 +750,7 @@ pub fn salvage_synth_failed(
     question: &str,
     confirmed: Vec<RefutedRow>,
     killed: Vec<RefutedRow>,
+    unverified: Vec<RefutedRow>,
     sources: Vec<SourceRow>,
     stats: Stats,
 ) -> ResearchReport {
@@ -729,6 +763,7 @@ pub fn salvage_synth_failed(
         summary,
         findings: Vec::new(),
         refuted: killed,
+        unverified,
         confirmed: Some(confirmed),
         sources,
         stats,
@@ -740,6 +775,7 @@ pub fn build_report(
     question: &str,
     report: ReportOut,
     killed: Vec<RefutedRow>,
+    unverified: Vec<RefutedRow>,
     sources: Vec<SourceRow>,
     mut stats: Stats,
 ) -> ResearchReport {
@@ -749,6 +785,7 @@ pub fn build_report(
         summary: report.summary,
         findings: report.findings,
         refuted: killed,
+        unverified,
         confirmed: None,
         sources,
         stats,
@@ -1298,13 +1335,14 @@ pub async fn run(
 
     let angles_n = scope.angles.len();
     let sources_fetched = sources.len();
-    let base_stats = move |confirmed: usize, killed: usize, verified: usize| Stats {
+    let base_stats = move |confirmed: usize, killed: usize, unverified: usize, verified: usize| Stats {
         angles: angles_n,
         sources_fetched,
         claims_extracted,
         claims_verified: verified,
         confirmed,
         killed,
+        unverified,
         after_synthesis: 0,
         url_dupes,
         budget_dropped,
@@ -1312,7 +1350,7 @@ pub async fn run(
 
     // Salvage: nothing to verify.
     if ranked.is_empty() {
-        let report = salvage_no_claims(&question, sources, base_stats(0, 0, 0));
+        let report = salvage_no_claims(&question, sources, base_stats(0, 0, 0, 0));
         finish(&dir, &report);
         return Ok(report);
     }
@@ -1364,19 +1402,36 @@ pub async fn run(
         "valid": vc.valid(),
         "refutes": vc.refutes(),
         "survives": survives(&vc.votes, cfg.refutations_required),
+        "refuted": is_refuted(&vc.votes, cfg.refutations_required),
         "votes": vc.votes,
     })).collect();
     persist(&dir, "verdicts.json", &verdict_log);
 
-    let (confirmed, killed): (Vec<VotedClaim>, Vec<VotedClaim>) =
+    // Three-way outcome: survives / refuted-on-merit / unverified (panel errored).
+    // Infra failure must never read as a refutation (go/ccissue/69883).
+    let (confirmed, rest): (Vec<VotedClaim>, Vec<VotedClaim>) =
         voted.into_iter().partition(|vc| survives(&vc.votes, cfg.refutations_required));
-    let verified = confirmed.len() + killed.len();
+    let (killed, unverified): (Vec<VotedClaim>, Vec<VotedClaim>) =
+        rest.into_iter().partition(|vc| is_refuted(&vc.votes, cfg.refutations_required));
+    let verified = confirmed.len() + killed.len() + unverified.len();
     let killed_rows: Vec<RefutedRow> = killed.iter().map(|c| c.to_row()).collect();
-    debug!(confirmed = confirmed.len(), killed = killed.len(), "deep_research: verified");
+    let unverified_rows: Vec<RefutedRow> = unverified.iter().map(|c| c.to_row()).collect();
+    debug!(
+        confirmed = confirmed.len(),
+        killed = killed.len(),
+        unverified = unverified.len(),
+        "deep_research: verified"
+    );
 
-    // Salvage: everything refuted.
+    // Salvage: nothing survived — refuted on merit and/or unverified (infra).
     if confirmed.is_empty() {
-        let report = salvage_all_refuted(&question, killed_rows, sources, base_stats(0, killed.len(), verified));
+        let report = salvage_none_confirmed(
+            &question,
+            killed_rows,
+            unverified_rows,
+            sources,
+            base_stats(0, killed.len(), unverified.len(), verified),
+        );
         finish(&dir, &report);
         return Ok(report);
     }
@@ -1389,7 +1444,7 @@ pub async fn run(
     // ── Phase 4: Synthesize ──
     emit_progress(&progress, format!("Synthesizing {} confirmed claims…", confirmed.len()));
     emit_node_start(&progress, "synth", "Synthesize: writing the report");
-    let stats = base_stats(confirmed.len(), killed.len(), verified);
+    let stats = base_stats(confirmed.len(), killed.len(), unverified.len(), verified);
     let report = match run_typed::<ReportOut>(&agent, StructuredTask {
         system: SYNTH_SYS.into(),
         task: synth_task(&question, &confirmed, &killed),
@@ -1400,13 +1455,13 @@ pub async fn run(
     }, &cancel).await {
         Ok(out) => {
             emit_node_done(&progress, "synth", "Synthesize: writing the report", true);
-            build_report(&question, out, killed_rows, sources, stats)
+            build_report(&question, out, killed_rows, unverified_rows, sources, stats)
         }
         Err(e) => {
             warn!(error = %e, "deep_research: synthesis failed, salvaging survivors");
             emit_node_done(&progress, "synth", "Synthesize: writing the report", false);
             let confirmed_rows: Vec<RefutedRow> = confirmed.iter().map(|c| c.to_row()).collect();
-            salvage_synth_failed(&question, confirmed_rows, killed_rows, sources, stats)
+            salvage_synth_failed(&question, confirmed_rows, killed_rows, unverified_rows, sources, stats)
         }
     };
     finish(&dir, &report);
@@ -1444,10 +1499,16 @@ pub fn format_report(r: &ResearchReport) -> String {
             out.push_str(&format!("- {} ({}, vote {})\n", c.claim, c.source, c.vote));
         }
     }
+    if !r.unverified.is_empty() {
+        out.push_str("\n## Unverified (verifier panel errored — not adjudicated)\n");
+        for c in &r.unverified {
+            out.push_str(&format!("- {} ({}, vote {})\n", c.claim, c.source, c.vote));
+        }
+    }
     let s = &r.stats;
     out.push_str(&format!(
-        "\n---\n_{} angles · {} sources · {} claims → {} verified, {} confirmed, {} killed · {} findings_\n",
-        s.angles, s.sources_fetched, s.claims_extracted, s.claims_verified, s.confirmed, s.killed, s.after_synthesis
+        "\n---\n_{} angles · {} sources · {} claims → {} verified, {} confirmed, {} killed, {} unverified · {} findings_\n",
+        s.angles, s.sources_fetched, s.claims_extracted, s.claims_verified, s.confirmed, s.killed, s.unverified, s.after_synthesis
     ));
     out
 }
@@ -1485,6 +1546,33 @@ mod tests {
         assert!(survives(&[pass(), pass(), pass()], REFUTATIONS_REQUIRED));
         // 2 pass + 1 abstain → quorum met, 0 refutes → survive.
         assert!(survives(&[pass(), pass(), abstain()], REFUTATIONS_REQUIRED));
+    }
+
+    /// Three-way outcome (go/ccissue/69883): a claim that neither survives nor is
+    /// refuted on merit is UNVERIFIED — infra failure must not read as a refutation.
+    #[test]
+    fn three_way_outcome_table() {
+        let pass = || Some(verdict(false));
+        let refute = || Some(verdict(true));
+        let abstain = || None::<Verdict>;
+        let unverified = |votes: &[Vote]| {
+            !survives(votes, REFUTATIONS_REQUIRED) && !is_refuted(votes, REFUTATIONS_REQUIRED)
+        };
+
+        // All verifiers errored → unverified, NOT refuted.
+        assert!(unverified(&[abstain(), abstain(), abstain()]));
+        // 1 pass, 2 errored → quorum not met either way → unverified.
+        assert!(unverified(&[pass(), abstain(), abstain()]));
+        // 1 refute, 2 errored → one refute is not a quorum → unverified, NOT refuted.
+        assert!(unverified(&[refute(), abstain(), abstain()]));
+        // 2 refutes → refuted on merit, even with an errored third voter.
+        assert!(is_refuted(&[refute(), refute(), abstain()], REFUTATIONS_REQUIRED));
+        assert!(!unverified(&[refute(), refute(), abstain()]));
+        // 2 refutes + 1 pass → refuted on merit.
+        assert!(is_refuted(&[refute(), refute(), pass()], REFUTATIONS_REQUIRED));
+        // Survivor is never also refuted/unverified.
+        assert!(!is_refuted(&[pass(), pass(), abstain()], REFUTATIONS_REQUIRED));
+        assert!(!unverified(&[pass(), pass(), abstain()]));
     }
 
     /// V3a — `norm_url` collapses scheme/www/trailing-slash/fragment variants to one key.

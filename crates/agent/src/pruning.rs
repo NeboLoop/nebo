@@ -8,8 +8,11 @@ const CHARS_PER_TOKEN: usize = 4;
 const IMAGE_CHAR_ESTIMATE: usize = 8000;
 /// Minimum token savings to bother micro-compacting.
 const MICRO_COMPACT_MIN_SAVINGS: usize = 1000;
-/// Protect the N most recent tool results from micro-compaction.
-const MICRO_COMPACT_KEEP_RECENT: usize = 3;
+/// Protect the N most recent tool results from micro-compaction. Matches Claude
+/// Code's microcompact keep-recent (5): keeping only 3 stripped content the model
+/// was still actively working with, so mid-run reads it had just done looked
+/// "empty" once compacted. 5 leaves enough live context to reason over.
+const MICRO_COMPACT_KEEP_RECENT: usize = 5;
 /// When compactable tool results exceed this count, strip aggressively
 /// regardless of age (keep only MICRO_COMPACT_KEEP_RECENT most recent).
 const MICRO_COMPACT_COUNT_TRIGGER: usize = 4;
@@ -517,7 +520,13 @@ fn bounded_content(content: &str) -> String {
         Some(nl) if nl > READ_RESULT_KEEP_CHARS / 2 => &slice[..nl],
         _ => slice,
     };
-    format!("{}\n…(truncated)", slice.trim_end())
+    // Explicit about WHY it's short — a bare "truncated" (or worse, a blank) reads
+    // as "the file is empty"; this tells the model the content existed and is
+    // recoverable, so it re-reads instead of concluding the file was empty.
+    format!(
+        "{}\n…(truncated to save context — the full content was read successfully; re-read this path if you need the rest)",
+        slice.trim_end()
+    )
 }
 
 /// Build an informative one-line summary of a tool call + result.
@@ -1173,8 +1182,9 @@ mod tests {
         // now be compactable since we removed the category filter.
         let big = "x".repeat(4000);
         let mut messages = Vec::new();
-        // Create 6 tool results with a custom tool name — exceeds count trigger (4)
-        for i in 0..6 {
+        // Create 8 tool results with a custom tool name — exceeds count trigger (4)
+        // and leaves ≥2 compactable after the keep-recent-5 protection.
+        for i in 0..8 {
             let mut assistant = make_old_msg("assistant", "calling tool");
             assistant.tool_calls = Some(
                 serde_json::json!([{
@@ -1194,7 +1204,7 @@ mod tests {
             "non-standard tool results should be compactable (universal filter)"
         );
 
-        // Should keep 3 most recent, compact older 3
+        // Should keep 5 most recent, compact the older 3.
         // Tool summaries now use informative format like "[search_emails] N lines"
         let compacted_count = result
             .iter()
@@ -1256,8 +1266,8 @@ mod tests {
         let result = "x".repeat(10_000);
         let summary = build_tool_summary("os", Some(&input), &result);
         assert!(summary.len() < result.len(), "should be bounded");
-        assert!(summary.len() <= READ_RESULT_KEEP_CHARS + 32);
-        assert!(summary.ends_with("…(truncated)"));
+        assert!(summary.len() <= READ_RESULT_KEEP_CHARS + 160);
+        assert!(summary.contains("truncated to save context"));
     }
 
     #[test]

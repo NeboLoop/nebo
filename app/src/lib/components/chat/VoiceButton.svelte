@@ -150,7 +150,7 @@
 		title="Stop playback"
 		onclick={handleStopPlayback}
 	>
-		<Volume2 class="w-[18px] h-[18px] text-primary voice-pulse" />
+		<Volume2 class="w-[1.125rem] h-[1.125rem] text-primary voice-pulse" />
 	</button>
 {:else}
 	<div class="relative flex items-center" bind:this={dropdownRef}>
@@ -167,11 +167,11 @@
 			onpointerleave={handlePointerUp}
 		>
 			{#if isRecording}
-				<MicOff class="w-[18px] h-[18px] animate-pulse" />
+				<MicOff class="w-[1.125rem] h-[1.125rem] animate-pulse" />
 			{:else if isConnecting}
-				<Mic class="w-[18px] h-[18px] animate-pulse" />
+				<Mic class="w-[1.125rem] h-[1.125rem] animate-pulse" />
 			{:else}
-				<Mic class="w-[18px] h-[18px]" />
+				<Mic class="w-[1.125rem] h-[1.125rem]" />
 			{/if}
 		</button>
 

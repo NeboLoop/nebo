@@ -465,7 +465,7 @@
             <div class="flex flex-col gap-1.5">
               {#each modalDependents as dep}
                 <div class="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-base-200/50 border border-base-content/5">
-                  <span class="px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider shrink-0 mt-0.5 {dep.type === 'agent' ? 'bg-primary/10 text-primary' : 'bg-accent/10 text-accent'}">{dep.type}</span>
+                  <span class="px-1.5 py-0.5 rounded text-[0.625rem] font-medium uppercase tracking-wider shrink-0 mt-0.5 {dep.type === 'agent' ? 'bg-primary/10 text-primary' : 'bg-accent/10 text-accent'}">{dep.type}</span>
                   <div class="min-w-0">
                     <div class="text-sm font-medium">{dep.name}</div>
                     {#if dep.description}

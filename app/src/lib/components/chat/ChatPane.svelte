@@ -1160,7 +1160,7 @@
       {:else}
         <span class="text-sm font-semibold flex-1 truncate">{creationsTitle}</span>
       {/if}
-      {#if activeArtifact?.url && (activeArtifact.codeUrl || activeArtifact.url.endsWith('.html'))}
+      {#if activeArtifact?.url && (activeArtifact.codeUrl || activeArtifact.url.endsWith('.html') || activeArtifact.url.endsWith('.md') || activeArtifact.url.endsWith('.txt'))}
         <div class="flex items-center rounded-md bg-base-200 p-0.5 shrink-0">
           <button
             class="py-0.5 px-2 rounded text-xs cursor-pointer border-none transition-colors {!viewSource ? 'bg-base-100 font-medium shadow-sm' : 'bg-transparent text-base-content/60 hover:text-base-content'}"
@@ -1183,7 +1183,7 @@
         <a
           href={activeArtifact.url}
           download={activeArtifact.title}
-          onclick={(e) => downloadArtifact(e, activeArtifact?.url ?? '')}
+          onclick={(e) => downloadArtifact(e, activeArtifact?.url ?? '', activeArtifact?.title)}
           class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 text-base-content/70 hover:text-base-content transition-colors shrink-0"
           title="Download {activeArtifact.title}"
         >

@@ -140,6 +140,7 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(ToolResultGrounding),
         Box::new(ToolResultHonesty),
         Box::new(ResearchDelegationNudge),
+        Box::new(SerialReadGrind),
         Box::new(TaskTrackingNudge),
         Box::new(TaskCompletionNudge),
         Box::new(UntrustedContent),
@@ -1418,6 +1419,97 @@ impl Reminder for ResearchDelegationNudge {
     }
 }
 
+/// True if this assistant turn made EXACTLY ONE tool call and it was a read-type
+/// filesystem exploration (`os`/`system` read/glob/grep/list). This is the per-turn
+/// signal for the serial grind: many turns each doing one read. A healthy PARALLEL
+/// batch has ≥2 calls in the turn, so it returns false — that's the whole point of
+/// counting per-turn rather than by flat tool-name frequency.
+fn is_serial_read_turn(tool_calls_json: &str) -> bool {
+    let calls: serde_json::Value = match serde_json::from_str(tool_calls_json) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let arr = match calls.as_array() {
+        Some(a) => a,
+        None => return false,
+    };
+    if arr.len() != 1 {
+        return false;
+    }
+    let c = &arr[0];
+    let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    if name != "os" && name != "system" {
+        return false;
+    }
+    let action = c
+        .get("input")
+        .and_then(|i| i.get("action"))
+        .and_then(|a| a.as_str())
+        .unwrap_or("");
+    matches!(action, "read" | "glob" | "grep" | "list" | "ls")
+}
+
+/// SerialReadGrind — the weak-model failure the stadium-partners run showed: reading a
+/// directory tree one file per turn across dozens of turns. The runtime already runs
+/// batched read-only tools concurrently and an explore sub-agent exists; the prompt even
+/// says to use them — but weak models ignore static prompt bullets and heed the live
+/// stream. This fires as a stream reminder once the grind is underway. It also relieves
+/// the real damage: 40 serial reads overflow the sliding window and compaction strips all
+/// but the most-recent few, which is how the model ended up thinking the files were empty.
+/// Delegation keeps that bulk in the sub-agent's context, not the main one.
+struct SerialReadGrind;
+impl Reminder for SerialReadGrind {
+    fn name(&self) -> &'static str {
+        "serial_read_grind"
+    }
+    fn priority(&self) -> u8 {
+        8
+    }
+    fn min_turns_between(&self) -> usize {
+        4
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        // Direct Claude batches/delegates on its own; this is a weak-model nudge.
+        if ctx.is_claude() {
+            return None;
+        }
+        // Count serial single-read turns among the last 8 assistant tool-turns.
+        let mut serial = 0usize;
+        let mut seen = 0usize;
+        for m in ctx.messages.iter().rev() {
+            if m.role != "assistant" {
+                continue;
+            }
+            let Some(ref tc) = m.tool_calls else { continue };
+            if tc.is_empty() || tc == "[]" || tc == "null" {
+                continue;
+            }
+            seen += 1;
+            if is_serial_read_turn(tc) {
+                serial += 1;
+            }
+            if seen >= 8 {
+                break;
+            }
+        }
+        if serial < 5 {
+            return None;
+        }
+        Some(
+            "You've read files one at a time for several turns — this fills your context \
+             and older reads get compacted away (that's how content you already read \
+             starts looking 'empty'). Two fixes, both faster: (1) batch independent reads \
+             into ONE message — Nebo runs read-only tools in parallel, so request every \
+             file you need at once; (2) for a whole directory or open-ended search, spawn \
+             an explore sub-agent: agent(resource: \"task\", action: \"spawn\", \
+             agent_type: \"explore\", prompt: \"Read <dir> and report <what you need> as a \
+             consolidated summary\"). It explores in its own context and hands you one \
+             answer. Don't keep grinding file-by-file."
+                .to_string(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1466,6 +1558,52 @@ mod tests {
             ..base_rctx()
         };
         assert!(IdentityReinforce.check(&claude).is_none());
+    }
+
+    #[test]
+    fn serial_read_grind_fires_on_one_at_a_time_reads() {
+        let read = |path: &str| ChatMessage {
+            tool_calls: Some(format!(
+                r#"[{{"name":"os","input":{{"action":"read","path":"{path}"}}}}]"#
+            )),
+            ..make_msg("assistant", "reading")
+        };
+        // 6 turns, each a single os read → the grind. Fires.
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(make_msg("user", "go"));
+            messages.push(read(&format!("/dir/f{i}.md")));
+        }
+        let ctx = ReminderContext { messages: &messages, ..base_rctx() };
+        assert!(SerialReadGrind.check(&ctx).is_some(), "grind should fire");
+
+        // Direct Claude self-regulates → skipped.
+        let claude = ReminderContext {
+            messages: &messages,
+            provider_id: "anthropic",
+            ..base_rctx()
+        };
+        assert!(SerialReadGrind.check(&claude).is_none());
+
+        // A healthy PARALLEL batch (one turn, five reads) is NOT a grind — this is
+        // exactly what we want the model to do, so it must not false-fire.
+        let batched = ChatMessage {
+            tool_calls: Some(
+                r#"[{"name":"os","input":{"action":"read","path":"/a"}},
+                    {"name":"os","input":{"action":"read","path":"/b"}},
+                    {"name":"os","input":{"action":"read","path":"/c"}},
+                    {"name":"os","input":{"action":"read","path":"/d"}},
+                    {"name":"os","input":{"action":"read","path":"/e"}}]"#
+                    .to_string(),
+            ),
+            ..make_msg("assistant", "batch")
+        };
+        let batch_msgs = vec![make_msg("user", "go"), batched];
+        let bctx = ReminderContext { messages: &batch_msgs, ..base_rctx() };
+        assert!(
+            SerialReadGrind.check(&bctx).is_none(),
+            "a parallel batch is not a grind"
+        );
     }
 
     #[test]

@@ -894,7 +894,7 @@
           title="Voice conversation"
           onclick={handleStartConversation}
         >
-          <AudioLines class="w-[18px] h-[18px]" />
+          <AudioLines class="w-[1.125rem] h-[1.125rem]" />
         </button>
         [VOICE DISABLED] -->
       </div>

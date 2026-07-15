@@ -1,0 +1,421 @@
+- generic [ref=f37e343]:
+  - generic [ref=f37e345]:
+    - generic [ref=f37e346]:
+      - paragraph [ref=f37e347]:
+        - text: Scopes express the permissions you request users to authorize for your app and allow your project to access specific types of private user data from their Google Account.
+        - link "Learn more about OAuth scopes external, opens new window" [ref=f37e1745] [cursor=pointer]:
+          - /url: https://developers.google.com/identity/protocols/oauth2/scopes
+          - text: Learn more
+          - img "external, opens new window" [ref=f37e1746]:
+            - img [ref=f37e350]
+      - paragraph [ref=f37e352]:
+        - text: If you add sensitive (
+        - img [ref=f37e354]:
+          - img [ref=f37e355]
+        - text: ) or restricted (
+        - img [ref=f37e358]:
+          - img [ref=f37e359]
+        - text: ) scopes, like scopes that let you access a user's emails or contacts, you will need to submit your app for verification.
+        - link "FAQ to learn more about verifying OAuth scopes external, opens new window" [ref=f37e1747] [cursor=pointer]:
+          - /url: https://support.google.com/cloud/answer/9110914
+          - text: Learn more
+          - img "external, opens new window" [ref=f37e1748]:
+            - img [ref=f37e363]
+      - button "Add or remove scopes" [ref=f37e1749]:
+        - generic [ref=f37e366]: Add or remove scopes
+    - separator [ref=f37e367]
+    - generic [ref=f37e368]:
+      - heading "Your non-sensitive scopes" [level=2] [ref=f37e1750]
+      - grid "Table displaying a list of scopes , Navigate table with arrow keys. Enter key to interact with cell. Tab to navigate inside cell. Escape to exit cell." [ref=f37e1751]:
+        - rowgroup [ref=f37e381]:
+          - row "Scope approval state info Sort by API Scope User-facing description Delete Action" [ref=f37e1752]:
+            - columnheader "Scope approval state info Sort by" [ref=f37e1753]:
+              - generic [ref=f37e385] [cursor=pointer]:
+                - button "Scope approval state info" [ref=f37e1754]:
+                  - img [ref=f37e389]:
+                    - img [ref=f37e390]
+                - button "Sort by" [ref=f37e1755]:
+                  - img [ref=f37e394]
+            - columnheader "API" [ref=f37e1756]:
+              - generic [ref=f37e398] [cursor=pointer]:
+                - generic [ref=f37e399]: API
+                - button "Sort by API" [ref=f37e1757]:
+                  - img [ref=f37e402]
+            - columnheader "Scope" [ref=f37e1758]:
+              - generic [ref=f37e406] [cursor=pointer]:
+                - generic [ref=f37e407]: Scope
+                - button "Sort by Scope" [ref=f37e1759]:
+                  - img [ref=f37e410]
+            - columnheader "User-facing description" [ref=f37e1760]:
+              - generic [ref=f37e414] [cursor=pointer]:
+                - generic [ref=f37e415]: User-facing description
+                - button "Sort by User-facing description" [ref=f37e1761]:
+                  - img [ref=f37e418]
+            - columnheader "Delete Action" [ref=f37e1762]
+        - rowgroup [ref=f37e421]:
+          - row ".../auth/userinfo.email See your primary Google Account email address Click to delete this scope" [ref=f37e1763]:
+            - gridcell [ref=f37e1764]
+            - gridcell [ref=f37e1765]
+            - gridcell ".../auth/userinfo.email" [ref=f37e1766]:
+              - generic [ref=f37e1767]:
+                - text: .
+                - text: .
+                - text: ./auth/userinfo
+                - text: .email
+            - gridcell "See your primary Google Account email address" [ref=f37e1768]
+            - gridcell "Click to delete this scope" [ref=f37e1769]:
+              - button "Click to delete this scope" [ref=f37e1770] [cursor=pointer]:
+                - img "Delete this scope" [ref=f37e1771]:
+                  - img [ref=f37e1772]:
+                    - img [ref=f37e1773]
+    - separator [ref=f37e434]
+    - generic [ref=f37e435]:
+      - heading "Your sensitive scopes" [level=2] [ref=f37e1775]:
+        - img [ref=f37e438]:
+          - img [ref=f37e439]
+        - text: Your sensitive scopes
+      - paragraph [ref=f37e441]:
+        - text: Approval required.
+        - button "Help with sensitive scope approval" [ref=f37e1776] [cursor=pointer]:
+          - img [ref=f37e445]
+      - grid "Table displaying a list of scopes , Navigate table with arrow keys. Enter key to interact with cell. Tab to navigate inside cell. Escape to exit cell." [ref=f37e1777]:
+        - rowgroup [ref=f37e458]:
+          - row "Verification status API Scope User-facing description Delete Action" [ref=f37e1778]:
+            - columnheader "Verification status" [ref=f37e1779]:
+              - generic [ref=f37e462] [cursor=pointer]:
+                - button "Scope approval state info" [ref=f37e1780]:
+                  - img [ref=f37e466]:
+                    - img [ref=f37e467]
+                - button "Sort by" [ref=f37e1781]:
+                  - img [ref=f37e471]
+            - columnheader "API" [ref=f37e1782]:
+              - generic [ref=f37e475] [cursor=pointer]:
+                - generic [ref=f37e476]: API
+                - button "Sort by API" [ref=f37e1783]:
+                  - img [ref=f37e479]
+            - columnheader "Scope" [ref=f37e1784]:
+              - generic [ref=f37e483] [cursor=pointer]:
+                - generic [ref=f37e484]: Scope
+                - button "Sort by Scope" [ref=f37e1785]:
+                  - img [ref=f37e487]
+            - columnheader "User-facing description" [ref=f37e1786]:
+              - generic [ref=f37e491] [cursor=pointer]:
+                - generic [ref=f37e492]: User-facing description
+                - button "Sort by User-facing description" [ref=f37e1787]:
+                  - img [ref=f37e495]
+            - columnheader "Delete Action" [ref=f37e1788]
+        - rowgroup [ref=f37e498]:
+          - row "This scope is not yet verified .../auth/calendar See, edit, share, and permanently delete all the calendars you can access using Google Calendar Click to delete this scope" [ref=f37e1789]:
+            - gridcell "This scope is not yet verified" [ref=f37e1790]:
+              - img "This scope is not yet verified" [ref=f37e1791]:
+                - img [ref=f37e1792]:
+                  - img [ref=f37e1793]
+            - gridcell [ref=f37e1795]
+            - gridcell ".../auth/calendar" [ref=f37e1796]:
+              - generic [ref=f37e1797]:
+                - text: .
+                - text: .
+                - text: ./auth/calendar
+            - gridcell "See, edit, share, and permanently delete all the calendars you can access using Google Calendar" [ref=f37e1798]
+            - gridcell "Click to delete this scope" [ref=f37e1799]:
+              - button "Click to delete this scope" [ref=f37e1800] [cursor=pointer]:
+                - img "Delete this scope" [ref=f37e1801]:
+                  - img [ref=f37e1802]:
+                    - img [ref=f37e1803]
+          - row "This scope is not yet verified .../auth/documents See, edit, create, and delete all your Google Docs documents Click to delete this scope" [ref=f37e1805]:
+            - gridcell "This scope is not yet verified" [ref=f37e1806]:
+              - img "This scope is not yet verified" [ref=f37e1807]:
+                - img [ref=f37e1808]:
+                  - img [ref=f37e1809]
+            - gridcell [ref=f37e1811]
+            - gridcell ".../auth/documents" [ref=f37e1812]:
+              - generic [ref=f37e1813]:
+                - text: .
+                - text: .
+                - text: ./auth/documents
+            - gridcell "See, edit, create, and delete all your Google Docs documents" [ref=f37e1814]
+            - gridcell "Click to delete this scope" [ref=f37e1815]:
+              - button "Click to delete this scope" [ref=f37e1816] [cursor=pointer]:
+                - img "Delete this scope" [ref=f37e1817]:
+                  - img [ref=f37e1818]:
+                    - img [ref=f37e1819]
+          - row "This scope is not yet verified .../auth/spreadsheets See, edit, create, and delete all your Google Sheets spreadsheets Click to delete this scope" [ref=f37e1821]:
+            - gridcell "This scope is not yet verified" [ref=f37e1822]:
+              - img "This scope is not yet verified" [ref=f37e1823]:
+                - img [ref=f37e1824]:
+                  - img [ref=f37e1825]
+            - gridcell [ref=f37e1827]
+            - gridcell ".../auth/spreadsheets" [ref=f37e1828]:
+              - generic [ref=f37e1829]:
+                - text: .
+                - text: .
+                - text: ./auth/spreadsheets
+            - gridcell "See, edit, create, and delete all your Google Sheets spreadsheets" [ref=f37e1830]
+            - gridcell "Click to delete this scope" [ref=f37e1831]:
+              - button "Click to delete this scope" [ref=f37e1832] [cursor=pointer]:
+                - img "Delete this scope" [ref=f37e1833]:
+                  - img [ref=f37e1834]:
+                    - img [ref=f37e1835]
+          - row "This scope is not yet verified .../auth/tasks Create, edit, organize, and delete all your tasks Click to delete this scope" [ref=f37e1837]:
+            - gridcell "This scope is not yet verified" [ref=f37e1838]:
+              - img "This scope is not yet verified" [ref=f37e1839]:
+                - img [ref=f37e1840]:
+                  - img [ref=f37e1841]
+            - gridcell [ref=f37e1843]
+            - gridcell ".../auth/tasks" [ref=f37e1844]:
+              - generic [ref=f37e1845]:
+                - text: .
+                - text: .
+                - text: ./auth/tasks
+            - gridcell "Create, edit, organize, and delete all your tasks" [ref=f37e1846]
+            - gridcell "Click to delete this scope" [ref=f37e1847]:
+              - button "Click to delete this scope" [ref=f37e1848] [cursor=pointer]:
+                - img "Delete this scope" [ref=f37e1849]:
+                  - img [ref=f37e1850]:
+                    - img [ref=f37e1851]
+      - heading "How will the scopes be used?" [level=5] [ref=f37e1853]
+      - generic [ref=f37e596]:
+        - generic [ref=f37e598] [cursor=pointer]:
+          - generic [ref=f37e599]:
+            - text: Enter justification here
+            - generic [ref=f37e600]: "*"
+          - textbox "Enter justification here" [ref=f37e1854]: Nebo is a desktop AI agent platform. Users install skills that interact with Google Workspace APIs on their behalf. The agent reads and writes Calendar events, Docs, Sheets, Apps Script projects, and Admin directory info only when the user explicitly requests it through natural language commands. All actions require user initiation. No data is stored on our servers.
+        - generic [ref=f37e604]:
+          - generic [ref=f37e605]: Explain to Google why you need these scopes, how you will use them, and why more limited scopes aren’t sufficient.
+          - generic [ref=f37e607]: 368 / 1000
+    - separator [ref=f37e608]
+    - generic [ref=f37e609]:
+      - heading "Your restricted scopes" [level=2] [ref=f37e1855]:
+        - img [ref=f37e612]:
+          - img [ref=f37e613]
+        - text: Your restricted scopes
+      - paragraph [ref=f37e615]:
+        - text: Approval required.
+        - button "Help with restricted scope approval" [ref=f37e1856] [cursor=pointer]:
+          - img [ref=f37e619]
+      - heading "Drive scopes" [level=4] [ref=f37e1857]:
+        - generic [ref=f37e622]: Drive scopes
+      - grid "Table displaying a list of scopes , Navigate table with arrow keys. Enter key to interact with cell. Tab to navigate inside cell. Escape to exit cell." [ref=f37e1858]:
+        - rowgroup [ref=f37e634]:
+          - row "Scope approval state info Sort by API Scope User-facing description Delete Action" [ref=f37e1859]:
+            - columnheader "Scope approval state info Sort by" [ref=f37e1860]:
+              - generic [ref=f37e638] [cursor=pointer]:
+                - button "Scope approval state info" [ref=f37e1861]:
+                  - img [ref=f37e642]:
+                    - img [ref=f37e643]
+                - button "Sort by" [ref=f37e1862]:
+                  - img [ref=f37e647]
+            - columnheader "API" [ref=f37e1863]:
+              - generic [ref=f37e651] [cursor=pointer]:
+                - generic [ref=f37e652]: API
+                - button "Sort by API" [ref=f37e1864]:
+                  - img [ref=f37e655]
+            - columnheader "Scope" [ref=f37e1865]:
+              - generic [ref=f37e659] [cursor=pointer]:
+                - generic [ref=f37e660]: Scope
+                - button "Sort by Scope" [ref=f37e1866]:
+                  - img [ref=f37e663]
+            - columnheader "User-facing description" [ref=f37e1867]:
+              - generic [ref=f37e667] [cursor=pointer]:
+                - generic [ref=f37e668]: User-facing description
+                - button "Sort by User-facing description" [ref=f37e1868]:
+                  - img [ref=f37e671]
+            - columnheader "Delete Action" [ref=f37e1869]
+        - rowgroup [ref=f37e674]:
+          - row "This scope is not yet verified .../auth/drive See, edit, create, and delete all of your Google Drive files Click to delete this scope" [ref=f37e1870]:
+            - gridcell "This scope is not yet verified" [ref=f37e1871]:
+              - img "This scope is not yet verified" [ref=f37e1872]:
+                - img [ref=f37e1873]:
+                  - img [ref=f37e1874]
+            - gridcell [ref=f37e1876]
+            - gridcell ".../auth/drive" [ref=f37e1877]:
+              - generic [ref=f37e1878]:
+                - text: .
+                - text: .
+                - text: ./auth/drive
+            - gridcell "See, edit, create, and delete all of your Google Drive files" [ref=f37e1879]
+            - gridcell "Click to delete this scope" [ref=f37e1880]:
+              - button "Click to delete this scope" [ref=f37e1881] [cursor=pointer]:
+                - img "Delete this scope" [ref=f37e1882]:
+                  - img [ref=f37e1883]:
+                    - img [ref=f37e1884]
+      - generic [ref=f37e691]:
+        - heading "What features will you use?" [level=5] [ref=f37e1886]
+        - button "Help with restricted scope" [ref=f37e1887] [cursor=pointer]:
+          - img [ref=f37e696]
+      - generic [ref=f37e700] [cursor=pointer]:
+        - generic [ref=f37e701]:
+          - text: Select the ways that your app intends to use the user data
+          - generic [ref=f37e702]: "*"
+        - combobox "Select the ways that your app intends to use the user data" [ref=f37e1888]:
+          - generic [ref=f37e705]:
+            - generic [ref=f37e707]: Drive productivity
+            - img [ref=f37e709]
+      - heading "How will the scopes be used?" [level=5] [ref=f37e1889]
+      - generic [ref=f37e712]:
+        - generic [ref=f37e714] [cursor=pointer]:
+          - generic [ref=f37e715]:
+            - text: Enter justification here
+            - generic [ref=f37e716]: "*"
+          - textbox "Enter justification here" [ref=f37e1890]: Users ask the AI agent to find, read, create, or organize files in their Google Drive. The agent accesses Drive only when the user explicitly requests file operations such as searching for documents, uploading files, or managing folder structure. No bulk export or background syncing occurs.
+        - generic [ref=f37e720]:
+          - generic [ref=f37e721]: Explain to Google why you need these scopes, how you will use them, and why more limited scopes aren’t sufficient.
+          - generic [ref=f37e723]: 291 / 1000
+      - heading "Gmail scopes" [level=4] [ref=f37e1891]:
+        - generic [ref=f37e725]: Gmail scopes
+      - grid "Table displaying a list of scopes , Navigate table with arrow keys. Enter key to interact with cell. Tab to navigate inside cell. Escape to exit cell." [ref=f37e1892]:
+        - rowgroup [ref=f37e737]:
+          - row "Scope approval state info Sort by API Scope User-facing description Delete Action" [ref=f37e1893]:
+            - columnheader "Scope approval state info Sort by" [ref=f37e1894]:
+              - generic [ref=f37e741] [cursor=pointer]:
+                - button "Scope approval state info" [ref=f37e1895]:
+                  - img [ref=f37e745]:
+                    - img [ref=f37e746]
+                - button "Sort by" [ref=f37e1896]:
+                  - img [ref=f37e750]
+            - columnheader "API" [ref=f37e1897]:
+              - generic [ref=f37e754] [cursor=pointer]:
+                - generic [ref=f37e755]: API
+                - button "Sort by API" [ref=f37e1898]:
+                  - img [ref=f37e758]
+            - columnheader "Scope" [ref=f37e1899]:
+              - generic [ref=f37e762] [cursor=pointer]:
+                - generic [ref=f37e763]: Scope
+                - button "Sort by Scope" [ref=f37e1900]:
+                  - img [ref=f37e766]
+            - columnheader "User-facing description" [ref=f37e1901]:
+              - generic [ref=f37e770] [cursor=pointer]:
+                - generic [ref=f37e771]: User-facing description
+                - button "Sort by User-facing description" [ref=f37e1902]:
+                  - img [ref=f37e774]
+            - columnheader "Delete Action" [ref=f37e1903]
+        - rowgroup [ref=f37e777]:
+          - row "This scope is not yet verified .../auth/gmail.modify Read, compose, and send emails from your Gmail account Click to delete this scope" [ref=f37e1904]:
+            - gridcell "This scope is not yet verified" [ref=f37e1905]:
+              - img "This scope is not yet verified" [ref=f37e1906]:
+                - img [ref=f37e1907]:
+                  - img [ref=f37e1908]
+            - gridcell [ref=f37e1910]
+            - gridcell ".../auth/gmail.modify" [ref=f37e1911]:
+              - generic [ref=f37e1912]:
+                - text: .
+                - text: .
+                - text: ./auth/gmail
+                - text: .modify
+            - gridcell "Read, compose, and send emails from your Gmail account" [ref=f37e1913]
+            - gridcell "Click to delete this scope" [ref=f37e1914]:
+              - button "Click to delete this scope" [ref=f37e1915] [cursor=pointer]:
+                - img "Delete this scope" [ref=f37e1916]:
+                  - img [ref=f37e1917]:
+                    - img [ref=f37e1918]
+      - generic [ref=f37e794]:
+        - heading "What features will you use?" [level=5] [ref=f37e1920]
+        - button "Help with restricted scope" [ref=f37e1921] [cursor=pointer]:
+          - img [ref=f37e799]
+      - generic [ref=f37e803] [cursor=pointer]:
+        - generic [ref=f37e804]:
+          - text: Select the ways that your app intends to use the user data
+          - generic [ref=f37e805]: "*"
+        - combobox "Select the ways that your app intends to use the user data" [ref=f37e1922]:
+          - generic [ref=f37e808]:
+            - generic [ref=f37e810]: Email productivity
+            - img [ref=f37e812]
+      - heading "How will the scopes be used?" [level=5] [ref=f37e1923]
+      - generic [ref=f37e815]:
+        - generic [ref=f37e817] [cursor=pointer]:
+          - generic [ref=f37e818]:
+            - text: Enter justification here
+            - generic [ref=f37e819]: "*"
+          - textbox "Enter justification here" [ref=f37e1924]: Users ask the AI agent to read, draft, or send emails on their behalf. The agent accesses Gmail only when the user explicitly requests email operations such as reading recent messages, composing replies, or sending new emails. No background scanning or bulk access occurs.
+        - generic [ref=f37e823]:
+          - generic [ref=f37e824]: Explain to Google why you need these scopes, how you will use them, and why more limited scopes aren’t sufficient.
+          - generic [ref=f37e826]: 272 / 1000
+      - heading "Chat scopes" [level=4] [ref=f37e1925]:
+        - generic [ref=f37e828]: Chat scopes
+      - grid "Table displaying a list of scopes , Navigate table with arrow keys. Enter key to interact with cell. Tab to navigate inside cell. Escape to exit cell." [ref=f37e1926]:
+        - rowgroup [ref=f37e840]:
+          - row "Scope approval state info Sort by API Scope User-facing description Delete Action" [ref=f37e1927]:
+            - columnheader "Scope approval state info Sort by" [ref=f37e1928]:
+              - generic [ref=f37e844] [cursor=pointer]:
+                - button "Scope approval state info" [ref=f37e1929]:
+                  - img [ref=f37e848]:
+                    - img [ref=f37e849]
+                - button "Sort by" [ref=f37e1930]:
+                  - img [ref=f37e853]
+            - columnheader "API" [ref=f37e1931]:
+              - generic [ref=f37e857] [cursor=pointer]:
+                - generic [ref=f37e858]: API
+                - button "Sort by API" [ref=f37e1932]:
+                  - img [ref=f37e861]
+            - columnheader "Scope" [ref=f37e1933]:
+              - generic [ref=f37e865] [cursor=pointer]:
+                - generic [ref=f37e866]: Scope
+                - button "Sort by Scope" [ref=f37e1934]:
+                  - img [ref=f37e869]
+            - columnheader "User-facing description" [ref=f37e1935]:
+              - generic [ref=f37e873] [cursor=pointer]:
+                - generic [ref=f37e874]: User-facing description
+                - button "Sort by User-facing description" [ref=f37e1936]:
+                  - img [ref=f37e877]
+            - columnheader "Delete Action" [ref=f37e1937]
+        - rowgroup [ref=f37e880]:
+          - row "This scope is not yet verified .../auth/chat.messages See, compose, send, update, and delete messages as well as their message content; add, see, and delete reactions to messages. Click to delete this scope" [ref=f37e1938]:
+            - gridcell "This scope is not yet verified" [ref=f37e1939]:
+              - img "This scope is not yet verified" [ref=f37e1940]:
+                - img [ref=f37e1941]:
+                  - img [ref=f37e1942]
+            - gridcell [ref=f37e1944]
+            - gridcell ".../auth/chat.messages" [ref=f37e1945]:
+              - generic [ref=f37e1946]:
+                - text: .
+                - text: .
+                - text: ./auth/chat
+                - text: .messages
+            - gridcell "See, compose, send, update, and delete messages as well as their message content; add, see, and delete reactions to messages." [ref=f37e1947]
+            - gridcell "Click to delete this scope" [ref=f37e1948]:
+              - button "Click to delete this scope" [ref=f37e1949] [cursor=pointer]:
+                - img "Delete this scope" [ref=f37e1950]:
+                  - img [ref=f37e1951]:
+                    - img [ref=f37e1952]
+      - generic [ref=f37e897]:
+        - heading "What features will you use?" [level=5] [ref=f37e1954]
+        - button "Help with restricted scope" [ref=f37e1955] [cursor=pointer]:
+          - img [ref=f37e902]
+      - generic [ref=f37e906] [cursor=pointer]:
+        - generic [ref=f37e907]:
+          - text: Select the ways that your app intends to use the user data
+          - generic [ref=f37e908]: "*"
+        - combobox "Select the ways that your app intends to use the user data" [ref=f37e1956]:
+          - generic [ref=f37e911]:
+            - generic [ref=f37e913]: Chat app
+            - img [ref=f37e915]
+      - heading "How will the scopes be used?" [level=5] [ref=f37e1957]
+      - generic [ref=f37e918]:
+        - generic [ref=f37e920] [cursor=pointer]:
+          - generic [ref=f37e921]:
+            - text: Enter justification here
+            - generic [ref=f37e922]: "*"
+          - textbox "Enter justification here" [ref=f37e1958]: Users ask the AI agent to send or read Google Chat messages. The agent accesses Chat only when the user explicitly requests messaging operations. No background monitoring or bulk message access occurs.
+        - generic [ref=f37e926]:
+          - generic [ref=f37e927]: Explain to Google why you need these scopes, how you will use them, and why more limited scopes aren’t sufficient.
+          - generic [ref=f37e929]: 201 / 1000
+    - separator [ref=f37e930]
+    - generic [ref=f37e931]:
+      - generic [ref=f37e932]:
+        - 'heading "Demo video: how will the scopes will be used?" [level=2] [ref=f37e1959]'
+        - button "Help with scope usage Youtube URL" [ref=f37e1960] [cursor=pointer]:
+          - img [ref=f37e937]
+      - generic [ref=f37e939]:
+        - generic [ref=f37e941] [cursor=pointer]:
+          - generic [ref=f37e942]:
+            - text: YouTube link
+            - generic [ref=f37e943]: "*"
+          - textbox "YouTube link" [ref=f37e1961]
+        - generic [ref=f37e1172]:
+          - img "Error" [ref=f37e1962]:
+            - img [ref=f37e1174]
+          - generic [ref=f37e1176]: A YouTube video link is required when selecting sensitive or restricted scopes
+  - button "Save" [disabled] [ref=f37e1963]:
+    - generic [ref=f37e953]: Save
+  - button "Discard changes" [ref=f37e1964]:
+    - generic [ref=f37e955]: Discard changes

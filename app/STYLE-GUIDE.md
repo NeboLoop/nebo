@@ -2,7 +2,7 @@
 
 > **Audience:** Developers and AI coding assistants working on the Nebo SvelteKit app.
 > **Stack:** SvelteKit · Tailwind CSS v4 · DaisyUI · Geist typeface
-> **Theme:** Custom `nebo` theme (defined in `app.css`) — all values are DaisyUI semantic tokens.
+> **Theme:** Custom `clean` theme is the shipped light mode; `dark` is the shipped dark mode (both defined in `app.css`). All values are DaisyUI semantic tokens, so the guidance holds for every theme. (A `nebo` teal theme also exists in `app.css` but is not applied at runtime.)
 
 ---
 
@@ -22,29 +22,29 @@ Three qualities drive every decision:
 
 ### Palette — DaisyUI Semantic Tokens Only
 
-| Token | Light value | Role |
+| Token | Light value (`clean`) | Role |
 |---|---|---|
-| `base-100` | `#f7fbfc` | Main panels, chat canvas, page background |
-| `base-200` | `#deeaef` | Sidebar, recessed areas, canvas surfaces, selected state bg |
-| `base-300` | `#b8cdd8` | Borders, dividers, input outlines |
-| `base-content` | `#0e1c26` | All body text |
+| `base-100` | `#ffffff` | Main panels, chat canvas, page background |
+| `base-200` | `#fafafa` | Sidebar, recessed areas, canvas surfaces, selected state bg |
+| `base-300` | `#ebebeb` | Borders, dividers, input outlines |
+| `base-content` | `#1d1d1f` | All body text |
 | `surface` | `#ffffff` | Elevated cards/inputs that must pop off `base-100` (e.g. chat composer) |
-| `primary` | `#0077a8` | Cool teal — primary actions, links, active states |
+| `primary` | `#2563eb` | Cool blue — primary actions, links, active states |
 | `primary-content` | `#ffffff` | Text on primary backgrounds |
-| `accent` | `#b85c12` | Warm copper — badges, highlights, secondary CTAs |
+| `accent` | `#e8503a` | Warm coral — badges, highlights, secondary CTAs |
 | `accent-content` | `#ffffff` | Text on accent backgrounds |
-| `secondary` | `#162b3a` | Deep navy — rarely used directly |
-| `neutral` | `#0e1c26` | Darkest surface (tooltips, overlays) |
-| `success` | `#138a4a` | Confirmations, online status |
-| `warning` | `#c47a08` | Running/in-progress states |
-| `error` | `#cc2222` | Errors, destructive actions |
-| `info` | `#1a6fa8` | Informational callouts |
+| `secondary` | `#64748b` | Cool slate — rarely used directly |
+| `neutral` | `#1d1d1f` | Darkest surface (tooltips, overlays) |
+| `success` | `#22c55e` | Confirmations, online status |
+| `warning` | `#f59e0b` | Running/in-progress states |
+| `error` | `#ef4444` | Errors, destructive actions |
+| `info` | `#3b82f6` | Informational callouts |
 
 ### Rules
 
 - **Never hardcode hex values** in class attributes. All colors come from tokens above.
 - **Opacity modifiers** create tints from tokens: `bg-primary/10`, `text-base-content/70`, `border-base-300/50`.
-- **Primary vs Accent** — these are intentionally opposite temperatures. Use `primary` for navigation, active states, links. Use `accent` for badges, tags, "new" labels, and CTAs that need to pop against teal.
+- **Primary vs Accent** — these are intentionally opposite temperatures (cool blue vs warm coral). Use `primary` for navigation, active states, links. Use `accent` for badges, tags, "new" labels, and CTAs that need to pop against the blue.
 - **All themes inherit** — the token system means the app works correctly in dark, nord, sunset, coffee, etc. without any per-theme overrides.
 
 ### Surface Hierarchy

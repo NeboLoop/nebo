@@ -1,0 +1,293 @@
+- generic [active] [ref=f46e1]:
+  - generic [ref=f46e3]:
+    - generic [ref=f46e4]:
+      - complementary "Skip links" [ref=f46e5]:
+        - link "Skip to main content" [ref=f46e6] [cursor=pointer]:
+          - /url: /
+          - generic [ref=f46e7]: Skip to main content
+        - button "Keyboard shortcuts" [ref=f46e8]:
+          - generic [ref=f46e9]: Keyboard shortcuts
+        - link "Accessibility Help external, opens new window" [ref=f46e10] [cursor=pointer]:
+          - /url: https://cloud.google.com/docs/accessibility?hl=en_US
+          - generic [ref=f46e11]:
+            - text: Accessibility Help
+            - generic "external, opens new window" [ref=f46e12]:
+              - img "external, opens new window" [ref=f46e13]:
+                - img [ref=f46e14]
+        - link "Accessibility Feedback external, opens new window" [ref=f46e16] [cursor=pointer]:
+          - /url: https://support.google.com/accessibility/contact/feedback?hl=en_US
+          - generic [ref=f46e17]:
+            - text: Accessibility Feedback
+            - generic "external, opens new window" [ref=f46e18]:
+              - img "external, opens new window" [ref=f46e19]:
+                - img [ref=f46e20]
+      - banner [ref=f46e23]:
+        - generic [ref=f46e24]:
+          - navigation [ref=f46e27]:
+            - button "Navigation menu (.)" [ref=f46e28] [cursor=pointer]:
+              - img [ref=f46e30]
+          - link "Google Cloud Platform Home" [ref=f46e32] [cursor=pointer]:
+            - /url: /
+            - generic:
+              - img
+          - button "You're currently working in NeboLoop. Hit enter to switch projects, folders, or organizations" [ref=f46e40]:
+            - generic [ref=f46e41]:
+              - img [ref=f46e43]
+              - generic [ref=f46e46]: NeboLoop
+        - search "Google Cloud Platform" [ref=f46e52]:
+          - combobox [ref=f46e53]:
+            - searchbox "Enter query to search for resources, docs, products, and more" [ref=f46e54]
+          - button "See all search results" [disabled]:
+            - generic:
+              - img
+            - generic: Search
+        - generic [ref=f46e55]:
+          - generic [ref=f46e56]:
+            - button "Open or close Gemini Cloud Assist chat (Option G)" [ref=f46e60] [cursor=pointer]:
+              - img [ref=f46e62]
+            - button "Activate Cloud Shell (G then S)" [ref=f46e510] [cursor=pointer]:
+              - img [ref=f46e512]
+            - button "Open notifications" [ref=f46e70] [cursor=pointer]:
+              - img [ref=f46e72]
+            - button "Settings and utilities" [ref=f46e78] [cursor=pointer]:
+              - img [ref=f46e80]
+          - 'button "Account: Alma Tuck (alma.tuck@gmail.com)" [ref=f46e516]':
+            - img [ref=f46e517]
+    - generic [ref=f46e93]:
+      - navigation "Breadcrumb" [ref=f46e98]:
+        - link "Google Auth Platform" [ref=f46e101] [cursor=pointer]:
+          - /url: /auth?project=neboloop
+          - img [ref=f46e104]
+          - generic [ref=f46e108]: Google Auth Platform
+        - list [ref=f46e109]:
+          - listitem [ref=f46e110]:
+            - generic [ref=f46e111]: /
+            - link "Branding" [ref=f46e114] [cursor=pointer]:
+              - /url: /auth/branding?project=neboloop
+              - generic [ref=f46e116]: Branding
+      - generic [ref=f46e127]:
+        - navigation "Google Auth Platform" [ref=f46e134]:
+          - generic [ref=f46e135]:
+            - list "Overview, 1 of 7 More options Branding, 2 of 7 More options Audience, 3 of 7 More options Clients, 4 of 7 More options Data Access, 5 of 7 More options Verification Center, 6 of 7 More options Settings, 7 of 7 More options" [ref=f46e139]:
+              - listitem [ref=f46e140]:
+                - generic [ref=f46e143]:
+                  - link "Overview, 1 of 7" [ref=f46e144] [cursor=pointer]:
+                    - /url: /auth/overview
+                    - generic [ref=f46e145]:
+                      - img [ref=f46e148]
+                      - generic [ref=f46e150]: Overview
+                  - button "More options" [ref=f46e152] [cursor=pointer]:
+                    - img [ref=f46e154]
+              - listitem [ref=f46e156]:
+                - generic [ref=f46e159]:
+                  - link "Branding, 2 of 7" [ref=f46e160] [cursor=pointer]:
+                    - /url: /auth/branding
+                    - generic [ref=f46e161]:
+                      - img [ref=f46e164]
+                      - generic [ref=f46e170]: Branding
+                  - button "More options" [ref=f46e172] [cursor=pointer]:
+                    - img [ref=f46e174]
+              - listitem [ref=f46e176]:
+                - generic [ref=f46e179]:
+                  - link "Audience, 3 of 7" [ref=f46e180] [cursor=pointer]:
+                    - /url: /auth/audience
+                    - generic [ref=f46e181]:
+                      - img [ref=f46e184]
+                      - generic [ref=f46e186]: Audience
+                  - button "More options" [ref=f46e188] [cursor=pointer]:
+                    - img [ref=f46e190]
+              - listitem [ref=f46e192]:
+                - generic [ref=f46e195]:
+                  - link "Clients, 4 of 7" [ref=f46e196] [cursor=pointer]:
+                    - /url: /auth/clients
+                    - generic [ref=f46e197]:
+                      - img [ref=f46e200]
+                      - generic [ref=f46e202]: Clients
+                  - button "More options" [ref=f46e204] [cursor=pointer]:
+                    - img [ref=f46e206]
+              - listitem [ref=f46e208]:
+                - generic [ref=f46e211]:
+                  - link "Data Access, 5 of 7" [ref=f46e212] [cursor=pointer]:
+                    - /url: /auth/scopes
+                    - generic [ref=f46e213]:
+                      - img [ref=f46e216]
+                      - generic [ref=f46e219]: Data Access
+                  - button "More options" [ref=f46e221] [cursor=pointer]:
+                    - img [ref=f46e223]
+              - listitem [ref=f46e225]:
+                - generic [ref=f46e228]:
+                  - link "Verification Center, 6 of 7" [ref=f46e229] [cursor=pointer]:
+                    - /url: /auth/verification
+                    - generic [ref=f46e230]:
+                      - img [ref=f46e233]
+                      - generic [ref=f46e236]: Verification Center
+                  - button "More options" [ref=f46e238] [cursor=pointer]:
+                    - img [ref=f46e240]
+              - listitem [ref=f46e242]:
+                - generic [ref=f46e245]:
+                  - link "Settings, 7 of 7" [ref=f46e246] [cursor=pointer]:
+                    - /url: /auth/settings
+                    - generic [ref=f46e247]:
+                      - img [ref=f46e250]
+                      - generic [ref=f46e252]: Settings
+                  - button "More options" [ref=f46e254] [cursor=pointer]:
+                    - img [ref=f46e256]
+            - button "Toggle Google Auth Platform navigation menu" [pressed] [ref=f46e259] [cursor=pointer]:
+              - img [ref=f46e262]
+        - main [ref=f46e265]:
+          - generic [ref=f46e282]:
+            - generic [ref=f46e285]:
+              - heading "Branding" [level=1] [ref=f46e288]:
+                - generic [ref=f46e289]: Branding
+              - button "Information and summary" [ref=f46e295] [cursor=pointer]:
+                - img [ref=f46e297]
+            - generic [ref=f46e304]:
+              - generic [ref=f46e306]:
+                - text: App information
+                - paragraph [ref=f46e307]: This shows in the consent screen, and helps end users know who you are and contact you
+                - generic [ref=f46e308]:
+                  - generic [ref=f46e310] [cursor=pointer]:
+                    - generic [ref=f46e311]:
+                      - text: App name
+                      - generic [ref=f46e312]: "*"
+                    - textbox "App name" [ref=f46e314]: NeboAI
+                  - generic [ref=f46e317]: The name of the app asking for consent
+                - generic [ref=f46e319]:
+                  - generic [ref=f46e519] [cursor=pointer]:
+                    - generic [ref=f46e320]:
+                      - text: User support email
+                      - generic [ref=f46e520]: "*"
+                    - combobox "User support email" [ref=f46e522]:
+                      - generic [ref=f46e523]:
+                        - generic [ref=f46e525]: alma.tuck@gmail.com
+                        - img [ref=f46e527]
+                  - generic [ref=f46e323]:
+                    - text: For users to contact you with questions about their consent.
+                    - link "Learn more about the user support email external, opens new window" [ref=f46e324] [cursor=pointer]:
+                      - /url: https://support.google.com/cloud/answer/10311615#user-support-email
+                      - text: Learn more
+                      - img "external, opens new window" [ref=f46e325]:
+                        - img [ref=f46e326]
+                - generic [ref=f46e329]:
+                  - heading "App logo" [level=3] [ref=f46e330]
+                  - paragraph [ref=f46e331]:
+                    - text: This is your logo. It helps people recognize your app and is displayed on the OAuth consent screen.
+                    - text: After you upload a logo, you will need to submit your app for verification unless the app is configured for internal use only or has a publishing status of "Testing".
+                    - link "FAQ to learn more about OAuth app verification external, opens new window" [ref=f46e332] [cursor=pointer]:
+                      - /url: https://support.google.com/cloud/answer/9110914
+                      - text: Learn more
+                      - img "external, opens new window" [ref=f46e333]:
+                        - img [ref=f46e334]
+                  - img "Current App logo" [ref=f46e337]
+                  - button "Remove" [disabled] [ref=f46e338]:
+                    - img [ref=f46e340]:
+                      - img [ref=f46e341]
+                    - generic [ref=f46e343]: Remove
+                  - heading "Change logo" [level=4] [ref=f46e347]:
+                    - button "Change logo" [ref=f46e349]:
+                      - generic [ref=f46e350]:
+                        - img [ref=f46e352]:
+                          - img [ref=f46e353]
+                        - text: Change logo
+                      - img [ref=f46e356]:
+                        - img [ref=f46e357]
+                - text: App domain
+                - paragraph [ref=f46e359]: To protect you and your users, Google only allows apps using OAuth to use Authorized Domains. The following information will be shown to your users on the consent screen.
+                - generic [ref=f46e362]:
+                  - generic [ref=f46e364] [cursor=pointer]:
+                    - generic [ref=f46e365]: Application home page
+                    - textbox "Application home page" [ref=f46e367]: https://neboai.com
+                  - generic [ref=f46e370]: Provide users a link to your home page
+                - generic [ref=f46e374]:
+                  - generic [ref=f46e376] [cursor=pointer]:
+                    - generic [ref=f46e377]: Application privacy policy link
+                    - textbox "Application privacy policy link" [ref=f46e379]: https://neboai.com/privacy
+                  - generic [ref=f46e382]: Provide users a link to your public privacy policy
+                - generic [ref=f46e386]:
+                  - generic [ref=f46e388] [cursor=pointer]:
+                    - generic [ref=f46e389]: Application terms of service link
+                    - textbox "Application terms of service link" [ref=f46e391]: https://neboai.com/terms
+                  - generic [ref=f46e394]: Provide users a link to your public terms of service
+                - group "Authorized domains" [ref=f46e398]:
+                  - generic "Authorized domains" [ref=f46e400]:
+                    - heading "Authorized domains" [level=2] [ref=f46e402]
+                    - button "Help with authorized domains" [ref=f46e404] [cursor=pointer]:
+                      - img [ref=f46e406]
+                  - generic [ref=f46e409]:
+                    - text: When a domain is used on the consent screen or in an OAuth client’s configuration, it must be pre-registered here. If your app needs to go through verification, please go to the
+                    - link "Google Search Console" [ref=f46e410] [cursor=pointer]:
+                      - /url: https://search.google.com/search-console/about
+                    - text: to check if your domains are authorized.
+                    - link "Learn more about the OAuth authorized domain limit external, opens new window" [ref=f46e411] [cursor=pointer]:
+                      - /url: https://support.google.com/cloud/answer/7650096
+                      - text: Learn more
+                      - img "external, opens new window" [ref=f46e412]:
+                        - img [ref=f46e413]
+                    - text: about the authorized domain limit.
+                  - group [ref=f46e416]:
+                    - generic [ref=f46e417]:
+                      - group "Item 1" [ref=f46e418]:
+                        - generic [ref=f46e422] [cursor=pointer]:
+                          - generic [ref=f46e423]:
+                            - generic [ref=f46e424]: Authorized domain 1
+                            - generic [ref=f46e425]: "*"
+                          - textbox "Authorized domain 1" [ref=f46e427]:
+                            - /placeholder: example.com
+                            - text: localrivet.com
+                        - button "Delete item. Item 1" [disabled] [ref=f46e429]:
+                          - img [ref=f46e431]
+                      - group "Item 2" [ref=f46e433]:
+                        - generic [ref=f46e437] [cursor=pointer]:
+                          - generic [ref=f46e438]:
+                            - generic [ref=f46e439]: Authorized domain 2
+                            - generic [ref=f46e440]: "*"
+                          - textbox "Authorized domain 2" [ref=f46e442]:
+                            - /placeholder: example.com
+                            - text: neboai.com
+                        - button "Delete item. Item 2" [disabled] [ref=f46e444]:
+                          - img [ref=f46e446]
+                      - group "Item 3" [ref=f46e448]:
+                        - generic [ref=f46e452] [cursor=pointer]:
+                          - generic [ref=f46e453]:
+                            - generic [ref=f46e454]: Authorized domain 3
+                            - generic [ref=f46e455]: "*"
+                          - textbox "Authorized domain 3" [ref=f46e457]:
+                            - /placeholder: example.com
+                            - text: neboloop.com
+                        - button "Delete item. Item 3" [ref=f46e459] [cursor=pointer]:
+                          - img [ref=f46e461]
+                    - button "Add domain" [ref=f46e464]:
+                      - generic [ref=f46e466]:
+                        - img [ref=f46e468]
+                        - text: Add domain
+                - text: Developer contact information
+                - generic [ref=f46e472]:
+                  - generic [ref=f46e474] [cursor=pointer]:
+                    - generic [ref=f46e475]:
+                      - text: Email addresses
+                      - generic [ref=f46e476]: "*"
+                    - grid [ref=f46e478]:
+                      - row "admin@neboloop.com Click to remove email" [ref=f46e479]:
+                        - gridcell "admin@neboloop.com" [ref=f46e480]:
+                          - generic [ref=f46e481]: admin@neboloop.com
+                        - gridcell "Click to remove email" [ref=f46e482]:
+                          - button "Click to remove email" [ref=f46e483]:
+                            - img [ref=f46e484]:
+                              - img [ref=f46e485]
+                      - row "alma.tuck@gmail.com Click to remove email" [ref=f46e487]:
+                        - gridcell "alma.tuck@gmail.com" [ref=f46e488]:
+                          - generic [ref=f46e489]: alma.tuck@gmail.com
+                        - gridcell "Click to remove email" [ref=f46e490]:
+                          - button "Click to remove email" [ref=f46e491]:
+                            - img [ref=f46e492]:
+                              - img [ref=f46e493]
+                      - textbox "Text field for emails" [ref=f46e495]
+                  - generic [ref=f46e498]: These email addresses are for Google to notify you about any changes to your project.
+              - button "Save" [disabled] [ref=f46e502]:
+                - generic [ref=f46e503]: Save
+              - button "Discard changes" [disabled] [ref=f46e504]:
+                - generic [ref=f46e505]: Discard changes
+  - iframe [ref=f46e507]:
+    
+  - iframe [ref=f46e509]:
+    

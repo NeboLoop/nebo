@@ -31,6 +31,18 @@ export const themeMode = writable<ThemeMode>(loadMode());
 // Applied daisy theme — derived from mode + system preference.
 export const theme = writable<string>(LIGHT_THEME);
 
+// Whole-UI zoom: multiplier applied to the root font-size, so every rem-based
+// size (text, spacing, fixed heights) scales together. Persisted client-side.
+export type UiScale = 0.9 | 1 | 1.1 | 1.25;
+
+function loadScale(): UiScale {
+  if (!browser) return 1;
+  const saved = Number(localStorage.getItem('nebo-ui-scale'));
+  return saved === 0.9 || saved === 1.1 || saved === 1.25 ? saved : 1;
+}
+
+export const uiScale = writable<UiScale>(loadScale());
+
 function applyTheme(mode: ThemeMode) {
   const applied = mode === 'system' ? resolveSystemTheme() : (mode === 'dark' ? DARK_THEME : LIGHT_THEME);
   theme.set(applied);
@@ -47,6 +59,12 @@ if (browser) {
   themeMode.subscribe((mode) => {
     localStorage.setItem('nebo-theme-mode', mode);
     applyTheme(mode);
+  });
+
+  // Persist + apply UI scale whenever it changes (also fires on load)
+  uiScale.subscribe((scale) => {
+    localStorage.setItem('nebo-ui-scale', String(scale));
+    document.documentElement.style.setProperty('--ui-scale', String(scale));
   });
 
   // React to OS theme changes only while in 'system' mode

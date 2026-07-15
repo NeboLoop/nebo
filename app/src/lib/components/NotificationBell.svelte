@@ -31,7 +31,7 @@
   >
     <Bell class="w-4.5 h-4.5 text-base-content/70" />
     {#if $unreadCount > 0}
-      <span class="absolute top-1 right-1 w-4 h-4 rounded-full bg-error text-error-content text-[10px] font-bold flex items-center justify-center">
+      <span class="absolute top-1 right-1 w-4 h-4 rounded-full bg-error text-error-content text-[0.625rem] font-bold flex items-center justify-center">
         {$unreadCount > 9 ? '9+' : $unreadCount}
       </span>
     {/if}

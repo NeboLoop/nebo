@@ -1211,17 +1211,17 @@ async fn run_loop(
     let mut read_failures: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     const READ_FAILURE_LIMIT: usize = 3;
-    // Spiral backstop (FRAMES Phase 2): repeated calls to the SAME (tool, action)
-    // within a turn — even with different args that each "succeed" — are the
+    // Spiral backstop (FRAMES Phase 2): UNPRODUCTIVE repeats of the SAME (tool,
+    // action) within a turn — errored or returning already-seen content — are the
     // wander-spiral the identical-args and read-failure guards both miss (glob
     // hunting across dirs, browser page re-reads, shell retries). After
-    // SAME_ACTION_LIMIT, return a terminal result so the run ends and the agent
-    // reports instead of looping.
-    // ponytail: coarse name:action key — a legit task calling ONE action 8x in a
-    // single turn gets cut (reading N different files is "os:read" repeated, so the
-    // limit also bounds that). 8 clears normal multi-file work; raise it or add
-    // result-novelty keying if it ever false-trips. NOT a substitute for clear tool
-    // errors — a misleading error is what STARTS the spiral.
+    // SAME_ACTION_LIMIT such attempts, return a terminal result so the run ends and
+    // the agent reports instead of looping.
+    // ponytail: result-novelty keyed (see the counter's gate below) — only
+    // error/redundant attempts count, so legitimate bulk work (create N distinct
+    // todos, write N files) no longer false-trips, which the coarse name:action key
+    // used to do at 8. NOT a substitute for clear tool errors — a misleading error is
+    // what STARTS the spiral.
     let mut action_call_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     const SAME_ACTION_LIMIT: usize = 8;
@@ -3189,10 +3189,11 @@ async fn run_loop(
             }
 
             // Spiral backstop (see action_call_counts): once one (tool, action) has
-            // run SAME_ACTION_LIMIT times this turn, END the run with a terminal result
-            // rather than let the model keep trying variations that each "succeed" but
-            // never converge (glob-wander / browser re-read / shell-retry). Generalizes
-            // the read-failure guard to non-failing loops. (FRAMES Phase 2.)
+            // racked up SAME_ACTION_LIMIT UNPRODUCTIVE attempts this turn (errored or
+            // returning content the model already had — glob-wander / browser re-read /
+            // shell-retry), END the run with a terminal result. Productive calls that
+            // return novel results don't count, so legitimate bulk work (create N
+            // todos, write N files) never trips this. (FRAMES Phase 2.)
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {
                     continue;
@@ -3680,10 +3681,6 @@ async fn run_loop(
                     *read_failures.entry(p).or_insert(0) += 1;
                 }
 
-                // Spiral backstop: count every (tool, action) attempt this turn
-                // (success or failure) so the pre-dispatch guard can end a wander-loop.
-                *action_call_counts.entry(action_key(&tc)).or_insert(0) += 1;
-
                 // Empty result guard (Claude Code pattern): prevent models from
                 // interpreting empty tool_result as end-of-output.
                 if result.content.is_empty() && !result.is_error {
@@ -3709,6 +3706,17 @@ async fn run_loop(
                             recent_result_content_hashes.remove(0);
                         }
                     }
+                }
+
+                // Spiral backstop counter: only UNPRODUCTIVE attempts count. A call
+                // that errored or returned content the model already had is a
+                // wander-loop step (glob-wander / browser re-read / shell-retry); a
+                // call that succeeded with a NOVEL result made progress. Counting
+                // successes cut legitimate bulk work off at 8 (e.g. creating N
+                // distinct todos, writing N files) — the false-trip this guard's own
+                // comment warned about. Novelty-key it instead.
+                if result.is_error || flagged_redundant {
+                    *action_call_counts.entry(action_key(&tc)).or_insert(0) += 1;
                 }
 
                 // Arg-identity dedup (complements the content check above, which only

@@ -1,7 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
-  import { themeMode } from '$lib/stores/theme.js';
+  import { themeMode, uiScale, type UiScale } from '$lib/stores/theme.js';
   import Check from 'lucide-svelte/icons/check';
   import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
   import Sun from 'lucide-svelte/icons/sun';
@@ -92,6 +92,14 @@
     { id: 'dark' as const, label: 'Dark', icon: Moon },
     { id: 'system' as const, label: 'System', icon: Monitor },
   ];
+
+  // Whole-UI zoom steps. The "A" glyph size hints the scale.
+  const scaleOptions: { v: UiScale; label: string; glyph: string }[] = [
+    { v: 0.9, label: 'Small', glyph: 'text-xs' },
+    { v: 1, label: 'Default', glyph: 'text-sm' },
+    { v: 1.1, label: 'Large', glyph: 'text-base' },
+    { v: 1.25, label: 'Extra Large', glyph: 'text-lg' },
+  ];
 </script>
 
 <SettingsHeader title="Profile" description="Your personal information and preferences.">
@@ -117,6 +125,22 @@
       >
         <Icon class="w-5 h-5 {$themeMode === opt.id ? 'text-primary' : 'text-base-content/70'}" />
         <span class="text-xs font-medium {$themeMode === opt.id ? 'text-primary' : 'text-base-content'}">{opt.label}</span>
+      </button>
+    {/each}
+  </div>
+</div>
+
+<!-- Font size -->
+<div class="mb-6">
+  <div class="text-sm font-semibold mb-2">Font size</div>
+  <div class="grid grid-cols-4 gap-2 max-w-md">
+    {#each scaleOptions as opt}
+      <button
+        class="flex flex-col items-center gap-2 py-4 px-3 rounded-lg border transition-colors cursor-pointer {$uiScale === opt.v ? 'border-primary bg-primary/5' : 'border-base-content/10 hover:border-base-content/25 bg-transparent'}"
+        onclick={() => uiScale.set(opt.v)}
+      >
+        <span class="{opt.glyph} font-semibold leading-none {$uiScale === opt.v ? 'text-primary' : 'text-base-content/70'}">A</span>
+        <span class="text-xs font-medium {$uiScale === opt.v ? 'text-primary' : 'text-base-content'}">{opt.label}</span>
       </button>
     {/each}
   </div>

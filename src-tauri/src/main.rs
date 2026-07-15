@@ -143,19 +143,28 @@ fn get_window_state(label: String) -> Option<WindowState> {
 
 /// Tauri command: save a Work-panel artifact to ~/Downloads and reveal it.
 /// WKWebView ignores the anchor `download` attribute, so the desktop build
-/// saves natively. `file_name` must be a bare name inside the files dir.
+/// saves natively. `rel_path` is the file's path inside the files dir (e.g.
+/// "work/blobs/<hash>.md"); `save_name` is the friendly name to save it under.
 #[tauri::command]
-fn save_artifact(file_name: String) -> Result<String, String> {
-    if file_name.contains('/') || file_name.contains('\\') || file_name.starts_with('.') {
-        return Err("invalid file name".into());
+fn save_artifact(rel_path: String, save_name: String) -> Result<String, String> {
+    let files_dir = config::data_dir().map_err(|e| e.to_string())?.join("files");
+    // Resolve under the files dir and reject any escape (e.g. `..`).
+    let src = files_dir
+        .join(&rel_path)
+        .canonicalize()
+        .map_err(|_| format!("file not found: {rel_path}"))?;
+    let base = files_dir.canonicalize().map_err(|e| e.to_string())?;
+    if !src.starts_with(&base) || !src.is_file() {
+        return Err(format!("file not found: {rel_path}"));
     }
-    let src = config::data_dir()
-        .map_err(|e| e.to_string())?
-        .join("files")
-        .join(&file_name);
-    if !src.is_file() {
-        return Err(format!("file not found: {file_name}"));
-    }
+    // Save under the artifact title (a bare name), falling back to the source
+    // file name. Strip any path components a title might carry.
+    let file_name = std::path::Path::new(&save_name)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty() && !s.starts_with('.'))
+        .or_else(|| src.file_name().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "download".into());
     let downloads = dirs::download_dir().ok_or("no Downloads directory")?;
     // Don't overwrite an existing download: name.ext, name (1).ext, …
     let mut dest = downloads.join(&file_name);

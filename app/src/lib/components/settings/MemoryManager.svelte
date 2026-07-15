@@ -129,7 +129,7 @@
     <div class="flex flex-col gap-1.5">
       {#each filtered as mem}
         <div class="group flex items-center gap-3 py-2.5 px-3.5 rounded-lg border border-base-content/5 bg-base-100">
-          <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide shrink-0 {layerColors[mem.layer] ?? 'bg-base-200 text-base-content/70'}">{mem.layer}</span>
+          <span class="px-1.5 py-0.5 rounded text-[0.625rem] font-semibold uppercase tracking-wide shrink-0 {layerColors[mem.layer] ?? 'bg-base-200 text-base-content/70'}">{mem.layer}</span>
           <div class="flex-1 min-w-0">
             <span class="text-xs font-mono text-base-content/50">{mem.key}</span>
             <p class="text-sm truncate">{mem.value}</p>

@@ -202,6 +202,9 @@
 
   html {
     overscroll-behavior: none;
+    /* Whole-UI zoom: 100% = browser/OS default, scaled by the user's font-size
+       setting (see uiScale in stores/theme.ts). Everything rem-based cascades. */
+    font-size: calc(100% * var(--ui-scale, 1));
   }
 
   body {

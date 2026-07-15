@@ -43,7 +43,7 @@
     py: 'python', rs: 'rust', go: 'go', json: 'json', sh: 'bash', bash: 'bash',
     css: 'css', yaml: 'yaml', yml: 'yaml', toml: 'toml', sql: 'sql',
     svelte: 'svelte', tsx: 'tsx', jsx: 'jsx', rb: 'ruby', java: 'java', html: 'html',
-    c: 'c', h: 'c', cpp: 'cpp', xml: 'xml',
+    c: 'c', h: 'c', cpp: 'cpp', xml: 'xml', md: 'markdown', markdown: 'markdown',
   };
 
   type Mode =
@@ -298,13 +298,13 @@
   {:else if error}
     <div class="flex flex-col items-center gap-3 py-8">
       <div class="text-xs text-error">{error}</div>
-      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url)} class="btn btn-sm btn-outline">Download {title}</a>
+      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url, title)} class="btn btn-sm btn-outline">Download {title}</a>
     </div>
   {:else if sourceView}
-    <div class="text-xs leading-relaxed rounded-lg overflow-x-auto [&_pre]:p-4 [&_pre]:rounded-lg">{@html renderedHtml}</div>
+    <div data-selectable class="text-xs leading-relaxed rounded-lg overflow-x-auto [&_pre]:p-4 [&_pre]:rounded-lg">{@html renderedHtml}</div>
   {:else if mode === 'markdown'}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-    <div class="prose prose-sm max-w-none" onclick={oncontentclick}>{@html renderedHtml}</div>
+    <div data-selectable class="prose prose-sm max-w-none" onclick={oncontentclick}>{@html renderedHtml}</div>
   {:else if mode === 'docx'}
     <div bind:this={docxContainer}></div>
   {:else if mode === 'code'}
@@ -361,7 +361,7 @@
       <div class="text-xs text-base-content/50 text-center max-w-[260px]">
         No in-app preview for this format yet — download it to open in its native app.
       </div>
-      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url)} class="btn btn-sm btn-primary">Download</a>
+      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url, title)} class="btn btn-sm btn-primary">Download</a>
     </div>
   {/if}
 </div>

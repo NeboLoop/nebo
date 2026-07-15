@@ -156,8 +156,15 @@ pub struct PluginManifest {
     pub events: Option<Vec<PluginEventDef>>,         // Optional event declarations (see §5)
     pub dependencies: Vec<PluginDependency>,         // Plugin-to-plugin deps (see §4.5)
     pub capabilities: Option<PluginCapabilities>,    // Structured capability declarations (see §4.6)
+    pub permissions: Option<PluginPermissions>,      // Env allow/deny, network, max timeout
+    pub category: String,                            // Marketplace category (default "")
+    pub triggers: Vec<String>,                       // Declared trigger types
+    pub channel: Option<PluginChannel>,              // Channel-adapter declaration (messaging bridges)
+    pub setup: Option<ArtifactSetup>,                // Post-install setup steps
 }
 ```
+
+Most fields carry `#[serde(default)]` / `skip_serializing_if`, so older `plugin.json` files parse unchanged.
 
 ### PluginAuth
 
@@ -170,6 +177,8 @@ pub struct PluginAuth {
     pub commands: PluginAuthCommands,                // CLI subcommands for auth lifecycle
     pub label: String,                               // Human-readable label for UI (e.g., "Google Account")
     pub description: String,                         // Description shown to user during auth step
+    pub help: Option<ArtifactHelp>,                  // Optional help doc reference for the auth step
+    pub profile_dir_env: Option<String>,             // Env var naming the per-account profile dir → drives multi-account isolation
 }
 
 pub struct PluginAuthCommands {
@@ -206,6 +215,10 @@ pub struct PluginAuthCommands {
 2. `GET /api/v1/plugins/{slug}/auth/status` — runs `<binary> <status_cmd>`, exit code 0 = authenticated
 3. `POST /api/v1/plugins/{slug}/auth/login` — spawns `<binary> <login_cmd>` in background, broadcasts `plugin_auth_complete` or `plugin_auth_error` via WebSocket
 4. `POST /api/v1/plugins/{slug}/auth/logout` — runs `<binary> <logout_cmd>` synchronously
+
+**Multi-account:** when `PluginAuth.profile_dir_env` is set, a plugin supports multiple connected accounts, each with its own profile dir. Managed via `POST /plugins/{slug}/accounts/login`, `GET`/`DELETE /plugins/{slug}/accounts`; per-account status uses `PluginStore::check_auth_for_profile`. See `[[gws-account-isolation-launch-paths]]` for the isolation invariant.
+
+**Other plugin HTTP endpoints** (`routes/plugins.rs`, beyond the event-discovery set in §5): `DELETE /plugins/{slug}` (uninstall), `POST /plugins/{slug}/toggle`, `GET /plugins/{slug}/dependents`, `GET`/`PUT /plugins/{slug}/config` (config-schema form + env injection, §23), `GET /plugins/{slug}/diagnostics`, `POST /plugins/{slug}/setup`, `GET /plugins/{slug}/help` + `POST .../help/chat`, and the `ANY /plugins/{slug}/api/{*path}` catch-all that proxies `capabilities.routes[]`.
 
 ### PlatformBinary
 
@@ -322,17 +335,17 @@ pub struct PluginToolDef {
 }
 ```
 
-Plugin tools are exposed through the consolidated STRAP `PluginTool`, which routes `capabilities.tools[]` via action parameters. The tool resolves the plugin binary, runs the declared command as a subprocess, and returns stdout as the tool result.
+> **Not yet wired as typed tools (as of this writing).** `PluginToolDef` is a manifest schema type and is validated, but nothing enumerates `capabilities.tools[]` into individual, schema-typed agent tools. Agents reach plugins **only** through the single generic STRAP `PluginTool` — `plugin(resource: "<slug>", action: "exec", command: "<subcommand>", ...)` — which resolves the binary, runs an arbitrary subcommand as a subprocess, and returns stdout. Per-tool `input_schema`/`approval`/`timeout_seconds` are stored but not enforced per-tool. (Test coverage exists in `plugin.rs`, but no dispatch/registration path.)
 
-**Registration:** Plugin tools are registered via `register_all_with_permissions()` (14 params) in `crates/tools/src/registry.rs`. Registration is **deferred** — the plugin tool is not sent to the LLM until keyword-activated or directly called, saving context tokens on requests that don't involve plugin operations.
+**Registration:** The generic `plugin` tool is registered via `register_all_with_permissions()` (15 params) in `crates/tools/src/registry.rs`. Registration is **deferred** — the plugin tool is not sent to the LLM until keyword-activated or directly called, saving context tokens on requests that don't involve plugin operations.
 
-**Concurrency safety:** `PluginTool` implements `is_concurrent_safe()` on the `DynTool` trait. Read-only actions (`search`, `skills`, `services`, `help`, `events`) return `true` for parallel execution. Write actions (e.g., `exec`) default to `false` (serial). This is consistent across all STRAP tools — see §16 for the concurrency model.
+**Concurrency safety:** `PluginTool` implements `is_concurrent_safe()` on the `DynTool` trait. Read-only actions (`list`, `discover`, `events`, `help`) return `true` for parallel execution. Write actions (e.g., `exec`) default to `false` (serial). This is consistent across all STRAP tools — see §16 for the concurrency model.
 
 ### PluginHookDef
 
 ```rust
 pub struct PluginHookDef {
-    pub hook: String,                    // Hook point name (must be in VALID_HOOKS)
+    pub hook: String,                    // Hook point name (must be in VALID_HOOKS — 8 wired points, see §23)
     pub hook_type: String,               // "filter" or "action" (default "action")
     pub priority: i32,                   // Lower = first (default 100)
     pub command: String,                 // CLI subcommand for the handler
@@ -375,6 +388,23 @@ pub struct PluginProviderDef {
 }
 ```
 
+### PluginChannel
+
+Top-level `channel` field in `plugin.json` (not under `capabilities`). Declares that the plugin **is a messaging channel adapter** — a long-running bridge process (Slack, Discord, etc.). **Source:** `crates/napp/src/plugin.rs`.
+
+```rust
+pub struct PluginChannel {
+    pub command: String,             // CLI appended to the binary, e.g. "bridge --listen"
+    pub name: String,                // Display name (e.g. "Slack")
+    pub description: String,         // Shown in settings UI
+    pub restart_delay_secs: u64,     // Restart backoff on crash (default 5)
+    pub shared: bool,                // true = ONE bridge shared across all agents, routed by name;
+                                     // false = one bridge process per agent
+}
+```
+
+The bridge is launched and supervised by `crates/agent/src/agent_worker.rs` (shared and per-agent launch paths, with restart backoff). `PluginStore::get_channel_def(slug)` resolves it; `handlers/agents.rs` and `plugin_tool.rs` gate channel behavior on its presence. See `[[channel-plugin-architecture]]` and `[[orphan-prevention-stdin-eof]]` (bridges self-exit on stdin EOF). This is the mechanism that makes "channel adapters" a real plugin capability (see §23).
+
 ### Manifest Validation
 
 **Source:** `PluginManifest::validate()` in `crates/napp/src/plugin.rs`
@@ -383,11 +413,11 @@ Called during `install_from_napp_inner()` and `download_and_install()`. Validate
 
 | Field | Rule |
 |-------|------|
-| `slug` | Non-empty, lowercase alphanumeric + hyphens, no leading/trailing hyphens, max 64 chars |
+| `slug` | Non-empty, lowercase alphanumeric + hyphens, no leading/trailing hyphens, no consecutive hyphens, max 64 chars |
 | `version` | Valid semver (`semver::Version::parse()`) |
 | `platforms` | At least one entry |
 | `binary_name` (per platform) | No path separators (`/`, `\`), no `..`, non-empty |
-| `auth.commands.login` | Non-empty if `auth` is present |
+| `auth.commands.login` | Non-empty if `auth` is present — **unless** `auth.type == "env"` (env-only auth needs no login command) |
 | `events[].name` | Non-empty, no path separators |
 | `events[].command` | Non-empty if event present |
 
@@ -557,24 +587,36 @@ pub struct PluginStore {
     signing_key: Option<Arc<SigningKeyProvider>>,                    // ED25519 verification
     manifests: Arc<tokio::sync::RwLock<HashMap<String, PluginManifest>>>,  // Cache keyed by "slug:version"
     downloading: Arc<tokio::sync::Mutex<HashSet<String>>>,          // Concurrent download dedup
+    diagnostics: Arc<std::sync::RwLock<Vec<PluginDiagnostic>>>,     // Install/auth diagnostic ring
+    auth_cache: Arc<std::sync::RwLock<HashMap<String, bool>>>,      // Cached per-slug auth status
+    env_cache: Arc<std::sync::RwLock<HashMap<String, HashMap<String, String>>>>, // Resolved config/auth env per slug
 }
 ```
 
 ### Methods
 
+The public surface is ~37 methods. The lifecycle core:
+
 | Method | Async | Description |
 |--------|-------|-------------|
-| `new(plugins_dir, signing_key)` | No | Constructor |
-| `plugins_dir()` | No | Returns installed dir path (`&Path`) |
+| `new(installed_dir, user_dir, signing_key)` | No | Constructor (three args — installed + user dirs + optional signing key) |
+| `plugins_dir()` / `user_plugins_dir()` | No | Installed / user dir path (`&Path`) |
 | `resolve(slug, version_range)` | No | Local-only semver resolution → `Option<PathBuf>` |
 | `ensure(slug, version_range, download_fn)` | Yes | Resolve locally or download, returns binary path |
-| `install_from_napp(slug, napp_data)` | Yes | Install from .napp archive (binary + plugin.json + PLUGIN.md + skills/) |
+| `install_from_napp(slug, version, napp_data)` | Yes | Install from .napp archive (binary + plugin.json + PLUGIN.md + skills/) |
 | `ensure_deps(manifest, download_fn)` | Yes | Recursively ensure a manifest's non-optional `dependencies[]` (plugin→plugin); skips deps already resolved locally. Returns the slugs newly installed |
+| `reconcile_orphaned_staging()` | Yes | Clean up half-finished installs left in the staging dir |
 | `verify_integrity(slug, version)` | No | SHA256 check against cached manifest |
 | `list_installed()` | No | All installed `(slug, Version, PathBuf, source)` 4-tuples — `source` is `"user"` or `"installed"` (user dir takes priority) |
-| `path_with_plugins()` | No | Builds a `PATH` string prepending every installed plugin's bin directory ahead of the system `PATH` (dedup'd). Used by `ExecuteTool` env injection |
+| `path_with_plugins()` / `build_env_map()` | No | Build the augmented `PATH` string / the full `(env, value)` list injected on plugin exec. Used by `ExecuteTool` env injection |
 | `garbage_collect(referenced_slugs)` | No | Remove unreferenced plugin slug directories |
+| `remove(slug)` | No | Uninstall a plugin (removes its dir) |
 | `quarantine(slug, version, reason)` | No | Delete binary, write `.quarantined` marker |
+| `get_manifest(slug)` / `get_dependencies(slug)` / `get_events(slug)` / `resolve_event(slug, name)` / `get_channel_def(slug)` | No | Read cached manifest facets |
+| `plugin_data_dir(slug)` | No | Per-plugin persistent data dir (see `[[artifact-data-dir-contract]]`) |
+| `watch()` | No | FS watcher handle for hot-reload |
+
+Plus an **auth/config cluster** (all backing the HTTP handlers in §5 / §22): `check_auth_now`, `check_auth_lazy`, `check_auth_for_profile`, `update_auth_status`, `refresh_auth_cache`, `plugins_needing_auth`, `get_auth_info`, `resolved_auth_env`, `is_ready`, `set_env_var` / `set_env_vars`, and the diagnostics ring (`record_diagnostic`, `get_diagnostics`). `check_auth_for_profile` + `PluginAuth.profile_dir_env` are what implement per-account isolation.
 
 ### resolve()
 
@@ -603,7 +645,7 @@ Async download with dedup.
 
 ### install_from_napp()
 
-Install a plugin from a sealed `.napp` archive. Used by `handle_plugin_code()` when `CodeRedeemResponse.download_url` ends in `.napp`.
+Install a plugin from a sealed `.napp` archive. This is the only install mechanism — `fetch_and_install_plugin()` (called by both code redemption and the dependency cascade) always routes here after `download_napp()`.
 
 ```
 1. Write napp_data to temp file
@@ -746,7 +788,7 @@ The hot-reload watcher clones the `plugin_store` Arc and passes it to the reload
 
 The `ExecuteTool` struct has `plugin_store: Option<Arc<napp::plugin::PluginStore>>`, set via `with_plugin_store()`.
 
-**Current wiring caveat (CONFIRMED open):** `ExecuteTool` fully supports plugin env injection, but `Registry::register_all_with_permissions()` registers it with `.with_store(...)` only — it never calls `.with_plugin_store(plugin_store)` (see `registry.rs`, the `ExecuteTool::new(...)` registration). The `plugin_store` field therefore stays `None`, so the injection block below is dead at runtime and skill scripts do **not** receive `GWS_BIN` or the augmented `PATH`. The fix is a one-line `.with_plugin_store(ps)` on that registration. (Note: `OsTool` and `SkillTool` *are* wired with the plugin store in the same function — only `ExecuteTool` is missed.)
+**Wiring (LIVE — the historical `plugin_store == None` gap is fixed):** `Registry::register_all_with_permissions()` now wires `ExecuteTool` with `.with_plugin_store(ps)` when a plugin store is present (`registry.rs`, the `ExecuteTool::new(...)` registration). `OsTool` and `SkillTool` are wired the same way in that function. The env injection block below is therefore active at runtime — skill scripts receive `{SLUG}_BIN` and the augmented `PATH`.
 
 **Env var injection** happens after secret injection, before the script subprocess is spawned:
 
@@ -762,7 +804,7 @@ if let Some(ref plugin_store) = self.plugin_store {
 }
 ```
 
-When `plugin_store` is actually set on `ExecuteTool`, this means:
+This means:
 - Plugin `gws` version `>=1.2.0` resolves to e.g., `/data/nebo/plugins/gws/1.2.0/gws`
 - Environment variable `GWS_BIN` is set to that path
 - `PATH` is prepended with every installed plugin's bin dir via `path_with_plugins()`, so scripts can also call the binary by bare name
@@ -788,15 +830,17 @@ Plugins have their own install code prefix, following the same Crockford Base32 
 `detect_code()` checks for the `PLUG-` prefix and returns `CodeType::Plugin`.
 
 `handle_plugin_code()` flow:
-1. Build NeboAI API client
-2. Redeem code via `api.install_skill(code)` (plugins use the same install endpoint)
-3. Detect platform via `napp::plugin::current_platform_key()`
-4. Broadcast `plugin_installing` WebSocket event
-5. Check if `CodeRedeemResponse.download_url` ends in `.napp`:
-   - **Yes (.napp path):** Download .napp via `api.download_napp()` → `plugin_store.install_from_napp()` — extracts binary + plugin.json + PLUGIN.md + skills/ in one shot
-   - **No (binary-only fallback):** Call `plugin_store.ensure()` with a download callback that queries `api.get_plugin()` and `api.download_plugin_binary()`
-6. On success: broadcast `plugin_installed` event, reload skill loader (picks up embedded skills)
-7. On failure: broadcast `plugin_error` event
+1. Build NeboAI API client, redeem code via `api.install_skill(code)` (plugins share the install endpoint), extract `slug` / `name`
+2. Broadcast `plugin_installing` (with platform from `current_platform_key()`)
+3. Install via the shared `fetch_and_install_plugin(state, api, slug, name)` helper (below)
+4. On success: broadcast `plugin_installed`; cascade non-optional `dependencies[]` via `ensure_deps` (each dep resolved with `get_plugin` + `download_napp`); if the manifest declares `auth`, broadcast `plugin_auth_required`
+5. On failure: broadcast `plugin_error`
+
+`fetch_and_install_plugin()` — shared by `codes.rs` and the dependency cascade — **always installs from a `.napp`; there is no binary-only path anymore:**
+- `get_plugin(slug, platform)` → manifest; resolve the **per-platform** `download_url` from the manifest (the redeem response's `download_url` is empty for code-redeemed plugins)
+- `download_napp(url)` → `plugin_store.remove(slug)` → `install_from_napp(slug, version, data)` (skill watcher paused across extraction, then `load_all()`)
+- `store.upsert_installed_plugin(...)` — persists to the DB registry that **Settings → Plugins** reads; records signature status (verified/unverified) + an update-pref row
+- Unregister + re-register the `plugin` STRAP tool, then `napp::register_plugin_hooks(manifest, binary, &hooks, store)` so hooks are live immediately
 
 Both the WebSocket handler and the REST `POST /api/v1/codes/redeem` handler dispatch to `handle_plugin_code()`.
 
@@ -865,24 +909,19 @@ For plugins: `state.plugin_store.resolve(&dep.reference, "*").is_some()`
 ### install_dep()
 
 For plugins: calls `install_plugin()` which:
-1. Redeems the install code via `api.install_skill(reference)` (plugins share the redeem endpoint)
-2. Resolves strictly by the canonical `artifact.slug` (fails loudly if missing — never guesses from the display name)
-3. Resolves the `{platform}` template in the redeem response's `download_url` (see fix below)
-4. Downloads the per-platform `.napp` via `api.download_napp(url)`, then `plugin_store.install_from_napp(slug, "latest", &napp_data)` — extracts binary + plugin.json + embedded skills
-5. Reloads skills, re-registers the `plugin` STRAP tool
-6. Reads the installed manifest's `dependencies[]` field, returns non-optional deps as child `DepRef` entries for recursive resolution
+1. Resolves the reference to a marketplace install code via `resolve_marketplace_code(api, "plugin", reference)`, then redeems it with `api.install_skill(code)` — resolving strictly by the canonical `artifact.slug` (fails loudly if missing; never guesses from the display name)
+2. Delegates to the shared `fetch_and_install_plugin(state, api, slug, name)` (see §10): `get_plugin` → resolve per-platform `.napp` URL from the manifest → `download_napp` → `install_from_napp`, DB upsert, re-register the `plugin` tool + hooks
+3. Reads the installed manifest via `plugin_store.get_dependencies(slug)`, returns non-optional deps as child `DepRef` entries for recursive resolution
 
-> **`{platform}` template resolution (`crates/server/src/deps.rs::install_plugin`, fix d661e280):**
-> The redeem response's `download_url` is a **template** —
-> `/api/v1/apps/<id>/download/{platform}`. The cascade previously passed the literal
-> `{platform}` straight to `download_napp()`, which 404s (*"binary not found"*), so plugin
-> **dependencies** never fetched the binary-bearing `.napp` and `install_from_napp` then
-> failed with *"no binary found in extracted .napp"*. The fix substitutes
-> `napp::plugin::current_platform_key()` for `{platform}` before download, mirroring the
-> code-redemption path in `codes.rs` (which resolves the concrete per-platform URL via
-> `get_plugin` → `platform_binary.download_url`). The two paths differ in *how* they
-> reach the per-platform URL (template substitution here vs. `get_plugin` lookup in
-> codes.rs) but both now download the real per-platform archive.
+> **Historical (`fix d661e280`), now superseded by the unified path above:** the dependency
+> cascade once passed the redeem response's `download_url` — a `{platform}` template
+> (`/api/v1/apps/<id>/download/{platform}`) — straight to `download_napp()`, which 404s, so
+> plugin **dependencies** never fetched the binary-bearing `.napp` and `install_from_napp`
+> failed with *"no binary found in extracted .napp"*. The fix substituted
+> `current_platform_key()` for `{platform}`. Both code-redemption and cascade paths now
+> funnel through `fetch_and_install_plugin`, which resolves the concrete per-platform URL
+> from the manifest (`get_plugin` → `platforms[platform].download_url`) — so the template
+> is no longer used at all.
 
 ---
 
@@ -890,21 +929,21 @@ For plugins: calls `install_plugin()` which:
 
 **Source:** `crates/comm/src/api.rs`
 
-Two new methods on `NeboAIApi`:
-
 ### get_plugin(slug, platform)
 
 ```
 GET /api/v1/plugins/{slug}?platform={platform}
 ```
 
-Returns `napp::plugin::PluginManifest`. The server filters platform binaries based on the `platform` query parameter.
+Returns `napp::plugin::PluginManifest`. The server filters platform binaries based on the `platform` query parameter. The install path reads `manifest.platforms[platform].download_url` to get the concrete `.napp` URL.
+
+### download_napp(url)
+
+The actual binary-fetch method used by every install path (codes.rs, dependency cascade, tools). Downloads the `.napp` archive bytes. Handles both absolute URLs (CDN) and relative URLs (resolved against `api_server`). Returns `Vec<u8>`.
 
 ### download_plugin_binary(url)
 
-Downloads the binary bytes from the given URL. Handles both absolute URLs (CDN) and relative URLs (API paths resolved against `api_server`).
-
-Returns `Vec<u8>`.
+Legacy raw-binary fetch — **no live callers**; the binary-only install path was removed in favor of `.napp` (`download_napp`). Retained on `NeboAIApi` but dead. `ponytail: candidate for deletion.`
 
 ---
 
@@ -918,8 +957,9 @@ Initialization in `lib.rs`:
 
 ```rust
 let plugins_dir = data_dir.join("nebo").join("plugins");
+let user_plugins_dir = data_dir.join("user").join("plugins");
 let _ = std::fs::create_dir_all(&plugins_dir);
-let plugin_store = Arc::new(napp::plugin::PluginStore::new(plugins_dir, None));
+let plugin_store = Arc::new(napp::plugin::PluginStore::new(plugins_dir, user_plugins_dir, None));
 ```
 
 The plugin store is wired to the skill loader and included in AppState construction:
@@ -1005,7 +1045,7 @@ All STRAP domain tools implement `is_concurrent_safe(&self, input: &Value) -> bo
 
 | Tool | Concurrent-safe actions |
 |------|------------------------|
-| `PluginTool` | `search`, `skills`, `services`, `help`, `events` |
+| `PluginTool` | `list`, `discover`, `events`, `help` |
 | `SkillTool` | `catalog`, `discover`, `help`, `browse`, `read_resource`, `featured`, `popular`, `reviews`, `secrets` |
 | `WebTool` | All actions (read-only by nature) |
 | `AgentTool` | `list`, `info`, `stats` |
@@ -1065,7 +1105,7 @@ If `PluginManifest.env_var` is non-empty, the custom name is intended to be used
 
 When a skill has BOTH an embedded binary (`RuntimeKind::Binary` from `.napp`) AND a `plugins:` dependency for the same tool:
 
-- **Embedded binary wins.** The `execute_tool.rs` binary detection (lines ~416-443) runs BEFORE plugin env var injection.
+- **Embedded binary wins.** The `execute_tool.rs` embedded-binary detection (the `bin/`-prefix / legacy root-`binary` block) runs BEFORE plugin env var injection.
 - Plugin env vars are injected for scripts to reference, not for the execute tool's own binary detection.
 - This is the expected behavior: embedded = bundled with skill, plugin = available for scripts.
 
@@ -1099,7 +1139,7 @@ Future events (not yet implemented):
 - **Concurrent download:** `downloading` mutex deduplicates — second caller polls for first to complete (30s timeout).
 - **Invalid version range:** `semver::VersionReq::parse()` fails → `resolve()` returns None.
 - **Empty version range / `*`:** Matches any installed version, returns highest.
-- **Plugin dependency `.napp` download (fix d661e280):** the redeem response's `download_url` is a `{platform}` template. The cascade (`deps.rs::install_plugin`) substitutes `current_platform_key()` before download; without it the literal `{platform}` 404s and install fails with *"no binary found in extracted .napp"*. Two contributing robustness fixes landed alongside: `extract_all` now preserves the archived `+x` bit (slug-named binaries kept their mode), and `find_binary_in_version_dir` falls back to the largest non-metadata file when no executable is present. See §6 and §11.
+- **Plugin dependency `.napp` download (fix d661e280, since unified):** the code-redemption and dependency-cascade paths now both funnel through `fetch_and_install_plugin`, which resolves the concrete per-platform `.napp` URL from the manifest (`get_plugin` → `platforms[platform].download_url`). This retired the earlier `{platform}`-template bug where the cascade 404'd and install failed with *"no binary found in extracted .napp"*. Two robustness fixes still stand: `extract_all` preserves the archived `+x` bit (slug-named binaries keep their mode), and `find_binary_in_version_dir` falls back to the largest non-metadata file when no executable is present. See §6, §10, §11.
 
 ---
 
@@ -1107,7 +1147,7 @@ Future events (not yet implemented):
 
 | File | Lines | What |
 |------|-------|------|
-| `crates/napp/src/plugin.rs` | ~3067 | Core module: types (incl. capabilities, dependencies, validation), PluginStore (incl. `ensure_deps`, `path_with_plugins`), helpers, tests |
+| `crates/napp/src/plugin.rs` | ~3342 | Core module: types (incl. capabilities, dependencies, permissions, channel, validation), PluginStore (incl. `ensure_deps`, `path_with_plugins`, auth/config/diagnostics cluster), helpers, tests |
 | `crates/napp/src/agent.rs` | — | `AgentTrigger::Watch` with optional `event` field |
 | `crates/napp/src/napp.rs` | — | .napp extraction: ALLOWED_FILES includes PLUGIN.md/plugin.json, `skills/` prefix support |
 | `crates/napp/src/reader.rs` | — | `extract_all()` — extracts .napp to dir; preserves archived executable bit (`mode & 0o111`) so slug-named binaries stay runnable |
@@ -1125,7 +1165,10 @@ Future events (not yet implemented):
 | `crates/server/src/routes/plugins.rs` | — | Plugin routes incl. event discovery endpoints |
 | `crates/server/src/codes.rs` | — | `CodeType::Plugin`, `PLUG-` detection, `handle_plugin_code()` |
 | `crates/server/src/deps.rs` | — | `DepType::Plugin`, `install_plugin()`, `extract_skill_deps()` |
-| `crates/comm/src/api.rs` | — | `get_plugin()`, `download_plugin_binary()` |
+| `crates/comm/src/api.rs` | — | `get_plugin()`, `download_napp()` (live), `download_plugin_binary()` (legacy/dead) |
+| `crates/napp/src/hooks.rs` | — | `HookDispatcher`, `HookCaller`, `VALID_HOOKS` (8 points), circuit breaker |
+| `crates/server/src/plugin_commands.rs` | — | Slash-command interception for `capabilities.commands[]` (bypasses LLM, 30s timeout) |
+| `crates/server/src/plugin_provider.rs` | — | `PluginProvider` — `Provider` trait impl for `capabilities.providers[]` (NDJSON streaming) |
 
 ---
 
@@ -1248,21 +1291,24 @@ Nebo plugins are **managed native binaries** distributed via signed `.napp` arch
 | Agent-facing tool | Single generic `plugin(resource, action, command, args, topic, timeout)` | Exec-time |
 | Manifest validation | Validates slug format, semver, binary names (path traversal protection), auth/event consistency | Install-time |
 | Plugin-to-plugin dependencies | `dependencies[]` in plugin.json; cascade resolver installs deps recursively; env vars injected | Install-time |
-| **Structured tools** | `capabilities.tools[]` → routed through STRAP `PluginTool` | `plugin_tool.rs` |
-| **Lifecycle hooks** | `capabilities.hooks[]` → `HookDispatcher` with circuit breaker (3 failures → 5min recovery) | `hooks.rs` |
+| Generic tool exec | Single STRAP `plugin(resource, action, command, ...)` runs any subcommand | `plugin_tool.rs` |
+| **Structured tools** | `capabilities.tools[]` — schema declared/validated, **not yet wired** as individual typed tools (agents use the generic tool above) | `plugin.rs` (schema only) |
+| **Lifecycle hooks** | `capabilities.hooks[]` → `HookDispatcher` with circuit breaker (3 failures → 5min recovery); **8 of 12 declared points wired** | `hooks.rs` |
 | **Slash commands** | `capabilities.commands[]` → intercepted in chat, bypass LLM, 30s timeout | `plugin_commands.rs` |
 | **HTTP routes** | `capabilities.routes[]` → proxied through catch-all handler, public or JWT auth | Route layer |
 | **AI providers** | `capabilities.providers[]` → `PluginProvider` implements `Provider` trait, NDJSON streaming | `plugin_provider.rs` |
 | **Config schemas** | `capabilities.config_schema[]` → UI settings form, values injected as env vars | Settings UI |
 | **Permissions** | `permissions` manifest → env allow/deny lists, network flag, max timeout | Exec-time |
+| **Channel adapters** | top-level `channel` → long-running bridge process (shared or per-agent), supervised by `agent_worker.rs` | Long-running |
+| **Multi-account isolation** | `auth.profile_dir_env` → per-account profile dirs; account CRUD endpoints | Auth flow |
 
 ### What Plugins Cannot Do
 
 | Capability | Status | Detail |
 |---|---|---|
-| Register channel adapters | Not possible | Communication locked to NeboAI SDK in `crates/comm/` |
 | Expose reusable services | Not possible | No service registration model |
-| Contribute to memory/context | Not possible | Memory/prompt assembly has no plugin surface |
+| Contribute to memory/context | Not possible | Memory/prompt assembly has no plugin surface (the 4 `memory.*`/`prompt.*` hooks are declared but unwired) |
+| Structured typed tools | Not yet | `capabilities.tools[]` declared/validated but not routed as individual tools |
 
 ### Hook System
 
@@ -1270,7 +1316,7 @@ Nebo plugins are **managed native binaries** distributed via signed `.napp` arch
 
 The hook infrastructure is generic — `HookDispatcher` accepts any `Arc<dyn HookCaller>`. Plugins declare hooks via `capabilities.hooks[]` in their manifest with a `hook` name, `hook_type` (filter/action), `priority`, and `command`.
 
-**12 hook points:**
+**8 wired hook points** (the current `VALID_HOOKS` constant in `hooks.rs`; all dispatched from `crates/agent/src/runner.rs`):
 
 | Hook | Type | When |
 |---|---|---|
@@ -1278,14 +1324,12 @@ The hook infrastructure is generic — `HookDispatcher` accepts any `Arc<dyn Hoo
 | `tool.post_execute` | Filter | After tool completes — can modify output |
 | `message.pre_send` | Filter | Before user message sent to agent |
 | `message.post_receive` | Filter | After agent message received |
-| `memory.pre_store` | Filter | Before memory persisted |
-| `memory.pre_recall` | Filter | Before memory retrieved |
 | `session.message_append` | Action | When message added to session |
-| `prompt.system_sections` | Filter | System prompt generation — can inject sections |
 | `steering.generate` | Filter | Steering signal generation |
-| `response.stream` | Action | During response streaming |
 | `agent.turn` | Action | Agent turn completion |
 | `agent.should_continue` | Filter | Decision to continue turn — can halt |
+
+**4 declared-but-not-wired** (design intent; no dispatch call exists yet — do not rely on them): `memory.pre_store`, `memory.pre_recall`, `prompt.system_sections`, `response.stream`.
 
 **Hook types:**
 - **Filter** — chainable, modifies payload, returns `(modified_payload, handled)`
@@ -1301,9 +1345,9 @@ The hook infrastructure is generic — `HookDispatcher` accepts any `Arc<dyn Hoo
 | Trust boundary | Signed `.napp` archive | npm package | pip package / directory import |
 | Binary verification | SHA256 + ED25519 | None | None |
 | Provider registration | Plugin-contributed via `capabilities.providers[]` | 10+ types (LLM, TTS, voice, image, video, music, search, fetch) | None |
-| Channel registration | None | 20+ adapters (messaging, threading, auth, security, etc.) | None |
-| Hook system | 12 hooks via `capabilities.hooks[]` + `HookDispatcher` | 29 hooks (all plugin-accessible) | 13 hooks (all plugin-accessible) |
-| Tool registration | Generic tool + manifest-declared typed tools via `capabilities.tools[]` | Per-plugin typed tools with schemas | Per-plugin tools in global registry |
+| Channel registration | Bridge process via top-level `channel` (shared/per-agent) | 20+ adapters (messaging, threading, auth, security, etc.) | None |
+| Hook system | 8 wired hooks (12 declared) via `capabilities.hooks[]` + `HookDispatcher` | 29 hooks (all plugin-accessible) | 13 hooks (all plugin-accessible) |
+| Tool registration | Generic `plugin` tool only (typed `capabilities.tools[]` declared, not yet routed) | Per-plugin typed tools with schemas | Per-plugin tools in global registry |
 | Config schemas | `capabilities.config_schema[]` with UI form generation | Zod + UI hints + JSON Schema | plugin.yaml + config.yaml |
 | CLI commands | `capabilities.commands[]` with slash command dispatch | Top-level with lazy descriptors | Slash + CLI commands |
 | Memory/context | None | 8 registration methods | Context engine replacement |

@@ -1,0 +1,166 @@
+- generic [active] [ref=f78e1]:
+  - generic [ref=f78e3]:
+    - generic [ref=f78e4]:
+      - complementary "Skip links" [ref=f78e5]:
+        - link "Skip to main content" [ref=f78e6] [cursor=pointer]:
+          - /url: /
+          - generic [ref=f78e7]: Skip to main content
+        - button "Keyboard shortcuts" [ref=f78e8]:
+          - generic [ref=f78e9]: Keyboard shortcuts
+        - link "Accessibility Help external, opens new window" [ref=f78e10] [cursor=pointer]:
+          - /url: https://cloud.google.com/docs/accessibility?hl=en_US
+          - generic [ref=f78e11]:
+            - text: Accessibility Help
+            - generic "external, opens new window" [ref=f78e12]:
+              - img "external, opens new window" [ref=f78e13]:
+                - img [ref=f78e14]
+        - link "Accessibility Feedback external, opens new window" [ref=f78e16] [cursor=pointer]:
+          - /url: https://support.google.com/accessibility/contact/feedback?hl=en_US
+          - generic [ref=f78e17]:
+            - text: Accessibility Feedback
+            - generic "external, opens new window" [ref=f78e18]:
+              - img "external, opens new window" [ref=f78e19]:
+                - img [ref=f78e20]
+      - banner [ref=f78e23]:
+        - generic [ref=f78e24]:
+          - navigation [ref=f78e27]:
+            - button "Navigation menu (.)" [ref=f78e28] [cursor=pointer]:
+              - img [ref=f78e30]
+          - link "Google Cloud Platform Home" [ref=f78e32] [cursor=pointer]:
+            - /url: /
+            - generic:
+              - img
+          - button "You're currently working in NeboLoop. Hit enter to switch projects, folders, or organizations" [ref=f78e266]:
+            - generic [ref=f78e267]:
+              - img [ref=f78e269]
+              - generic [ref=f78e272]: NeboLoop
+        - search "Google Cloud Platform" [ref=f78e46]:
+          - combobox [ref=f78e47]:
+            - searchbox "Enter query to search for resources, docs, products, and more" [ref=f78e48]
+          - button "See all search results" [disabled]:
+            - generic:
+              - img
+            - generic: Search
+        - generic [ref=f78e49]:
+          - generic [ref=f78e50]:
+            - button "Open or close Gemini Cloud Assist chat (Option G)" [ref=f78e276] [cursor=pointer]:
+              - img [ref=f78e278]
+            - button "Activate Cloud Shell (G then S)" [ref=f78e280] [cursor=pointer]:
+              - img [ref=f78e282]
+            - button "Open notifications" [ref=f78e57] [cursor=pointer]:
+              - img [ref=f78e59]
+            - button "Settings and utilities" [ref=f78e65] [cursor=pointer]:
+              - img [ref=f78e67]
+          - 'button "Account: Alma Tuck (admin@neboloop.com)" [ref=f78e286]':
+            - img [ref=f78e287]
+    - generic [ref=f78e80]:
+      - navigation "Breadcrumb" [ref=f78e292]:
+        - link "Google Auth Platform" [ref=f78e295] [cursor=pointer]:
+          - /url: /auth?authuser=1&project=neboloop
+          - img [ref=f78e298]
+          - generic [ref=f78e302]: Google Auth Platform
+        - list [ref=f78e303]:
+          - listitem [ref=f78e304]:
+            - generic [ref=f78e305]: /
+            - link "Verification center" [ref=f78e308] [cursor=pointer]:
+              - /url: /auth/verification?project=neboloop&authuser=1
+              - generic [ref=f78e310]: Verification center
+      - generic [ref=f78e91]:
+        - navigation "Google Auth Platform" [ref=f78e98]:
+          - generic [ref=f78e99]:
+            - list "Overview, 1 of 7 More options Branding, 2 of 7 More options Audience, 3 of 7 More options Clients, 4 of 7 More options Data Access, 5 of 7 More options Verification Center, 6 of 7 More options Settings, 7 of 7 More options" [ref=f78e113]:
+              - listitem [ref=f78e114]:
+                - generic [ref=f78e117]:
+                  - link "Overview, 1 of 7" [ref=f78e118] [cursor=pointer]:
+                    - /url: /auth/overview
+                    - generic [ref=f78e119]:
+                      - img [ref=f78e122]
+                      - generic [ref=f78e124]: Overview
+                  - button "More options" [ref=f78e126] [cursor=pointer]:
+                    - img [ref=f78e128]
+              - listitem [ref=f78e130]:
+                - generic [ref=f78e133]:
+                  - link "Branding, 2 of 7" [ref=f78e134] [cursor=pointer]:
+                    - /url: /auth/branding
+                    - generic [ref=f78e135]:
+                      - img [ref=f78e138]
+                      - generic [ref=f78e144]: Branding
+                  - button "More options" [ref=f78e146] [cursor=pointer]:
+                    - img [ref=f78e148]
+              - listitem [ref=f78e150]:
+                - generic [ref=f78e153]:
+                  - link "Audience, 3 of 7" [ref=f78e154] [cursor=pointer]:
+                    - /url: /auth/audience
+                    - generic [ref=f78e155]:
+                      - img [ref=f78e158]
+                      - generic [ref=f78e160]: Audience
+                  - button "More options" [ref=f78e162] [cursor=pointer]:
+                    - img [ref=f78e164]
+              - listitem [ref=f78e166]:
+                - generic [ref=f78e169]:
+                  - link "Clients, 4 of 7" [ref=f78e170] [cursor=pointer]:
+                    - /url: /auth/clients
+                    - generic [ref=f78e171]:
+                      - img [ref=f78e174]
+                      - generic [ref=f78e176]: Clients
+                  - button "More options" [ref=f78e178] [cursor=pointer]:
+                    - img [ref=f78e180]
+              - listitem [ref=f78e182]:
+                - generic [ref=f78e185]:
+                  - link "Data Access, 5 of 7" [ref=f78e186] [cursor=pointer]:
+                    - /url: /auth/scopes
+                    - generic [ref=f78e187]:
+                      - img [ref=f78e190]
+                      - generic [ref=f78e193]: Data Access
+                  - button "More options" [ref=f78e195] [cursor=pointer]:
+                    - img [ref=f78e197]
+              - listitem [ref=f78e199]:
+                - generic [ref=f78e202]:
+                  - link "Verification Center, 6 of 7" [ref=f78e203] [cursor=pointer]:
+                    - /url: /auth/verification
+                    - generic [ref=f78e204]:
+                      - img [ref=f78e207]
+                      - generic [ref=f78e210]: Verification Center
+                  - button "More options" [ref=f78e212] [cursor=pointer]:
+                    - img [ref=f78e214]
+              - listitem [ref=f78e216]:
+                - generic [ref=f78e219]:
+                  - link "Settings, 7 of 7" [ref=f78e220] [cursor=pointer]:
+                    - /url: /auth/settings
+                    - generic [ref=f78e221]:
+                      - img [ref=f78e224]
+                      - generic [ref=f78e226]: Settings
+                  - button "More options" [ref=f78e228] [cursor=pointer]:
+                    - img [ref=f78e230]
+            - button "Toggle Google Auth Platform navigation menu" [pressed] [ref=f78e233] [cursor=pointer]:
+              - img [ref=f78e236]
+        - main [ref=f78e239]:
+          - generic [ref=f78e321]:
+            - heading "Verification Center" [level=1] [ref=f78e327]:
+              - generic [ref=f78e328]: Verification Center
+            - generic [ref=f78e331]:
+              - generic [ref=f78e333]:
+                - generic [ref=f78e337]: Branding status
+                - generic [ref=f78e339]:
+                  - img [ref=f78e341]
+                  - text: Your branding is not being shown to users. You can view more details and verify your branding in the branding page.
+                - link "View branding" [ref=f78e345] [cursor=pointer]:
+                  - /url: /auth/branding?authuser=1&project=neboloop
+                  - img [ref=f78e347]
+                  - generic [ref=f78e349]: View branding
+              - generic [ref=f78e351]:
+                - generic [ref=f78e355]: Data access status
+                - generic [ref=f78e356]:
+                  - generic [ref=f78e357]:
+                    - img [ref=f78e359]
+                    - text: Your app's data access is not verified. Verification is required because your app requests sensitive or restricted scopes.
+                  - generic [ref=f78e361]: You need to verify and publish your branding before you can request for verification.
+                - generic [ref=f78e363]:
+                  - button "Prepare for verification" [disabled]:
+                    - generic:
+                      - img
+                    - generic: Prepare for verification
+  - iframe [ref=f78e263]:
+    
+  - iframe [ref=f78e265]:
+    
