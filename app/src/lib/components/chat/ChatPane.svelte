@@ -394,12 +394,67 @@
 
   // Scroll state
   let messagesContainer = $state<HTMLDivElement | null>(null);
+  let messagesContent = $state<HTMLDivElement | null>(null);
   let showScrollButton = $state(false);
   let autoScrollEnabled = $state(true);
   let scrollingProgrammatically = false;
-  let pendingScrollRAF: number | null = null;
   let initialScrollDone = false;
   let prevScrollHeight = 0;
+  let lastScrollTop = 0;
+  // Reserved room for the streaming reply (the claude.ai turn model): on send,
+  // the user's message pins to the TOP of the viewport and a trailing spacer
+  // reserves the rest of it. The reply streams INTO the reserved room — the
+  // spacer shrinks 1:1 with content growth, total scroll height stays constant,
+  // and the view is perfectly calm. When the room runs out (spacer hits 0),
+  // normal follow-the-stream pinning takes over.
+  let turnSpacerHeight = $state(0);
+  /// Identity of the latest user message (grouped messages carry no id — key on
+  /// position + content so both new sends and edit-resubmits re-arm the room).
+  let lastUserMsgKey: string | null = null;
+  const TURN_TOP_PAD = 18; // matches the scroller's vertical padding
+
+  /// Recompute the spacer so (last user msg → end of content + spacer) fills
+  /// exactly one viewport. Returns the room left for the reply.
+  function updateTurnSpacer(): number {
+    const scroller = messagesContainer;
+    const content = messagesContent;
+    if (!scroller || !content || lastUserMsgKey === null) return 0;
+    const userEls = content.querySelectorAll<HTMLElement>('[data-user-msg]');
+    const target = userEls[userEls.length - 1];
+    if (!target) {
+      turnSpacerHeight = 0;
+      return 0;
+    }
+    const usedByTurn = content.getBoundingClientRect().bottom - target.getBoundingClientRect().top;
+    const room = Math.max(0, Math.round(scroller.clientHeight - usedByTurn - TURN_TOP_PAD * 2));
+    turnSpacerHeight = room;
+    return room;
+  }
+
+  // A new user message: reserve the room and pin their message to the top.
+  $effect(() => {
+    const users = groupedMessages.filter((m) => m.type === 'user');
+    const last = users[users.length - 1];
+    const key = last ? `${users.length}:${last.content}` : null;
+    if (key === lastUserMsgKey || key === null) return;
+    lastUserMsgKey = key;
+    if (!initialScrollDone) return; // opening an old chat is not a send
+    requestAnimationFrame(() => {
+      const scroller = messagesContainer;
+      const content = messagesContent;
+      if (!scroller || !content) return;
+      updateTurnSpacer();
+      const userEls = content.querySelectorAll<HTMLElement>('[data-user-msg]');
+      const target = userEls[userEls.length - 1];
+      if (!target) return;
+      scrollingProgrammatically = true;
+      scroller.scrollTop +=
+        target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - TURN_TOP_PAD;
+      lastScrollTop = scroller.scrollTop;
+      autoScrollEnabled = true;
+      requestAnimationFrame(() => { scrollingProgrammatically = false; });
+    });
+  });
 
   // Preserve scroll position after older messages are prepended
   $effect(() => {
@@ -422,21 +477,29 @@
     }
   });
 
-  // Auto-scroll when messages change
+  // Auto-scroll: pin to the bottom whenever the CONTENT grows, not when the
+  // message count changes. Streaming appends tokens to the LAST message (count
+  // constant), and markdown/images/tool blocks grow after insert — a
+  // count-keyed effect misses all of it, which is exactly the "messages stop
+  // following the stream" bug. A ResizeObserver on the inner content sees every
+  // growth source. Pin INSTANTLY (no smooth): a gliding scroll outlives the
+  // programmatic flag and its intermediate positions read as "user scrolled
+  // away", disabling auto-scroll mid-stream.
   $effect(() => {
-    const _count = messages.length; // track dependency
-    if (!initialScrollDone) return;
-    if (messagesContainer && autoScrollEnabled) {
-      if (pendingScrollRAF) cancelAnimationFrame(pendingScrollRAF);
+    if (!messagesContent) return;
+    const ro = new ResizeObserver(() => {
+      const el = messagesContainer;
+      if (!el || !autoScrollEnabled || !initialScrollDone) return;
+      // While the reply still fits in the reserved room, shrink the spacer to
+      // absorb the growth — total height constant, view stays put (calm fill).
+      if (updateTurnSpacer() > 0) return;
       scrollingProgrammatically = true;
-      pendingScrollRAF = requestAnimationFrame(() => {
-        pendingScrollRAF = null;
-        if (messagesContainer && autoScrollEnabled) {
-          messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: 'smooth' });
-        }
-        requestAnimationFrame(() => { scrollingProgrammatically = false; });
-      });
-    }
+      el.scrollTop = el.scrollHeight;
+      lastScrollTop = el.scrollTop;
+      requestAnimationFrame(() => { scrollingProgrammatically = false; });
+    });
+    ro.observe(messagesContent);
+    return () => ro.disconnect();
   });
 
   // Initial scroll to bottom. Markdown, tool blocks, and images render
@@ -481,12 +544,16 @@
     if (!messagesContainer || scrollingProgrammatically) return;
     const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    const wasNearBottom = !showScrollButton;
+    const scrolledUp = scrollTop < lastScrollTop - 1;
+    lastScrollTop = scrollTop;
     showScrollButton = distanceFromBottom > 100;
 
-    if (wasNearBottom && showScrollButton) {
+    // Disengage only on genuine user intent — an UPWARD scroll away from the
+    // bottom. Position alone can't distinguish "user scrolled away" from a
+    // pin that hasn't caught up with fresh content yet.
+    if (scrolledUp && distanceFromBottom > 100) {
       autoScrollEnabled = false;
-    } else if (!wasNearBottom && !showScrollButton) {
+    } else if (distanceFromBottom <= 100) {
       autoScrollEnabled = true;
     }
 
@@ -679,7 +746,7 @@
       </div>
     {/if}
   <div bind:this={messagesContainer} onscroll={handleScroll} class="h-full overflow-y-auto p-[18px_24px]">
-  <div class="max-w-3xl mx-auto flex flex-col gap-1" data-selectable>
+  <div bind:this={messagesContent} class="max-w-3xl mx-auto flex flex-col gap-1" data-selectable>
     {#if isLoadingMore}
       <div class="flex justify-center py-3">
         <div class="loading loading-spinner loading-sm text-base-content/30"></div>
@@ -808,7 +875,7 @@
             </div>
           </div>
         {:else}
-          <div class="max-w-[640px] self-end mt-3">
+          <div class="max-w-[640px] self-end mt-3" data-user-msg>
             <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 rounded-br-sm prose prose-sm max-w-none [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
               {@html renderMarkdown(msg.content)}
               {#if msg.attachments?.length}
@@ -1012,6 +1079,11 @@
       </div>
     {/if}
   </div>
+  <!-- Reserved room for the streaming reply — see turnSpacerHeight. Outside the
+       observed content wrapper so spacer changes don't re-fire the observer. -->
+  {#if turnSpacerHeight > 0}
+    <div style="height: {turnSpacerHeight}px" aria-hidden="true"></div>
+  {/if}
   </div>
   </div>
   {/if}
