@@ -20,7 +20,14 @@ RUN rustup component add rustfmt   # whisper-rs-sys bindgen needs it
 WORKDIR /src
 COPY . .
 RUN test -d app/build || { echo "app/build missing — run 'cd app && pnpm build' on the host first"; exit 1; }
-RUN cargo build --release -p nebo-cli
+# `-l openblas` is REQUIRED — turbovec's `cblas_sgemm` reference otherwise goes
+# unresolved at link time (blas-src is a link-only shim the linker drops).
+# `--no-as-needed` forces the lib to stay on the link line regardless of
+# placement; flip back to `--as-needed` so unrelated libs still get pruned.
+# Same flags as .github/workflows/release.yml (tested on arm64 + amd64).
+RUN MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) && \
+    export RUSTFLAGS="-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" && \
+    cargo build --release -p nebo-cli
 
 FROM debian:bookworm-slim
 # Runtime .so for the GUI crates the binary links (loaded but unused on a server).
