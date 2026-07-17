@@ -237,7 +237,7 @@ pub fn build_replacement(
     let content = format!(
         "[This message contained a large {content_type} document ({original_chars} characters, \
          ~{original_tokens_est} tokens). The full content has been saved to {file_path} and can \
-         be read with system(resource: \"file\", action: \"read\", path: \"{file_path}\"). \
+         be read with os(resource: \"file\", action: \"read\", path: \"{file_path}\"). \
          Here is a summary:]\n\n{summary}",
     );
 

@@ -197,7 +197,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "store",
                         "key and value",
-                        "bot(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\")",
+                        "agent(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\")",
                     ));
                 }
 
@@ -278,7 +278,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "recall",
                         "key",
-                        "bot(resource: \"memory\", action: \"recall\", key: \"user/name\")",
+                        "agent(resource: \"memory\", action: \"recall\", key: \"user/name\")",
                     ));
                 }
 
@@ -360,7 +360,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "search",
                         "query",
-                        "bot(resource: \"memory\", action: \"search\", query: \"project deadlines\")",
+                        "agent(resource: \"memory\", action: \"search\", query: \"project deadlines\")",
                     ));
                 }
 
@@ -452,7 +452,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "delete",
                         "key",
-                        "bot(resource: \"memory\", action: \"delete\", key: \"user/name\")",
+                        "agent(resource: \"memory\", action: \"delete\", key: \"user/name\")",
                     ));
                 }
                 // Delete scoped to current user/agent only — never cross-agent
@@ -473,7 +473,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "clear",
                         "namespace",
-                        "bot(resource: \"memory\", action: \"clear\", namespace: \"tacit/general\")",
+                        "agent(resource: \"memory\", action: \"clear\", namespace: \"tacit/general\")",
                     ));
                 }
                 match self
@@ -542,7 +542,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "spawn",
                         "prompt",
-                        "bot(resource: \"task\", action: \"spawn\", prompt: \"Research competitor pricing\")",
+                        "agent(resource: \"task\", action: \"spawn\", prompt: \"Research competitor pricing\")",
                     ));
                 }
 
@@ -596,14 +596,14 @@ impl AgentTool {
                     None => return ToolResult::error(errors::missing_param(
                         "spawn_parallel",
                         "tasks",
-                        "bot(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
+                        "agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
                     )),
                 };
 
                 if tasks.is_empty() {
                     return ToolResult::error(
                         "tasks array must not be empty. Provide at least one task with a prompt.\n\
-                         Example: bot(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
+                         Example: agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
                     );
                 }
 
@@ -691,7 +691,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "orchestrate",
                         "prompt",
-                        "bot(resource: \"task\", action: \"orchestrate\", prompt: \"Plan and execute a market analysis\")",
+                        "agent(resource: \"task\", action: \"orchestrate\", prompt: \"Plan and execute a market analysis\")",
                     ));
                 }
 
@@ -736,7 +736,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "cancel",
                         "task_id",
-                        "bot(resource: \"task\", action: \"cancel\", task_id: \"abc123\")",
+                        "agent(resource: \"task\", action: \"cancel\", task_id: \"abc123\")",
                     ));
                 }
 
@@ -778,7 +778,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "status",
                         "task_id",
-                        "bot(resource: \"task\", action: \"status\", task_id: \"abc123\")",
+                        "agent(resource: \"task\", action: \"status\", task_id: \"abc123\")",
                     ));
                 }
 
@@ -817,7 +817,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "create",
                         "subject",
-                        "bot(resource: \"task\", action: \"create\", subject: \"Draft the quarterly report\")",
+                        "agent(resource: \"task\", action: \"create\", subject: \"Draft the quarterly report\")",
                     ));
                 }
                 let description = input["description"].as_str();
@@ -834,7 +834,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "update",
                         "task_id",
-                        "bot(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")",
+                        "agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")",
                     ));
                 }
                 let status = input["status"].as_str().unwrap_or("");
@@ -842,7 +842,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "update",
                         "status",
-                        "bot(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")\nValid statuses: pending, in_progress, completed, failed",
+                        "agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")\nValid statuses: pending, in_progress, completed, failed",
                     ));
                 }
                 let output = input["output"].as_str();
@@ -888,7 +888,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "get",
                         "task_id",
-                        "bot(resource: \"task\", action: \"get\", task_id: \"1\")",
+                        "agent(resource: \"task\", action: \"get\", task_id: \"1\")",
                     ));
                 }
                 match self.store.get_task_item(task_id) {
@@ -913,7 +913,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "delete",
                         "task_id",
-                        "bot(resource: \"task\", action: \"delete\", task_id: \"1\")",
+                        "agent(resource: \"task\", action: \"delete\", task_id: \"1\")",
                     ));
                 }
                 match self
@@ -1001,7 +1001,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "query",
                         "query",
-                        "bot(resource: \"session\", action: \"query\", query: \"meeting notes\")",
+                        "agent(resource: \"session\", action: \"query\", query: \"meeting notes\")",
                     ));
                 }
                 let limit = input["limit"].as_i64().unwrap_or(20) as usize;
@@ -1128,7 +1128,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "deliberate",
                         "task",
-                        "bot(resource: \"advisors\", action: \"deliberate\", task: \"Should we use PostgreSQL or SQLite?\")",
+                        "agent(resource: \"advisors\", action: \"deliberate\", task: \"Should we use PostgreSQL or SQLite?\")",
                     ));
                 }
 
@@ -1251,7 +1251,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         action,
                         "text",
-                        "bot(resource: \"ask\", action: \"prompt\", text: \"What would you like to do?\")",
+                        "agent(resource: \"ask\", action: \"prompt\", text: \"What would you like to do?\")",
                     ));
                 }
 
@@ -1443,7 +1443,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "research",
                         "query",
-                        "bot(resource: \"research\", action: \"research\", query: \"What are the latest trends in AI?\")",
+                        "agent(resource: \"research\", action: \"research\", query: \"What are the latest trends in AI?\")",
                     ));
                 }
 
@@ -1476,7 +1476,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "submit_findings",
                         "subtask_id",
-                        "bot(resource: \"research\", action: \"submit_findings\", subtask_id: \"sub-1\", findings: [{\"claim\": \"...\", \"source_url\": \"...\"}])",
+                        "agent(resource: \"research\", action: \"submit_findings\", subtask_id: \"sub-1\", findings: [{\"claim\": \"...\", \"source_url\": \"...\"}])",
                     ));
                 }
 
@@ -1486,7 +1486,7 @@ impl AgentTool {
                     None => return ToolResult::error(errors::missing_param(
                         "submit_findings",
                         "findings",
-                        "bot(resource: \"research\", action: \"submit_findings\", subtask_id: \"sub-1\", findings: [{\"claim\": \"...\", \"source_url\": \"...\", \"confidence\": 0.9}])",
+                        "agent(resource: \"research\", action: \"submit_findings\", subtask_id: \"sub-1\", findings: [{\"claim\": \"...\", \"source_url\": \"...\", \"confidence\": 0.9}])",
                     )),
                 };
 
@@ -1533,7 +1533,7 @@ impl AgentTool {
                     None => {
                         return ToolResult::error(
                             "No active research run found. You must start a research run first with:\n\
-                             bot(resource: \"research\", action: \"research\", query: \"your research question\")\n\
+                             agent(resource: \"research\", action: \"research\", query: \"your research question\")\n\
                              Then submit findings from worker sub-agents using submit_findings.",
                         );
                     }
@@ -1568,7 +1568,7 @@ impl AgentTool {
             return ToolResult::error(errors::missing_param(
                 "deep_research",
                 "query",
-                "bot(resource: \"research\", action: \"deep_research\", query: \"How effective is X for Y?\", depth: \"standard\")",
+                "agent(resource: \"research\", action: \"deep_research\", query: \"How effective is X for Y?\", depth: \"standard\")",
             ));
         }
 

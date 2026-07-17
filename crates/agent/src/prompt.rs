@@ -43,7 +43,7 @@ pub struct PromptContext {
     /// Compact agent catalog: "## Installed Agents (N)\n- name: description\n..."
     pub agent_catalog: String,
     /// When set, research methodology is appended to the system prompt.
-    /// Injected when bot(action: "research") activates research mode.
+    /// Injected when agent(action: "research") activates research mode.
     pub research_prompt: Option<String>,
     /// Workspace context loaded from `.nebo.md` or `NEBO.md` in the project directory.
     pub context_file: Option<String>,

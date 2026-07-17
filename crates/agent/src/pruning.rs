@@ -58,6 +58,17 @@ impl ContextThresholds {
             auto_compact,
         }
     }
+
+    /// Tighten thresholds by the run's observed estimate undercount
+    /// (API-reported usage vs local chars/4 estimate). Never loosens —
+    /// an overcounting estimate just means compaction fires early.
+    pub fn adjusted(&self, undercount: usize) -> Self {
+        Self {
+            warning: self.warning.saturating_sub(undercount),
+            error: self.error.saturating_sub(undercount),
+            auto_compact: self.auto_compact.saturating_sub(undercount),
+        }
+    }
 }
 
 /// Estimate tokens for a message.

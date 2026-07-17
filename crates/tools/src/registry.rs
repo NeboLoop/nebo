@@ -612,7 +612,7 @@ impl Registry {
 
         // ── Phase 3: Re-acquire lock and execute ───────────────────
         let tools = self.tools.read().await;
-        match tools
+        let mut result = match tools
             .get(name)
             .or_else(|| tools.get(strip_mcp_prefix(name)))
         {
@@ -621,7 +621,21 @@ impl Registry {
                 "Tool '{}' was unregistered during permit acquisition",
                 name
             )),
+        };
+
+        // Registry-level output backstop (Claude Code's MAX_TOOL_RESULT_BYTES).
+        // The runner has smarter preview/spill-to-file tiers well below this, so
+        // chat runs never hit it — it protects direct callers (deep research,
+        // workflows) from unbounded multi-MB results.
+        const MAX_RESULT_BYTES: usize = 400_000;
+        if result.content.len() > MAX_RESULT_BYTES {
+            let truncated = crate::truncate_str(&result.content, MAX_RESULT_BYTES);
+            result.content = format!(
+                "{}\n\n[output truncated at 400KB — re-run with a narrower scope]",
+                truncated
+            );
         }
+        result
     }
 
     /// Update the policy.
@@ -1167,5 +1181,52 @@ mod tests {
         assert!(tool_correction("unknown_tool").contains("skill(action: \"discover\""));
         assert!(tool_correction("unknown_tool").contains("tool_search"));
         assert!(tool_correction("mcp__server__tool").contains("mcp(server:"));
+    }
+
+    /// Drift guard for the tool-rename class (TD-001, capability vocabulary,
+    /// the bot() steering sweep): source strings that teach the model a
+    /// deprecated tool name send it into the correction path, wasting a turn.
+    /// Scans this crate and nebo-agent for deprecated call shapes.
+    #[test]
+    fn no_deprecated_tool_calls_in_model_facing_strings() {
+        // Patterns assembled with concat! so this test file never matches itself.
+        const DEPRECATED: &[&str] = &[
+            concat!("bot", "(resource"),
+            concat!("bot", "(action"),
+            concat!("system", "(resource"),
+            concat!("system", "(action"),
+            concat!("desktop", "(resource"),
+            concat!("desktop", "(action"),
+        ];
+        fn scan(dir: &std::path::Path, hits: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan(&path, hits);
+                } else if matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("rs" | "md" | "txt")
+                ) {
+                    let content = std::fs::read_to_string(&path).unwrap_or_default();
+                    for pat in DEPRECATED {
+                        if content.contains(pat) {
+                            hits.push(format!("{}: contains `{}`", path.display(), pat));
+                        }
+                    }
+                }
+            }
+        }
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut hits = Vec::new();
+        scan(&manifest.join("src"), &mut hits);
+        scan(&manifest.join("../agent/src"), &mut hits);
+        assert!(
+            hits.is_empty(),
+            "deprecated tool names in model-facing strings (use agent/os):\n{}",
+            hits.join("\n")
+        );
     }
 }

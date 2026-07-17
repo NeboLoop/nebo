@@ -5846,6 +5846,7 @@ version = "0.12.5"
 dependencies = [
  "async-openai",
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "hex",
  "libc",

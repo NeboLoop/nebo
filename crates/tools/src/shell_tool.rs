@@ -283,7 +283,7 @@ impl ShellTool {
                     if persisted {
                         result.push_str(&format!(
                             "\n\n--- Full output ({} chars, {} lines) saved to: {}\n\
-                             Read sections with: system(resource: \"file\", action: \"read\", path: \"{}\", offset: N, limit: M)",
+                             Read sections with: os(resource: \"file\", action: \"read\", path: \"{}\", offset: N, limit: M)",
                             total_len, total_lines,
                             output_path.display(), output_path.display(),
                         ));

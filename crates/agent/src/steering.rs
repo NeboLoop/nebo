@@ -1059,7 +1059,7 @@ impl Reminder for ResearchModeNudge {
         }
         Some(
             "This task calls for multi-source research. Use \
-             bot(resource: \"research\", action: \"deep_research\", query: \"<the user's research question>\") \
+             agent(resource: \"research\", action: \"deep_research\", query: \"<the user's research question>\") \
              to run the verified deep-research harness rather than searching ad-hoc."
                 .to_string(),
         )
@@ -1320,9 +1320,9 @@ impl Reminder for TaskTrackingNudge {
         Some(
             "This looks like a multi-step request. Break it into trackable tasks so the user \
              can see your progress:\n\
-             1. Create tasks: bot(resource: \"task\", action: \"create\", subject: \"...\")\n\
-             2. Update as you work: bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
-             3. Mark complete with output: bot(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
+             1. Create tasks: agent(resource: \"task\", action: \"create\", subject: \"...\")\n\
+             2. Update as you work: agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
+             3. Mark complete with output: agent(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
              Create all tasks upfront, then work through them one at a time."
                 .to_string(),
         )
@@ -1355,7 +1355,7 @@ impl Reminder for TaskCompletionNudge {
         Some(
             "You have tasks but none are marked in_progress or completed. \
              Update task status as you work: \
-             bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\") \
+             agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\") \
              before starting, then status: \"completed\" with output when done."
                 .to_string(),
         )

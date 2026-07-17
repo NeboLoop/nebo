@@ -37,11 +37,37 @@ const DEFAULT_CONTEXT_TOKEN_LIMIT: usize = 80_000;
 const MAX_TRANSIENT_RETRIES: usize = 10;
 /// Max retryable (provider/rate_limit/billing) retries before giving up.
 const MAX_RETRYABLE_RETRIES: usize = 5;
+/// Max reactive-compaction attempts when the provider rejects for context
+/// overflow despite the local estimate saying we fit (Claude Code's
+/// single-shot reactive compact + give-up, autoCompact death-spiral guard).
+const MAX_OVERFLOW_RETRIES: usize = 2;
 /// Consecutive overloaded (529) errors before falling back to a cheaper model.
 #[allow(dead_code)] // reserved for overload fallback logic
 const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
 /// Timeout for individual tool execution.
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
+/// Max gap between stream events before the stream is declared wedged
+/// (connection open, no tokens). Matches Claude Code's 90s idle watchdog;
+/// classified transient so the normal retry/failover path re-issues the request.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Retry backoff (Claude Code's withRetry): exponential 500ms × 2^(n−1) capped
+/// at 32s, plus 0–25% jitter. An explicit provider Retry-After wins outright.
+fn retry_backoff(attempt: usize, retry_after_secs: Option<u64>) -> Duration {
+    if let Some(secs) = retry_after_secs {
+        return Duration::from_secs(secs);
+    }
+    let exp = attempt.saturating_sub(1).min(6) as u32; // 500ms × 2^6 = 32s cap
+    let base_ms = 500u64 << exp;
+    // ponytail: clock-nanos jitter instead of a rand dependency
+    let jitter_ms = base_ms
+        * (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64 % 250)
+            .unwrap_or(0))
+        / 1000;
+    Duration::from_millis(base_ms + jitter_ms)
+}
 /// Default max auto-continuations when agent stops mid-task (no work tasks).
 #[allow(dead_code)] // used by max_auto_continuations, reserved for auto-continuation logic
 const MAX_AUTO_CONTINUATIONS_DEFAULT: usize = 5;
@@ -322,6 +348,13 @@ struct RunState {
     /// System prompt + tool-schema tokens (display estimate, no threshold fudge).
     system_overhead_tokens: usize,
     last_input_tokens: usize,
+    /// Local estimate (chars/4) of the message tokens sent in the last request.
+    /// Compared against API-reported usage to calibrate compaction thresholds.
+    last_request_estimate: usize,
+    /// Observed undercount of the local estimate vs API-reported usage
+    /// (Claude Code's hybrid counting, expressed as a threshold adjustment:
+    /// actual_prev + est(tail) > threshold  ⇔  est(prev) + est(tail) > threshold − undercount).
+    estimate_correction: usize,
     /// Cumulative input tokens across all iterations in this run.
     total_input_tokens: i32,
     /// Cumulative output tokens across all iterations in this run.
@@ -339,6 +372,8 @@ impl RunState {
             prompt_overhead: 0,
             system_overhead_tokens: 0,
             last_input_tokens: 0,
+            last_request_estimate: 0,
+            estimate_correction: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
             thresholds: None,
@@ -1191,6 +1226,7 @@ async fn run_loop(
     };
     let mut transient_retries = 0usize;
     let mut retryable_retries = 0usize;
+    let mut overflow_retries = 0usize;
     // Pre-seed called_tools with preactivated tools so they pass the tool filter
     // from turn 1 (bypasses deferred-loading discovery for sub-agents).
     let mut called_tools: Vec<String> = preactivate_tools.to_vec();
@@ -1261,10 +1297,13 @@ async fn run_loop(
     // Track file paths read during this session to detect duplicate reads.
     // When the model re-reads a file, a short note is appended to the tool result.
     let mut files_read_this_session: HashSet<String> = HashSet::new();
-    // Deferred tool discovery follows Claude Code's message-history pattern:
-    // Each turn, `extract_discovered_deferred_tools` scans window_messages for
-    // tool_search results and direct calls to deferred tools. When sliding window
-    // evicts those messages, the tools naturally unload. No persistent set needed.
+    // Deferred tool discovery: each turn, `extract_discovered_deferred_tools`
+    // scans window_messages for tool_search results and direct calls to deferred
+    // tools. The results accumulate into this per-run set so a tool stays loaded
+    // for the rest of the run even after compaction evicts its discovery message
+    // (Claude Code solves the same eviction race by snapshotting the discovered
+    // set onto the compact boundary — a monotonic per-run set is equivalent).
+    let mut discovered_deferred: HashSet<String> = HashSet::new();
 
     // Resolve agent from registry if agent_id is set
     let active_agent_entry = if !agent_id.is_empty() {
@@ -1790,6 +1829,17 @@ async fn run_loop(
             return Ok(());
         }
 
+        // Every consumer drains the event receiver until the run completes, so a
+        // closed channel means the consumer task died — stop instead of burning
+        // iterations and tool calls into the void (every send is `let _ =`).
+        if tx.is_closed() {
+            warn!(
+                session_id,
+                iteration, "event receiver dropped — stopping run"
+            );
+            return Ok(());
+        }
+
         // Adaptive iteration limit: extend past default only if making genuine progress.
         if iteration > max_iterations && iteration <= hard_ceiling {
             if consecutive_error_iterations >= 2
@@ -1910,6 +1960,7 @@ async fn run_loop(
         // Compute context thresholds — use model's actual context window when
         // available so large-context providers (200K Claude, 128K GPT-4o) aren't
         // under-utilized.  Falls back to DEFAULT_CONTEXT_TOKEN_LIMIT (80K).
+        let estimate_correction = state.estimate_correction;
         let thresholds = state.thresholds.get_or_insert_with(|| {
             let model_ctx = if !model_override.is_empty() {
                 selector
@@ -1930,6 +1981,11 @@ async fn run_loop(
             let context_window = model_ctx.unwrap_or(DEFAULT_CONTEXT_TOKEN_LIMIT);
             ContextThresholds::from_context_window(context_window, state.prompt_overhead)
         });
+        // Calibrate with API-reported usage from the previous iteration: the
+        // chars/4 estimate undercounts (tokenizer overhead, tool-call JSON),
+        // so tighten thresholds by the observed error instead of trusting it.
+        let thresholds = thresholds.adjusted(estimate_correction);
+        let thresholds = &thresholds;
 
         // Pre-compaction memory flush: extract facts from ALL messages before
         // the sliding window evicts them. Only fires when new compactions have
@@ -1990,6 +2046,10 @@ async fn run_loop(
         // Stage 4: Sliding window — only fires if still over auto_compact after stages 1-3
         let (window_messages, evicted) =
             pruning::apply_sliding_window(&working, run_start_time, thresholds.auto_compact);
+
+        // Record the local estimate for what this request will carry; compared
+        // against API-reported usage when it arrives to set estimate_correction.
+        state.last_request_estimate = pruning::estimate_total_tokens(&window_messages);
 
         // Build rolling summary if we evicted messages.
         // Quick fallback is used immediately (no LLM call); the LLM-quality
@@ -2062,8 +2122,11 @@ async fn run_loop(
         // those messages are evicted by sliding window compaction.
         let t_tools_start = std::time::Instant::now();
         let deferred_names = tools.get_deferred_names().await;
-        let mut active_deferred =
-            tool_filter::extract_discovered_deferred_tools(&window_messages, &deferred_names);
+        discovered_deferred.extend(tool_filter::extract_discovered_deferred_tools(
+            &window_messages,
+            &deferred_names,
+        ));
+        let mut active_deferred = discovered_deferred.clone();
 
         // Merge agent-declared dependencies — these stay active for the entire session
         // regardless of message window state (they're part of the job definition).
@@ -2529,7 +2592,28 @@ async fn run_loop(
                 }
 
                 if ai::is_context_overflow(&e) {
-                    warn!("context overflow, reducing window");
+                    overflow_retries += 1;
+                    if overflow_retries > MAX_OVERFLOW_RETRIES {
+                        return Err(format!(
+                            "Context overflow persisted after {} compaction attempts: {}",
+                            MAX_OVERFLOW_RETRIES, e
+                        ));
+                    }
+                    // The provider disagreed with our local estimate. Make the
+                    // retry state-changing: tighten thresholds by 20% of the
+                    // compaction budget so next iteration's stages actually
+                    // evict, instead of re-sending the identical request.
+                    let bump = state
+                        .thresholds
+                        .as_ref()
+                        .map(|t| t.auto_compact / 5)
+                        .unwrap_or(20_000);
+                    state.estimate_correction += bump;
+                    warn!(
+                        overflow_retries,
+                        correction = state.estimate_correction,
+                        "context overflow: forcing reactive compaction"
+                    );
                     continue;
                 }
 
@@ -2556,7 +2640,7 @@ async fn run_loop(
                     }
                     tokio::select! {
                         _ = cancel_token.cancelled() => return Ok(()),
-                        _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        _ = tokio::time::sleep(retry_backoff(transient_retries, None)) => {}
                     }
                     continue;
                 }
@@ -2585,7 +2669,7 @@ async fn run_loop(
                     }
                     tokio::select! {
                         _ = cancel_token.cancelled() => return Ok(()),
-                        _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        _ = tokio::time::sleep(retry_backoff(retryable_retries, None)) => {}
                     }
                     continue;
                 }
@@ -2598,6 +2682,7 @@ async fn run_loop(
         let mut assistant_content = String::new();
         let mut tool_calls: Vec<ai::ToolCall> = Vec::new();
         let mut stream_error: Option<String> = None;
+        let mut last_retry_after: Option<u64> = None;
         let mut stop_reason: Option<String> = None;
         let mut t_first_token: Option<std::time::Instant> = None;
         // Track the order of content blocks (text vs tool) for correct rehydration.
@@ -2628,9 +2713,22 @@ async fn run_loop(
                     }
                     return Ok(());
                 }
-                ev = rx.recv() => match ev {
-                    Some(e) => e,
-                    None => break,
+                ev = tokio::time::timeout(STREAM_IDLE_TIMEOUT, rx.recv()) => match ev {
+                    Ok(Some(e)) => e,
+                    Ok(None) => break,
+                    Err(_) => {
+                        warn!(
+                            iteration,
+                            session_id,
+                            "stream idle timeout: no events for {}s",
+                            STREAM_IDLE_TIMEOUT.as_secs()
+                        );
+                        stream_error = Some(format!(
+                            "stream idle timeout: no events for {}s",
+                            STREAM_IDLE_TIMEOUT.as_secs()
+                        ));
+                        break;
+                    }
                 }
             };
             if t_first_token.is_none() {
@@ -2704,11 +2802,26 @@ async fn run_loop(
                         state.total_input_tokens += usage.input_tokens;
                         state.total_output_tokens += usage.output_tokens;
                         usage.overhead_tokens = state.system_overhead_tokens as i32;
+
+                        // Calibrate the local token estimate against ground truth.
+                        // Context actually sent = input + cache tokens (with prompt
+                        // caching, input_tokens alone excludes the cached bulk).
+                        let context_actual = (usage.input_tokens
+                            + usage.cache_creation_input_tokens
+                            + usage.cache_read_input_tokens)
+                            as usize;
+                        if context_actual > 0 && state.last_request_estimate > 0 {
+                            let conversation_actual =
+                                context_actual.saturating_sub(state.system_overhead_tokens);
+                            state.estimate_correction =
+                                conversation_actual.saturating_sub(state.last_request_estimate);
+                        }
                     }
                     let _ = tx.send(event).await;
                 }
                 StreamEventType::RateLimit => {
                     if let Some(ref meta) = event.rate_limit {
+                        last_retry_after = meta.retry_after_secs;
                         concurrency.report_success(Some(meta));
 
                         // Check Janus session/weekly usage and generate quota warning at >80%
@@ -2813,6 +2926,9 @@ async fn run_loop(
         if stream_error.is_none() && (!assistant_content.is_empty() || !tool_calls.is_empty()) {
             transient_retries = 0;
             retryable_retries = 0;
+            // Note: estimate_correction is NOT reset — the compaction that
+            // recovered from overflow must stay in effect for the rest of the run.
+            overflow_retries = 0;
         }
 
         // Report success or rate limit to concurrency controller
@@ -2836,7 +2952,7 @@ async fn run_loop(
                     }
                     tokio::select! {
                         _ = cancel_token.cancelled() => return Ok(()),
-                        _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        _ = tokio::time::sleep(retry_backoff(transient_retries, None)) => {}
                     }
                     continue;
                 }
@@ -2844,7 +2960,7 @@ async fn run_loop(
 
             // Report rate limit to concurrency controller
             if reason == "rate_limit" {
-                concurrency.report_rate_limit(None);
+                concurrency.report_rate_limit(last_retry_after);
             }
 
             // Layer 2: Retryable errors (rate_limit, billing, provider errors)
@@ -2874,7 +2990,7 @@ async fn run_loop(
                 }
                 tokio::select! {
                     _ = cancel_token.cancelled() => return Ok(()),
-                    _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                    _ = tokio::time::sleep(retry_backoff(retryable_retries, last_retry_after)) => {}
                 }
                 continue;
             }
