@@ -14,8 +14,9 @@ napp = { workspace = true }
 async-trait = "0.1"
 reqwest = { workspace = true }
 futures = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["compat"] }
 tokio-tungstenite = { workspace = true }
+yamux = { workspace = true }
 zstd = "0.13"
 getrandom = "0.2"
 urlencoding = "2"

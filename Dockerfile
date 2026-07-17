@@ -40,6 +40,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd -u 1000 -m nebo
 COPY --from=build /src/target/release/nebo-cli /usr/local/bin/nebo-cli
 USER 1000
-ENV NEBO_HOST=0.0.0.0 NEBO_DATA_DIR=/data
+ENV NEBO_HOST=0.0.0.0 NEBO_DATA_DIR=/data NEBO_SERVER_MODE=1
 EXPOSE 27895
 ENTRYPOINT ["nebo-cli", "serve"]

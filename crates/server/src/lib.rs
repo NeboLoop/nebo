@@ -599,7 +599,18 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Err(e) => warn!(error = %e, "failed to clean up orphaned workflow runs"),
     }
 
-    // Ensure bot_id exists: file → DB (Go migration) → generate new
+    // Cloud/container deploys are provisioned as a specific bot up front, so
+    // there is no interactive pairing flow to run. NEBO_BOT_ID seeds the same
+    // file the pairing flow writes, so the chain below is unchanged.
+    if config::read_bot_id().is_none()
+        && let Ok(id) = std::env::var("NEBO_BOT_ID")
+        && id.len() == 36
+    {
+        config::write_bot_id(&id)?;
+        info!(bot_id = %id, "seeded bot_id from NEBO_BOT_ID");
+    }
+
+    // Ensure bot_id exists: env → file → DB (Go migration) → generate new
     if config::read_bot_id().is_none() {
         // Check DB for bot_id set by the Go version (plugin_settings table)
         let from_db = store
@@ -619,6 +630,33 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Sync bot_id to DB for backward compatibility
     if let Some(bot_id) = config::read_bot_id() {
         let _ = store.set_plugin_setting("neboai", "bot_id", &bot_id);
+    }
+
+    // Seed the NeboAI auth token for env-provisioned (cloud) deploys — the
+    // counterpart to NEBO_BOT_ID above. Seed ONLY when absent: the token is
+    // rotated at runtime and persisted back here, so re-applying the original
+    // env value on every restart would push a stale token and fail auth.
+    if let Ok(tok) = std::env::var("NEBO_BOT_TOKEN")
+        && !tok.is_empty()
+        && store
+            .get_plugin_setting("neboai", "token")
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .is_empty()
+    {
+        // Seed failure means the pod can't authenticate to the loop, so surface
+        // it rather than discarding — the cloud bot would silently never connect.
+        match store.set_plugin_setting("neboai", "token", &tok) {
+            Ok(()) => {
+                if let Err(e) = store.set_plugin_setting("neboai", "api_server", &cfg.neboai.api_url)
+                {
+                    warn!(error = %e, "seeded NeboAI token but failed to set api_server");
+                }
+                info!("seeded NeboAI token from NEBO_BOT_TOKEN (first boot)");
+            }
+            Err(e) => warn!(error = %e, "failed to seed NeboAI token from NEBO_BOT_TOKEN"),
+        }
     }
 
     // NOTE: setup/onboarding completion is driven ONLY by the user finishing
@@ -1948,6 +1986,41 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         backoff_secs = (backoff_secs * 2).min(600);
                     }
                 }
+            }
+        });
+    }
+
+    // Management-tunnel watcher — dials the hub and keeps the tunnel alive
+    // (docs/plans/nebo-cloud-architecture.md, Plane B). Every bot — desktop
+    // and cloud — is reached through its outbound tunnel, so this runs
+    // whenever NeboAI is enabled; until credentials exist it just idles.
+    if cfg.is_neboai_enabled() && !cfg.neboai.tunnel_url.is_empty() {
+        let tunnel_state = state.clone();
+        let local_addr = format!("127.0.0.1:{}", cfg.port);
+        tokio::spawn(async move {
+            let mut backoff_secs: u64 = 30;
+            loop {
+                let Some(token) = codes::neboai_token(&tunnel_state) else {
+                    // Not activated yet — poll until credentials appear.
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    continue;
+                };
+                let started = std::time::Instant::now();
+                let hub_url = tunnel_state.config.neboai.tunnel_url.clone();
+                match comm::tunnel::run(&hub_url, &token, &local_addr).await {
+                    Ok(()) => info!("tunnel: closed by hub, redialing"),
+                    Err(e) => info!("tunnel: {e}"),
+                }
+                // A connection that lived a while earns a quick redial;
+                // repeated fast failures back off like the comms watcher.
+                let delay = if started.elapsed() > std::time::Duration::from_secs(60) {
+                    backoff_secs = 30;
+                    5
+                } else {
+                    backoff_secs = (backoff_secs * 2).min(600);
+                    backoff_secs
+                };
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             }
         });
     }

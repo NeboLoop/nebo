@@ -175,6 +175,8 @@ pub struct NeboAIConfig {
     pub janus_url: String,
     #[serde(rename = "CommsURL")]
     pub comms_url: String,
+    #[serde(rename = "TunnelURL")]
+    pub tunnel_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -325,6 +327,7 @@ impl Default for NeboAIConfig {
             api_url: "https://api.neboai.com".into(),
             janus_url: "https://janus.neboai.com".into(),
             comms_url: "wss://comms.neboai.com/ws".into(),
+            tunnel_url: "wss://api.neboai.com/tunnel/connect".into(),
         }
     }
 }
@@ -399,6 +402,9 @@ impl Config {
         }
         if let Ok(v) = env::var("NEBOAI_COMMS_URL") {
             self.neboai.comms_url = v;
+        }
+        if let Ok(v) = env::var("NEBOAI_TUNNEL_URL") {
+            self.neboai.tunnel_url = v;
         }
         // Bind overrides so the server can listen on 0.0.0.0 in a container.
         if let Ok(v) = env::var("NEBO_HOST") {

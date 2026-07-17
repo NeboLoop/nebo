@@ -741,6 +741,38 @@ impl DynTool for OsTool {
                 input["resource"] = serde_json::Value::String(resource.clone());
             }
 
+            // Desktop-bound resources have no counterpart in a cloud deploy —
+            // no screen, input devices, or Mail/Calendar apps. Refuse with a
+            // reason the model can act on, instead of letting the platform
+            // layer fail deep inside with a cryptic xdotool/Evolution error.
+            // file/shell/web/search all work normally here, so only these are
+            // gated.
+            if crate::server_mode()
+                && matches!(
+                    resource.as_str(),
+                    "window"
+                        | "input"
+                        | "clipboard"
+                        | "capture"
+                        | "notification"
+                        | "ui"
+                        | "menu"
+                        | "dialog"
+                        | "space"
+                        | "shortcut"
+                        | "tts"
+                        | "dock"
+                        | "mail"
+                        | "contacts"
+                        | "calendar"
+                        | "reminders"
+                )
+            {
+                return ToolResult::error(format!(
+                    "os(resource: \"{resource}\") is not available in server mode — this Nebo runs in the cloud and has no screen, input devices, or desktop apps. File, shell, and web tools work normally."
+                ));
+            }
+
             match resource.as_str() {
                 // File + Shell — delegate to inner tools. `convert` is handled
                 // here (not in FileTool) because rendering runs on the async

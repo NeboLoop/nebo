@@ -50,6 +50,26 @@ pub mod vm_tool;
 pub mod web_tool;
 pub mod workflows;
 
+/// True when this Nebo runs as a cloud/container server rather than on a user's
+/// desktop.
+///
+/// Desktop-bound resources (windows, input, screen capture, Mail/Calendar) have
+/// no counterpart here: there is no display, window manager, or PIM app to talk
+/// to. Their platform layers would otherwise fail deep inside with a cryptic
+/// xdotool/Evolution error, so callers use this to refuse with a clear reason.
+///
+/// `NEBO_SERVER_MODE` forces it; otherwise a Linux box with neither `DISPLAY`
+/// nor `WAYLAND_DISPLAY` is headless by definition (a Linux desktop always has
+/// one). macOS/Windows are always treated as desktops.
+pub fn server_mode() -> bool {
+    if std::env::var_os("NEBO_SERVER_MODE").is_some() {
+        return true;
+    }
+    cfg!(target_os = "linux")
+        && std::env::var_os("DISPLAY").is_none()
+        && std::env::var_os("WAYLAND_DISPLAY").is_none()
+}
+
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
 /// UTF-8 character.
 pub fn truncate_str(s: &str, max_bytes: usize) -> &str {

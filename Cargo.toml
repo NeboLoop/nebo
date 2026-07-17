@@ -89,6 +89,7 @@ futures = "0.3"
 async-openai = { version = "0.33", features = ["chat-completion"] }
 tokio-util = "0.7"
 tokio-tungstenite = { version = "0.26", features = ["connect", "native-tls"] }
+yamux = "0.13"
 
 # Cron
 cron = "0.12"

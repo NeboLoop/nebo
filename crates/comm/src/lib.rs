@@ -8,6 +8,7 @@ pub mod handle;
 mod loopback;
 mod manager;
 pub mod neboai;
+pub mod tunnel;
 mod types;
 pub mod ulid;
 pub mod wire;

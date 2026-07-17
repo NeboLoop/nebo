@@ -1670,6 +1670,32 @@ async fn persist_workflow_artifact(
 
 // ── Shared Helpers ──────────────────────────────────────────────────
 
+/// Resolve the current NeboAI bot token: the stored auth profile, overridden
+/// by the rotated-token cache (written immediately on AUTH_OK, so it survives
+/// hot-reload/crash where the DB persist hasn't run yet). Used by both the
+/// comms connect and the management-tunnel watcher — one resolution pathway.
+pub(crate) fn neboai_token(state: &AppState) -> Option<String> {
+    let profiles = state
+        .store
+        .list_all_active_auth_profiles_by_provider("neboai")
+        .unwrap_or_default();
+    let mut token = profiles.first().map(|p| p.api_key.clone())?;
+    if token.is_empty() {
+        return None;
+    }
+    if let Ok(dir) = config::data_dir() {
+        let cache_path = dir.join("neboai_token.cache");
+        if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+            let cached = cached.trim().to_string();
+            if !cached.is_empty() && cached != token {
+                info!("neboai: using cached rotated token (differs from DB)");
+                token = cached;
+            }
+        }
+    }
+    Some(token)
+}
+
 /// Activate the NeboAI connection using stored credentials.
 ///
 /// This is the canonical implementation — called by both startup auto-connect
@@ -1688,24 +1714,8 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     let profile = profiles
         .first()
         .ok_or_else(|| NeboError::Internal("no NeboAI credentials".into()))?;
-    let mut token = if profile.api_key.is_empty() {
-        return Err(NeboError::Internal("empty NeboAI token".into()));
-    } else {
-        profile.api_key.clone()
-    };
-
-    // Prefer cached rotated token over DB token — the cache is written immediately
-    // on AUTH_OK, so it survives hot-reload/crash where the DB persist hasn't run yet.
-    if let Ok(dir) = config::data_dir() {
-        let cache_path = dir.join("neboai_token.cache");
-        if let Ok(cached) = std::fs::read_to_string(&cache_path) {
-            let cached = cached.trim().to_string();
-            if !cached.is_empty() && cached != token {
-                info!("neboai: using cached rotated token (differs from DB)");
-                token = cached;
-            }
-        }
-    }
+    let token =
+        neboai_token(state).ok_or_else(|| NeboError::Internal("empty NeboAI token".into()))?;
 
     let mut config = HashMap::new();
     config.insert("gateway".into(), state.config.neboai.comms_url.clone());
