@@ -3,17 +3,13 @@ name: nebo-server-image
 # Builds the headless Nebo server image (amd64) for the SaaS/cluster deploy and
 # pushes it to GHCR. Frontend is built on the runner (pinned pnpm 10, matching
 # release.yml) and embedded via rust-embed; the Rust binary compiles in Docker.
+# Build an image when we actually want to ship one — NOT on every backend
+# commit. The old `push: branches:[main] paths:[crates/**, ...]` trigger fired a
+# cold ~32min build on every commit and burned the org's Actions minutes.
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    paths:
-      - 'crates/**'
-      - 'app/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'Dockerfile'
-      - '.github/workflows/server-image.yml'
+    tags: ['v*']
 
 jobs:
   build:
