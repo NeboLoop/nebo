@@ -517,6 +517,12 @@ pub enum ProviderError {
 
 impl ProviderError {
     /// Whether this error is retryable.
+    ///
+    /// `Request` is a transport-level send failure (connection reset, stale
+    /// pooled keepalive, momentary network blip) — the request never reached
+    /// the server, making it the safest class to retry. The runner bounds
+    /// retries (MAX_RETRYABLE_RETRIES + backoff), so deterministic Request
+    /// constructors (serialize errors) just fail identically and stop.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -526,6 +532,7 @@ impl ProviderError {
                     ..
                 }
                 | ProviderError::Stream(_)
+                | ProviderError::Request(_)
         )
     }
 }
