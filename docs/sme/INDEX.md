@@ -15,7 +15,7 @@
 | AI & Providers | 3 | 3 | 0 |
 | Data & Storage | 4 | 4 | 0 |
 | Auth & Security | 4 | 4 | 0 |
-| Communication | 4 | 4 | 0 |
+| Communication | 5 | 5 | 0 |
 | Desktop & Platform | 6 | 6 | 0 |
 | App Platform | 5 | 5 | 0 |
 | Frontend | 8 | 8 | 0 |
@@ -99,6 +99,7 @@
 | 37 | Comm Plugin Framework | `comm/manager.rs`, `comm/types.rs`, wire protocol | `COMM_FRAMEWORK_SME.md` | Current |
 | 38 | Notification System | `notify/`, `server/handlers/notification.rs` | `NOTIFICATION_SYSTEM_SME.md` | Current |
 | 39 | MCP System (client + server) | `mcp/` (client.rs, bridge.rs, crypto.rs), `tools/mcp_tool.rs`, `server/handlers/mcp_server.rs` | `MCP_SYSTEM.md` | Current |
+| 65 | Reverse Management Tunnel (Plane B) | `comm/tunnel.rs`; neboloop `internal/tunnel/`, `internal/api/tunnel.go` | `TUNNEL.md` | Current |
 
 ## 8. Desktop & Platform Systems
 
@@ -199,7 +200,8 @@ All new SME documents created:
 | 21 | `AUTOMATION_SME.md` | Heartbeats, cron, workflow engine, agent workers | ~1407 |
 | 22 | `NEBOLOOP_CONNECTION.md` | NeboAI connection, hub chat, wire protocol | ~674 |
 | 23 | `RIVET_DEPLOYMENT_SECURITY_SME.md` | Rivet PaaS security (server-Nebo substrate): VM/network isolation, jailer, capacity over-commit, audit findings | ~430 |
-| | **Total new documentation** | | **~17,080** |
+| 24 | `TUNNEL.md` | Reverse management tunnel: yamux-over-wss, denylists, Origin-strip gotcha | ~81 |
+| | **Total new documentation** | | **~17,160** |
 
 ---
 
@@ -243,5 +245,5 @@ cli / src-tauri (entry points)
 | Frontend stores | 17 |
 | i18n locales | 26 |
 | Proto files | 9 |
-| Total SME docs | 49 |
+| Total SME docs | 50 |
 | Missing SME docs | 0 |
