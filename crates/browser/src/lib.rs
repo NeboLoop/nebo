@@ -5,6 +5,7 @@ pub mod chrome;
 pub mod config;
 pub mod executor;
 pub mod extension_bridge;
+pub mod extension_relay;
 pub mod human_input;
 pub mod manager;
 pub mod native_host;

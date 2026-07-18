@@ -5785,6 +5785,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "http 1.4.0",
+ "nebo-browser",
  "nebo-config",
  "nebo-server",
  "open",
@@ -5889,15 +5890,18 @@ dependencies = [
 name = "nebo-browser"
 version = "0.12.5"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "chromiumoxide",
  "futures",
+ "nebo-config",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
 ]
 
