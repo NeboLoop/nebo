@@ -48,8 +48,47 @@ impl ClientHub {
     }
 }
 
+/// True when a WS handshake may reach a localhost-trust endpoint: either no
+/// Origin header (native clients — the Tauri shell, agents, relays), or an
+/// Origin whose host is loopback/Tauri (our own SPA, dev server, app iframes).
+/// A hostile web page reaching localhost via DNS-rebind or a direct
+/// `ws://127.0.0.1` connect always carries its own Origin — browsers send it
+/// unconditionally and page JS cannot suppress it — so it is rejected here.
+/// NOTE (Phase 4): remote UI through the tunnel will carry the loop's Origin;
+/// the hub must strip/rewrite Origin before proxying into the tunnel.
+fn origin_is_trusted(headers: &axum::http::HeaderMap) -> bool {
+    let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return true;
+    };
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+        .or_else(|| origin.strip_prefix("tauri://"))
+    else {
+        return false; // includes opaque "null" origins
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        v6.split(']').next().unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1" | "tauri.localhost")
+}
+
 /// GET /ws — Main client WebSocket endpoint.
-pub async fn client_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+pub async fn client_ws_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if !origin_is_trusted(&headers) {
+        warn!("ws: rejected upgrade from untrusted origin");
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
     info!("ws upgrade request received");
     ws.on_upgrade(move |socket| handle_client_ws(socket, state))
 }
@@ -58,8 +97,13 @@ pub async fn client_ws_handler(State(state): State<AppState>, ws: WebSocketUpgra
 pub async fn app_ws_handler(
     Path(agent_id): Path<String>,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    if !origin_is_trusted(&headers) {
+        warn!(agent = %agent_id, "ws/app: rejected upgrade from untrusted origin");
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
     match state.store.get_agent(&agent_id) {
         Ok(Some(agent)) if agent.is_app.unwrap_or(0) != 0 => {
             ws.on_upgrade(move |socket| handle_app_ws(socket, agent_id, state))
@@ -2044,7 +2088,15 @@ fn inject_delegate_response(
 }
 
 /// GET /api/v1/agent/ws — Agent WebSocket endpoint for agent-to-server communication.
-pub async fn agent_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+pub async fn agent_ws_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if !origin_is_trusted(&headers) {
+        warn!("agent/ws: rejected upgrade from untrusted origin");
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
     let hub = state.hub.clone();
     ws.on_upgrade(move |socket| handle_agent_ws(socket, hub))
 }
@@ -2213,7 +2265,7 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                                     } else {
                                         Ok(parsed["result"].clone())
                                     };
-                                    bridge_recv.deliver_result(id, result).await;
+                                    bridge_recv.deliver_result(conn_id, id, result).await;
                                 }
                             }
                             "batch_response" => {
@@ -2224,7 +2276,7 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                                     } else {
                                         Ok(parsed["result"].clone())
                                     };
-                                    bridge_recv.deliver_result(id, result).await;
+                                    bridge_recv.deliver_result(conn_id, id, result).await;
                                 }
                             }
                             "hello" | "connected" => {
@@ -2249,6 +2301,52 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     }
 
     bridge.disconnect(conn_id).await;
+}
+
+#[cfg(test)]
+mod origin_guard_tests {
+    use super::origin_is_trusted;
+    use axum::http::{HeaderMap, HeaderValue, header::ORIGIN};
+
+    fn with_origin(origin: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(ORIGIN, HeaderValue::from_str(origin).unwrap());
+        h
+    }
+
+    #[test]
+    fn native_clients_without_origin_pass() {
+        assert!(origin_is_trusted(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn local_origins_pass() {
+        for o in [
+            "http://localhost:5173",
+            "http://localhost:27895",
+            "http://127.0.0.1:27895",
+            "http://[::1]:27895",
+            "tauri://localhost",
+            "http://tauri.localhost",
+        ] {
+            assert!(origin_is_trusted(&with_origin(o)), "{o} should be trusted");
+        }
+    }
+
+    #[test]
+    fn hostile_origins_rejected() {
+        for o in [
+            "http://evil.com",
+            "https://evil.com",
+            "http://localhost.evil.com",
+            "http://127.0.0.1.evil.com",
+            "null",
+            "file://",
+            "http://192.168.1.50:27895",
+        ] {
+            assert!(!origin_is_trusted(&with_origin(o)), "{o} should be rejected");
+        }
+    }
 }
 
 #[cfg(test)]
