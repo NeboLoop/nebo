@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { themeMode, uiScale, type UiScale } from '$lib/stores/theme.js';
   import Check from 'lucide-svelte/icons/check';
   import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
@@ -87,27 +88,27 @@
     persistProfile();
   }
 
-  const themeOptions = [
-    { id: 'light' as const, label: 'Light', icon: Sun },
-    { id: 'dark' as const, label: 'Dark', icon: Moon },
-    { id: 'system' as const, label: 'System', icon: Monitor },
-  ];
+  const themeOptions = $derived([
+    { id: 'light' as const, label: $t('theme.light'), icon: Sun },
+    { id: 'dark' as const, label: $t('theme.dark'), icon: Moon },
+    { id: 'system' as const, label: $t('theme.system'), icon: Monitor },
+  ]);
 
   // Whole-UI zoom steps. The "A" glyph size hints the scale.
-  const scaleOptions: { v: UiScale; label: string; glyph: string }[] = [
-    { v: 0.9, label: 'Small', glyph: 'text-xs' },
-    { v: 1, label: 'Default', glyph: 'text-sm' },
-    { v: 1.1, label: 'Large', glyph: 'text-base' },
-    { v: 1.25, label: 'Extra Large', glyph: 'text-lg' },
-  ];
+  const scaleOptions: { v: UiScale; label: string; glyph: string }[] = $derived([
+    { v: 0.9, label: $t('settingsProfile.scaleSmall'), glyph: 'text-xs' },
+    { v: 1, label: $t('settingsProfile.scaleDefault'), glyph: 'text-sm' },
+    { v: 1.1, label: $t('settingsProfile.scaleLarge'), glyph: 'text-base' },
+    { v: 1.25, label: $t('settingsProfile.scaleExtraLarge'), glyph: 'text-lg' },
+  ]);
 </script>
 
-<SettingsHeader title="Profile" description="Your personal information and preferences.">
+<SettingsHeader title={$t('settingsProfile.title')} description={$t('settingsProfile.pageDescription')}>
   {#snippet action()}
     {#if saved}
-      <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+      <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
     {/if}
-    <button onclick={revert} class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none" title="Revert to last saved">
+    <button onclick={revert} class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none" title={$t('common.revertToLastSaved')}>
       <RotateCcw class="w-3.5 h-3.5 text-base-content/50" />
     </button>
   {/snippet}
@@ -115,7 +116,7 @@
 
 <!-- Theme -->
 <div class="mb-6">
-  <div class="text-sm font-semibold mb-2">Theme</div>
+  <div class="text-sm font-semibold mb-2">{$t('settingsProfile.theme')}</div>
   <div class="grid grid-cols-3 gap-2 max-w-md">
     {#each themeOptions as opt}
       {@const Icon = opt.icon}
@@ -132,7 +133,7 @@
 
 <!-- Font size -->
 <div class="mb-6">
-  <div class="text-sm font-semibold mb-2">Font size</div>
+  <div class="text-sm font-semibold mb-2">{$t('settingsProfile.fontSize')}</div>
   <div class="grid grid-cols-4 gap-2 max-w-md">
     {#each scaleOptions as opt}
       <button
@@ -148,34 +149,34 @@
 
 <!-- Display name -->
 <label class="block mb-4">
-  <span class="block text-xs font-semibold mb-1.5">Display Name</span>
+  <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.displayName')}</span>
   <input type="text" bind:value={user.displayName} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30" />
 </label>
 
 <!-- Occupation -->
 <label class="block mb-4">
-  <span class="block text-xs font-semibold mb-1.5">Occupation</span>
+  <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.occupation')}</span>
   <input type="text" bind:value={user.occupation} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30" />
 </label>
 
 <!-- Location -->
 <label class="block mb-4">
-  <span class="block text-xs font-semibold mb-1.5">Location</span>
+  <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.locationLabel')}</span>
   <input type="text" bind:value={user.location} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30" />
 </label>
 
 <!-- Timezone -->
 <label class="block mb-4">
-  <span class="block text-xs font-semibold mb-1.5">Timezone</span>
+  <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.timezoneLabel')}</span>
   <div class="flex gap-2">
     <input type="text" bind:value={user.timezone} oninput={debounceSave} class="flex-1 py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30" />
-    <button class="px-3 py-2 rounded-lg border border-base-content/10 text-xs cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={autoDetectTimezone}>Auto-detect</button>
+    <button class="px-3 py-2 rounded-lg border border-base-content/10 text-xs cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={autoDetectTimezone}>{$t('settingsProfile.autoDetect')}</button>
   </div>
 </label>
 
 <!-- Interests -->
 <div class="block mb-4">
-  <span class="block text-xs font-semibold mb-1.5">Interests</span>
+  <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.interests')}</span>
   <div class="flex flex-wrap gap-1.5 mb-2">
     {#each user.interests as interest, idx}
       <span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-base-200 text-xs">
@@ -183,25 +184,25 @@
       </span>
     {/each}
   </div>
-  <input type="text" bind:value={newInterest} placeholder="Add interest…" class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30"
+  <input type="text" bind:value={newInterest} placeholder={$t('settingsProfile.addInterestPlaceholder')} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30"
     onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addInterest(); } }} />
 </div>
 
 <!-- Goals -->
 <label class="block mb-4">
-  <span class="block text-xs font-semibold mb-1.5">Goals</span>
+  <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.goals')}</span>
   <textarea rows="2" class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30 resize-y" bind:value={user.goals} oninput={debounceSave}></textarea>
 </label>
 
 <!-- Communication style -->
 <div class="mb-6">
-  <div class="text-xs font-semibold mb-1.5">Communication Style</div>
+  <div class="text-xs font-semibold mb-1.5">{$t('settingsProfile.communicationStyle')}</div>
   <div class="flex gap-1.5">
     {#each ['casual', 'professional', 'adaptive'] as style}
       <button class="px-3.5 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors {user.commStyle === style
         ? 'bg-primary/10 text-primary border-primary font-medium'
         : 'border-base-content/10 bg-base-100 hover:bg-base-200'}"
-        onclick={() => setCommStyle(style)}>{style.charAt(0).toUpperCase() + style.slice(1)}</button>
+        onclick={() => setCommStyle(style)}>{$t('settingsProfile.' + style)}</button>
     {/each}
   </div>
 </div>

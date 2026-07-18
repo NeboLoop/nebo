@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { Editor, Extension, Mark } from '@tiptap/core';
   import StarterKit from '@tiptap/starter-kit';
   import { Markdown } from 'tiptap-markdown';
@@ -793,7 +794,7 @@
 
     {#if mentionMenuVisible && mentionAgents.length > 0}
       <div class="absolute bottom-full left-0 right-0 mb-2 z-20 bg-base-100 border border-base-300 rounded-xl shadow-lg max-h-[240px] overflow-y-auto">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-4 pt-3 pb-1">Agents</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-4 pt-3 pb-1">{$t('sidebar.agents')}</div>
         {#each mentionAgents as agent, idx}
           {@const c = AGENT_COLORS_MAP[agent.color]}
           <button
@@ -806,8 +807,8 @@
             <div class="flex-1 min-w-0 flex items-center gap-1.5">
               <span class="text-sm font-medium shrink-0">{agent.name}</span>
               {#if !agent.isApp}
-                <span class="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-base-200 text-xs font-medium text-base-content/70 shrink-0" title="Companion bot">
-                  <Bot class="w-3 h-3" />bot
+                <span class="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-base-200 text-xs font-medium text-base-content/70 shrink-0" title={$t('common.agent')}>
+                  <Bot class="w-3 h-3" />{$t('chatInput.botBadge')}
                 </span>
               {/if}
               <span class="text-xs text-base-content/70 truncate">{agent.role}</span>
@@ -831,7 +832,7 @@
               <button
                 class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-base-300 hover:bg-error hover:text-error-content flex items-center justify-center text-xs cursor-pointer border-none opacity-0 group-hover:opacity-100 transition-opacity"
                 onclick={() => removeAttachment(att.id)}
-                title="Remove"
+                title={$t('common.remove')}
               >&times;</button>
               <div class="absolute bottom-0 left-0 right-0 bg-base-content/60 text-base-100 text-xs px-1 py-0.5 rounded-b-md truncate">
                 {att.file.name}
@@ -847,7 +848,7 @@
               <button
                 class="w-5 h-5 rounded-full hover:bg-error/20 hover:text-error flex items-center justify-center text-xs cursor-pointer border-none bg-transparent text-base-content/50 shrink-0 transition-colors"
                 onclick={() => removeAttachment(att.id)}
-                title="Remove"
+                title={$t('common.remove')}
               >&times;</button>
             </div>
           {/if}
@@ -860,7 +861,7 @@
     <div class="relative cursor-text" onclick={() => editor?.commands.focus()}>
       {#if editorIsEmpty && hasHydrated && !ghostText}
         <div class="absolute inset-0 pointer-events-none text-base text-base-content/40 leading-snug">
-          {placeholder || `Message ${agentName}...`}
+          {placeholder || $t('chatInput.messageAgent', { values: { name: agentName } })}
         </div>
       {/if}
       <div
@@ -877,7 +878,7 @@
           <button
             class="w-8 h-8 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent"
             onclick={browseFiles}
-            title="Attach files"
+            title={$t('chatInput.attachFiles')}
             tabindex={-1}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -902,7 +903,7 @@
       {#if isLoading}
         <button
           class="btn btn-error btn-circle size-9 text-sm"
-          title="Stop (Esc)"
+          title={$t('chatInput.stopEsc')}
           onclick={onstop}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
@@ -920,7 +921,7 @@
   <input bind:this={fileInputEl} type="file" multiple class="hidden" onchange={handleFileInput} />
 
   <p class="text-center text-xs text-base-content/50 mt-2">
-    Nebo can make mistakes. Verify important information.
+    {$t('chat.disclaimer')}
   </p>
 </div>
 

@@ -5,6 +5,7 @@
 
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { t } from 'svelte-i18n';
   import Search from 'lucide-svelte/icons/search';
 
   interface Props {
@@ -26,39 +27,39 @@
     action: () => void;
   }
 
-  const navItems: PaletteItem[] = [
-    { category: 'Navigation', label: 'Agents', icon: 'cpu', action: () => goto('/') },
-    { category: 'Navigation', label: 'Apps', icon: 'grid', action: () => goto('/apps') },
-    { category: 'Navigation', label: 'Schedule', icon: 'calendar', action: () => goto('/schedule') },
-    { category: 'Navigation', label: 'Marketplace', icon: 'store', action: () => goto('/marketplace') },
-    { category: 'Navigation', label: 'Activity', icon: 'calendar', action: () => goto('/activity') },
-    { category: 'Navigation', label: 'Events', icon: 'calendar', action: () => goto('/events') },
-    { category: 'Navigation', label: 'Automations', icon: 'workflow', action: () => goto('/automate') },
-  ];
+  const navItems: PaletteItem[] = $derived([
+    { category: $t('commandPalette.navigation'), label: $t('components.commandPalette.agents'), icon: 'cpu', action: () => goto('/') },
+    { category: $t('commandPalette.navigation'), label: $t('components.commandPalette.apps'), icon: 'grid', action: () => goto('/apps') },
+    { category: $t('commandPalette.navigation'), label: $t('components.commandPalette.schedule'), icon: 'calendar', action: () => goto('/schedule') },
+    { category: $t('commandPalette.navigation'), label: $t('commandPalette.marketplace'), icon: 'store', action: () => goto('/marketplace') },
+    { category: $t('commandPalette.navigation'), label: $t('components.commandPalette.activity'), icon: 'calendar', action: () => goto('/activity') },
+    { category: $t('commandPalette.navigation'), label: $t('commandPalette.events'), icon: 'calendar', action: () => goto('/events') },
+    { category: $t('commandPalette.navigation'), label: $t('automations.title'), icon: 'workflow', action: () => goto('/automate') },
+  ]);
 
-  const settingsItems: PaletteItem[] = [
-    { category: 'Settings', label: 'Account', icon: 'settings', action: () => goto('/settings/account') },
-    { category: 'Settings', label: 'Profile & Theme', icon: 'settings', action: () => goto('/settings/profile') },
-    { category: 'Settings', label: 'Billing', icon: 'settings', action: () => goto('/settings/billing') },
-    { category: 'Settings', label: 'Usage', icon: 'settings', action: () => goto('/settings/usage') },
-    { category: 'Settings', label: 'Identity', icon: 'settings', action: () => goto('/settings/identity') },
-    { category: 'Settings', label: 'Personality', icon: 'settings', action: () => goto('/settings/personality') },
-    { category: 'Settings', label: 'Rules', icon: 'settings', action: () => goto('/settings/rules') },
-    { category: 'Settings', label: 'Advisors', icon: 'settings', action: () => goto('/settings/advisors') },
-    { category: 'Settings', label: 'Permissions', icon: 'settings', action: () => goto('/settings/permissions') },
-    { category: 'Settings', label: 'Developer', icon: 'settings', action: () => goto('/settings/developer') },
-    { category: 'Settings', label: 'About', icon: 'settings', action: () => goto('/settings/about') },
-  ];
+  const settingsItems: PaletteItem[] = $derived([
+    { category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.account'), icon: 'settings', action: () => goto('/settings/account') },
+    { category: $t('commandPalette.settingsCategory'), label: $t('components.commandPalette.profileTheme'), icon: 'settings', action: () => goto('/settings/profile') },
+    { category: $t('commandPalette.settingsCategory'), label: $t('settings.navItems.billing'), icon: 'settings', action: () => goto('/settings/billing') },
+    { category: $t('commandPalette.settingsCategory'), label: $t('settings.navItems.usage'), icon: 'settings', action: () => goto('/settings/usage') },
+    { category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.identity'), icon: 'settings', action: () => goto('/settings/identity') },
+    { category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.personality'), icon: 'settings', action: () => goto('/settings/personality') },
+    { category: $t('commandPalette.settingsCategory'), label: $t('settings.navItems.rules'), icon: 'settings', action: () => goto('/settings/rules') },
+    { category: $t('commandPalette.settingsCategory'), label: $t('settings.navItems.advisors'), icon: 'settings', action: () => goto('/settings/advisors') },
+    { category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.permissions'), icon: 'settings', action: () => goto('/settings/permissions') },
+    { category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.developer'), icon: 'settings', action: () => goto('/settings/developer') },
+    { category: $t('commandPalette.settingsCategory'), label: $t('settings.navItems.about'), icon: 'settings', action: () => goto('/settings/about') },
+  ]);
 
-  const marketplaceItems: PaletteItem[] = [
-    { category: 'Marketplace', label: 'Browse Skills', icon: 'zap', action: () => goto('/marketplace/skills') },
-    { category: 'Marketplace', label: 'Browse Agents', icon: 'cpu', action: () => goto('/marketplace/agents') },
-    { category: 'Marketplace', label: 'Browse Plugins', icon: 'plug', action: () => goto('/marketplace/plugins') },
-    { category: 'Marketplace', label: 'Browse Connectors', icon: 'plug', action: () => goto('/marketplace/connectors') },
-    { category: 'Marketplace', label: 'Installed Items', icon: 'grid', action: () => goto('/marketplace/installed') },
-  ];
+  const marketplaceItems: PaletteItem[] = $derived([
+    { category: $t('commandPalette.marketplace'), label: $t('components.commandPalette.browseSkills'), icon: 'zap', action: () => goto('/marketplace/skills') },
+    { category: $t('commandPalette.marketplace'), label: $t('components.commandPalette.browseAgents'), icon: 'cpu', action: () => goto('/marketplace/agents') },
+    { category: $t('commandPalette.marketplace'), label: $t('components.commandPalette.browsePlugins'), icon: 'plug', action: () => goto('/marketplace/plugins') },
+    { category: $t('commandPalette.marketplace'), label: $t('components.commandPalette.browseConnectors'), icon: 'plug', action: () => goto('/marketplace/connectors') },
+    { category: $t('commandPalette.marketplace'), label: $t('components.commandPalette.installedItems'), icon: 'grid', action: () => goto('/marketplace/installed') },
+  ]);
 
-  const allItems = [...navItems, ...settingsItems, ...marketplaceItems];
+  const allItems = $derived([...navItems, ...settingsItems, ...marketplaceItems]);
 
   const filteredItems = $derived.by(() => {
     const q = query.toLowerCase().trim();
@@ -177,7 +178,7 @@
         <input
           type="text"
           bind:value={query}
-          placeholder="Search or run..."
+          placeholder={$t('components.commandPalette.searchOrRun')}
           class="flex-1 bg-transparent border-none outline-none text-base text-base-content placeholder:text-base-content/40"
           autofocus
         />
@@ -218,15 +219,15 @@
 
         {#if groupedResults.length === 0}
           <div class="px-4 py-8 text-center text-base text-base-content/60">
-            No results for "{query}"
+            {$t('components.commandPalette.noResults', { values: { query } })}
           </div>
         {/if}
       </div>
 
       <div class="command-palette-footer">
-        <span><kbd class="kbd kbd-xs">&uarr;&darr;</kbd> navigate</span>
-        <span><kbd class="kbd kbd-xs">&crarr;</kbd> select</span>
-        <span><kbd class="kbd kbd-xs">esc</kbd> close</span>
+        <span><kbd class="kbd kbd-xs">&uarr;&darr;</kbd> {$t('components.commandPalette.navigate')}</span>
+        <span><kbd class="kbd kbd-xs">&crarr;</kbd> {$t('components.commandPalette.select')}</span>
+        <span><kbd class="kbd kbd-xs">esc</kbd> {$t('components.commandPalette.close')}</span>
       </div>
     </div>
   </div>

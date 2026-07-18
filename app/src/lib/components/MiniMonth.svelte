@@ -1,6 +1,8 @@
 <script lang="ts">
-  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-  const DOWS = ['S','M','T','W','T','F','S'];
+  import { t } from 'svelte-i18n';
+
+  const MONTHS = $derived([$t('months.january'), $t('months.february'), $t('months.march'), $t('months.april'), $t('months.may'), $t('months.june'), $t('months.july'), $t('months.august'), $t('months.september'), $t('months.october'), $t('months.november'), $t('months.december')]);
+  const DOWS = $derived([$t('schedule.narrowSun'), $t('schedule.narrowMon'), $t('schedule.narrowTue'), $t('schedule.narrowWed'), $t('schedule.narrowThu'), $t('schedule.narrowFri'), $t('schedule.narrowSat')]);
 
   let { selectedDate, onselect } = $props();
 

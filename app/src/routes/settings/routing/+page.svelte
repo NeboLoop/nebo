@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import Sparkles from 'lucide-svelte/icons/sparkles';
   import Brain from 'lucide-svelte/icons/brain';
   import Code from 'lucide-svelte/icons/code';
@@ -30,31 +31,31 @@
 
   const janusCoveredProviders = ['anthropic', 'openai', 'google', 'deepseek'];
 
-  const providerOptions = [
-    { value: 'anthropic', label: 'Anthropic (Claude)' },
-    { value: 'openai', label: 'OpenAI (GPT)' },
-    { value: 'google', label: 'Google (Gemini)' },
-    { value: 'deepseek', label: 'DeepSeek' },
-    { value: 'ollama', label: 'Ollama (Local)' },
-  ];
+  const providerOptions = $derived([
+    { value: 'anthropic', label: $t('settingsProviders.providerOptions.anthropic') },
+    { value: 'openai', label: $t('settingsProviders.providerOptions.openai') },
+    { value: 'google', label: $t('settingsProviders.providerOptions.google') },
+    { value: 'deepseek', label: $t('settingsProviders.providerOptions.deepseek') },
+    { value: 'ollama', label: $t('settingsProviders.providerOptions.ollama') },
+  ]);
 
   type TaskKey = 'general' | 'reasoning' | 'code' | 'vision' | 'audio';
   type LaneKey = 'heartbeat' | 'events' | 'comm' | 'subagent';
 
-  const routingModes: { key: TaskKey; label: string; description: string; icon: any; color: string }[] = [
-    { key: 'general', label: 'All-Purpose', description: 'General tasks and conversation', icon: Sparkles, color: 'text-primary' },
-    { key: 'reasoning', label: 'Reasoning', description: 'Complex analysis and logic', icon: Brain, color: 'text-secondary' },
-    { key: 'code', label: 'Advanced', description: 'Code generation and execution', icon: Code, color: 'text-accent' },
-    { key: 'vision', label: 'Vision', description: 'Image understanding', icon: Eye, color: 'text-info' },
-    { key: 'audio', label: 'Audio', description: 'Voice and audio processing', icon: Volume2, color: 'text-warning' },
-  ];
+  const routingModes: { key: TaskKey; label: string; description: string; icon: any; color: string }[] = $derived([
+    { key: 'general', label: $t('settingsRouting.modeAllPurpose'), description: $t('settingsRouting.modeAllPurposeDesc'), icon: Sparkles, color: 'text-primary' },
+    { key: 'reasoning', label: $t('settingsRouting.modes.reasoning'), description: $t('settingsRouting.modeReasoningDesc'), icon: Brain, color: 'text-secondary' },
+    { key: 'code', label: $t('settingsRouting.modeAdvanced'), description: $t('settingsRouting.modeAdvancedDesc'), icon: Code, color: 'text-accent' },
+    { key: 'vision', label: $t('settingsRouting.modes.vision'), description: $t('settingsRouting.modeVisionDesc'), icon: Eye, color: 'text-info' },
+    { key: 'audio', label: $t('settingsRouting.modes.audio'), description: $t('settingsRouting.modeAudioDesc'), icon: Volume2, color: 'text-warning' },
+  ]);
 
-  const laneModes: { key: LaneKey; label: string; description: string }[] = [
-    { key: 'heartbeat', label: 'Heartbeat', description: 'Health monitoring operations' },
-    { key: 'events', label: 'Scheduled', description: 'Scheduled and event operations' },
-    { key: 'comm', label: 'Communication', description: 'Messaging operations' },
-    { key: 'subagent', label: 'Sub-agents', description: 'Sub-agent delegation' },
-  ];
+  const laneModes: { key: LaneKey; label: string; description: string }[] = $derived([
+    { key: 'heartbeat', label: $t('settingsRouting.lanes.heartbeat'), description: $t('settingsRouting.laneHeartbeatDesc') },
+    { key: 'events', label: $t('settingsRouting.laneScheduled'), description: $t('settingsRouting.laneScheduledDesc') },
+    { key: 'comm', label: $t('settingsRouting.lanes.communication'), description: $t('settingsRouting.laneCommDesc') },
+    { key: 'subagent', label: $t('settingsRouting.lanes.subagents'), description: $t('settingsRouting.laneSubagentDesc') },
+  ]);
 
   // Debounced auto-save
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -95,7 +96,7 @@
         laneRouting: Object.keys(laneRouting).length > 0 ? laneRouting : undefined,
       });
     } catch (err: any) {
-      error = err?.message || 'Failed to save routing';
+      error = err?.message || $t('settingsRouting.saveFailed');
     } finally { saving = false; }
   }
 
@@ -164,7 +165,7 @@
         };
       }
     } catch (err: any) {
-      error = err?.message || 'Failed to load routing config';
+      error = err?.message || $t('settingsRouting.loadConfigFailed');
     } finally { loading = false; }
   }
 
@@ -230,12 +231,12 @@
   }
 </script>
 
-<SettingsHeader title="Routing" description="Configure which models handle which task types." />
+<SettingsHeader title={$t('settingsRouting.title')} description={$t('settingsRouting.pageDescription')} />
 
 {#if loading}
   <div class="flex items-center justify-center gap-3 py-16">
     <Spinner size={20} />
-    <span class="text-xs text-base-content/50">Loading routing config...</span>
+    <span class="text-xs text-base-content/50">{$t('settingsRouting.loadingConfig')}</span>
   </div>
 {:else}
   <div class="flex flex-col gap-6">
@@ -245,7 +246,7 @@
 
     <!-- Task Routing -->
     <section>
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Task Routing</div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('settingsRouting.taskRouting')}</div>
       <div class="rounded-lg border border-base-content/5 bg-base-100 p-4">
         <div class="flex flex-col gap-5">
           {#each routingModes as mode}
@@ -257,9 +258,9 @@
               </div>
               <div class="grid sm:grid-cols-2 gap-2">
                 <div>
-                  <label class="text-xs text-base-content/50 mb-1 block">Primary</label>
+                  <label class="text-xs text-base-content/50 mb-1 block">{$t('settingsRouting.primary')}</label>
                   <select bind:value={routingForm[mode.key]} onchange={scheduleAutoSave} class="select select-bordered select-sm w-full">
-                    <option value="auto">Auto</option>
+                    <option value="auto">{$t('settingsRouting.auto')}</option>
                     {#each groups as group}
                       <optgroup label={group.label}>
                         {#each group.models as opt}
@@ -270,9 +271,9 @@
                   </select>
                 </div>
                 <div>
-                  <label class="text-xs text-base-content/50 mb-1 block">Backup</label>
+                  <label class="text-xs text-base-content/50 mb-1 block">{$t('settingsRouting.backup')}</label>
                   <select bind:value={backupForm[mode.key]} onchange={scheduleAutoSave} class="select select-bordered select-sm w-full">
-                    <option value="none">None</option>
+                    <option value="none">{$t('settingsRouting.none')}</option>
                     {#each groups as group}
                       <optgroup label={group.label}>
                         {#each group.models as opt}
@@ -292,7 +293,7 @@
           <div class="mt-5 pt-5 border-t border-base-content/10">
             <div class="flex items-center gap-2 mb-3">
               <Tag class="w-3 h-3 text-base-content/50" />
-              <span class="text-xs font-medium text-base-content/70">Custom Aliases</span>
+              <span class="text-xs font-medium text-base-content/70">{$t('settingsRouting.customAliases')}</span>
             </div>
             <div class="flex flex-col gap-2">
               {#each aliasesForm as aliasEntry, index}
@@ -300,13 +301,13 @@
                   <div class="flex items-center gap-2">
                     <input
                       type="text"
-                      placeholder="Alias name"
+                      placeholder={$t('settingsRouting.aliasNamePlaceholder')}
                       bind:value={aliasEntry.alias}
                       onblur={scheduleAutoSave}
                       class="input input-bordered input-sm w-36"
                     />
                     <select bind:value={aliasEntry.modelId} onchange={scheduleAutoSave} class="select select-bordered select-sm flex-1">
-                      <option value="">Select model...</option>
+                      <option value="">{$t('settingsRouting.selectModel')}</option>
                       {#each groups as group}
                         <optgroup label={group.label}>
                           {#each group.models as opt}
@@ -335,7 +336,7 @@
             class="flex items-center gap-1.5 text-xs text-base-content/50 hover:text-primary transition-colors cursor-pointer"
             onclick={addAlias}
           >
-            <Plus class="w-3.5 h-3.5" /> Add Shortcut
+            <Plus class="w-3.5 h-3.5" /> {$t('settingsRouting.addShortcutLabel')}
           </button>
         </div>
       </div>
@@ -343,8 +344,8 @@
 
     <!-- Lane Routing -->
     <section>
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Lane Routing</div>
-      <p class="text-xs text-base-content/50 mb-2">Assign models to background operation lanes.</p>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('settingsRouting.laneRouting')}</div>
+      <p class="text-xs text-base-content/50 mb-2">{$t('settingsRouting.laneRoutingHint')}</p>
       <div class="rounded-lg border border-base-content/5 bg-base-100 p-4">
         <div class="flex flex-col gap-5">
           {#each laneModes as lane}
@@ -354,7 +355,7 @@
                 <span class="text-xs text-base-content/50">{lane.description}</span>
               </div>
               <select bind:value={laneRoutingForm[lane.key]} onchange={scheduleAutoSave} class="select select-bordered select-sm w-full">
-                <option value="auto">Auto</option>
+                <option value="auto">{$t('settingsRouting.auto')}</option>
                 {#each groups as group}
                   <optgroup label={group.label}>
                     {#each group.models as opt}

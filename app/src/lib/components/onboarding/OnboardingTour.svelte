@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { onMount, onDestroy } from 'svelte';
   import { dispatchInstallStart } from '$lib/marketplace/installCodes';
 
@@ -16,54 +17,55 @@
   // First-run capabilities to install in one tap (canonical handle_code pathway).
   const SETUP_CODES = ['PLUG-BHVY-A96N', 'SKIL-VQTF-WV8E', 'SKIL-TV64-VHQ4']; // Office, Design, NeboAI
 
+  // Step titles/bodies are i18n key strings, resolved lazily with $t at render time.
   type Step = { target: string; title: string; body: { personal: string; business: string } };
   const STEPS: Step[] = [
     {
       target: '[data-tour="chat"]',
-      title: 'This is where we talk',
+      title: 'onboardingTour.steps.chat.title',
       body: {
-        personal: 'Ask me anything, or just tell me what to do — I take it from there.',
-        business: 'Ask me anything, or just tell me what to do — I take it from there.',
+        personal: 'onboardingTour.steps.chat.bodyPersonal',
+        business: 'onboardingTour.steps.chat.bodyBusiness',
       },
     },
     {
       target: '[data-tour="agents"]',
-      title: 'Your companions live here',
+      title: 'onboardingTour.steps.agents.title',
       body: {
-        personal: "I'm Nebo. You can add specialists anytime — each is great at a different job.",
-        business: "I'm Nebo. Add specialists anytime — a Chief of Staff, a researcher, and more.",
+        personal: 'onboardingTour.steps.agents.bodyPersonal',
+        business: 'onboardingTour.steps.agents.bodyBusiness',
       },
     },
     {
       target: '[data-tour="work"]',
-      title: 'Your work shows up here',
+      title: 'onboardingTour.steps.work.title',
       body: {
-        personal: 'Notes, lists, and documents I make for you open in this panel.',
-        business: 'Documents, spreadsheets, and decks I make for you open in this panel.',
+        personal: 'onboardingTour.steps.work.bodyPersonal',
+        business: 'onboardingTour.steps.work.bodyBusiness',
       },
     },
     {
       target: '[data-tour="schedule"]',
-      title: 'Put things on autopilot',
+      title: 'onboardingTour.steps.schedule.title',
       body: {
-        personal: 'Set reminders and routines — appointments, bills, a morning rundown.',
-        business: 'Automate the recurring work — morning briefings, follow-ups, reports.',
+        personal: 'onboardingTour.steps.schedule.bodyPersonal',
+        business: 'onboardingTour.steps.schedule.bodyBusiness',
       },
     },
     {
       target: '[data-tour="marketplace"]',
-      title: 'Add new abilities',
+      title: 'onboardingTour.steps.marketplace.title',
       body: {
-        personal: 'Browse skills and tools — document editing, design, and more.',
-        business: 'Browse skills and tools — document editing, design, a Chief of Staff, and more.',
+        personal: 'onboardingTour.steps.marketplace.bodyPersonal',
+        business: 'onboardingTour.steps.marketplace.bodyBusiness',
       },
     },
     {
       target: '[data-tour="search"]',
-      title: 'Jump anywhere fast',
+      title: 'onboardingTour.steps.search.title',
       body: {
-        personal: 'Press ⌘K to search or run any command in a flash.',
-        business: 'Press ⌘K to search or run any command in a flash.',
+        personal: 'onboardingTour.steps.search.bodyPersonal',
+        business: 'onboardingTour.steps.search.bodyBusiness',
       },
     },
   ];
@@ -71,7 +73,7 @@
   // Only tour anchors that are actually mounted — computed when the tour starts.
   let activeSteps = $state<Step[]>(STEPS);
   const step = $derived(activeSteps[stepIndex]);
-  const welcomeNoun = $derived(accountType === 'business' ? 'your business' : 'your life');
+  const welcomeNoun = $derived(accountType === 'business' ? $t('onboardingTour.nounBusiness') : $t('onboardingTour.nounPersonal'));
 
   function shouldRun(): boolean {
     try {
@@ -175,16 +177,16 @@
   <div class="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
     <div class="w-full max-w-md rounded-2xl bg-base-100 border border-base-300 shadow-2xl p-7 text-center">
       <div class="w-12 h-12 rounded-xl bg-primary text-primary-content flex items-center justify-center font-mono text-xl font-bold mx-auto mb-4">N</div>
-      <h2 class="text-xl font-bold mb-1">Hi, I'm Nebo Desktop.</h2>
-      <p class="text-sm text-base-content/70 mb-6">First — who am I mostly here to help?</p>
+      <h2 class="text-xl font-bold mb-1">{$t('onboardingTour.hiTitle')}</h2>
+      <p class="text-sm text-base-content/70 mb-6">{$t('onboardingTour.accountQuestion')}</p>
       <div class="grid grid-cols-2 gap-3">
         <button onclick={() => pickAccount('personal')} class="rounded-xl border border-base-300 bg-base-100 hover:border-primary hover:bg-primary/5 transition-colors p-4 cursor-pointer text-left">
-          <div class="text-sm font-semibold mb-0.5">Personal</div>
-          <div class="text-xs text-base-content/60">Organize and automate your life.</div>
+          <div class="text-sm font-semibold mb-0.5">{$t('onboardingTour.personal')}</div>
+          <div class="text-xs text-base-content/60">{$t('onboardingTour.personalDesc')}</div>
         </button>
         <button onclick={() => pickAccount('business')} class="rounded-xl border border-base-300 bg-base-100 hover:border-primary hover:bg-primary/5 transition-colors p-4 cursor-pointer text-left">
-          <div class="text-sm font-semibold mb-0.5">Business</div>
-          <div class="text-xs text-base-content/60">Organize and automate your work.</div>
+          <div class="text-sm font-semibold mb-0.5">{$t('onboardingTour.business')}</div>
+          <div class="text-xs text-base-content/60">{$t('onboardingTour.businessDesc')}</div>
         </button>
       </div>
     </div>
@@ -193,13 +195,13 @@
   <div class="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
     <div class="w-full max-w-md rounded-2xl bg-base-100 border border-base-300 shadow-2xl p-7 text-center">
       <div class="w-12 h-12 rounded-xl bg-primary text-primary-content flex items-center justify-center font-mono text-xl font-bold mx-auto mb-4">N</div>
-      <h2 class="text-xl font-bold mb-2">Welcome aboard.</h2>
+      <h2 class="text-xl font-bold mb-2">{$t('onboardingTour.welcomeTitle')}</h2>
       <p class="text-sm text-base-content/80 mb-6 leading-relaxed">
-        I live on your computer and help you organize and automate {welcomeNoun}. Let me give you a quick tour so you know where everything is.
+        {$t('onboardingTour.welcomeBody', { values: { noun: welcomeNoun } })}
       </p>
       <div class="flex items-center justify-center gap-2">
-        <button onclick={() => (phase = 'finale')} class="px-4 py-2 rounded-lg border border-base-300 text-sm font-medium hover:bg-base-200 transition-colors cursor-pointer bg-transparent">Skip tour</button>
-        <button onclick={startTour} class="px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all cursor-pointer border-none">Start the tour</button>
+        <button onclick={() => (phase = 'finale')} class="px-4 py-2 rounded-lg border border-base-300 text-sm font-medium hover:bg-base-200 transition-colors cursor-pointer bg-transparent">{$t('onboardingTour.skipTour')}</button>
+        <button onclick={startTour} class="px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all cursor-pointer border-none">{$t('onboardingTour.startTour')}</button>
       </div>
     </div>
   </div>
@@ -220,17 +222,17 @@
       style:top="{tip.top}px"
       style:left="{tip.left}px"
     >
-      <div class="text-sm font-semibold mb-1">{step.title}</div>
-      <div class="text-xs text-base-content/70 leading-relaxed mb-3">{step.body[accountType]}</div>
+      <div class="text-sm font-semibold mb-1">{$t(step.title)}</div>
+      <div class="text-xs text-base-content/70 leading-relaxed mb-3">{$t(step.body[accountType])}</div>
       <div class="flex items-center justify-between">
         <span class="text-xs text-base-content/50 font-mono">{stepIndex + 1} / {activeSteps.length}</span>
         <div class="flex items-center gap-1.5">
-          <button onclick={() => (phase = 'finale')} class="px-2.5 py-1 rounded-md text-xs font-medium text-base-content/60 hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none">Skip</button>
+          <button onclick={() => (phase = 'finale')} class="px-2.5 py-1 rounded-md text-xs font-medium text-base-content/60 hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none">{$t('onboardingTour.skip')}</button>
           {#if stepIndex > 0}
-            <button onclick={back} class="px-2.5 py-1 rounded-md text-xs font-medium border border-base-300 hover:bg-base-200 transition-colors cursor-pointer bg-transparent">Back</button>
+            <button onclick={back} class="px-2.5 py-1 rounded-md text-xs font-medium border border-base-300 hover:bg-base-200 transition-colors cursor-pointer bg-transparent">{$t('common.back')}</button>
           {/if}
           <button onclick={next} class="px-3 py-1 rounded-md text-xs font-bold bg-primary text-primary-content hover:brightness-110 transition-all cursor-pointer border-none">
-            {stepIndex === activeSteps.length - 1 ? 'Finish' : 'Next'}
+            {stepIndex === activeSteps.length - 1 ? $t('onboardingTour.finish') : $t('common.next')}
           </button>
         </div>
       </div>
@@ -240,13 +242,13 @@
   <div class="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
     <div class="w-full max-w-md rounded-2xl bg-base-100 border border-base-300 shadow-2xl p-7 text-center">
       <div class="w-12 h-12 rounded-xl bg-primary text-primary-content flex items-center justify-center text-xl mx-auto mb-4">✨</div>
-      <h2 class="text-xl font-bold mb-2">That's the lay of the land.</h2>
+      <h2 class="text-xl font-bold mb-2">{$t('onboardingTour.finaleTitle')}</h2>
       <p class="text-sm text-base-content/80 mb-6 leading-relaxed">
-        Want me to set up your core tools now? I'll add document editing (Word, Excel, PowerPoint, PDF), design, and publishing — so you can start making real things right away.
+        {$t('onboardingTour.finaleBody')}
       </p>
       <div class="flex items-center justify-center gap-2">
-        <button onclick={finish} class="px-4 py-2 rounded-lg border border-base-300 text-sm font-medium hover:bg-base-200 transition-colors cursor-pointer bg-transparent">Maybe later</button>
-        <button onclick={runSetup} class="px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all cursor-pointer border-none">Set me up</button>
+        <button onclick={finish} class="px-4 py-2 rounded-lg border border-base-300 text-sm font-medium hover:bg-base-200 transition-colors cursor-pointer bg-transparent">{$t('onboardingTour.maybeLater')}</button>
+        <button onclick={runSetup} class="px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all cursor-pointer border-none">{$t('onboardingTour.setMeUp')}</button>
       </div>
     </div>
   </div>

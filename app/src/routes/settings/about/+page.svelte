@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import { updateState, checkForUpdates, setApplying } from '$lib/stores/update';
@@ -24,7 +25,7 @@
       const api = await import('$lib/api/nebo');
       await api.updateApply();
     } catch {
-      addToast('Failed to apply update', 'error');
+      addToast($t('settingsAbout.applyUpdateFailed'), 'error');
     }
   }
 
@@ -48,48 +49,48 @@
       try {
         const resp = await fetch('/LICENSES.txt');
         licensesText = await resp.text();
-      } catch { licensesText = 'Failed to load license information.'; }
+      } catch { licensesText = $t('settingsAbout.licensesLoadFailed'); }
     }
     showLicenses = !showLicenses;
   }
 
-  const resources = [
-    { label: 'Documentation', url: 'https://docs.neboai.com' },
-    { label: 'Report an Issue', url: 'https://github.com/NeboLoop/nebo/issues' },
-    { label: 'Privacy Policy', url: 'https://neboai.com/privacy' },
-    { label: 'Terms of Service', url: 'https://neboai.com/terms' },
-  ];
+  const resources = $derived([
+    { label: $t('settingsAbout.docs'), url: 'https://docs.neboai.com' },
+    { label: $t('settingsAbout.reportIssue'), url: 'https://github.com/NeboLoop/nebo/issues' },
+    { label: $t('settingsApps.privacyPolicy'), url: 'https://neboai.com/privacy' },
+    { label: $t('settingsAbout.termsOfService'), url: 'https://neboai.com/terms' },
+  ]);
 </script>
 
-<SettingsHeader title="About" description="Application information and resources." />
+<SettingsHeader title={$t('settingsAbout.title')} description={$t('settingsAbout.pageDescription')} />
 
 <div class="p-4 rounded-xl border border-base-content/5 bg-base-100 mb-6">
   <div class="flex items-center gap-3 mb-4">
     <div class="w-12 h-12 rounded-xl bg-base-content text-base-100 grid place-items-center font-mono text-lg font-semibold">N</div>
     <div>
       <div class="text-sm font-bold">Nebo</div>
-      <div class="text-xs text-base-content/70">Personal Desktop AI Companion</div>
+      <div class="text-xs text-base-content/70">{$t('settingsAbout.tagline')}</div>
     </div>
   </div>
 
   <div class="flex flex-col gap-2 text-sm">
     <div class="flex justify-between py-1.5 border-b border-base-content/5">
-      <span class="text-xs text-base-content/70">Version</span>
+      <span class="text-xs text-base-content/70">{$t('settingsAbout.version')}</span>
       <span class="text-xs font-mono">{version}</span>
     </div>
     <div class="flex justify-between py-1.5 border-b border-base-content/5">
-      <span class="text-xs text-base-content/70">Platform</span>
+      <span class="text-xs text-base-content/70">{$t('settingsAbout.platform')}</span>
       <span class="text-xs font-mono">{platform}</span>
     </div>
     <div class="flex justify-between items-center py-1.5">
       {#if $updateState.available}
-        <span class="text-xs text-base-content/70">v{$updateState.latestVersion} available</span>
+        <span class="text-xs text-base-content/70">{$t('settingsAbout.versionAvailable', { values: { version: $updateState.latestVersion } })}</span>
         <button class="btn btn-primary btn-xs" onclick={installUpdate} disabled={$updateState.applying}>
-          {$updateState.applying ? 'Restarting…' : $updateState.ready ? 'Relaunch to update' : 'Install & Restart'}
+          {$updateState.applying ? $t('settingsAbout.restarting') : $updateState.ready ? $t('settingsAbout.relaunchToUpdate') : $t('settingsAbout.installAndRestart')}
         </button>
       {:else}
-        <span class="text-xs text-base-content/50">{checkingUpdate ? 'Checking…' : 'Updates'}</span>
-        <button class="btn btn-ghost btn-xs" onclick={runUpdateCheck} disabled={checkingUpdate}>Check for Updates</button>
+        <span class="text-xs text-base-content/50">{checkingUpdate ? $t('agentSettings.checking') : $t('settingsStatus.updates')}</span>
+        <button class="btn btn-ghost btn-xs" onclick={runUpdateCheck} disabled={checkingUpdate}>{$t('settingsAbout.checkForUpdates')}</button>
       {/if}
     </div>
     {#if $updateState.error}
@@ -100,7 +101,7 @@
 
 <!-- Resources -->
 <div class="mb-6">
-  <h3 class="text-sm font-semibold mb-3">Resources</h3>
+  <h3 class="text-sm font-semibold mb-3">{$t('settingsAbout.resources')}</h3>
   <div class="flex flex-col gap-1.5">
     {#each resources as resource}
       <a
@@ -123,7 +124,7 @@
     class="flex items-center justify-between w-full p-3 rounded-lg border border-base-content/5 bg-base-100 cursor-pointer hover:border-base-content/15 transition-colors"
     onclick={toggleLicenses}
   >
-    <span class="text-sm font-medium">Open Source Licenses</span>
+    <span class="text-sm font-medium">{$t('settingsAbout.openSourceLicenses')}</span>
     <ChevronDown class="w-3.5 h-3.5 text-base-content/50 transition-transform {showLicenses ? 'rotate-180' : ''}" />
   </button>
   {#if showLicenses}

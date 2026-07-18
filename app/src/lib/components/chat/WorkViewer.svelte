@@ -13,6 +13,7 @@
    * formulas are never evaluated — values only.
    */
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { downloadArtifact } from '$lib/chat/download';
 
   let {
@@ -78,13 +79,13 @@
 
   async function fetchText(): Promise<string> {
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`Failed to load (${res.status})`);
+    if (!res.ok) throw new Error($t('chat.failedToLoadStatus', { values: { status: res.status } }));
     return res.text();
   }
 
   async function fetchBinary(): Promise<ArrayBuffer> {
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`Failed to load (${res.status})`);
+    if (!res.ok) throw new Error($t('chat.failedToLoadStatus', { values: { status: res.status } }));
     return res.arrayBuffer();
   }
 
@@ -141,7 +142,7 @@
         const srcUrl = codeUrl || url;
         const srcExt = (srcUrl.split('/').pop() || '').split('.').pop()?.toLowerCase() || '';
         const res = await fetch(srcUrl);
-        if (!res.ok) throw new Error(`Failed to load (${res.status})`);
+        if (!res.ok) throw new Error($t('chat.failedToLoadStatus', { values: { status: res.status } }));
         const text = await res.text();
         const { codeToHtml } = await import('shiki');
         renderedHtml = await codeToHtml(text, {
@@ -217,8 +218,8 @@
           if (!res.ok) {
             throw new Error(
               res.status === 503
-                ? 'Preview needs the nebo-office plugin — download to open in PowerPoint/Keynote.'
-                : `Failed to load preview (${res.status})`
+                ? $t('chat.pptxPreviewNeedsPlugin')
+                : $t('chat.failedToLoadPreview', { values: { status: res.status } })
             );
           }
           await renderPdfFrom(await res.arrayBuffer());
@@ -231,7 +232,7 @@
       }
       loading = false;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to render this file.';
+      error = e instanceof Error ? e.message : $t('chat.failedToRender');
       loading = false;
     }
   }
@@ -294,11 +295,11 @@
      iframe); every other mode scrolls as padded content. -->
 <div class={mode === 'html' && !sourceView ? 'h-full' : 'p-4'}>
   {#if loading}
-    <div class="text-xs text-base-content/50 py-8 text-center">Loading…</div>
+    <div class="text-xs text-base-content/50 py-8 text-center">{$t('common.loading')}</div>
   {:else if error}
     <div class="flex flex-col items-center gap-3 py-8">
       <div class="text-xs text-error">{error}</div>
-      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url, title)} class="btn btn-sm btn-outline">Download {title}</a>
+      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url, title)} class="btn btn-sm btn-outline">{$t('chat.downloadFile', { values: { title } })}</a>
     </div>
   {:else if sourceView}
     <div data-selectable class="text-xs leading-relaxed rounded-lg overflow-x-auto [&_pre]:p-4 [&_pre]:rounded-lg">{@html renderedHtml}</div>
@@ -347,7 +348,7 @@
         </table>
       </div>
       {#if sheet.total > SHEET_ROW_CAP + 1}
-        <div class="text-xs text-base-content/50 mb-3">Showing first {SHEET_ROW_CAP} of {sheet.total - 1} rows.</div>
+        <div class="text-xs text-base-content/50 mb-3">{$t('chat.showingFirstRows', { values: { shown: SHEET_ROW_CAP, total: sheet.total - 1 } })}</div>
       {/if}
     {/each}
   {:else if mode === 'image'}
@@ -359,9 +360,9 @@
     <div class="flex flex-col items-center gap-3 py-10">
       <div class="text-sm font-medium">{title}</div>
       <div class="text-xs text-base-content/50 text-center max-w-[260px]">
-        No in-app preview for this format yet — download it to open in its native app.
+        {$t('chat.noPreviewFormat')}
       </div>
-      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url, title)} class="btn btn-sm btn-primary">Download</a>
+      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url, title)} class="btn btn-sm btn-primary">{$t('common.download')}</a>
     </div>
   {/if}
 </div>

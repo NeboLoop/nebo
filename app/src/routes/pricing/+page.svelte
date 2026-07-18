@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { goto } from '$app/navigation';
   import Check from 'lucide-svelte/icons/check';
@@ -102,7 +103,7 @@
           const s = document.createElement('script');
           s.src = 'https://js.stripe.com/v3/';
           s.onload = () => resolve();
-          s.onerror = () => reject(new Error('Failed to load Stripe'));
+          s.onerror = () => reject(new Error($t('pricing.stripeLoadFailed')));
           document.head.appendChild(s);
         });
       }
@@ -135,7 +136,7 @@
         embeddedCheckout.mount(container);
       }
     } catch (e: any) {
-      checkoutError = e?.message || 'Something went wrong.';
+      checkoutError = e?.message || $t('pricing.somethingWentWrong');
     } finally {
       checkoutLoading = false;
     }
@@ -152,28 +153,28 @@
     checkoutError = '';
   }
 
-  const includedFeatures = ['Runs on your machine', 'Your data stays local', 'Skills & roles marketplace', 'Desktop automation', 'MCP integrations', 'Memory system'];
+  const includedFeatures = ['pricing.featureLocal', 'pricing.featureDataLocal', 'pricing.featureMarketplace', 'pricing.featureDesktop', 'pricing.featureMcp', 'pricing.featureMemory'];
 </script>
 
-<svelte:head><title>Choose your plan - Nebo</title></svelte:head>
+<svelte:head><title>{$t('pricing.pageTitle')}</title></svelte:head>
 
 {#if isLoading}
   <div class="flex items-center justify-center gap-3 py-24">
     <Spinner size={20} />
-    <span class="text-sm text-base-content/70">Loading plans...</span>
+    <span class="text-sm text-base-content/70">{$t('pricing.loadingPlans')}</span>
   </div>
 {:else if !status?.connected}
   <div class="text-center py-24">
-    <h1 class="text-2xl font-bold text-base-content mb-2">Connect NeboAI</h1>
-    <p class="text-xs text-base-content/70 mb-6">Connect your NeboAI account to view plans and upgrade.</p>
-    <a href="/settings/account" class="inline-flex h-9 px-4 items-center rounded-xl bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all">Go to Account</a>
+    <h1 class="text-2xl font-bold text-base-content mb-2">{$t('pricing.connectNeboAI')}</h1>
+    <p class="text-xs text-base-content/70 mb-6">{$t('pricing.connectDescription')}</p>
+    <a href="/settings/account" class="inline-flex h-9 px-4 items-center rounded-xl bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all">{$t('settingsUsage.goToAccount')}</a>
   </div>
 
 {:else if step === 'plans'}
   <div class="space-y-8">
     <div class="text-center">
-      <h1 class="text-3xl font-bold tracking-tight text-base-content">Plans that grow with you</h1>
-      <p class="text-xs text-base-content/50 max-w-md mx-auto mt-2">AI that runs on your machine. Pick a plan, get instant access.</p>
+      <h1 class="text-3xl font-bold tracking-tight text-base-content">{$t('pricing.heading')}</h1>
+      <p class="text-xs text-base-content/50 max-w-md mx-auto mt-2">{$t('pricing.subheading')}</p>
     </div>
 
     {#if visiblePrices.length > 0}
@@ -187,12 +188,12 @@
           <div class="relative rounded-2xl border p-6 flex flex-col transition-all {isPopular ? 'bg-primary/5 border-primary/30 ring-1 ring-primary/20 scale-[1.02]' : 'bg-base-200/50 border-base-content/10 hover:border-base-content/20'}">
             {#if isPopular}
               <div class="absolute -top-3 left-1/2 -translate-x-1/2">
-                <span class="px-3 py-1 rounded-full bg-primary text-primary-content text-xs font-bold shadow-sm">Most popular</span>
+                <span class="px-3 py-1 rounded-full bg-primary text-primary-content text-xs font-bold shadow-sm">{$t('pricing.mostPopular')}</span>
               </div>
             {/if}
             {#if isCurrent}
               <div class="absolute -top-3 right-4">
-                <span class="px-3 py-1 rounded-full bg-base-content/10 text-base-content/60 text-xs font-bold">Current</span>
+                <span class="px-3 py-1 rounded-full bg-base-content/10 text-base-content/60 text-xs font-bold">{$t('pricing.current')}</span>
               </div>
             {/if}
 
@@ -204,11 +205,11 @@
             <div class="mt-5 mb-5">
               {#if price.interval === 'year'}
                 <span class="text-4xl font-bold text-base-content tracking-tight">{fmt(Math.round((price.amountCents ?? 0) / 12), price.currency)}</span>
-                <span class="text-sm text-base-content/40 ml-1">/mo</span>
-                <p class="text-xs text-base-content/40 mt-1">{fmt(price.amountCents ?? 0, price.currency)} billed annually</p>
+                <span class="text-sm text-base-content/40 ml-1">{$t('pricing.perMonth')}</span>
+                <p class="text-xs text-base-content/40 mt-1">{$t('pricing.billedAnnually', { values: { amount: fmt(price.amountCents ?? 0, price.currency) } })}</p>
               {:else}
                 <span class="text-4xl font-bold text-base-content tracking-tight">{fmt(price.amountCents ?? 0, price.currency)}</span>
-                <span class="text-sm text-base-content/40 ml-1">/mo</span>
+                <span class="text-sm text-base-content/40 ml-1">{$t('pricing.perMonth')}</span>
               {/if}
             </div>
 
@@ -229,24 +230,24 @@
                 <div class="flex-1">
                   <div class="flex items-center gap-1.5">
                     <Zap class="w-3.5 h-3.5 text-accent" />
-                    <span class="text-xs font-bold text-base-content uppercase tracking-wide">Double Up</span>
+                    <span class="text-xs font-bold text-base-content uppercase tracking-wide">{$t('pricing.doubleUp')}</span>
                   </div>
-                  <p class="text-xs text-base-content/50 mt-1">Same companion. Twice as much of it.</p>
+                  <p class="text-xs text-base-content/50 mt-1">{$t('pricing.doubleUpDesc')}</p>
                   <p class="text-xs font-bold text-accent mt-1">
-                    +{fmt(boost.amountCents ?? 0, boost.currency)}/mo
+                    {$t('pricing.boostPerMonth', { values: { amount: fmt(boost.amountCents ?? 0, boost.currency) } })}
                   </p>
                 </div>
               </label>
             {/if}
 
             {#if isCurrent}
-              <button disabled class="w-full h-11 rounded-xl text-sm font-bold bg-base-content/10 text-base-content/40 cursor-not-allowed">Current plan</button>
+              <button disabled class="w-full h-11 rounded-xl text-sm font-bold bg-base-content/10 text-base-content/40 cursor-not-allowed">{$t('pricing.currentPlan')}</button>
             {:else}
               <button
                 onclick={() => selectPlan(price)}
                 class="w-full h-11 flex items-center justify-center gap-2 rounded-xl text-sm font-bold transition-all mt-auto cursor-pointer border-none {isPopular ? 'bg-primary text-primary-content hover:brightness-110 shadow-md shadow-primary/20' : 'bg-primary text-primary-content hover:brightness-110'}"
               >
-                Get started <ArrowRight class="w-4 h-4" />
+                {$t('pricing.getStarted')} <ArrowRight class="w-4 h-4" />
               </button>
             {/if}
           </div>
@@ -256,12 +257,12 @@
 
     <section class="pt-4 pb-6">
       <div class="rounded-2xl bg-base-200/30 border border-base-content/5 p-6">
-        <h2 class="text-xs font-bold text-base-content/30 uppercase tracking-widest mb-4">Every plan includes</h2>
+        <h2 class="text-xs font-bold text-base-content/30 uppercase tracking-widest mb-4">{$t('pricing.everyPlanIncludes')}</h2>
         <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {#each includedFeatures as feature}
             <div class="flex items-center gap-2 text-xs text-base-content/50">
               <Check class="w-4 h-4 text-primary/60 shrink-0" />
-              {feature}
+              {$t(feature)}
             </div>
           {/each}
         </div>
@@ -275,7 +276,7 @@
       onclick={goBack}
       class="flex items-center gap-2 text-xs text-base-content/50 hover:text-base-content transition-colors cursor-pointer bg-transparent border-none"
     >
-      <ArrowLeft class="w-4 h-4" /> Back to plans
+      <ArrowLeft class="w-4 h-4" /> {$t('pricing.backToPlans')}
     </button>
 
     {#if checkoutError}
@@ -287,7 +288,7 @@
     {#if checkoutLoading}
       <div class="flex items-center justify-center gap-3 py-24">
         <Spinner size={20} />
-        <span class="text-xs text-base-content/70">Loading checkout...</span>
+        <span class="text-xs text-base-content/70">{$t('pricing.loadingCheckout')}</span>
       </div>
     {/if}
 

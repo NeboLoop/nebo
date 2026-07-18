@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import Lock from 'lucide-svelte/icons/lock';
   import Zap from 'lucide-svelte/icons/zap';
   import Puzzle from 'lucide-svelte/icons/puzzle';
@@ -88,7 +89,7 @@
 
       groups = loaded;
     } catch (err: any) {
-      error = err?.message || 'Failed to load secrets';
+      error = err?.message || $t('settingsSecrets.loadFailed');
     } finally { loading = false; }
   }
 
@@ -107,11 +108,11 @@
         await setPluginConfig(group.slug, { [key]: value.trim() });
       }
       secretInputs[inputKey] = '';
-      successMsg = `Saved ${key} for ${group.name}`;
+      successMsg = $t('settingsSecrets.savedFor', { values: { key, name: group.name } });
       await loadSecrets();
       setTimeout(() => successMsg = '', 3000);
     } catch (err: any) {
-      error = err?.message || 'Failed to save secret';
+      error = err?.message || $t('settingsSecrets.saveFailed');
     } finally { settingSecret = null; }
   }
 
@@ -128,17 +129,17 @@
       }
       await loadSecrets();
     } catch (err: any) {
-      error = err?.message || 'Failed to remove secret';
+      error = err?.message || $t('settingsSecrets.removeFailed');
     } finally { settingSecret = null; }
   }
 </script>
 
-<SettingsHeader title="Secrets" description="Manage API keys and credentials used by your skills and plugins." />
+<SettingsHeader title={$t('settingsSecrets.title')} description={$t('settingsSecrets.pageDescription')} />
 
 {#if loading}
   <div class="flex items-center justify-center gap-3 py-16">
     <Spinner size={20} />
-    <span class="text-xs text-base-content/50">Loading secrets...</span>
+    <span class="text-xs text-base-content/50">{$t('settingsSecrets.loading')}</span>
   </div>
 {:else}
   <div class="flex flex-col gap-6">
@@ -154,9 +155,9 @@
       <div class="rounded-lg border border-base-content/5 bg-base-100 p-4">
         <div class="py-8 text-center">
           <Lock class="w-8 h-8 mx-auto mb-3 text-base-content/30" />
-          <p class="text-sm font-medium text-base-content/70 mb-1">No secrets to configure</p>
-          <p class="text-xs text-base-content/50 mb-4">Install skills or plugins from the marketplace that require API keys.</p>
-          <a href="/marketplace" class="btn btn-primary btn-sm">Browse Marketplace</a>
+          <p class="text-sm font-medium text-base-content/70 mb-1">{$t('settingsSecrets.noSecrets')}</p>
+          <p class="text-xs text-base-content/50 mb-4">{$t('settingsSecrets.noSecretsHint')}</p>
+          <a href="/marketplace" class="btn btn-primary btn-sm">{$t('marketplace.installedPage.browseMarketplace')}</a>
         </div>
       </div>
     {:else}
@@ -178,7 +179,7 @@
                   <div class="flex items-center gap-2 mb-0.5">
                     <span class="text-sm font-medium">{secret.label || secret.key}</span>
                     {#if secret.required}
-                      <span class="text-xs text-error/80">Required</span>
+                      <span class="text-xs text-error/80">{$t('settingsSecrets.required')}</span>
                     {/if}
                     {#if secret.configured}
                       <CheckCircle class="w-3.5 h-3.5 text-success" />
@@ -192,7 +193,7 @@
 
                   {#if secret.configured}
                     <div class="flex items-center gap-2 mt-2">
-                      <span class="text-xs text-success/80">Configured</span>
+                      <span class="text-xs text-success/80">{$t('common.configured')}</span>
                       <button
                         type="button"
                         class="text-base-content/30 hover:text-error transition-colors cursor-pointer"
@@ -217,7 +218,7 @@
                         onclick={() => saveSecret(group, secret.key)}
                         disabled={settingSecret === `${group.slug}:${secret.key}` || !secretInputs[`${group.slug}:${secret.key}`]}
                       >
-                        {settingSecret === `${group.slug}:${secret.key}` ? '...' : 'Save'}
+                        {settingSecret === `${group.slug}:${secret.key}` ? '...' : $t('common.save')}
                       </button>
                     </div>
                   {/if}

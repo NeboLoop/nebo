@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { getContext } from 'svelte';
+  import { t } from 'svelte-i18n';
   import AgentTabBar from '$lib/components/AgentTabBar.svelte';
   import type { AgentPageContext } from '$lib/types/agentPage';
 
@@ -11,17 +12,18 @@
   const agent = $derived(ctx.agent);
   const agentStatusVal = $derived(ctx.agentStatus(ctx.agentId));
 
+  // `label` holds an i18n key — translated with $t at render time.
   const settingsSections = [
-    { id: 'general', label: 'General' },
-    { id: 'identity', label: 'Identity' },
-    { id: 'persona', label: 'Persona' },
-    { id: 'soul', label: 'Soul' },
-    { id: 'configure', label: 'Configure' },
-    { id: 'workflows', label: 'Workflows' },
-    { id: 'skills', label: 'Skills' },
-    { id: 'channels', label: 'Channels' },
-    { id: 'accounts', label: 'Connected Accounts' },
-    { id: 'memory', label: 'Memory' },
+    { id: 'general', label: 'agentSettings.general' },
+    { id: 'identity', label: 'settings.navItems.identity' },
+    { id: 'persona', label: 'agentPersona.title' },
+    { id: 'soul', label: 'settings.navItems.soul' },
+    { id: 'configure', label: 'agent.configure' },
+    { id: 'workflows', label: 'marketplace.workflows' },
+    { id: 'skills', label: 'settings.navItems.skills' },
+    { id: 'channels', label: 'agentSettings.channels' },
+    { id: 'accounts', label: 'agentSettings.connectedAccounts' },
+    { id: 'memory', label: 'agentSettings.memory' },
     // Permissions are managed once, globally, in Settings → Permissions and
     // inherited by every agent. There is no per-agent permissions surface —
     // a single source of truth is the right model for non-technical users.
@@ -40,7 +42,7 @@
         <a
           href="/{agentId}/settings/{sec.id}"
           class="flex items-center w-full text-left py-1.5 px-2.5 rounded-md text-sm cursor-pointer transition-colors no-underline text-base-content {activeSection === sec.id ? 'bg-base-100 border border-base-300 shadow-sm font-medium' : 'bg-transparent border border-transparent hover:bg-base-200'}"
-        >{sec.label}</a>
+        >{$t(sec.label)}</a>
       {/each}
     </div>
   </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { AGENT_COLORS } from '$lib/tokens.js';
   import { AGENTS, AGENT_ID_REVERSE } from '$lib/data.js';
   import { triggerGlyph, fmtTime } from '$lib/utils.js';
@@ -105,7 +106,7 @@
   let formSaving = $state(false);
   let formError = $state('');
 
-  const dayLabels = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const dayLabels = $derived(['', $t('weekdays.mon'), $t('weekdays.tue'), $t('weekdays.wed'), $t('weekdays.thu'), $t('weekdays.fri'), $t('weekdays.sat'), $t('weekdays.sun')]);
   const intervalPresets = ['5m', '10m', '15m', '30m', '1h', '2h', '4h'];
   const editHours = Array.from({ length: 24 }, (_, i) => i);
   const editMinutes = [0, 15, 30, 45];
@@ -127,9 +128,9 @@
   });
 
   function fmtHourLabel(h: number): string {
-    if (h === 0) return '12 AM';
-    if (h === 12) return '12 PM';
-    return h < 12 ? `${h} AM` : `${h - 12} PM`;
+    if (h === 0) return `12 ${$t('schedule.am')}`;
+    if (h === 12) return `12 ${$t('schedule.pm')}`;
+    return h < 12 ? `${h} ${$t('schedule.am')}` : `${h - 12} ${$t('schedule.pm')}`;
   }
 
   function toggleDay(d: number) {
@@ -146,10 +147,10 @@
   }
 
   function recurrenceText(): string {
-    const dayPart = formDays.length === 7 ? 'daily' :
-      formDays.length === 5 && formDays.every((d, i) => d === i + 1) ? 'weekdays' :
+    const dayPart = formDays.length === 7 ? $t('schedule.recurrenceDaily') :
+      formDays.length === 5 && formDays.every((d, i) => d === i + 1) ? $t('schedule.recurrenceWeekdays') :
       formDays.map(d => dayLabels[d]).join(', ');
-    if (formTriggerType === 'heartbeat') return `every ${formInterval}, ${dayPart}`;
+    if (formTriggerType === 'heartbeat') return `${$t('schedule.everyInterval', { values: { interval: formInterval } })}, ${dayPart}`;
     return dayPart;
   }
 
@@ -162,7 +163,7 @@
   async function handleSave() {
     if (!formAgent || !formLabel.trim() || formDays.length === 0) return;
     const agentFullId = AGENT_ID_REVERSE[formAgent];
-    if (!agentFullId) { formError = 'Unknown agent'; return; }
+    if (!agentFullId) { formError = $t('schedule.unknownAgent'); return; }
 
     formSaving = true;
     formError = '';
@@ -190,7 +191,7 @@
       await loadScheduleFromAPI();
       onclose?.();
     } catch (e: any) {
-      formError = e?.message || 'Failed to create event';
+      formError = e?.message || $t('schedule.createEventFailed');
     } finally {
       formSaving = false;
     }
@@ -207,7 +208,7 @@
         agent: formAgent,
         hour: formHour + formMinute / 60,
         dur: 0.25,
-        label: formLabel || 'New event',
+        label: formLabel || $t('schedule.newEvent'),
       };
     } else {
       preview = null;
@@ -221,13 +222,13 @@
   <!-- ─── Create Form ─────────────────────────────────────────── -->
   <div class="w-80 border-l border-base-content/10 bg-base-100 p-5 flex flex-col gap-4 shrink-0 overflow-y-auto">
     <div class="flex items-center justify-between">
-      <div class="text-sm font-semibold">Schedule a Task</div>
+      <div class="text-sm font-semibold">{$t('schedule.scheduleATask')}</div>
       <button class="w-6 h-6 rounded grid place-items-center hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors text-lg leading-none" onclick={onclose}>×</button>
     </div>
 
     <!-- Agent -->
     <div class="flex flex-col gap-1">
-      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Agent</span>
+      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('common.agent')}</span>
       <select class="select select-bordered select-sm w-full" bind:value={formAgent}>
         {#each schedAgents as id}
           {@const a = AGENTS.find(x => x.id === id)}
@@ -240,29 +241,29 @@
 
     <!-- What should the agent do? -->
     <div class="flex flex-col gap-1">
-      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">What should they do?</span>
-      <input type="text" class="input input-bordered input-sm w-full" placeholder="e.g. Morning email summary" bind:value={formLabel} />
+      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('schedule.whatShouldTheyDo')}</span>
+      <input type="text" class="input input-bordered input-sm w-full" placeholder={$t('schedule.taskPlaceholder')} bind:value={formLabel} />
     </div>
 
     <!-- Trigger Type -->
     <div class="flex flex-col gap-1">
-      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">How often?</span>
+      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('schedule.howOften')}</span>
       <div class="inline-flex bg-base-200/80 rounded-lg p-0.5 border border-base-content/5">
         <button
           class="px-3 py-1 rounded-md text-xs cursor-pointer transition-all {formTriggerType === 'schedule' ? 'bg-base-100 font-medium text-base-content shadow-sm' : 'text-base-content/70'}"
           onclick={() => formTriggerType = 'schedule'}
-        >At a time</button>
+        >{$t('schedule.atATime')}</button>
         <button
           class="px-3 py-1 rounded-md text-xs cursor-pointer transition-all {formTriggerType === 'heartbeat' ? 'bg-base-100 font-medium text-base-content shadow-sm' : 'text-base-content/70'}"
           onclick={() => formTriggerType = 'heartbeat'}
-        >On an interval</button>
+        >{$t('schedule.onAnInterval')}</button>
       </div>
     </div>
 
     {#if formTriggerType === 'heartbeat'}
       <!-- Interval -->
       <div class="flex flex-col gap-1">
-        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Every</span>
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('schedule.every')}</span>
         <div class="flex flex-wrap gap-1">
           {#each intervalPresets as iv}
             <button
@@ -275,7 +276,7 @@
     {:else}
       <!-- Time -->
       <div class="flex flex-col gap-1">
-        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">At</span>
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('schedule.at')}</span>
         <div class="flex items-center gap-1.5">
           <select class="select select-bordered select-sm flex-1" bind:value={formHour}>
             {#each editHours as h}
@@ -294,10 +295,10 @@
 
     <!-- Repeat -->
     <div class="flex flex-col gap-1.5">
-      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Repeat on</span>
+      <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('schedule.repeatOn')}</span>
       <div class="flex gap-1">
-        <button class="px-2 py-0.5 rounded-md text-xs cursor-pointer border transition-colors {formDays.length === 7 ? 'bg-primary text-primary-content border-primary' : 'bg-base-200 border-base-300 hover:bg-base-300'}" onclick={() => setPreset('daily')}>Daily</button>
-        <button class="px-2 py-0.5 rounded-md text-xs cursor-pointer border transition-colors {formDays.length === 5 && formDays.every((d, i) => d === i + 1) ? 'bg-primary text-primary-content border-primary' : 'bg-base-200 border-base-300 hover:bg-base-300'}" onclick={() => setPreset('weekdays')}>Weekdays</button>
+        <button class="px-2 py-0.5 rounded-md text-xs cursor-pointer border transition-colors {formDays.length === 7 ? 'bg-primary text-primary-content border-primary' : 'bg-base-200 border-base-300 hover:bg-base-300'}" onclick={() => setPreset('daily')}>{$t('schedule.daily')}</button>
+        <button class="px-2 py-0.5 rounded-md text-xs cursor-pointer border transition-colors {formDays.length === 5 && formDays.every((d, i) => d === i + 1) ? 'bg-primary text-primary-content border-primary' : 'bg-base-200 border-base-300 hover:bg-base-300'}" onclick={() => setPreset('weekdays')}>{$t('schedule.weekdays')}</button>
       </div>
       <div class="flex gap-0.5">
         {#each [1, 2, 3, 4, 5, 6, 7] as d}
@@ -313,9 +314,9 @@
     <div class="rounded-lg bg-base-200/50 border border-base-300 px-3 py-2">
       <div class="text-xs text-base-content/70">
         {#if formTriggerType === 'heartbeat'}
-          Runs every {formInterval}, {recurrenceText()}
+          {$t('schedule.runsEvery', { values: { interval: formInterval, recurrence: recurrenceText() } })}
         {:else}
-          Runs at {fmtHourLabel(formHour)}{formMinute > 0 ? `:${String(formMinute).padStart(2, '0')}` : ''}, {recurrenceText()}
+          {$t('schedule.runsAt', { values: { time: `${fmtHourLabel(formHour)}${formMinute > 0 ? `:${String(formMinute).padStart(2, '0')}` : ''}`, recurrence: recurrenceText() } })}
         {/if}
       </div>
     </div>
@@ -334,7 +335,7 @@
       {#if formSaving}
         <span class="loading loading-spinner loading-xs"></span>
       {/if}
-      Schedule Task
+      {$t('schedule.scheduleTask')}
     </button>
   </div>
 
@@ -361,7 +362,7 @@
       <div class="flex flex-col gap-3 pt-2 border-t border-base-content/5">
         <!-- Time -->
         <div class="flex flex-col gap-1">
-          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Time</span>
+          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('schedule.time')}</span>
           <div class="flex items-center gap-1.5">
             <select class="select select-bordered select-sm flex-1" bind:value={editHour}>
               {#each editHours as h}
@@ -379,7 +380,7 @@
 
         <!-- Days -->
         <div class="flex flex-col gap-1">
-          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Repeat on</span>
+          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('schedule.repeatOn')}</span>
           <div class="flex gap-0.5">
             {#each [1, 2, 3, 4, 5, 6, 7] as d}
               <button
@@ -391,8 +392,8 @@
         </div>
 
         <div class="flex gap-2">
-          <button class="btn btn-primary btn-sm flex-1" onclick={saveEditing}>Save</button>
-          <button class="btn btn-ghost btn-sm" onclick={cancelEditing}>Cancel</button>
+          <button class="btn btn-primary btn-sm flex-1" onclick={saveEditing}>{$t('common.save')}</button>
+          <button class="btn btn-ghost btn-sm" onclick={cancelEditing}>{$t('common.cancel')}</button>
         </div>
       </div>
     {:else}
@@ -415,7 +416,7 @@
             <button
               class="text-xs text-primary hover:underline cursor-pointer"
               onclick={startEditing}
-            >Edit</button>
+            >{$t('common.edit')}</button>
           {/if}
         </div>
 
@@ -423,30 +424,30 @@
         <div class="flex flex-wrap items-center gap-1.5">
           <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs bg-base-200 text-base-content/70">
             {triggerGlyph(item.kind)}
-            {item.triggerType === 'heartbeat' ? 'Interval' : item.kind === 'sched' ? 'Scheduled' : item.kind === 'event' ? 'Event-triggered' : 'Manual'}
+            {item.triggerType === 'heartbeat' ? $t('automations.interval') : item.kind === 'sched' ? $t('automations.scheduled') : item.kind === 'event' ? $t('schedule.eventTriggered') : $t('schedule.manualTrigger')}
           </span>
           {#if workflowDef?.emit}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs bg-accent/10 text-accent">
-              Emits: {workflowDef.emit}
+              {$t('schedule.emits', { values: { event: workflowDef.emit } })}
             </span>
           {/if}
           {#if workflowDef?.isActive === false}
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs bg-warning/10 text-warning">
-              Paused
+              {$t('common.paused')}
             </span>
           {/if}
         </div>
 
         <!-- Last Fired (from workflow definition) -->
         {#if workflowDef?.lastFired}
-          <div class="text-xs text-base-content/50 font-mono">Last fired: {workflowDef.lastFired}</div>
+          <div class="text-xs text-base-content/50 font-mono">{$t('schedule.lastFired', { values: { time: workflowDef.lastFired } })}</div>
         {/if}
 
         <!-- Workflow Activities -->
         {#if workflowActivities.length > 0}
           <div class="pt-2 border-t border-base-content/5">
             <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">
-              Activities ({workflowActivities.length})
+              {$t('schedule.activitiesCount', { values: { count: workflowActivities.length } })}
             </div>
             {#each workflowActivities as activity, i}
               {@const runActivity = item.run?.activities?.find((a) => a.id === activity.id)}
@@ -480,7 +481,7 @@
         <!-- Connections (activity flow) -->
         {#if workflowConnections.length > 0}
           <div class="pt-2 border-t border-base-content/5">
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Flow</div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('schedule.flow')}</div>
             <div class="flex flex-col gap-1">
               {#each workflowConnections as conn}
                 <div class="flex items-center gap-1.5 text-xs text-base-content/70">
@@ -496,7 +497,7 @@
         <!-- Last Run -->
         {#if item.run}
           <div class="pt-2 border-t border-base-content/5">
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Last Run</div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('schedule.lastRun')}</div>
             <div class="flex items-center gap-2 mb-1">
               <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium {item.run.status === 'success' ? 'bg-success/10 text-success' : item.run.status === 'failed' ? 'bg-error/10 text-error' : 'bg-base-200 text-base-content/70'}">
                 {statusIcon(item.run.status)} {item.run.status}
@@ -515,7 +516,7 @@
             <!-- Run output preview -->
             {#if item.run.output}
               <div class="rounded-lg bg-base-200/50 border border-base-300 p-3 mb-2">
-                <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Output</div>
+                <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('schedule.output')}</div>
                 <div class="text-xs text-base-content leading-relaxed whitespace-pre-wrap break-words max-h-40 overflow-y-auto">{item.run.output.length > 500 ? item.run.output.slice(0, 500) + '...' : item.run.output}</div>
               </div>
             {/if}
@@ -523,21 +524,21 @@
             <!-- Error details -->
             {#if item.run.status === 'failed' && item.run.error}
               <div class="rounded-lg bg-error/5 border border-error/20 p-3 mb-2">
-                <div class="text-xs font-semibold uppercase tracking-wider text-error/70 mb-1">Error{item.run.errorActivity ? ` in ${item.run.errorActivity}` : ''}</div>
+                <div class="text-xs font-semibold uppercase tracking-wider text-error/70 mb-1">{item.run.errorActivity ? $t('schedule.errorIn', { values: { activity: item.run.errorActivity } }) : $t('common.error')}</div>
                 <div class="text-xs text-error leading-relaxed whitespace-pre-wrap break-words">{item.run.error}</div>
               </div>
             {/if}
           </div>
         {:else if !workflowDef}
           <div class="pt-2 border-t border-base-content/5">
-            <div class="text-xs text-base-content/50">No runs yet</div>
+            <div class="text-xs text-base-content/50">{$t('schedule.noRunsYet')}</div>
           </div>
         {/if}
 
         <!-- Recent Runs -->
         {#if recentRuns.length > 0}
           <div class="pt-2 border-t border-base-content/5">
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">History</div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('schedule.history')}</div>
             {#each recentRuns as run}
               <div class="py-1.5 border-b border-base-content/5 last:border-b-0">
                 <div class="flex items-center gap-2">

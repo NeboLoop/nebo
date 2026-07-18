@@ -3,6 +3,7 @@
   // resolves agent_id → that agent's memory scope), so each agent shows only
   // ITS memories — never the global pool. Layout mirrors the old global page
   // (stats, search, layer filter, key+value rows) plus the types explainer.
+  import { t } from 'svelte-i18n';
   import { onMount } from 'svelte';
   import { listMemories, deleteMemory, type Memory } from '$lib/api/nebo';
   import Info from 'lucide-svelte/icons/info';
@@ -32,10 +33,17 @@
   }
 
   const layerInfo: { key: string; label: string; blurb: string }[] = [
-    { key: 'tacit', label: 'Tacit', blurb: 'Lasting facts about you and how this agent should work — preferences, role, and the people and projects that keep coming up.' },
-    { key: 'daily', label: 'Daily', blurb: 'Day-to-day notes tied to a specific date — what happened and what’s coming up. These age out over time.' },
-    { key: 'entity', label: 'Entity', blurb: 'What this agent knows about the specific people, companies, and things it deals with.' }
+    { key: 'tacit', label: 'memoryManager.layerTacit', blurb: 'memoryManager.tacitBlurb' },
+    { key: 'daily', label: 'memoryManager.layerDaily', blurb: 'memoryManager.dailyBlurb' },
+    { key: 'entity', label: 'memoryManager.layerEntity', blurb: 'memoryManager.entityBlurb' }
   ];
+
+  const layerFilterKeys: Record<string, string> = {
+    all: 'settingsMemories.all',
+    tacit: 'memoryManager.layerTacit',
+    daily: 'memoryManager.layerDaily',
+    entity: 'memoryManager.layerEntity',
+  };
 
   async function load() {
     loading = true;
@@ -82,33 +90,33 @@
 </script>
 
 <div class="flex items-center gap-1.5 mb-1">
-  <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Memory Banks</h3>
+  <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('memoryManager.title')}</h3>
   <button
     type="button"
     onclick={() => (showInfo = true)}
     class="p-0.5 rounded-full text-base-content/40 hover:text-base-content hover:bg-base-200 transition-colors cursor-pointer"
-    aria-label="What are the memory types?"
-    title="What are the memory types?"
+    aria-label={$t('memoryManager.whatAreTypes')}
+    title={$t('memoryManager.whatAreTypes')}
   >
     <Info class="w-3.5 h-3.5" />
   </button>
 </div>
-<p class="text-xs text-base-content/70 mb-3">This agent's stored knowledge — private to it, plus your shared preferences.</p>
+<p class="text-xs text-base-content/70 mb-3">{$t('memoryManager.subtitle')}</p>
 
 {#if loading}
-  <div class="text-xs text-base-content/50 py-6 text-center">Loading memories…</div>
+  <div class="text-xs text-base-content/50 py-6 text-center">{$t('settingsMemories.loadingMemories')}</div>
 {:else}
   <!-- Stats -->
   <div class="flex gap-2.5 mb-4">
-    <div class="px-3.5 py-2 rounded-lg bg-base-200/50 text-sm"><span class="font-mono font-bold">{stats.total}</span> total</div>
-    <div class="px-3.5 py-2 rounded-lg bg-base-200/50 text-sm"><span class="font-mono font-bold">{stats.tacit}</span> tacit</div>
-    <div class="px-3.5 py-2 rounded-lg bg-base-200/50 text-sm"><span class="font-mono font-bold">{stats.daily}</span> daily</div>
-    <div class="px-3.5 py-2 rounded-lg bg-base-200/50 text-sm"><span class="font-mono font-bold">{stats.entity}</span> entity</div>
+    <div class="px-3.5 py-2 rounded-lg bg-base-200/50 text-sm"><span class="font-mono font-bold">{stats.total}</span> {$t('memoryManager.statTotal')}</div>
+    <div class="px-3.5 py-2 rounded-lg bg-base-200/50 text-sm"><span class="font-mono font-bold">{stats.tacit}</span> {$t('memoryManager.statTacit')}</div>
+    <div class="px-3.5 py-2 rounded-lg bg-base-200/50 text-sm"><span class="font-mono font-bold">{stats.daily}</span> {$t('memoryManager.statDaily')}</div>
+    <div class="px-3.5 py-2 rounded-lg bg-base-200/50 text-sm"><span class="font-mono font-bold">{stats.entity}</span> {$t('memoryManager.statEntity')}</div>
   </div>
 
   <!-- Search + filters -->
   <div class="flex gap-2 mb-4">
-    <input type="text" placeholder="Search memories…" bind:value={searchText}
+    <input type="text" placeholder={$t('settingsMemories.searchPlaceholder')} bind:value={searchText}
       class="flex-1 py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30 placeholder:text-base-content/40" />
     <div class="flex gap-1">
       {#each layers as layer}
@@ -116,7 +124,7 @@
           ? 'bg-primary/10 text-primary border-primary font-medium'
           : 'border-base-content/10 bg-base-100 hover:bg-base-200'}"
           onclick={() => (layerFilter = layer)}>
-          {layer.charAt(0).toUpperCase() + layer.slice(1)}
+          {$t(layerFilterKeys[layer])}
         </button>
       {/each}
     </div>
@@ -124,7 +132,7 @@
 
   <!-- Memory list -->
   {#if filtered.length === 0}
-    <div class="text-xs text-base-content/50 py-8 text-center">No memories yet.</div>
+    <div class="text-xs text-base-content/50 py-8 text-center">{$t('memoryManager.noMemories')}</div>
   {:else}
     <div class="flex flex-col gap-1.5">
       {#each filtered as mem}
@@ -144,8 +152,8 @@
             onclick={() => removeMemory(mem.id)}
             disabled={deletingId === mem.id}
             class="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-error/10 text-base-content/40 hover:text-error cursor-pointer shrink-0 disabled:opacity-50"
-            aria-label="Delete memory"
-            title="Delete this memory"
+            aria-label={$t('memoryManager.deleteMemory')}
+            title={$t('memoryManager.deleteThisMemory')}
           >
             <Trash2 class="w-3.5 h-3.5" />
           </button>
@@ -157,20 +165,20 @@
 
 {#if showInfo}
   <div class="fixed inset-0 z-50 flex items-center justify-center">
-    <button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => (showInfo = false)} aria-label="Close"></button>
+    <button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => (showInfo = false)} aria-label={$t('common.close')}></button>
     <div class="relative bg-base-100 rounded-2xl border border-base-300 w-full max-w-md mx-4 p-6">
       <div class="flex items-center justify-between mb-4">
-        <h3 class="text-lg font-bold">How memory works</h3>
-        <button type="button" onclick={() => (showInfo = false)} class="p-1.5 rounded-full hover:bg-base-200 transition-colors cursor-pointer" aria-label="Close">
+        <h3 class="text-lg font-bold">{$t('memoryManager.howItWorks')}</h3>
+        <button type="button" onclick={() => (showInfo = false)} class="p-1.5 rounded-full hover:bg-base-200 transition-colors cursor-pointer" aria-label={$t('common.close')}>
           <X class="w-4 h-4" />
         </button>
       </div>
-      <p class="text-sm text-base-content/70 mb-4">This agent remembers across conversations in three layers — and only its own:</p>
+      <p class="text-sm text-base-content/70 mb-4">{$t('memoryManager.howItWorksIntro')}</p>
       <div class="flex flex-col gap-3">
         {#each layerInfo as info}
           <div class="flex gap-3">
-            <span class="px-2 py-0.5 h-fit rounded text-sm font-semibold font-mono uppercase shrink-0 {layerColors[info.key]}">{info.label}</span>
-            <p class="text-sm text-base-content/70 leading-relaxed">{info.blurb}</p>
+            <span class="px-2 py-0.5 h-fit rounded text-sm font-semibold font-mono uppercase shrink-0 {layerColors[info.key]}">{$t(info.label)}</span>
+            <p class="text-sm text-base-content/70 leading-relaxed">{$t(info.blurb)}</p>
           </div>
         {/each}
       </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { goto } from '$app/navigation';
 	import InstallCode from '$lib/components/InstallCode.svelte';
 	import PricePill from './PricePill.svelte';
@@ -10,11 +11,11 @@
 
 	let { item, label }: { item: AppItem; label?: string } = $props();
 
-	const TYPE_NAMES: Record<AppItem['type'], string> = {
-		agent: 'AGENT', app: 'APP', skill: 'SKILL', plugin: 'PLUGIN',
-		connector: 'CONNECTOR', workflow: 'WORKFLOW', collection: 'COLLECTION'
+	const TYPE_KEYS: Record<AppItem['type'], string> = {
+		agent: 'marketplace.kind.agent', app: 'marketplace.kind.app', skill: 'marketplace.kind.skill', plugin: 'marketplace.kind.plugin',
+		connector: 'marketplace.kind.connector', workflow: 'marketplace.kind.workflow', collection: 'marketplace.kind.collection'
 	};
-	const typeLabel = $derived(label || TYPE_NAMES[item.type] || 'ITEM');
+	const typeLabel = $derived(label || $t(TYPE_KEYS[item.type] ?? 'marketplace.kind.item'));
 
 	let installing = $state(false);
 

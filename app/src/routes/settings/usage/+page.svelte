@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import * as api from '$lib/api/nebo';
   import type { AccountStatusResponse, NeboAIBillingSubscriptionResponse } from '$lib/api/neboComponents';
@@ -99,14 +100,14 @@
   function timeUntilReset(resetAt?: string): string {
     if (!resetAt) return '';
     const diff = new Date(resetAt).getTime() - Date.now();
-    if (diff <= 0) return 'resetting...';
+    if (diff <= 0) return $t('settingsUsage.resetting');
     const h = Math.floor(diff / 3600000);
     const m = Math.floor((diff % 3600000) / 60000);
     if (h > 24) {
       const d = Math.floor(h / 24);
-      return `resets in ${d}d`;
+      return $t('settingsUsage.resetsInDaysShort', { values: { days: d } });
     }
-    return `resets in ${h}h ${m}m`;
+    return $t('settingsUsage.resetsInTimeShort', { values: { hours: h, minutes: m } });
   }
 
   function formatUpdatedAt(iso?: string): string {
@@ -114,25 +115,25 @@
     const d = new Date(iso);
     const now = Date.now();
     const diff = now - d.getTime();
-    if (diff < 60000) return 'just now';
-    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+    if (diff < 60000) return $t('time.justNow');
+    if (diff < 3600000) return $t('time.minutesAgo', { values: { n: Math.floor(diff / 60000) } });
+    if (diff < 86400000) return $t('time.hoursAgo', { values: { n: Math.floor(diff / 3600000) } });
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
 </script>
 
-<SettingsHeader title="Usage" description="Monitor your plan usage and billing balance." />
+<SettingsHeader title={$t('settingsUsage.title')} description={$t('settingsUsage.pageDescription')} />
 
 {#if isLoading}
   <div class="flex items-center justify-center gap-3 py-16">
     <Spinner size={20} />
-    <span class="text-xs text-base-content/70">Loading usage...</span>
+    <span class="text-xs text-base-content/70">{$t('settingsUsage.loadingUsage')}</span>
   </div>
 {:else if !connected}
   <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-    <p class="text-xs text-base-content/70">Connect your NeboAI account to view usage.</p>
+    <p class="text-xs text-base-content/70">{$t('settingsUsage.connectToView')}</p>
     <a href="/settings/account" class="inline-block mt-3 text-sm font-medium text-primary hover:brightness-110 transition-all">
-      Go to Account
+      {$t('settingsUsage.goToAccount')}
     </a>
   </div>
 {:else}
@@ -142,15 +143,15 @@
       <section>
         <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 flex items-center justify-between">
           <div>
-            <p class="text-sm font-medium text-base-content">{planName} Plan</p>
+            <p class="text-sm font-medium text-base-content">{$t('settingsBilling.planTitle', { values: { plan: planName } })}</p>
             {#if subscription?.subscriptions?.length}
               {@const sub = subscription.subscriptions[0]}
               {#if sub.amountCents}
-                <p class="text-xs text-base-content/50">${Math.round(sub.amountCents / 100)}/{sub.interval === 'year' ? 'yr' : 'mo'}</p>
+                <p class="text-xs text-base-content/50">{$t('settingsUsage.price', { values: { amount: Math.round(sub.amountCents / 100), interval: sub.interval === 'year' ? $t('common.yearShort') : $t('common.monthShort') } })}</p>
               {/if}
             {/if}
           </div>
-          <a href="/pricing" class="text-sm text-primary font-medium hover:brightness-110 transition-all">Change Plan</a>
+          <a href="/pricing" class="text-sm text-primary font-medium hover:brightness-110 transition-all">{$t('settingsUsage.changePlanTitle')}</a>
         </div>
       </section>
     {/if}
@@ -158,16 +159,16 @@
     <!-- Plan Usage Limits -->
     <section>
       <div class="flex items-center justify-between mb-3">
-        <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Plan Limits</h3>
+        <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settingsUsage.planLimitsShort')}</h3>
         <div class="flex items-center gap-2">
           {#if usage?.updatedAt}
-            <span class="text-xs text-base-content/50 font-mono">Updated {formatUpdatedAt(usage.updatedAt)}</span>
+            <span class="text-xs text-base-content/50 font-mono">{$t('settingsUsage.updated', { values: { time: formatUpdatedAt(usage.updatedAt) } })}</span>
           {/if}
           <button
             onclick={refresh}
             disabled={refreshing}
             class="flex items-center gap-1.5 text-xs text-base-content/50 hover:text-base-content transition-colors disabled:opacity-50 cursor-pointer bg-transparent border-none"
-            title="Refresh usage from server"
+            title={$t('settingsUsage.refreshTitle')}
           >
             <RefreshCw class="w-3.5 h-3.5 {refreshing ? 'animate-spin' : ''}" />
           </button>
@@ -178,12 +179,12 @@
           <div>
             <div class="flex items-center justify-between mb-2">
               <div>
-                <span class="text-sm font-medium text-base-content">Session</span>
+                <span class="text-sm font-medium text-base-content">{$t('settingsUsage.session')}</span>
                 {#if usage.session.resetAt}
                   <span class="text-xs text-base-content/50 ml-2">{timeUntilReset(usage.session.resetAt)}</span>
                 {/if}
               </div>
-              <span class="text-xs text-base-content/50 font-mono tabular-nums">{usage.session.percentUsed ?? 0}% used</span>
+              <span class="text-xs text-base-content/50 font-mono tabular-nums">{$t('settingsUsage.percentUsed', { values: { percent: usage.session.percentUsed ?? 0 } })}</span>
             </div>
             <div class="h-2 rounded-full bg-base-content/10 overflow-hidden">
               <div
@@ -198,12 +199,12 @@
           <div>
             <div class="flex items-center justify-between mb-2">
               <div>
-                <span class="text-sm font-medium text-base-content">Weekly</span>
+                <span class="text-sm font-medium text-base-content">{$t('settingsUsage.weekly')}</span>
                 {#if usage.weekly.resetAt}
                   <span class="text-xs text-base-content/50 ml-2">{timeUntilReset(usage.weekly.resetAt)}</span>
                 {/if}
               </div>
-              <span class="text-xs text-base-content/50 font-mono tabular-nums">{usage.weekly.percentUsed ?? 0}% used</span>
+              <span class="text-xs text-base-content/50 font-mono tabular-nums">{$t('settingsUsage.percentUsed', { values: { percent: usage.weekly.percentUsed ?? 0 } })}</span>
             </div>
             <div class="h-2 rounded-full bg-base-content/10 overflow-hidden">
               <div
@@ -215,7 +216,7 @@
         {/if}
 
         {#if !usage?.session && !usage?.weekly}
-          <p class="text-xs text-base-content/50">No usage data available yet.</p>
+          <p class="text-xs text-base-content/50">{$t('settingsUsage.noUsageDataShort')}</p>
         {/if}
       </div>
     </section>
@@ -223,28 +224,28 @@
     <!-- Budget Balance -->
     {#if hasBudget}
       <section>
-        <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">Balance</h3>
+        <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">{$t('settingsUsage.balance')}</h3>
         <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
           {#if usage?.budget?.activePool}
             <div class="flex items-center gap-2 mb-4">
-              <span class="text-xs text-base-content/50">Active pool:</span>
+              <span class="text-xs text-base-content/50">{$t('settingsUsage.activePool')}:</span>
               <span class="badge badge-primary badge-sm">{usage.budget.activePool}</span>
             </div>
           {/if}
           <div class="grid sm:grid-cols-3 gap-4">
             {#if usage?.budget && (usage.budget.freeAvailable ?? 0) > 0}
               <div>
-                <p class="text-xs text-base-content/50">Free pool</p>
+                <p class="text-xs text-base-content/50">{$t('settingsUsage.freePoolLabel')}</p>
                 <p class="text-lg font-bold text-base-content font-mono tabular-nums">{formatDollars(usage.budget.freeAvailable ?? 0)}</p>
               </div>
             {/if}
             {#if usage?.budget}
               <div>
-                <p class="text-xs text-base-content/50">Gift pool</p>
+                <p class="text-xs text-base-content/50">{$t('settingsUsage.giftPoolLabel')}</p>
                 <p class="text-lg font-bold text-base-content font-mono tabular-nums">{formatDollars(usage.budget.giftAvailable ?? 0)}</p>
               </div>
               <div>
-                <p class="text-xs text-base-content/50">Credits</p>
+                <p class="text-xs text-base-content/50">{$t('settingsUsage.creditsPool')}</p>
                 <p class="text-lg font-bold text-base-content font-mono tabular-nums">${((usage.budget.creditsCents ?? 0) / 100).toFixed(2)}</p>
               </div>
             {/if}

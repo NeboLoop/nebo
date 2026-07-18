@@ -11,6 +11,7 @@
 	// output cache. Callers provide `slug`, `setup`, and a callback for
 	// when the user completes the credentials save.
 
+	import { t } from 'svelte-i18n';
 	import { pluginSetupRun } from '$lib/api/nebo';
 
 	interface SetupField {
@@ -131,13 +132,13 @@
 			if (data.ok === false) {
 				const d = data as { error?: string; stderr?: string };
 				generateError =
-					d.error || d.stderr || 'Setup step failed. Check that the plugin is installed.';
+					d.error || d.stderr || $t('setupWizard.stepFailed');
 				return;
 			}
 			generatedOutputs[stepIndex] = (data.output as string) ?? '';
 			generatedFormats[stepIndex] = (data.outputFormat as string) ?? currentStep.outputFormat ?? 'text';
 		} catch (err) {
-			generateError = (err as Error).message || 'Request failed.';
+			generateError = (err as Error).message || $t('setupWizard.requestFailed');
 		} finally {
 			runningGenerate = false;
 		}
@@ -179,7 +180,7 @@
 			}
 			await onComplete(envValues);
 		} catch (err) {
-			credentialsError = (err as Error).message || 'Save failed.';
+			credentialsError = (err as Error).message || $t('setupWizard.saveFailed');
 		} finally {
 			savingCredentials = false;
 		}
@@ -208,7 +209,7 @@
 					<div class="text-xs text-base-content/70 mt-1">{setup.description}</div>
 				{/if}
 			</div>
-			<button class="btn btn-sm btn-ghost btn-square" onclick={onClose} aria-label="Close">
+			<button class="btn btn-sm btn-ghost btn-square" onclick={onClose} aria-label={$t('common.close')}>
 				<span aria-hidden="true">×</span>
 			</button>
 		</div>
@@ -225,7 +226,7 @@
 			{/each}
 		</div>
 		<div class="text-xs font-mono text-base-content/50 mb-2">
-			Step {stepIndex + 1} of {setup.steps.length}
+			{$t('sidebar.stepProgress', { values: { step: stepIndex + 1, total: setup.steps.length } })}
 		</div>
 
 		{#if currentStep}
@@ -260,7 +261,7 @@
 										? 'font-mono'
 										: ''}"
 									placeholder={alreadySet(field.key) && !(values[field.key] ?? '').length
-										? '•••••••• already set — leave blank to keep'
+										? $t('setupWizard.alreadySetPlaceholder')
 										: (field.placeholder ?? '')}
 									maxlength={field.maxLength ?? undefined}
 									bind:value={values[field.key]}
@@ -287,7 +288,7 @@
 						onclick={runGenerate}
 						disabled={runningGenerate}
 					>
-						{runningGenerate ? 'Generating…' : currentStep.buttonLabel || 'Generate'}
+						{runningGenerate ? $t('setupWizard.generating') : currentStep.buttonLabel || $t('setupWizard.generate')}
 					</button>
 					{#if generateError}
 						<div class="alert alert-error mt-4 text-sm">
@@ -298,14 +299,14 @@
 					<div class="relative">
 						<div class="absolute top-2 right-2 z-10">
 							<button class="btn btn-xs btn-ghost" onclick={copyGenerated}>
-								{copyState === 'copied' ? 'Copied ✓' : 'Copy'}
+								{copyState === 'copied' ? $t('setupWizard.copied') : $t('common.copy')}
 							</button>
 						</div>
 						<pre
 							class="bg-base-200 border border-base-300 rounded p-4 text-xs font-mono overflow-auto max-h-80 whitespace-pre"><code>{generatedOutputs[stepIndex]}</code></pre>
 					</div>
 					<button class="btn btn-ghost btn-xs mt-2" onclick={runGenerate} disabled={runningGenerate}>
-						Regenerate
+						{$t('setupWizard.regenerate')}
 					</button>
 				{/if}
 			{:else if currentStep.kind === 'external'}
@@ -329,7 +330,7 @@
 		<!-- Footer / nav -->
 		<div class="modal-action mt-6">
 			<button class="btn btn-ghost btn-sm" onclick={back} disabled={stepIndex === 0}>
-				Back
+				{$t('common.back')}
 			</button>
 			{#if currentStep?.kind === 'credentials'}
 				<button
@@ -337,7 +338,7 @@
 					disabled={!stepIsValid() || savingCredentials}
 					onclick={saveCredentials}
 				>
-					{savingCredentials ? 'Saving…' : 'Save & Verify'}
+					{savingCredentials ? $t('common.saving') : $t('setupWizard.saveAndVerify')}
 				</button>
 			{:else if !isLastStep}
 				<button
@@ -345,7 +346,7 @@
 					disabled={!stepIsValid()}
 					onclick={next}
 				>
-					Next
+					{$t('common.next')}
 				</button>
 			{/if}
 		</div>

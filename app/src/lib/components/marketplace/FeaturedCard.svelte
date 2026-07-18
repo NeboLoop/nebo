@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import InstallCode from '$lib/components/InstallCode.svelte';
 	import PricePill from './PricePill.svelte';
 	import ArtifactIcon from './ArtifactIcon.svelte';
@@ -7,16 +8,21 @@
 
 	let { item, label }: { item: AppItem; label?: string } = $props();
 
-	const TYPE_NAMES: Record<AppItem['type'], string> = {
-		agent: 'Agent',
-		app: 'App',
-		skill: 'Skill',
-		plugin: 'Plugin',
-		connector: 'Connector',
-		workflow: 'Workflow',
-		collection: 'Collection'
+	const TYPE_KEYS: Record<AppItem['type'], string> = {
+		agent: 'marketplace.kind.agent',
+		app: 'marketplace.kind.app',
+		skill: 'marketplace.kind.skill',
+		plugin: 'marketplace.kind.plugin',
+		connector: 'marketplace.kind.connector',
+		workflow: 'marketplace.kind.workflow',
+		collection: 'marketplace.kind.collection'
 	};
-	const typeLabel = $derived(label || `Featured ${TYPE_NAMES[item.type] ?? 'Item'}`);
+	const typeLabel = $derived(
+		label ||
+			$t('marketplace.featuredKind', {
+				values: { kind: $t(TYPE_KEYS[item.type] ?? 'marketplace.kind.item') }
+			})
+	);
 </script>
 
 <a

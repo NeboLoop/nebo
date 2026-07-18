@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getContext } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { AgentPageContext, AgentRun, WorkflowActivity } from '$lib/types/agentPage';
@@ -237,12 +238,12 @@
   {:else if selectedRun}
     <!-- Header -->
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
-      <a href="/{agentId}/runs" class="w-6 h-6 rounded flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/50 no-underline" title="Back">
+      <a href="/{agentId}/runs" class="w-6 h-6 rounded flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/50 no-underline" title={$t('common.back')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </a>
       <span class="text-sm font-semibold truncate">{selectedRun.workflowName}</span>
       <span class="py-0 px-1.5 rounded text-xs font-medium shrink-0 {selectedRun.status === 'success' ? 'bg-success/10 text-success' : selectedRun.status === 'failed' ? 'bg-error/10 text-error' : selectedRun.status === 'running' ? 'bg-warning/10 text-warning' : selectedRun.status === 'exited' ? 'bg-info/10 text-info' : selectedRun.status === 'cancelled' ? 'bg-warning/10 text-warning' : 'bg-base-200 text-base-content/50'}">
-        {selectedRun.status === 'success' ? 'Completed' : selectedRun.status === 'failed' ? 'Failed' : selectedRun.status === 'running' ? 'Running' : selectedRun.status === 'exited' ? 'Exited' : selectedRun.status === 'cancelled' ? 'Cancelled' : 'Skipped'}
+        {selectedRun.status === 'success' ? $t('common.completed') : selectedRun.status === 'failed' ? $t('common.failed') : selectedRun.status === 'running' ? $t('agent.running') : selectedRun.status === 'exited' ? $t('agentActivity.exited') : selectedRun.status === 'cancelled' ? $t('common.cancelled') : $t('common.skipped')}
       </span>
       {#if selectedRun.status === 'running'}
         <button
@@ -253,7 +254,7 @@
           {#if cancelLoading}
             <span class="loading loading-spinner loading-xs"></span>
           {:else}
-            Stop
+            {$t('common.stop')}
           {/if}
         </button>
       {/if}
@@ -270,7 +271,7 @@
       <!-- Error/reason banner for cancelled/failed/exited runs -->
       {#if selectedRun.error}
         <div class="mb-4 p-3 rounded-lg border {selectedRun.status === 'failed' ? 'border-error/30 bg-error/5' : selectedRun.status === 'exited' ? 'border-info/30 bg-info/5' : 'border-warning/30 bg-warning/5'}">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{selectedRun.status === 'cancelled' ? 'Reason' : selectedRun.status === 'exited' ? 'Exit Reason' : 'Error'}</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{selectedRun.status === 'cancelled' ? $t('agentActivity.reason') : selectedRun.status === 'exited' ? $t('agentActivity.exitReason') : $t('common.error')}</div>
           <div class="text-xs text-base-content/70">{selectedRun.error}</div>
         </div>
       {/if}
@@ -278,7 +279,7 @@
       <!-- Run inputs (event payload, etc.) -->
       {#if runInputs}
         <div class="mb-4">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Input</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('agentActivity.input')}</div>
           <div class="p-3 rounded-lg border border-base-300 bg-base-200/30">
             <pre class="text-xs text-base-content/70 whitespace-pre-wrap font-mono m-0">{runInputs}</pre>
           </div>
@@ -286,7 +287,7 @@
       {/if}
 
       <!-- Activities timeline -->
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">Activities</div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">{$t('agentActivity.activities')}</div>
       {#if mergedActivities.length > 0}
         <div class="flex flex-col">
           {#each mergedActivities as activity, idx}
@@ -336,7 +337,7 @@
                     <!-- Intent -->
                     {#if def?.intent}
                       <div>
-                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Intent</div>
+                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('agentActivity.intent')}</div>
                         <div class="text-sm text-base-content/70">{def.intent}</div>
                       </div>
                     {/if}
@@ -344,7 +345,7 @@
                     <!-- Skills -->
                     {#if def?.skills && def.skills.length > 0}
                       <div>
-                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Skills</div>
+                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('settingsSkills.title')}</div>
                         <div class="flex flex-wrap gap-1">
                           {#each def.skills as skill}
                             <span class="py-0.5 px-1.5 rounded bg-base-200 font-mono text-xs">{skill}</span>
@@ -357,7 +358,7 @@
                     {#if def?.steps && def.steps.length > 0}
                       {@const stepTasks = taskItems[activity.activityId] ?? []}
                       <div>
-                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Steps</div>
+                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('automations.steps')}</div>
                         <div class="flex flex-col gap-3">
                           {#each def.steps as step, sIdx}
                             {@const task = stepTasks.find(t => t.seq === sIdx + 1)}
@@ -375,7 +376,7 @@
                                     {sIdx + 1}
                                   {/if}
                                 </div>
-                                <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Step {sIdx + 1}</span>
+                                <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentActivity.stepN', { values: { n: sIdx + 1 } })}</span>
                                 {#if task && (task.tokensInput ?? 0) + (task.tokensOutput ?? 0) > 0}
                                   {@const totalTok = (task.tokensInput ?? 0) + (task.tokensOutput ?? 0)}
                                   <span class="text-xs text-base-content/40 font-mono ml-auto">{totalTok >= 1000 ? (totalTok / 1000).toFixed(1) + 'k' : totalTok} tok</span>
@@ -386,9 +387,9 @@
                                 {/if}
                               </div>
                               <div class="ml-7">
-                                <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-0.5">Input</div>
+                                <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-0.5">{$t('agentActivity.input')}</div>
                                 <div class="text-sm text-base-content/70 mb-2">{step}</div>
-                                <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-0.5">Output</div>
+                                <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-0.5">{$t('agentActivity.output')}</div>
                                 {#if task?.output}
                                   <div class="text-xs text-base-content/70 whitespace-pre-wrap">{task.output}</div>
                                 {:else if task?.lastError}
@@ -396,19 +397,19 @@
                                 {:else if stepStatus === 'in_progress'}
                                   <div class="flex items-center gap-1.5">
                                     <span class="loading loading-spinner loading-xs text-warning"></span>
-                                    <span class="text-xs text-base-content/50">Running...</span>
+                                    <span class="text-xs text-base-content/50">{$t('common.running')}</span>
                                   </div>
                                 {:else if stepStatus === 'completed' && !task?.output}
                                   <!-- Fallback: no task_item data, use activity-level output for last step -->
                                   {#if sIdx === def.steps.length - 1 && actOutput}
                                     <div class="text-xs text-base-content/70 whitespace-pre-wrap">{actOutput}</div>
                                   {:else}
-                                    <div class="text-xs text-base-content/40">Completed (no output captured)</div>
+                                    <div class="text-xs text-base-content/40">{$t('agentActivity.completedNoOutput')}</div>
                                   {/if}
                                 {:else if stepStatus === 'pending'}
                                   <div class="text-xs text-base-content/40">—</div>
                                 {:else}
-                                  <div class="text-xs text-base-content/40">No output recorded</div>
+                                  <div class="text-xs text-base-content/40">{$t('agentActivity.noOutputRecorded')}</div>
                                 {/if}
                               </div>
                             </div>
@@ -418,7 +419,7 @@
                     {:else}
                       <!-- No steps defined — show activity-level result -->
                       <div>
-                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Result</div>
+                        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('agentActivity.result')}</div>
                         {#if actOutput}
                           <div class="p-3 rounded-lg border border-base-300 bg-base-200/30">
                             <div class="text-xs text-base-content/70 whitespace-pre-wrap">{actOutput}</div>
@@ -431,11 +432,11 @@
                         {:else if st === 'running'}
                           <div class="p-3 rounded-lg border border-warning/30 bg-warning/5 flex items-center gap-2">
                             <span class="loading loading-spinner loading-xs text-warning"></span>
-                            <span class="text-xs text-base-content/50">Running...</span>
+                            <span class="text-xs text-base-content/50">{$t('common.running')}</span>
                           </div>
                         {:else}
                           <div class="p-3 rounded-lg border border-base-300 bg-base-200/30">
-                            <div class="text-xs text-base-content/50">No output recorded.</div>
+                            <div class="text-xs text-base-content/50">{$t('agentActivity.noOutputRecorded')}</div>
                           </div>
                         {/if}
                       </div>
@@ -444,9 +445,9 @@
                     <!-- Token counts -->
                     {#if activity.tokensUsed && activity.tokensUsed > 0}
                       <div class="flex gap-3 text-xs text-base-content/50 font-mono">
-                        <span>{activity.tokensUsed >= 1000 ? (activity.tokensUsed / 1000).toFixed(1) + 'k' : activity.tokensUsed} tokens</span>
+                        <span>{$t('agentActivity.tokensCount', { values: { count: activity.tokensUsed >= 1000 ? (activity.tokensUsed / 1000).toFixed(1) + 'k' : activity.tokensUsed } })}</span>
                         {#if activity.attempts && activity.attempts > 1}
-                          <span>&middot; {activity.attempts} attempts</span>
+                          <span>&middot; {$t('agentActivity.attemptsCount', { values: { count: activity.attempts } })}</span>
                         {/if}
                       </div>
                     {/if}
@@ -457,7 +458,7 @@
           {/each}
         </div>
       {:else}
-        <div class="text-xs text-base-content/50">No activity records for this run.</div>
+        <div class="text-xs text-base-content/50">{$t('agentActivity.noActivityRecords')}</div>
       {/if}
 
       <!-- Footer -->
@@ -470,7 +471,7 @@
           {#if triggerLoading}
             <span class="loading loading-spinner loading-xs"></span>
           {:else}
-            {selectedRun.status === 'failed' ? 'Retry' : 'Run Again'}
+            {selectedRun.status === 'failed' ? $t('common.retry') : $t('agentActivity.runAgain')}
           {/if}
         </button>
       </div>
@@ -478,8 +479,8 @@
   {:else}
     <div class="flex-1 flex items-center justify-center">
       <div class="text-center">
-        <div class="text-sm font-medium mb-1">Run not found</div>
-        <a href="/{agentId}/runs" class="text-xs text-primary hover:underline">Back to runs</a>
+        <div class="text-sm font-medium mb-1">{$t('agentActivity.runNotFound')}</div>
+        <a href="/{agentId}/runs" class="text-xs text-primary hover:underline">{$t('agentActivity.backToRuns')}</a>
       </div>
     </div>
   {/if}

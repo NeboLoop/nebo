@@ -43,7 +43,7 @@
 
 			installed = all.filter(item => item.installed);
 		} catch (err: any) {
-			error = err?.message || 'Failed to load installed items';
+			error = err?.message || $t('marketplace.installedPage.loadFailed');
 		} finally {
 			isLoading = false;
 		}
@@ -67,7 +67,7 @@
 			installed = installed.filter(i => i.id !== item.id);
 			pendingUninstall = null;
 		} catch (err: any) {
-			error = err?.message || 'Failed to uninstall';
+			error = err?.message || $t('marketplace.installedPage.uninstallFailed');
 		} finally {
 			uninstallingId = null;
 		}
@@ -212,11 +212,11 @@
 
 {#if pendingUninstall}
 	<ConfirmModal
-		title="Uninstall {pendingUninstall.name}?"
+		title={$t('marketplace.installedPage.uninstallConfirm', { values: { name: pendingUninstall.name } })}
 		message={isAgent(pendingUninstall)
-			? `This removes ${pendingUninstall.name} and permanently deletes everything it has learned — all of its memories go with it. This can't be undone.`
-			: `This removes ${pendingUninstall.name} from your companion. This can't be undone.`}
-		confirmLabel="Uninstall"
+			? $t('marketplace.installedPage.uninstallAgentWarning', { values: { name: pendingUninstall.name } })
+			: $t('marketplace.installedPage.uninstallItemWarning', { values: { name: pendingUninstall.name } })}
+		confirmLabel={$t('common.uninstall')}
 		busy={uninstallingId === pendingUninstall.id}
 		onCancel={() => (pendingUninstall = null)}
 		onConfirm={confirmUninstall}

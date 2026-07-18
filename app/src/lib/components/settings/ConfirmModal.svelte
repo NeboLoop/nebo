@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
+
   // Shared confirmation dialog. Stacks above ManageModal (z-[60] > z-50).
   let {
     title,
     message,
-    confirmLabel = 'Confirm',
+    confirmLabel = '',
     onConfirm,
     onCancel,
     busy = false,
@@ -36,12 +38,12 @@
         class="px-3 py-1.5 rounded-md border border-base-300 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors"
         onclick={onCancel}
         disabled={busy}
-      >Cancel</button>
+      >{$t('common.cancel')}</button>
       <button
         class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors"
         onclick={onConfirm}
         disabled={busy}
-      >{busy ? 'Removing…' : confirmLabel}</button>
+      >{busy ? $t('confirmModal.removing') : (confirmLabel || $t('common.confirm'))}</button>
     </div>
   </div>
 </div>

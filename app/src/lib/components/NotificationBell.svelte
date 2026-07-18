@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { goto } from '$app/navigation';
   import Bell from 'lucide-svelte/icons/bell';
   import X from 'lucide-svelte/icons/x';
@@ -27,7 +28,7 @@
   <button
     onclick={() => (open = !open)}
     class="relative p-2 rounded-lg hover:bg-base-content/5 transition-colors cursor-pointer bg-transparent border-none"
-    aria-label="Notifications"
+    aria-label={$t('notifications.title')}
   >
     <Bell class="w-4.5 h-4.5 text-base-content/70" />
     {#if $unreadCount > 0}
@@ -42,13 +43,13 @@
     <div class="absolute right-0 top-full mt-1 w-80 bg-base-100 rounded-xl border border-base-300 shadow-xl z-50 overflow-hidden">
       <!-- Header -->
       <div class="flex items-center justify-between px-4 py-3 border-b border-base-content/10">
-        <span class="text-sm font-bold">Notifications</span>
+        <span class="text-sm font-bold">{$t('notifications.title')}</span>
         {#if $unreadCount > 0}
           <button
             onclick={markAllRead}
             class="flex items-center gap-1 text-sm text-primary hover:brightness-110 transition-all cursor-pointer bg-transparent border-none"
           >
-            <CheckCheck class="w-3.5 h-3.5" /> Mark all read
+            <CheckCheck class="w-3.5 h-3.5" /> {$t('notifications.markAllRead')}
           </button>
         {/if}
       </div>
@@ -56,7 +57,7 @@
       <!-- List -->
       <div class="max-h-80 overflow-y-auto">
         {#if $notifications.length === 0}
-          <div class="py-8 text-center text-xs text-base-content/50">No notifications</div>
+          <div class="py-8 text-center text-xs text-base-content/50">{$t('notifications.noNotifications')}</div>
         {:else}
           {#each $notifications as notif (notif.id)}
             <div

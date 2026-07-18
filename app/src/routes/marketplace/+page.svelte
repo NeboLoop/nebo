@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import Search from 'lucide-svelte/icons/search';
 	import FeaturedCard from '$lib/components/marketplace/FeaturedCard.svelte';
 	import SectionTopRanked from '$lib/components/marketplace/sections/SectionTopRanked.svelte';
@@ -16,9 +17,9 @@
 		all: '', agents: 'agent', apps: 'app', skills: 'skill',
 		plugins: 'plugin', connectors: 'connector', collections: 'collection'
 	};
-	const KIND_LABEL: Record<string, string> = {
-		all: 'Marketplace', agents: 'Agents', apps: 'Apps', skills: 'Skills',
-		plugins: 'Plugins', connectors: 'Connectors', collections: 'Collections'
+	const KIND_LABEL_KEY: Record<string, string> = {
+		all: 'marketplace.title', agents: 'marketplace.nav.agents', apps: 'marketplace.nav.apps', skills: 'marketplace.skills',
+		plugins: 'marketplace.nav.plugins', connectors: 'nav.connectors', collections: 'marketplace.nav.collections'
 	};
 
 	const kind = $derived($page.url.searchParams.get('kind') || 'all');
@@ -120,7 +121,7 @@
 	<!-- Category storefront — headline + lede + featured + Top + All -->
 	<div class="max-w-6xl mx-auto pb-10">
 		<div class="px-6 pt-6">
-			<h1 class="font-display text-3xl font-bold tracking-tight">{categoryName || 'Category'}</h1>
+			<h1 class="font-display text-3xl font-bold tracking-tight">{categoryName || $t('marketplace.detail.category')}</h1>
 			{#if catMeta}
 				<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{catMeta.lede}</p>
 			{/if}
@@ -129,7 +130,7 @@
 		{#if categoryItems.length === 0}
 			<div class="flex flex-col items-center justify-center py-16 text-center">
 				<Search class="w-10 h-10 text-base-content/40 mb-3" />
-				<p class="text-base font-medium">Nothing here yet</p>
+				<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
 			</div>
 		{:else}
 			{#if categoryFeatured}
@@ -137,9 +138,9 @@
 					<FeaturedCard item={categoryFeatured} />
 				</div>
 			{/if}
-			<SectionListGrid title="Top in {categoryName}" items={categoryItems.slice(0, 6)} />
+			<SectionListGrid title={$t('marketplace.topIn', { values: { name: categoryName } })} items={categoryItems.slice(0, 6)} />
 			{#if categoryItems.length > 6}
-				<SectionListGrid title="All in {categoryName}" items={categoryItems.slice(6)} />
+				<SectionListGrid title={$t('marketplace.allIn', { values: { name: categoryName } })} items={categoryItems.slice(6)} />
 			{/if}
 		{/if}
 	</div>
@@ -147,16 +148,16 @@
 	<!-- Filtered: flat result list (kind / price / publisher) -->
 	<div class="max-w-6xl mx-auto px-6 py-6">
 		{#if publisher}
-			<h1 class="font-display text-xl font-bold mb-1">By {publisher}</h1>
+			<h1 class="font-display text-xl font-bold mb-1">{$t('marketplace.byPublisher', { values: { name: publisher } })}</h1>
 		{/if}
 		<div class="mb-4 text-sm text-base-content/70">
-			{filteredItems.length} result{filteredItems.length === 1 ? '' : 's'}
+			{filteredItems.length === 1 ? $t('marketplace.resultCountSingular', { values: { count: filteredItems.length } }) : $t('marketplace.resultCount', { values: { count: filteredItems.length } })}
 		</div>
 		{#if filteredItems.length === 0}
 			<div class="flex flex-col items-center justify-center py-16 text-center">
 				<Search class="w-10 h-10 text-base-content/40 mb-3" />
-				<p class="text-base font-medium">No results found</p>
-				<p class="text-xs text-base-content/50 mt-1">Try adjusting your filters.</p>
+				<p class="text-base font-medium">{$t('common.noResultsFound')}</p>
+				<p class="text-xs text-base-content/50 mt-1">{$t('marketplace.tryAdjustingFilters')}</p>
 			</div>
 		{:else}
 			<MarketplaceGrid>
@@ -169,7 +170,7 @@
 {:else if items.length === 0}
 	<div class="flex flex-col items-center justify-center py-16 text-center">
 		<Search class="w-10 h-10 text-base-content/40 mb-3" />
-		<p class="text-base font-medium">No items in the marketplace yet</p>
+		<p class="text-base font-medium">{$t('marketplace.noItemsYet')}</p>
 	</div>
 {:else}
 	<!-- Editorial home — Apple App Store cadence: a large hero, a ranked list,
@@ -182,7 +183,7 @@
 			</div>
 		{/if}
 
-		<SectionTopRanked title="Top in {KIND_LABEL[kind] ?? 'the Marketplace'}" items={items.slice(0, 9)} />
+		<SectionTopRanked title={$t('marketplace.topIn', { values: { name: KIND_LABEL_KEY[kind] ? $t(KIND_LABEL_KEY[kind]) : $t('marketplace.theMarketplace') } })} items={items.slice(0, 9)} />
 
 		{#each byCategory as group, i}
 			{#if i % 4 === 0}

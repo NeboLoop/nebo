@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { goto } from '$app/navigation';
   import CreditCard from 'lucide-svelte/icons/credit-card';
@@ -92,7 +93,7 @@
     try {
       await api.neboAIBillingPortal();
     } catch (e: any) {
-      actionError = e?.message || 'Failed to open billing portal';
+      actionError = e?.message || $t('settingsBilling.portalOpenFailed');
     } finally {
       actionLoading = '';
     }
@@ -108,7 +109,7 @@
       } catch { /* ignore */ }
       showCancelConfirm = false;
     } catch (e: any) {
-      actionError = e?.message || 'Failed to cancel subscription';
+      actionError = e?.message || $t('settingsBilling.cancelFailed');
     } finally {
       actionLoading = '';
     }
@@ -120,7 +121,7 @@
       const script = document.createElement('script');
       script.src = 'https://js.stripe.com/v3/';
       script.onload = () => resolve((window as any).Stripe);
-      script.onerror = () => reject(new Error('Failed to initialize payment form'));
+      script.onerror = () => reject(new Error($t('settingsBilling.paymentInitFailed')));
       document.head.appendChild(script);
     });
   }
@@ -157,7 +158,7 @@
         paymentElement.mount(paymentElementContainer);
       }
     } catch (e: any) {
-      stripeError = e?.message || 'Failed to initialize payment form';
+      stripeError = e?.message || $t('settingsBilling.paymentInitFailed');
     } finally {
       stripeLoading = false;
     }
@@ -178,7 +179,7 @@
       });
 
       if (error) {
-        stripeError = error.message || 'Payment setup failed';
+        stripeError = error.message || $t('settingsBilling.paymentSetupFailed');
       } else {
         stripeSuccess = true;
         setTimeout(async () => {
@@ -191,7 +192,7 @@
         }, 2000);
       }
     } catch (e: any) {
-      stripeError = e?.message || 'Payment confirmation failed';
+      stripeError = e?.message || $t('settingsBilling.paymentConfirmFailed');
     } finally {
       stripeLoading = false;
     }
@@ -205,18 +206,18 @@
   }
 </script>
 
-<SettingsHeader title="Billing" description="Manage your subscription and payment methods." />
+<SettingsHeader title={$t('settingsBilling.title')} description={$t('settingsBilling.pageDescription')} />
 
 {#if isLoading}
   <div class="flex items-center justify-center gap-3 py-16">
     <Spinner size={20} />
-    <span class="text-xs text-base-content/70">Loading billing...</span>
+    <span class="text-xs text-base-content/70">{$t('settingsBilling.loadingBilling')}</span>
   </div>
 {:else if !status?.connected}
   <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-    <p class="text-xs text-base-content/70">Connect your NeboAI account to manage billing.</p>
+    <p class="text-xs text-base-content/70">{$t('settingsBilling.connectForBilling')}</p>
     <a href="/settings/account" class="inline-block mt-3 text-sm font-medium text-primary hover:brightness-110 transition-all">
-      Go to Account
+      {$t('settingsBilling.goToAccount')}
     </a>
   </div>
 {:else}
@@ -225,7 +226,7 @@
       <div class="rounded-xl bg-error/10 border border-error/20 p-3 flex items-center gap-2">
         <TriangleAlert class="w-4 h-4 text-error shrink-0" />
         <p class="text-sm text-error flex-1">{actionError}</p>
-        <button onclick={() => (actionError = '')} class="text-xs text-error/60 hover:text-error cursor-pointer bg-transparent border-none">Dismiss</button>
+        <button onclick={() => (actionError = '')} class="text-xs text-error/60 hover:text-error cursor-pointer bg-transparent border-none">{$t('common.dismiss')}</button>
       </div>
     {/if}
 
@@ -235,16 +236,16 @@
         <!-- Plan -->
         <div class="flex items-center justify-between p-5">
           <div>
-            <p class="text-sm font-semibold text-base-content">{planName} Plan</p>
+            <p class="text-sm font-semibold text-base-content">{$t('settingsBilling.planTitle', { values: { plan: planName } })}</p>
             {#if subscription?.subscriptions?.length}
-              <p class="text-xs text-base-content/50">Auto-renews</p>
+              <p class="text-xs text-base-content/50">{$t('settingsBilling.autoRenews')}</p>
             {/if}
           </div>
           <button
             onclick={() => goto('/pricing')}
             class="text-sm text-primary font-medium hover:brightness-110 transition-all cursor-pointer bg-transparent border-none"
           >
-            Adjust plan
+            {$t('settingsBilling.adjustPlan')}
           </button>
         </div>
 
@@ -253,17 +254,17 @@
           <div class="flex items-center gap-3">
             {#if defaultPayment}
               <CreditCard class="w-4 h-4 text-base-content/60" />
-              <span class="text-sm text-base-content">{defaultPayment.brand || defaultPayment.type} ending in {defaultPayment.lastFour || '****'}</span>
+              <span class="text-sm text-base-content">{$t('settingsBilling.cardEnding', { values: { brand: defaultPayment.brand || defaultPayment.type, lastFour: defaultPayment.lastFour || '****' } })}</span>
             {:else}
               <CreditCard class="w-4 h-4 text-base-content/40" />
-              <span class="text-xs text-base-content/50">No payment method on file</span>
+              <span class="text-xs text-base-content/50">{$t('settingsBilling.noPaymentOnFile')}</span>
             {/if}
           </div>
           <button
             onclick={openPaymentModal}
             class="text-sm text-primary font-medium hover:brightness-110 transition-all cursor-pointer bg-transparent border-none"
           >
-            Update
+            {$t('settingsBilling.update')}
           </button>
         </div>
 
@@ -271,14 +272,14 @@
         <div class="flex items-center justify-between p-5">
           <div class="flex items-center gap-3">
             <Receipt class="w-4 h-4 text-base-content/60" />
-            <span class="text-sm text-base-content">{invoices.length} receipts</span>
+            <span class="text-sm text-base-content">{$t('settingsBilling.receiptCount', { values: { count: invoices.length } })}</span>
           </div>
           {#if invoices.length > 0}
             <button
               onclick={() => (showInvoices = !showInvoices)}
               class="text-sm text-primary font-medium hover:brightness-110 transition-all cursor-pointer bg-transparent border-none"
             >
-              {showInvoices ? 'Hide' : 'View'}
+              {showInvoices ? $t('common.hide') : $t('common.view')}
             </button>
           {/if}
         </div>
@@ -301,7 +302,7 @@
                 {formatPrice(inv.amountCents ?? 0, inv.currency ?? 'usd')}
               </span>
               <span class="px-2 py-0.5 rounded text-xs font-semibold {inv.status === 'paid' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'}">
-                {inv.status === 'paid' ? 'Paid' : inv.status}
+                {inv.status === 'paid' ? $t('settingsBilling.paid') : inv.status}
               </span>
               {#if inv.hostedUrl || inv.pdfUrl}
                 <a
@@ -310,7 +311,7 @@
                   rel="noopener noreferrer"
                   class="text-sm text-primary hover:brightness-110 transition-all"
                 >
-                  View
+                  {$t('common.view')}
                 </a>
               {/if}
             </div>
@@ -322,7 +323,7 @@
     <!-- Marketplace Subscriptions -->
     {#if marketplaceSubs.length > 0}
       <section>
-        <p class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Marketplace Subscriptions</p>
+        <p class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('settingsBilling.marketplaceSubscriptions')}</p>
         <div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10">
           {#each marketplaceSubs as sub}
             <div class="flex items-center justify-between p-4">
@@ -333,10 +334,10 @@
                 </div>
                 <div class="flex items-center gap-3 mt-1">
                   {#if sub.priceCents}
-                    <span class="text-xs text-base-content/50">{formatPrice(sub.priceCents, sub.billingInterval || 'usd')}/{sub.billingInterval === 'year' ? 'yr' : 'mo'}</span>
+                    <span class="text-xs text-base-content/50">{formatPrice(sub.priceCents, sub.billingInterval || 'usd')}/{sub.billingInterval === 'year' ? $t('common.yearShort') : $t('common.monthShort')}</span>
                   {/if}
                   {#if sub.currentPeriodEnd}
-                    <span class="text-xs text-base-content/50">Renews {formatDate(sub.currentPeriodEnd)}</span>
+                    <span class="text-xs text-base-content/50">{$t('settingsBilling.renewsDate', { values: { date: formatDate(sub.currentPeriodEnd) } })}</span>
                   {/if}
                   <span class="px-1.5 py-0.5 rounded text-xs font-semibold {sub.status === 'active' ? 'bg-success/10 text-success' : sub.status === 'cancelled' ? 'bg-error/10 text-error' : 'bg-warning/10 text-warning'}">{sub.status}</span>
                 </div>
@@ -344,7 +345,7 @@
               {#if sub.status === 'active'}
                 {#if cancellingSubId === sub.id}
                   <div class="flex items-center gap-2">
-                    <button onclick={() => (cancellingSubId = '')} class="px-2 py-1 rounded-lg border border-base-content/10 text-xs cursor-pointer hover:bg-base-200 transition-colors bg-transparent">Keep</button>
+                    <button onclick={() => (cancellingSubId = '')} class="px-2 py-1 rounded-lg border border-base-content/10 text-xs cursor-pointer hover:bg-base-200 transition-colors bg-transparent">{$t('settingsBilling.keep')}</button>
                     <button
                       class="px-2 py-1 rounded-lg bg-error text-error-content text-xs font-medium cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-50"
                       disabled={actionLoading === `cancel-mkt-${sub.id}`}
@@ -355,20 +356,20 @@
                           marketplaceSubs = marketplaceSubs.map(s => s.id === sub.id ? { ...s, status: 'cancelled' } : s);
                           cancellingSubId = '';
                         } catch (e) {
-                          actionError = (e as any)?.message || 'Failed to cancel';
+                          actionError = (e as any)?.message || $t('settingsBilling.cancelFailedShort');
                         } finally {
                           actionLoading = '';
                         }
                       }}
                     >
-                      {#if actionLoading === `cancel-mkt-${sub.id}`}<Spinner size={12} />{:else}Cancel{/if}
+                      {#if actionLoading === `cancel-mkt-${sub.id}`}<Spinner size={12} />{:else}{$t('common.cancel')}{/if}
                     </button>
                   </div>
                 {:else}
                   <button
                     onclick={() => (cancellingSubId = sub.id)}
                     class="text-xs text-error/70 hover:text-error transition-colors cursor-pointer bg-transparent border-none"
-                  >Cancel</button>
+                  >{$t('common.cancel')}</button>
                 {/if}
               {/if}
             </div>
@@ -384,11 +385,11 @@
     <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
       <div class="flex items-center justify-between">
         <div>
-          <p class="text-sm font-semibold text-base-content">Billing Portal</p>
-          <p class="text-xs text-base-content/50">Manage invoices, tax IDs, and billing details on Stripe</p>
+          <p class="text-sm font-semibold text-base-content">{$t('settingsBilling.billingPortal')}</p>
+          <p class="text-xs text-base-content/50">{$t('settingsBilling.billingPortalDesc')}</p>
         </div>
         <button class="flex items-center gap-1.5 text-sm text-primary font-medium hover:brightness-110 transition-all cursor-pointer bg-transparent border-none" onclick={openBillingPortal}>
-          Open portal <ExternalLink class="w-3.5 h-3.5" />
+          {$t('settingsBilling.openPortal')} <ExternalLink class="w-3.5 h-3.5" />
         </button>
       </div>
     </div>
@@ -397,14 +398,14 @@
     {#if currentPlan !== 'free' && subscription?.subscriptions?.length}
       <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
         <div class="flex items-center justify-between">
-          <p class="text-xs text-base-content/50">Need to cancel your subscription?</p>
+          <p class="text-xs text-base-content/50">{$t('settingsBilling.needToCancel')}</p>
           {#if !showCancelConfirm}
             <button
               disabled={actionLoading !== ''}
               onclick={() => (showCancelConfirm = true)}
               class="text-sm text-error/70 hover:text-error transition-colors cursor-pointer bg-transparent border-none"
             >
-              Cancel plan
+              {$t('settingsBilling.cancelPlan')}
             </button>
           {:else}
             <div class="flex items-center gap-2">
@@ -413,7 +414,7 @@
                 disabled={actionLoading === 'cancel'}
                 class="px-3 py-1 rounded-lg border border-base-content/10 text-sm cursor-pointer hover:bg-base-200 transition-colors bg-transparent"
               >
-                Keep plan
+                {$t('settingsBilling.keepPlan')}
               </button>
               <button
                 class="px-3 py-1 rounded-lg bg-error text-error-content text-sm font-medium cursor-pointer hover:brightness-110 transition-all border-none"
@@ -426,7 +427,7 @@
                 {#if actionLoading === 'cancel'}
                   <Spinner size={14} />
                 {:else}
-                  Yes, cancel
+                  {$t('settingsBilling.yesCancel')}
                 {/if}
               </button>
             </div>
@@ -440,11 +441,11 @@
 <!-- Payment Method Modal (Stripe Elements) -->
 {#if showPaymentModal}
   <div class="fixed inset-0 z-[80] flex items-center justify-center" role="dialog" aria-modal="true">
-    <button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm cursor-default border-none" onclick={closePaymentModal} aria-label="Close"></button>
+    <button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm cursor-default border-none" onclick={closePaymentModal} aria-label={$t('common.close')}></button>
     <div class="relative rounded-2xl bg-base-100 w-full max-w-md shadow-xl">
       <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
-        <h3 class="text-base font-semibold">Payment Method</h3>
-        <button type="button" onclick={closePaymentModal} class="text-base-content/60 text-xl hover:text-base-content cursor-pointer bg-transparent border-none" aria-label="Close">
+        <h3 class="text-base font-semibold">{$t('settingsBilling.paymentMethodTitle')}</h3>
+        <button type="button" onclick={closePaymentModal} class="text-base-content/60 text-xl hover:text-base-content cursor-pointer bg-transparent border-none" aria-label={$t('common.close')}>
           &times;
         </button>
       </div>
@@ -455,13 +456,13 @@
             <div class="w-12 h-12 rounded-full bg-success/10 flex items-center justify-center mx-auto mb-3">
               <CreditCard class="w-6 h-6 text-success" />
             </div>
-            <p class="text-sm font-medium text-base-content">Payment method saved</p>
-            <p class="text-xs text-base-content/50 mt-1">Closing...</p>
+            <p class="text-sm font-medium text-base-content">{$t('settingsBilling.paymentSaved')}</p>
+            <p class="text-xs text-base-content/50 mt-1">{$t('settingsBilling.closing')}</p>
           </div>
         {:else if stripeLoading && !elementsInstance}
           <div class="flex items-center justify-center gap-3 py-12">
             <Spinner size={20} />
-            <span class="text-xs text-base-content/70">Loading payment form...</span>
+            <span class="text-xs text-base-content/70">{$t('settingsBilling.loadingPaymentForm')}</span>
           </div>
         {:else}
           <div bind:this={paymentElementContainer} class="min-h-[200px]"></div>
@@ -481,7 +482,7 @@
             class="h-10 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors cursor-pointer bg-transparent"
             onclick={closePaymentModal}
           >
-            Cancel
+            {$t('common.cancel')}
           </button>
           <button
             type="button"
@@ -489,7 +490,7 @@
             onclick={confirmPayment}
             disabled={stripeLoading || !elementsInstance}
           >
-            {#if stripeLoading}<Spinner size={14} />{:else}Save{/if}
+            {#if stripeLoading}<Spinner size={14} />{:else}{$t('common.save')}{/if}
           </button>
         </div>
       {/if}

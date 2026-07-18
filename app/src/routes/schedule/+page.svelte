@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import ColorCalendarShell from '$lib/components/ColorCalendarShell.svelte';
   import MiniMonth from '$lib/components/MiniMonth.svelte';
   import UserMenu from '$lib/components/UserMenu.svelte';
@@ -92,16 +93,16 @@
   }
 </script>
 
-<svelte:head><title>Schedule - Nebo</title></svelte:head>
+<svelte:head><title>{$t('schedule.pageTitle')}</title></svelte:head>
 
 <div class="flex-1 flex min-h-0 {sidebarResizing ? 'select-none' : ''}" bind:this={containerEl}>
 <!-- Left panel: agent toggles -->
 <div class="{$sidebarCollapsed ? 'w-12 min-w-12 border-r border-base-300' : ''} flex flex-col bg-base-200 shrink-0 transition-all duration-150" style={$sidebarCollapsed ? '' : `width:${sidebarWidth}px; min-width:${SIDEBAR_MIN}px`}>
   <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed ? 'justify-center' : 'px-3.5 justify-between'}">
     {#if !$sidebarCollapsed}
-      <span class="text-sm font-semibold flex-1">Agents</span>
+      <span class="text-sm font-semibold flex-1">{$t('sidebar.agents')}</span>
     {/if}
-    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}>
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="3" x2="5.5" y2="13" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
   </div>
@@ -131,7 +132,7 @@
           <label class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md cursor-pointer text-sm transition-opacity {on ? 'opacity-100' : 'opacity-50'}">
             <input type="checkbox" class="checkbox checkbox-sm {c.checkboxClass}" checked={on} onchange={() => toggleAgent(id)} />
             <span class="flex-1 font-medium">{a.name}</span>
-            <span class="font-mono text-xs text-base-content/70">{runsPerWeek(id, $userScheduleItems)}/wk</span>
+            <span class="font-mono text-xs text-base-content/70">{$t('schedule.perWeek', { values: { count: runsPerWeek(id, $userScheduleItems) } })}</span>
           </label>
         {/if}
       {/each}
@@ -179,8 +180,8 @@
         <div class="flex items-center gap-3">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
           <div>
-            <div class="text-sm font-semibold">{canvasAgentName} — Workflow Builder</div>
-            <div class="text-xs text-base-content/50">{Object.keys(canvasWorkflows).length} workflows</div>
+            <div class="text-sm font-semibold">{$t('schedule.workflowBuilderTitle', { values: { name: canvasAgentName } })}</div>
+            <div class="text-xs text-base-content/50">{$t('commander.workflowCount', { values: { count: Object.keys(canvasWorkflows).length } })}</div>
           </div>
         </div>
         <button class="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-lg" onclick={() => canvasAgentFull = null}>&times;</button>

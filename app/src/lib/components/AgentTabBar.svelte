@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { t } from 'svelte-i18n';
 
   let { agentId, agentName, agentInitial, status, isApp = false } = $props<{
     agentId: string;
@@ -10,10 +11,10 @@
   }>();
 
   function statusLabel(s: string) {
-    if (s === 'online') return 'Online';
-    if (s === 'running') return 'Running';
-    if (s === 'paused') return 'Paused';
-    return 'Idle';
+    if (s === 'online') return 'common.online';
+    if (s === 'running') return 'components.agentTabBar.running';
+    if (s === 'paused') return 'common.paused';
+    return 'components.agentTabBar.idle';
   }
 
   const activeTab = $derived.by(() => {
@@ -36,16 +37,16 @@
   <span class="text-sm font-semibold">{agentName}</span>
   <span class="text-xs ml-auto flex items-center gap-1.5 {status === 'online' ? 'text-success' : status === 'running' ? 'text-warning' : 'text-base-content/50'}">
     <span class="w-1.5 h-1.5 rounded-full {status === 'online' ? 'bg-success' : status === 'running' ? 'bg-warning animate-pulse' : 'bg-base-content/30'}"></span>
-    {statusLabel(status)}
+    {$t(statusLabel(status))}
   </span>
 </div>
 
 <div role="tablist" class="tabs tabs-border w-full shrink-0">
   {#if isApp}
-    <a href="/{agentId}/overview" role="tab" class="tab flex-1 {activeTab === 'overview' ? 'tab-active' : ''}">Overview</a>
+    <a href="/{agentId}/overview" role="tab" class="tab flex-1 {activeTab === 'overview' ? 'tab-active' : ''}">{$t('components.agentTabBar.overview')}</a>
   {:else}
-    <a href="/{agentId}/threads" role="tab" class="tab flex-1 {activeTab === 'threads' ? 'tab-active' : ''}">Chats</a>
+    <a href="/{agentId}/threads" role="tab" class="tab flex-1 {activeTab === 'threads' ? 'tab-active' : ''}">{$t('components.agentTabBar.chats')}</a>
   {/if}
-  <a href="/{agentId}/runs" role="tab" class="tab flex-1 {activeTab === 'runs' ? 'tab-active' : ''}">Runs</a>
-  <a href="/{agentId}/settings" role="tab" class="tab flex-1 {activeTab === 'settings' ? 'tab-active' : ''}">Settings</a>
+  <a href="/{agentId}/runs" role="tab" class="tab flex-1 {activeTab === 'runs' ? 'tab-active' : ''}">{$t('components.agentTabBar.runs')}</a>
+  <a href="/{agentId}/settings" role="tab" class="tab flex-1 {activeTab === 'settings' ? 'tab-active' : ''}">{$t('nav.settings')}</a>
 </div>

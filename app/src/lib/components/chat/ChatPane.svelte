@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import ChatComposer from './ChatComposer.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import AskWidget from './AskWidget.svelte';
@@ -92,7 +93,8 @@
 
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
-  let creationsTitle = $state('Work');
+  // Empty = default panel title ($t('chat.work') at render time).
+  let creationsTitle = $state('');
   let activeArtifactId = $state<string | null>(null);
   // Pinned version of the active document; null = follow the latest version.
   let activeVersion = $state<number | null>(null);
@@ -117,7 +119,7 @@
     const withCopy = html
       .replace(
         /<pre>/g,
-        '<div class="relative group/code"><button type="button" data-code-copy title="Copy code" class="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-xs font-medium bg-base-100/80 border border-base-content/10 text-base-content/60 opacity-0 group-hover/code:opacity-100 hover:text-base-content hover:bg-base-200 cursor-pointer transition-opacity">Copy</button><pre>'
+        `<div class="relative group/code"><button type="button" data-code-copy title="${$t('chat.copyCode')}" class="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-xs font-medium bg-base-100/80 border border-base-content/10 text-base-content/60 opacity-0 group-hover/code:opacity-100 hover:text-base-content hover:bg-base-200 cursor-pointer transition-opacity">${$t('common.copy')}</button><pre>`
       )
       .replace(/<\/pre>/g, '</pre></div>');
     return renderMentionChips(withCopy);
@@ -130,7 +132,7 @@
     const code = btn.parentElement?.querySelector('pre code, pre')?.textContent ?? '';
     navigator.clipboard.writeText(code).then(() => {
       const prev = btn.textContent;
-      btn.textContent = 'Copied!';
+      btn.textContent = $t('chat.copied');
       setTimeout(() => { btn.textContent = prev; }, 1200);
     });
     return true;
@@ -381,7 +383,7 @@
     composerRef?.focusAndInsert(e.key);
   }
 
-  export function showCreations(title = 'Work') {
+  export function showCreations(title = '') {
     creationsTitle = title;
     openWorkPanel();
   }
@@ -602,8 +604,8 @@
     const total = tools.reduce((s, t) => s + (t.durationMs ?? 0), 0);
     return total > 0 ? fmtDuration(total) : '';
   }
-  function stepOutcome(t: ToolMsg): string {
-    return t.outcome ?? t.label ?? `Used ${t.name}`;
+  function stepOutcome(tool: ToolMsg): string {
+    return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: tool.name } });
   }
   // Correct tool signature: MCP → "slug · tool", STRAP → "name · resource.action".
   function strapSig(t: ToolMsg): string {
@@ -618,7 +620,7 @@
     const running = tools.filter((t) => t.status === 'running');
     if (running.length) {
       const cur = running[running.length - 1];
-      return `${cur.label ?? `working with ${cur.name}`}…`;
+      return `${cur.label ?? $t('chat.workingWithTool', { values: { name: cur.name } })}…`;
     }
     // Group completed steps by outcome, preserving first-seen order.
     const groups = new Map<string, number>();
@@ -632,7 +634,7 @@
       return i === 0 ? s : s.charAt(0).toLowerCase() + s.slice(1);
     });
     const line = parts.slice(0, 3).join(', ');
-    return groups.size > 3 ? `${line}, +${groups.size - 3} more` : line;
+    return groups.size > 3 ? `${line}, ${$t('chat.moreCount', { values: { count: groups.size - 3 } })}` : line;
   }
 
   // Tools now live on the assistant message that ran them (msg.tools[]), so there
@@ -693,7 +695,7 @@
   <!-- Dropzone overlay -->
   {#if isDragging}
     <div class="absolute inset-0 z-30 bg-primary/5 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
-      <div class="text-primary font-medium text-sm">Drop files here</div>
+      <div class="text-primary font-medium text-sm">{$t('chat.dropFilesHere')}</div>
     </div>
   {/if}
 
@@ -706,7 +708,7 @@
           data-tour="work"
           class="text-sm ml-auto shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
           onclick={() => creationsOpen ? (creationsOpen = false) : openWorkPanel()}
-          title={creationsOpen ? 'Close Work panel' : 'Open Work panel'}
+          title={creationsOpen ? $t('chat.closeWorkPanel') : $t('chat.openWorkPanel')}
         >
           {headerRight}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{creationsOpen ? 'text-primary' : ''}">
@@ -739,7 +741,7 @@
           type="button"
           onclick={scrollToBottom}
           class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/90 hover:bg-base-300 hover:text-base-content transition-all shadow-lg cursor-pointer"
-          title="Scroll to bottom"
+          title={$t('chat.scrollToBottom')}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
         </button>
@@ -803,24 +805,24 @@
                     {#if isExpanded}
                       <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-hidden">
                         <div class="px-3.5 pt-3 pb-2">
-                          <div class="text-xs font-semibold mb-1.5">Request</div>
+                          <div class="text-xs font-semibold mb-1.5">{$t('chat.request')}</div>
                           <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{JSON.stringify(tool.request, null, 2)}</pre>
                         </div>
                         <div class="px-3.5 pt-2 pb-3 border-t border-base-300">
-                          <div class="text-xs font-semibold mb-1.5">Response</div>
+                          <div class="text-xs font-semibold mb-1.5">{$t('chat.response')}</div>
                           <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{tool.response}</pre>
                         </div>
                       </div>
                       <button
                         class="mt-1.5 py-0.5 px-2 rounded text-xs font-medium bg-base-200 cursor-pointer border-none hover:bg-base-300 transition-colors"
                         onclick={() => toggleResult(resultKey)}
-                      >Hide</button>
+                      >{$t('chat.hide')}</button>
                     {:else}
                       <div class="mt-1">
                         <button
                           class="py-0.5 px-2 rounded text-xs font-medium cursor-pointer border-none transition-colors {tool.status === 'success' ? 'bg-base-200 hover:bg-base-300' : 'bg-error/10 text-error hover:bg-error/20'}"
                           onclick={() => toggleResult(resultKey)}
-                        >Result</button>
+                        >{$t('chat.result')}</button>
                       </div>
                     {/if}
                   {/if}
@@ -835,7 +837,7 @@
                     <path d="M6 9L8.25 11.25L12.25 6.75" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                   </svg>
                 </div>
-                <span class="text-xs">Done</span>
+                <span class="text-xs">{$t('common.done')}</span>
               </div>
             {/if}
           </div>
@@ -859,17 +861,17 @@
                 oninput={handleEditInput}
               ></textarea>
               <div class="flex items-center justify-between mt-2 pt-2 border-t border-base-content/10">
-                <span class="text-xs text-base-content/50">Enter to submit · Esc to cancel</span>
+                <span class="text-xs text-base-content/50">{$t('chat.enterToSubmit')}</span>
                 <div class="flex items-center gap-2">
                   <button
                     class="py-1.5 px-3 rounded-lg text-xs cursor-pointer border border-base-300 bg-transparent hover:bg-base-200 transition-colors"
                     onclick={cancelEdit}
-                  >Cancel</button>
+                  >{$t('common.cancel')}</button>
                   <button
                     class="py-1.5 px-3 rounded-lg text-xs font-medium cursor-pointer border-none bg-primary text-primary-content hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
                     disabled={!editText.trim()}
                     onclick={() => saveEdit(origIdx)}
-                  >Save & Submit</button>
+                  >{$t('chat.saveAndSubmit')}</button>
                 </div>
               </div>
             </div>
@@ -883,7 +885,7 @@
                   {#each msg.attachments as att}
                     {@const attType = getAttachmentType(att.mimeType)}
                     {#if attType === 'image'}
-                      <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = att.url)} aria-label="View image">
+                      <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = att.url)} aria-label={$t('chat.viewImage')}>
                         <img
                           src={att.thumbnailUrl || att.url}
                           alt={att.filename}
@@ -921,14 +923,14 @@
               {/if}
               <button
                 class="w-7 h-7 rounded-md grid place-items-center text-base-content/50 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none transition-colors"
-                title="Edit & resend"
+                title={$t('chat.editResend')}
                 onclick={() => startEdit(origIdx, msg.content)}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               </button>
               <button
                 class="w-7 h-7 rounded-md grid place-items-center {copiedIdx === origIdx ? 'text-success' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'} cursor-pointer bg-transparent border-none transition-colors"
-                title={copiedIdx === origIdx ? 'Copied!' : 'Copy'}
+                title={copiedIdx === origIdx ? $t('chat.copied') : $t('common.copy')}
                 onclick={() => copyMessage(msg.content, origIdx)}
               >
                 {#if copiedIdx === origIdx}
@@ -944,7 +946,7 @@
       {:else if msg.type === 'thinking'}
         <details class="max-w-[640px] mt-2 mb-1">
           <summary class="text-xs text-base-content/50 cursor-pointer hover:text-base-content/70 transition-colors">
-            Nebo worked for {msg.duration}
+            {$t('chat.workedFor', { values: { duration: msg.duration } })}
           </summary>
           <div class="mt-1.5 py-2 px-3 rounded-box bg-base-200 border-l-2 border-base-content/20 text-xs leading-relaxed font-mono whitespace-pre-wrap">{msg.content}</div>
         </details>
@@ -997,7 +999,7 @@
               {#each msg.attachments as att}
                 {@const attType = getAttachmentType(att.mimeType)}
                 {#if attType === 'image'}
-                  <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = att.url)} aria-label="View image">
+                  <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = att.url)} aria-label={$t('chat.viewImage')}>
                     <img
                       src={att.thumbnailUrl || att.url}
                       alt={att.filename}
@@ -1038,7 +1040,7 @@
               {#if ArtIcon}<ArtIcon class="w-4 h-4 text-base-content/50 shrink-0" />{/if}
               <div class="flex-1 min-w-0">
                 <div class="text-xs font-medium truncate">{artifact.title}</div>
-                <div class="text-xs text-base-content/50">{artifact.kind === 'code' ? 'Code' : artifact.kind === 'table' ? 'Spreadsheet' : artifact.kind === 'slides' ? 'Presentation' : 'Document'}</div>
+                <div class="text-xs text-base-content/50">{artifact.kind === 'code' ? $t('chat.artifactCode') : artifact.kind === 'table' ? $t('chat.artifactSpreadsheet') : artifact.kind === 'slides' ? $t('chat.artifactPresentation') : $t('chat.artifactDocument')}</div>
               </div>
             </button>
           {/each}
@@ -1050,7 +1052,7 @@
               {/if}
               <button
                 class="w-7 h-7 rounded-md grid place-items-center {copiedIdx === origIdx ? 'text-success' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'} cursor-pointer bg-transparent border-none transition-colors"
-                title={copiedIdx === origIdx ? 'Copied!' : 'Copy'}
+                title={copiedIdx === origIdx ? $t('chat.copied') : $t('common.copy')}
                 onclick={() => copyMessage(msg.content, origIdx)}
               >
                 {#if copiedIdx === origIdx}
@@ -1061,7 +1063,7 @@
               </button>
               <button
                 class="w-7 h-7 rounded-md grid place-items-center text-base-content/50 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none transition-colors"
-                title="Retry"
+                title={$t('common.retry')}
                 onclick={() => redoMessage(origIdx)}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
@@ -1075,7 +1077,7 @@
     {#if isLoading && groupedMessages.length > 0 && groupedMessages[groupedMessages.length - 1]?.type !== 'assistant'}
       <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2">
         <span class="loading loading-spinner loading-xs text-primary"></span>
-        <span class="text-sm text-base-content/50 animate-pulse">{activityStatus || 'Working...'}</span>
+        <span class="text-sm text-base-content/50 animate-pulse">{activityStatus || $t('chat.working')}</span>
       </div>
     {/if}
   </div>
@@ -1093,8 +1095,8 @@
     {@const totalPrompt = tokenUsage.input + (tokenUsage.cacheRead ?? 0) + (tokenUsage.cacheCreation ?? 0)}
     {@const conversationIn = Math.max(0, totalPrompt - (tokenUsage.overhead ?? 0))}
     <div class="max-w-3xl mx-auto w-full shrink-0 px-6 pb-1">
-      <span class="text-xs text-base-content/50 font-mono" title="{totalPrompt.toLocaleString()} total prompt · {(tokenUsage.overhead ?? 0).toLocaleString()} system+tools · {(tokenUsage.cacheRead ?? 0).toLocaleString()} cache read">
-        {conversationIn.toLocaleString()} in · {tokenUsage.output.toLocaleString()} out
+      <span class="text-xs text-base-content/50 font-mono" title={$t('chat.tokenTooltip', { values: { total: totalPrompt.toLocaleString(), overhead: (tokenUsage.overhead ?? 0).toLocaleString(), cacheRead: (tokenUsage.cacheRead ?? 0).toLocaleString() } })}>
+        {$t('chat.tokensInOut', { values: { input: conversationIn.toLocaleString(), output: tokenUsage.output.toLocaleString() } })}
       </span>
     </div>
   {/if}
@@ -1116,14 +1118,14 @@
       <div class="px-3 py-2 rounded-lg bg-error/10 border border-error/30 flex items-center justify-between gap-3">
         <span class="text-xs text-base-content">
           {#if isOutOfBalance}
-            You're out of usage balance — your plan limits, gift tokens, and credits are used up.
+            {$t('chat.outOfBalance')}
           {:else}
             {chatError}
           {/if}
         </span>
         <div class="flex items-center gap-2 shrink-0">
           {#if isOutOfBalance}
-            <a href="/pricing" class="btn btn-primary btn-xs">View plans</a>
+            <a href="/pricing" class="btn btn-primary btn-xs">{$t('chat.viewPlans')}</a>
           {/if}
           <button class="btn btn-ghost btn-xs" onclick={() => ondismisserror?.()}>x</button>
         </div>
@@ -1190,7 +1192,7 @@
           </div>
           <ul class="dropdown-content menu menu-sm bg-base-100 border border-base-300 rounded-box z-50 w-72 max-h-80 overflow-y-auto flex-nowrap p-1 shadow-md">
             {#if documents.length > 1}
-              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Documents</span></li>
+              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('chat.documents')}</span></li>
             {/if}
             {#each documents as d}
               {@const ArtIcon2 = artifactIcons[d.kind]}
@@ -1205,13 +1207,13 @@
               </li>
             {/each}
             {#if activeVersionList.length > 1}
-              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Versions</span></li>
+              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('chat.versions')}</span></li>
               <li>
                 <button
                   class="flex items-center justify-between gap-2 {activeVersion == null ? 'bg-base-200 font-medium' : ''}"
                   onclick={() => { activeVersion = null; (document.activeElement as HTMLElement | null)?.blur(); }}
                 >
-                  <span class="text-xs">Latest</span>
+                  <span class="text-xs">{$t('chat.latest')}</span>
                   <span class="text-xs text-base-content/50 font-mono">v{activeVersionList.length}</span>
                 </button>
               </li>
@@ -1221,7 +1223,7 @@
                     class="flex items-center justify-between gap-2 {activeVersion === v.version ? 'bg-base-200 font-medium' : ''}"
                     onclick={() => { activeVersion = v.version; (document.activeElement as HTMLElement | null)?.blur(); }}
                   >
-                    <span class="text-xs">Version {v.version}</span>
+                    <span class="text-xs">{$t('chat.versionN', { values: { version: v.version } })}</span>
                     {#if v.time}<span class="text-xs text-base-content/50 font-mono">{v.time}</span>{/if}
                   </button>
                 </li>
@@ -1230,26 +1232,26 @@
           </ul>
         </div>
       {:else}
-        <span class="text-sm font-semibold flex-1 truncate">{creationsTitle}</span>
+        <span class="text-sm font-semibold flex-1 truncate">{creationsTitle || $t('chat.work')}</span>
       {/if}
       {#if activeArtifact?.url && (activeArtifact.codeUrl || activeArtifact.url.endsWith('.html') || activeArtifact.url.endsWith('.md') || activeArtifact.url.endsWith('.txt'))}
         <div class="flex items-center rounded-md bg-base-200 p-0.5 shrink-0">
           <button
             class="py-0.5 px-2 rounded text-xs cursor-pointer border-none transition-colors {!viewSource ? 'bg-base-100 font-medium shadow-sm' : 'bg-transparent text-base-content/60 hover:text-base-content'}"
             onclick={() => viewSource = false}
-          >Preview</button>
+          >{$t('chat.preview')}</button>
           <button
             class="py-0.5 px-2 rounded text-xs cursor-pointer border-none transition-colors {viewSource ? 'bg-base-100 font-medium shadow-sm' : 'bg-transparent text-base-content/60 hover:text-base-content'}"
             onclick={() => viewSource = true}
-          >Code</button>
+          >{$t('chat.artifactCode')}</button>
         </div>
       {/if}
       {#if activeArtifact && activeVersion != null && activeVersionList.length > 0 && activeArtifact.version < activeVersionList[activeVersionList.length - 1].version}
         <button
           class="py-1 px-2 rounded-md text-xs font-medium cursor-pointer bg-base-200 hover:bg-base-300 text-base-content/80 hover:text-base-content transition-colors shrink-0 border-none"
           onclick={() => { if (activeArtifact) onrestoreversion?.(activeArtifact.documentId, activeArtifact.version); activeVersion = null; }}
-          title="Make this version current"
-        >Restore</button>
+          title={$t('chat.makeVersionCurrent')}
+        >{$t('chat.restore')}</button>
       {/if}
       {#if activeArtifact?.url}
         <a
@@ -1257,7 +1259,7 @@
           download={activeArtifact.title}
           onclick={(e) => downloadArtifact(e, activeArtifact?.url ?? '', activeArtifact?.title)}
           class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 text-base-content/70 hover:text-base-content transition-colors shrink-0"
-          title="Download {activeArtifact.title}"
+          title={$t('chat.downloadFile', { values: { title: activeArtifact.title } })}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         </a>
@@ -1265,7 +1267,7 @@
       <button
         class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors shrink-0"
         onclick={() => creationsOpen = false}
-        title="Close Work panel"
+        title={$t('chat.closeWorkPanel')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
@@ -1288,7 +1290,7 @@
       {:else if documents.length > 0}
         <!-- No file selected yet: list each distinct document to pick from. -->
         <div class="p-3 flex flex-col gap-1.5">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-1 pt-1 pb-2">Files in this thread</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-1 pt-1 pb-2">{$t('chat.filesInThread')}</div>
           {#each documents as a}
             {@const ListIcon = artifactIcons[a.kind]}
             <button
@@ -1298,7 +1300,7 @@
               {#if ListIcon}<ListIcon class="w-4 h-4 text-base-content/50 shrink-0" />{/if}
               <div class="flex-1 min-w-0">
                 <div class="text-sm font-medium truncate">{a.title}</div>
-                <div class="text-xs text-base-content/50">{a.kind === 'code' ? 'Code' : a.kind === 'table' ? 'Spreadsheet' : a.kind === 'slides' ? 'Presentation' : 'Document'}</div>
+                <div class="text-xs text-base-content/50">{a.kind === 'code' ? $t('chat.artifactCode') : a.kind === 'table' ? $t('chat.artifactSpreadsheet') : a.kind === 'slides' ? $t('chat.artifactPresentation') : $t('chat.artifactDocument')}</div>
               </div>
             </button>
           {/each}
@@ -1310,8 +1312,8 @@
             <path d="M9 3v18"/>
             <path d="M14 9l3 3-3 3"/>
           </svg>
-          <div class="text-sm font-medium">Nothing here yet</div>
-          <div class="text-xs text-center max-w-[220px]">When Nebo makes a report, sheet, or design, it'll appear here.</div>
+          <div class="text-sm font-medium">{$t('chat.nothingHereYet')}</div>
+          <div class="text-xs text-center max-w-[220px]">{$t('chat.workEmptyDesc')}</div>
         </div>
       {/if}
     </div>
@@ -1323,9 +1325,9 @@
     type="button"
     class="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-6 border-0 cursor-zoom-out"
     onclick={() => (lightboxUrl = null)}
-    aria-label="Close image"
+    aria-label={$t('chat.closeImage')}
   >
-    <img src={lightboxUrl} alt="Full size" class="max-w-full max-h-full rounded-lg object-contain" />
+    <img src={lightboxUrl} alt={$t('chat.fullSize')} class="max-w-full max-h-full rounded-lg object-contain" />
   </button>
 {/if}
 </div>

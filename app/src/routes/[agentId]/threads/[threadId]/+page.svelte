@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getContext, onMount, onDestroy } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext, EnrichedChat } from '$lib/types/agentPage';
@@ -98,7 +99,7 @@
     const ws = getWebSocketClient();
     activeRunUnsubs.push(ws.on<{ agentId?: string; session_id?: string; error?: string }>('chat_error', (data) => {
       if (!isFirstRunEvent(data)) return;
-      const message = data.error || 'Something went wrong.';
+      const message = data.error || $t('chat.somethingWentWrong');
       // Survive a remount: keep pending-send + stash the error so a new page
       // instance can restore the bubble and the provider banner.
       sessionStorage.setItem(pendingErrorKey(initialThreadId), message);
@@ -384,11 +385,11 @@
 
 <ChatPane
   messages={chat.messages}
-  agentName={agent?.name ?? 'Agent'}
+  agentName={agent?.name ?? $t('common.agent')}
   agentId={agentId}
   {threadId}
-  headerTitle={thread?.name ?? 'Thread'}
-  headerRight="Work"
+  headerTitle={thread?.name ?? $t('chat.thread')}
+  headerRight={$t('chat.work')}
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
   quotaWarning={chat.quotaWarning}

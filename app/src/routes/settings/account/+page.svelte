@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount, onDestroy } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { neboAIOAuthStartWithJanus, neboAIOAuthStatus } from '$lib/api/index';
 
   let user = $state({ name: '', email: '', displayName: '' });
@@ -56,7 +57,7 @@
       oauthTimeout = setTimeout(() => {
         if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
         reconnecting = false;
-        reconnectError = 'Connection timed out. Please try again.';
+        reconnectError = $t('settingsAccount.connectionTimeout');
       }, 180_000);
 
       oauthPollInterval = setInterval(async () => {
@@ -73,12 +74,12 @@
             if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
             if (oauthTimeout) { clearTimeout(oauthTimeout); oauthTimeout = null; }
             reconnecting = false;
-            reconnectError = status.error || 'OAuth failed. Please try again.';
+            reconnectError = status.error || $t('settingsAccount.oauthFailed');
           } else if (status?.status === 'expired') {
             if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
             if (oauthTimeout) { clearTimeout(oauthTimeout); oauthTimeout = null; }
             reconnecting = false;
-            reconnectError = 'OAuth session expired. Please try again.';
+            reconnectError = $t('settingsAccount.oauthExpired');
           }
         } catch {
           // Poll error — keep trying
@@ -86,7 +87,7 @@
       }, 2000);
     } catch (err) {
       reconnecting = false;
-      reconnectError = err instanceof Error ? err.message : 'Failed to start OAuth flow';
+      reconnectError = err instanceof Error ? err.message : $t('settingsAccount.oauthStartFailed');
     }
   }
 
@@ -99,7 +100,7 @@
   }
 
   async function handleDeleteAccount() {
-    if (!confirm('Are you sure you want to delete your account? This cannot be undone.')) return;
+    if (!confirm($t('settingsAccount.deleteConfirm'))) return;
     try {
       const api = await import('$lib/api/nebo');
       await api.userDeleteAccount();
@@ -107,7 +108,7 @@
   }
 </script>
 
-<SettingsHeader title="NeboAI Account" description="Manage your NeboAI connection and account settings." />
+<SettingsHeader title={$t('settingsAccount.neboaiAccount')} description={$t('settingsAccount.pageDescription')} />
 
 <!-- Connection status + inline connect/disconnect action -->
 <div class="p-4 rounded-xl border border-base-content/10 bg-base-100 mb-2">
@@ -117,19 +118,19 @@
       <div class="flex items-center gap-2">
         <span class="text-sm font-medium truncate">{user.displayName}</span>
         <span class="px-2 py-0.5 rounded text-xs font-semibold {connected ? 'bg-success/10 text-success' : 'bg-base-200 text-base-content/70'}">
-          {connected ? 'Connected' : 'Disconnected'}
+          {connected ? $t('common.connected') : $t('common.disconnected')}
         </span>
       </div>
       <div class="text-xs text-base-content/70 truncate">{user.email}</div>
     </div>
     {#if connected}
-      <button class="shrink-0 px-3 py-1.5 rounded-lg border border-error/20 text-sm font-medium text-error hover:bg-error/5 transition-colors cursor-pointer" onclick={disconnect}>Disconnect</button>
+      <button class="shrink-0 px-3 py-1.5 rounded-lg border border-error/20 text-sm font-medium text-error hover:bg-error/5 transition-colors cursor-pointer" onclick={disconnect}>{$t('settingsAccount.disconnect')}</button>
     {:else}
       <button
         class="shrink-0 px-3 py-1.5 rounded-lg border border-primary/30 text-sm font-medium text-primary hover:bg-primary/5 transition-colors cursor-pointer disabled:opacity-50"
         onclick={reconnect}
         disabled={reconnecting}
-      >{reconnecting ? 'Connecting…' : 'Connect'}</button>
+      >{reconnecting ? $t('settingsPlugins.connecting') : $t('oauth.connect')}</button>
     {/if}
   </div>
   {#if reconnectError}
@@ -138,13 +139,13 @@
 </div>
 
 <div class="mb-8">
-  <a href="/settings/usage" class="text-sm font-medium text-primary hover:underline">View Usage →</a>
+  <a href="/settings/usage" class="text-sm font-medium text-primary hover:underline">{$t('settingsAccount.viewUsageArrow')}</a>
 </div>
 
 <!-- Bot Identity (immutable) -->
 <div class="mb-8">
-  <h3 class="text-base font-semibold mb-1">Bot Identity</h3>
-  <p class="text-xs text-base-content/70 mb-2.5">Your bot's permanent, globally-unique identity. This never changes.</p>
+  <h3 class="text-base font-semibold mb-1">{$t('settingsAccount.botIdentity')}</h3>
+  <p class="text-xs text-base-content/70 mb-2.5">{$t('settingsAccount.botIdentityDesc')}</p>
   <div class="flex items-center gap-3 p-3 rounded-lg border border-base-content/10 bg-base-200/50" data-selectable>
     <span class="font-mono text-sm font-medium text-base-content shrink-0">@{defaultHandle || 'bot_…'}</span>
     {#if botId}
@@ -155,14 +156,14 @@
 
 <!-- Danger zone -->
 <div class="mb-7">
-  <h3 class="text-base font-semibold mb-3 text-error">Danger Zone</h3>
+  <h3 class="text-base font-semibold mb-3 text-error">{$t('settingsAccount.dangerZone')}</h3>
   <div class="p-4 rounded-xl border border-error/20 bg-base-100">
     <div class="flex items-center justify-between">
       <div>
-        <div class="text-sm font-medium">Delete Account</div>
-        <div class="text-sm">Permanently delete your account and all data. This cannot be undone.</div>
+        <div class="text-sm font-medium">{$t('settingsAccount.deleteModal.title')}</div>
+        <div class="text-sm">{$t('settingsAccount.deleteAccountDesc')}</div>
       </div>
-      <button class="px-3 py-1.5 rounded-lg border border-error/30 text-sm text-error font-medium cursor-pointer hover:bg-error/5 transition-colors" onclick={handleDeleteAccount}>Delete Account</button>
+      <button class="px-3 py-1.5 rounded-lg border border-error/30 text-sm text-error font-medium cursor-pointer hover:bg-error/5 transition-colors" onclick={handleDeleteAccount}>{$t('settingsAccount.deleteModal.title')}</button>
     </div>
   </div>
 </div>

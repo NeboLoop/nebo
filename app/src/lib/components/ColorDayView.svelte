@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { AGENT_COLORS } from '$lib/tokens.js';
   import { AGENTS } from '$lib/data.js';
   import { packLanes } from '$lib/utils.js';
@@ -90,10 +91,10 @@
               style="top:{i * HOUR_PX}px"
             >
               {#if h === 12}
-                <span class="font-medium">Noon</span>
+                <span class="font-medium">{$t('schedule.noon')}</span>
               {:else}
                 <span class="font-medium">{h === 0 ? 12 : h <= 12 ? h : h - 12}</span>
-                <span class="text-base-content/60 ml-0.5">{h < 12 ? 'AM' : 'PM'}</span>
+                <span class="text-base-content/60 ml-0.5">{h < 12 ? $t('schedule.am') : $t('schedule.pm')}</span>
               {/if}
             </div>
           {/each}
@@ -133,7 +134,7 @@
               class="absolute rounded-sm overflow-hidden cursor-pointer flex items-start transition-shadow border-l-[3px] px-1.5 pt-[3px] {c.fillClass} {c.edgeClass} {c.textClass}"
               class:ring-2={isSelected}
               style="left:calc({leftPct}% + 4px); width:calc({widthPct}% - 8px); top:{top}px; height:{height}px; {isHeartbeat ? 'border-left-style:dashed; ' : ''}{isSelected ? `--tw-ring-color:${c.edgeVar}; z-index:20` : `z-index:${zBase}`}"
-              title="{a?.name ?? item.agent}: {item.label}{isHeartbeat && item.interval ? ` (every ${item.interval})` : ''}"
+              title="{a?.name ?? item.agent}: {item.label}{isHeartbeat && item.interval ? ` (${$t('schedule.everyInterval', { values: { interval: item.interval } })})` : ''}"
               onclick={(e) => { e.stopPropagation(); selected = item._id; createData = null; }}
               onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selected = item._id; createData = null; } }}
               role="button"

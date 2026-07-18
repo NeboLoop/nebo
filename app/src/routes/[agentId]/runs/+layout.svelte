@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getContext } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import AgentTabBar from '$lib/components/AgentTabBar.svelte';
   import type { AgentPageContext, AgentRun } from '$lib/types/agentPage';
@@ -53,27 +54,27 @@
       <button
         class="py-0.5 px-2 rounded-full text-xs font-medium cursor-pointer border transition-colors {statusFilter === 'all' ? 'bg-base-content text-base-100 border-base-content' : 'bg-transparent border-base-300 hover:bg-base-200'}"
         onclick={() => statusFilter = 'all'}
-      >All {runs.length}</button>
+      >{$t('agentActivity.filterAll', { values: { count: runs.length } })}</button>
       {#if failedCount > 0}
         <button
           class="py-0.5 px-2 rounded-full text-xs font-medium cursor-pointer border transition-colors {statusFilter === 'failed' ? 'bg-error text-error-content border-error' : 'bg-transparent border-base-300 hover:bg-base-200 text-error'}"
           onclick={() => statusFilter = 'failed'}
-        >Failed {failedCount}</button>
+        >{$t('agentActivity.filterFailed', { values: { count: failedCount } })}</button>
       {/if}
       {#if runningCount > 0}
         <button
           class="py-0.5 px-2 rounded-full text-xs font-medium cursor-pointer border transition-colors {statusFilter === 'running' ? 'bg-warning text-warning-content border-warning' : 'bg-transparent border-base-300 hover:bg-base-200 text-warning'}"
           onclick={() => statusFilter = 'running'}
-        >Running {runningCount}</button>
+        >{$t('agentActivity.filterRunning', { values: { count: runningCount } })}</button>
       {/if}
     </div>
   {/if}
 
   <div class="flex-1 overflow-y-auto">
     {#if runs.length === 0}
-      <div class="p-6 text-center text-sm text-base-content/50">No runs yet.</div>
+      <div class="p-6 text-center text-sm text-base-content/50">{$t('agentActivity.noRuns')}</div>
     {:else if filteredRuns.length === 0}
-      <div class="p-6 text-center text-sm text-base-content/50">No {statusFilter} runs.</div>
+      <div class="p-6 text-center text-sm text-base-content/50">{$t('agentActivity.noFilteredRuns', { values: { status: statusFilter } })}</div>
     {:else}
       {@const byDate = Object.groupBy(filteredRuns, (r: AgentRun) => r.dateGroup)}
       {#each Object.entries(byDate) as [date, dateRuns]}

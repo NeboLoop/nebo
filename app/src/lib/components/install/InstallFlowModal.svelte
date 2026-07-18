@@ -21,6 +21,7 @@
 -->
 
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import {
@@ -137,7 +138,22 @@
   let installTimeout: ReturnType<typeof setTimeout> | null = null;
   let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  const typeLabel = $derived(codeType ? codeType.charAt(0).toUpperCase() + codeType.slice(1) : 'Agent');
+  const KIND_KEYS: Record<string, string> = {
+    agent: 'marketplace.kind.agent',
+    app: 'marketplace.kind.app',
+    skill: 'marketplace.kind.skill',
+    plugin: 'marketplace.kind.plugin',
+    connector: 'marketplace.kind.connector',
+    workflow: 'marketplace.kind.workflow',
+    collection: 'marketplace.kind.collection',
+  };
+  const typeLabel = $derived(
+    codeType
+      ? KIND_KEYS[codeType]
+        ? $t(KIND_KEYS[codeType])
+        : codeType.charAt(0).toUpperCase() + codeType.slice(1)
+      : $t('marketplace.kind.agent'),
+  );
   const installedCount = $derived(deps.filter((d) => d.status === 'installed').length);
   const failedCount = $derived(deps.filter((d) => d.status === 'failed').length);
   const settledCount = $derived(installedCount + failedCount);
@@ -152,31 +168,31 @@
 
   const title = $derived(
     phase === 'done'
-      ? configuring ? 'Saved' : `${artifactName || typeLabel} Installed`
+      ? configuring ? $t('common.saved') : $t('installFlow.installedTitle', { values: { name: artifactName || typeLabel } })
       : phase === 'error'
-        ? 'Install Failed'
+        ? $t('installFlow.installFailed')
         : phase === 'confirm'
-          ? 'Confirm Purchase'
+          ? $t('installFlow.confirmPurchase')
           : phase === 'processing'
-            ? 'Processing Payment'
+            ? $t('installFlow.processingPayment')
             : phase === 'inputs'
-              ? configuring ? `Configure ${agentName || ''}` : `Set up ${artifactName || agentName || ''}`
+              ? configuring ? $t('installFlow.configureTitle', { values: { name: agentName || '' } }) : $t('installFlow.setupTitle', { values: { name: artifactName || agentName || '' } })
               : phase === 'schedule'
-                ? 'How often should it run?'
-                : `Installing ${typeLabel}`,
+                ? $t('installFlow.scheduleTitle')
+                : $t('installFlow.installingTitle', { values: { type: typeLabel } }),
   );
 
-  const intervalOptions = [
-    { value: '5m', label: 'Every 5 minutes' },
-    { value: '10m', label: 'Every 10 minutes' },
-    { value: '15m', label: 'Every 15 minutes' },
-    { value: '30m', label: 'Every 30 minutes' },
-    { value: '1h', label: 'Every hour' },
-    { value: '2h', label: 'Every 2 hours' },
-    { value: '4h', label: 'Every 4 hours' },
-    { value: '8h', label: 'Every 8 hours' },
-    { value: '24h', label: 'Every 24 hours' },
-  ];
+  const intervalOptions = $derived([
+    { value: '5m', label: $t('automations.every5min') },
+    { value: '10m', label: $t('automations.every10min') },
+    { value: '15m', label: $t('automations.every15min') },
+    { value: '30m', label: $t('automations.every30min') },
+    { value: '1h', label: $t('automations.everyHour') },
+    { value: '2h', label: $t('automations.every2h') },
+    { value: '4h', label: $t('automations.every4h') },
+    { value: '8h', label: $t('automations.every8h') },
+    { value: '24h', label: $t('automations.every24h') },
+  ]);
 
   function formatPrice(cents: number, interval?: string): string {
     const amount = new Intl.NumberFormat('en-US', {
@@ -184,8 +200,8 @@
       currency: 'usd',
       minimumFractionDigits: 0,
     }).format(cents / 100);
-    if (interval === 'year') return `${amount}/yr`;
-    if (interval === 'month') return `${amount}/mo`;
+    if (interval === 'year') return $t('installFlow.pricePerYear', { values: { amount } });
+    if (interval === 'month') return $t('installFlow.pricePerMonth', { values: { amount } });
     return amount;
   }
 
@@ -313,7 +329,7 @@
       if (mode === 'configure') {
         agentId = existingAgentId;
       } else {
-        statusMessage = 'Installing…';
+        statusMessage = $t('marketplace.detail.installing');
         phase = 'installing';
         if (dependencies) seedDepRows(dependencies);
         const res = await installStoreProduct(appId);
@@ -321,7 +337,7 @@
       }
       await loadSetup(agentId);
     } catch (e: any) {
-      errorMessage = e?.error || e?.message || 'Failed to install';
+      errorMessage = e?.error || e?.message || $t('installFlow.failedToInstall');
       phase = 'error';
     }
   }
@@ -425,7 +441,7 @@
 
   async function finalize() {
     if (agentId) await activateAgent(agentId).catch(() => {});
-    statusMessage = configuring ? 'Saved' : `${artifactName || typeLabel} installed`;
+    statusMessage = configuring ? $t('common.saved') : $t('installFlow.installedStatus', { values: { name: artifactName || typeLabel } });
     phase = 'done';
     // Surface any plugins still needing auth on the review screen. (Also refreshed
     // on dep_cascade_complete; this covers agents with no cascade.)
@@ -484,9 +500,12 @@
   function summarizeTrigger(wf: AgentWorkflow): string {
     if (wf.triggerType === 'heartbeat') {
       const interval = wf.triggerConfig.split('|')[0] || '30m';
-      return intervalOptions.find((o) => o.value === interval)?.label || `Every ${interval}`;
+      return (
+        intervalOptions.find((o) => o.value === interval)?.label ||
+        $t('automations.everyInterval', { values: { interval } })
+      );
     }
-    if (wf.triggerType === 'schedule') return `Scheduled: ${wf.triggerConfig}`;
+    if (wf.triggerType === 'schedule') return $t('installFlow.scheduledAt', { values: { config: wf.triggerConfig } });
     return wf.triggerType;
   }
 
@@ -532,7 +551,7 @@
     reset();
     code = data?.code || '';
     codeType = data?.code_type || '';
-    statusMessage = data?.status_message || 'Processing…';
+    statusMessage = data?.status_message || $t('installFlow.processing');
     interactive = data?.interactive !== false;
     show = true;
 
@@ -541,7 +560,7 @@
     // round-trip is <3s. Real cause of a slow spinner is a missing/late code_result.
     installTimeout = setTimeout(() => {
       if (phase === 'installing') {
-        statusMessage = `${typeLabel} installed — finalizing…`;
+        statusMessage = $t('installFlow.installedFinalizing', { values: { type: typeLabel } });
         phase = 'done';
         autoCloseIfRemote(2000);
       }
@@ -577,7 +596,7 @@
       return;
     }
     if (!success) {
-      errorMessage = (data?.error as string) || 'Installation failed';
+      errorMessage = (data?.error as string) || $t('installFlow.installationFailed');
       phase = 'error';
       return;
     }
@@ -586,7 +605,7 @@
     if ((codeType === 'agent' || codeType === 'app') && id) {
       await loadSetup(id);
     } else {
-      statusMessage = message || `${artifactName || typeLabel} installed`;
+      statusMessage = message || $t('installFlow.installedStatus', { values: { name: artifactName || typeLabel } });
       phase = 'done';
       autoCloseIfRemote();
     }
@@ -617,13 +636,13 @@
       if (resp.checkoutUrl) {
         window.open(resp.checkoutUrl, '_blank');
         phase = 'processing';
-        statusMessage = 'Complete payment in your browser…';
+        statusMessage = $t('installFlow.completePaymentInBrowser');
       } else {
         phase = 'processing';
-        statusMessage = 'Finalizing…';
+        statusMessage = $t('installFlow.finalizing');
       }
     } catch (e: any) {
-      errorMessage = e?.message || 'Failed to start checkout';
+      errorMessage = e?.message || $t('installFlow.failedToStartCheckout');
       phase = 'error';
     } finally {
       confirmLoading = false;
@@ -691,7 +710,7 @@
     const d = (e as CustomEvent).detail;
     if (!d?.reference) return;
     const idx = findOrAddDep(d.reference, (d.depType || 'skill').toLowerCase(), d.name, d.slug);
-    deps[idx] = { ...deps[idx], status: 'failed', error: (d.error as string) || 'Unknown error' };
+    deps[idx] = { ...deps[idx], status: 'failed', error: (d.error as string) || $t('installFlow.unknownError') };
   }
   function handlePluginInstalling(e: Event) {
     if (!show) return;
@@ -733,7 +752,7 @@
         deps: [{ depType: dep.type, reference: dep.reference, name: dep.name, slug: dep.slug }],
       });
     } catch {
-      deps[idx] = { ...deps[idx], status: 'failed', error: 'Retry failed to start' };
+      deps[idx] = { ...deps[idx], status: 'failed', error: $t('installFlow.retryFailedToStart') };
     }
   }
 
@@ -828,7 +847,7 @@
         <button
           class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/50 hover:text-base-content transition-colors"
           onclick={close}
-          title="Close"
+          title={$t('common.close')}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -861,25 +880,25 @@
             {#if inputFields.length > 0}
               <AgentInputForm fields={inputFields} bind:values={inputValues} onchange={(v) => (inputValues = v)} />
             {:else}
-              <p class="text-sm text-base-content/70 text-center">No configuration needed — ready to go!</p>
+              <p class="text-sm text-base-content/70 text-center">{$t('installFlow.noConfigNeeded')}</p>
             {/if}
             <button type="button" class="btn btn-primary btn-sm w-full" onclick={submitInputs}>
-              {configuring ? 'Save changes' : 'Continue'}
+              {configuring ? $t('installFlow.saveChanges') : $t('common.continue')}
             </button>
             {#if configuring && onUninstall}
               <button type="button" class="btn btn-ghost btn-sm text-error/80 hover:text-error" onclick={onUninstall}>
-                Uninstall {agentName}
+                {$t('installFlow.uninstallName', { values: { name: agentName } })}
               </button>
             {/if}
           </div>
 
         {:else if phase === 'schedule'}
           <div class="flex flex-col gap-4">
-            <p class="text-sm text-base-content/70 text-center">You can change these anytime in the Automate tab.</p>
+            <p class="text-sm text-base-content/70 text-center">{$t('installFlow.changeAnytime')}</p>
             {#each workflows.filter((w) => w.isActive && (w.triggerType === 'schedule' || w.triggerType === 'heartbeat')) as wf}
               <div class="rounded-xl border border-base-content/10 p-4">
                 <p class="text-sm font-medium mb-1">{wf.description || wf.bindingName}</p>
-                <p class="text-xs text-base-content/70 mb-3">Currently: {summarizeTrigger(wf)}</p>
+                <p class="text-xs text-base-content/70 mb-3">{$t('installFlow.currently', { values: { value: summarizeTrigger(wf) } })}</p>
                 {#if wf.triggerType === 'heartbeat'}
                   <select
                     class="select select-bordered select-sm w-full"
@@ -889,11 +908,11 @@
                     {#each intervalOptions as opt}<option value={opt.value}>{opt.label}</option>{/each}
                   </select>
                 {:else}
-                  <p class="text-xs text-base-content/70">This runs on a fixed schedule.</p>
+                  <p class="text-xs text-base-content/70">{$t('installFlow.fixedSchedule')}</p>
                 {/if}
               </div>
             {/each}
-            <button type="button" class="btn btn-primary btn-sm w-full" onclick={applySchedules}>Start working</button>
+            <button type="button" class="btn btn-primary btn-sm w-full" onclick={applySchedules}>{$t('installFlow.startWorking')}</button>
           </div>
 
         {:else if phase === 'done'}
@@ -901,16 +920,16 @@
             {#if cascadePending}
               <span class="loading loading-spinner loading-lg text-primary"></span>
               <p class="text-sm font-medium">
-                Installing dependencies… <span class="font-mono text-base-content/50">{settledCount}/{progressTotal}</span>
+                {$t('installFlow.installingDependencies')} <span class="font-mono text-base-content/50">{settledCount}/{progressTotal}</span>
               </p>
             {:else}
               <div class="w-12 h-12 rounded-full bg-success/15 flex items-center justify-center">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-success"><polyline points="20 6 9 17 4 12"/></svg>
               </div>
-              <p class="text-sm font-medium">{configuring ? 'Saved!' : `${artifactName || typeLabel} installed!`}</p>
+              <p class="text-sm font-medium">{configuring ? $t('installFlow.savedExclaim') : $t('installFlow.installedExclaim', { values: { name: artifactName || typeLabel } })}</p>
               {#if needsSetupFlag && agentId}
                 <button type="button" class="btn btn-xs btn-outline" onclick={() => { const id = agentId; close(); goto(`/${id}/settings/configure`); }}>
-                  Finish setup in Settings
+                  {$t('installFlow.finishSetupInSettings')}
                 </button>
               {/if}
             {/if}
@@ -922,7 +941,7 @@
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-error"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
             </div>
             <div class="text-center">
-              <p class="text-sm font-medium">Failed to install</p>
+              <p class="text-sm font-medium">{$t('installFlow.failedToInstall')}</p>
               <p class="text-xs text-error/80 mt-2 max-w-[280px]">{errorMessage}</p>
             </div>
           </div>
@@ -940,23 +959,23 @@
               <div class="w-full rounded-xl bg-base-200/50 border border-base-content/10 p-4">
                 {#if tier.name}<p class="text-xs text-base-content/50 mb-1">{tier.name}</p>{/if}
                 <p class="text-xl font-bold text-base-content">{formatPrice(tier.recurringPriceCents || 0, tier.billingInterval)}</p>
-                {#if tier.pricingModel === 'perBot'}<p class="text-xs text-base-content/50 mt-1">per agent</p>{/if}
+                {#if tier.pricingModel === 'perBot'}<p class="text-xs text-base-content/50 mt-1">{$t('installFlow.perEmployee')}</p>{/if}
               </div>
             {/if}
             <div class="w-full rounded-xl bg-base-200/50 border border-base-content/10 p-4">
               {#if paymentMethodLoading}
-                <div class="flex items-center gap-2"><span class="loading loading-spinner loading-xs text-base-content/50"></span><span class="text-xs text-base-content/50">Loading payment info…</span></div>
+                <div class="flex items-center gap-2"><span class="loading loading-spinner loading-xs text-base-content/50"></span><span class="text-xs text-base-content/50">{$t('installFlow.loadingPaymentInfo')}</span></div>
               {:else if paymentMethod}
-                <div class="flex items-center gap-2"><span class="text-sm text-base-content">{paymentMethod.brand || paymentMethod.type} ending in {paymentMethod.lastFour || '****'}</span></div>
+                <div class="flex items-center gap-2"><span class="text-sm text-base-content">{$t('settingsBilling.cardEnding', { values: { brand: paymentMethod.brand || paymentMethod.type, lastFour: paymentMethod.lastFour || '****' } })}</span></div>
               {:else}
-                <p class="text-xs text-base-content/50">Payment method will be collected at checkout</p>
+                <p class="text-xs text-base-content/50">{$t('installFlow.paymentAtCheckout')}</p>
               {/if}
             </div>
             <div class="flex flex-col gap-2 w-full mt-1">
               <button type="button" class="btn btn-primary btn-sm w-full" onclick={confirmPurchase} disabled={confirmLoading || paymentMethodLoading}>
-                {#if confirmLoading}<span class="loading loading-spinner loading-xs"></span>{:else}Confirm Purchase{tier ? ` — ${formatPrice(tier.recurringPriceCents || 0, tier.billingInterval)}` : ''}{/if}
+                {#if confirmLoading}<span class="loading loading-spinner loading-xs"></span>{:else}{$t('installFlow.confirmPurchase')}{tier ? ` — ${formatPrice(tier.recurringPriceCents || 0, tier.billingInterval)}` : ''}{/if}
               </button>
-              <button type="button" class="btn btn-sm btn-ghost w-full" onclick={close}>Cancel</button>
+              <button type="button" class="btn btn-sm btn-ghost w-full" onclick={close}>{$t('common.cancel')}</button>
             </div>
           </div>
 
@@ -964,10 +983,10 @@
           <div class="flex flex-col items-center gap-4">
             <span class="loading loading-spinner loading-lg text-primary"></span>
             <div class="text-center">
-              <p class="text-sm font-medium">{statusMessage || 'Processing payment…'}</p>
-              <p class="text-xs text-base-content/50 mt-1.5">This may take a moment</p>
+              <p class="text-sm font-medium">{statusMessage || $t('installFlow.processingPaymentEllipsis')}</p>
+              <p class="text-xs text-base-content/50 mt-1.5">{$t('installFlow.mayTakeMoment')}</p>
             </div>
-            <button type="button" class="btn btn-sm btn-ghost" onclick={close}>Cancel</button>
+            <button type="button" class="btn btn-sm btn-ghost" onclick={close}>{$t('common.cancel')}</button>
           </div>
         {/if}
 
@@ -975,8 +994,8 @@
         {#if deps.length > 0}
           <div class="border-t border-base-content/10 pt-4 mt-5">
             <p class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">
-              Dependencies ({installedCount}/{progressTotal})
-              {#if failedCount > 0}<span class="text-error/70 normal-case font-medium"> · {failedCount} failed</span>{/if}
+              {$t('installFlow.dependencies')} ({installedCount}/{progressTotal})
+              {#if failedCount > 0}<span class="text-error/70 normal-case font-medium"> · {$t('agentActivity.failedCount', { values: { count: failedCount } })}</span>{/if}
             </p>
             <ul class="flex flex-col gap-2">
               {#each deps as dep}
@@ -997,25 +1016,25 @@
                   <div class="flex-1 min-w-0">
                     <div class="truncate font-medium {dep.status === 'failed' ? 'text-error/90' : ''}">{label}</div>
                     {#if dep.reference !== label}
-                      <button type="button" class="font-mono text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none p-0" title="Copy install code" onclick={() => copyCode(dep.reference)}>
-                        {copiedRef === dep.reference ? 'Copied ✓' : dep.reference}
+                      <button type="button" class="font-mono text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none p-0" title={$t('installFlow.copyInstallCode')} onclick={() => copyCode(dep.reference)}>
+                        {copiedRef === dep.reference ? $t('installFlow.copied') : dep.reference}
                       </button>
                     {/if}
                   </div>
                   {#if auth && aState === 'connected'}
-                    <span class="text-xs text-success shrink-0">Connected</span>
+                    <span class="text-xs text-success shrink-0">{$t('common.connected')}</span>
                   {:else}
                     <span class="text-xs text-base-content/40 shrink-0">{dep.type}</span>
                   {/if}
                   {#if dep.status === 'failed'}
-                    <button type="button" class="btn btn-xs btn-primary shrink-0" onclick={() => retryDep(dep)} title={dep.error}>Install</button>
+                    <button type="button" class="btn btn-xs btn-primary shrink-0" onclick={() => retryDep(dep)} title={dep.error}>{$t('common.install')}</button>
                   {:else if auth && aState !== 'connected'}
                     {#if aState === 'connecting'}
                       <span class="loading loading-spinner loading-xs text-primary shrink-0"></span>
                     {:else if auth.authType === 'env'}
-                      <button type="button" class="btn btn-xs btn-outline shrink-0" onclick={() => openPluginSettings(auth)}>Set up</button>
+                      <button type="button" class="btn btn-xs btn-outline shrink-0" onclick={() => openPluginSettings(auth)}>{$t('installFlow.setUp')}</button>
                     {:else}
-                      <button type="button" class="btn btn-xs btn-primary shrink-0" disabled={!!connectingSlug} onclick={() => connectPlugin(slug)}>{aState === 'failed' ? 'Retry' : 'Connect'}</button>
+                      <button type="button" class="btn btn-xs btn-primary shrink-0" disabled={!!connectingSlug} onclick={() => connectPlugin(slug)}>{aState === 'failed' ? $t('common.retry') : $t('settingsPlugins.connect')}</button>
                     {/if}
                   {/if}
                 </li>
@@ -1028,15 +1047,15 @@
       <!-- Footer -->
       {#if phase === 'error'}
         <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
-          <button type="button" class="btn btn-sm btn-ghost" onclick={close}>Close</button>
+          <button type="button" class="btn btn-sm btn-ghost" onclick={close}>{$t('common.close')}</button>
         </div>
       {:else if phase === 'done' && interactive}
         <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
-          <button type="button" class="btn btn-sm btn-primary" disabled={cascadePending} onclick={() => { const id = agentId; close(); oncomplete?.(id || undefined); }}>Done</button>
+          <button type="button" class="btn btn-sm btn-primary" disabled={cascadePending} onclick={() => { const id = agentId; close(); oncomplete?.(id || undefined); }}>{$t('common.done')}</button>
         </div>
       {:else if showSkip}
         <div class="shrink-0 flex justify-between px-5 py-3 border-t border-base-content/10">
-          <button type="button" class="btn btn-sm btn-ghost" onclick={skipSetup}>Skip setup</button>
+          <button type="button" class="btn btn-sm btn-ghost" onclick={skipSetup}>{$t('installFlow.skipSetup')}</button>
         </div>
       {/if}
     </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { onMount } from 'svelte';
   import UpdateBanner from '$lib/components/UpdateBanner.svelte';
 
@@ -29,12 +30,12 @@
   });
 
   const menuItems = [
-    { href: '/settings/profile', label: 'Settings', icon: '⚙' },
-    { href: '/settings/account', label: 'Account', icon: '👤' },
-    { href: '/settings/billing', label: 'Billing', icon: '💳' },
-    { href: '/pricing', label: 'Upgrade', icon: '↑' },
+    { href: '/settings/profile', label: 'nav.settings', icon: '⚙' },
+    { href: '/settings/account', label: 'settings.navItems.account', icon: '👤' },
+    { href: '/settings/billing', label: 'settings.navItems.billing', icon: '💳' },
+    { href: '/pricing', label: 'sidebar.upgrade', icon: '↑' },
     null,
-    { href: '/settings/about', label: 'About Nebo', icon: 'ℹ' },
+    { href: '/settings/about', label: 'userMenu.aboutNebo', icon: 'ℹ' },
   ];
 </script>
 
@@ -53,7 +54,7 @@
             onclick={() => open = false}
           >
             <span class="w-4 text-center text-sm">{item.icon}</span>
-            {item.label}
+            {$t(item.label)}
           </a>
         {/if}
       {/each}
@@ -68,7 +69,7 @@
     {#if !collapsed}
       <div class="flex-1 min-w-0">
         <div class="text-sm font-medium truncate">{displayName}</div>
-        <div class="text-xs text-base-content/70 truncate">{planName} Plan</div>
+        <div class="text-xs text-base-content/70 truncate">{$t('userMenu.planSuffix', { values: { plan: planName } })}</div>
       </div>
       <span class="text-sm">&middot;&middot;&middot;</span>
     {/if}

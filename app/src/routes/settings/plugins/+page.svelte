@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { setPluginConfig } from '$lib/api/index';
   import { getWebSocketClient } from '$lib/websocket/client';
   import SetupWizard from '$lib/components/SetupWizard.svelte';
@@ -250,30 +251,30 @@
   }
 </script>
 
-<SettingsHeader title="Plugins" description="Manage installed plugins and their connections." />
+<SettingsHeader title={$t('settingsPlugins.title')} description={$t('settingsPlugins.pageDescription')} />
 
 <div class="flex gap-3 mb-6">
-  <StatCard label="Installed" value={plugins.length} />
-  <StatCard label="Connected" value={connectedCount} accent="success" />
-  <StatCard label="Events" value={totalEvents} />
+  <StatCard label={$t('common.installed')} value={plugins.length} />
+  <StatCard label={$t('common.connected')} value={connectedCount} accent="success" />
+  <StatCard label={$t('commandPalette.events')} value={totalEvents} />
 </div>
 
 <div class="mb-6">
   <div class="flex items-center justify-between mb-3">
-    <h3 class="text-base font-semibold">Installed Plugins</h3>
+    <h3 class="text-base font-semibold">{$t('settingsPlugins.installedPlugins')}</h3>
     {#if plugins.length > 0}
-      <input type="text" bind:value={searchQuery} placeholder="Search plugins…" class="input input-sm input-bordered max-w-xs text-sm" />
+      <input type="text" bind:value={searchQuery} placeholder={$t('settingsPlugins.searchPlaceholder')} class="input input-sm input-bordered max-w-xs text-sm" />
     {/if}
   </div>
 
   {#if plugins.length === 0}
     <div class="text-center py-12">
-      <div class="text-xs text-base-content/50 mb-2">No plugins installed.</div>
-      <a href="/marketplace/plugins" class="text-sm text-primary hover:underline">Browse plugins &rarr;</a>
+      <div class="text-xs text-base-content/50 mb-2">{$t('settingsPlugins.noneInstalled')}</div>
+      <a href="/marketplace/plugins" class="text-sm text-primary hover:underline">{$t('settingsPlugins.browsePluginsArrow')}</a>
     </div>
   {:else if filteredPlugins.length === 0}
     <div class="text-center py-8">
-      <div class="text-xs text-base-content/50">No plugins match "{searchQuery}"</div>
+      <div class="text-xs text-base-content/50">{$t('settingsPlugins.noMatch', { values: { search: searchQuery } })}</div>
     </div>
   {:else}
     <div class="flex flex-col gap-1.5">
@@ -281,7 +282,7 @@
         {@const connected = authStatuses[plugin.id] === 'connected' || !plugin.hasAuth}
         <SettingsRow>
           {#snippet leading()}
-            <div class="w-2 h-2 rounded-full shrink-0 {connected ? 'bg-success' : 'bg-base-content/20'}" title={connected ? 'Ready' : 'Not connected'}></div>
+            <div class="w-2 h-2 rounded-full shrink-0 {connected ? 'bg-success' : 'bg-base-content/20'}" title={connected ? $t('onboarding.provider.ready') : $t('settingsProviders.notConnected')}></div>
           {/snippet}
           <div class="flex items-center gap-2">
             <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-left" onclick={() => openPluginDetail(plugin)}>{plugin.name}</button>
@@ -289,7 +290,7 @@
               <span class="text-xs text-base-content/50 font-mono">{plugin.version}</span>
             {/if}
             {#if plugin.updateAvailable}
-              <a href="/settings/updates" class="py-0.5 px-2 rounded bg-primary/15 text-primary text-xs font-medium no-underline hover:bg-primary/25 transition-colors">Update to {plugin.updateAvailable}</a>
+              <a href="/settings/updates" class="py-0.5 px-2 rounded bg-primary/15 text-primary text-xs font-medium no-underline hover:bg-primary/25 transition-colors">{$t('agentSettings.updateTo', { values: { version: plugin.updateAvailable } })}</a>
             {/if}
           </div>
           {#if plugin.desc}
@@ -298,36 +299,36 @@
           {#if plugin.author || plugin.hasEvents}
             <div class="flex items-center gap-2 mt-1">
               {#if plugin.author}
-                <span class="text-xs text-base-content/50">by {plugin.author}</span>
+                <span class="text-xs text-base-content/50">{$t('settingsApps.byAuthor', { values: { name: plugin.author } })}</span>
               {/if}
               {#if plugin.author && plugin.hasEvents}
                 <span class="text-xs text-base-content/30">&middot;</span>
               {/if}
               {#if plugin.hasEvents}
-                <span class="text-xs text-base-content/50">{plugin.eventCount} {plugin.eventCount === 1 ? 'event' : 'events'}</span>
+                <span class="text-xs text-base-content/50">{plugin.eventCount === 1 ? $t('settingsPlugins.eventCountSingular', { values: { count: plugin.eventCount } }) : $t('settingsPlugins.eventCount', { values: { count: plugin.eventCount } })}</span>
               {/if}
             </div>
           {/if}
           {#snippet actions()}
             {#if plugin.hasAuth && plugin.authEnvVars.length > 0 && !plugin.authKeysSet}
-              <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>Set API Keys</button>
+              <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>{$t('settingsPlugins.setApiKeys')}</button>
             {:else if plugin.hasAuth && plugin.authType !== 'env'}
               {@const status = authStatuses[plugin.id] ?? 'disconnected'}
               {#if status === 'connected'}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">Connected</span>
-                <button class="px-3 py-1 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => disconnectPlugin(plugin.id)}>Disconnect</button>
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">{$t('settingsPlugins.connected')}</span>
+                <button class="px-3 py-1 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => disconnectPlugin(plugin.id)}>{$t('settingsPlugins.disconnect')}</button>
               {:else if status === 'connecting'}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-info/10 text-info">Connecting…</span>
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-info/10 text-info">{$t('settingsPlugins.connecting')}</span>
               {:else}
-                <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => connectPlugin(plugin.id)}>Connect</button>
+                <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => connectPlugin(plugin.id)}>{$t('settingsPlugins.connect')}</button>
               {/if}
             {:else if plugin.hasAuth && plugin.authType === 'env'}
               {#if plugin.authKeysSet}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">Key Set</span>
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">{$t('settingsPlugins.keySet')}</span>
               {/if}
-              <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>{plugin.authKeysSet ? 'Update Keys' : 'Set API Keys'}</button>
+              <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>{plugin.authKeysSet ? $t('settingsPlugins.updateKeys') : $t('settingsPlugins.setApiKeys')}</button>
             {:else}
-              <span class="text-xs text-base-content/40">No auth needed</span>
+              <span class="text-xs text-base-content/40">{$t('settingsPlugins.noAuthNeeded')}</span>
             {/if}
           {/snippet}
         </SettingsRow>
@@ -336,7 +337,7 @@
   {/if}
 </div>
 
-<BrowseCard title="Browse Plugins" description="Discover more plugins in the marketplace." href="/marketplace/plugins" />
+<BrowseCard title={$t('settingsPlugins.browseTitle')} description={$t('settingsPlugins.browseDescription')} href="/marketplace/plugins" />
 
 <!-- Plugin Detail Modal -->
 {#if selectedPlugin}
@@ -356,11 +357,11 @@
               {/if}
             </div>
             {#if selectedPlugin.author}
-              <div class="text-xs text-base-content/50">by {selectedPlugin.author}</div>
+              <div class="text-xs text-base-content/50">{$t('settingsApps.byAuthor', { values: { name: selectedPlugin.author } })}</div>
             {/if}
           </div>
         </div>
-        <button class="btn btn-ghost btn-sm btn-square" onclick={closeModal} aria-label="Close">
+        <button class="btn btn-ghost btn-sm btn-square" onclick={closeModal} aria-label={$t('common.close')}>
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
         </button>
       </div>
@@ -370,38 +371,38 @@
         <!-- Description -->
         {#if selectedPlugin.desc}
           <div>
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Description</div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('common.description')}</div>
             <p class="text-xs text-base-content/70 line-clamp-3">{selectedPlugin.desc}</p>
           </div>
         {/if}
 
         <!-- Status -->
         <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Status</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('common.status')}</div>
           <div class="flex items-center gap-3">
             {#if selectedPlugin.hasAuth && selectedPlugin.authType !== 'env'}
               {#if !selectedPlugin.authKeysSet && selectedPlugin.authEnvVars.length > 0}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">Credentials needed</span>
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">{$t('settingsPlugins.credentialsNeeded')}</span>
               {:else if status === 'connected'}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">Connected</span>
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">{$t('settingsPlugins.connected')}</span>
               {:else if status === 'connecting'}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-info/10 text-info">Connecting…</span>
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-info/10 text-info">{$t('settingsPlugins.connecting')}</span>
               {:else}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">Not connected</span>
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">{$t('settingsProviders.notConnected')}</span>
               {/if}
             {:else if selectedPlugin.hasAuth && selectedPlugin.authEnvVars.length > 0 && selectedPlugin.authType === 'env'}
               {#if selectedPlugin.authKeysSet && authStatuses[selectedPlugin.id] === 'connected'}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">Connected</span>
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">{$t('settingsPlugins.connected')}</span>
               {:else if selectedPlugin.authKeysSet}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">Keys Set &middot; Not verified</span>
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">{$t('settingsPlugins.keysSetNotVerified')}</span>
               {:else}
-                <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">Keys needed</span>
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">{$t('settingsPlugins.keysNeeded')}</span>
               {/if}
             {:else}
-              <span class="text-xs text-base-content/50">No authentication required</span>
+              <span class="text-xs text-base-content/50">{$t('settingsMcp.authNoneDesc')}</span>
             {/if}
             {#if selectedPlugin.hasEvents}
-              <span class="text-xs text-base-content/50">{selectedPlugin.eventCount} {selectedPlugin.eventCount === 1 ? 'event' : 'events'}</span>
+              <span class="text-xs text-base-content/50">{selectedPlugin.eventCount === 1 ? $t('settingsPlugins.eventCountSingular', { values: { count: selectedPlugin.eventCount } }) : $t('settingsPlugins.eventCount', { values: { count: selectedPlugin.eventCount } })}</span>
             {/if}
           </div>
         </div>
@@ -409,12 +410,12 @@
         <!-- Setup wizard launcher (only when the plugin declares one) -->
         {#if selectedPlugin.setup}
           <div>
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Guided Setup</div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('settingsPlugins.guidedSetup')}</div>
             <button class="btn btn-sm btn-primary" onclick={() => { wizardOpen = true; }}>
-              {selectedPlugin.authKeysSet ? 'Reconfigure' : 'Run setup wizard'}
+              {selectedPlugin.authKeysSet ? $t('settingsPlugins.reconfigure') : $t('settingsPlugins.runSetupWizard')}
             </button>
             <p class="text-xs text-base-content/70 mt-2">
-              Walks through manifest generation, app install, and credentials in one flow.
+              {$t('settingsPlugins.wizardDesc')}
             </p>
           </div>
         {/if}
@@ -423,12 +424,12 @@
         {#if selectedPlugin.hasAuth && selectedPlugin.authEnvVars.length > 0}
           {@const hasInput = Object.values(apiKeyInputs).some(v => v.trim())}
           <div>
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">API Keys</div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('settingsProviders.apiKeys')}</div>
             <div class="flex flex-col gap-3">
               {#each selectedPlugin.authEnvVars as envVar}
                 <label class="flex flex-col gap-1">
                   <span class="text-xs text-base-content/70 font-mono">{envVar}</span>
-                  <input type="password" value={apiKeyInputs[envVar] ?? ''} oninput={(e) => { apiKeySaveResult = null; apiKeyInputs[envVar] = (e.target as HTMLInputElement).value; }} placeholder={selectedPlugin.authKeysSet ? '••••••••' : 'Paste token here…'} class="input input-sm input-bordered w-full text-sm font-mono"
+                  <input type="password" value={apiKeyInputs[envVar] ?? ''} oninput={(e) => { apiKeySaveResult = null; apiKeyInputs[envVar] = (e.target as HTMLInputElement).value; }} placeholder={selectedPlugin.authKeysSet ? '••••••••' : $t('settingsPlugins.pasteTokenPlaceholder')} class="input input-sm input-bordered w-full text-sm font-mono"
                     onkeydown={(e) => { if (e.key === 'Enter' && selectedPlugin) saveApiKeys(selectedPlugin); }}
                   />
                 </label>
@@ -439,16 +440,16 @@
                 class="btn btn-sm btn-primary"
                 disabled={!hasInput || apiKeySaving}
                 onclick={() => selectedPlugin && saveApiKeys(selectedPlugin)}
-              >{apiKeySaving ? 'Saving…' : authChecking ? 'Verifying…' : 'Save & Verify'}</button>
+              >{apiKeySaving ? $t('common.saving') : authChecking ? $t('onboarding.apiKey.verifying') : $t('settingsPlugins.saveAndVerify')}</button>
               {#if apiKeySaveResult === 'saved' && !authChecking}
                 {@const authed = authStatuses[selectedPlugin.id] === 'connected'}
                 {#if authed}
-                  <span class="text-xs font-medium text-success">Authenticated</span>
+                  <span class="text-xs font-medium text-success">{$t('settingsPlugins.authenticated')}</span>
                 {:else}
-                  <span class="text-xs font-medium text-error">Keys saved but authentication failed — check your tokens</span>
+                  <span class="text-xs font-medium text-error">{$t('settingsPlugins.keysSavedAuthFailed')}</span>
                 {/if}
               {:else if apiKeySaveResult === 'error'}
-                <span class="text-xs font-medium text-error">Failed to save</span>
+                <span class="text-xs font-medium text-error">{$t('settingsIdentity.saveFailed')}</span>
               {/if}
             </div>
           </div>
@@ -456,11 +457,11 @@
 
         <!-- Dependents -->
         <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Used by</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsPlugins.usedBy')}</div>
           {#if modalLoading}
-            <div class="text-xs text-base-content/50">Loading…</div>
+            <div class="text-xs text-base-content/50">{$t('common.loading')}</div>
           {:else if modalDependents.length === 0}
-            <div class="text-xs text-base-content/50">No skills or agents depend on this plugin.</div>
+            <div class="text-xs text-base-content/50">{$t('settingsPlugins.noDependents')}</div>
           {:else}
             <div class="flex flex-col gap-1.5">
               {#each modalDependents as dep}
@@ -484,25 +485,25 @@
         <div class="flex items-center gap-2">
           {#if selectedPlugin.hasAuth && selectedPlugin.authType !== 'env'}
             {#if status === 'connected'}
-              <button class="px-3 py-1.5 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => disconnectPlugin(selectedPlugin!.id)}>Disconnect</button>
+              <button class="px-3 py-1.5 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => disconnectPlugin(selectedPlugin!.id)}>{$t('settingsPlugins.disconnect')}</button>
             {:else if status !== 'connecting'}
-              <button class="px-3 py-1.5 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => connectPlugin(selectedPlugin!.id)}>Connect</button>
+              <button class="px-3 py-1.5 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => connectPlugin(selectedPlugin!.id)}>{$t('settingsPlugins.connect')}</button>
             {/if}
           {:else if selectedPlugin.hasAuth && selectedPlugin.authType === 'env' && selectedPlugin.authKeysSet}
-            <button class="px-3 py-1.5 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" disabled={apiKeySaving} onclick={() => clearApiKeys(selectedPlugin!)}>Clear Keys</button>
+            <button class="px-3 py-1.5 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" disabled={apiKeySaving} onclick={() => clearApiKeys(selectedPlugin!)}>{$t('settingsPlugins.clearKeys')}</button>
           {/if}
           {#if selectedPlugin.updateAvailable}
-            <a href="/marketplace/plugins/{selectedPlugin.id}" class="px-3 py-1.5 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors no-underline">Upgrade to {selectedPlugin.updateAvailable}</a>
+            <a href="/marketplace/plugins/{selectedPlugin.id}" class="px-3 py-1.5 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors no-underline">{$t('settingsPlugins.upgradeTo', { values: { version: selectedPlugin.updateAvailable } })}</a>
           {/if}
         </div>
         <div>
           {#if canUninstall}
             <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={() => (confirmingUninstall = true)}>
-              Uninstall
+              {$t('common.uninstall')}
             </button>
           {:else if !modalLoading && modalDependents.length > 0}
-            <div class="tooltip tooltip-left" data-tip="Cannot uninstall — {modalDependents.length} {modalDependents.length === 1 ? 'item depends' : 'items depend'} on this plugin">
-              <button class="px-3 py-1.5 rounded-md border border-base-content/10 text-xs text-base-content/30 cursor-not-allowed bg-transparent" disabled>Uninstall</button>
+            <div class="tooltip tooltip-left" data-tip={modalDependents.length === 1 ? $t('settingsPlugins.cannotUninstallSingular', { values: { count: modalDependents.length } }) : $t('settingsPlugins.cannotUninstall', { values: { count: modalDependents.length } })}>
+              <button class="px-3 py-1.5 rounded-md border border-base-content/10 text-xs text-base-content/30 cursor-not-allowed bg-transparent" disabled>{$t('common.uninstall')}</button>
             </div>
           {/if}
         </div>
@@ -512,9 +513,9 @@
 
   {#if confirmingUninstall && selectedPlugin}
     <ConfirmModal
-      title="Uninstall {selectedPlugin.name}?"
-      message="This removes the plugin and its binary from this companion. You can reinstall it from the marketplace later."
-      confirmLabel="Uninstall"
+      title={$t('common.uninstallTitle', { values: { name: selectedPlugin.name } })}
+      message={$t('settingsPlugins.uninstallMessage')}
+      confirmLabel={$t('common.uninstall')}
       busy={removing}
       onCancel={() => (confirmingUninstall = false)}
       onConfirm={uninstallPlugin}

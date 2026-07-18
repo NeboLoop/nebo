@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { AGENT_COLORS } from '$lib/tokens.js';
   import { AGENTS, CAL_DAYS } from '$lib/data.js';
   import { onMount } from 'svelte';
@@ -124,10 +125,10 @@
       {#each rulerMarks as h, i}
         <div class="absolute right-3 -translate-y-1/2 text-xs text-base-content/70" style="top:{i * HOUR_PX}px">
           {#if h === 12}
-            <span class="font-medium">Noon</span>
+            <span class="font-medium">{$t('schedule.noon')}</span>
           {:else}
             <span class="font-medium">{h === 0 ? 12 : h <= 12 ? h : h - 12}</span>
-            <span class="text-base-content/60 ml-0.5">{h < 12 ? 'AM' : 'PM'}</span>
+            <span class="text-base-content/60 ml-0.5">{h < 12 ? $t('schedule.am') : $t('schedule.pm')}</span>
           {/if}
         </div>
       {/each}
@@ -168,7 +169,7 @@
           <div
             class="absolute rounded-sm overflow-hidden cursor-pointer flex items-start border-l-[2.5px] px-1 pt-0.5 min-h-[18px] transition-shadow {c.fillClass} {c.edgeClass} {c.textClass} {selected === item._id ? 'ring-2' : ''}"
             style="left:calc({leftPct}% + 2px); width:calc({widthPct}% - 4px); top:{top}px; height:{height}px; {isHeartbeat ? 'border-left-style:dashed; ' : ''}{selected === item._id ? `--tw-ring-color:${c.edgeVar}; z-index:20` : `z-index:${zBase}`}"
-            title="{a?.name ?? item.agent}: {item.label}{isHeartbeat && item.interval ? ` (every ${item.interval})` : ''}"
+            title="{a?.name ?? item.agent}: {item.label}{isHeartbeat && item.interval ? ` (${$t('schedule.everyInterval', { values: { interval: item.interval } })})` : ''}"
             onclick={(e) => { e.stopPropagation(); selected = item._id; createData = null; }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selected = item._id; createData = null; } }}
             role="button"

@@ -1,6 +1,7 @@
 <script lang="ts">
   import '../app.css';
   import '$lib/i18n';
+  import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
@@ -103,9 +104,9 @@
   }
 
   const sections = [
-    { id: 'agents', path: '/', label: 'Agents' },
-    { id: 'schedule', path: '/schedule', label: 'Schedule' },
-    { id: 'marketplace', path: '/marketplace', label: 'Marketplace' },
+    { id: 'agents', path: '/', label: 'nav.agents' },
+    { id: 'schedule', path: '/schedule', label: 'nav.schedule' },
+    { id: 'marketplace', path: '/marketplace', label: 'nav.marketplace' },
   ];
 
   const activeSection = $derived.by(() => {
@@ -137,9 +138,9 @@
     <div class="w-10 h-10 rounded-lg bg-primary text-primary-content flex items-center justify-center font-mono text-xl font-bold">N</div>
     {#if $backendChecking}
       <span class="loading loading-spinner loading-md"></span>
-      <p class="text-sm text-base-content/70">Connecting to Nebo...</p>
+      <p class="text-sm text-base-content/70">{$t('layout.connectingToNebo')}</p>
     {:else}
-      <p class="text-sm text-base-content/70">Waiting for backend...</p>
+      <p class="text-sm text-base-content/70">{$t('layout.waitingForBackend')}</p>
       <span class="loading loading-dots loading-sm"></span>
     {/if}
     <button
@@ -147,7 +148,7 @@
       disabled={$backendChecking}
       onclick={() => retryBackendConnection()}
     >
-      Retry now
+      {$t('layout.retryNow')}
     </button>
   </div>
 {:else if !$onboardingChecked}
@@ -180,7 +181,7 @@
               class="px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors {activeSection === s.id
                 ? 'border-primary text-base-content'
                 : 'border-transparent text-base-content/70 hover:text-base-content'}"
-            >{s.label}</a>
+            >{$t(s.label)}</a>
           {/each}
         </nav>
         <div class="flex-1"></div>
@@ -190,7 +191,7 @@
           class="flex items-center h-8 w-48 rounded-field px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
         >
           <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200">&#x2318;K</span>
-          <span class="text-base-content/70">Search or run...</span>
+          <span class="text-base-content/70">{$t('nav.searchOrRun')}</span>
         </button>
         <NotificationBell />
       </header>

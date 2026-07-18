@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { onMount } from 'svelte';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { AGENT_COLORS, AGENT_COLORS_MAP } from '$lib/tokens.js';
@@ -71,12 +72,12 @@
   function formatRelativeTime(iso: string): string {
     try {
       const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
-      if (diffMin < 1) return 'now';
-      if (diffMin < 60) return `${diffMin}m`;
+      if (diffMin < 1) return $t('time.now');
+      if (diffMin < 60) return $t('time.minutesShort', { values: { n: diffMin } });
       const diffHr = Math.floor(diffMin / 60);
-      if (diffHr < 24) return `${diffHr}h`;
+      if (diffHr < 24) return $t('time.hoursShort', { values: { n: diffHr } });
       const diffDay = Math.floor(diffHr / 24);
-      return `${diffDay}d`;
+      return $t('time.daysShort', { values: { n: diffDay } });
     } catch { return iso; }
   }
 
@@ -97,18 +98,18 @@
   }
 
   const navLinks = [
-    { href: '/marketplace', page: 'marketplace', icon: '◈', label: 'Marketplace' },
-    { href: '/schedule', page: 'schedule', icon: '▦', label: 'Schedule' },
-    { href: '/settings/skills', page: 'skills', icon: '⚡', label: 'Skills' },
+    { href: '/marketplace', page: 'marketplace', icon: '◈', label: 'nav.marketplace' },
+    { href: '/schedule', page: 'schedule', icon: '▦', label: 'sidebar.schedule' },
+    { href: '/settings/skills', page: 'skills', icon: '⚡', label: 'settings.navItems.skills' },
   ];
 
   const marketplaceLinks = [
-    { id: 'featured', path: '/marketplace', label: 'Featured', icon: '◈' },
-    { id: 'agents', path: '/marketplace/agents', label: 'Agents', icon: '🤖' },
-    { id: 'skills', path: '/marketplace/skills', label: 'Skills', icon: '⚡' },
-    { id: 'installed', path: '/marketplace/installed', label: 'Installed', icon: '✓' },
+    { id: 'featured', path: '/marketplace', label: 'marketplace.featured', icon: '◈' },
+    { id: 'agents', path: '/marketplace/agents', label: 'marketplace.agents', icon: '🤖' },
+    { id: 'skills', path: '/marketplace/skills', label: 'marketplace.skills', icon: '⚡' },
+    { id: 'installed', path: '/marketplace/installed', label: 'marketplace.installed', icon: '✓' },
     null,
-    { id: 'categories', path: '/marketplace/categories', label: 'Categories', icon: '▦' },
+    { id: 'categories', path: '/marketplace/categories', label: 'marketplace.categories', icon: '▦' },
   ];
 </script>
 
@@ -128,8 +129,8 @@
     {#if isSchedule && enabled}
       <!-- Schedule: agent toggles -->
       <div class="px-4 pt-3.5 pb-2 flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-wider">Agents</span>
-        <span class="font-mono text-xs">{enabledCount} of {schedAgents.length}</span>
+        <span class="text-xs font-semibold uppercase tracking-wider">{$t('sidebar.agents')}</span>
+        <span class="font-mono text-xs">{$t('sidebar.enabledOfTotal', { values: { count: enabledCount, total: schedAgents.length } })}</span>
       </div>
 
       <div class="px-2 flex flex-col gap-px">
@@ -141,7 +142,7 @@
             <label class="flex items-center gap-2.5 px-2 py-1.5 rounded-md cursor-pointer text-sm hover:bg-base-content/5 transition-colors {on ? '' : 'opacity-60'}">
               <input type="checkbox" class="checkbox checkbox-xs {c.edgeClass}" checked={on} onchange={() => onToggleAgent?.(id)} />
               <span class="flex-1 font-medium">{a.name}</span>
-              <span class="font-mono text-xs">{runsPerWeek(id)}/wk</span>
+              <span class="font-mono text-xs">{$t('sidebar.runsPerWeek', { values: { count: runsPerWeek(id) } })}</span>
               <input type="checkbox" checked={on} onchange={() => onToggleAgent?.(id)} hidden />
             </label>
           {/if}
@@ -150,28 +151,28 @@
 
       <div class="h-4"></div>
 
-      <div class="px-4 pb-1 text-xs font-semibold uppercase tracking-wider">Trigger types</div>
+      <div class="px-4 pb-1 text-xs font-semibold uppercase tracking-wider">{$t('sidebar.triggerTypes')}</div>
       <div class="px-4 flex flex-col gap-2 text-sm">
         <span class="flex items-center gap-2">
           <span class="w-5 h-5 rounded bg-base-200 border border-base-content/10 font-mono text-xs inline-flex items-center justify-center">↻</span>
-          Scheduled
+          {$t('automations.scheduled')}
         </span>
         <span class="flex items-center gap-2">
           <span class="w-5 h-5 rounded bg-base-200 border border-base-content/10 font-mono text-xs inline-flex items-center justify-center">⚡</span>
-          Event
+          {$t('sidebar.event')}
         </span>
         <span class="flex items-center gap-2">
           <span class="w-5 h-5 rounded bg-base-200 border border-base-content/10 font-mono text-xs inline-flex items-center justify-center">›</span>
-          You
+          {$t('common.you')}
         </span>
       </div>
 
     {:else if isMarketplace}
       <!-- Marketplace: sub-nav -->
       <div class="px-3 pt-3 pb-1">
-        <a href="/" class="flex items-center gap-1.5 px-2 py-1.5 text-sm hover:text-base-content transition-colors mb-2">← Back to chats</a>
+        <a href="/" class="flex items-center gap-1.5 px-2 py-1.5 text-sm hover:text-base-content transition-colors mb-2">{$t('sidebar.backToChats')}</a>
       </div>
-      <div class="px-4 py-1.5 text-xs font-semibold uppercase tracking-wider">Marketplace</div>
+      <div class="px-4 py-1.5 text-xs font-semibold uppercase tracking-wider">{$t('nav.marketplace')}</div>
       <div class="px-2 flex flex-col gap-0.5">
         {#each marketplaceLinks as item}
           {#if item === null}
@@ -184,7 +185,7 @@
                 : 'text-base-content hover:bg-base-content/5'}"
             >
               <span class="w-4 text-center text-sm">{item.icon}</span>
-              {item.label}
+              {$t(item.label)}
             </a>
           {/if}
         {/each}
@@ -194,16 +195,16 @@
       <!-- Default: chats & agents -->
       <div class="px-3 pt-2.5 pb-1.5">
         <button class="w-full py-1.5 px-3 rounded-lg border border-dashed border-base-content/10 text-sm flex items-center gap-1.5 cursor-pointer hover:bg-base-content/5 transition-colors">
-          <span>+</span> New chat
+          <span>+</span> {$t('sidebar.newChat')}
         </button>
       </div>
 
       <div class="px-3 pb-2">
-        <input type="text" placeholder="Search chats…" bind:value={searchText}
+        <input type="text" placeholder={$t('sidebar.searchChats')} bind:value={searchText}
           class="w-full py-1.5 px-2.5 rounded-md border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30 placeholder:text-base-content" />
       </div>
 
-      <div class="px-4 pt-2 pb-1 text-xs font-semibold uppercase tracking-wider">Agents</div>
+      <div class="px-4 pt-2 pb-1 text-xs font-semibold uppercase tracking-wider">{$t('sidebar.agents')}</div>
       <div class="px-2 flex flex-col gap-px">
         {#each agents.slice(0, 6) as agent}
           {@const c = AGENT_COLORS_MAP[agent.color]}
@@ -260,18 +261,18 @@
     {#if !collapsed}
       {#each navLinks as link}
         <a href={link.href} class="flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors {activePage === link.page ? 'bg-base-content/5 text-base-content font-medium' : 'text-base-content hover:bg-base-content/5 hover:text-base-content'}">
-          <span class="w-4 text-center text-sm">{link.icon}</span> {link.label}
+          <span class="w-4 text-center text-sm">{link.icon}</span> {$t(link.label)}
         </a>
       {/each}
       <div class="h-px bg-base-content/5 my-1 mx-2"></div>
       <a href="/settings/account" class="flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors {activePage === 'settings' ? 'bg-base-content/5 text-base-content font-medium' : 'text-base-content hover:bg-base-content/5 hover:text-base-content'}">
-        <span class="w-4 text-center text-sm">⚙</span> Settings
+        <span class="w-4 text-center text-sm">⚙</span> {$t('nav.settings')}
       </a>
       <a href="/pricing" class="flex items-center gap-2 py-1 px-2 rounded-md text-sm transition-colors {activePage === 'pricing' ? 'bg-base-content/5 text-base-content font-medium' : 'text-base-content hover:bg-base-content/5 hover:text-base-content'}">
-        <span class="w-4 text-center text-sm">↑</span> Upgrade
+        <span class="w-4 text-center text-sm">↑</span> {$t('sidebar.upgrade')}
       </a>
     {:else}
-      <a href="/settings/account" class="w-7 h-7 mx-auto rounded-md border border-base-content/10 flex items-center justify-center text-sm cursor-pointer hover:bg-base-content/5" title="Settings">⚙</a>
+      <a href="/settings/account" class="w-7 h-7 mx-auto rounded-md border border-base-content/10 flex items-center justify-center text-sm cursor-pointer hover:bg-base-content/5" title={$t('nav.settings')}>⚙</a>
     {/if}
   </div>
 </aside>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { Play } from 'lucide-svelte';
 
 	interface MediaItem {
@@ -26,7 +27,7 @@
 
 {#if media.length > 0}
 	<div class="px-5 py-5 border-b border-base-content/5">
-		<h3 class="text-sm font-semibold text-base-content/40 uppercase tracking-wider mb-3">Preview</h3>
+		<h3 class="text-sm font-semibold text-base-content/40 uppercase tracking-wider mb-3">{$t('marketplace.detail.preview')}</h3>
 		<div class="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
 			{#each media as item}
 				{#if item.mediaType === 'video'}
@@ -54,7 +55,7 @@
 
 {#if lightboxUrl}
 	<div class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-		<button type="button" class="absolute inset-0" onclick={closeLightbox} aria-label="Close lightbox"></button>
+		<button type="button" class="absolute inset-0" onclick={closeLightbox} aria-label={$t('marketplace.detail.closeLightbox')}></button>
 		<div class="relative max-w-4xl max-h-[90vh] w-full">
 			{#if lightboxType === 'video'}
 				<!-- svelte-ignore a11y_media_has_caption -->

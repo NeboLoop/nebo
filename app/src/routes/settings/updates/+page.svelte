@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { addToast } from '$lib/stores/toast';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
@@ -58,7 +59,7 @@
   onWsEvent<{ id: string }>('artifact_update_applied', (d) => { if (d?.id) applying = { ...applying, [d.id]: false }; loadAll(); });
   onWsEvent<{ id: string; error?: string }>('artifact_update_failed', (d) => {
     if (d?.id) applying = { ...applying, [d.id]: false };
-    addToast(`Update failed: ${d?.error ?? 'unknown error'}`, 'error');
+    addToast($t('settingsUpdates.updateFailedDetail', { values: { error: d?.error ?? $t('settingsUpdates.unknownError') } }), 'error');
     loadAll();
   });
 
@@ -67,10 +68,10 @@
     try {
       const api = await import('$lib/api/nebo');
       await api.checkUpdates();
-      addToast('Checking for updates…', 'info');
+      addToast($t('settingsUpdates.checkingToast'), 'info');
       // Results arrive via WS; give the check a moment then refresh as a fallback.
       setTimeout(loadAll, 4000);
-    } catch { addToast('Could not start update check', 'error'); }
+    } catch { addToast($t('settingsUpdates.checkStartFailed'), 'error'); }
     finally { checking = false; }
   }
 
@@ -79,10 +80,10 @@
     try {
       const api = await import('$lib/api/nebo');
       await api.applyUpdate(p.artifactId);
-      addToast(`Updating ${p.artifactType} to ${p.remoteVersion}…`, 'info');
+      addToast($t('settingsUpdates.updatingToast', { values: { type: p.artifactType, version: p.remoteVersion } }), 'info');
     } catch {
       applying = { ...applying, [p.artifactId]: false };
-      addToast('Could not start update', 'error');
+      addToast($t('settingsUpdates.updateStartFailed'), 'error');
     }
   }
 
@@ -116,36 +117,36 @@
   }
 
   function rel(ts: number): string {
-    if (!ts) return 'never';
+    if (!ts) return $t('settingsUpdates.never');
     const d = Date.now() / 1000 - ts;
-    if (d < 60) return 'just now';
-    if (d < 3600) return `${Math.floor(d / 60)}m ago`;
-    if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
-    return `${Math.floor(d / 86400)}d ago`;
+    if (d < 60) return $t('time.justNow');
+    if (d < 3600) return $t('time.minutesAgo', { values: { n: Math.floor(d / 60) } });
+    if (d < 86400) return $t('time.hoursAgo', { values: { n: Math.floor(d / 3600) } });
+    return $t('time.daysAgo', { values: { n: Math.floor(d / 86400) } });
   }
 </script>
 
 <div class="flex items-center justify-between mb-1">
-  <h2 class="text-lg font-semibold">Updates</h2>
+  <h2 class="text-lg font-semibold">{$t('settingsStatus.updates')}</h2>
   <button class="btn btn-sm btn-outline gap-2" onclick={checkNow} disabled={checking}>
     <RefreshCw class="w-4 h-4 {checking ? 'animate-spin' : ''}" />
-    {checking ? 'Checking…' : 'Check now'}
+    {checking ? $t('agentSettings.checking') : $t('settingsUpdates.checkNow')}
   </button>
 </div>
-<p class="text-xs text-base-content/70 mb-6">Available updates for your installed plugins, agents, skills, MCP connectors, and apps. You approve each update; turn on auto-update per item to apply silently.</p>
+<p class="text-xs text-base-content/70 mb-6">{$t('settingsUpdates.description')}</p>
 
 <!-- Pending updates -->
 <div class="flex items-center justify-between mb-3">
-  <h3 class="text-sm font-semibold">Available updates</h3>
+  <h3 class="text-sm font-semibold">{$t('settingsUpdates.availableUpdates')}</h3>
   {#if pending.length > 0}
     <button class="btn btn-xs btn-primary" onclick={updateAll} disabled={updatingAll}>
-      {updatingAll ? 'Updating all…' : `Update all (${pending.length})`}
+      {updatingAll ? $t('settingsUpdates.updatingAll') : $t('settingsUpdates.updateAll', { values: { count: pending.length } })}
     </button>
   {/if}
 </div>
 {#if pending.length === 0}
   <div class="rounded-xl border border-base-300 px-4 py-6 text-center text-sm text-base-content/60 mb-8">
-    Everything is up to date.
+    {$t('settingsUpdates.upToDate')}
   </div>
 {:else}
   <div class="divide-y divide-base-content/10 border border-base-300 rounded-xl mb-8">
@@ -163,10 +164,10 @@
         </div>
         <label class="flex items-center gap-1.5 text-xs text-base-content/70 cursor-pointer shrink-0">
           <input type="checkbox" class="toggle toggle-xs toggle-primary" checked={p.autoUpdate} onchange={() => toggleAuto(p)} />
-          Auto
+          {$t('settingsPermissions.auto')}
         </label>
         <button class="btn btn-xs btn-primary shrink-0" onclick={() => update(p)} disabled={applying[p.artifactId]}>
-          {applying[p.artifactId] ? 'Updating…' : 'Update'}
+          {applying[p.artifactId] ? $t('agentSettings.updating') : $t('settingsBilling.update')}
         </button>
       </div>
     {/each}
@@ -174,11 +175,11 @@
 {/if}
 
 <!-- Auto-check settings -->
-<h3 class="text-sm font-semibold mb-3">Automatic checks</h3>
+<h3 class="text-sm font-semibold mb-3">{$t('settingsUpdates.automaticChecks')}</h3>
 <div class="border border-base-300 rounded-xl divide-y divide-base-content/10 mb-8">
-  {#each [['plugins', 'Plugins'], ['agents', 'Agents'], ['skills', 'Skills'], ['connectors', 'MCP Connectors']] as [key, label]}
+  {#each [['plugins', 'settingsUpdates.typePlugins'], ['agents', 'settingsUpdates.typeAgents'], ['skills', 'settingsUpdates.typeSkills'], ['connectors', 'settingsUpdates.typeConnectors']] as [key, labelKey]}
     <div class="flex items-center justify-between px-4 py-3">
-      <span class="text-sm">{label}</span>
+      <span class="text-sm">{$t(labelKey)}</span>
       <input
         type="checkbox"
         class="toggle toggle-sm toggle-primary"
@@ -188,18 +189,18 @@
     </div>
   {/each}
   <div class="flex items-center justify-between px-4 py-3">
-    <span class="text-sm">Check every</span>
+    <span class="text-sm">{$t('settingsUpdates.checkEvery')}</span>
     <select class="select select-sm select-bordered" bind:value={settings.checkIntervalHours} onchange={saveSettings}>
-      <option value={1}>1 hour</option>
-      <option value={6}>6 hours</option>
-      <option value={24}>24 hours</option>
+      <option value={1}>{$t('settingsHeartbeat.intervals.1h')}</option>
+      <option value={6}>{$t('settingsUpdates.hours6')}</option>
+      <option value={24}>{$t('settingsHeartbeat.intervals.24h')}</option>
     </select>
   </div>
 </div>
 
 <!-- History -->
 {#if history.length > 0}
-  <h3 class="text-sm font-semibold mb-3">History</h3>
+  <h3 class="text-sm font-semibold mb-3">{$t('settingsUpdates.history')}</h3>
   <div class="divide-y divide-base-content/10 border border-base-300 rounded-xl mb-4">
     {#each history as h (h.id)}
       <div class="flex items-center gap-3 px-4 py-2.5">

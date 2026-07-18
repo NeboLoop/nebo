@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
+  import { t } from 'svelte-i18n';
   import { getContext } from 'svelte';
   import AgentTabBar from '$lib/components/AgentTabBar.svelte';
   import type { AgentPageContext } from '$lib/types/agentPage';
@@ -95,11 +96,11 @@
   >
     <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => startRename(ctxMenu!.threadId)}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
-      Rename
+      {$t('sidebar.rename')}
     </button>
     <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors text-error" onclick={() => handleDelete(ctxMenu!.threadId)}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-      Delete
+      {$t('common.delete')}
     </button>
   </div>
 {/if}
@@ -111,19 +112,19 @@
   <div class="flex-1 overflow-y-auto">
     <!-- New chat -->
     <a href="/{agentId}/threads" class="block w-full text-left py-2.5 px-3.5 border-b border-base-300 cursor-pointer hover:bg-base-200 transition-colors no-underline text-base-content">
-      <div class="text-sm font-medium text-primary">+ New chat</div>
-      <div class="text-xs text-base-content/70">Clean context. {agent?.name} knows who you are but nothing about previous chats.</div>
+      <div class="text-sm font-medium text-primary">+ {$t('agent.newChat')}</div>
+      <div class="text-xs text-base-content/70">{$t('agent.newChatDesc', { values: { name: agent?.name ?? '' } })}</div>
     </a>
 
-    {#each threads as t}
+    {#each threads as th}
       <a
-        href="/{agentId}/threads/{t.id}"
-        class="group relative block w-full text-left py-2.5 px-3.5 border-b border-base-300 cursor-pointer transition-colors no-underline text-base-content {selectedThread === t.id
+        href="/{agentId}/threads/{th.id}"
+        class="group relative block w-full text-left py-2.5 px-3.5 border-b border-base-300 cursor-pointer transition-colors no-underline text-base-content {selectedThread === th.id
           ? 'bg-base-100 border-l-2 border-l-primary'
           : 'bg-transparent border-l-2 border-l-transparent hover:bg-base-200'}"
-        oncontextmenu={(e) => openCtxMenu(e, t.id)}
+        oncontextmenu={(e) => openCtxMenu(e, th.id)}
       >
-        {#if renaming?.threadId === t.id}
+        {#if renaming?.threadId === th.id}
           <input
             bind:this={renameInput}
             type="text"
@@ -134,16 +135,16 @@
             onclick={(e) => e.preventDefault()}
           />
         {:else}
-          <div class="text-sm font-medium truncate mb-0.5">{t.name}</div>
+          <div class="text-sm font-medium truncate mb-0.5">{th.name}</div>
         {/if}
-        <div class="text-xs text-base-content/70 truncate mb-0.5">{t.preview}</div>
-        <div class="text-xs text-base-content/50 font-mono">{t.messages} messages &middot; {t.updatedAt}</div>
+        <div class="text-xs text-base-content/70 truncate mb-0.5">{th.preview}</div>
+        <div class="text-xs text-base-content/50 font-mono">{$t('agent.messageCount', { values: { count: th.messages } })} &middot; {th.updatedAt}</div>
 
         <!-- Three-dot menu button (visible on hover) -->
         <button
           class="absolute top-2 right-2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-base-300 transition-opacity cursor-pointer bg-transparent border-none"
-          onclick={(e) => { e.preventDefault(); e.stopPropagation(); openCtxMenu(e, t.id); }}
-          aria-label="Thread options"
+          onclick={(e) => { e.preventDefault(); e.stopPropagation(); openCtxMenu(e, th.id); }}
+          aria-label={$t('agent.threadOptions')}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-base-content/70">
             <circle cx="12" cy="5" r="2"/>
@@ -159,7 +160,7 @@
         <span class="loading loading-spinner loading-sm"></span>
       </div>
     {:else if threads.length === 0}
-      <div class="p-6 text-center text-sm text-base-content/50">No chats yet. Start a new one.</div>
+      <div class="p-6 text-center text-sm text-base-content/50">{$t('agent.noChatsYet')}</div>
     {/if}
   </div>
 </div>

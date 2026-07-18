@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { showUpdateBanner, updateDownloading, updateState, setApplying } from '$lib/stores/update';
   import { addToast } from '$lib/stores/toast';
 
@@ -10,7 +11,7 @@
       const api = await import('$lib/api/nebo');
       await api.updateApply();
     } catch (e) {
-      addToast('Failed to apply update', 'error');
+      addToast($t('updateBanner.applyFailed'), 'error');
     }
   }
 </script>
@@ -26,7 +27,7 @@
       </div>
       {#if !collapsed}
         <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium">Relaunch to update</div>
+          <div class="text-sm font-medium">{$t('updateBanner.relaunchToUpdate')}</div>
           <div class="text-xs text-base-content/70">v{$updateState.latestVersion}</div>
         </div>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50 shrink-0"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
@@ -36,7 +37,7 @@
 {:else if $updateDownloading}
   <div class="border-t border-base-300 shrink-0 {collapsed ? 'px-1 py-2' : 'px-3.5 py-2'}">
     {#if !collapsed}
-      <div class="text-xs text-base-content/50 mb-1">Downloading update...</div>
+      <div class="text-xs text-base-content/50 mb-1">{$t('settingsAbout.downloadingUpdate')}</div>
     {/if}
     <progress class="progress progress-primary w-full h-1" value={$updateState.downloadPercent} max="100"></progress>
   </div>

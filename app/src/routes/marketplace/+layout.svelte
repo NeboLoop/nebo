@@ -2,6 +2,7 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { listStoreProducts, listStoreCategories } from '$lib/api/nebo';
   import { installItem } from '$lib/stores/marketplace.js';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -90,7 +91,7 @@
 
   const showResults = $derived(searchFocused && debouncedQuery.trim().length > 0);
 
-  const typeLabels: Record<string, string> = { skill: 'Skill', agent: 'Agent', plugin: 'Plugin', connector: 'Connector', app: 'App', collection: 'Collection', private: 'Private' };
+  const typeLabelKeys: Record<string, string> = { skill: 'marketplace.types.skill', agent: 'marketplace.types.agent', plugin: 'marketplace.types.plugin', connector: 'marketplace.types.connector', app: 'marketplace.types.app', collection: 'marketplace.types.collection', private: 'marketplace.types.private' };
 
   function selectResult(path: string) {
     searchQuery = '';
@@ -127,21 +128,21 @@
   });
 
   const navItems = [
-    { id: 'all', path: '/marketplace', label: 'All' },
-    { id: 'agents', path: '/marketplace?kind=agents', label: 'Agents' },
-    { id: 'apps', path: '/marketplace?kind=apps', label: 'Apps' },
-    { id: 'skills', path: '/marketplace?kind=skills', label: 'Skills' },
-    { id: 'plugins', path: '/marketplace?kind=plugins', label: 'Plugins' },
-    { id: 'connectors', path: '/marketplace?kind=connectors', label: 'Connectors' },
-    { id: 'collections', path: '/marketplace?kind=collections', label: 'Collections' },
-    { id: 'shared', path: '/marketplace/shared', label: 'Shared' },
-    { id: 'installed', path: '/marketplace/installed', label: 'Installed' },
+    { id: 'all', path: '/marketplace', labelKey: 'marketplace.nav.all' },
+    { id: 'agents', path: '/marketplace?kind=agents', labelKey: 'marketplace.nav.agents' },
+    { id: 'apps', path: '/marketplace?kind=apps', labelKey: 'marketplace.nav.apps' },
+    { id: 'skills', path: '/marketplace?kind=skills', labelKey: 'marketplace.skills' },
+    { id: 'plugins', path: '/marketplace?kind=plugins', labelKey: 'marketplace.nav.plugins' },
+    { id: 'connectors', path: '/marketplace?kind=connectors', labelKey: 'nav.connectors' },
+    { id: 'collections', path: '/marketplace?kind=collections', labelKey: 'marketplace.nav.collections' },
+    { id: 'shared', path: '/marketplace/shared', labelKey: 'marketplace.nav.shared' },
+    { id: 'installed', path: '/marketplace/installed', labelKey: 'marketplace.installed' },
   ];
 
   const priceOptions = [
-    { value: 'all', label: 'All' },
-    { value: 'free', label: 'Free' },
-    { value: 'paid', label: 'Paid' },
+    { value: 'all', labelKey: 'marketplace.nav.all' },
+    { value: 'free', labelKey: 'common.free' },
+    { value: 'paid', labelKey: 'marketplace.paid' },
   ];
 
   // Set the ?price= filter on the current /marketplace URL.
@@ -164,7 +165,7 @@
     // dispatchInstallStart opens the modal instantly AND validates the format.
     if (!dispatchInstallStart(code)) {
       codeStatus = 'error';
-      codeMessage = 'Invalid code format';
+      codeMessage = $t('marketplace.invalidCodeFormat');
       setTimeout(() => { codeStatus = 'idle'; codeMessage = ''; }, 2500);
       return;
     }
@@ -186,9 +187,9 @@
 <div class="{$sidebarCollapsed ? 'w-12 min-w-12' : 'w-[220px] min-w-[220px]'} border-r border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
   <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed ? 'justify-center' : 'px-3.5 justify-between'}">
     {#if !$sidebarCollapsed}
-      <span class="text-sm font-semibold flex-1">Marketplace</span>
+      <span class="text-sm font-semibold flex-1">{$t('marketplace.title')}</span>
     {/if}
-    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}>
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="3" x2="5.5" y2="13" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
   </div>
@@ -201,7 +202,7 @@
           <a
             href={item.path}
             class="w-8 h-8 rounded-md flex items-center justify-center text-sm transition-colors {marketplaceTab === item.id ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)]' : 'hover:bg-base-200'}"
-            title={item.label}
+            title={$t(item.labelKey)}
           >{icons[item.id]}</a>
         {/each}
       </div>
@@ -216,7 +217,7 @@
   {:else}
     <!-- Install code -->
     <div class="py-2.5 px-3.5 border-b border-base-300">
-      <div class="text-xs text-base-content/70 mb-1">Install code</div>
+      <div class="text-xs text-base-content/70 mb-1">{$t('marketplace.installCode')}</div>
       <form class="flex gap-1" onsubmit={(e) => { e.preventDefault(); redeemCode(); }}>
         <input
           type="text"
@@ -229,7 +230,7 @@
           type="submit"
           class="py-1 px-2 rounded-[5px] border border-base-300 bg-base-100 text-sm cursor-pointer font-medium disabled:opacity-50"
           disabled={codeStatus === 'processing' || !codeInput.trim()}
-        >{codeStatus === 'processing' ? '...' : 'Go'}</button>
+        >{codeStatus === 'processing' ? '...' : $t('marketplace.go')}</button>
       </form>
       {#if codeMessage}
         <div class="text-sm mt-1 {codeStatus === 'error' ? 'text-error' : codeStatus === 'success' ? 'text-success' : 'text-base-content/60'}">
@@ -239,7 +240,7 @@
     </div>
 
     <div class="flex-1 overflow-y-auto">
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">Category</div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.detail.category')}</div>
       <div class="px-1.5">
         <a
           href="/marketplace"
@@ -247,7 +248,7 @@
             ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)] font-medium'
             : 'hover:bg-base-200'}"
         >
-          <span class="flex-1 truncate">All categories</span>
+          <span class="flex-1 truncate">{$t('marketplace.allCategories')}</span>
         </a>
         {#each categories as cat}
           <a
@@ -264,7 +265,7 @@
         {/each}
       </div>
 
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">Pricing</div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.pricing')}</div>
       <div class="p-1.5">
         {#each priceOptions as opt}
           <button
@@ -274,7 +275,7 @@
               : 'hover:bg-base-200'}"
             onclick={() => setPrice(opt.value)}
           >
-            {opt.label}
+            {$t(opt.labelKey)}
           </button>
         {/each}
       </div>
@@ -294,7 +295,7 @@
             class="shrink-0 px-3 py-1 rounded-lg text-sm transition-colors {marketplaceTab === item.id
               ? 'bg-base-content text-base-100 font-semibold'
               : 'text-base-content/70 font-medium hover:text-base-content hover:bg-base-200'}"
-          >{item.label}</a>
+          >{$t(item.labelKey)}</a>
         {/each}
       </div>
     {:else}
@@ -308,7 +309,7 @@
           bind:value={searchQuery}
           onfocus={() => searchFocused = true}
           onblur={() => setTimeout(() => searchFocused = false, 200)}
-          placeholder="Search marketplace..."
+          placeholder={$t('marketplace.searchPlaceholder')}
           class="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50 min-w-0"
         />
         {#if searchQuery}
@@ -337,18 +338,18 @@
                 {#if item.private && item.org}
                   <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-accent/10 text-accent shrink-0">{item.org.name}</span>
                 {:else}
-                  <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70 shrink-0">{typeLabels[item.type]}</span>
+                  <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70 shrink-0">{$t(typeLabelKeys[item.type])}</span>
                 {/if}
               </button>
             {/each}
             <button
               class="w-full px-3.5 py-2.5 text-left text-sm font-medium text-primary cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-t border-t-base-300"
               onmousedown={submitSearch}
-            >See all results for "{debouncedQuery}"</button>
+            >{$t('marketplace.seeAllResults', { values: { query: debouncedQuery } })}</button>
           {:else if searchLoading}
-            <div class="px-3.5 py-4 text-center text-xs text-base-content/50">Searching…</div>
+            <div class="px-3.5 py-4 text-center text-xs text-base-content/50">{$t('marketplace.searching')}</div>
           {:else}
-            <div class="px-3.5 py-4 text-center text-xs text-base-content/50">No results for "{debouncedQuery}"</div>
+            <div class="px-3.5 py-4 text-center text-xs text-base-content/50">{$t('marketplace.noResultsFor', { values: { query: debouncedQuery } })}</div>
           {/if}
         </div>
       {/if}

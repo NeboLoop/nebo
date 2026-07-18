@@ -8,6 +8,7 @@
   Routes under /marketplace/<plural>/[id] render this with `artifactType` set.
 -->
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { Star, X, Check, Copy, ShieldCheck, ChevronLeft, Download } from 'lucide-svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
@@ -36,15 +37,16 @@
 
 	// Customer-facing label per type. Note "Connection" not "Connector" on the
 	// buyer-facing surface — the founder's rule, mirrored from neboai.com.
-	const kindConfig: Record<ArtifactType, { label: string; chip: string }> = {
-		skill: { label: 'Skill', chip: 'bg-base-200 text-base-content/70' },
-		agent: { label: 'Agent', chip: 'bg-accent/15 text-accent' },
-		plugin: { label: 'Plugin', chip: 'bg-warning/15 text-warning' },
-		connector: { label: 'Connection', chip: 'bg-success/15 text-success' },
-		app: { label: 'App', chip: 'bg-accent/15 text-accent' },
-		collection: { label: 'Collection', chip: 'bg-base-200 text-base-content/70' }
+	const kindConfig: Record<ArtifactType, { labelKey: string; chip: string }> = {
+		skill: { labelKey: 'marketplace.kind.skill', chip: 'bg-base-200 text-base-content/70' },
+		agent: { labelKey: 'marketplace.kind.agent', chip: 'bg-accent/15 text-accent' },
+		plugin: { labelKey: 'marketplace.kind.plugin', chip: 'bg-warning/15 text-warning' },
+		connector: { labelKey: 'marketplace.kind.connection', chip: 'bg-success/15 text-success' },
+		app: { labelKey: 'marketplace.kind.app', chip: 'bg-accent/15 text-accent' },
+		collection: { labelKey: 'marketplace.kind.collection', chip: 'bg-base-200 text-base-content/70' }
 	};
 	const kind = $derived(kindConfig[artifactType] ?? kindConfig.skill);
+	const kindLabel = $derived($t(kind.labelKey));
 
 	// ── Loaded data ──────────────────────────────────────────────────────
 	let skill: any = $state(null);
@@ -87,14 +89,14 @@
 		const w = skill?.typeConfig?.workflows;
 		if (!w || typeof w !== 'object' || Array.isArray(w)) return [] as { name: string; when: string }[];
 		return Object.entries(w).map(([key, def]: [string, any]) => {
-			const t = def?.trigger ?? {};
-			let when = 'On demand';
-			if (t.type === 'cron' || t.cron || t.schedule) when = 'On a schedule';
-			else if (t.type === 'event' || Array.isArray(t.sources)) {
-				const src: string = (t.sources?.[0] ?? '').toString();
-				if (/email/.test(src)) when = 'When a new email arrives';
-				else if (/calendar|event/.test(src)) when = 'On calendar changes';
-				else when = src ? `When ${src.split('.').slice(-2).join(' ').replace(/[._]/g, ' ')}` : 'Automatic';
+			const trig = def?.trigger ?? {};
+			let when = $t('marketplace.detail.onDemand');
+			if (trig.type === 'cron' || trig.cron || trig.schedule) when = $t('marketplace.detail.onSchedule');
+			else if (trig.type === 'event' || Array.isArray(trig.sources)) {
+				const src: string = (trig.sources?.[0] ?? '').toString();
+				if (/email/.test(src)) when = $t('marketplace.detail.onNewEmail');
+				else if (/calendar|event/.test(src)) when = $t('marketplace.detail.onCalendarChanges');
+				else when = src ? $t('marketplace.detail.whenEvent', { values: { event: src.split('.').slice(-2).join(' ').replace(/[._]/g, ' ') } }) : $t('marketplace.detail.automatic');
 			}
 			const name = key.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 			return { name, when };
@@ -128,15 +130,15 @@
 
 	const information = $derived.by(() => {
 		const rows: { label: string; value: string; mono?: boolean }[] = [];
-		if (authorName) rows.push({ label: 'Developer', value: authorName });
-		if (skill?.version) rows.push({ label: 'Version', value: `v${skill.version}` });
+		if (authorName) rows.push({ label: $t('marketplace.detail.developer'), value: authorName });
+		if (skill?.version) rows.push({ label: $t('marketplace.detail.version'), value: `v${skill.version}` });
 		if (skill?.updatedAt) {
 			try {
-				rows.push({ label: 'Last updated', value: new Date(skill.updatedAt).toLocaleDateString() });
+				rows.push({ label: $t('marketplace.detail.lastUpdated'), value: new Date(skill.updatedAt).toLocaleDateString() });
 			} catch { /* skip */ }
 		}
-		rows.push({ label: 'Installs', value: formatNumber(Number(skill?.installCount ?? 0)) });
-		if (skill?.code) rows.push({ label: 'Install code', value: skill.code, mono: true });
+		rows.push({ label: $t('marketplace.detail.installs'), value: formatNumber(Number(skill?.installCount ?? 0)) });
+		if (skill?.code) rows.push({ label: $t('marketplace.detail.installCode'), value: skill.code, mono: true });
 		return rows;
 	});
 
@@ -275,14 +277,14 @@
 		</div>
 	{:else if !skill}
 		<div class="flex flex-col items-center justify-center py-24 text-center">
-			<p class="text-sm text-base-content/50">{kind.label} not found</p>
-			<a href="/marketplace" class="text-sm text-primary font-medium mt-3 hover:underline">Browse marketplace</a>
+			<p class="text-sm text-base-content/50">{$t('marketplace.detail.kindNotFound', { values: { kind: kindLabel } })}</p>
+			<a href="/marketplace" class="text-sm text-primary font-medium mt-3 hover:underline">{$t('marketplace.detail.browseMarketplace')}</a>
 		</div>
 	{:else}
 		<!-- Back link -->
-		<a href="/marketplace" class="inline-flex items-center gap-1 text-sm text-base-content/50 hover:text-base-content transition-colors" aria-label="Back to marketplace">
+		<a href="/marketplace" class="inline-flex items-center gap-1 text-sm text-base-content/50 hover:text-base-content transition-colors" aria-label={$t('marketplace.detail.backToMarketplace')}>
 			<ChevronLeft class="w-4 h-4" />
-			<span>Marketplace</span>
+			<span>{$t('marketplace.title')}</span>
 		</a>
 
 		<!-- Hero: title block + screenshots / sticky install rail -->
@@ -300,11 +302,11 @@
 					</div>
 					<div class="min-w-0 flex-1">
 						<div class="flex items-center gap-2 flex-wrap mb-2">
-							<span class="text-xs font-medium px-2.5 py-1 rounded-full {kind.chip}">{kind.label}</span>
+							<span class="text-xs font-medium px-2.5 py-1 rounded-full {kind.chip}">{kindLabel}</span>
 							{#if authorVerified}
 								<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-success/15 text-success inline-flex items-center gap-1">
 									<ShieldCheck class="w-3 h-3" />
-									Signed
+									{$t('marketplace.detail.signed')}
 								</span>
 							{/if}
 							{#if skill.category}
@@ -317,7 +319,7 @@
 						{/if}
 						<div class="flex items-center gap-4 text-sm text-base-content/50 mt-4 flex-wrap">
 							{#if authorName}
-								<span>by <span class="text-base-content/80 font-medium">{authorName}</span></span>
+								<span>{$t('marketplace.detail.by')} <span class="text-base-content/80 font-medium">{authorName}</span></span>
 							{/if}
 							{#if avgRating}
 								<span class="inline-flex items-center gap-1">
@@ -326,7 +328,7 @@
 									<span class="text-base-content/50">({ratingCount})</span>
 								</span>
 							{/if}
-							<span>{formatNumber(Number(skill.installCount ?? 0))} installs</span>
+							<span>{$t('marketplace.detail.installCount', { values: { count: formatNumber(Number(skill.installCount ?? 0)) } })}</span>
 						</div>
 					</div>
 				</div>
@@ -341,13 +343,13 @@
 			<aside class="lg:sticky lg:top-6">
 				<div class="rounded-2xl bg-base-100 border border-base-300 shadow-lg p-5 flex flex-col gap-4">
 					<div>
-						<div class="text-xs uppercase tracking-wider font-semibold text-base-content/50">Price</div>
-						<div class="font-display text-2xl font-bold mt-0.5">{skill.price && skill.price !== 'Get' ? skill.price : 'Free'}</div>
+						<div class="text-xs uppercase tracking-wider font-semibold text-base-content/50">{$t('marketplace.detail.price')}</div>
+						<div class="font-display text-2xl font-bold mt-0.5">{skill.price && skill.price !== 'Get' ? skill.price : $t('common.free')}</div>
 					</div>
 
 					{#if skill.code}
 						<div class="flex flex-col gap-1.5">
-							<span class="text-xs text-base-content/50 font-medium">Install code</span>
+							<span class="text-xs text-base-content/50 font-medium">{$t('marketplace.detail.installCode')}</span>
 							<button type="button" onclick={copyCode} class="flex items-center justify-between gap-3 p-3 rounded-xl bg-base-200 border border-base-300 hover:bg-base-300 transition-colors group">
 								<span class="font-mono text-sm font-bold tracking-wider">{skill.code}</span>
 								{#if codeCopied}
@@ -356,43 +358,43 @@
 									<Copy class="w-4 h-4 text-base-content/50 group-hover:text-base-content shrink-0 transition-colors" />
 								{/if}
 							</button>
-							<p class="text-xs text-base-content/50 leading-relaxed">Paste into Nebo's chat to install on any companion.</p>
+							<p class="text-xs text-base-content/50 leading-relaxed">{$t('marketplace.detail.pasteToInstall')}</p>
 						</div>
 					{/if}
 
 					{#if installed && skill.updateAvailable}
 						<button type="button" onclick={updateProduct} disabled={updating} class="btn btn-accent rounded-xl h-11 disabled:opacity-50">
-							{updating ? 'Updating…' : `Update to v${skill.remoteVersion}`}
+							{updating ? $t('marketplace.detail.updating') : $t('marketplace.detail.updateTo', { values: { version: skill.remoteVersion } })}
 						</button>
 					{:else if installed}
 						<span class="h-11 rounded-xl bg-success/15 text-success font-bold inline-flex items-center justify-center gap-1.5">
 							<Check class="w-4 h-4" />
-							Installed
+							{$t('common.installed')}
 						</span>
 						{#if artifactType === 'agent'}
 							<button type="button" onclick={configureAgent} class="btn btn-outline rounded-xl h-11">
-								Configure
+								{$t('marketplace.detail.configure')}
 							</button>
 						{/if}
 						{#if confirmUninstall}
 							<div class="flex flex-col gap-2 rounded-xl border border-error/30 bg-error/5 p-3">
-								<p class="text-xs text-base-content/70 text-center">Remove {skill.name} from this companion?</p>
+								<p class="text-xs text-base-content/70 text-center">{$t('marketplace.detail.removeConfirm', { values: { name: skill.name } })}</p>
 								<div class="flex gap-2">
-									<button type="button" onclick={() => (confirmUninstall = false)} class="btn btn-ghost btn-sm rounded-lg flex-1">Cancel</button>
+									<button type="button" onclick={() => (confirmUninstall = false)} class="btn btn-ghost btn-sm rounded-lg flex-1">{$t('common.cancel')}</button>
 									<button type="button" onclick={uninstallProduct} disabled={uninstalling} class="btn btn-error btn-sm rounded-lg flex-1 disabled:opacity-50">
-										{uninstalling ? 'Removing…' : 'Uninstall'}
+										{uninstalling ? $t('marketplace.detail.removing') : $t('common.uninstall')}
 									</button>
 								</div>
 							</div>
 						{:else}
 							<button type="button" onclick={() => (confirmUninstall = true)} class="btn btn-ghost rounded-xl h-11 text-error/80 hover:text-error">
-								Uninstall
+								{$t('common.uninstall')}
 							</button>
 						{/if}
 					{:else}
 						<button type="button" onclick={installProduct} disabled={installing} class="btn btn-primary rounded-xl h-11 disabled:opacity-50">
 							<Download class="w-4 h-4" />
-							{installing ? 'Installing…' : 'Install'}
+							{installing ? $t('marketplace.detail.installing') : $t('common.install')}
 						</button>
 					{/if}
 
@@ -402,7 +404,7 @@
 								<Star class="w-3.5 h-3.5 text-warning fill-warning" />
 								<span class="font-medium text-base-content">{avgRating}</span>
 							</span>
-							<span class="text-xs text-base-content/50">{ratingCount} reviews</span>
+							<span class="text-xs text-base-content/50">{$t('marketplace.detail.reviewCount', { values: { count: ratingCount } })}</span>
 						</div>
 					{/if}
 				</div>
@@ -415,7 +417,7 @@
 				<!-- About — long description only; the short tagline lives in the hero -->
 				{#if hasLongDescription}
 					<section class="flex flex-col gap-3">
-						<h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">About this {kind.label.toLowerCase()}</h2>
+						<h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('marketplace.detail.aboutThis', { values: { kind: kindLabel.toLowerCase() } })}</h2>
 						<div class="prose prose-sm sm:prose-base max-w-none prose-headings:font-display prose-headings:tracking-tight">
 							{@html longHtml}
 						</div>
@@ -425,8 +427,8 @@
 				<!-- Automations -->
 				{#if hasWorkflows}
 					<section class="flex flex-col gap-3">
-						<h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">What it runs for you</h2>
-						<p class="text-sm text-base-content/50 max-w-2xl">Automations that run on a schedule or when something happens, so you don't have to lift a finger.</p>
+						<h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('marketplace.detail.whatItRuns')}</h2>
+						<p class="text-sm text-base-content/50 max-w-2xl">{$t('marketplace.detail.automationsDesc')}</p>
 						<div class="flex flex-col gap-2">
 							{#each workflows as wf}
 								<div class="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-base-100 border border-base-300">
@@ -440,7 +442,7 @@
 
 				<!-- Ratings + histogram -->
 				<section class="flex flex-col gap-3">
-					<h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Ratings &amp; reviews</h2>
+					<h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('marketplace.detail.ratingsAndReviews')}</h2>
 					<div class="rounded-2xl bg-base-100 border border-base-300 p-5">
 						{#if avgRating}
 							<div class="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-6 items-center">
@@ -452,7 +454,7 @@
 												<Star class="w-4 h-4 {filled ? 'text-warning fill-warning' : 'text-base-content/30'}" />
 											{/each}
 										</div>
-										<span class="text-xs text-base-content/50">{ratingCount} review{ratingCount === 1 ? '' : 's'}</span>
+										<span class="text-xs text-base-content/50">{ratingCount === 1 ? $t('marketplace.detail.reviewCountSingular', { values: { count: ratingCount } }) : $t('marketplace.detail.reviewCount', { values: { count: ratingCount } })}</span>
 									</div>
 								</div>
 								<div class="flex flex-col gap-1.5">
@@ -469,7 +471,7 @@
 								</div>
 							</div>
 						{:else}
-							<p class="text-sm text-base-content/50">No ratings yet. Be the first to leave one.</p>
+							<p class="text-sm text-base-content/50">{$t('marketplace.detail.noRatingsYet')}</p>
 						{/if}
 					</div>
 
@@ -478,7 +480,7 @@
 							{#each reviews.slice(0, 5) as review}
 								<div class="rounded-2xl bg-base-100 border border-base-300 p-5 flex flex-col gap-2">
 									<div class="flex items-center justify-between gap-3">
-										<div class="text-sm font-semibold truncate">{review.reviewerName || review.userName || review.reviewerSlug || 'Anonymous'}</div>
+										<div class="text-sm font-semibold truncate">{review.reviewerName || review.userName || review.reviewerSlug || $t('marketplace.detail.anonymous')}</div>
 										<div class="flex items-center gap-0.5">
 											{#each renderStars(review.rating) as filled}
 												<Star class="w-3 h-3 {filled ? 'text-warning fill-warning' : 'text-base-content/30'}" />
@@ -488,7 +490,7 @@
 									<p class="text-sm text-base-content/70 leading-snug">{review.body ?? review.text ?? ''}</p>
 									{#if replyMap[review.id]}
 										<div class="mt-1 pt-3 border-t border-base-300">
-											<p class="text-xs font-semibold text-base-content/50 mb-1">Developer response</p>
+											<p class="text-xs font-semibold text-base-content/50 mb-1">{$t('marketplace.detail.developerResponse')}</p>
 											<p class="text-xs text-base-content/70 leading-relaxed">{replyMap[review.id].body}</p>
 										</div>
 									{/if}
@@ -498,7 +500,7 @@
 					{/if}
 					<button type="button" onclick={() => (showReview = true)} class="btn btn-sm btn-ghost self-start gap-1.5">
 						<Star class="w-3.5 h-3.5" />
-						Write a review
+						{$t('marketplace.detail.writeAReview')}
 					</button>
 				</section>
 
@@ -509,7 +511,7 @@
 			<!-- Right meta sidebar — Information block -->
 			<aside class="flex flex-col gap-4">
 				<div class="rounded-2xl bg-base-100 border border-base-300 p-5">
-					<h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">Information</h3>
+					<h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">{$t('marketplace.detail.information')}</h3>
 					<dl class="flex flex-col">
 						{#each information as row}
 							<div class="flex items-center justify-between gap-3 py-2 border-b border-base-content/10 last:border-b-0 text-sm">
@@ -522,7 +524,7 @@
 
 				{#if authorName}
 					<a href="/marketplace?publisher={encodeURIComponent(authorName)}" class="text-sm text-primary hover:underline text-center">
-						See more by {authorName}
+						{$t('marketplace.detail.seeMoreBy', { values: { name: authorName } })}
 					</a>
 				{/if}
 			</aside>
@@ -531,7 +533,7 @@
 		<!-- You might also like — full width below the two-column body -->
 		{#if similarItems.length > 0}
 			<section class="mt-16 flex flex-col gap-4">
-				<h2 class="font-display text-xl font-bold tracking-tight">You might also like</h2>
+				<h2 class="font-display text-xl font-bold tracking-tight">{$t('marketplace.detail.youMightAlsoLike')}</h2>
 				<SimilarGrid items={similarItems.slice(0, 6)} />
 			</section>
 		{/if}
@@ -541,34 +543,34 @@
 <!-- Write Review Modal -->
 {#if showReview && skill}
 	<div class="fixed inset-0 z-50 flex items-center justify-center">
-		<button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => (showReview = false)} aria-label="Close review modal"></button>
+		<button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => (showReview = false)} aria-label={$t('marketplace.detail.closeReviewModal')}></button>
 		<div class="relative bg-base-100 rounded-2xl border border-base-300 w-full max-w-sm mx-4 p-6">
 			<div class="flex items-center justify-between mb-4">
-				<h3 class="font-display text-lg font-bold">Review {skill.name}</h3>
+				<h3 class="font-display text-lg font-bold">{$t('marketplace.detail.reviewTitle', { values: { name: skill.name } })}</h3>
 				<button type="button" onclick={() => (showReview = false)} class="p-1.5 rounded-full hover:bg-base-200 transition-colors">
 					<X class="w-4 h-4" />
 				</button>
 			</div>
 			<div class="flex flex-col gap-4">
 				<div>
-					<p class="text-xs font-semibold text-base-content/50 uppercase tracking-wider mb-2">Rating</p>
+					<p class="text-xs font-semibold text-base-content/50 uppercase tracking-wider mb-2">{$t('marketplace.detail.rating')}</p>
 					<div class="flex gap-1">
 						{#each [1, 2, 3, 4, 5] as n}
-							<button type="button" onclick={() => (reviewRating = n)} aria-label="{n} stars">
+							<button type="button" onclick={() => (reviewRating = n)} aria-label={$t('marketplace.detail.nStars', { values: { n } })}>
 								<Star class="w-8 h-8 transition-colors {n <= reviewRating ? 'text-warning fill-warning' : 'text-base-content/30'}" />
 							</button>
 						{/each}
 					</div>
 				</div>
 				<div>
-					<label for="rev-text" class="text-xs font-semibold text-base-content/50 uppercase tracking-wider">Your review</label>
-					<textarea id="rev-text" bind:value={reviewText} rows="4" class="textarea textarea-bordered w-full mt-2 resize-none" placeholder="Share your experience…"></textarea>
+					<label for="rev-text" class="text-xs font-semibold text-base-content/50 uppercase tracking-wider">{$t('marketplace.detail.yourReview')}</label>
+					<textarea id="rev-text" bind:value={reviewText} rows="4" class="textarea textarea-bordered w-full mt-2 resize-none" placeholder={$t('marketplace.detail.shareExperience')}></textarea>
 				</div>
 			</div>
 			<div class="flex gap-2 mt-5">
-				<button type="button" onclick={() => (showReview = false)} class="btn btn-ghost flex-1">Cancel</button>
+				<button type="button" onclick={() => (showReview = false)} class="btn btn-ghost flex-1">{$t('common.cancel')}</button>
 				<button type="button" disabled={!reviewText || submittingReview} onclick={submitReview} class="btn btn-primary flex-1 disabled:opacity-40">
-					{submittingReview ? 'Submitting…' : 'Submit review'}
+					{submittingReview ? $t('marketplace.detail.submitting') : $t('marketplace.detail.submitReviewAction')}
 				</button>
 			</div>
 		</div>
