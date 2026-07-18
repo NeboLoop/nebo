@@ -2081,9 +2081,49 @@ async fn handle_agent_ws(mut socket: WebSocket, hub: Arc<ClientHub>) {
 /// GET /ws/extension — Chrome extension bridge WebSocket endpoint.
 /// The native messaging host process connects here to relay messages
 /// between the Chrome extension and the Nebo agent.
-pub async fn extension_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+pub async fn extension_ws_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // Reject browser-originated upgrades. The native messaging relay is a plain
+    // client and sends no Origin; a web page's WebSocket ALWAYS sends its Origin
+    // and page JS cannot suppress it, so this alone defeats the localhost-WS /
+    // DNS-rebind attack from the open web.
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        warn!("ws/extension: rejected upgrade carrying an Origin header (browser-originated)");
+        return (axum::http::StatusCode::FORBIDDEN, "extension endpoint").into_response();
+    }
+    // Require the per-install relay secret (defense in depth vs. a non-browser
+    // local process). A caller that cannot read the user's data dir cannot
+    // present it. Fail closed if the secret is somehow missing.
+    let presented = headers
+        .get("x-nebo-extension-secret")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    match config::read_extension_secret() {
+        Some(secret) if constant_time_eq(presented, &secret) => {}
+        _ => {
+            warn!("ws/extension: rejected upgrade with missing/invalid relay secret");
+            return (axum::http::StatusCode::FORBIDDEN, "unauthorized").into_response();
+        }
+    }
     let bridge = state.extension_bridge.clone();
     ws.on_upgrade(move |socket| handle_extension_ws(socket, bridge))
+}
+
+/// Constant-time string comparison. The secret is fixed-length (64 hex chars),
+/// so the early length check leaks nothing useful.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBridge>) {
@@ -2209,4 +2249,19 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     }
 
     bridge.disconnect(conn_id).await;
+}
+
+#[cfg(test)]
+mod extension_auth_tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn secret_comparison() {
+        assert!(constant_time_eq("abc123", "abc123"));
+        assert!(!constant_time_eq("abc123", "abc124"));
+        assert!(!constant_time_eq("abc123", "abc1234")); // length mismatch
+        assert!(!constant_time_eq("", "x"));
+        assert!(constant_time_eq("", "")); // empty==empty, but the handler
+        // rejects an empty stored secret via read_extension_secret returning None.
+    }
 }

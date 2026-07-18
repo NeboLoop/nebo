@@ -756,6 +756,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 warn!("failed to install native messaging manifest: {}", e);
             }
         }
+        // Generate the per-install relay secret so it exists before any relay
+        // (launched by the browser) connects to /ws/extension.
+        if let Err(e) = config::ensure_extension_secret() {
+            warn!("failed to prepare extension relay secret: {}", e);
+        }
     }
 
     // Ensure artifact directory structure exists (nebo/ and user/ namespaces)

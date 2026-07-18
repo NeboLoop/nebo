@@ -587,11 +587,30 @@ async fn run_native_messaging() -> anyhow::Result<()> {
 
     let ws_url = "ws://127.0.0.1:27895/ws/extension";
 
+    // Present the per-install relay secret so the server can tell this relay
+    // from any other local WS client (a hostile web page can't read it). We
+    // resolve the same default data dir as the server, so the value matches.
+    let relay_secret = config::read_extension_secret().unwrap_or_default();
+
+    // Build the upgrade request fresh each attempt (connect_async consumes it).
+    let build_request = || -> anyhow::Result<_> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = ws_url.into_client_request()?;
+        let value = relay_secret
+            .parse()
+            .map_err(|_| anyhow::anyhow!("relay secret is not a valid header value"))?;
+        request
+            .headers_mut()
+            .insert("X-Nebo-Extension-Secret", value);
+        Ok(request)
+    };
+
     // Retry WS connection with backoff — server may not be ready yet
     let ws_stream = {
         let mut attempts = 0u32;
         loop {
-            match connect_async(ws_url).await {
+            let request = build_request()?;
+            match connect_async(request).await {
                 Ok((stream, _)) => {
                     eprintln!("[nebo-relay] connected to server at {}", ws_url);
                     break stream;
