@@ -1,16 +1,44 @@
-# Nebo
+# Turn your computer into an AI workforce.
 
-Your personal AI assistant. Install skills, tools, workflows, and roles to make it smarter.
+**Nebo is the operating system for AI employees — open source, MIT licensed.**
 
-Nebo lives on your computer — you name it, shape its personality, and it learns how you think. One persistent intelligence that compounds understanding the longer it stays with you. Extend it with capabilities from the [NeboAI marketplace](https://neboai.com) or build your own.
+Hire pre-built employees from the marketplace — bookkeeper, researcher, scheduler — one click each. They show up already knowing the job: workflows, tools, and skills wired together, no setup.
 
-## Why Nebo
+They coordinate as a team, with real handoffs. They work in repeatable, auditable workflows — the tenth run as dependable as the first. And they operate inside guardrails written into the code, not the prompt, so you can trust them with real access to your systems.
 
-- **It's yours.** Runs locally on your machine. Your data stays on your computer.
-- **It remembers.** Persistent memory across sessions — preferences, projects, people, patterns.
-- **It grows.** The longer you use it, the more useful it becomes. Install skills, tools, workflows, and roles from the marketplace to expand what it can do.
-- **It works.** Browser automation, file operations, shell commands, scheduling — one AI for your entire workflow.
-- **It's extensible.** A sandboxed app platform where developers build and distribute capabilities via [NeboAI](https://neboai.com).
+Start on your own machine — your data never leaves your walls. Move to a server when the team needs to grow and never clock out.
+
+```bash
+brew install neboai/tap/nebo
+```
+
+Windows and Linux installers in the [latest release](https://github.com/AltMagick/nebo/releases/latest) — full instructions [below](#install).
+
+**What is Nebo?** Nebo runs a team of AI employees on hardware you control. Each employee is a pre-built role hired from the marketplace in one click. You own the machine, the data, and the workforce.
+
+## Hire, don't build
+
+You've been building agents one at a time. Nebo lets you hire them. Pick a role — bookkeeper, researcher, scheduler — and click once. A pre-built employee arrives with its workflows, tools, and skills already wired together. The shelf is stocked: 110 ready-to-hire roles in the [marketplace](https://neboai.com) today, built from 280 plugins and skills. No configuration, no prompt engineering, no assembly.
+
+<!-- screenshot: marketplace roles page → one-click hire → employee active in the roster. Caption: "Hired in one click. Working in the next." -->
+
+## The work moves between them
+
+A workforce isn't a pile of chatbots. Nebo employees hand work to each other — the researcher passes findings to the writer, the writer files output with the scheduler — with real handoffs you can watch happen. You manage the team; they manage the work.
+
+<!-- screenshot (LOAD-BEARING): two employees mid-handoff. Caption: "A real handoff, not a metaphor." -->
+
+## The tenth run is as good as the first
+
+Improvised agents are impressive once. Employees are dependable every time. Nebo work runs as repeatable, auditable workflows — you can see what an employee did, step by step, and rerun it knowing it behaves the same way tomorrow.
+
+<!-- screenshot: workflow run history / audit trail of a completed job. Caption: "Every step recorded. Every run repeatable." -->
+
+## Guardrails in the code, not the prompt
+
+You can't give real system access to something whose safety is a suggestion. Nebo enforces eight layers of defense in code — what an employee can touch, run, and reach is bounded before it ever acts, not politely requested in a prompt. See [SECURITY.md](SECURITY.md) for all eight. That's what makes real access rational instead of reckless.
+
+<!-- screenshot: permission/approval gate — an employee asking, the boundary visible. Caption: "The employee asks. The system enforces." -->
 
 ## Install
 
@@ -145,7 +173,7 @@ Nebo has a sandboxed app platform. Developers build `.napp` packages that extend
 - **Compiled-only** — only native binaries accepted (Go, Rust, C, Zig). No interpreted languages.
 - **Distributed via NeboAI** — install apps from the marketplace or deploy privately to your loop
 
-See [Creating Apps](docs/CREATING_APPS.md) for the developer guide.
+See the [Publisher's Guide](docs/publishers-guide/apps.md) for the developer guide.
 
 ## Channels
 
@@ -163,9 +191,9 @@ Channel apps are distributed through NeboAI. All channels route to the same agen
 
 ## NeboAI
 
-[NeboAI](https://neboai.com) is the AI assistant marketplace that powers Nebo's extensibility:
+[NeboAI](https://neboai.com) is the marketplace that stocks the workforce:
 
-- **Marketplace** — discover and install skills, tools, workflows, roles, and apps built by the community
+- **Hiring** — ready-to-work roles, and the skills, tools, workflows, and apps they're built from — created by the community
 - **Cloud integrations** — pre-built connectors like My Cloud (unified Google Workspace access: Gmail, Drive, Sheets, Docs, Contacts)
 - **Inter-agent communication** — your Nebo can collaborate with other Nebos in your loop
 - **Secure transport** — WebSocket-based binary protocol with JWT authentication
@@ -174,15 +202,16 @@ Nebo works fully offline without NeboAI if you have a local LLM (e.g., Ollama). 
 
 ## Security
 
-Seven layers of defense, each enforced in code — not by prompts. See [SECURITY.md](SECURITY.md) for the full architecture and audit trail.
+Eight layers of defense, each enforced in code — not by prompts. See [SECURITY.md](SECURITY.md) for the full architecture and audit trail.
 
 - Hard safeguards block destructive operations unconditionally (sudo, disk formatting, system paths)
 - Origin tagging tracks every request source (user, comm, app, skill, system)
 - Configurable tool policies with allowlists and approval flows
+- Capability permissions gate what each employee is allowed to do
 - App sandboxing with process isolation and ED25519 signature verification
 - Compiled-only binary policy — no interpreted languages in the app platform
-- All credentials encrypted at rest (AES-256-GCM) with OS keychain-backed master key
-- Network security: JWT auth, CSRF protection, rate limiting, security headers
+- Network security: JWT auth, CSRF protection, rate limiting, credentials encrypted at rest (AES-256-GCM)
+- Process safety: single-instance lock, WebSocket limits, cooperative cancellation
 
 ## System Requirements
 
@@ -222,4 +251,8 @@ cd ../../app && pnpm dev             # SvelteKit dev server (port 5173)
 
 ## License
 
-Nebo is licensed under the [Apache License 2.0](LICENSE). Use it, modify it, build on it — freely.
+Nebo is licensed under the [MIT License](LICENSE). Use it, modify it, build on it — freely.
+
+Bundled and vendored third-party components retain their own licenses; see [THIRD-PARTY.md](THIRD-PARTY.md).
+
+**Trademarks.** The MIT license covers the source code only. The *Nebo* and *NeboAI* names, logos, and brand assets (including those under `src-tauri/icons/`) are trademarks and are **not** licensed for use. You may build on the code, but not ship it under the Nebo name or brand.

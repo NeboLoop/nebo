@@ -111,7 +111,7 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
             .as_deref()
             .filter(|s| !s.is_empty())
             .or_else(|| personality_preset_prompt(agent.personality_preset.as_deref()))
-            .unwrap_or("You are a helpful personal AI companion.");
+            .unwrap_or("You are a capable AI employee.");
         sections.push(format!("# Identity\n{}", personality));
     }
 

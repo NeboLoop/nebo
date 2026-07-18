@@ -109,7 +109,7 @@ pub async fn synthesize_directive(
 
     let prompt = format!(
         "Based on these observed communication style patterns, write a concise personality directive (one paragraph, 3-5 sentences, second person \"you\").\n\
-         The directive should guide an AI assistant on how to communicate with this user.\n\
+         The directive should guide an AI employee on how to communicate with this user.\n\
          Focus on concrete behaviors, not abstract descriptions.\n\n\
          Observations:\n{}\n\n\
          Write ONLY the directive paragraph, no preamble or explanation.",

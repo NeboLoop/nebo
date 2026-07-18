@@ -88,7 +88,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Nebo
 
-Nebo is a **Personal Desktop AI Companion** — a locally-running AI agent with persistent memory, extensible via skills/apps/workflows from the NeboAI marketplace. It targets non-technical professionals (realtors, lawyers, consultants). Never call it an "assistant" — use "companion." Platform-agnostic: macOS, Windows, Linux.
+Nebo is **the operating system for AI employees** — it turns the user's computer into an AI workforce. Pre-built employees are hired from the NeboAI marketplace in one click and run locally with persistent memory, coordinating as a team. Never call it an "assistant" or "companion" — the frame is employees / workforce / hire ("pre-built," never "pre-trained"). It targets non-technical professionals (realtors, lawyers, consultants). Platform-agnostic: macOS, Windows, Linux.
 
 ## Tech Stack
 
