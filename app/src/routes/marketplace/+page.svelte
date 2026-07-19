@@ -34,17 +34,24 @@
 	let featured: AppItem[] = $state([]);
 	let categoryOrder: string[] = $state([]);
 
-	// The proxy pages the catalog (~100/page via limit/offset); fetch in PARALLEL and dedupe.
+	// The proxy caps at 100/page. Fetch page 1, read `total`, then fetch only the
+	// remaining pages that actually have data (in parallel) — no fixed page count
+	// to over-fetch empty pages or under-fetch as the catalog grows.
+	const PAGE_SIZE = 100;
 	async function fetchAllProducts(): Promise<AppItem[]> {
-		const PAGES = 6;
-		const results = await Promise.all(
-			Array.from({ length: PAGES }, (_, i) =>
-				listStoreProducts(undefined, undefined, i + 1, 100).catch(() => ({ products: [] }))
+		const first = (await listStoreProducts(undefined, undefined, 1, PAGE_SIZE).catch(
+			() => ({ products: [], total: 0 })
+		)) as { products?: any[]; total?: number };
+		const total = Number(first?.total ?? (first?.products?.length ?? 0));
+		const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+		const rest = await Promise.all(
+			Array.from({ length: pages - 1 }, (_, i) =>
+				listStoreProducts(undefined, undefined, i + 2, PAGE_SIZE).catch(() => ({ products: [] }))
 			)
 		);
 		const seen = new Set<string>();
 		const out: AppItem[] = [];
-		for (const res of results) {
+		for (const res of [first, ...rest]) {
 			for (const r of ((res as { products?: any[] })?.products as any[]) || []) {
 				const id = String(r?.id ?? '');
 				if (!id || seen.has(id)) continue;

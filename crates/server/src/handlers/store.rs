@@ -1,5 +1,9 @@
 //! Store proxy handlers — forward marketplace queries to NeboAI API.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use serde::Deserialize;
@@ -8,6 +12,21 @@ use super::{HandlerResult, to_error_response};
 use crate::codes::build_api_client;
 use crate::state::AppState;
 use types::NeboError;
+
+/// The marketplace catalog is large (~400 items, ~600ms per 100-item page over
+/// the cloud proxy) and changes rarely, but the SPA re-fetches it on every
+/// marketplace open. Cache the RAW cloud product-list response briefly so
+/// reopens are instant; install-state is enriched per request (below) so the
+/// live "Installed" badge is never stale. Keyed by the full query.
+/// ponytail: unbounded map, but keys are the handful of (type,category,page)
+/// combos the UI actually requests — TTL overwrite keeps it tiny. Add LRU only
+/// if the key space ever grows.
+const CATALOG_TTL: Duration = Duration::from_secs(120);
+
+fn catalog_cache() -> &'static Mutex<HashMap<String, (Instant, serde_json::Value)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, serde_json::Value)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Deserialize)]
 pub struct StoreQuery {
@@ -30,22 +49,50 @@ pub async fn list_store_products(
     State(state): State<AppState>,
     Query(params): Query<StoreQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api
-        .list_products(
-            params.artifact_type.as_deref(),
-            params.q.as_deref(),
-            params.category.as_deref(),
-            params.page,
-            params.page_size,
-        )
-        .await
-        .map_err(|e| to_error_response(NeboError::Internal(format!("list_products: {e}"))))?;
+    let cache_key = format!(
+        "{}|{}|{}|{}|{}",
+        params.artifact_type.as_deref().unwrap_or(""),
+        params.q.as_deref().unwrap_or(""),
+        params.category.as_deref().unwrap_or(""),
+        params.page.unwrap_or(1),
+        params.page_size.unwrap_or(0),
+    );
 
-    // NeboAI returns the canonical { "products": [...], "total": N } envelope —
-    // pass it through verbatim, only enriching with local install state (which
-    // NeboAI can't know). No client-side key remapping.
-    let mut out = resp;
+    // Serve the raw cloud response from cache when fresh; otherwise fetch it.
+    let cached = {
+        let map = catalog_cache().lock().unwrap();
+        map.get(&cache_key)
+            .filter(|(at, _)| at.elapsed() < CATALOG_TTL)
+            .map(|(_, v)| v.clone())
+    };
+
+    let mut out = match cached {
+        Some(v) => v,
+        None => {
+            let api = build_api_client(&state).map_err(to_error_response)?;
+            let resp = api
+                .list_products(
+                    params.artifact_type.as_deref(),
+                    params.q.as_deref(),
+                    params.category.as_deref(),
+                    params.page,
+                    params.page_size,
+                )
+                .await
+                .map_err(|e| {
+                    to_error_response(NeboError::Internal(format!("list_products: {e}")))
+                })?;
+            catalog_cache()
+                .lock()
+                .unwrap()
+                .insert(cache_key, (Instant::now(), resp.clone()));
+            resp
+        }
+    };
+
+    // NeboAI returns the canonical { "products": [...], "total": N } envelope.
+    // Install state is local (NeboAI can't know it) so it's enriched on every
+    // response, cached or not — the "Installed" badge stays live.
     enrich_installed_state(&mut out, &state.store);
 
     Ok(Json(out))
