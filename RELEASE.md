@@ -69,7 +69,7 @@ Tag push (v*)
 ### Homebrew (macOS)
 
 ```bash
-brew install --cask neboai/tap/nebo
+brew install --cask neboloop/tap/nebo
 ```
 
 - Installs `Nebo.app` to `/Applications` (Spotlight-indexable, proper icon)
@@ -94,7 +94,7 @@ sudo apt install nebo
 
 ### Direct Download (all platforms)
 
-Binaries available on the [GitHub Releases](https://github.com/AltMagick/nebo/releases) page.
+Binaries available on the [GitHub Releases](https://github.com/NeboLoop/nebo/releases) page.
 
 ---
 
@@ -194,8 +194,8 @@ gh release upload v0.2.0 src-tauri/target/release/bundle/*
 
 | Repo | Purpose |
 |------|---------|
-| [AltMagick/nebo](https://github.com/AltMagick/nebo) | Main source code (Rust) + CI pipeline |
-| [neboloop/homebrew-tap](https://github.com/neboloop/homebrew-tap) | Homebrew cask (`brew install neboai/tap/nebo`) |
+| [NeboLoop/nebo](https://github.com/NeboLoop/nebo) | Main source code (Rust) + CI pipeline |
+| [neboloop/homebrew-tap](https://github.com/neboloop/homebrew-tap) | Homebrew cask (`brew install --cask neboloop/tap/nebo`) |
 | [neboloop/apt](https://github.com/neboloop/apt) | APT repository for Debian/Ubuntu |
 
 ---
