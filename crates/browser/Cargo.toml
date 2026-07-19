@@ -17,6 +17,3 @@ futures = "0.3"
 rand = { workspace = true }
 anyhow = { workspace = true }
 tokio-tungstenite = { workspace = true }
-# Named nebo-config (not the workspace `config` alias) because this crate has
-# its own `config` module; the alias would make `use config::` ambiguous.
-nebo-config = { path = "../config" }

@@ -23,16 +23,19 @@ use tokio_tungstenite::tungstenite::Message;
 /// Never returns on the happy path: exits the process so tokio's blocking
 /// stdin thread can't prevent shutdown (Chrome's onDisconnect then fires and
 /// the extension reconnects).
-pub async fn run() -> anyhow::Result<()> {
+///
+/// `relay_secret` is the per-install `/ws/extension` secret (from
+/// `config::read_extension_secret()`), passed in by the caller so this crate
+/// stays free of a config dependency. It's presented on the WS upgrade so the
+/// server can tell this relay from any other local client (a hostile web page
+/// can't read it).
+pub async fn run(relay_secret: Option<String>) -> anyhow::Result<()> {
     // NOTE: stdout is the native messaging channel — ALL diagnostic logging goes to stderr.
     eprintln!("[nebo-relay] starting native messaging bridge");
 
     let ws_url = "ws://127.0.0.1:27895/ws/extension";
 
-    // Present the per-install relay secret so the server can tell this relay
-    // from any other local WS client (a hostile web page can't read it). We
-    // resolve the same default data dir as the server, so the value matches.
-    let relay_secret = nebo_config::read_extension_secret().unwrap_or_default();
+    let relay_secret = relay_secret.unwrap_or_default();
 
     // Build the upgrade request fresh each attempt (connect_async consumes it).
     let build_request = || -> anyhow::Result<_> {

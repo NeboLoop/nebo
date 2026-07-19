@@ -173,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let args: Vec<String> = std::env::args().collect();
         if args.iter().any(|a| a.starts_with("chrome-extension://")) {
-            return browser::extension_relay::run().await;
+            return browser::extension_relay::run(config::read_extension_secret()).await;
         }
     }
 
@@ -376,7 +376,7 @@ async fn main() -> anyhow::Result<()> {
             run_onboard(&cfg)?;
         }
         Some(Commands::Relay) => {
-            browser::extension_relay::run().await?;
+            browser::extension_relay::run(config::read_extension_secret()).await?;
         }
         Some(Commands::Capabilities) => {
             println!("Nebo v{VERSION} — Platform Capabilities");

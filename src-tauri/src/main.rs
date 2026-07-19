@@ -343,7 +343,7 @@ fn main() {
         let args: Vec<String> = std::env::args().collect();
         if args.iter().any(|a| a.starts_with("chrome-extension://")) {
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-            if let Err(e) = rt.block_on(browser::extension_relay::run()) {
+            if let Err(e) = rt.block_on(browser::extension_relay::run(config::read_extension_secret())) {
                 eprintln!("[nebo-relay] error: {e}");
                 std::process::exit(1);
             }
