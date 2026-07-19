@@ -38,8 +38,8 @@ const MAX_TRANSIENT_RETRIES: usize = 10;
 /// Max retryable (provider/rate_limit/billing) retries before giving up.
 const MAX_RETRYABLE_RETRIES: usize = 5;
 /// Max reactive-compaction attempts when the provider rejects for context
-/// overflow despite the local estimate saying we fit (Claude Code's
-/// single-shot reactive compact + give-up, autoCompact death-spiral guard).
+/// overflow despite the local estimate saying we fit (single-shot reactive
+/// compact + give-up, a guard against an auto-compaction death-spiral).
 const MAX_OVERFLOW_RETRIES: usize = 2;
 /// Consecutive overloaded (529) errors before falling back to a cheaper model.
 #[allow(dead_code)] // reserved for overload fallback logic
@@ -47,12 +47,12 @@ const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
 /// Timeout for individual tool execution.
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 /// Max gap between stream events before the stream is declared wedged
-/// (connection open, no tokens). Matches Claude Code's 90s idle watchdog;
-/// classified transient so the normal retry/failover path re-issues the request.
+/// (connection open, no tokens). A 90s idle watchdog, classified transient so
+/// the normal retry/failover path re-issues the request.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// Retry backoff (Claude Code's withRetry): exponential 500ms × 2^(n−1) capped
-/// at 32s, plus 0–25% jitter. An explicit provider Retry-After wins outright.
+/// Retry backoff: exponential 500ms × 2^(n−1) capped at 32s, plus 0–25% jitter.
+/// An explicit provider Retry-After wins outright.
 fn retry_backoff(attempt: usize, retry_after_secs: Option<u64>) -> Duration {
     if let Some(secs) = retry_after_secs {
         return Duration::from_secs(secs);
@@ -352,7 +352,7 @@ struct RunState {
     /// Compared against API-reported usage to calibrate compaction thresholds.
     last_request_estimate: usize,
     /// Observed undercount of the local estimate vs API-reported usage
-    /// (Claude Code's hybrid counting, expressed as a threshold adjustment:
+    /// (hybrid counting, expressed as a threshold adjustment:
     /// actual_prev + est(tail) > threshold  ⇔  est(prev) + est(tail) > threshold − undercount).
     estimate_correction: usize,
     /// Cumulative input tokens across all iterations in this run.
@@ -537,7 +537,7 @@ impl Runner {
         let session_id = session.id.clone();
         info!(session_id = %session_id, ms = t_run_entry.elapsed().as_millis() as u64, "[telemetry] session ready");
 
-        // Pre-load skills into the sub-agent's conversation (Claude Code pattern).
+        // Pre-load skills into the sub-agent's conversation.
         // Each skill becomes a user message with isMeta metadata so the UI doesn't
         // render it as real user input. Injected BEFORE the task prompt so the
         // sub-agent has instructions in its context from turn 1.
@@ -1300,9 +1300,9 @@ async fn run_loop(
     // Deferred tool discovery: each turn, `extract_discovered_deferred_tools`
     // scans window_messages for tool_search results and direct calls to deferred
     // tools. The results accumulate into this per-run set so a tool stays loaded
-    // for the rest of the run even after compaction evicts its discovery message
-    // (Claude Code solves the same eviction race by snapshotting the discovered
-    // set onto the compact boundary — a monotonic per-run set is equivalent).
+    // for the rest of the run even after compaction evicts its discovery message.
+    // (Snapshotting the discovered set onto the compact boundary would solve the
+    // same eviction race — a monotonic per-run set is equivalent and simpler.)
     let mut discovered_deferred: HashSet<String> = HashSet::new();
 
     // Resolve agent from registry if agent_id is set
@@ -1479,7 +1479,7 @@ async fn run_loop(
     // Get active task (mutable: refreshed periodically to catch async detect_objective)
     let mut active_task = sessions.get_active_task(session_id).unwrap_or_default();
 
-    // Skills follow Claude Code's deferred pattern: NOT auto-loaded into system prompt.
+    // Skills follow a deferred pattern: NOT auto-loaded into system prompt.
     // Model uses skill(action: "discover") to find skills and skill(action: "load") to
     // activate them. Loaded skill content goes into message history (tool results) and
     // unloads when messages are evicted by sliding window.
@@ -2116,10 +2116,9 @@ async fn run_loop(
             sessions.get_summary(session_id).unwrap_or_default()
         };
 
-        // Discover which deferred tools are active by scanning the message window.
-        // Follows Claude Code's extractDiscoveredToolNames pattern — tools load when
-        // tool_search results or direct calls appear in messages, and unload when
-        // those messages are evicted by sliding window compaction.
+        // Discover which deferred tools are active by scanning the message window:
+        // tools load when tool_search results or direct calls appear in messages,
+        // and unload when those messages are evicted by sliding window compaction.
         let t_tools_start = std::time::Instant::now();
         let deferred_names = tools.get_deferred_names().await;
         discovered_deferred.extend(tool_filter::extract_discovered_deferred_tools(
@@ -3741,7 +3740,7 @@ async fn run_loop(
             // Save all tool results to session in deterministic order
             // and track whether ALL results in this iteration were errors.
             //
-            // Context protection (Claude Code pattern):
+            // Context protection:
             // - Success results: 30K cap. Oversized → persist to file, return preview + path.
             // - Error results:   10K cap. Oversized → first 5K + last 5K with truncation marker.
             // - Universal:      100K hard ceiling as final safety net.
@@ -3797,7 +3796,7 @@ async fn run_loop(
                     *read_failures.entry(p).or_insert(0) += 1;
                 }
 
-                // Empty result guard (Claude Code pattern): prevent models from
+                // Empty result guard: prevent models from
                 // interpreting empty tool_result as end-of-output.
                 if result.content.is_empty() && !result.is_error {
                     result.content = format!("({} completed with no output)", tc.name);
@@ -3854,7 +3853,7 @@ async fn run_loop(
                     }
                 }
 
-                // Error truncation: first 5K + last 5K with marker (Claude Code pattern)
+                // Error truncation: first 5K + last 5K with marker
                 if result.is_error && result.content.len() > ERROR_CAP {
                     let total_len = result.content.len();
                     let first = truncate_str(&result.content, ERROR_HALF).to_string();
@@ -4268,8 +4267,8 @@ async fn run_loop(
             empty_content_retries = 0;
         }
 
-        // Auto-continuation: tool_use blocks are the sole continuation signal
-        // (aligned with Claude Code). Text-only responses always exit the loop.
+        // Auto-continuation: tool_use blocks are the sole continuation signal.
+        // Text-only responses always exit the loop.
         // Tool-using iterations already `continue` via the tool execution path
         // at ~line 2367, so reaching this point means no tools were called.
         // Max-tokens recovery and budget continuation handle their own cases above.

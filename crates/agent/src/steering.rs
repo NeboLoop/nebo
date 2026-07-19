@@ -20,7 +20,7 @@ pub fn format_proactive_items(items: &[crate::proactive::ProactiveItem]) -> Vec<
         .collect()
 }
 
-// ===== Reminder engine: event-driven, message-stream steering (Claude Code style) =====
+// ===== Reminder engine: event-driven, message-stream steering =====
 //
 // Unlike the always-on Generator pipeline (which injects into the low-salience
 // system-prompt suffix), reminders are checked AFTER tool results and injected as
@@ -214,7 +214,7 @@ const EXTERNAL_CONTENT_TOOLS: &[&str] = &["web", "browser"];
 
 /// UntrustedContent — prompt-injection defense. When recent tool results carried
 /// content fetched from the web, remind the model (in the high-salience stream)
-/// that it's untrusted external data, not instructions. Mirrors Claude Code's
+/// that it's untrusted external data, not instructions. Emitted as an
 /// external-content `<system-reminder>`. Both modes; cadence-capped so it recurs
 /// periodically while external content is in the window without spamming.
 struct UntrustedContent;
@@ -853,8 +853,8 @@ impl Reminder for ErrorRecovery {
 }
 
 /// Re-state the modifiable objective every N turns so a weak model doesn't drift off
-/// the goal over a long run. Claude Code does the analogue (todo/task re-injection on a
-/// cadence, never every turn). Content template mirrors the recap: goal → stay on it.
+/// the goal over a long run — objective re-injection on a cadence (never every
+/// turn), analogous to periodic todo/task recaps. Content template: goal → stay on it.
 const OBJECTIVE_REINFORCE_EVERY: usize = 8;
 /// ExecuteIntent — weak models narrate a next step ("Now I'll create the file") and end the
 /// turn without the tool call ("promise-then-stop"). The static comm-style binds intent to a
@@ -1449,7 +1449,7 @@ fn is_serial_read_turn(tool_calls_json: &str) -> bool {
     matches!(action, "read" | "glob" | "grep" | "list" | "ls")
 }
 
-/// SerialReadGrind — the weak-model failure the stadium-partners run showed: reading a
+/// SerialReadGrind — a weak-model failure seen in production runs: reading a
 /// directory tree one file per turn across dozens of turns. The runtime already runs
 /// batched read-only tools concurrently and an explore sub-agent exists; the prompt even
 /// says to use them — but weak models ignore static prompt bullets and heed the live

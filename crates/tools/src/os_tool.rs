@@ -165,7 +165,7 @@ impl OsTool {
     /// True when the call is a file-management verb (move/copy/rename/delete/
     /// mkdir) shaped like a file op (has `path`, no explicit resource) rather
     /// than a mouse `move`. The file tool has no such actions (they go through
-    /// the shell, matching Claude Code), so these are redirected to a shell
+    /// the shell), so these are redirected to a shell
     /// correction — and the permission gate must NOT treat them as desktop
     /// control. One detection, shared by `execute` (the redirect) and
     /// `capabilities::gating_capability` (skip the wrong-capability ask).
@@ -678,8 +678,8 @@ impl DynTool for OsTool {
             // args are file operations, NOT a mouse "move" — but action-name inference
             // resolves bare "move" to the desktop "input" resource, which then gated on
             // the wrong (Desktop) capability and surfaced a misleading "need Desktop".
-            // The file tool has no move/copy/delete (matching Claude Code: those go
-            // through the shell), so steer the agent to shell `mv`/`cp`/`rm` instead of
+            // The file tool has no move/copy/delete (those go through the shell),
+            // so steer the agent to shell `mv`/`cp`/`rm` instead of
             // misrouting. Disambiguated by file args: a real mouse move never carries
             // `path` + `destination`.
             {

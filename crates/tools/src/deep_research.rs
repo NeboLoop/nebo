@@ -1,6 +1,6 @@
 //! Deterministic deep-research harness — pure-code core.
 //!
-//! Ported from Claude Code's `deep-research` workflow (v2.1.162). The pipeline is
+//! The pipeline is
 //! Scope → Search → URL-dedup → Fetch/Extract → 3-vote adversarial Verify → Synthesize,
 //! every stage a bounded fan-out whose sub-agent is forced through a schema-validated
 //! `StructuredOutput` call (see [`crate::deep_research`] callers + `agent::structured`).

@@ -167,7 +167,7 @@ pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, Nap
         // Restore the executable bit when the archived entry was executable, or
         // for conventionally-named binary/script entries. `std::fs::write`
         // creates 0644, which would otherwise strip the +x off a packaged
-        // binary named after its slug (e.g. "stadium-ops").
+        // binary named after its slug (e.g. "example-ops").
         #[cfg(unix)]
         if entry_mode & 0o111 != 0 || is_executable_entry(&normalized) {
             use std::os::unix::fs::PermissionsExt;

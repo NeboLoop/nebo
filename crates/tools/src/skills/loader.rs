@@ -31,7 +31,7 @@ pub struct Loader {
     /// Keyed by skill name, value is the full SKILL.md content from include_str!().
     bundled_raw: HashMap<String, &'static str>,
     /// Pre-built compact catalog string, rebuilt on load_all() / watcher reload.
-    /// Names-only format (like Claude Code's deferred tool listing).
+    /// Names-only format (the deferred tool-listing format).
     cached_catalog: Arc<RwLock<String>>,
     /// License keys for sealed .napp files, keyed by artifact_id.
     /// Populated from the license key cache before load_all().
@@ -300,7 +300,7 @@ impl Loader {
         verify_dependencies(&mut loaded, self.plugin_store.as_deref());
 
         let count = loaded.len();
-        // Rebuild cached catalog before storing (names-only, like Claude Code deferred tools)
+        // Rebuild cached catalog before storing (names-only, deferred-tool format)
         let catalog = build_catalog_string(&loaded);
         *self.skills.write().await = loaded;
         *self.cached_catalog.write().await = catalog;

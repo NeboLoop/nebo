@@ -1068,7 +1068,7 @@ async fn run_and_collect(
     if output.is_empty() {
         Ok("Sub-agent completed (no text output).".to_string())
     } else {
-        // Cap sub-agent output to prevent flooding parent context (Claude Code pattern).
+        // Cap sub-agent output to prevent flooding parent context.
         // Default 32K — parent can Read the full file if it needs more.
         const MAX_SUBAGENT_OUTPUT: usize = 32_000;
         if output.len() > MAX_SUBAGENT_OUTPUT {

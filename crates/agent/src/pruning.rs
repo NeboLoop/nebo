@@ -22,7 +22,7 @@ const MICRO_COMPACT_COUNT_TRIGGER: usize = 4;
 /// stale tool results at full input cost.
 pub const TIME_BASED_GAP_THRESHOLD_SECS: i64 = 300; // 5 minutes
 /// How many recent tool results to keep during time-based clearing.
-/// Claude Code keeps 1 — we match that.
+/// Keep the single most recent so the model retains immediate context.
 pub const TIME_BASED_KEEP_RECENT: usize = 1;
 
 /// Default sliding window token limit (used when caller doesn't supply one).
@@ -96,7 +96,7 @@ pub fn estimate_total_tokens(messages: &[ChatMessage]) -> usize {
 /// Never evicts messages with created_at >= run_start_time.
 /// `max_tokens` controls the token budget for the window — caller typically
 /// passes `ContextThresholds::auto_compact` so eviction only fires when
-/// approaching the context limit (like Claude Code's ~83% threshold).
+/// approaching the context limit (the standard ~83%-of-limit threshold).
 pub fn apply_sliding_window(
     messages: &[ChatMessage],
     run_start_time: i64,
@@ -214,7 +214,7 @@ pub fn micro_compact(
     };
 
     // Count-based trigger: when compactable results exceed threshold,
-    // strip aggressively regardless of age (Claude Code style).
+    // strip aggressively regardless of age.
     let count_triggered = tool_result_indices.len() > MICRO_COMPACT_COUNT_TRIGGER;
     // Age-based floor for the non-triggered path (backward compat).
     let min_age = if count_triggered {

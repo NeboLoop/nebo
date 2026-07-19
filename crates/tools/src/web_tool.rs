@@ -2171,9 +2171,9 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
 /// Used by auto-snapshot after navigate to keep output compact.
 /// Bound an inline tool result WITHOUT losing data. Short results pass through;
 /// large ones return a preview plus the FULL text written to a temp file the model
-/// can page through with `os(action: "read", path, offset, limit)`. This mirrors how
-/// Claude Code handles oversized output (preview + spill-to-file) — the model gets
-/// the whole result on demand instead of a silent hard cut.
+/// can page through with `os(action: "read", path, offset, limit)`. Oversized
+/// output is handled by preview + spill-to-file — the model gets the whole
+/// result on demand instead of a silent hard cut.
 fn spill_large_result(full: &str, name_hint: &str) -> String {
     if full.len() <= MAX_INLINE_CHARS {
         return full.to_string();

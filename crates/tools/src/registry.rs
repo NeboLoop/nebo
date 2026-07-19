@@ -623,7 +623,7 @@ impl Registry {
             )),
         };
 
-        // Registry-level output backstop (Claude Code's MAX_TOOL_RESULT_BYTES).
+        // Registry-level output backstop (a hard MAX_TOOL_RESULT_BYTES ceiling).
         // The runner has smarter preview/spill-to-file tiers well below this, so
         // chat runs never hit it — it protects direct callers (deep research,
         // workflows) from unbounded multi-MB results.
@@ -1038,7 +1038,7 @@ fn strip_mcp_prefix(name: &str) -> &str {
     if parts.len() == 3 { parts[2] } else { name }
 }
 
-/// Resolve flat tool names (Claude Code convention) to STRAP tool + injected params.
+/// Resolve flat tool names (the model-facing convention) to STRAP tool + injected params.
 /// Returns (strap_tool_name, params_to_inject) or None if not a known alias.
 fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Value)>)> {
     let lc = name.to_lowercase();

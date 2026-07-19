@@ -188,7 +188,7 @@ impl DynTool for SkillTool {
 
             match domain_input.action.as_str() {
                 "list" => {
-                    // Budget-constrained catalog (Claude Code pattern): show count +
+                    // Budget-constrained catalog: show count +
                     // capped entries with truncated descriptions. Never dump the full
                     // catalog — use discover(query) for targeted search.
                     const MAX_CATALOG_ENTRIES: usize = 30;
