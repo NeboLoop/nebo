@@ -993,6 +993,13 @@ export function neboAIConnectHandler(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Nebo a i entitlements"
+ */
+export function neboAIEntitlements() {
+	return webapi.get<unknown>(`/api/v1/neboai/entitlements`)
+}
+
+/**
  * @description "Nebo a i janus usage"
  */
 export function neboAIJanusUsage() {
@@ -1130,6 +1137,13 @@ export function removePlugin(slug: string) {
  */
 export function listPluginAccounts(slug: string, agentId: string) {
 	return webapi.get<components.ListPluginAccountsResponse>(`/api/v1/plugins/${slug}/accounts`, { agentId })
+}
+
+/**
+ * @description "Disconnect plugin account"
+ */
+export function disconnectPluginAccount(slug: string, agentId: string, accountLabel: string) {
+	return webapi.delete<components.DisconnectPluginAccountResponse>(`/api/v1/plugins/${slug}/accounts`, { agentId, accountLabel })
 }
 
 /**
@@ -1434,10 +1448,17 @@ export function listStoreFeatured(q?: string, category?: string, page?: number, 
 }
 
 /**
+ * @description "List store marketplace map"
+ */
+export function listStoreMarketplaceMap() {
+	return webapi.get<unknown>(`/api/v1/store/marketplace-map`)
+}
+
+/**
  * @description "List store orgs"
  */
 export function listStoreOrgs() {
-	return webapi.get<components.ListStoreOrgsResponse>(`/api/v1/store/orgs`)
+	return webapi.get<unknown>(`/api/v1/store/orgs`)
 }
 
 /**

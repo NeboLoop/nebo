@@ -130,6 +130,7 @@ export interface ArtifactUpdateHistoryEntry {
 export interface ArtifactUpdatePref {
 	artifactId: string
 	artifactType: string
+	name?: string
 	autoUpdate: boolean
 	localVersion: string
 	remoteVersion: string
@@ -141,6 +142,7 @@ export interface ArtifactUpdateSettings {
 	agents: boolean
 	skills: boolean
 	plugins: boolean
+	connectors?: boolean
 	checkIntervalHours: number
 }
 
@@ -403,6 +405,7 @@ export interface McpIntegration {
 	createdAt: number
 	updatedAt: number
 	toolCount?: number
+	artifactId?: string
 }
 
 export interface Memory {
@@ -973,6 +976,10 @@ export interface DisableAgentChannelResponse {
 	ok: boolean
 }
 
+export interface DisconnectPluginAccountResponse {
+	ok: boolean
+}
+
 export interface DuplicateAgentResponse {
 	agent: unknown
 	activated: boolean
@@ -1289,10 +1296,6 @@ export interface ListSkillSecretsResponse {
 
 export interface ListStorageResponse {
 	items: unknown[]
-}
-
-export interface ListStoreOrgsResponse {
-	orgs: unknown
 }
 
 export interface ListTaskHistoryResponse {

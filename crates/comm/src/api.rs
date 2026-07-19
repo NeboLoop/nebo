@@ -165,6 +165,14 @@ impl NeboAIApi {
             .await
     }
 
+    /// Get the curated marketplace reorganization map — the Employees/Tools/
+    /// Collections placement keyed by artifact Code, generated from one source
+    /// on NeboAI. Returns `{ departments, toolCategories, entries, responsibilities }`.
+    pub async fn get_marketplace_map(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/marketplace/map", None::<&()>)
+            .await
+    }
+
     /// List the organizations (namespaces) the authenticated bot's owner belongs
     /// to, each with its non-public artifacts. Backs the marketplace "Shared" tab.
     /// Returns NeboAI's `{ "orgs": [...] }` envelope verbatim.

@@ -124,6 +124,35 @@ pub async fn list_store_featured(
     Ok(Json(resp))
 }
 
+/// GET /store/marketplace-map — the curated Employees/Tools/Collections
+/// placement map, proxied from NeboAI's single source. Cached for 10 min: the
+/// map is static per NeboAI deploy, so the desktop three-view marketplace pays
+/// the cloud round-trip at most once every ten minutes.
+pub async fn list_store_marketplace_map(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    const MAP_KEY: &str = "__marketplace_map__";
+    let cached = {
+        let map = catalog_cache().lock().unwrap();
+        map.get(MAP_KEY)
+            .filter(|(at, _)| at.elapsed() < Duration::from_secs(600))
+            .map(|(_, v)| v.clone())
+    };
+    if let Some(v) = cached {
+        return Ok(Json(v));
+    }
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .get_marketplace_map()
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("get_marketplace_map: {e}"))))?;
+    catalog_cache()
+        .lock()
+        .unwrap()
+        .insert(MAP_KEY.to_string(), (Instant::now(), resp.clone()));
+    Ok(Json(resp))
+}
+
 /// GET /store/categories — list all marketplace categories with counts.
 pub async fn list_store_categories(
     State(state): State<AppState>,
