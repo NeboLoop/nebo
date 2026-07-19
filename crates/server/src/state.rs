@@ -152,6 +152,12 @@ pub struct AppState {
     /// Active follow-up windows per loop channel, keyed by conversation_id.
     /// Lets the engaged user keep talking without re-mentioning the bot.
     pub channel_engagement: Arc<Mutex<HashMap<String, Engagement>>>,
+    /// Short-TTL cache of raw NeboAI store responses (marketplace catalog + map),
+    /// keyed by query. Only the cloud round-trip is cached; the store handler
+    /// enriches each response with local install state per request. Uses
+    /// std::sync::Mutex — the lock is never held across an await (snapshot then
+    /// release in the handler), so the cheaper sync lock is correct.
+    pub store_cache: Arc<std::sync::Mutex<HashMap<String, (std::time::Instant, serde_json::Value)>>>,
 }
 
 impl AppState {

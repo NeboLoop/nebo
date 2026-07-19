@@ -1,7 +1,5 @@
 //! Store proxy handlers — forward marketplace queries to NeboAI API.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
@@ -13,20 +11,16 @@ use crate::codes::build_api_client;
 use crate::state::AppState;
 use types::NeboError;
 
-/// The marketplace catalog is large (~400 items, ~600ms per 100-item page over
-/// the cloud proxy) and changes rarely, but the SPA re-fetches it on every
-/// marketplace open. Cache the RAW cloud product-list response briefly so
-/// reopens are instant; install-state is enriched per request (below) so the
-/// live "Installed" badge is never stale. Keyed by the full query.
+/// TTL for cached raw NeboAI store responses. The marketplace catalog is large
+/// (~400 items, ~600ms per 100-item page over the cloud proxy) and changes
+/// rarely, but the SPA re-fetches it on every marketplace open. Caching the raw
+/// cloud response makes reopens instant; install-state is enriched per request
+/// (below) so the live "Installed" badge is never stale. The cache itself lives
+/// on `AppState::store_cache` (not a global).
 /// ponytail: unbounded map, but keys are the handful of (type,category,page)
 /// combos the UI actually requests — TTL overwrite keeps it tiny. Add LRU only
 /// if the key space ever grows.
 const CATALOG_TTL: Duration = Duration::from_secs(120);
-
-fn catalog_cache() -> &'static Mutex<HashMap<String, (Instant, serde_json::Value)>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, serde_json::Value)>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
 
 #[derive(Deserialize)]
 pub struct StoreQuery {
@@ -60,7 +54,7 @@ pub async fn list_store_products(
 
     // Serve the raw cloud response from cache when fresh; otherwise fetch it.
     let cached = {
-        let map = catalog_cache().lock().unwrap();
+        let map = state.store_cache.lock().unwrap();
         map.get(&cache_key)
             .filter(|(at, _)| at.elapsed() < CATALOG_TTL)
             .map(|(_, v)| v.clone())
@@ -82,7 +76,8 @@ pub async fn list_store_products(
                 .map_err(|e| {
                     to_error_response(NeboError::Internal(format!("list_products: {e}")))
                 })?;
-            catalog_cache()
+            state
+                .store_cache
                 .lock()
                 .unwrap()
                 .insert(cache_key, (Instant::now(), resp.clone()));
@@ -133,7 +128,7 @@ pub async fn list_store_marketplace_map(
 ) -> HandlerResult<serde_json::Value> {
     const MAP_KEY: &str = "__marketplace_map__";
     let cached = {
-        let map = catalog_cache().lock().unwrap();
+        let map = state.store_cache.lock().unwrap();
         map.get(MAP_KEY)
             .filter(|(at, _)| at.elapsed() < Duration::from_secs(600))
             .map(|(_, v)| v.clone())
@@ -146,7 +141,8 @@ pub async fn list_store_marketplace_map(
         .get_marketplace_map()
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("get_marketplace_map: {e}"))))?;
-    catalog_cache()
+    state
+        .store_cache
         .lock()
         .unwrap()
         .insert(MAP_KEY.to_string(), (Instant::now(), resp.clone()));

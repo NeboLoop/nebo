@@ -1661,6 +1661,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )),
         channel_context: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     // Install the chat-title sink: the runner generates+persists titles for every
