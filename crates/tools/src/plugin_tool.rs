@@ -50,10 +50,33 @@ struct PluginInput {
     /// Search query for action: "discover" (marketplace plugin search).
     #[serde(default)]
     query: String,
+    /// Typed capability operation to invoke (e.g. "ledger.bill.create", or the
+    /// fully-qualified "accounting.ap-specialist.ledger.bill.create"). When set,
+    /// the port is resolved on its operation suffix to whichever installed plugin
+    /// declares that binding, and `input` is passed as flags — no `resource`/
+    /// `command` needed. This is the provider-agnostic port pathway.
+    #[serde(default)]
+    operation: String,
+    /// Typed input object for a port `operation`; each field becomes a `--key value` flag.
+    #[serde(default)]
+    input: serde_json::Value,
 }
 
 fn default_action() -> String {
     "exec".to_string()
+}
+
+/// The `capability.resource.action` suffix a plugin binding matches on. A fully-
+/// qualified port (`department.role.capability.resource.action`) reduces to its
+/// last three segments; a bare operation is returned unchanged. This is what keeps
+/// one plugin binding (`ledger.bill.create`) satisfying every seat that calls it.
+fn port_suffix(operation: &str) -> String {
+    let parts: Vec<&str> = operation.split('.').collect();
+    if parts.len() > 3 {
+        parts[parts.len() - 3..].join(".")
+    } else {
+        operation.to_string()
+    }
 }
 
 impl PluginTool {
@@ -93,6 +116,36 @@ impl PluginTool {
             slugs.push(slug.clone());
         }
         slugs
+    }
+
+    /// Resolve a typed capability operation to (plugin slug, command) by scanning
+    /// active plugins' declared `interface_bindings`. Matches on the
+    /// `capability.resource.action` suffix, so a fully-qualified port
+    /// (`department.role.capability.resource.action`) binds the same as a bare op.
+    fn resolve_port(&self, operation: &str) -> Option<(String, String)> {
+        let target = port_suffix(operation);
+        for slug in self.active_slugs() {
+            if let Some(m) = self.plugin_store.get_manifest(&slug) {
+                if let Some(cmd) = m.interface_bindings.get(&target) {
+                    return Some((slug, cmd.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// (operation, provider-slug) for every port the installed plugins implement.
+    fn bound_operations(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for slug in self.active_slugs() {
+            if let Some(m) = self.plugin_store.get_manifest(&slug) {
+                for op in m.interface_bindings.keys() {
+                    out.push((op.clone(), slug.clone()));
+                }
+            }
+        }
+        out.sort();
+        out
     }
 
     /// List installed plugins (slug, version, enabled/disabled, signature status).
@@ -385,6 +438,16 @@ impl DynTool for PluginTool {
         }
 
         out.push_str("\nFor commands listed above, use the exact syntax shown. For other plugins, discover commands first via the skill tool.");
+
+        // Typed capability ports currently bound (provider-agnostic).
+        let ops = self.bound_operations();
+        if !ops.is_empty() {
+            out.push_str("\n\nTyped ports (provider-agnostic): call plugin(operation: \"<op>\", input: {...}). \
+                          The operation resolves to the bound provider below:\n");
+            for (op, slug) in &ops {
+                out.push_str(&format!("  - {op}  (via {slug})\n"));
+            }
+        }
         out
     }
 
@@ -442,11 +505,25 @@ impl DynTool for PluginTool {
                 "description": "Command timeout in seconds (default: 120)"
             }),
         );
+        props.insert(
+            "operation".into(),
+            serde_json::json!({
+                "type": "string",
+                "description": "Typed capability operation to invoke (provider-agnostic), e.g. 'ledger.bill.create' or the fully-qualified 'accounting.ap-specialist.ledger.bill.create'. Resolves on the operation suffix to whichever installed plugin declares that binding. Use this instead of resource/command to call a port; pass fields via `input`. See this tool's description for the operations currently bound."
+            }),
+        );
+        props.insert(
+            "input".into(),
+            serde_json::json!({
+                "type": "object",
+                "description": "Typed input for a port `operation`. Each field is passed to the bound plugin as a --key value flag."
+            }),
+        );
 
         serde_json::json!({
             "type": "object",
             "properties": serde_json::Value::Object(props),
-            "required": ["resource"]
+            "required": []
         })
     }
 
@@ -481,6 +558,44 @@ impl DynTool for PluginTool {
                 Ok(v) => v,
                 Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
             };
+
+            // Typed port pathway: an `operation` resolves to whichever installed plugin
+            // declares that binding (provider-agnostic), and `input` becomes flags. This
+            // is how a seat's capability port (`department.role.ledger.bill.create`) runs
+            // without naming a vendor tool.
+            if !pi.operation.is_empty() {
+                let (slug, command) = match self.resolve_port(&pi.operation) {
+                    Some(x) => x,
+                    None => {
+                        return ToolResult::error(format!(
+                            "no installed plugin implements operation '{}'. Enable a provider whose \
+                             interface_bindings declare this operation.",
+                            pi.operation
+                        ))
+                    }
+                };
+                let mut args = pi.args.clone();
+                if let serde_json::Value::Object(map) = &pi.input {
+                    for (k, v) in map {
+                        let sval = match v {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        args.entry(k.clone()).or_insert(sval);
+                    }
+                }
+                let port_pi = PluginInput {
+                    resource: slug,
+                    action: "exec".to_string(),
+                    command,
+                    args,
+                    timeout: pi.timeout,
+                    query: String::new(),
+                    operation: String::new(),
+                    input: serde_json::Value::Null,
+                };
+                return self.handle_exec(&port_pi, ctx).await;
+            }
 
             // `list` and `discover` don't need a plugin slug; `exec`/`events` do.
             match pi.action.as_str() {
@@ -1445,6 +1560,22 @@ fn build_op_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_port_suffix_matches_operation() {
+        // Fully-qualified port reduces to the capability.resource.action a plugin declares.
+        assert_eq!(
+            port_suffix("accounting.ap-specialist.ledger.bill.create"),
+            "ledger.bill.create"
+        );
+        assert_eq!(
+            port_suffix("sales.account-executive.crm.opportunity.status"),
+            "crm.opportunity.status"
+        );
+        // A bare operation (already the suffix) is returned unchanged.
+        assert_eq!(port_suffix("ledger.bill.create"), "ledger.bill.create");
+        assert_eq!(port_suffix("mail.message.send"), "mail.message.send");
+    }
 
     #[test]
     fn test_agent_id_from_session_key_resolves_nested_subagent() {
