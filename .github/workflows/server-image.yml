@@ -46,13 +46,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Flux's ImagePolicy only matches `main-<unix_ts>-<short_sha>` and orders
+      # by the timestamp — the same tag convention every other image in the
+      # cluster uses. Never `:latest` (Flux can't order it and the deploy repo
+      # never references it).
+      - name: Compute image tag
+        id: vars
+        run: |
+          echo "tag=main-$(date +%s)-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: |
-            ghcr.io/neboloop/nebo:latest
-            ghcr.io/neboloop/nebo:${{ github.sha }}
+          tags: ghcr.io/neboloop/nebo:${{ steps.vars.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
