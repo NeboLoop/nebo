@@ -79,6 +79,30 @@ fn port_suffix(operation: &str) -> String {
     }
 }
 
+/// The calling department in a fully-qualified port (the first segment of
+/// `department.role.capability.resource.action`). `None` for a bare operation.
+/// Load-bearing: when a shared operation (e.g. `mail.message.send`) has multiple
+/// installed providers, the department is what selects the right one — without it
+/// two departments would collide on whichever provider happened to be first.
+fn port_department(operation: &str) -> Option<String> {
+    let parts: Vec<&str> = operation.split('.').collect();
+    if parts.len() > 3 {
+        Some(parts[0].to_string())
+    } else {
+        None
+    }
+}
+
+/// The capability a port targets (the first segment of the operation suffix,
+/// e.g. "ledger" for `…ledger.bill.create`).
+fn port_capability(operation: &str) -> String {
+    port_suffix(operation)
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
 impl PluginTool {
     pub fn new(
         plugin_store: Arc<napp::plugin::PluginStore>,
@@ -122,15 +146,59 @@ impl PluginTool {
     /// active plugins' declared `interface_bindings`. Matches on the
     /// `capability.resource.action` suffix, so a fully-qualified port
     /// (`department.role.capability.resource.action`) binds the same as a bare op.
-    fn resolve_port(&self, operation: &str) -> Option<(String, String)> {
-        let target = port_suffix(operation);
+    fn resolve_port(&self, operation: &str) -> Result<(String, String), String> {
+        let suffix = port_suffix(operation);
+        // Every installed provider that implements this operation.
+        let mut providers: Vec<(String, String)> = Vec::new();
         for slug in self.active_slugs() {
             if let Some(m) = self.plugin_store.get_manifest(&slug) {
-                if let Some(cmd) = m.interface_bindings.get(&target) {
-                    return Some((slug, cmd.clone()));
+                if let Some(cmd) = m.interface_bindings.get(&suffix) {
+                    providers.push((slug, cmd.clone()));
                 }
             }
         }
+        match providers.len() {
+            0 => Err(format!(
+                "no installed provider implements operation '{suffix}'."
+            )),
+            1 => Ok(providers.into_iter().next().unwrap()),
+            _ => {
+                // Ambiguous: a shared operation (e.g. mail.message.send) with several
+                // providers. The calling DEPARTMENT's binding disambiguates — this is why
+                // the port carries department.role. Never guess; a wrong provider here
+                // could send from the wrong account or move money the wrong way.
+                let dept = port_department(operation);
+                let cap = port_capability(operation);
+                if let Some(bound) = self.department_provider(dept.as_deref(), &cap) {
+                    if let Some(p) = providers.iter().find(|(s, _)| *s == bound) {
+                        return Ok(p.clone());
+                    }
+                }
+                let names: Vec<&str> = providers.iter().map(|(s, _)| s.as_str()).collect();
+                Err(format!(
+                    "operation '{suffix}' is implemented by multiple providers ({}); \
+                     bind one for {}.{} to disambiguate.",
+                    names.join(", "),
+                    dept.as_deref().unwrap_or("<department>"),
+                    cap
+                ))
+            }
+        }
+    }
+
+    /// The provider a department has bound for a capability (e.g. accounting's
+    /// `mail` → "postmark", support's `mail` → a different provider). This is what
+    /// makes resolution department-scoped and collision-free. Populated by the
+    /// install wizard's per-department capability binding; `None` until bound, so an
+    /// ambiguous port fails loudly rather than resolving to the wrong provider.
+    fn department_provider(&self, department: Option<&str>, capability: &str) -> Option<String> {
+        let _dept = department?;
+        let _ = capability;
+        // TICKET-02: the install wizard writes the per-department capability→provider
+        // binding (keyed "<department>.<capability>", e.g. "accounting.mail" → "postmark",
+        // "customer-support.mail" → a different provider); this reads it. Until that store
+        // exists, return None — so an ambiguous port fails loudly demanding a binding,
+        // never resolving to the wrong provider.
         None
     }
 
@@ -565,14 +633,8 @@ impl DynTool for PluginTool {
             // without naming a vendor tool.
             if !pi.operation.is_empty() {
                 let (slug, command) = match self.resolve_port(&pi.operation) {
-                    Some(x) => x,
-                    None => {
-                        return ToolResult::error(format!(
-                            "no installed plugin implements operation '{}'. Enable a provider whose \
-                             interface_bindings declare this operation.",
-                            pi.operation
-                        ))
-                    }
+                    Ok(x) => x,
+                    Err(e) => return ToolResult::error(e),
                 };
                 let mut args = pi.args.clone();
                 if let serde_json::Value::Object(map) = &pi.input {
@@ -1575,6 +1637,28 @@ mod tests {
         // A bare operation (already the suffix) is returned unchanged.
         assert_eq!(port_suffix("ledger.bill.create"), "ledger.bill.create");
         assert_eq!(port_suffix("mail.message.send"), "mail.message.send");
+    }
+
+    #[test]
+    fn test_port_department_and_capability_scope_resolution() {
+        // The department is what disambiguates a shared operation across departments:
+        // accounting.collections-specialist.mail.message.send and
+        // customer-support.escalation-specialist.mail.message.send are the SAME operation
+        // but must be able to resolve to different providers.
+        assert_eq!(
+            port_department("accounting.collections-specialist.mail.message.send").as_deref(),
+            Some("accounting")
+        );
+        assert_eq!(
+            port_department("customer-support.escalation-specialist.mail.message.send").as_deref(),
+            Some("customer-support")
+        );
+        // Both target the same capability — hence the collision the department resolves.
+        assert_eq!(port_capability("accounting.collections-specialist.mail.message.send"), "mail");
+        assert_eq!(port_capability("customer-support.escalation-specialist.mail.message.send"), "mail");
+        assert_eq!(port_capability("accounting.ap-specialist.ledger.bill.create"), "ledger");
+        // A bare operation has no department (nothing to scope by).
+        assert_eq!(port_department("mail.message.send"), None);
     }
 
     #[test]
