@@ -60,6 +60,6 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/neboloop/nebo:${{ steps.vars.outputs.tag }}
+          tags: ghcr.io/neboloop/nebo-server:${{ steps.vars.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
