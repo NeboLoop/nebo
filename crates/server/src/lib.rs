@@ -632,30 +632,38 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let _ = store.set_plugin_setting("neboai", "bot_id", &bot_id);
     }
 
-    // Seed the NeboAI auth token for env-provisioned (cloud) deploys — the
-    // counterpart to NEBO_BOT_ID above. Seed ONLY when absent: the token is
-    // rotated at runtime and persisted back here, so re-applying the original
-    // env value on every restart would push a stale token and fail auth.
+    // Seed the NeboAI credential for env-provisioned (cloud) deploys as an active
+    // auth profile — the counterpart to NEBO_BOT_ID above. This is the SAME store
+    // the OAuth callback writes and `activate_neboai`/`neboai_token` read, so the
+    // pod auto-connects to the loop on boot with NO interactive OAuth (a cloud bot's
+    // identity is provisioned up front, not paired in a browser). Seed ONLY when no
+    // active profile exists: the token rotates at runtime and persists back to this
+    // profile, so re-seeding the original env value on restart would push a stale
+    // token and fail auth.
     if let Ok(tok) = std::env::var("NEBO_BOT_TOKEN")
         && !tok.is_empty()
         && store
-            .get_plugin_setting("neboai", "token")
-            .ok()
-            .flatten()
+            .list_all_active_auth_profiles_by_provider("neboai")
             .unwrap_or_default()
             .is_empty()
     {
-        // Seed failure means the pod can't authenticate to the loop, so surface
-        // it rather than discarding — the cloud bot would silently never connect.
-        match store.set_plugin_setting("neboai", "token", &tok) {
-            Ok(()) => {
-                if let Err(e) = store.set_plugin_setting("neboai", "api_server", &cfg.neboai.api_url)
-                {
-                    warn!(error = %e, "seeded NeboAI token but failed to set api_server");
-                }
-                info!("seeded NeboAI token from NEBO_BOT_TOKEN (first boot)");
-            }
-            Err(e) => warn!(error = %e, "failed to seed NeboAI token from NEBO_BOT_TOKEN"),
+        // Seed failure means the pod can't authenticate to the loop, so surface it
+        // rather than discarding — the cloud bot would silently never connect.
+        let id = uuid::Uuid::new_v4().to_string();
+        match store.create_auth_profile(
+            &id,
+            "NeboAI",
+            "neboai",
+            &tok,
+            None,
+            Some(&cfg.neboai.api_url),
+            0,
+            1,
+            Some("token"),
+            None,
+        ) {
+            Ok(_) => info!("seeded NeboAI auth profile from NEBO_BOT_TOKEN (first boot)"),
+            Err(e) => warn!(error = %e, "failed to seed NeboAI auth profile from NEBO_BOT_TOKEN"),
         }
     }
 
