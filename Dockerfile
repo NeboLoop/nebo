@@ -3,7 +3,11 @@
 # compiles the binary and copies the prebuilt app/build in.
 # ponytail: host-built frontend dodges pnpm-in-Docker; CI can add a node stage later.
 
-FROM rust:1-bookworm AS build
+# cargo-chef splits the build so DEPENDENCIES compile in a Docker layer keyed
+# only by Cargo.lock/manifests: a source-only commit reuses the cached dep layer
+# (including the whisper.cpp cmake build) and recompiles just the workspace —
+# ~35min cold → single-digit minutes warm under the CI layer cache.
+FROM rust:1-bookworm AS chef
 # Build deps. nebo-cli is not cleanly headless — it compiles the Linux desktop
 # GUI crates (clipboard/input/tray via wayland/x11/gtk/dbus) even though the
 # server never uses them — so the full cluster is required to link.
@@ -17,14 +21,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgtk-3-dev libayatana-appindicator3-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN rustup component add rustfmt   # whisper-rs-sys bindgen needs it
+RUN cargo install cargo-chef --locked
 WORKDIR /src
+
+FROM chef AS planner
 COPY . .
-RUN test -d app/build || { echo "app/build missing — run 'cd app && pnpm build' on the host first"; exit 1; }
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS build
 # `-l openblas` is REQUIRED — turbovec's `cblas_sgemm` reference otherwise goes
 # unresolved at link time (blas-src is a link-only shim the linker drops).
 # `--no-as-needed` forces the lib to stay on the link line regardless of
 # placement; flip back to `--as-needed` so unrelated libs still get pruned.
 # Same flags as .github/workflows/release.yml (tested on arm64 + amd64).
+COPY --from=planner /src/recipe.json recipe.json
+RUN MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) && \
+    export RUSTFLAGS="-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" && \
+    cargo chef cook --release --recipe-path recipe.json -p nebo-cli
+COPY . .
+RUN test -d app/build || { echo "app/build missing — run 'cd app && pnpm build' on the host first"; exit 1; }
 RUN MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) && \
     export RUSTFLAGS="-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" && \
     cargo build --release -p nebo-cli
