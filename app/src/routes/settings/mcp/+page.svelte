@@ -12,7 +12,8 @@
   import KeyRound from 'lucide-svelte/icons/key-round';
   import type { McpIntegration } from '$lib/api/nebo';
 
-  interface MCPIntegration { id: string; name: string; serverUrl: string; authType: 'oauth' | 'api_key' | 'none'; isEnabled: boolean; connectionStatus: 'connected' | 'disconnected' | 'error'; toolCount: number; lastConnectedAt: string; lastError: string | null }
+  type ConnectionStatus = 'connected' | 'disconnected' | 'error' | 'needs_reauth';
+  interface MCPIntegration { id: string; name: string; serverUrl: string; authType: 'oauth' | 'api_key' | 'none'; isEnabled: boolean; connectionStatus: ConnectionStatus; toolCount: number; lastConnectedAt: string; lastError: string | null }
 
   let integrations = $state<MCPIntegration[]>([]);
 
@@ -27,10 +28,10 @@
           serverUrl: i.serverUrl || '',
           authType: (i.authType || 'oauth') as 'oauth' | 'api_key' | 'none',
           isEnabled: i.isEnabled ?? false,
-          connectionStatus: (i.connectionStatus || 'disconnected') as 'connected' | 'disconnected' | 'error',
+          connectionStatus: (i.connectionStatus || 'disconnected') as ConnectionStatus,
           toolCount: i.toolCount ?? 0,
           lastConnectedAt: i.lastConnectedAt ? new Date(i.lastConnectedAt * 1000).toLocaleString() : $t('time.never'),
-          lastError: i.lastError || null,
+          lastError: i.lastError || (i.connectionStatus === 'needs_reauth' ? $t('settingsMcp.needsReauth') : null),
         }));
       }
     } catch { /* leave list empty on error */ }
@@ -216,9 +217,12 @@
   async function testConnection(id: string) {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.testIntegration(id) as { success?: boolean; message?: string };
+      const resp = await api.testIntegration(id) as { success?: boolean; message?: string; needsReauth?: boolean };
       if (resp?.success) {
         updateIntegrationById(id, { lastError: null });
+      } else if (resp?.needsReauth) {
+        // Surface the reauthorize affordance (key button) instead of a dead error.
+        updateIntegrationById(id, { connectionStatus: 'needs_reauth', lastError: resp?.message || $t('settingsMcp.needsReauth') });
       } else {
         updateIntegrationById(id, { lastError: resp?.message || $t('settingsMcp.testFailed') });
       }
@@ -338,7 +342,7 @@
           {/if}
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
-          {#if integration.authType === 'oauth' && integration.connectionStatus === 'error'}
+          {#if integration.authType === 'oauth' && (integration.connectionStatus === 'error' || integration.connectionStatus === 'needs_reauth')}
             <button
               onclick={() => reauthenticate(integration.id)}
               class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"

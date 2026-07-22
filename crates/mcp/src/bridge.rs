@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::client::McpClient;
 use crate::{McpError, McpToolDef, McpToolResult};
@@ -26,20 +26,6 @@ pub trait ProxyToolRegistry: Send + Sync {
         integration_id: &str,
     );
     fn unregister_proxy(&self, name: &str);
-}
-
-/// Integration info needed by the bridge (from DB).
-pub struct IntegrationInfo {
-    pub id: String,
-    pub name: String,
-    pub server_type: String,
-    pub server_url: Option<String>,
-    pub auth_type: String,
-    pub is_enabled: bool,
-    pub connection_status: Option<String>,
-    /// JSON `metadata` column — carries the stdio launch spec (command/args/env)
-    /// for `server_type == "stdio"`. None / absent for remote HTTP servers.
-    pub metadata: Option<String>,
 }
 
 /// Launch spec for a local stdio MCP server, parsed from an integration's
@@ -100,64 +86,6 @@ impl Bridge {
     /// Get a reference to the underlying MCP client (for OAuth/encryption operations).
     pub fn client(&self) -> &McpClient {
         &self.client
-    }
-
-    /// Sync all enabled integrations. Disconnects stale, connects new.
-    pub async fn sync_all(&self, integrations: &[IntegrationInfo]) -> Result<(), McpError> {
-        let enabled: HashMap<&str, &IntegrationInfo> = integrations
-            .iter()
-            .filter(|i| i.is_enabled)
-            .map(|i| (i.id.as_str(), i))
-            .collect();
-
-        // Disconnect stale
-        {
-            let mut conns = self.connections.lock().await;
-            let stale: Vec<String> = conns
-                .keys()
-                .filter(|id| !enabled.contains_key(id.as_str()))
-                .cloned()
-                .collect();
-            for id in stale {
-                self.disconnect_locked(&mut conns, &id).await;
-            }
-        }
-
-        // Connect new/updated
-        let mut last_err = None;
-        for info in integrations.iter().filter(|i| i.is_enabled) {
-            // stdio servers carry their launch spec in metadata (no URL); remote
-            // servers must have a non-empty URL.
-            let has_stdio = parse_stdio_config(info.metadata.as_deref()).is_some();
-            let server_url = info.server_url.clone().unwrap_or_default();
-            if !has_stdio && server_url.is_empty() {
-                continue;
-            }
-
-            // Skip OAuth integrations without completed auth
-            if info.auth_type == "oauth" && info.connection_status.is_none() {
-                continue;
-            }
-
-            if let Err(e) = self
-                .connect(
-                    &info.id,
-                    &info.server_type,
-                    &server_url,
-                    None,
-                    info.metadata.as_deref(),
-                )
-                .await
-            {
-                error!(name = info.name.as_str(), id = info.id.as_str(), error = %e, "failed to connect integration");
-                last_err = Some(e);
-            }
-        }
-
-        match last_err {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
     }
 
     /// Connect to a single MCP integration.

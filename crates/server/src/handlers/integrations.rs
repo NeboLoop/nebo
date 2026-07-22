@@ -1,4 +1,5 @@
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::Json;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
@@ -6,6 +7,52 @@ use tracing::{info, warn};
 
 use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
+
+/// The one OAuth scope string for MCP servers — used identically in Dynamic
+/// Client Registration and the authorization request. `offline_access` must be
+/// REQUESTED (not just registered) or many servers never issue a refresh token,
+/// which leaves the integration unable to recover from access-token expiry.
+const MCP_OAUTH_SCOPE: &str = "mcp:full offline_access";
+
+/// Derive the public base URL a browser can reach this server on, from the
+/// incoming request's Host header. The ONE derivation for every OAuth
+/// redirect_uri (flow start, DCR, and the callback's token exchange — RFC 6749
+/// requires the exchange redirect_uri to equal the authorize one; both call
+/// this and get the same value because the callback lands on this very base).
+///
+/// - Loopback Host (desktop UI, Tauri, dev proxy) → `http://localhost:{port}`.
+/// - Any other Host is a request through the reverse management tunnel: the hub
+///   strips the `/t/{bot_id}` prefix but preserves the browser's Host header
+///   (docs/sme/TUNNEL.md), so the browser-reachable base is
+///   `https://{host}/t/{bot_id}`. Without a bot id we can't rebuild the tunnel
+///   prefix, so fall back to localhost (the pre-tunnel behavior).
+fn derive_public_base(host: Option<&str>, port: u16, bot_id: Option<&str>) -> String {
+    let localhost = || format!("http://localhost:{port}");
+    let Some(host) = host.map(str::trim).filter(|h| !h.is_empty()) else {
+        return localhost();
+    };
+    let bare = host
+        .strip_prefix('[')
+        .map(|rest| rest.split(']').next().unwrap_or(rest))
+        .unwrap_or_else(|| host.split(':').next().unwrap_or(host));
+    if matches!(bare, "localhost" | "127.0.0.1" | "::1") {
+        return localhost();
+    }
+    match bot_id {
+        Some(bot_id) if !bot_id.is_empty() => format!("https://{host}/t/{bot_id}"),
+        _ => localhost(),
+    }
+}
+
+/// The OAuth redirect_uri for MCP flows, derived from the request that started
+/// (or completed) the flow. See `derive_public_base`.
+fn oauth_redirect_uri(headers: &HeaderMap, port: u16) -> String {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok());
+    let base = derive_public_base(host, port, config::read_bot_id().as_deref());
+    format!("{base}/api/v1/integrations/oauth/callback")
+}
 
 /// Slugify an integration name for use in tool naming.
 /// e.g. "monument.sh" → "monument_sh", "My GitHub" → "my_github"
@@ -214,8 +261,8 @@ fn fix_server_type(state: &AppState) {
 }
 
 /// Re-sync the MCP bridge after integration changes.
-/// Uses per-integration connect with proper token resolution instead of sync_all
-/// (which passes None for tokens and would fail for OAuth integrations).
+/// Per-integration connect with proper token resolution (resolve_mcp_token) —
+/// the same one token pathway startup reconnect and the connect/test handlers use.
 async fn sync_bridge(state: &AppState) {
     let integrations = match state.store.list_mcp_integrations() {
         Ok(i) => i,
@@ -820,6 +867,7 @@ pub async fn connect_integration(
 pub async fn reauthenticate_integration(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> HandlerResult<serde_json::Value> {
     let integration = state
         .store
@@ -865,10 +913,7 @@ pub async fn reauthenticate_integration(
         "MCP reauthenticate: discovered OAuth metadata"
     );
 
-    let redirect_uri = format!(
-        "http://localhost:{}/api/v1/integrations/oauth/callback",
-        state.config.port
-    );
+    let redirect_uri = oauth_redirect_uri(&headers, state.config.port);
     let (client_id, client_secret) = if let Some(ref reg_endpoint) = metadata.registration_endpoint
     {
         match do_client_registration(&state, reg_endpoint, &redirect_uri).await {
@@ -913,12 +958,13 @@ pub async fn reauthenticate_integration(
         .map_err(to_error_response)?;
 
     let auth_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope=mcp:full",
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope={}",
         metadata.authorization_endpoint,
         urlencoding::encode(&client_id),
         urlencoding::encode(&redirect_uri),
         urlencoding::encode(&oauth_state),
         urlencoding::encode(&code_challenge),
+        urlencoding::encode(MCP_OAUTH_SCOPE),
     );
 
     info!(integration = %id, "MCP reauthenticate: OAuth URL generated");
@@ -961,6 +1007,7 @@ fn generate_state() -> String {
 pub async fn get_oauth_url(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> HandlerResult<serde_json::Value> {
     let integration = state
         .store
@@ -994,10 +1041,7 @@ pub async fn get_oauth_url(
     );
 
     // 2. Dynamic Client Registration (if supported)
-    let redirect_uri = format!(
-        "http://localhost:{}/api/v1/integrations/oauth/callback",
-        state.config.port
-    );
+    let redirect_uri = oauth_redirect_uri(&headers, state.config.port);
     let (client_id, client_secret) = if let Some(ref reg_endpoint) = metadata.registration_endpoint
     {
         match do_client_registration(&state, reg_endpoint, &redirect_uri).await {
@@ -1045,12 +1089,13 @@ pub async fn get_oauth_url(
 
     // 5. Build authorization URL
     let auth_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope=mcp:full",
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope={}",
         metadata.authorization_endpoint,
         urlencoding::encode(&client_id),
         urlencoding::encode(&redirect_uri),
         urlencoding::encode(&oauth_state),
         urlencoding::encode(&code_challenge),
+        urlencoding::encode(MCP_OAUTH_SCOPE),
     );
 
     info!(integration = %id, "MCP OAuth URL generated");
@@ -1072,7 +1117,7 @@ async fn do_client_registration(
         "token_endpoint_auth_method": "none",
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
-        "scope": "mcp:full offline_access"
+        "scope": MCP_OAUTH_SCOPE
     });
 
     let resp = reqwest::Client::new()
@@ -1115,6 +1160,7 @@ pub struct OAuthCallbackQuery {
 pub async fn oauth_callback(
     State(state): State<AppState>,
     Query(params): Query<OAuthCallbackQuery>,
+    headers: HeaderMap,
 ) -> axum::response::Html<String> {
     // Handle error from OAuth server
     if let Some(ref err) = params.error {
@@ -1166,10 +1212,10 @@ pub async fn oauth_callback(
         .as_deref()
         .and_then(|enc| state.bridge.client().decrypt_token(enc).ok());
 
-    let redirect_uri = format!(
-        "http://localhost:{}/api/v1/integrations/oauth/callback",
-        state.config.port
-    );
+    // The callback arrives AT the redirect_uri the flow started with, so
+    // deriving from this request reproduces the exact value the authorize
+    // request used — required to match at the token exchange.
+    let redirect_uri = oauth_redirect_uri(&headers, state.config.port);
 
     // 3. Exchange code for tokens
     let tokens = match exchange_mcp_code(
@@ -1333,6 +1379,60 @@ async fn exchange_mcp_code(
 /// users add servers via "Custom Server" (a real URL) or a pasted config block.
 pub async fn list_registry() -> HandlerResult<serde_json::Value> {
     Ok(Json(serde_json::json!({ "registry": [] })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_public_base;
+
+    #[test]
+    fn loopback_hosts_use_localhost_base() {
+        for host in [
+            "localhost",
+            "localhost:27895",
+            "127.0.0.1",
+            "127.0.0.1:27895",
+            "[::1]:27895",
+        ] {
+            assert_eq!(
+                derive_public_base(Some(host), 27895, Some("bot-1")),
+                "http://localhost:27895",
+                "host {host}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_host_uses_localhost_base() {
+        assert_eq!(
+            derive_public_base(None, 27895, Some("bot-1")),
+            "http://localhost:27895"
+        );
+        assert_eq!(
+            derive_public_base(Some("  "), 27895, Some("bot-1")),
+            "http://localhost:27895"
+        );
+    }
+
+    #[test]
+    fn tunnel_host_rebuilds_public_tunnel_base() {
+        assert_eq!(
+            derive_public_base(Some("neboai.com"), 27895, Some("0b7f2c1a-1111-2222-3333-444455556666")),
+            "https://neboai.com/t/0b7f2c1a-1111-2222-3333-444455556666"
+        );
+    }
+
+    #[test]
+    fn tunnel_host_without_bot_id_falls_back_to_localhost() {
+        assert_eq!(
+            derive_public_base(Some("neboai.com"), 27895, None),
+            "http://localhost:27895"
+        );
+        assert_eq!(
+            derive_public_base(Some("neboai.com"), 27895, Some("")),
+            "http://localhost:27895"
+        );
+    }
 }
 
 /// GET /api/v1/integrations/tools

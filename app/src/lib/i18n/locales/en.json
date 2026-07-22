@@ -2453,6 +2453,7 @@
 		"testRequestFailed": "Test request failed",
 		"connectionFailedCheckKey": "Connection failed — check the key",
 		"reauthFailed": "Reauthentication failed",
+		"needsReauth": "Authentication expired — reauthorize this server",
 		"connectWithOauth": "Connect with OAuth",
 		"addServerAction": "Add Server",
 		"servers": "Servers",
