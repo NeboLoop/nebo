@@ -1852,7 +1852,8 @@ impl DynTool for WebTool {
          - NEVER navigate with search query params (triggers anti-bot). Navigate to the site, find the search box, type your query\n\
          - Do NOT click file upload buttons. Use file_upload(ref) instead\n\
          - After search results appear, extract data from results BEFORE visiting individual pages\n\
-         - When you have enough info, STOP and respond. Don't keep browsing to be thorough"
+         - When you have enough info, STOP and respond. Don't keep browsing to be thorough\n\
+         - Do NOT retry failing searches with rephrased variations of the same query — vary the approach entirely or report what you have"
         )
     }
 

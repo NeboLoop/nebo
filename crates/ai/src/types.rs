@@ -46,6 +46,11 @@ pub enum StreamEventType {
     SubagentProgress,
     SubagentComplete,
     ToolSummary,
+    /// Run-control status from the runner (spiral backstop, circuit breaker,
+    /// terminal tool error). Rendered as a status/notice in the UI — NEVER
+    /// accumulated into reply text (`text` is the human-readable status line;
+    /// `stop_reason` is the typed machine reason, e.g. "repeated_tool_calls").
+    ControlNotice,
 }
 
 /// Token usage statistics from a streaming response.
@@ -119,6 +124,25 @@ impl StreamEvent {
             widgets: None,
             provider_metadata: None,
             stop_reason: None,
+            image_url: None,
+        }
+    }
+
+    /// Run-control status: `text` is the user-facing status line, `stop_reason`
+    /// the typed reason ("repeated_tool_calls", "user_requested_stop",
+    /// "terminal_tool_error"). Consumers surface it as status — reply
+    /// accumulators must ignore it by type.
+    pub fn control_notice(text: impl Into<String>, stop_reason: impl Into<String>) -> Self {
+        Self {
+            event_type: StreamEventType::ControlNotice,
+            text: text.into(),
+            tool_call: None,
+            error: None,
+            usage: None,
+            rate_limit: None,
+            widgets: None,
+            provider_metadata: None,
+            stop_reason: Some(stop_reason.into()),
             image_url: None,
         }
     }

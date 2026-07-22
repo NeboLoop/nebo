@@ -1397,14 +1397,19 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // TurboVec index cache — powering per-message prompt recall.
     .set_hybrid_searcher(hybrid_searcher);
 
-    if let Some(ep) = embedding_provider {
+    if let Some(ep) = embedding_provider.clone() {
         runner_builder = runner_builder.set_embedding_provider(ep);
     }
 
     let runner = Arc::new(runner_builder);
 
-    // Spawn background memory consolidation sweep (30-min interval, per-scope dedup/prune)
-    agent::memory_consolidation::spawn_sweep(store.clone(), runner.providers());
+    // Spawn background memory consolidation sweep (30-min interval, per-scope
+    // dedup/prune); the embedding provider keeps merged values' vectors fresh.
+    agent::memory_consolidation::spawn_sweep(
+        store.clone(),
+        runner.providers(),
+        embedding_provider,
+    );
 
     // Create event bus and dispatcher for workflow-to-workflow events
     let (event_bus, event_rx) = tools::EventBus::new();

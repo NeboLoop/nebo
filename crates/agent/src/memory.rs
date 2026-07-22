@@ -692,6 +692,121 @@ pub fn memory_scope_chain(user_id: &str) -> Vec<String> {
     chain
 }
 
+/// Explicit isolation context carried in a session key, if any.
+/// Channel sessions set a deliberate 4th segment: `agent:{id}:{channel}:{ctx}`
+/// (the ctx segment may itself contain colons — everything after the third
+/// colon is the context). Desktop chat-thread sessions carry no segment.
+pub fn session_key_context(session_key: &str) -> Option<String> {
+    let parts: Vec<&str> = session_key.splitn(4, ':').collect();
+    if parts.len() == 4 && parts[0] == "agent" {
+        Some(parts[3].to_string())
+    } else {
+        None
+    }
+}
+
+/// The memory scoping decision for one run — produced by
+/// [`resolve_memory_scope`], the ONE derivation the runner threads into every
+/// read and write path (extraction, flush, transcript indexing, the memory
+/// tool via `ToolContext.user_id`, recall, injection).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryScope {
+    /// The exact scope every memory WRITE uses, and the base scope for reads.
+    pub user_id: String,
+    /// Fail-closed marker: `context_isolated` is set but no context could be
+    /// derived (no explicit key segment, no session row / active chat). All
+    /// memory writes for the run must be refused — never silently written to
+    /// the shared agent scope, where they would be readable from every
+    /// isolation context. Reads still serve `user_id` (the base agent scope)
+    /// plus the owner identity chain.
+    pub writes_disabled: bool,
+}
+
+/// Derive the memory scope for a run. Context precedence (highest first):
+///
+/// 1. An EXPLICIT `:ctx:` segment in the session key
+///    (`agent:{id}:{channel}:{ctx}`) — channel sessions set it deliberately.
+/// 2. With `context_isolated` only: the session's ACTIVE CHAT id
+///    (thread = matter), resolved by the caller via the canonical
+///    `Store::session_chat_id`.
+/// 3. Neither derivable under `context_isolated` → FAIL CLOSED: the base
+///    agent scope is kept for reads, `writes_disabled` is set.
+///
+/// Without `context_isolated`, contexts are ignored and the agent's base
+/// scope applies; the main bot (empty `agent_id`) always uses the raw owner.
+pub fn resolve_memory_scope(
+    owner: &str,
+    agent_id: &str,
+    context_isolated: bool,
+    explicit_ctx: Option<&str>,
+    chat_ctx: Option<&str>,
+) -> MemoryScope {
+    if agent_id.is_empty() {
+        return MemoryScope {
+            user_id: owner.to_string(),
+            writes_disabled: false,
+        };
+    }
+    let agent_scope = agent_memory_scope(owner, agent_id);
+    if !context_isolated {
+        return MemoryScope {
+            user_id: agent_scope,
+            writes_disabled: false,
+        };
+    }
+    match explicit_ctx.or(chat_ctx) {
+        Some(ctx) => MemoryScope {
+            user_id: format!("{}:ctx:{}", agent_scope, ctx),
+            writes_disabled: false,
+        },
+        None => MemoryScope {
+            user_id: agent_scope,
+            writes_disabled: true,
+        },
+    }
+}
+
+/// The inherited READ scopes for a run — the ONE place this construction
+/// lives (the runner calls it once per run). A context-isolated run inherits
+/// the agent-wide `tacit/` prefix ONLY (working style crosses contexts, case
+/// facts do not — and sibling ctx scopes appear nowhere); every agent
+/// additionally reads the owner's identity prefixes. The main bot inherits
+/// nothing (it IS the owner scope).
+pub fn build_inherit_scopes(
+    owner: &str,
+    agent_id: &str,
+    context_isolated: bool,
+    has_context: bool,
+) -> Vec<crate::db_context::InheritScope> {
+    let mut inherit_scopes: Vec<crate::db_context::InheritScope> = Vec::new();
+
+    if !agent_id.is_empty() {
+        // If context-isolated, inherit agent-wide memories (all tacit/)
+        if context_isolated && has_context {
+            inherit_scopes.push(crate::db_context::InheritScope {
+                user_id: agent_memory_scope(owner, agent_id),
+                namespace_prefix: "tacit/".to_string(),
+            });
+        }
+
+        // Every agent reads the owner's IDENTITY memories (read-only): who the
+        // owner is and how to act belongs to the owner, not the agent that
+        // happened to hear it. Only the identity prefixes are blanket-injected
+        // (mirroring the local slice in load_scored_memories — injecting all of
+        // tacit/ was the prompt-bloat source); arbitrary owner facts surface on
+        // demand via the FTS scope chain. Writes stay scoped to the agent, so
+        // what each agent LEARNS remains independent.
+        for prefix in ["tacit/preferences", "tacit/personality"] {
+            inherit_scopes.push(crate::db_context::InheritScope {
+                user_id: owner.to_string(),
+                namespace_prefix: prefix.to_string(),
+            });
+        }
+    }
+
+    inherit_scopes
+}
+
 pub fn load_scored_memories(
     store: &Store,
     user_id: &str,
@@ -759,6 +874,20 @@ pub fn embed_memories_async(
     tokio::spawn(async move {
         embed_memories(&store, embedding_provider.as_ref(), &keys, &user_id).await;
         debug!(count = keys.len(), "background embedding complete");
+        // Write-time contradiction micro-check (Phase 2,
+        // docs/plans/memory-rock-solid.md): every NEW-write path funnels
+        // through this wrapper (auto-extraction, explicit tool store, flush),
+        // so this is the ONE point where a freshly written + embedded memory
+        // is compared against its scope. The boot backfill deliberately calls
+        // embed_memories directly — old rows are never re-litigated. Runs
+        // after the caller already returned: it can never slow or fail a store.
+        crate::memory_consolidation::check_new_memories(
+            &store,
+            embedding_provider.as_ref(),
+            &keys,
+            &user_id,
+        )
+        .await;
     });
 }
 
@@ -802,6 +931,16 @@ pub async fn embed_memories(
                 continue;
             }
         };
+
+        // Replace, don't accumulate: an upsert-updated (or curator-merged)
+        // memory would otherwise keep its previous chunks/vectors alongside
+        // the new ones — ghost values that stale-match vector recall and the
+        // write-time contradiction check. Clearing only AFTER a successful
+        // embed keeps the failure mode unchanged: a failed embed leaves the
+        // old vectors in place until the boot backfill retries.
+        if let Err(e) = store.delete_chunks_for_memory(mem.id) {
+            debug!(memory_id = mem.id, error = %e, "failed to clear stale chunks before re-embed");
+        }
 
         for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.iter()).enumerate() {
             let chunk_id = match store.insert_memory_chunk(
@@ -1163,5 +1302,170 @@ mod tests {
         let entries = format_for_storage(&facts, &[]);
         assert!(!entries[0].key.contains('\x00'));
         assert!(!entries[0].value.contains('\x01'));
+    }
+
+    // ── Context-isolation scope derivation ─────────────────────────────
+
+    #[test]
+    fn test_session_key_context_shapes() {
+        // Explicit 4th segment on an agent key.
+        assert_eq!(
+            session_key_context("agent:a1:web:caseA").as_deref(),
+            Some("caseA")
+        );
+        // The ctx segment may itself contain colons — stays whole.
+        assert_eq!(
+            session_key_context("agent:a1:loop:dm:123").as_deref(),
+            Some("dm:123")
+        );
+        // Desktop chat-thread keys carry no segment.
+        assert_eq!(session_key_context("agent:a1:web"), None);
+        // Non-agent key shapes never yield a context.
+        assert_eq!(session_key_context("main"), None);
+        assert_eq!(session_key_context("acp:xyz"), None);
+        assert_eq!(session_key_context("subagent:parent:child"), None);
+        assert_eq!(session_key_context("slack:group:C123:extra"), None);
+    }
+
+    #[test]
+    fn test_resolve_memory_scope_main_bot_and_plain_agent() {
+        // Main bot: raw owner, contexts irrelevant.
+        let s = resolve_memory_scope("local", "", true, Some("caseA"), None);
+        assert_eq!(s.user_id, "local");
+        assert!(!s.writes_disabled);
+
+        // Non-isolated agent: base scope, contexts ignored.
+        let s = resolve_memory_scope("local", "a1", false, Some("caseA"), Some("chat-1"));
+        assert_eq!(s.user_id, "local:agent:a1");
+        assert!(!s.writes_disabled);
+    }
+
+    #[test]
+    fn test_resolve_memory_scope_isolated_context_precedence() {
+        // Explicit channel segment wins over the chat derivation.
+        let s = resolve_memory_scope("local", "a1", true, Some("caseA"), Some("chat-1"));
+        assert_eq!(s.user_id, "local:agent:a1:ctx:caseA");
+        assert!(!s.writes_disabled);
+
+        // No explicit segment → active chat id (thread = matter).
+        let s = resolve_memory_scope("local", "a1", true, None, Some("chat-1"));
+        assert_eq!(s.user_id, "local:agent:a1:ctx:chat-1");
+        assert!(!s.writes_disabled);
+    }
+
+    #[test]
+    fn test_resolve_memory_scope_isolated_fails_closed_without_context() {
+        // Isolated with NO derivable context: reads keep the base agent
+        // scope, writes are refused — never a silent write to the shared
+        // agent scope.
+        let s = resolve_memory_scope("local", "a1", true, None, None);
+        assert_eq!(s.user_id, "local:agent:a1");
+        assert!(s.writes_disabled);
+    }
+
+    #[test]
+    fn test_memory_scope_chain_ctx_excludes_siblings() {
+        let chain = memory_scope_chain("local:agent:a1:ctx:chat-A");
+        assert_eq!(
+            chain,
+            vec![
+                "local:agent:a1:ctx:chat-A".to_string(),
+                "local:agent:a1".to_string(),
+                "local".to_string(),
+            ]
+        );
+        // Sibling contexts and sibling agents are never in the chain —
+        // cross-case recall is structurally impossible.
+        assert!(!chain.iter().any(|s| s.contains(":ctx:chat-B")));
+        assert!(!chain.iter().any(|s| s.contains(":agent:a2")));
+    }
+
+    #[test]
+    fn test_build_inherit_scopes_isolated_ctx_reads() {
+        // Isolated run with a context: agent-wide tacit/ ONLY + owner
+        // identity prefixes — never the agent's non-tacit namespaces, never
+        // a sibling ctx scope.
+        let scopes = build_inherit_scopes("local", "a1", true, true);
+        assert_eq!(scopes.len(), 3);
+        assert_eq!(scopes[0].user_id, "local:agent:a1");
+        assert_eq!(scopes[0].namespace_prefix, "tacit/");
+        assert_eq!(scopes[1].user_id, "local");
+        assert_eq!(scopes[1].namespace_prefix, "tacit/preferences");
+        assert_eq!(scopes[2].user_id, "local");
+        assert_eq!(scopes[2].namespace_prefix, "tacit/personality");
+        // Every agent-scope inherit is prefix-bounded to tacit/ (case facts
+        // in entity/, project, topic layers do NOT cross contexts) and no
+        // inherited scope is a ctx scope.
+        for s in &scopes {
+            if s.user_id == "local:agent:a1" {
+                assert!(s.namespace_prefix.starts_with("tacit/"));
+            }
+            assert!(!s.user_id.contains(":ctx:"));
+        }
+
+        // Fail-closed run (no context): no agent tacit/ inherit (the base
+        // agent scope IS the read scope), identity prefixes remain.
+        let scopes = build_inherit_scopes("local", "a1", true, false);
+        assert_eq!(scopes.len(), 2);
+        assert!(scopes.iter().all(|s| s.user_id == "local"));
+
+        // Main bot inherits nothing.
+        assert!(build_inherit_scopes("local", "", false, false).is_empty());
+    }
+
+    #[test]
+    fn test_store_facts_extraction_lands_at_exact_ctx_scope() {
+        // Extraction parity: with context_isolated + a chat-derived ctx, the
+        // debounced-extraction/flush write path (store_facts) lands facts
+        // under the exact ctx scope — invisible to sibling contexts.
+        let path = std::env::temp_dir().join(format!(
+            "nebo-ctx-extract-test-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
+
+        let scope = resolve_memory_scope("local", "a1", true, None, Some("chat-A"));
+        assert!(!scope.writes_disabled);
+
+        let facts = ExtractedFacts {
+            preferences: vec![Fact {
+                key: "filing-deadline".to_string(),
+                value: "The filing deadline for the Smith matter is March 3, 2027.".to_string(),
+                category: "preference".to_string(),
+                tags: vec![],
+                confidence: 0.9,
+                explicit: Some(true),
+                topic: None,
+            }],
+            ..Default::default()
+        };
+        store_facts(&store, &facts, &scope.user_id, None, &[]);
+
+        // Lands under the exact ctx scope…
+        let stored = store
+            .get_memory_by_key_and_user(
+                "tacit/preferences",
+                "filing-deadline",
+                "local:agent:a1:ctx:chat-A",
+            )
+            .unwrap();
+        assert!(stored.is_some(), "fact must land under the ctx scope");
+        // …and under NO other scope a sibling context would read.
+        for other in [
+            "local:agent:a1:ctx:chat-B",
+            "local:agent:a1",
+            "local",
+        ] {
+            assert!(
+                store
+                    .get_memory_by_key_and_user("tacit/preferences", "filing-deadline", other)
+                    .unwrap()
+                    .is_none(),
+                "fact leaked to scope {other}"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -183,6 +183,20 @@ pub(crate) fn strip_progress_heartbeats(s: &str) -> String {
         .to_string()
 }
 
+/// The reply-text fragment of a stream event: `Some` ONLY for `Text` events.
+/// This is the ONE gate for what accumulates into user-visible reply text
+/// (desktop `full_response`, comm buffers, channel replies). `ControlNotice`
+/// (spiral backstop, circuit breaker, terminal tool error) and every other
+/// event type return `None` — run-control status must never render as
+/// assistant prose (the spiral instruction leaked verbatim into a customer
+/// Slack channel when it was emitted as Text).
+pub(crate) fn reply_fragment(event: &ai::StreamEvent) -> Option<&str> {
+    match event.event_type {
+        StreamEventType::Text => Some(&event.text),
+        _ => None,
+    }
+}
+
 /// Configuration for a chat run — decorators that customize behavior
 /// without changing the underlying execution flow.
 pub struct ChatConfig {
@@ -474,6 +488,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             Ok(mut rx) => {
                 let mut full_response = String::new();
                 let mut saw_stream_error = false;
+                // Typed run stop from a ControlNotice event: (stop_reason, notice).
+                // Carried on chat_complete so the UI can render a status line
+                // ("stopped: repeated tool calls") instead of prose.
+                let mut control_stop: Option<(String, String)> = None;
                 let mut text_buffer = String::new();
                 let mut last_flush = tokio::time::Instant::now();
                 // Tight coalesce window so text streams in small, token-smooth chunks
@@ -569,7 +587,28 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     _run_handle.touch();
 
                     match event.event_type {
-                        StreamEventType::Text => {
+                        StreamEventType::Text | StreamEventType::ControlNotice => {
+                            // ONE reply-text gate (reply_fragment): only Text
+                            // accumulates. ControlNotice is typed run-control
+                            // status — surfaced on the existing chat_error
+                            // status channel + recorded as the typed stop
+                            // reason for chat_complete, never reply prose.
+                            if reply_fragment(&event).is_none() {
+                                control_stop = Some((
+                                    event
+                                        .stop_reason
+                                        .clone()
+                                        .unwrap_or_else(|| "control_stop".to_string()),
+                                    event.text.clone(),
+                                ));
+                                hub.broadcast(
+                                    "chat_error",
+                                    ws_payload!(
+                                        "error": &event.text,
+                                    ),
+                                );
+                                continue;
+                            }
                             if needs_separator
                                 && !full_response.is_empty()
                                 && !full_response.ends_with(|c: char| c.is_whitespace())
@@ -1248,12 +1287,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // the app renders them). Carries NO message content: streamed
                 // blocks finalize in place on the frontend — a final payload that
                 // re-carried the turn text is what caused segments to render twice.
-                hub.broadcast(
-                    "chat_complete",
-                    ws_payload!(
-                        "artifacts": &chat_artifacts,
-                    ),
+                // When the run ended via a typed ControlNotice, the payload also
+                // carries the typed stop reason + status line so the UI can render
+                // e.g. "stopped: repeated tool calls" as status, never prose.
+                let mut complete_payload = ws_payload!(
+                    "artifacts": &chat_artifacts,
                 );
+                if let Some((reason, notice)) = &control_stop {
+                    complete_payload["stop_reason"] = serde_json::json!(reason);
+                    complete_payload["stop_notice"] = serde_json::json!(notice);
+                }
+                hub.broadcast("chat_complete", complete_payload);
 
                 // Persist the artifacts onto the turn's final assistant message so
                 // Work items + their version chain survive history reload (the live
@@ -2077,7 +2121,26 @@ impl agent::ChatTitleSink for TitleBroadcaster {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_progress_heartbeat, strip_progress_heartbeats};
+    use super::{is_progress_heartbeat, reply_fragment, strip_progress_heartbeats};
+
+    #[test]
+    fn only_text_events_are_reply_text() {
+        assert_eq!(
+            reply_fragment(&ai::StreamEvent::text("real content")),
+            Some("real content")
+        );
+        // ControlNotice (spiral backstop / circuit breaker / terminal error)
+        // must never reach reply accumulators — this is the Slack-leak guard.
+        assert_eq!(
+            reply_fragment(&ai::StreamEvent::control_notice(
+                "Stopped: 'web(search)' was called 8 times this turn without progress.",
+                "repeated_tool_calls",
+            )),
+            None
+        );
+        assert_eq!(reply_fragment(&ai::StreamEvent::error("boom")), None);
+        assert_eq!(reply_fragment(&ai::StreamEvent::done()), None);
+    }
 
     #[test]
     fn detects_orchestrator_heartbeats() {

@@ -1412,16 +1412,24 @@ async fn run_loop(
     // threaded into extraction, the flush, and the memory tool's layer map.
     let memory_topics = memory_config.topics.clone();
 
-    // Extract context_id from session key for context-isolated memory scoping.
-    // Session key format: "agent:{agent_id}:{channel}:{context_id}"
-    let context_id: Option<String> = {
-        let parts: Vec<&str> = session_id.splitn(4, ':').collect();
-        if parts.len() == 4 && parts[0] == "agent" {
-            Some(parts[3].to_string())
-        } else {
-            None
-        }
+    // Explicit isolation context from the session key, if the channel set one
+    // ("agent:{agent_id}:{channel}:{context_id}").
+    let explicit_ctx = crate::memory::session_key_context(session_id);
+
+    // Context-isolated agents whose session key carries NO explicit segment
+    // (desktop chat threads) derive the context from the session's ACTIVE
+    // CHAT id — thread = matter — via the canonical session→chat resolution.
+    // Precedence: an explicit channel segment always wins over the chat
+    // derivation (see memory::resolve_memory_scope).
+    let chat_ctx = if memory_config.context_isolated
+        && !agent_id.is_empty()
+        && explicit_ctx.is_none()
+    {
+        store.session_chat_id(session_id)
+    } else {
+        None
     };
+    let has_context = explicit_ctx.is_some() || chat_ctx.is_some();
 
     // Canonical memory owner: the on-device local user id, NOT the loosely-passed
     // (often empty) request user_id. ALL memory scoping derives from this so the
@@ -1432,53 +1440,44 @@ async fn run_loop(
         .ensure_local_user_id()
         .unwrap_or_else(|_| user_id.to_string());
 
-    // Scope memory by agent: each agent gets its own memory namespace to prevent cross-contamination.
-    // Main bot uses the raw owner; agents use "owner:agent:agent_id".
-    // With context_isolated, further scoped to "owner:agent:agent_id:ctx:context_id".
-    let memory_user_id = if !agent_id.is_empty() {
-        // Canonical base scope (one definition shared with the memory API).
-        let agent_scope = crate::memory::agent_memory_scope(&memory_owner, agent_id);
-        if memory_config.context_isolated {
-            if let Some(ref ctx) = context_id {
-                format!("{}:ctx:{}", agent_scope, ctx)
-            } else {
-                agent_scope
-            }
-        } else {
-            agent_scope
-        }
-    } else {
-        memory_owner.clone()
-    };
-
-    // Build the inheritance chain for READ access
-    let mut inherit_scopes: Vec<db_context::InheritScope> = Vec::new();
-
-    if !agent_id.is_empty() {
-        let agent_scope = crate::memory::agent_memory_scope(&memory_owner, agent_id);
-
-        // If context-isolated, inherit agent-wide memories (all tacit/)
-        if memory_config.context_isolated && context_id.is_some() {
-            inherit_scopes.push(db_context::InheritScope {
-                user_id: agent_scope,
-                namespace_prefix: "tacit/".to_string(),
-            });
-        }
-
-        // Every agent reads the owner's IDENTITY memories (read-only): who the
-        // owner is and how to act belongs to the owner, not the agent that
-        // happened to hear it. Only the identity prefixes are blanket-injected
-        // (mirroring the local slice in load_scored_memories — injecting all of
-        // tacit/ was the prompt-bloat source); arbitrary owner facts surface on
-        // demand via the FTS scope chain. Writes stay scoped to the agent, so
-        // what each agent LEARNS remains independent.
-        for prefix in ["tacit/preferences", "tacit/personality"] {
-            inherit_scopes.push(db_context::InheritScope {
-                user_id: memory_owner.clone(),
-                namespace_prefix: prefix.to_string(),
-            });
-        }
+    // Scope memory by agent: each agent gets its own memory namespace to prevent
+    // cross-contamination. Main bot uses the raw owner; agents use
+    // "owner:agent:agent_id"; with context_isolated, further scoped to
+    // "owner:agent:agent_id:ctx:context_id". The ONE derivation — every read
+    // and write path below inherits it.
+    let memory_scope = crate::memory::resolve_memory_scope(
+        &memory_owner,
+        agent_id,
+        memory_config.context_isolated,
+        explicit_ctx.as_deref(),
+        chat_ctx.as_deref(),
+    );
+    // Fail-closed: context_isolated with no derivable context must NEVER write
+    // to the shared agent scope (readable from every isolation context — the
+    // exact leak the flag exists to prevent). Setting skip_memory refuses the
+    // extraction, flush, and personality paths through their existing gate;
+    // transcript indexing and the memory tool's mutations check
+    // memory_writes_disabled directly. Reads still serve the base agent scope
+    // + owner identity chain.
+    let memory_writes_disabled = memory_scope.writes_disabled;
+    if memory_writes_disabled {
+        warn!(
+            session_id,
+            agent_id, "context_isolated: no context derivable — memory writes disabled for this run"
+        );
+        skip_memory = true;
     }
+    let memory_user_id = memory_scope.user_id;
+
+    // Build the inheritance chain for READ access: agent tacit/ (context-
+    // isolated runs only) + owner identity prefixes. Sibling ctx scopes are
+    // never in the chain.
+    let inherit_scopes = crate::memory::build_inherit_scopes(
+        &memory_owner,
+        agent_id,
+        memory_config.context_isolated,
+        has_context,
+    );
 
     // Kick off per-message memory recall CONCURRENTLY with the rest of prompt
     // assembly: its cost is a query-embedding network round trip (~650ms
@@ -2252,8 +2251,11 @@ async fn run_loop(
                 crate::memory_flush::track_extraction(handle).await;
             }
 
-            // Background: index evicted messages for cross-session semantic search
-            if let Some(ep) = embedding_provider {
+            // Background: index evicted messages for cross-session semantic search.
+            // Fail-closed isolation: indexing writes conversation content under
+            // memory_user_id, so a run whose isolation context could not be
+            // derived must not index into the shared agent scope.
+            if let Some(ep) = embedding_provider.filter(|_| !memory_writes_disabled) {
                 let store_c = store.clone();
                 let ep_c = ep.clone();
                 let sid = session_id.to_string();
@@ -2409,22 +2411,15 @@ async fn run_loop(
         // the rest). The behavioral steering moved to the message-stream reminder channel.
         if let Some(reason) = steering::should_force_break(&window_messages, iteration) {
             warn!(session_id, iteration, reason = %reason, "circuit breaker triggered");
-            let _ = tx.send(StreamEvent {
-                event_type: StreamEventType::Text,
-                text: format!(
-                    "\n\nI got stuck in a loop and the circuit breaker stopped me. {}\n\n\
-                     I apologize for the repeated attempts. Please let me know how you'd like to proceed.",
-                    reason
-                ),
-                tool_call: None,
-                error: None,
-                usage: None,
-                rate_limit: None,
-                widgets: None,
-                provider_metadata: None,
-                stop_reason: None,
-                image_url: None,
-            }).await;
+            // Typed termination: a ControlNotice status event, never assistant
+            // prose (the old apology text leaked verbatim into channel replies).
+            turn_exit_reason = "user_requested_stop".to_string();
+            let _ = tx
+                .send(StreamEvent::control_notice(
+                    "Stopped at your request.",
+                    "user_requested_stop",
+                ))
+                .await;
             break;
         }
 
@@ -3055,8 +3050,10 @@ async fn run_loop(
                 }
                 StreamEventType::ApprovalRequest
                 | StreamEventType::AskRequest
-                | StreamEventType::PlanApproval => {
-                    // Approval/Ask/Plan: only sent by runner, not received from provider.
+                | StreamEventType::PlanApproval
+                | StreamEventType::ControlNotice => {
+                    // Approval/Ask/Plan/ControlNotice: only sent by runner, not
+                    // received from provider.
                 }
                 StreamEventType::ToolSummary => {
                     // Tool execution summary — relay to parent for display.
@@ -3351,6 +3348,7 @@ async fn run_loop(
                 channel: channel_ctx.cloned(),
                 model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
                 memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
+                memory_writes_disabled,
                 // Populated by the approval gate below, before tool execution.
                 approved_categories: std::collections::HashSet::new(),
             };
@@ -3462,6 +3460,11 @@ async fn run_loop(
             // shell-retry), END the run with a terminal result. Productive calls that
             // return novel results don't count, so legitimate bulk work (create N
             // todos, write N files) never trips this. (FRAMES Phase 2.)
+            //
+            // The tripped action key is recorded so the terminal break below emits a
+            // typed ControlNotice ("repeated_tool_calls") — the model-facing tool
+            // result text must never surface as user-visible reply text.
+            let mut spiral_stop: Option<String> = None;
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {
                     continue;
@@ -3474,12 +3477,12 @@ async fn run_loop(
                         limit = SAME_ACTION_LIMIT,
                         "spiral backstop: ending run after repeated action"
                     );
+                    spiral_stop.get_or_insert_with(|| key.clone());
                     blocked_results[idx] = Some((
                         tc.clone(),
                         ToolResult::terminal(format!(
-                            "Stopped: '{}' has been called {} times this turn without resolving the \
-                             task. Do not retry more variations — report what you found so far and ask \
-                             the user for the missing detail (e.g. the correct path, file, or input).",
+                            "'{}' has been called {} times this turn without resolving. \
+                             Report what you found so far and ask for the missing detail.",
                             key, SAME_ACTION_LIMIT
                         )),
                     ));
@@ -4217,24 +4220,27 @@ async fn run_loop(
             // unrecoverable (auth/permission/connection) — surface it and stop rather
             // than feed it back for the model to retry/improvise. This is the
             // death-spiral fix: in an autonomous workflow there is no human to ask or
-            // to interrupt, so a dead account must stop the run cleanly. Mirrors the
-            // circuit-breaker's emit-text-then-break. (Narrow: only ToolResult::terminal
-            // sets this — healthy long-running tasks never trip it.)
+            // to interrupt, so a dead account must stop the run cleanly. (Narrow: only
+            // ToolResult::terminal sets this — healthy long-running tasks never trip it.)
+            //
+            // Typed termination: emitted as a ControlNotice status event, never Text —
+            // the old emit-text-then-break made the notice indistinguishable from
+            // assistant prose and it leaked verbatim into channel replies.
             if let Some(msg) = terminal_error {
                 warn!(session_id, iteration, "terminal tool error — ending run");
+                let (control_reason, notice) = match &spiral_stop {
+                    Some(action) => (
+                        "repeated_tool_calls",
+                        format!(
+                            "Stopped: '{}' was called {} times this turn without progress.",
+                            action, SAME_ACTION_LIMIT
+                        ),
+                    ),
+                    None => ("terminal_tool_error", msg),
+                };
+                turn_exit_reason = control_reason.to_string();
                 let _ = tx
-                    .send(StreamEvent {
-                        event_type: StreamEventType::Text,
-                        text: msg,
-                        tool_call: None,
-                        error: None,
-                        usage: None,
-                        rate_limit: None,
-                        widgets: None,
-                        provider_metadata: None,
-                        stop_reason: None,
-                        image_url: None,
-                    })
+                    .send(StreamEvent::control_notice(notice, control_reason))
                     .await;
                 break;
             }

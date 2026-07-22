@@ -137,6 +137,39 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// All memory-level embeddings for ONE exact user scope under `model`:
+    /// `(memory_id, memory key, embedding blob)` rows. Exact `user_id` match —
+    /// never a scope chain — so the write-time contradiction check can only
+    /// ever compare within a single isolation scope (a `:ctx:` scope never
+    /// sees a sibling's vectors). Transcript chunks (NULL memory_id) excluded.
+    pub fn list_memory_embeddings_by_user(
+        &self,
+        user_id: &str,
+        model: &str,
+    ) -> Result<Vec<(i64, String, Vec<u8>)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT mc.memory_id, m.key, me.embedding
+                 FROM memory_embeddings me
+                 JOIN memory_chunks mc ON mc.id = me.chunk_id
+                 JOIN memories m ON m.id = mc.memory_id
+                 WHERE mc.user_id = ?1 AND me.model = ?2",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id, model], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// FTS5 search on memories table across a READ scope chain (the exact
     /// scope plus its ancestors, from `memory::memory_scope_chain`). Returns
     /// (memory_id, rank). An agent-scoped search also surfaces owner-level

@@ -103,63 +103,154 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
             };
             let channel = channel_kind.as_str();
 
-            let mut rx = crate::chat_dispatch::run_chat_events(&self.state, config)
+            let rx = crate::chat_dispatch::run_chat_events(&self.state, config)
                 .await
                 .map_err(|e| format!("channel dispatch error: {}", e))?;
 
-            // Collect all text events into the full response,
-            // filtering out internal status/progress notifications.
-            let mut full_response = String::new();
-            while let Some(event) = rx.recv().await {
-                match event.event_type {
-                    StreamEventType::Text => {
-                        // Skip orchestrator progress notifications — the
-                        // "_Working on: ..._" heartbeat (shared predicate) and
-                        // the background-task notice are status, not content.
-                        if crate::chat_dispatch::is_progress_heartbeat(&event.text) {
-                            continue;
-                        }
-                        if event.text.trim() == "Working on this in the background..." {
-                            continue;
-                        }
-                        full_response.push_str(&event.text);
-                    }
-                    StreamEventType::Error => {
-                        warn!(
-                            agent_id,
-                            channel,
-                            error = %event.text,
-                            "channel chat error"
-                        );
-                    }
-                    StreamEventType::ApprovalRequest => {
-                        warn!(
-                            agent_id,
-                            channel,
-                            "channel chat requested approval; cancelling because channel dispatch has no approval UI"
-                        );
-                        cancel_token.cancel();
-                        if full_response.trim().is_empty() {
-                            full_response.push_str(
-                                "I need an approval before I can do that, but this channel can't show approval prompts. Enable Full Access or continue in the Nebo app.",
-                            );
-                        }
-                        break;
-                    }
-                    _ => {} // ToolCall, ToolResult, Usage, Stop — skip
+            Ok(collect_channel_reply(rx, &cancel_token, agent_id, channel).await)
+        })
+    }
+}
+
+/// Drain a chat run's event stream into the channel reply text, filtering out
+/// internal status/progress notifications.
+///
+/// Reply accumulation is gated by [`crate::chat_dispatch::reply_fragment`]:
+/// only `Text` events contribute. `ControlNotice` (spiral backstop, circuit
+/// breaker, terminal tool error) is run-control status and is ignored by type
+/// — it must never land in a customer channel as prose.
+pub(crate) async fn collect_channel_reply(
+    mut rx: tokio::sync::mpsc::Receiver<ai::StreamEvent>,
+    cancel_token: &tokio_util::sync::CancellationToken,
+    agent_id: &str,
+    channel: &str,
+) -> String {
+    let mut full_response = String::new();
+    // Channels have no status banner — the reply is the only surface. Keep the
+    // last control-notice status line as a FALLBACK so a run that terminates
+    // before producing any prose doesn't answer with silence (which reads as
+    // the bot ignoring the user). It is used only when the reply is empty.
+    let mut last_control_notice: Option<String> = None;
+    while let Some(event) = rx.recv().await {
+        if let Some(frag) = crate::chat_dispatch::reply_fragment(&event) {
+            // Skip orchestrator progress notifications — the
+            // "_Working on: ..._" heartbeat (shared predicate) and
+            // the background-task notice are status, not content.
+            if crate::chat_dispatch::is_progress_heartbeat(frag) {
+                continue;
+            }
+            if frag.trim() == "Working on this in the background..." {
+                continue;
+            }
+            full_response.push_str(frag);
+            continue;
+        }
+        match event.event_type {
+            StreamEventType::ControlNotice => {
+                if !event.text.trim().is_empty() {
+                    last_control_notice = Some(event.text.clone());
                 }
             }
+            StreamEventType::Error => {
+                warn!(
+                    agent_id,
+                    channel,
+                    error = %event.text,
+                    "channel chat error"
+                );
+            }
+            StreamEventType::ApprovalRequest => {
+                warn!(
+                    agent_id,
+                    channel,
+                    "channel chat requested approval; cancelling because channel dispatch has no approval UI"
+                );
+                cancel_token.cancel();
+                if full_response.trim().is_empty() {
+                    full_response.push_str(
+                        "I need an approval before I can do that, but this channel can't show approval prompts. Enable Full Access or continue in the Nebo app.",
+                    );
+                }
+                break;
+            }
+            _ => {} // ToolCall, ToolResult, Usage, Done — skip
+        }
+    }
 
-            // Clean up any residual empty lines from filtered status messages
-            let cleaned = full_response
-                .lines()
-                .filter(|line| !line.trim().is_empty() || full_response.matches('\n').count() < 20)
-                .collect::<Vec<_>>()
-                .join("\n")
-                .trim()
-                .to_string();
+    // Clean up any residual empty lines from filtered status messages
+    let reply = full_response
+        .lines()
+        .filter(|line| !line.trim().is_empty() || full_response.matches('\n').count() < 20)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
 
-            Ok(cleaned)
-        })
+    // Empty-reply fallback: surface the terminal status line rather than
+    // silence. Real prose always wins — the notice never mixes into it.
+    if reply.is_empty() {
+        if let Some(notice) = last_control_notice {
+            return notice.trim().to_string();
+        }
+    }
+    reply
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_channel_reply;
+
+    /// A run emitting Text + ControlNotice must produce a reply containing
+    /// ONLY the Text — the spiral/circuit-breaker notice leaked verbatim into
+    /// a customer Slack channel when it was emitted as plain Text.
+    #[tokio::test]
+    async fn channel_reply_ignores_control_notices() {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        tx.send(ai::StreamEvent::text("Here is what I found so far."))
+            .await
+            .unwrap();
+        tx.send(ai::StreamEvent::control_notice(
+            "Stopped: 'web(search)' was called 8 times this turn without progress.",
+            "repeated_tool_calls",
+        ))
+        .await
+        .unwrap();
+        tx.send(ai::StreamEvent::text("\nTwo listings match your filters."))
+            .await
+            .unwrap();
+        tx.send(ai::StreamEvent::done()).await.unwrap();
+        drop(tx);
+
+        let reply = collect_channel_reply(rx, &cancel, "agent-1", "slack").await;
+        assert_eq!(
+            reply,
+            "Here is what I found so far.\nTwo listings match your filters."
+        );
+        assert!(!reply.contains("Stopped"));
+        assert!(!cancel.is_cancelled());
+    }
+
+    /// A run that terminates with NO prose must not answer a channel with
+    /// silence — the last control-notice status line serves as the fallback
+    /// reply (channels have no status banner; the reply is the only surface).
+    #[tokio::test]
+    async fn channel_reply_falls_back_to_notice_when_empty() {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        tx.send(ai::StreamEvent::control_notice(
+            "I couldn't reach gws — reconnect this account in Settings, then ask me again.",
+            "terminal_tool_error",
+        ))
+        .await
+        .unwrap();
+        tx.send(ai::StreamEvent::done()).await.unwrap();
+        drop(tx);
+
+        let reply = collect_channel_reply(rx, &cancel, "agent-1", "slack").await;
+        assert_eq!(
+            reply,
+            "I couldn't reach gws — reconnect this account in Settings, then ask me again."
+        );
     }
 }
