@@ -188,6 +188,26 @@ impl OsTool {
         !has_explicit_resource && file_mgmt_verb && has_path && (has_dest || action != "move")
     }
 
+    /// Resolve the effective resource of an os call — THE canonical chain:
+    /// explicit non-empty `resource` field → [`Self::infer_resource`] from the
+    /// action name → [`Self::infer_resource_from_context`] from the parameters.
+    /// Every consumer (approval gate, resource permits, concurrency, capability
+    /// gating, safeguards, path scoping) must use this so they all agree on
+    /// which resource a call targets.
+    pub(crate) fn resolved_resource(input: &serde_json::Value) -> &str {
+        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+        if !resource.is_empty() {
+            return resource;
+        }
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let inferred = Self::infer_resource(action);
+        if inferred.is_empty() {
+            Self::infer_resource_from_context(input)
+        } else {
+            inferred
+        }
+    }
+
     /// Infer resource from action name when resource field is omitted.
     pub(crate) fn infer_resource(action: &str) -> &str {
         match action {
@@ -584,19 +604,7 @@ impl DynTool for OsTool {
     }
 
     fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
-        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-        // If no resource, try to infer it from action, then from context
-        let resource = if resource.is_empty() {
-            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let inferred = Self::infer_resource(action);
-            if inferred.is_empty() {
-                Self::infer_resource_from_context(input)
-            } else {
-                inferred
-            }
-        } else {
-            resource
-        };
+        let resource = Self::resolved_resource(input);
         // Organizer resources: only write actions need approval
         match resource {
             "mail" | "contacts" | "calendar" | "reminders" => {
@@ -608,19 +616,7 @@ impl DynTool for OsTool {
     }
 
     fn resource_permit(&self, input: &serde_json::Value) -> Option<ResourceKind> {
-        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-        let resource = if resource.is_empty() {
-            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let inferred = OsTool::infer_resource(action);
-            if inferred.is_empty() {
-                OsTool::infer_resource_from_context(input)
-            } else {
-                inferred
-            }
-        } else {
-            resource
-        };
-        match resource {
+        match OsTool::resolved_resource(input) {
             // Physical screen resources — one mouse, one keyboard, one display
             "window" | "input" | "ui" | "menu" | "dialog" | "space" | "shortcut" => {
                 Some(ResourceKind::Screen)
@@ -632,19 +628,8 @@ impl DynTool for OsTool {
     }
 
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
-        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let resource = if resource.is_empty() {
-            let inferred = OsTool::infer_resource(action);
-            if inferred.is_empty() {
-                OsTool::infer_resource_from_context(input)
-            } else {
-                inferred
-            }
-        } else {
-            resource
-        };
-        match resource {
+        match OsTool::resolved_resource(input) {
             "file" => matches!(action, "read" | "list" | "glob" | "grep"),
             "search" => true,
             "capture" => matches!(action, "screenshot" | "see"),

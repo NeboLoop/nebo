@@ -141,6 +141,23 @@ impl DynTool for EventTool {
                                 "event(action: \"create\", name: \"cleanup\", cron: \"0 0 * * *\", command: \"rm -rf /tmp/cache/*\")",
                             ));
                         }
+                        // Cron commands execute later without going through the
+                        // interactive shell pipeline — run the same unconditional
+                        // safeguard here at creation time so a scheduled job can't
+                        // smuggle a command the shell tool would refuse.
+                        if let Some(block) = crate::safeguard::check_safeguard(
+                            "shell",
+                            &serde_json::json!({
+                                "resource": "bash",
+                                "action": "exec",
+                                "command": command,
+                            }),
+                        ) {
+                            return ToolResult::error(format!(
+                                "Refusing to schedule this command: {}",
+                                block
+                            ));
+                        }
                         (command, None::<&str>)
                     };
 
@@ -285,13 +302,20 @@ impl DynTool for EventTool {
                             // Execute based on task type
                             let (success, output) = match job.task_type.as_str() {
                                 "bash" => {
-                                    match tokio::process::Command::new("bash")
-                                        .arg("-c")
-                                        .arg(&job.command)
-                                        .output()
-                                        .await
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_secs(120),
+                                        tokio::process::Command::new("bash")
+                                            .arg("-c")
+                                            .arg(&job.command)
+                                            .output(),
+                                    )
+                                    .await
                                     {
-                                        Ok(result) => {
+                                        Err(_) => (
+                                            false,
+                                            "Command timed out after 120s".to_string(),
+                                        ),
+                                        Ok(Ok(result)) => {
                                             let stdout =
                                                 String::from_utf8_lossy(&result.stdout).to_string();
                                             let stderr =
@@ -303,7 +327,7 @@ impl DynTool for EventTool {
                                             };
                                             (result.status.success(), out)
                                         }
-                                        Err(e) => (false, format!("Failed to execute: {}", e)),
+                                        Ok(Err(e)) => (false, format!("Failed to execute: {}", e)),
                                     }
                                 }
                                 "agent" => {

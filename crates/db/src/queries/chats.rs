@@ -400,6 +400,35 @@ impl Store {
         Ok(())
     }
 
+    /// Atomically replace all of a chat's messages with a single assistant
+    /// summary message (compaction). Delete + insert run in one transaction so
+    /// a failure at any point leaves the original conversation intact.
+    pub fn compact_chat_messages(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        content: &str,
+    ) -> Result<(), NeboError> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM chat_messages WHERE chat_id = ?1",
+            params![chat_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        tx.execute(
+            "INSERT INTO chat_messages (id, chat_id, role, content, created_at)
+             VALUES (?1, ?2, 'assistant', ?3, unixepoch())",
+            params![message_id, chat_id, content],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        tx.commit()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn update_chat_message_content(
         &self,
         id: &str,

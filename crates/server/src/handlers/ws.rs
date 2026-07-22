@@ -702,19 +702,23 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             return;
                                         }
 
-                                        // 4. Clear messages in current conversation and insert summary
-                                        let _ = state_clone.runner.sessions().clear_current_messages(&internal_sid);
-                                        let chat_id = state_clone.runner.sessions().active_chat_id(&internal_sid);
-                                        let msg_id = uuid::Uuid::new_v4().to_string();
-                                        let _ = state_clone.store.create_chat_message(
-                                            &msg_id, &chat_id, "assistant",
+                                        // 4. Atomically replace the conversation with the summary.
+                                        // On failure the original conversation is left intact.
+                                        match state_clone.runner.sessions().compact_current_messages(
+                                            &internal_sid,
                                             &format!("**Conversation Summary**\n\n{}", summary),
-                                            None,
-                                        );
-
-                                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                            "session_id": skey, "success": true, "summary_length": summary.len()
-                                        }));
+                                        ) {
+                                            Ok(()) => {
+                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                                    "session_id": skey, "success": true, "summary_length": summary.len()
+                                                }));
+                                            }
+                                            Err(e) => {
+                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                                    "session_id": skey, "success": false, "error": format!("failed to save summary: {}", e)
+                                                }));
+                                            }
+                                        }
                                     });
                                 }
                                 "list_active_runs" => {
@@ -1503,18 +1507,23 @@ async fn handle_builtin_slash(
                     return;
                 }
 
-                let _ = state_clone.runner.sessions().clear_current_messages(&internal_sid);
-                let chat_id = state_clone.runner.sessions().active_chat_id(&internal_sid);
-                let msg_id = uuid::Uuid::new_v4().to_string();
-                let _ = state_clone.store.create_chat_message(
-                    &msg_id, &chat_id, "assistant",
+                // Atomically replace the conversation with the summary.
+                // On failure the original conversation is left intact.
+                match state_clone.runner.sessions().compact_current_messages(
+                    &internal_sid,
                     &format!("**Conversation Summary**\n\n{}", summary),
-                    None,
-                );
-
-                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                    "session_id": skey, "success": true, "summary_length": summary.len()
-                }));
+                ) {
+                    Ok(()) => {
+                        state_clone.hub.broadcast("session_compact", serde_json::json!({
+                            "session_id": skey, "success": true, "summary_length": summary.len()
+                        }));
+                    }
+                    Err(e) => {
+                        state_clone.hub.broadcast("session_compact", serde_json::json!({
+                            "session_id": skey, "success": false, "error": format!("failed to save summary: {}", e)
+                        }));
+                    }
+                }
             });
             Some("Compacting conversation...".to_string())
         }

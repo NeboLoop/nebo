@@ -7,6 +7,15 @@ pub fn check_safeguard(tool_name: &str, input: &serde_json::Value) -> Option<Str
     match tool_name {
         "system" | "file" => check_file_safeguard(input),
         "shell" => check_shell_safeguard(input),
+        // The STRAP `os` tool carries the real category in `resource` (which the
+        // model may omit — resolve it through the tool's own inference chain so
+        // the safeguard and the dispatch agree). Pre-rename this match never saw
+        // "os", so ALL hard safety limits were silently disabled for os calls.
+        "os" => match crate::os_tool::OsTool::resolved_resource(input) {
+            "file" => check_file_safeguard(input),
+            "shell" => check_shell_safeguard(input),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -31,9 +40,9 @@ pub fn check_path_scope(
         // file and shell sub-resources the same as the legacy standalone tools.
         // (Pre-rename this match never saw "os", so path scoping was silently
         // disabled for all os file/shell calls — TD-002.)
-        "os" => match input.get("resource").and_then(|v| v.as_str()) {
-            Some("file") => check_file_path_scope(input, allowed_paths),
-            Some("shell") => check_shell_path_scope(input, allowed_paths),
+        "os" => match crate::os_tool::OsTool::resolved_resource(input) {
+            "file" => check_file_path_scope(input, allowed_paths),
+            "shell" => check_shell_path_scope(input, allowed_paths),
             _ => None,
         },
         _ => None,
@@ -77,14 +86,10 @@ fn check_file_path_scope(input: &serde_json::Value, allowed_paths: &[String]) ->
 }
 
 fn check_shell_path_scope(input: &serde_json::Value, allowed_paths: &[String]) -> Option<String> {
-    let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
     let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
     let cwd = input.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
 
-    if !resource.is_empty() && resource != "bash" {
-        return None;
-    }
     if action != "exec" || command.is_empty() {
         return None;
     }
@@ -164,14 +169,13 @@ fn check_file_safeguard(input: &serde_json::Value) -> Option<String> {
 }
 
 fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
-    let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
     let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
-    // Only guard command execution
-    if !resource.is_empty() && resource != "bash" {
-        return None;
-    }
+    // Only guard command execution. The caller has already dispatched by
+    // category (tool name / resolved resource), so no resource re-check here —
+    // the old `resource != "bash"` early-return self-disabled the guard for the
+    // os tool's "shell" resource.
     if action != "exec" {
         return None;
     }
@@ -596,6 +600,45 @@ mod tests {
             "command": "ls -la"
         });
         assert!(check_shell_safeguard(&safe).is_none());
+    }
+
+    #[test]
+    fn test_os_tool_safeguard_enforced() {
+        // The dead-guard bug: registry resolves aliases to "os" before calling
+        // check_safeguard, so the "os" name MUST dispatch to the real guards.
+        let shell_sudo = serde_json::json!({
+            "resource": "shell", "action": "exec", "command": "sudo rm -rf /tmp"
+        });
+        assert!(check_safeguard("os", &shell_sudo).is_some());
+
+        // Omitted resource — inferred as shell from the "exec" action.
+        let inferred_wipe = serde_json::json!({
+            "action": "exec", "command": "rm -rf /"
+        });
+        assert!(check_safeguard("os", &inferred_wipe).is_some());
+
+        // File guard fires for protected system paths.
+        let file_write = serde_json::json!({
+            "resource": "file", "action": "write", "path": "/etc/passwd"
+        });
+        assert!(check_safeguard("os", &file_write).is_some());
+
+        // Safe commands pass.
+        let safe = serde_json::json!({
+            "resource": "shell", "action": "exec", "command": "ls -la"
+        });
+        assert!(check_safeguard("os", &safe).is_none());
+    }
+
+    #[test]
+    fn test_os_tool_path_scope_inferred_resource() {
+        // Omitted resource must not bypass path scoping — "exec" infers shell,
+        // and the out-of-scope cwd is blocked.
+        let allowed = vec!["/Users/me/ws".to_string()];
+        let input = serde_json::json!({
+            "action": "exec", "command": "ls", "cwd": "/private/etc"
+        });
+        assert!(check_path_scope("os", &input, &allowed).is_some());
     }
 
     #[test]

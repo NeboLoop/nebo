@@ -360,6 +360,22 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Compact the current conversation: atomically replace all messages with a
+    /// single assistant summary message. Stays in the same conversation; a
+    /// failure leaves the original messages untouched.
+    pub fn compact_current_messages(
+        &self,
+        session_id: &str,
+        summary: &str,
+    ) -> Result<(), NeboError> {
+        let chat_id = self.resolve_chat_id(session_id);
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        self.store
+            .compact_chat_messages(&chat_id, &msg_id, summary)?;
+        self.store.reset_session_counters(session_id)?;
+        Ok(())
+    }
+
     /// List sessions by scope.
     pub fn list_sessions(&self, scope: &str) -> Result<Vec<Session>, NeboError> {
         self.store.list_sessions_by_scope(scope)

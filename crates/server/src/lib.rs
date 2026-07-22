@@ -1467,26 +1467,35 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 sync_agent_workflows(&store, &agent_id_for_bindings, config);
             }
         }
-        // Filesystem is the source of truth. Remove any DB agent not on the filesystem.
+        // Filesystem is the source of truth for which agents are active.
+        // Soft-deactivate any DB agent not on the filesystem — same policy as
+        // the fs-watcher's Removed branch. Do NOT delete: the listing may be
+        // incomplete (partial load_all after transient IO), and the user may
+        // re-add the directory; chats/sessions/memories must survive.
         let fs_ids: std::collections::HashSet<String> = fs_agents
             .iter()
             .map(|a| a.id.clone().unwrap_or_else(|| a.agent_def.name.clone()))
             .collect();
         if let Ok(db_agents) = store.list_agents(1000, 0) {
-            let mut removed = 0usize;
+            let mut deactivated = 0usize;
             for db_agent in &db_agents {
-                if !fs_ids.contains(&db_agent.id) {
-                    let _ = store.delete_agent_chats(&db_agent.id);
-                    let _ = store.delete_agent_sessions(&db_agent.id);
-                    let _ = store.delete_agent_memories(&db_agent.id);
-                    let _ = store.delete_agent_workflow_runs(&db_agent.id);
-                    let _ = store.delete_agent(&db_agent.id);
-                    removed += 1;
-                    info!(id = %db_agent.id, name = %db_agent.name, "removed orphan agent and associated data from DB");
+                if !fs_ids.contains(&db_agent.id) && db_agent.is_enabled != 0 {
+                    match store.set_agent_enabled(&db_agent.id, false) {
+                        Ok(()) => {
+                            deactivated += 1;
+                            info!(id = %db_agent.id, name = %db_agent.name, "deactivated orphan agent missing from filesystem (data preserved)");
+                        }
+                        Err(e) => {
+                            warn!(id = %db_agent.id, error = %e, "failed to deactivate orphan agent");
+                        }
+                    }
                 }
             }
-            if removed > 0 {
-                info!(removed, "cleaned up orphan agents from DB");
+            if deactivated > 0 {
+                info!(
+                    deactivated,
+                    "deactivated orphan agents missing from filesystem"
+                );
             }
         }
 
