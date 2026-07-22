@@ -12,7 +12,7 @@
 	import { listStoreProducts, listStoreFeatured, listStoreCategories } from '$lib/api/nebo';
 	import { type AppItem, toAppItem } from '$lib/types/marketplace';
 	import ResumeCard from '$lib/components/marketplace/ResumeCard.svelte';
-	import { loadMarketplaceMap, type MarketplaceMap } from '$lib/data/marketplaceMap';
+	import { loadMarketplaceMap, deptFromSlug, toolCatFromSlug, type MarketplaceMap } from '$lib/data/marketplaceMap';
 	import { slugify, categoryMeta } from '$lib/data/categories';
 
 	const KIND_TYPE: Record<string, string> = {
@@ -99,16 +99,21 @@
 	const mapOf = (it: AppItem) => mktMap?.entries[it.code];
 	const respOf = (it: AppItem) => mktMap?.responsibilities[mapOf(it)?.role ?? ''] ?? [];
 	const employees = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'E') : []);
+	const filterSlug = $derived($page.url.searchParams.get('filter') || '');
+	const deptFilter = $derived(mktMap && filterSlug ? deptFromSlug(mktMap, filterSlug) : '');
+	const tcFilter = $derived(mktMap && filterSlug ? toolCatFromSlug(mktMap, filterSlug) : '');
 	const employeesByDept = $derived.by(() => {
 		if (!mktMap) return [] as { name: string; roles: AppItem[] }[];
-		return mktMap.departments
+		const depts = deptFilter ? [deptFilter] : mktMap.departments;
+		return depts
 			.map((d) => ({ name: d, roles: employees.filter((e) => mapOf(e)?.dept === d) }))
 			.filter((g) => g.roles.length > 0);
 	});
 	const toolItems = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'T') : []);
 	const toolsByCategory = $derived.by(() => {
 		if (!mktMap) return [] as { name: string; items: AppItem[] }[];
-		return mktMap.toolCategories
+		const cats = tcFilter ? [tcFilter] : mktMap.toolCategories;
+		return cats
 			.map((c) => ({ name: c, items: toolItems.filter((t) => mapOf(t)?.tc === c) }))
 			.filter((g) => g.items.length > 0);
 	});

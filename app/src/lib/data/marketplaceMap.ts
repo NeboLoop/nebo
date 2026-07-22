@@ -33,3 +33,20 @@ export function loadMarketplaceMap(): Promise<MarketplaceMap | null> {
 		.catch(() => null);
 	return cached;
 }
+
+/** Website-compatible slugs — round-trip exactly against the map's names. */
+export function mapSlugify(name: string): string {
+	return name
+		.toLowerCase()
+		.replace(/&/g, ' ')
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '');
+}
+
+export function deptFromSlug(map: MarketplaceMap, slug: string): string {
+	return map.departments.find((d) => mapSlugify(d) === slug) ?? '';
+}
+
+export function toolCatFromSlug(map: MarketplaceMap, slug: string): string {
+	return map.toolCategories.find((c) => mapSlugify(c) === slug) ?? '';
+}
