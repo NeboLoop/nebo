@@ -122,16 +122,20 @@
   }
 
   // On the unified /marketplace page the active tab is driven by the `kind`
-  // param (all/agents/apps/...). Everywhere else it derives from the pathname.
-  const activeKind = $derived($page.url.searchParams.get('kind') || 'all');
+  // param. Like the website, Employees is the default view; the legacy
+  // category/publisher storefronts (linked from cards) still resolve as 'all'.
+  const activeKind = $derived(
+    $page.url.searchParams.get('kind') ||
+      ($page.url.searchParams.get('category') || $page.url.searchParams.get('publisher') ? 'all' : 'employees')
+  );
   const activeFilter = $derived($page.url.searchParams.get('filter') || '');
   // Curated map drives the sidebar per tab, same single source as the website:
   // employee-type tabs filter by department, tool-type tabs (incl. collections,
   // which the website filters by tool category too) by tool category.
   let mktMap: MarketplaceMap | null = $state(null);
   onMount(() => { loadMarketplaceMap().then((m) => (mktMap = m)); });
-  const DEPT_KINDS = ['employees', 'agents'];
-  const TC_KINDS = ['tools', 'apps', 'skills', 'plugins', 'connectors', 'collections'];
+  const DEPT_KINDS = ['employees'];
+  const TC_KINDS = ['tools', 'collections'];
   const activePrice = $derived($page.url.searchParams.get('price') || 'all');
   const activeCategory = $derived($page.url.searchParams.get('category') || '');
   // Detail pages (/marketplace/<type>/<id>) shouldn't show the kind filter bar.
@@ -144,15 +148,11 @@
     return match ? match[1] : 'all';
   });
 
+  // The website's three views (employees / tools / collections) plus the two
+  // desktop-only user surfaces. Per-type browsing lives inside Tools + search.
   const navItems = [
-    { id: 'all', path: '/marketplace', labelKey: 'marketplace.nav.all' },
-    { id: 'employees', path: '/marketplace?kind=employees', labelKey: 'marketplace.nav.employees' },
+    { id: 'employees', path: '/marketplace', labelKey: 'marketplace.nav.employees' },
     { id: 'tools', path: '/marketplace?kind=tools', labelKey: 'marketplace.nav.tools' },
-    { id: 'agents', path: '/marketplace?kind=agents', labelKey: 'marketplace.nav.agents' },
-    { id: 'apps', path: '/marketplace?kind=apps', labelKey: 'marketplace.nav.apps' },
-    { id: 'skills', path: '/marketplace?kind=skills', labelKey: 'marketplace.skills' },
-    { id: 'plugins', path: '/marketplace?kind=plugins', labelKey: 'marketplace.nav.plugins' },
-    { id: 'connectors', path: '/marketplace?kind=connectors', labelKey: 'nav.connectors' },
     { id: 'collections', path: '/marketplace?kind=collections', labelKey: 'marketplace.nav.collections' },
     { id: 'shared', path: '/marketplace/shared', labelKey: 'marketplace.nav.shared' },
     { id: 'installed', path: '/marketplace/installed', labelKey: 'marketplace.installed' },
@@ -258,7 +258,7 @@
     <div class="flex-1 overflow-y-auto">
       <div class="flex flex-col items-center gap-1 py-2">
         {#each navItems as item}
-          {@const icons: Record<string, string> = { all: '◆', agents: '◉', apps: '▦', skills: '⚡', plugins: '🔌', connectors: '⬡', collections: '▤', shared: '↗', installed: '✓' }}
+          {@const icons: Record<string, string> = { employees: '◉', tools: '⚙', collections: '▤', shared: '↗', installed: '✓' }}
           <a
             href={item.path}
             class="w-8 h-8 rounded-md flex items-center justify-center text-sm transition-colors {marketplaceTab === item.id ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)]' : 'hover:bg-base-200'}"

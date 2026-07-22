@@ -24,7 +24,12 @@
 		plugins: 'marketplace.nav.plugins', connectors: 'nav.connectors', collections: 'marketplace.nav.collections'
 	};
 
-	const kind = $derived($page.url.searchParams.get('kind') || 'all');
+	// Employees is the default view (same as the website); the legacy
+	// category/publisher storefronts linked from cards still resolve as 'all'.
+	const kind = $derived(
+		$page.url.searchParams.get('kind') ||
+			($page.url.searchParams.get('category') || $page.url.searchParams.get('publisher') ? 'all' : 'employees')
+	);
 	const price = $derived($page.url.searchParams.get('price') || 'all');
 	const category = $derived($page.url.searchParams.get('category') || '');
 	const publisher = $derived($page.url.searchParams.get('publisher') || '');
@@ -69,7 +74,9 @@
 	// ── Employees / Tools views (map-driven, joined on artifact Code) ──
 	const mapOf = (it: AppItem) => mktMap?.entries[it.code];
 	const respOf = (it: AppItem) => mktMap?.responsibilities[mapOf(it)?.role ?? ''] ?? [];
-	const employees = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'E') : []);
+	// The map-driven views respect the price filter, same as the website.
+	const priceOk = (it: AppItem) => price === 'all' || (price === 'free' ? it.free : !it.free);
+	const employees = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'E' && priceOk(it)) : []);
 	const filterSlug = $derived($page.url.searchParams.get('filter') || '');
 	const deptFilter = $derived(mktMap && filterSlug ? deptFromSlug(mktMap, filterSlug) : '');
 	const tcFilter = $derived(mktMap && filterSlug ? toolCatFromSlug(mktMap, filterSlug) : '');
@@ -80,7 +87,7 @@
 			.map((d) => ({ name: d, roles: employees.filter((e) => mapOf(e)?.dept === d) }))
 			.filter((g) => g.roles.length > 0);
 	});
-	const toolItems = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'T') : []);
+	const toolItems = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'T' && priceOk(it)) : []);
 	const toolsByCategory = $derived.by(() => {
 		if (!mktMap) return [] as { name: string; items: AppItem[] }[];
 		const cats = tcFilter ? [tcFilter] : mktMap.toolCategories;
