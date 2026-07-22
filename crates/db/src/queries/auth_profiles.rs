@@ -197,6 +197,22 @@ impl Store {
         Ok(())
     }
 
+    /// Update only the metadata for one auth profile. Used to repair/enrich a
+    /// profile without touching the api_key (which rotates independently).
+    pub fn update_auth_profile_metadata(
+        &self,
+        id: &str,
+        metadata: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE auth_profiles SET metadata = ?2, updated_at = unixepoch() WHERE id = ?1",
+            params![id, metadata],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// Update only the api_key (token) for auth profiles matching a provider.
     /// Used for NeboAI JWT rotation — gateway rotates the token on each AUTH_OK.
     pub fn update_auth_profile_token_by_provider(

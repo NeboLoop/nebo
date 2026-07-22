@@ -89,6 +89,20 @@ fn wants_coordination(text: &str) -> bool {
     PHRASES.iter().any(|p| t.contains(p))
 }
 
+/// Best-effort claim extraction from a JWT payload — no signature verification.
+/// Only used on the provisioner-injected NEBO_BOT_TOKEN to mirror its ownerId
+/// into profile metadata the same way the OAuth pathway records owner_id; the
+/// token itself is verified by the services that consume it.
+fn jwt_claim(token: &str, claim: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v.get(claim)?.as_str().map(|s| s.to_string())
+}
+
 /// Seed the provider_models table from the embedded models.yaml catalog.
 /// - New models are inserted with is_active=1
 /// - Existing models get metadata updated (pricing, capabilities, context_window)
@@ -642,28 +656,62 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // token and fail auth.
     if let Ok(tok) = std::env::var("NEBO_BOT_TOKEN")
         && !tok.is_empty()
-        && store
-            .list_all_active_auth_profiles_by_provider("neboai")
-            .unwrap_or_default()
-            .is_empty()
     {
-        // Seed failure means the pod can't authenticate to the loop, so surface it
-        // rather than discarding — the cloud bot would silently never connect.
-        let id = uuid::Uuid::new_v4().to_string();
-        match store.create_auth_profile(
-            &id,
-            "NeboAI",
-            "neboai",
-            &tok,
-            None,
-            Some(&cfg.neboai.api_url),
-            0,
-            1,
-            Some("token"),
-            None,
-        ) {
-            Ok(_) => info!("seeded NeboAI auth profile from NEBO_BOT_TOKEN (first boot)"),
-            Err(e) => warn!(error = %e, "failed to seed NeboAI auth profile from NEBO_BOT_TOKEN"),
+        // The profile metadata MUST carry janus_provider — build_providers only
+        // constructs the Janus LLM provider when it's present (same key the
+        // OAuth pathway writes in store_neboai_profile). Without it a cloud pod
+        // connects to the loop but has NO providers and rejects every run.
+        let mut meta = serde_json::Map::new();
+        meta.insert("janus_provider".into(), "true".into());
+        if let Some(owner) = jwt_claim(&tok, "ownerId") {
+            meta.insert("owner_id".into(), owner.into());
+        }
+        let meta_json = serde_json::Value::Object(meta).to_string();
+
+        let existing = store
+            .list_all_active_auth_profiles_by_provider("neboai")
+            .unwrap_or_default();
+        if existing.is_empty() {
+            // Seed failure means the pod can't authenticate to the loop, so surface it
+            // rather than discarding — the cloud bot would silently never connect.
+            let id = uuid::Uuid::new_v4().to_string();
+            match store.create_auth_profile(
+                &id,
+                "NeboAI",
+                "neboai",
+                &tok,
+                None,
+                Some(&cfg.neboai.api_url),
+                0,
+                1,
+                Some("token"),
+                Some(&meta_json),
+            ) {
+                Ok(_) => info!("seeded NeboAI auth profile from NEBO_BOT_TOKEN (first boot)"),
+                Err(e) => warn!(error = %e, "failed to seed NeboAI auth profile from NEBO_BOT_TOKEN"),
+            }
+        } else if let Some(profile) = existing.first() {
+            // Repair pods seeded before the metadata fix: patch janus_provider in
+            // (merging any existing metadata) WITHOUT touching the api_key, which
+            // rotates at runtime. Desktop installs never set NEBO_BOT_TOKEN, so
+            // their OAuth-managed profiles are never touched here.
+            let mut merged = profile
+                .metadata
+                .as_deref()
+                .and_then(|m| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(m).ok())
+                .unwrap_or_default();
+            if !merged.contains_key("janus_provider") {
+                for (k, v) in serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&meta_json)
+                    .unwrap_or_default()
+                {
+                    merged.entry(k).or_insert(v);
+                }
+                let merged_json = serde_json::Value::Object(merged).to_string();
+                match store.update_auth_profile_metadata(&profile.id, &merged_json) {
+                    Ok(_) => info!("repaired NeboAI auth profile metadata (janus_provider seeded)"),
+                    Err(e) => warn!(error = %e, "failed to repair NeboAI auth profile metadata"),
+                }
+            }
         }
     }
 
