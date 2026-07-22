@@ -1480,6 +1480,40 @@ async fn run_loop(
         }
     }
 
+    // Kick off per-message memory recall CONCURRENTLY with the rest of prompt
+    // assembly: its cost is a query-embedding network round trip (~650ms
+    // steady-state), while the sibling loads below (db context, configured
+    // inputs, task, skill template) are local SQLite/file work that doesn't
+    // depend on it. tokio::spawn rather than futures::join! because those
+    // siblings are synchronous — join! polls futures on THIS task, so the
+    // sync work would serialize in front of the recall instead of overlapping.
+    // Joined (and deduped against the identity slice, which needs db_ctx)
+    // right before the run loop starts.
+    let recall_task = if !user_prompt.is_empty() {
+        hybrid_searcher.map(|searcher| {
+            let searcher = searcher.clone();
+            let recall_user_id = memory_user_id.clone();
+            let recall_prompt = user_prompt.to_string();
+            let t_start = std::time::Instant::now();
+            tokio::spawn(async move {
+                let results = searcher
+                    .search(
+                        &recall_prompt,
+                        &recall_user_id,
+                        db_context::PROMPT_MEMORY_CANDIDATES,
+                        // min_score 0: FTS-only installs score below the
+                        // vector-scale default floor (see format_prompt_
+                        // relevant_memories docs).
+                        Some(0.0),
+                    )
+                    .await;
+                (results, t_start.elapsed())
+            })
+        })
+    } else {
+        None
+    };
+
     // Load rich DB context (agent profile, user profile, personality directive, scored memories)
     let t_run_start = std::time::Instant::now();
     let db_ctx = db_context::load_db_context(store, &memory_user_id, agent_id, &inherit_scopes);
@@ -1540,56 +1574,6 @@ async fn run_loop(
         }
     }
 
-    // Pre-load prompt-relevant memories through the canonical hybrid search
-    // (FTS + vector when an embedding provider exists, FTS-only otherwise) —
-    // surfaces memories the decay scoring may miss.
-    let mut recalled_ids: Vec<i64> = Vec::new();
-    if !user_prompt.is_empty() {
-        let t_recall = std::time::Instant::now();
-        let existing_ids: std::collections::HashSet<i64> = db_ctx
-            .tacit_memories
-            .iter()
-            .map(|sm| sm.memory.id)
-            .collect();
-        let (relevant, ids) = db_context::load_prompt_relevant_memories(
-            hybrid_searcher.map(|s| s.as_ref()),
-            &memory_user_id,
-            user_prompt,
-            &existing_ids,
-        )
-        .await;
-        recalled_ids = ids;
-        if !relevant.is_empty() {
-            db_context_formatted.push_str(&relevant);
-        }
-        info!(
-            ms = t_recall.elapsed().as_millis() as u64,
-            session_id, "[telemetry] hybrid memory recall"
-        );
-    }
-
-    // Access accounting: memories actually injected into this prompt — the
-    // identity slice plus per-message recall — get their access_count bumped
-    // so decay ranking reflects real usefulness (without this, a new correct
-    // memory loses to an old touched one forever). Spawned: never blocks the
-    // hot path.
-    {
-        let mut injected_ids: Vec<i64> = db_ctx
-            .tacit_memories
-            .iter()
-            .map(|sm| sm.memory.id)
-            .collect();
-        injected_ids.extend(&recalled_ids);
-        if !injected_ids.is_empty() {
-            let store_bump = store.clone();
-            tokio::spawn(async move {
-                for id in injected_ids {
-                    let _ = store_bump.increment_memory_access(id);
-                }
-            });
-        }
-    }
-
     // Get active task (mutable: refreshed periodically to catch async detect_objective)
     let mut active_task = sessions.get_active_task(session_id).unwrap_or_default();
 
@@ -1618,6 +1602,60 @@ async fn run_loop(
     } else {
         None
     };
+
+    // Join the concurrent memory recall spawned before the db-context load,
+    // under a hard latency budget (db_context::join_prompt_recall): the vector
+    // leg is a remote embed call and must never gate prompt assembly
+    // unboundedly — past budget it degrades to the synchronous FTS-only tier.
+    // `wait_ms` is the residual cost recall adds to assembly, capped by the
+    // budget and ~0 when the search finished under the sibling loads above.
+    let mut recalled_ids: Vec<i64> = Vec::new();
+    if let Some(task) = recall_task {
+        let t_join = std::time::Instant::now();
+        let existing_ids: std::collections::HashSet<i64> = db_ctx
+            .tacit_memories
+            .iter()
+            .map(|sm| sm.memory.id)
+            .collect();
+        let (relevant, ids) = db_context::join_prompt_recall(
+            task,
+            store,
+            &memory_user_id,
+            user_prompt,
+            &existing_ids,
+        )
+        .await;
+        recalled_ids = ids;
+        if !relevant.is_empty() {
+            db_context_formatted.push_str(&relevant);
+        }
+        info!(
+            wait_ms = t_join.elapsed().as_millis() as u64,
+            session_id, "[telemetry] hybrid memory recall"
+        );
+    }
+
+    // Access accounting: memories actually injected into this prompt — the
+    // identity slice plus per-message recall — get their access_count bumped
+    // so decay ranking reflects real usefulness (without this, a new correct
+    // memory loses to an old touched one forever). Spawned: never blocks the
+    // hot path.
+    {
+        let mut injected_ids: Vec<i64> = db_ctx
+            .tacit_memories
+            .iter()
+            .map(|sm| sm.memory.id)
+            .collect();
+        injected_ids.extend(&recalled_ids);
+        if !injected_ids.is_empty() {
+            let store_bump = store.clone();
+            tokio::spawn(async move {
+                for id in injected_ids {
+                    let _ = store_bump.increment_memory_access(id);
+                }
+            });
+        }
+    }
 
     // Agent-declared skills are already in the skill catalog (compact name +
     // description). The LLM discovers and loads them on-demand via the skill

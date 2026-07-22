@@ -93,6 +93,25 @@ impl Store {
         Ok(())
     }
 
+    /// Distinct memory-scope user ids with at least one stored embedding under
+    /// `model` — the boot index prewarm builds one ANN index per entry.
+    pub fn list_embedding_user_ids(&self, model: &str) -> Result<Vec<String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT mc.user_id
+                 FROM memory_embeddings me
+                 JOIN memory_chunks mc ON mc.id = me.chunk_id
+                 WHERE me.model = ?1",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![model], |row| row.get(0))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Get all embeddings for a user and model.
     /// Returns (chunk_id, embedding_blob) pairs.
     pub fn get_all_embeddings_by_user(

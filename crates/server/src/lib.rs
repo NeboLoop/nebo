@@ -1018,14 +1018,19 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             )) as Arc<dyn tools::MemoryEmbedder>
         });
 
-    // Background boot backfill: embed memories that have no vector embeddings —
-    // victims of the migration-0113 dangling-FK bug plus rows stored before all
-    // write paths embedded. Batched + rate-limited inside; skipped entirely
-    // when no embedding provider exists.
+    // Background boot maintenance for vector recall, skipped entirely when no
+    // embedding provider exists:
+    // 1. backfill memories that have no embeddings (victims of the
+    //    migration-0113 dangling-FK bug plus rows stored before all write
+    //    paths embedded) — batched + rate-limited inside;
+    // 2. pre-warm the embedding provider and per-user ANN indexes (runs even
+    //    when the backfill had nothing to do) so the first chat's recall
+    //    doesn't pay the cold-provider + lazy-index-build cost.
     if let Some(ep) = embedding_provider.clone() {
-        let store_backfill = store.clone();
+        let store_boot = store.clone();
         tokio::spawn(async move {
-            agent::memory::backfill_missing_embeddings(store_backfill, ep).await;
+            agent::memory::backfill_missing_embeddings(store_boot.clone(), ep.clone()).await;
+            agent::search_adapter::prewarm(&store_boot, ep.as_ref()).await;
         });
     }
 

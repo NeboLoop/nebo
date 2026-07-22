@@ -772,6 +772,7 @@ pub async fn embed_memories(
     keys: &[(String, String)],
     user_id: &str,
 ) {
+    let mut inserted_any = false;
     for (namespace, key) in keys {
         // Look up the memory we just stored
         let mem = match store.get_memory_by_key_and_user(namespace, key, user_id) {
@@ -824,8 +825,18 @@ pub async fn embed_memories(
             let blob = ai::f32_to_bytes(embedding);
             if let Err(e) = store.insert_memory_embedding(chunk_id, &model, dims, &blob) {
                 debug!(error = %e, "failed to insert memory embedding");
+            } else {
+                inserted_any = true;
             }
         }
+    }
+
+    // Freshness: drop the user's cached ANN index so same-lifetime searches
+    // see the new vectors (stale caches made fresh memories invisible until
+    // restart). This is the ONE hook point — every write path (auto-extract,
+    // explicit store, flush, backfill) funnels through this function.
+    if inserted_any {
+        crate::search_adapter::invalidate_index(user_id);
     }
 }
 
