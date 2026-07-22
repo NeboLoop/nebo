@@ -129,12 +129,14 @@ fn extract_confidence_from_metadata(mem: &Memory) -> Option<f64> {
 /// and included in the prompt so the LLM avoids extracting duplicates.
 /// `topics` are the scope's declared memory topics (agent.json `memory.topics`);
 /// when non-empty they replace the generic `project` category in the prompt.
+/// `model` overrides the provider's default model (empty = provider default).
 pub async fn extract_facts(
     provider: &dyn Provider,
     messages: &[ChatMessage],
     store: Option<&Store>,
     user_id: Option<&str>,
     topics: &[MemoryTopic],
+    model: &str,
 ) -> Option<ExtractedFacts> {
     let conversation = build_conversation_text(messages);
     if conversation.is_empty() {
@@ -210,7 +212,7 @@ pub async fn extract_facts(
         temperature: 0.0,
         system: "You are a precise fact extractor. Return only valid JSON.".to_string(),
         static_system: String::new(),
-        model: String::new(),
+        model: model.to_string(),
         enable_thinking: false,
         metadata: None,
         cache_breakpoints: vec![],

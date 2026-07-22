@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use ai::{ChatRequest, Message, Provider, StreamEventType};
+use config::ModelsConfig;
 use tokio::sync::RwLock;
 use tools::ToolResult;
 use tracing::{debug, warn};
@@ -32,7 +33,10 @@ pub async fn summarize_tool_batch(
         return None;
     }
 
-    let provider = pick_cheapest(providers)?;
+    let (provider, aux_model) = match crate::runner::resolve_aux(&ModelsConfig::load(), providers) {
+        Some(routed) => routed,
+        None => (pick_cheapest(providers)?, String::new()),
+    };
 
     // Build user prompt content
     let mut prompt = String::with_capacity(PROMPT_CAP);
@@ -82,7 +86,7 @@ pub async fn summarize_tool_batch(
         temperature: 0.0,
         system: SYSTEM_PROMPT.to_string(),
         static_system: String::new(),
-        model: String::new(),
+        model: aux_model,
         enable_thinking: false,
         metadata: None,
         cache_breakpoints: vec![],
@@ -128,10 +132,13 @@ pub async fn generate_session_title(
     user_prompt: &str,
     model: &str,
 ) -> Option<String> {
-    let provider = {
+    let (provider, model) = {
         let lock = providers.read().await;
-        crate::runner::prefer_non_gateway(&lock)
-    }?;
+        match crate::runner::resolve_aux(&ModelsConfig::load(), &lock) {
+            Some(routed) => routed,
+            None => (crate::runner::prefer_non_gateway(&lock)?, model.to_string()),
+        }
+    };
 
     let system = "Generate a 3-7 word title for this conversation. \
                   Output ONLY the title, no quotes, no punctuation at the end.";
@@ -139,7 +146,7 @@ pub async fn generate_session_title(
 
     let request = ChatRequest {
         tool_choice: Default::default(),
-        model: model.to_string(),
+        model,
         system: system.to_string(),
         static_system: String::new(),
         messages: vec![Message {

@@ -238,6 +238,25 @@ pub(crate) fn prefer_non_gateway(providers: &[Arc<dyn Provider>]) -> Option<Arc<
         .or_else(|| providers.first().cloned())
 }
 
+/// Resolve the (provider, model) for auxiliary side-tasks — chat title
+/// generation, memory extraction, tool-batch summaries, and the auto-continue
+/// judge.  Honors `task_routing.aux` ("provider/model") from models.yaml when
+/// set AND that provider is loaded; returns `None` otherwise so each caller
+/// silently keeps its existing selection.  Aux routing must never make a
+/// side-task fail that would have succeeded before.
+pub(crate) fn resolve_aux(
+    cfg: &config::ModelsConfig,
+    providers: &[Arc<dyn Provider>],
+) -> Option<(Arc<dyn Provider>, String)> {
+    let spec = cfg.task_routing.as_ref().map(|tr| tr.aux.as_str())?;
+    if spec.is_empty() {
+        return None;
+    }
+    let (provider_id, model) = spec.split_once('/')?;
+    let provider = providers.iter().find(|p| p.id() == provider_id)?.clone();
+    Some((provider, model.to_string()))
+}
+
 /// JSON shape for tool results stored in the DB. Includes optional image_url
 /// so vision-capable providers can receive screenshots in tool result content.
 #[derive(serde::Serialize)]
@@ -3458,21 +3477,27 @@ async fn run_loop(
             }
             ctx.approved_categories = approved_cats;
 
-            // Partition tool calls into concurrent-safe (read-only) and sequential (writes).
-            // Concurrent-safe tools run in parallel via FuturesUnordered, then
+            // Partition tool calls into concurrent-safe and sequential phases.
+            // Concurrent tools run in parallel via FuturesUnordered, then
             // sequential tools run one at a time to prevent state conflicts.
-            let mut concurrent_indices = Vec::new();
-            let mut sequential_indices = Vec::new();
+            // Beyond read-only calls, path-disjoint os file mutations are also
+            // admitted to the parallel phase — see partition_tool_calls for
+            // the admission rules.
+            let mut live_indices = Vec::new();
+            let mut partition_inputs: Vec<(&str, &serde_json::Value, bool)> = Vec::new();
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {
                     continue;
                 }
-                if tools.is_concurrent_safe(&tc.name, &tc.input).await {
-                    concurrent_indices.push(idx);
-                } else {
-                    sequential_indices.push(idx);
-                }
+                let safe = tools.is_concurrent_safe(&tc.name, &tc.input).await;
+                live_indices.push(idx);
+                partition_inputs.push((tc.name.as_str(), &tc.input, safe));
             }
+            let (concurrent, sequential) = partition_tool_calls(&partition_inputs);
+            let concurrent_indices: Vec<usize> =
+                concurrent.into_iter().map(|i| live_indices[i]).collect();
+            let sequential_indices: Vec<usize> =
+                sequential.into_iter().map(|i| live_indices[i]).collect();
 
             // Phase 1: Execute concurrent-safe tools in parallel
             for &idx in &concurrent_indices {
@@ -4442,17 +4467,19 @@ async fn run_loop(
 
             debouncer
                 .schedule(session_id, move || async move {
-                    let provider = {
+                    let resolved = {
                         let prov_lock = providers.read().await;
-                        prefer_non_gateway(&prov_lock)
+                        resolve_aux(&config::ModelsConfig::load(), &prov_lock)
+                            .or_else(|| prefer_non_gateway(&prov_lock).map(|p| (p, String::new())))
                     };
-                    if let Some(provider) = provider {
+                    if let Some((provider, aux_model)) = resolved {
                         if let Some(facts) = memory::extract_facts(
                             provider.as_ref(),
                             &last_exchange,
                             Some(&store),
                             Some(&mem_uid),
                             &topics,
+                            &aux_model,
                         )
                         .await
                         {
@@ -5092,9 +5119,145 @@ fn simple_hash(data: &[u8]) -> u64 {
     hash
 }
 
+/// Ceiling on path-admitted file mutations in one parallel batch. Read-only
+/// calls don't count against it — their parallelism is unchanged from the
+/// pre-path-scoping behavior and total simultaneous tool execution is already
+/// throttled by the shared tool-permit semaphore (`ConcurrencyControl`,
+/// min 8). This cap only bounds the newly-admitted parallel writes; the
+/// excess spills to the sequential phase.
+const MAX_CONCURRENT_FILE_MUTATIONS: usize = 8;
+
+/// Decide which of a turn's tool calls run in the parallel phase.
+///
+/// `calls` holds one `(tool_name, input, concurrent_safe)` tuple per call,
+/// where `concurrent_safe` is the registry's `is_concurrent_safe` verdict.
+/// Returns `(concurrent, sequential)` index lists into `calls`, each
+/// preserving the original call order.
+///
+/// Admission rules — strictly additive over the plain safe/unsafe split:
+/// - `concurrent_safe` calls are admitted exactly as before.
+/// - an os file mutation (write/edit/delete/move/copy — see
+///   [`tools::registry::file_mutation_paths`]) is admitted iff all of its
+///   canonical target paths (source, plus destination for move/copy) are
+///   disjoint — not equal to, not an ancestor of, not a descendant of — every
+///   path reserved by a mutation already admitted in this batch, and fewer
+///   than [`MAX_CONCURRENT_FILE_MUTATIONS`] mutations have been admitted.
+/// - everything else (overlapping or unparseable paths, non-file mutations)
+///   stays sequential, preserving original relative order.
+fn partition_tool_calls(calls: &[(&str, &serde_json::Value, bool)]) -> (Vec<usize>, Vec<usize>) {
+    let mut concurrent = Vec::new();
+    let mut sequential = Vec::new();
+    // Canonical paths reserved by mutations admitted so far in this batch.
+    let mut reserved: Vec<std::path::PathBuf> = Vec::new();
+    let mut admitted_mutations = 0usize;
+    for (i, (name, input, safe)) in calls.iter().enumerate() {
+        if *safe {
+            // Read-only per the registry — runs in parallel exactly as before.
+            concurrent.push(i);
+            continue;
+        }
+        // Path-scoped admission: a file mutation may join the parallel phase
+        // when its target paths don't overlap anything already reserved.
+        if admitted_mutations < MAX_CONCURRENT_FILE_MUTATIONS {
+            if let Some(paths) = tools::registry::file_mutation_paths(name, input) {
+                let disjoint = paths
+                    .iter()
+                    .all(|p| reserved.iter().all(|r| !paths_overlap(p, r)));
+                if disjoint {
+                    reserved.extend(paths);
+                    admitted_mutations += 1;
+                    concurrent.push(i);
+                    continue;
+                }
+            }
+        }
+        sequential.push(i);
+    }
+    (concurrent, sequential)
+}
+
+/// Two canonical paths overlap when they are equal or one contains the other
+/// (ancestor/descendant). Mutations to overlapping paths must not race.
+fn paths_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a.starts_with(b) || b.starts_with(a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal provider stub for resolve_aux tests (only id() matters).
+    struct StubProvider(&'static str);
+
+    #[async_trait::async_trait]
+    impl Provider for StubProvider {
+        fn id(&self) -> &str {
+            self.0
+        }
+        async fn stream(
+            &self,
+            _req: &ChatRequest,
+        ) -> Result<ai::EventReceiver, ProviderError> {
+            Err(ProviderError::Request("stub".into()))
+        }
+    }
+
+    fn aux_config(aux: &str) -> config::ModelsConfig {
+        config::ModelsConfig {
+            version: "1.0".into(),
+            defaults: None,
+            task_routing: Some(config::models::TaskRouting {
+                vision: String::new(),
+                audio: String::new(),
+                reasoning: String::new(),
+                code: String::new(),
+                general: String::new(),
+                aux: aux.to_string(),
+                fallbacks: std::collections::HashMap::new(),
+            }),
+            lane_routing: None,
+            aliases: vec![],
+            providers: std::collections::HashMap::new(),
+            cli_providers: vec![],
+        }
+    }
+
+    #[test]
+    fn test_resolve_aux_unset_returns_none() {
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
+        // Empty aux field → fallback.
+        assert!(resolve_aux(&aux_config(""), &providers).is_none());
+        // No task_routing at all → fallback.
+        let mut cfg = aux_config("");
+        cfg.task_routing = None;
+        assert!(resolve_aux(&cfg, &providers).is_none());
+    }
+
+    #[test]
+    fn test_resolve_aux_provider_missing_returns_none() {
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
+        let cfg = aux_config("openai/gpt-4o-mini");
+        assert!(resolve_aux(&cfg, &providers).is_none());
+    }
+
+    #[test]
+    fn test_resolve_aux_malformed_spec_returns_none() {
+        // Bare model id without a provider prefix cannot be routed → fallback.
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
+        assert!(resolve_aux(&aux_config("gpt-4o-mini"), &providers).is_none());
+    }
+
+    #[test]
+    fn test_resolve_aux_set_and_available_routes() {
+        let providers: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(StubProvider("anthropic")),
+            Arc::new(StubProvider("openai")),
+        ];
+        let cfg = aux_config("openai/gpt-4o-mini");
+        let (provider, model) = resolve_aux(&cfg, &providers).expect("aux route should resolve");
+        assert_eq!(provider.id(), "openai");
+        assert_eq!(model, "gpt-4o-mini");
+    }
 
     #[test]
     fn test_convert_messages() {
@@ -5145,6 +5308,90 @@ mod tests {
         let prompt = build_system_prompt("You are a coding assistant.", "");
         assert!(prompt.contains("coding assistant"));
         assert!(!prompt.contains("Memory context"));
+    }
+
+    #[test]
+    fn test_partition_disjoint_writes_run_concurrently() {
+        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
+        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/c.txt"});
+        let calls = vec![("os", &w1, false), ("os", &w2, false)];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent, vec![0, 1], "disjoint writes both join the parallel phase");
+        assert!(sequential.is_empty());
+    }
+
+    #[test]
+    fn test_partition_same_path_write_stays_sequential() {
+        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
+        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
+        let calls = vec![("os", &w1, false), ("os", &w2, false)];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent, vec![0]);
+        assert_eq!(sequential, vec![1], "second write to the same path is sequential");
+    }
+
+    #[test]
+    fn test_partition_ancestor_overlap_stays_sequential() {
+        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a"});
+        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/c.txt"});
+        let calls = vec![("os", &w1, false), ("os", &w2, false)];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent, vec![0]);
+        assert_eq!(sequential, vec![1], "write under an already-reserved dir is sequential");
+    }
+
+    #[test]
+    fn test_partition_non_file_mutation_stays_sequential() {
+        let shell = serde_json::json!({"resource": "shell", "action": "exec", "command": "ls"});
+        let calls = vec![("os", &shell, false)];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert!(concurrent.is_empty(), "non-file mutations never join the parallel phase");
+        assert_eq!(sequential, vec![0]);
+    }
+
+    #[test]
+    fn test_partition_reads_unchanged_and_order_preserved() {
+        // Reads (concurrent_safe=true) are admitted as before, even when a
+        // conflicting write is forced sequential; both phases keep original order.
+        let r1 = serde_json::json!({"resource": "file", "action": "read", "path": "/a/b.txt"});
+        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/x/y.txt"});
+        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/x/y.txt"});
+        let r2 = serde_json::json!({"action": "search", "query": "q"});
+        let calls = vec![
+            ("os", &r1, true),
+            ("os", &w1, false),
+            ("os", &w2, false),
+            ("web", &r2, true),
+        ];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent, vec![0, 1, 3]);
+        assert_eq!(sequential, vec![2]);
+    }
+
+    #[test]
+    fn test_partition_move_reserves_destination() {
+        let mv = serde_json::json!({
+            "resource": "file", "action": "move", "path": "/src/a.txt", "destination": "/dst/a.txt"
+        });
+        let w = serde_json::json!({"resource": "file", "action": "write", "path": "/dst/a.txt"});
+        let calls = vec![("os", &mv, false), ("os", &w, false)];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent, vec![0]);
+        assert_eq!(sequential, vec![1], "write to a move's destination is sequential");
+    }
+
+    #[test]
+    fn test_partition_mutation_cap_spills_to_sequential() {
+        let inputs: Vec<serde_json::Value> = (0..10)
+            .map(|i| {
+                serde_json::json!({"resource": "file", "action": "write", "path": format!("/a/f{i}.txt")})
+            })
+            .collect();
+        let calls: Vec<(&str, &serde_json::Value, bool)> =
+            inputs.iter().map(|input| ("os", input, false)).collect();
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent.len(), MAX_CONCURRENT_FILE_MUTATIONS);
+        assert_eq!(sequential, vec![8, 9], "excess past the cap spills to sequential");
     }
 
     fn make_msg(id: &str, role: &str, content: &str) -> ChatMessage {

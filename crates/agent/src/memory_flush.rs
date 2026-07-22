@@ -202,7 +202,7 @@ async fn run_flush_inner(
 
     // Extract from all messages
     if let Some(facts) =
-        memory::extract_facts(provider, &messages, Some(store), Some(user_id), topics).await
+        memory::extract_facts(provider, &messages, Some(store), Some(user_id), topics, "").await
     {
         memory::store_facts(store, &facts, user_id, None, topics);
         debug!(session_id, "memory flush extraction complete");

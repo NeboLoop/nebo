@@ -312,6 +312,13 @@ fn entity_run_params(
 }
 
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
+    // Persistent-goals v1: a real (non-synthetic) message resets this session's
+    // auto-continuation budget and becomes the prompt the judge sees. Synthetic
+    // continuations (exact CONTINUATION_PREFIX) never reset — loop safety.
+    if !agent::goals::is_continuation_prompt(&config.prompt) {
+        agent::goals::tracker().on_real_message(&config.session_key, &config.prompt);
+    }
+
     let hub = state.hub.clone();
     let runner = state.runner.clone();
     let janus_usage = state.janus_usage.clone();
@@ -337,6 +344,24 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let lane = config.lane.clone();
     // Resolve display name + register the run (shared with run_chat_events).
     let (agent_display_name, run_handle) = register_run(state, &config).await;
+
+    // Persistent-goals v1: everything the completion hook needs to judge this
+    // run and re-dispatch a continuation through this same entry point.
+    let goals_state = state.clone();
+    let goals_params = AutoContinueParams {
+        session_key: config.session_key.clone(),
+        agent_id: config.agent_id.clone(),
+        user_id: config.user_id.clone(),
+        channel: config.channel.clone(),
+        system: config.system.clone(),
+        origin: config.origin,
+        lane: config.lane.clone(),
+        entity_name: agent_display_name.clone(),
+        entity_config: config.entity_config.clone(),
+        comm_reply: config.comm_reply.clone(),
+        tool_scope: config.tool_scope.clone(),
+        origin_agent_id: config.origin_agent_id.clone(),
+    };
 
     // Destructure config fields before moving into closure
     let prompt = config.prompt;
@@ -441,9 +466,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             ..Default::default()
         };
 
+        // Persistent-goals v1: (final assistant response, saw a stream error).
+        // Some(..) only when the run completed through the normal event loop.
+        let mut goal_outcome: Option<(String, bool)> = None;
+
         match runner.run(req).await {
             Ok(mut rx) => {
                 let mut full_response = String::new();
+                let mut saw_stream_error = false;
                 let mut text_buffer = String::new();
                 let mut last_flush = tokio::time::Instant::now();
                 // Tight coalesce window so text streams in small, token-smooth chunks
@@ -783,6 +813,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             needs_separator = true;
                         }
                         StreamEventType::Error => {
+                            saw_stream_error = true;
                             hub.broadcast(
                                 "chat_error",
                                 ws_payload!(
@@ -1242,6 +1273,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // path; the ChatTitleSink installed at startup broadcasts it + pushes
                 // it to the loop. (Was a duplicate generator coordinated by
                 // skip_title_gen — see Runner::ChatTitleSink.)
+
+                goal_outcome = Some((full_response, saw_stream_error));
             }
             Err(e) => {
                 warn!(error = %e, "agent run failed");
@@ -1269,11 +1302,128 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         // RunHandle unregisters from RunRegistry on drop (including panics)
         drop(_run_handle);
 
+        // Persistent-goals v1: judge the completed run and, if it left an
+        // explicit unfinished commitment, re-dispatch a synthetic continuation
+        // through run_chat. MUST run after the RunHandle drop above so the
+        // preemption check only sees OTHER runs for this session.
+        if let Some((assistant_response, saw_error)) = goal_outcome {
+            let cancelled = cancel_token.is_cancelled();
+            maybe_auto_continue(
+                goals_state,
+                goals_params,
+                assistant_response,
+                saw_error,
+                cancelled,
+            );
+        }
+
         Ok(())
     });
     lane_task.fairness_key = Some(fairness_key);
 
     state.lanes.enqueue_async(&lane, lane_task);
+}
+
+/// Everything the auto-continuation hook needs to re-dispatch a synthetic
+/// user message through [`run_chat`] with the SAME identity, permissions, and
+/// reply routing as the run it follows.
+struct AutoContinueParams {
+    session_key: String,
+    agent_id: String,
+    user_id: String,
+    channel: String,
+    system: String,
+    origin: Origin,
+    lane: String,
+    entity_name: String,
+    entity_config: Option<crate::entity_config::ResolvedEntityConfig>,
+    comm_reply: Option<CommReplyConfig>,
+    tool_scope: Option<String>,
+    origin_agent_id: Option<String>,
+}
+
+/// Persistent-goals v1 completion hook (see `agent::goals`).
+///
+/// Called once per completed [`run_chat`] run, AFTER the run's handle has left
+/// the RunRegistry. Spawned so the lane task isn't held open; the plain-fn +
+/// spawn indirection also breaks the `run_chat` → hook → `run_chat` future
+/// type cycle. Order of checks: kill-switch → eligibility → budget peek →
+/// preemption (a real pending run wins, no judging) → judge (fail-closed) →
+/// budget consume → re-dispatch through `run_chat` (the ONE chat pathway).
+fn maybe_auto_continue(
+    state: AppState,
+    p: AutoContinueParams,
+    assistant_response: String,
+    saw_error: bool,
+    cancelled: bool,
+) {
+    tokio::spawn(async move {
+        use agent::goals;
+
+        if !goals::enabled() {
+            return;
+        }
+        if !goals::eligible_for_judging(&p.session_key, &assistant_response, saw_error, cancelled)
+        {
+            return;
+        }
+        // Cheap peek before paying for a judge call.
+        if !goals::tracker().has_budget(&p.session_key) {
+            tracing::debug!(session = %p.session_key, "auto-continue: budget exhausted");
+            return;
+        }
+        // Preemption FIRST: a real queued/active message for this session wins
+        // — no judging. (Our own run already unregistered before this hook.)
+        if state.run_registry.is_session_active(&p.session_key).await {
+            tracing::debug!(session = %p.session_key, "auto-continue: preempted by pending run");
+            return;
+        }
+        // Judge against the last REAL user message (recorded at dispatch).
+        let last_user = match goals::tracker().last_real_prompt(&p.session_key) {
+            Some(s) if !s.is_empty() => s,
+            _ => return,
+        };
+        let providers = state.runner.providers().read().await.clone();
+        let reason = match goals::judge(&providers, &last_user, &assistant_response).await {
+            goals::Verdict::Continue { reason } => reason,
+            goals::Verdict::Done => return,
+        };
+        // The judge call took time — re-check preemption before dispatching.
+        if state.run_registry.is_session_active(&p.session_key).await {
+            tracing::debug!(session = %p.session_key, "auto-continue: preempted during judging");
+            return;
+        }
+        if !goals::tracker().try_consume(&p.session_key) {
+            return;
+        }
+        tracing::info!(
+            session = %p.session_key,
+            reason = %reason,
+            "auto-continue: judge found an unfinished commitment; dispatching continuation"
+        );
+        let config = ChatConfig {
+            session_key: p.session_key,
+            prompt: goals::continuation_prompt(&reason),
+            system: p.system,
+            user_id: p.user_id,
+            channel: p.channel,
+            origin: p.origin,
+            agent_id: p.agent_id,
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            lane: p.lane,
+            comm_reply: p.comm_reply,
+            entity_config: p.entity_config,
+            images: Vec::new(),
+            entity_name: p.entity_name,
+            origin_agent_id: p.origin_agent_id,
+            mention_context: None,
+            tool_scope: p.tool_scope,
+            // Never re-trigger plan approval on an auto-continuation.
+            plan_mode: false,
+            channel_ctx: None,
+        };
+        run_chat(&state, config).await;
+    });
 }
 
 /// Run chat through the canonical agent dispatch path and return raw stream events.
@@ -1286,6 +1436,13 @@ pub async fn run_chat_events(
     state: &AppState,
     config: ChatConfig,
 ) -> Result<mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
+    // Persistent-goals v1: real messages through this transport also reset the
+    // session's auto-continuation budget (continuations only dispatch via
+    // run_chat, so no prefix can arrive here — the guard keeps it symmetric).
+    if !agent::goals::is_continuation_prompt(&config.prompt) {
+        agent::goals::tracker().on_real_message(&config.session_key, &config.prompt);
+    }
+
     let runner = state.runner.clone();
     let presence_tracker = state.presence.clone();
     let proactive_inbox = state.proactive_inbox.clone();

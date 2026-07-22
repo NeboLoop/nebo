@@ -17,9 +17,10 @@ const SELECT_ALL_KEY: &str = "ctrl+a";
 /// How long a visited page / search result stays reusable by siblings.
 const VISITED_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Preview size for inline read_page/evaluate/fetch results. Results beyond this
-/// return this many chars inline and spill the FULL text to a file the model can
-/// page through (see `spill_large_result`) — never a silent cut.
+/// Inline budget for read_page/evaluate/fetch results. Results beyond this
+/// return a head+tail window inside this budget and spill the FULL text to a
+/// file the model can page through (see `spill_large_result`) — never a
+/// silent cut.
 const MAX_INLINE_CHARS: usize = 15_000;
 
 /// Callback type for broadcasting events to connected WebSocket clients.
@@ -285,7 +286,7 @@ impl WebTool {
         Err(format!("Too many redirects for {} (limit 5)", url))
     }
 
-    async fn handle_http(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
+    async fn handle_http(&self, input: &serde_json::Value, _session_id: &str) -> ToolResult {
         let url = match input.get("url").and_then(|v| v.as_str()) {
             Some(u) => u,
             None => {
@@ -303,29 +304,47 @@ impl WebTool {
             .and_then(|v| v.as_str())
             .unwrap_or("fetch");
         if action == "sanitize" {
-            let resp = match self
-                .fetch_checked(
-                    reqwest::Method::GET,
-                    url,
-                    reqwest::header::HeaderMap::new(),
-                    None,
-                )
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => return ToolResult::error(e),
-            };
-            let status = resp.status().as_u16();
-            let html = match resp.text().await {
-                Ok(t) => t,
-                Err(e) => {
-                    return ToolResult::error(format!(
-                        "Failed to read response body from {} (status {}): {}",
-                        url, status, e
-                    ))
+            // Tier 0: Janus clean extract (server-side fetch + extraction to
+            // clean markdown, no LLM summarization). ANY failure falls through
+            // silently to the local fetch + sanitize chain — the same graceful
+            // degradation the search tiers use.
+            let mut extracted = None;
+            let mut status = 200u16;
+            if self.janus_search.is_some() {
+                match self.extract_via_janus(url).await {
+                    Ok(content) if !content.trim().is_empty() => extracted = Some(content),
+                    Ok(_) => tracing::debug!(url, "janus extract returned empty content, using local extraction"),
+                    Err(e) => tracing::debug!(url, error = %e, "janus extract failed, using local extraction"),
+                }
+            }
+            let clean = match extracted {
+                Some(content) => content,
+                None => {
+                    let resp = match self
+                        .fetch_checked(
+                            reqwest::Method::GET,
+                            url,
+                            reqwest::header::HeaderMap::new(),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => return ToolResult::error(e),
+                    };
+                    status = resp.status().as_u16();
+                    let html = match resp.text().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            return ToolResult::error(format!(
+                                "Failed to read response body from {} (status {}): {}",
+                                url, status, e
+                            ))
+                        }
+                    };
+                    sanitize_html(&html)
                 }
             };
-            let clean = sanitize_html(&html);
             let max_chars = input
                 .get("chunk_size")
                 .and_then(|v| v.as_u64())
@@ -401,13 +420,30 @@ impl WebTool {
                     Ok(body) => {
                         let display_body = if content_type.contains("html") {
                             // Rendered page: return capped VISIBLE TEXT, not a wall of raw
-                            // HTML/markup/scripts. `sanitize_html` drops script/style/nav
-                            // noise (same extractor the `sanitize` action uses). For the full
-                            // page use read_page after navigate; for structured data fetch a
-                            // JSON/API endpoint (which stays raw below).
-                            // Full visible text inline if small; otherwise preview +
-                            // the full text spilled to a file the model can page.
-                            spill_large_result(&sanitize_html(&body), session_id)
+                            // HTML/markup/scripts. Tier 0 is the Janus clean extract
+                            // (clean markdown, no LLM summarization); ANY failure falls
+                            // through silently to local `sanitize_html` (same extractor
+                            // the `sanitize` action uses) — the same graceful degradation
+                            // as search. For the full page use read_page after navigate;
+                            // for structured data fetch a JSON/API endpoint (raw below).
+                            // Small text stays inline; otherwise head+tail window + the
+                            // full text spilled to a file the model can page.
+                            let text = if self.janus_search.is_some() && method_str == "GET" {
+                                match self.extract_via_janus(url).await {
+                                    Ok(content) if !content.trim().is_empty() => content,
+                                    Ok(_) => {
+                                        tracing::debug!(url, "janus extract returned empty content, using local extraction");
+                                        sanitize_html(&body)
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(url, error = %e, "janus extract failed, using local extraction");
+                                        sanitize_html(&body)
+                                    }
+                                }
+                            } else {
+                                sanitize_html(&body)
+                            };
+                            spill_large_result(&text, Some(url))
                         } else if body.len() > 50_000 {
                             // Non-HTML (e.g. JSON/API) — keep RAW so it stays parseable,
                             // paginated by `offset` for very large responses.
@@ -618,6 +654,22 @@ impl WebTool {
         result
     }
 
+    /// Bearer token for Janus calls. Parity with the LLM provider
+    /// (build_providers): the Janus token lives on the `neboai` auth profile —
+    /// a `janus` provider row never exists, so looking one up sent a bare
+    /// bot_id and Janus replied 401 on every search, silently degrading tier 0
+    /// to the scrape tiers. Shared by search and extract so the auth
+    /// construction can never drift between the two.
+    fn janus_bearer(&self, cfg: &JanusSearchConfig) -> String {
+        self.store
+            .as_ref()
+            .and_then(|s| s.list_active_auth_profiles_by_provider("neboai").ok())
+            .and_then(|profiles| profiles.into_iter().find(|p| !p.api_key.is_empty()))
+            .map(|p| p.api_key)
+            .filter(|k| !k.is_empty())
+            .unwrap_or_else(|| cfg.bot_id.clone())
+    }
+
     /// Search via the Janus gateway's `/v1/search` endpoint. Janus owns the
     /// provider keys and fails over across Serper/Brave/Tavily server-side, so
     /// the client just asks for results and gets normalized hits back. Auth
@@ -629,18 +681,7 @@ impl WebTool {
             .as_ref()
             .ok_or_else(|| "janus search not configured".to_string())?;
 
-        // Bearer parity with the LLM provider (build_providers): the Janus token
-        // lives on the `neboai` auth profile — a `janus` provider row never exists,
-        // so looking one up sent a bare bot_id and Janus replied 401 on every
-        // search, silently degrading tier 0 to the scrape tiers.
-        let bearer = self
-            .store
-            .as_ref()
-            .and_then(|s| s.list_active_auth_profiles_by_provider("neboai").ok())
-            .and_then(|profiles| profiles.into_iter().find(|p| !p.api_key.is_empty()))
-            .map(|p| p.api_key)
-            .filter(|k| !k.is_empty())
-            .unwrap_or_else(|| cfg.bot_id.clone());
+        let bearer = self.janus_bearer(cfg);
 
         let url = format!("{}/v1/search", cfg.base_url);
         let body = serde_json::json!({ "query": query, "max_results": 10 });
@@ -687,6 +728,60 @@ impl WebTool {
             .unwrap_or_default();
 
         Ok(results)
+    }
+
+    /// Clean-extract a page via the Janus gateway's `/v1/extract` endpoint —
+    /// tier 0 for page extraction, exactly as `/v1/search` is tier 0 for
+    /// search. Janus fetches the URL server-side and returns
+    /// `{url, title, content}` where content is clean markdown (no LLM
+    /// summarization). Auth mirrors `search_via_janus`: `X-Bot-ID` for
+    /// per-user billing plus the shared `janus_bearer` token. Callers treat
+    /// ANY error as a silent fallthrough to the local extraction chain — the
+    /// endpoint may not be deployed yet.
+    async fn extract_via_janus(&self, page_url: &str) -> Result<String, String> {
+        let cfg = self
+            .janus_search
+            .as_ref()
+            .ok_or_else(|| "janus search not configured".to_string())?;
+
+        let bearer = self.janus_bearer(cfg);
+
+        let url = format!("{}/v1/extract", cfg.base_url);
+        let body = serde_json::json!({ "url": page_url });
+
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&bearer)
+            .header("X-Bot-ID", &cfg.bot_id)
+            .json(&body)
+            // Longer than search: Janus has to fetch and render an arbitrary
+            // page before extracting, not just query a search API.
+            .timeout(std::time::Duration::from_secs(20))
+            .send()
+            .await
+            .map_err(|e| format!("janus request: {e}"))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let snippet = resp.text().await.unwrap_or_default();
+            return Err(format!("janus status {status}: {}", snippet.chars().take(200).collect::<String>()));
+        }
+
+        let parsed: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("janus decode: {e}"))?;
+
+        let content = parsed
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let title = parsed.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        if content.is_empty() || title.is_empty() {
+            return Ok(content.to_string());
+        }
+        Ok(format!("# {title}\n\n{content}"))
     }
 
     /// Per-request budget for direct search scraping (DDG, Brave). A blocked engine
@@ -1586,10 +1681,7 @@ impl WebTool {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             if !page_content.is_empty() {
-                                let content = spill_large_result(
-                                    page_content,
-                                    session_id.unwrap_or("read_page"),
-                                );
+                                let content = spill_large_result(page_content, None);
                                 return ToolResult {
                                     content,
                                     is_error: false,
@@ -1714,8 +1806,7 @@ impl WebTool {
                 // can page through (os read), instead of a silent cut.
                 if matches!(action, "evaluate" | "snapshot" | "read_page") {
                     if text_result.len() > MAX_INLINE_CHARS {
-                        let hint = session_id.unwrap_or("read_page");
-                        text_result = spill_large_result(&text_result, hint);
+                        text_result = spill_large_result(&text_result, None);
                     }
                 }
 
@@ -2167,48 +2258,86 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
     serde_json::Value::Object(args)
 }
 
-/// Truncate a snapshot at a line boundary, appending an omission note.
-/// Used by auto-snapshot after navigate to keep output compact.
-/// Bound an inline tool result WITHOUT losing data. Short results pass through;
-/// large ones return a preview plus the FULL text written to a temp file the model
-/// can page through with `os(action: "read", path, offset, limit)`. Oversized
-/// output is handled by preview + spill-to-file — the model gets the whole
-/// result on demand instead of a silent hard cut.
-fn spill_large_result(full: &str, name_hint: &str) -> String {
+/// Head/tail split of the inline budget for spilled results: the opening of a
+/// page (title, lede) plus its end (conclusions, footers, latest entries) is
+/// usually enough for the model to decide whether paging the full text is
+/// worth it — the Hermes Agent "spill and page" pattern.
+const SPILL_HEAD_BUDGET: usize = MAX_INLINE_CHARS * 60 / 100;
+const SPILL_TAIL_BUDGET: usize = MAX_INLINE_CHARS * 40 / 100;
+
+/// FNV-1a 64-bit — tiny, dependency-free, and stable across builds. Seeds the
+/// spill cache filename so the same URL always maps to the same file
+/// (overwritten on refetch) instead of leaking a fresh file per fetch.
+fn fnv1a_64(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in data {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Cache file for a spilled result, keyed by a short hash of `key`
+/// (deterministic: same key → same path). Lives under the Nebo data dir at
+/// `cache/web/<hash>.txt`.
+fn spill_cache_path(key: &str) -> std::path::PathBuf {
+    let dir = config::data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("cache")
+        .join("web");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(format!("{:016x}.txt", fnv1a_64(key.as_bytes())))
+}
+
+/// Bound an inline tool result WITHOUT losing data (the Hermes Agent "spill
+/// and page" pattern). Short results pass through untouched; large ones return
+/// a head+tail window — the first ~60% of the inline budget from the head and
+/// the last ~40% from the tail, an explicit omission marker in between — and
+/// the FULL text is written to a stable cache file the model can page through
+/// with `os(resource: "file", action: "read", path, offset, limit)`. No LLM
+/// summarization, never a silent cut.
+///
+/// `key` seeds the cache filename: pass `Some(url)` for URL-derived content so
+/// a refetch overwrites the same file; pass `None` to key off the content
+/// itself (browser reads where no single URL is at hand).
+fn spill_large_result(full: &str, key: Option<&str>) -> String {
     if full.len() <= MAX_INLINE_CHARS {
         return full.to_string();
     }
-    let end = types::strutil::floor_char_boundary(full, MAX_INLINE_CHARS);
-    let preview = &full[..end];
+    let head_end = types::strutil::floor_char_boundary(full, SPILL_HEAD_BUDGET);
+    // Ceil to a char boundary so the tail never starts mid-codepoint. full is
+    // longer than MAX_INLINE_CHARS, so tail_start always lands past head_end.
+    let mut tail_start = full.len() - SPILL_TAIL_BUDGET;
+    while !full.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let head = &full[..head_end];
+    let tail = &full[tail_start..];
+    let omitted = full[head_end..tail_start].chars().count();
+    let total_bytes = full.len();
+    let total_chars = full.chars().count();
 
-    let dir = config::data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("tmp")
-        .join("web");
-    let _ = std::fs::create_dir_all(&dir);
-    let slug: String = name_hint
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .take(40)
-        .collect();
-    let path = dir.join(format!("{}-{}.txt", slug, uuid::Uuid::new_v4()));
-
+    let path = spill_cache_path(key.unwrap_or(full));
     match std::fs::write(&path, full) {
-        Ok(()) => format!(
-            "{preview}\n\n[showing first {} of {} chars — full text saved to {}]",
-            preview.len(),
-            full.len(),
-            path.display()
-        ),
-        // Spill failed — still state the total rather than cut silently.
-        Err(_) => format!(
-            "{preview}\n\n[showing first {} of {} chars]",
-            preview.len(),
-            full.len()
+        Ok(()) => {
+            let p = path.display();
+            format!(
+                "{head}\n\n[... {omitted} chars omitted — full text saved to {p} \
+                 ({total_bytes} bytes, {total_chars} chars); read it with \
+                 os(resource:\"file\", action:\"read\", path:\"{p}\", offset/limit) ...]\n\n{tail}"
+            )
+        }
+        // Spill failed — still show the tail and state the totals rather than
+        // cut silently.
+        Err(e) => format!(
+            "{head}\n\n[... {omitted} chars omitted \
+             ({total_bytes} bytes, {total_chars} chars total; spill to file failed: {e}) ...]\n\n{tail}"
         ),
     }
 }
 
+/// Truncate a snapshot at a line boundary, appending an omission note.
+/// Used by auto-snapshot after navigate to keep output compact.
 fn truncate_snapshot(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_string();
@@ -3143,27 +3272,98 @@ link "Create account" [ref_5]"#;
     #[test]
     fn spill_passes_small_results_through_unchanged() {
         let small = "just a little content";
-        assert_eq!(spill_large_result(small, "t"), small);
+        assert_eq!(spill_large_result(small, Some("https://example.com/small")), small);
+        assert_eq!(spill_large_result(small, None), small);
+    }
+
+    /// Extract the spill file path from the marker footer.
+    fn spill_path_from(out: &str) -> &str {
+        out.rsplit("full text saved to ")
+            .next()
+            .unwrap()
+            .split(" (")
+            .next()
+            .unwrap()
+            .trim()
     }
 
     #[test]
-    fn spill_large_result_previews_and_saves_full_text() {
-        let big = "x".repeat(MAX_INLINE_CHARS + 5_000);
-        let out = spill_large_result(&big, "test-spill");
-        // Inline output is bounded, states the true total, and points at a file.
-        assert!(out.len() < big.len(), "inline output should be a preview");
-        assert!(out.contains(&format!("of {} chars", big.len())));
-        assert!(out.contains("full text saved to"));
+    fn spill_large_result_windows_head_and_tail_and_saves_full_text() {
+        let head_mark = "HEADSTART ";
+        let tail_mark = " TAILEND";
+        let big = format!(
+            "{head_mark}{}{tail_mark}",
+            "x".repeat(MAX_INLINE_CHARS + 5_000)
+        );
+        let out = spill_large_result(&big, Some("https://example.com/big"));
+
+        // Inline output is a bounded head+tail window with an explicit marker.
+        assert!(out.len() < big.len(), "inline output should be a window");
+        assert!(out.starts_with(head_mark), "head of the text must open the window");
+        assert!(out.ends_with(tail_mark), "tail of the text must close the window");
+        assert!(out.contains("chars omitted — full text saved to"));
+        assert!(out.contains("os(resource:\"file\", action:\"read\""));
+        // Footer states totals so the model can plan reads.
+        assert!(out.contains(&format!("({} bytes, {} chars)", big.len(), big.chars().count())));
+
         // The spilled file holds the FULL text (nothing lost).
-        let path = out
-            .rsplit("saved to ")
-            .next()
-            .unwrap()
-            .trim_end_matches(']')
-            .trim();
+        let path = spill_path_from(&out);
         let saved = std::fs::read_to_string(path).expect("spill file should exist");
         assert_eq!(saved, big);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Head/tail cuts must land on char boundaries — a page of multibyte text
+    /// (CJK, emoji, accents) must window without panicking or splitting a
+    /// codepoint.
+    #[test]
+    fn spill_large_result_char_boundary_safe_on_multibyte() {
+        // 3-byte chars, offset by a 2-byte ASCII prefix and 1-byte suffix so
+        // NEITHER budget cut lands on a char boundary by accident: the head cut
+        // must floor and the tail cut must ceil to the next boundary.
+        let big = format!("ab{}z", "個".repeat(MAX_INLINE_CHARS)); // 45_003 bytes
+        let out = spill_large_result(&big, None);
+        assert!(out.contains("chars omitted — full text saved to"));
+        // Window halves are intact codepoint sequences (a mid-codepoint slice
+        // would have panicked in the slicing above).
+        let head = out.split("\n\n[...").next().unwrap();
+        assert!(head.starts_with("ab") && head.chars().skip(2).all(|c| c == '個'));
+        let tail = out.rsplit("...]\n\n").next().unwrap();
+        assert!(tail.ends_with('z'));
+        let inner: Vec<char> = tail.chars().collect();
+        assert!(inner[..inner.len() - 1].iter().all(|&c| c == '個'));
+
+        let path = spill_path_from(&out).to_string();
+        let saved = std::fs::read_to_string(&path).expect("spill file should exist");
+        assert_eq!(saved, big);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Same URL → same spill file (refetch overwrites); different URL → different file.
+    #[test]
+    fn spill_cache_path_stable_per_url() {
+        let a1 = spill_cache_path("https://example.com/page");
+        let a2 = spill_cache_path("https://example.com/page");
+        let b = spill_cache_path("https://example.com/other");
+        assert_eq!(a1, a2, "same URL must map to the same spill file");
+        assert_ne!(a1, b, "different URLs must not collide");
+        assert!(a1.to_string_lossy().contains("cache"));
+        assert!(a1.extension().is_some_and(|e| e == "txt"));
+    }
+
+    /// Refetching the same URL overwrites the cache file in place.
+    #[test]
+    fn spill_overwrites_on_refetch() {
+        let url = "https://example.com/refetch-test";
+        let v1 = format!("ONE {}", "a".repeat(MAX_INLINE_CHARS + 100));
+        let v2 = format!("TWO {}", "b".repeat(MAX_INLINE_CHARS + 100));
+        let out1 = spill_large_result(&v1, Some(url));
+        let out2 = spill_large_result(&v2, Some(url));
+        let (p1, p2) = (spill_path_from(&out1), spill_path_from(&out2));
+        assert_eq!(p1, p2, "refetch must reuse the same file");
+        let saved = std::fs::read_to_string(p1).expect("spill file should exist");
+        assert_eq!(saved, v2, "refetch must overwrite with the new full text");
+        let _ = std::fs::remove_file(p1);
     }
 
     // ── Search-result extraction: snippets must be populated (the empty-snippet

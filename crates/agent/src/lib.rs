@@ -8,6 +8,7 @@ pub mod decompose;
 pub mod dedupe;
 pub mod memory_consolidation;
 pub mod fuzzy;
+pub mod goals;
 pub mod hooks;
 pub mod keyparser;
 pub mod lanes;

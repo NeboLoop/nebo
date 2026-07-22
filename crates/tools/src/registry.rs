@@ -1038,6 +1038,53 @@ fn strip_mcp_prefix(name: &str) -> &str {
     if parts.len() == 3 { parts[2] } else { name }
 }
 
+/// The canonical absolute paths an `os` file mutation would touch, or `None`
+/// when the call is anything else.
+///
+/// Returns `Some(paths)` only for the `os` tool with resolved resource "file"
+/// (via [`crate::os_tool::OsTool::resolved_resource`] — the same chain the
+/// approval gate, safeguards, and path scoping use) and a mutating action
+/// (write/edit/delete/move/copy). The target `path` is made absolute; for
+/// move/copy the destination (`destination`/`to`) is included too. A missing
+/// or unresolvable path yields `None` — callers must treat `None` as "not a
+/// path-scoped file mutation" and fall back to their conservative behavior.
+///
+/// Part of the concurrency surface alongside [`Registry::is_concurrent_safe`]:
+/// the runner's tool-call partition uses it to admit path-disjoint file
+/// mutations into the parallel phase.
+pub fn file_mutation_paths(
+    tool_name: &str,
+    input: &serde_json::Value,
+) -> Option<Vec<std::path::PathBuf>> {
+    if tool_name != "os" {
+        return None;
+    }
+    if crate::os_tool::OsTool::resolved_resource(input) != "file" {
+        return None;
+    }
+    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(action, "write" | "edit" | "delete" | "move" | "copy") {
+        return None;
+    }
+    let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    if path.is_empty() {
+        return None;
+    }
+    let mut paths = vec![std::path::absolute(std::path::Path::new(path)).ok()?];
+    if matches!(action, "move" | "copy") {
+        let dest = input
+            .get("destination")
+            .or_else(|| input.get("to"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if dest.is_empty() {
+            return None;
+        }
+        paths.push(std::path::absolute(std::path::Path::new(dest)).ok()?);
+    }
+    Some(paths)
+}
+
 /// Resolve flat tool names (the model-facing convention) to STRAP tool + injected params.
 /// Returns (strap_tool_name, params_to_inject) or None if not a known alias.
 fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Value)>)> {
@@ -1166,6 +1213,46 @@ mod tests {
         assert_eq!(strip_mcp_prefix("mcp__nebo-agent__web"), "web");
         assert_eq!(strip_mcp_prefix("mcp__server__file"), "file");
         assert_eq!(strip_mcp_prefix("mcp__only_one"), "mcp__only_one");
+    }
+
+    #[test]
+    fn test_file_mutation_paths() {
+        // Write with explicit resource → its absolute path.
+        let write = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
+        assert_eq!(
+            file_mutation_paths("os", &write),
+            Some(vec![std::path::PathBuf::from("/a/b.txt")])
+        );
+
+        // Inferred resource (write → file) works without an explicit resource.
+        let inferred = serde_json::json!({"action": "write", "path": "/a/b.txt"});
+        assert!(file_mutation_paths("os", &inferred).is_some());
+
+        // Move includes the destination.
+        let mv = serde_json::json!({
+            "resource": "file", "action": "move", "path": "/a/b.txt", "destination": "/c/d.txt"
+        });
+        assert_eq!(
+            file_mutation_paths("os", &mv),
+            Some(vec![
+                std::path::PathBuf::from("/a/b.txt"),
+                std::path::PathBuf::from("/c/d.txt")
+            ])
+        );
+
+        // Move without a destination is unparseable → None.
+        let mv_no_dest =
+            serde_json::json!({"resource": "file", "action": "move", "path": "/a/b.txt"});
+        assert_eq!(file_mutation_paths("os", &mv_no_dest), None);
+
+        // Reads, shell calls, missing paths, and non-os tools are all None.
+        let read = serde_json::json!({"resource": "file", "action": "read", "path": "/a/b.txt"});
+        assert_eq!(file_mutation_paths("os", &read), None);
+        let shell = serde_json::json!({"resource": "shell", "action": "exec", "command": "ls"});
+        assert_eq!(file_mutation_paths("os", &shell), None);
+        let no_path = serde_json::json!({"resource": "file", "action": "write"});
+        assert_eq!(file_mutation_paths("os", &no_path), None);
+        assert_eq!(file_mutation_paths("web", &write), None);
     }
 
     #[test]
