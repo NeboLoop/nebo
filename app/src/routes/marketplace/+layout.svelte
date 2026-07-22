@@ -184,7 +184,7 @@
 <svelte:head><title>Marketplace - Nebo</title></svelte:head>
 
 <!-- Left panel: marketplace nav -->
-<div class="{$sidebarCollapsed ? 'w-12 min-w-12' : 'w-[220px] min-w-[220px]'} border-r border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
+<div class="max-md:hidden {$sidebarCollapsed ? 'w-12 min-w-12' : 'w-[220px] min-w-[220px]'} border-r border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
   <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed ? 'justify-center' : 'px-3.5 justify-between'}">
     {#if !$sidebarCollapsed}
       <span class="text-sm font-semibold flex-1">{$t('marketplace.title')}</span>
@@ -302,7 +302,7 @@
       <div class="flex-1"></div>
     {/if}
     <div class="relative ml-auto shrink-0">
-      <form class="flex items-center h-[26px] w-[220px] rounded-[5px] px-[9px] gap-1.5 text-sm border border-base-300 bg-base-100" onsubmit={(e) => { e.preventDefault(); submitSearch(); }}>
+      <form class="flex items-center h-[26px] w-[220px] max-md:w-[150px] rounded-[5px] px-[9px] gap-1.5 text-sm border border-base-300 bg-base-100" onsubmit={(e) => { e.preventDefault(); submitSearch(); }}>
         <Search class="w-3 h-3 text-base-content/50 shrink-0" />
         <input
           type="text"

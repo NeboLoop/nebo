@@ -97,7 +97,7 @@
 
 <div class="flex-1 flex min-h-0 {sidebarResizing ? 'select-none' : ''}" bind:this={containerEl}>
 <!-- Left panel: agent toggles -->
-<div class="{$sidebarCollapsed ? 'w-12 min-w-12 border-r border-base-300' : ''} flex flex-col bg-base-200 shrink-0 transition-all duration-150" style={$sidebarCollapsed ? '' : `width:${sidebarWidth}px; min-width:${SIDEBAR_MIN}px`}>
+<div class="max-md:hidden {$sidebarCollapsed ? 'w-12 min-w-12 border-r border-base-300' : ''} flex flex-col bg-base-200 shrink-0 transition-all duration-150" style={$sidebarCollapsed ? '' : `width:${sidebarWidth}px; min-width:${SIDEBAR_MIN}px`}>
   <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed ? 'justify-center' : 'px-3.5 justify-between'}">
     {#if !$sidebarCollapsed}
       <span class="text-sm font-semibold flex-1">{$t('sidebar.agents')}</span>

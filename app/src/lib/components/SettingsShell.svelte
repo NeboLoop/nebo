@@ -120,10 +120,10 @@
     </div>
 
     <!-- Body: sidebar + content -->
-    <div class="flex flex-1 min-h-0 overflow-hidden">
+    <div class="flex max-md:flex-col flex-1 min-h-0 overflow-hidden">
       <!-- Nav sidebar -->
-      <nav class="w-48 shrink-0 border-r border-base-content/10 overflow-y-auto py-3 px-2" aria-label={$t('settings.settingsNav')}>
-        <ul class="flex flex-col gap-0.5">
+      <nav class="w-48 max-md:w-full shrink-0 border-r max-md:border-r-0 max-md:border-b border-base-content/10 overflow-y-auto max-md:overflow-x-auto py-3 max-md:py-2 px-2" aria-label={$t('settings.settingsNav')}>
+        <ul class="flex flex-col max-md:flex-row max-md:gap-1 gap-0.5 max-md:w-max">
           {#each items as item}
             {#if item === null}
               <li class="h-3"></li>

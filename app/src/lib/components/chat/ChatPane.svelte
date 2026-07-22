@@ -1155,7 +1155,7 @@
 {#if creationsOpen}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
-    class="w-1.5 shrink-0 cursor-col-resize relative z-10 group bg-base-200 hover:bg-primary/30 transition-colors {resizing ? '!bg-primary/50' : ''}"
+    class="max-md:hidden w-1.5 shrink-0 cursor-col-resize relative z-10 group bg-base-200 hover:bg-primary/30 transition-colors {resizing ? '!bg-primary/50' : ''}"
     onmousedown={startResize}
     role="separator"
     aria-orientation="vertical"
@@ -1174,7 +1174,7 @@
   </div>
   <!-- Creations panel. pointer-events-none while dragging the divider: the
        viewer iframe otherwise swallows mousemove and the resize stalls. -->
-  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
+  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 max-md:fixed max-md:inset-0 max-md:z-[70] max-md:!w-full max-md:border-l-0 {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
     <!-- Creations header -->
     <div class="h-11 px-4 border-b border-base-content/10 flex items-center gap-2 shrink-0">
       {#if activeArtifact}
