@@ -357,3 +357,14 @@
   background: color-mix(in srgb, var(--color-base-content) 25%, transparent);
   border-radius: 9999px;
 }
+
+/* iOS Safari zooms the page when a focused field's font-size is under 16px.
+   Floor form controls at 16px on coarse-pointer (touch) devices only —
+   desktop keeps the Tailwind type scale untouched. */
+@media (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: max(16px, 1em);
+  }
+}

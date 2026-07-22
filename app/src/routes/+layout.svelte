@@ -197,12 +197,12 @@
           <div class="w-5 h-5 rounded bg-primary text-primary-content flex items-center justify-center font-mono text-sm font-bold">N</div>
           <span class="hidden sm:inline">Nebo</span>
         </a>
-        <nav class="flex items-center h-full gap-0.5 md:gap-1">
+        <nav class="flex items-center h-full gap-0.5 md:gap-1 min-w-0 overflow-x-auto">
           {#each sections as s}
             <a
               href={s.path}
               data-tour={s.id}
-              class="px-2 md:px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors {activeSection === s.id
+              class="px-2 md:px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors whitespace-nowrap shrink-0 {activeSection === s.id
                 ? 'border-primary text-base-content'
                 : 'border-transparent text-base-content/70 hover:text-base-content'}"
             >{$t(s.label)}</a>
