@@ -316,7 +316,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     // auto-continuation budget and becomes the prompt the judge sees. Synthetic
     // continuations (exact CONTINUATION_PREFIX) never reset — loop safety.
     if !agent::goals::is_continuation_prompt(&config.prompt) {
-        agent::goals::tracker().on_real_message(&config.session_key, &config.prompt);
+        state.goal_tracker.on_real_message(&config.session_key, &config.prompt);
     }
 
     let hub = state.hub.clone();
@@ -1368,7 +1368,7 @@ fn maybe_auto_continue(
             return;
         }
         // Cheap peek before paying for a judge call.
-        if !goals::tracker().has_budget(&p.session_key) {
+        if !state.goal_tracker.has_budget(&p.session_key) {
             tracing::debug!(session = %p.session_key, "auto-continue: budget exhausted");
             return;
         }
@@ -1379,7 +1379,7 @@ fn maybe_auto_continue(
             return;
         }
         // Judge against the last REAL user message (recorded at dispatch).
-        let last_user = match goals::tracker().last_real_prompt(&p.session_key) {
+        let last_user = match state.goal_tracker.last_real_prompt(&p.session_key) {
             Some(s) if !s.is_empty() => s,
             _ => return,
         };
@@ -1393,7 +1393,7 @@ fn maybe_auto_continue(
             tracing::debug!(session = %p.session_key, "auto-continue: preempted during judging");
             return;
         }
-        if !goals::tracker().try_consume(&p.session_key) {
+        if !state.goal_tracker.try_consume(&p.session_key) {
             return;
         }
         tracing::info!(
@@ -1440,7 +1440,7 @@ pub async fn run_chat_events(
     // session's auto-continuation budget (continuations only dispatch via
     // run_chat, so no prefix can arrive here — the guard keeps it symmetric).
     if !agent::goals::is_continuation_prompt(&config.prompt) {
-        agent::goals::tracker().on_real_message(&config.session_key, &config.prompt);
+        state.goal_tracker.on_real_message(&config.session_key, &config.prompt);
     }
 
     let runner = state.runner.clone();

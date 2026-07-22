@@ -1700,6 +1700,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         auth: auth_service,
         hub,
         runner,
+        goal_tracker: Arc::new(agent::goals::GoalTracker::new()),
         tools: tool_registry,
         bridge,
         napp_registry,

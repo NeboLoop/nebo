@@ -127,6 +127,8 @@ pub struct AppState {
     pub presence: Arc<agent::PresenceTracker>,
     /// Proactive inbox — in-memory queue for background task results
     pub proactive_inbox: Arc<agent::ProactiveInbox>,
+    /// Auto-continuation budget/state tracker for judge-gated persistent goals
+    pub goal_tracker: Arc<agent::goals::GoalTracker>,
     /// Global registry of all active agent runs — single source of truth
     pub run_registry: RunRegistry,
     /// Owner's personal loop ID — used to unify agent sessions across local + NeboAI

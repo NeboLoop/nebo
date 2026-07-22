@@ -154,14 +154,9 @@ impl SessionManager {
             }
         }
 
-        // Load from DB — prefer active_chat_id, fall back to name
-        let chat_id = self
-            .store
-            .get_session(session_id)
-            .ok()
-            .flatten()
-            .and_then(|s| s.active_chat_id.or(s.name))
-            .unwrap_or_else(|| format!("chat-{}", session_id));
+        // Load via the one canonical derivation in the db crate
+        // (active_chat_id → name → chat-{session_id}).
+        let chat_id = self.store.resolve_session_chat_id(session_id);
 
         if let Ok(mut cache) = self.chat_ids.write() {
             cache.insert(session_id.to_string(), chat_id.clone());

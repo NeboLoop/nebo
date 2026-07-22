@@ -26,7 +26,7 @@
 //! [`enabled`]).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ai::{ChatRequest, Message, Provider, StreamEventType};
@@ -277,12 +277,6 @@ impl GoalTracker {
         entry.continuations += 1;
         true
     }
-}
-
-/// Process-wide tracker instance.
-pub fn tracker() -> &'static GoalTracker {
-    static TRACKER: OnceLock<GoalTracker> = OnceLock::new();
-    TRACKER.get_or_init(GoalTracker::new)
 }
 
 #[cfg(test)]

@@ -960,16 +960,9 @@ impl AgentTool {
             "history" => {
                 let session_id = input["session_id"].as_str().unwrap_or(&ctx.session_id);
                 // Messages are stored under the session's active_chat_id (sessions
-                // are decoupled from chats), NOT the session id itself. Mirror the
-                // write-side derivation (SessionManager::resolve_chat_id in
-                // crates/agent): active_chat_id → name → chat-{session_id}.
-                let chat_id = self
-                    .store
-                    .get_session(session_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|s| s.active_chat_id.or(s.name))
-                    .unwrap_or_else(|| format!("chat-{}", session_id));
+                // are decoupled from chats), NOT the session id itself — resolved
+                // by the one canonical derivation in the db crate.
+                let chat_id = self.store.resolve_session_chat_id(session_id);
                 match self.store.get_chat_messages(&chat_id) {
                     Ok(msgs) => {
                         if msgs.is_empty() {

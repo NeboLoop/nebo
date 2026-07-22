@@ -32,6 +32,19 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Resolve a session id to the chat id its messages are stored under.
+    /// Sessions are decoupled from chats: prefer `active_chat_id`, fall back to
+    /// `name` (legacy pre-decoupling sessions), then `chat-{session_id}`.
+    /// The ONE derivation — used by both the write side (SessionManager) and
+    /// readers (tools); do not mirror this chain anywhere else.
+    pub fn resolve_session_chat_id(&self, session_id: &str) -> String {
+        self.get_session(session_id)
+            .ok()
+            .flatten()
+            .and_then(|s| s.active_chat_id.or(s.name))
+            .unwrap_or_else(|| format!("chat-{}", session_id))
+    }
+
     pub fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
