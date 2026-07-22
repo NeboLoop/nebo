@@ -1,5 +1,5 @@
 import { writable, derived, get } from 'svelte/store';
-import { goto } from '$app/navigation';
+import { goto } from '$lib/nav';
 import * as api from '$lib/api/nebo';
 import type { User, LoginResponse, UserGetCurrentUserResponse, UserUpdateCurrentUserResponse } from '$lib/api/neboComponents';
 import { logger } from '$lib/monitoring';

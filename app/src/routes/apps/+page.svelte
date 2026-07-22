@@ -12,7 +12,7 @@
   import Sparkles from 'lucide-svelte/icons/sparkles';
   import AppWindow from 'lucide-svelte/icons/app-window';
   import EllipsisVertical from 'lucide-svelte/icons/ellipsis-vertical';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
 
   const COLOR_CYCLE = Object.keys(AGENT_COLORS_MAP);
 

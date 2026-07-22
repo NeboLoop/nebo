@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { completeOnboarding } from '$lib/stores/onboarding';

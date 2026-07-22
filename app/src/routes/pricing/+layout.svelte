@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { t } from 'svelte-i18n';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import ArrowLeft from 'lucide-svelte/icons/arrow-left';
   import X from 'lucide-svelte/icons/x';
 

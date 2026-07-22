@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { appPath } from '$lib/nav';
   import { page } from '$app/stores';
   import { t } from 'svelte-i18n';
 
@@ -18,7 +19,7 @@
   }
 
   const activeTab = $derived.by(() => {
-    const p = $page.url.pathname;
+    const p = appPath($page.url.pathname);
     if (p.includes('/settings')) return 'settings';
     if (p.includes('/runs')) return 'runs';
     if (p.includes('/overview')) return 'overview';

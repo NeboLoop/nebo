@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import { t } from 'svelte-i18n';
   import { setContext, onMount } from 'svelte';
   import { getWebSocketClient } from '$lib/websocket/client';

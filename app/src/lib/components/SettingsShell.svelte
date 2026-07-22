@@ -1,7 +1,7 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto, appPath } from '$lib/nav';
   import { devMode } from '$lib/stores/devmode.js';
   import Cloud from 'lucide-svelte/icons/cloud';
   import User from 'lucide-svelte/icons/user';
@@ -84,7 +84,7 @@
 
   const allTabs = $derived(items.filter((i): i is NavItem => i !== null));
   const activeTab = $derived(
-    allTabs.find(t => $page.url.pathname.startsWith(t.path))?.id || 'account'
+    allTabs.find(t => appPath($page.url.pathname).startsWith(t.path))?.id || 'account'
   );
 
   function closeSettings() {

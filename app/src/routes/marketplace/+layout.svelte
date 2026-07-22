@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto, appPath } from '$lib/nav';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { listStoreProducts, listStoreCategories } from '$lib/api/nebo';
@@ -118,10 +118,10 @@
   const activePrice = $derived($page.url.searchParams.get('price') || 'all');
   const activeCategory = $derived($page.url.searchParams.get('category') || '');
   // Detail pages (/marketplace/<type>/<id>) shouldn't show the kind filter bar.
-  const isDetail = $derived(/^\/marketplace\/(agents|apps|skills|plugins|connectors|collections)\/.+/.test($page.url.pathname));
+  const isDetail = $derived(/^\/marketplace\/(agents|apps|skills|plugins|connectors|collections)\/.+/.test(appPath($page.url.pathname)));
 
   const marketplaceTab = $derived.by(() => {
-    const p = $page.url.pathname;
+    const p = appPath($page.url.pathname);
     if (p === '/marketplace') return activeKind;
     const match = p.match(/\/marketplace\/([^/]+)/);
     return match ? match[1] : 'all';

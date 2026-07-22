@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { t } from 'svelte-i18n';
-	import { goto } from '$app/navigation';
+	import { goto } from '$lib/nav';
 	import InstallCode from '$lib/components/InstallCode.svelte';
 	import PricePill from './PricePill.svelte';
 	import ArtifactIcon from './ArtifactIcon.svelte';

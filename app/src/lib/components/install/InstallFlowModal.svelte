@@ -23,7 +23,7 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
   import { onMount, onDestroy } from 'svelte';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import {
     approveDeps,
     authLogin,

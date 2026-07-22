@@ -11,7 +11,7 @@
 	import { t } from 'svelte-i18n';
 	import { Star, X, Check, Copy, ShieldCheck, ChevronLeft, Download } from 'lucide-svelte';
 	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
+	import { goto } from '$lib/nav';
 	import { onMount } from 'svelte';
 	import { marked } from 'marked';
 	import {

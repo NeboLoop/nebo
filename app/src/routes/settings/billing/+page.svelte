@@ -3,7 +3,7 @@
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { onWsEvent } from '$lib/websocket/subscribe';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import CreditCard from 'lucide-svelte/icons/credit-card';
   import Receipt from 'lucide-svelte/icons/receipt';
   import ExternalLink from 'lucide-svelte/icons/external-link';

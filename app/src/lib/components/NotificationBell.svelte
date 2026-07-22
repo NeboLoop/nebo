@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import Bell from 'lucide-svelte/icons/bell';
   import X from 'lucide-svelte/icons/x';
   import CheckCheck from 'lucide-svelte/icons/check-check';

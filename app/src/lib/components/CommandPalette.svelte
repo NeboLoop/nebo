@@ -4,7 +4,7 @@
 -->
 
 <script lang="ts">
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import { t } from 'svelte-i18n';
   import Search from 'lucide-svelte/icons/search';
 

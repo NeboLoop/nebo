@@ -3,8 +3,21 @@
   import '$lib/i18n';
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto, appPath } from '$lib/nav';
+  import { beforeNavigate } from '$app/navigation';
+  import { base } from '$app/paths';
   import { onMount } from 'svelte';
+
+  // Under the tunnel base (/t/<botID>/), goto() is base-aware via $lib/nav but
+  // raw <a href="/x"> links would still escape the prefix onto the hub's site.
+  // Catch any same-origin navigation that leaves the base and re-root it.
+  beforeNavigate((nav) => {
+    if (!base || !nav.to) return;
+    const to = nav.to.url;
+    if (to.origin !== location.origin || to.pathname.startsWith(base)) return;
+    nav.cancel();
+    goto(to.pathname + to.search + to.hash);
+  });
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { theme } from '$lib/stores/theme.js';
   import { onboardingComplete, onboardingChecked, backendReady, backendChecking, checkOnboardingStatus, retryBackendConnection } from '$lib/stores/onboarding';
@@ -67,7 +80,7 @@
 
   // Redirect to onboarding if not complete (wait for check to finish)
   $effect(() => {
-    if ($onboardingChecked && !$onboardingComplete && !$page.url.pathname.startsWith('/onboarding')) {
+    if ($onboardingChecked && !$onboardingComplete && !appPath($page.url.pathname).startsWith('/onboarding')) {
       goto('/onboarding');
     }
   });
@@ -110,7 +123,7 @@
   ];
 
   const activeSection = $derived.by(() => {
-    const p = $page.url.pathname;
+    const p = appPath($page.url.pathname);
     if (p === '/') return 'agents';
     for (const s of sections) {
       if (s.path !== '/' && p.startsWith(s.path)) return s.id;
@@ -120,12 +133,12 @@
     return '';
   });
 
-  const isEmbed = $derived($page.url.pathname.startsWith('/chat-embed'));
+  const isEmbed = $derived(appPath($page.url.pathname).startsWith('/chat-embed'));
 
   const isMinimalChrome = $derived(
     isEmbed ||
-    $page.url.pathname.startsWith('/settings') ||
-    $page.url.pathname.startsWith('/app/')
+    appPath($page.url.pathname).startsWith('/settings') ||
+    appPath($page.url.pathname).startsWith('/app/')
   );
 </script>
 
@@ -155,7 +168,7 @@
   <div class="h-dvh flex items-center justify-center bg-base-100">
     <span class="loading loading-spinner loading-lg"></span>
   </div>
-{:else if $page.url.pathname.startsWith('/onboarding')}
+{:else if appPath($page.url.pathname).startsWith('/onboarding')}
   {@render children()}
 {:else if !$onboardingComplete}
   <!-- Check finished, onboarding not complete, and we're not on /onboarding yet:
@@ -218,7 +231,7 @@
     plan={upgradedPlan}
     onclose={() => {
       showUpgradeSuccess = false;
-      if ($page.url.pathname.startsWith('/pricing')) goto('/');
+      if (appPath($page.url.pathname).startsWith('/pricing')) goto('/');
     }}
   />
 {/if}

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import { t } from 'svelte-i18n';
   import { getContext, onDestroy } from 'svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';

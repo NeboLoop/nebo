@@ -673,6 +673,18 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // generated automatically on first boot (above), so auto-marking would fire
     // on a brand-new install before the user ever sees onboarding, causing the
     // app to skip straight into the main view.
+    //
+    // The ONE exception is server mode: a provisioned cloud pod has no human at
+    // the machine to click through desktop onboarding (permissions, Full Access,
+    // account linking) — its identity and credentials are injected at provision
+    // time above. Without this, opening the bot through the tunnel lands on an
+    // onboarding flow that can never be completed.
+    if tools::server_mode() && !config::is_setup_complete().unwrap_or(false) {
+        match config::mark_setup_complete() {
+            Ok(()) => info!("server mode: marked setup complete (provisioned deploy, no interactive onboarding)"),
+            Err(e) => warn!(error = %e, "server mode: failed to mark setup complete"),
+        }
+    }
 
     // Initialize auth service
     let auth_service = Arc::new(auth::AuthService::new(store.clone(), cfg.clone()));

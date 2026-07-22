@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
   import { onWsEvent } from '$lib/websocket/subscribe';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import Check from 'lucide-svelte/icons/check';
   import ArrowRight from 'lucide-svelte/icons/arrow-right';
   import ArrowLeft from 'lucide-svelte/icons/arrow-left';

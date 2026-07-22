@@ -2,7 +2,7 @@
   import { getContext, onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { onWsEvent } from '$lib/websocket/subscribe';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext } from '$lib/types/agentPage';
   import { currentUser } from '$lib/stores/auth';
