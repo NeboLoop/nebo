@@ -14,6 +14,7 @@
  */
 
 import { writable, derived } from 'svelte/store';
+import { backendWsBase } from '$lib/api/base';
 import { startPcmCapture, type AudioCaptureHandle } from '$lib/stores/audio';
 import { deviceManager } from '$lib/stores/devices';
 import { logger } from '$lib/monitoring';
@@ -194,9 +195,9 @@ function createDictationStore() {
 			log.info('Dictation connecting for owner: ' + ownerId);
 
 			try {
-				// 1. Open WebSocket (use current origin so Vite proxy works in dev)
-				const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-				const wsUrl = `${wsProtocol}//${window.location.host}/ws/voice/dictation`;
+				// 1. Open WebSocket (same base derivation as the chat WS — carries
+				// the tunnel prefix, and the Vite proxy still applies in dev)
+				const wsUrl = `${backendWsBase()}/ws/voice/dictation`;
 				ws = new WebSocket(wsUrl);
 				ws.binaryType = 'arraybuffer';
 

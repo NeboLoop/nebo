@@ -6,6 +6,7 @@
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import { updateState, checkForUpdates, setApplying } from '$lib/stores/update';
   import { addToast } from '$lib/stores/toast';
+  import { backendHealth, backendUrl } from '$lib/api/base';
 
   let version = $state('—');
   let platform = $state('—');
@@ -30,11 +31,8 @@
   }
 
   onMount(async () => {
-    try {
-      const resp = await fetch('/health');
-      const data = await resp.json();
-      if (data?.version) version = data.version;
-    } catch { /* keep placeholder */ }
+    const data = await backendHealth();
+    if (data?.version) version = data.version;
     if (typeof navigator !== 'undefined') {
       const ua = navigator.userAgent;
       if (ua.includes('Mac')) platform = 'macOS';
@@ -47,7 +45,8 @@
   async function toggleLicenses() {
     if (!licensesText) {
       try {
-        const resp = await fetch('/LICENSES.txt');
+        // Static SPA asset served by the backend — carry the tunnel base.
+        const resp = await fetch(backendUrl('/LICENSES.txt'));
         licensesText = await resp.text();
       } catch { licensesText = $t('settingsAbout.licensesLoadFailed'); }
     }

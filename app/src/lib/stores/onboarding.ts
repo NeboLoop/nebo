@@ -1,4 +1,5 @@
 import { writable, get } from 'svelte/store';
+import { backendHealth } from '$lib/api/base';
 import { logger } from '$lib/monitoring';
 
 // Onboarding state tracks whether setup is complete.
@@ -21,12 +22,7 @@ onboardingComplete.subscribe(v => {
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function tryBackendHealth(): Promise<boolean> {
-  try {
-    const resp = await fetch('/health');
-    return resp.ok;
-  } catch {
-    return false;
-  }
+  return (await backendHealth()) !== null;
 }
 
 function startPolling() {

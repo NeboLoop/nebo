@@ -1323,7 +1323,7 @@
 {#if lightboxUrl}
   <button
     type="button"
-    class="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-6 border-0 cursor-zoom-out"
+    class="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-6 border-0 cursor-zoom-out"
     onclick={() => (lightboxUrl = null)}
     aria-label={$t('chat.closeImage')}
   >

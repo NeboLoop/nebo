@@ -1,4 +1,4 @@
-import { backendBase } from '$lib/api/base';
+import { backendWsBase } from '$lib/api/base';
 /**
  * WebSocket Client for Nebo
  *
@@ -54,12 +54,8 @@ type PresenceStatus = 'focused' | 'unfocused' | 'away';
  * Get WebSocket URL based on current page origin
  */
 function getWebSocketUrl(): string {
-	if (typeof window === 'undefined') return '';
-
-	const base = backendBase();
-	const wsProtocol = base.startsWith('https:') ? 'wss:' : 'ws:';
-	const rest = base.replace(/^https?:/, '');
-	return `${wsProtocol}${rest}/ws`;
+	const base = backendWsBase();
+	return base ? `${base}/ws` : '';
 }
 
 class WebSocketClient {

@@ -2,6 +2,7 @@
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import { goto, appPath } from '$lib/nav';
+  import { backendHealth } from '$lib/api/base';
   import { devMode } from '$lib/stores/devmode.js';
   import Cloud from 'lucide-svelte/icons/cloud';
   import User from 'lucide-svelte/icons/user';
@@ -31,11 +32,8 @@
   let appVersion = $state('');
 
   onMount(async () => {
-    try {
-      const resp = await fetch('/health');
-      const data = await resp.json();
-      if (data?.version) appVersion = data.version;
-    } catch { /* keep empty */ }
+    const data = await backendHealth();
+    if (data?.version) appVersion = data.version;
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

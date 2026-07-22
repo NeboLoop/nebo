@@ -14,6 +14,7 @@
    */
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
+  import { backendUrl } from '$lib/api/base';
   import { downloadArtifact } from '$lib/chat/download';
 
   let {
@@ -34,6 +35,11 @@
     /** Source file behind a compiled artifact (the .jsx behind a .html). */
     codeUrl?: string;
   } = $props();
+
+  // Artifact URLs arrive root-relative from backend payloads (/api/v1/files/...)
+  // — resolve them through backendBase() so they carry the tunnel prefix.
+  const src = $derived(backendUrl(url));
+  const codeSrc = $derived(codeUrl ? backendUrl(codeUrl) : undefined);
 
   const ext = $derived((title.split('.').pop() || '').toLowerCase());
 
@@ -78,13 +84,13 @@
   const SHEET_ROW_CAP = 500;
 
   async function fetchText(): Promise<string> {
-    const res = await fetch(url);
+    const res = await fetch(src);
     if (!res.ok) throw new Error($t('chat.failedToLoadStatus', { values: { status: res.status } }));
     return res.text();
   }
 
   async function fetchBinary(): Promise<ArrayBuffer> {
-    const res = await fetch(url);
+    const res = await fetch(src);
     if (!res.ok) throw new Error($t('chat.failedToLoadStatus', { values: { status: res.status } }));
     return res.arrayBuffer();
   }
@@ -139,7 +145,7 @@
       // Source view: show the artifact's code (the .jsx behind a compiled
       // .html when paired, otherwise the file's own text), shiki-highlighted.
       if (sourceView) {
-        const srcUrl = codeUrl || url;
+        const srcUrl = codeSrc || src;
         const srcExt = (srcUrl.split('/').pop() || '').split('.').pop()?.toLowerCase() || '';
         const res = await fetch(srcUrl);
         if (!res.ok) throw new Error($t('chat.failedToLoadStatus', { values: { status: res.status } }));
@@ -214,7 +220,7 @@
           // Decks render through the PDF viewer via the server's on-demand
           // pptx→pdf preview (nebo-office). 503 = plugin missing → the error
           // branch offers the download instead.
-          const res = await fetch(`${url}?preview=pdf`);
+          const res = await fetch(`${src}?preview=pdf`);
           if (!res.ok) {
             throw new Error(
               res.status === 503
@@ -299,7 +305,7 @@
   {:else if error}
     <div class="flex flex-col items-center gap-3 py-8">
       <div class="text-xs text-error">{error}</div>
-      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url, title)} class="btn btn-sm btn-outline">{$t('chat.downloadFile', { values: { title } })}</a>
+      <a href={src} download={title} onclick={(e) => downloadArtifact(e, src, title)} class="btn btn-sm btn-outline">{$t('chat.downloadFile', { values: { title } })}</a>
     </div>
   {:else if sourceView}
     <div data-selectable class="text-xs leading-relaxed rounded-lg overflow-x-auto [&_pre]:p-4 [&_pre]:rounded-lg">{@html renderedHtml}</div>
@@ -316,7 +322,7 @@
          Opaque origin: scripts may run but can't reach the app, API, or storage. -->
     <iframe
       sandbox="allow-scripts"
-      src={url}
+      src={src}
       title={title}
       class="w-full h-full border-0 bg-white"
     ></iframe>
@@ -352,17 +358,17 @@
       {/if}
     {/each}
   {:else if mode === 'image'}
-    <img src={url} alt={title} class="max-w-full h-auto rounded-lg border border-base-300" />
+    <img src={src} alt={title} class="max-w-full h-auto rounded-lg border border-base-300" />
   {:else if mode === 'video'}
     <!-- svelte-ignore a11y_media_has_caption -->
-    <video src={url} controls class="max-w-full rounded-lg border border-base-300"></video>
+    <video src={src} controls class="max-w-full rounded-lg border border-base-300"></video>
   {:else}
     <div class="flex flex-col items-center gap-3 py-10">
       <div class="text-sm font-medium">{title}</div>
       <div class="text-xs text-base-content/50 text-center max-w-[260px]">
         {$t('chat.noPreviewFormat')}
       </div>
-      <a href={url} download={title} onclick={(e) => downloadArtifact(e, url, title)} class="btn btn-sm btn-primary">{$t('common.download')}</a>
+      <a href={src} download={title} onclick={(e) => downloadArtifact(e, src, title)} class="btn btn-sm btn-primary">{$t('common.download')}</a>
     </div>
   {/if}
 </div>

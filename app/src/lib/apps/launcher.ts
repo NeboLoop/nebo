@@ -5,6 +5,8 @@
  * Works in both Tauri desktop and headless/VPS (browser popup fallback).
  */
 
+import { withBase } from '$lib/nav';
+
 export interface AppWindowConfig {
 	width: number;
 	height: number;
@@ -78,5 +80,7 @@ export async function launchApp(
 	const left = Math.round((screen.width - cfg.width) / 2);
 	const top = Math.round((screen.height - cfg.height) / 2);
 	const features = `width=${cfg.width},height=${cfg.height},left=${left},top=${top},resizable=${cfg.resizable ? 'yes' : 'no'},scrollbars=yes`;
-	window.open(`/apps/${agentId}/ui/`, `app-${agentId}`, features);
+	// window.open is a new browsing context — the beforeNavigate re-rooter
+	// doesn't apply, so carry the runtime base (tunnel prefix) explicitly.
+	window.open(withBase(`/apps/${agentId}/ui/`), `app-${agentId}`, features);
 }

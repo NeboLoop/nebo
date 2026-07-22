@@ -19,6 +19,7 @@
  */
 
 import { writable, derived } from 'svelte/store';
+import { backendWsBase } from '$lib/api/base';
 import { startPcmCapture, type AudioCaptureHandle } from '$lib/stores/audio';
 import { deviceManager } from '$lib/stores/devices';
 import { logger } from '$lib/monitoring';
@@ -320,9 +321,9 @@ function createVoiceSessionStore() {
 				// 1. Initialize playback AudioContext (24kHz for TTS output)
 				playbackCtx = new AudioContext({ sampleRate: 24000 });
 
-				// 2. Open WebSocket
-				const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-				const wsUrl = `${wsProtocol}//${window.location.host}/ws/voice/conversation`;
+				// 2. Open WebSocket (same base derivation as the chat WS — carries
+				// the tunnel prefix, and the Vite proxy still applies in dev)
+				const wsUrl = `${backendWsBase()}/ws/voice/conversation`;
 				ws = new WebSocket(wsUrl);
 				ws.binaryType = 'arraybuffer';
 
