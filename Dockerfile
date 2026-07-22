@@ -13,12 +13,13 @@ FROM rust:1-bookworm AS chef
 # server never uses them — so the full cluster is required to link.
 # ponytail: bloated build deps to avoid feature-gating the workspace; revisit if
 # a headless build feature ever lands.
+# Empirical dependency set: `ldd nebo-cli` in the shipped image links ONLY
+# libc/ssl/crypto, the OpenBLAS chain, libstdc++ (whisper.cpp), and
+# libwayland-client. The previous gtk/x11/dbus/asound list was copied from the
+# desktop (Tauri) docs and nothing in this binary ever linked it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       cmake clang libclang-dev pkg-config protobuf-compiler \
-      libssl-dev libasound2-dev libdbus-1-dev libopenblas-dev \
-      libwayland-dev libxkbcommon-dev \
-      libx11-dev libxcb1-dev libxrandr-dev libxi-dev libxtst-dev libxdo-dev \
-      libgtk-3-dev libayatana-appindicator3-dev \
+      libssl-dev libopenblas-dev libwayland-dev libxkbcommon-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN rustup component add rustfmt   # whisper-rs-sys bindgen needs it
 RUN cargo install cargo-chef --locked
@@ -46,11 +47,10 @@ RUN MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) && \
 
 FROM debian:bookworm-slim
 # Runtime .so for the GUI crates the binary links (loaded but unused on a server).
+# Runtime .so set matches ldd of the binary — nothing speculative.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates libssl3 libasound2 libdbus-1-3 libopenblas0-pthread \
+      ca-certificates libssl3 libopenblas0-pthread \
       libwayland-client0 libxkbcommon0 \
-      libx11-6 libxcb1 libxrandr2 libxi6 libxtst6 libxdo3 \
-      libgtk-3-0 libayatana-appindicator3-1 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -u 1000 -m nebo
 COPY --from=build /src/target/release/nebo-cli /usr/local/bin/nebo-cli
