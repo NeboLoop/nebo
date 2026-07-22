@@ -4,7 +4,7 @@
 
 Hire pre-built employees from the marketplace — bookkeeper, researcher, scheduler — one click each. They show up already knowing the job: workflows, tools, and skills wired together, no setup.
 
-They coordinate as a team, with real handoffs. They work in repeatable, auditable workflows — the tenth run as dependable as the first. And they operate inside guardrails written into the code, not the prompt, so you can trust them with real access to your systems.
+They coordinate as a team, with real handoffs. They work in repeatable, auditable workflows — the thousandth run as dependable as the first. And they operate inside guardrails written into the code, not the prompt, so you can trust them with real access to your systems.
 
 Start on your own machine — your data never leaves your walls. Move to a server when the team needs to grow and never clock out.
 
@@ -28,9 +28,11 @@ A workforce isn't a pile of chatbots. Hand the researcher a job and it delegates
 
 <!-- screenshot (LOAD-BEARING): a delegation in the chat thread — researcher's message, then the writer's response with its agent badge. This is shootable today. Caption: "A real handoff, not a metaphor." -->
 
-## The tenth run is as good as the first
+## The thousandth run is as good as the first
 
-Improvised agents are impressive once. Employees are dependable every time. Nebo work runs as repeatable, auditable workflows — you can see what an employee did, step by step, and rerun it knowing it behaves the same way tomorrow.
+A business doesn't run on improvisation — it runs on process. Nebo work runs as repeatable, auditable workflows that do not drift: the process you approved is the process that executes, run after run, and you can read every step it took.
+
+Some platforms let the AI rewrite its own processes as it goes. We think that's backwards. Self-improving *skills* make an employee sharper at a task; self-improving *processes* governed by AI alone are how a business quietly destabilizes. Business trust is built the way it has always been built — plan, design, implement, audit, measure, and then improve under human guidance. Your processes get better because you decided how, not because they mutated overnight.
 
 <!-- screenshot: workflow run history / audit trail of a completed job. Caption: "Every step recorded. Every run repeatable." -->
 
