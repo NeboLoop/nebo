@@ -93,7 +93,12 @@ impl DynTool for EventTool {
             match domain_input.action.as_str() {
                 "create" => {
                     let name = input["name"].as_str().unwrap_or("");
-                    let cron_val = input["cron"].as_str().unwrap_or("");
+                    let cron_val = input["cron"]
+                        .as_str()
+                        .filter(|v| !v.is_empty())
+                        // `schedule` is the natural synonym models reach for — accept it.
+                        .or_else(|| input["schedule"].as_str())
+                        .unwrap_or("");
                     let at_val = input["at"].as_str().unwrap_or("");
                     let task_type = input["task_type"].as_str().unwrap_or("bash");
                     let command = input["command"].as_str().unwrap_or("");

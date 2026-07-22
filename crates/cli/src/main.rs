@@ -1,6 +1,6 @@
 mod mcp_serve;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
@@ -483,14 +483,97 @@ async fn run_chat(
     interactive: bool,
     prompt: Option<String>,
 ) -> anyhow::Result<()> {
-    let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
+    // The CLI is a thin client of the RUNNING server's one chat pipeline
+    // (ws → dispatch_chat → Runner), exactly like the web UI — so the agent
+    // has its full tool registry, memory, and steering. The previous
+    // implementation called the provider directly with zero tools and no
+    // system prompt, a competing pathway on which tool use was impossible.
+    let url = format!("ws://{}:{}/ws", cfg.host, cfg.port);
+    let (ws, _) = tokio_tungstenite::connect_async(&url).await.map_err(|e| {
+        anyhow::anyhow!("cannot reach nebo server at {url} ({e}) — is `nebo serve` running?")
+    })?;
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    let (mut tx, mut rx) = ws.split();
 
-    // Build providers using the canonical server function (handles all provider types)
-    let providers = server::build_providers(&store, cfg, None);
+    // Auth handshake (the local server trusts the connection; it replies auth_ok).
+    tx.send(WsMessage::Text(r#"{"type":"auth"}"#.to_string().into()))
+        .await?;
 
-    if providers.is_empty() {
-        println!("No active providers available. Add one with `nebo serve` and the web UI.");
-        return Ok(());
+    // Unique session per invocation so test runs never bleed into each other
+    // or into the user's UI chats.
+    let session_id = format!(
+        "agent:assistant:cli-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+
+    let send_prompt = |text: String| {
+        let msg = serde_json::json!({
+            "type": "chat",
+            "message_id": format!("cli-{}-{}", session_id, uuid::Uuid::new_v4()),
+            "data": {
+                "session_id": session_id,
+                "prompt": text,
+                "agent_id": "assistant",
+                "channel": "cli",
+            },
+        });
+        msg.to_string()
+    };
+
+    // Stream events for OUR session until the run completes. Returns false on
+    // socket close.
+    async fn pump(
+        rx: &mut (impl StreamExt<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+              + Unpin),
+        session_id: &str,
+    ) -> anyhow::Result<bool> {
+        let timeout = std::time::Duration::from_secs(300);
+        loop {
+            let Ok(next) = tokio::time::timeout(timeout, rx.next()).await else {
+                anyhow::bail!("timed out after {}s waiting for the run", timeout.as_secs());
+            };
+            let Some(msg) = next else { return Ok(false) };
+            let WsMessage::Text(text) = msg? else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            let data = &v["data"];
+            if data["session_id"].as_str() != Some(session_id) {
+                continue;
+            }
+            match v["type"].as_str().unwrap_or("") {
+                "chat_stream" => {
+                    if let Some(c) = data["content"].as_str() {
+                        print!("{c}");
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+                "activity" => {
+                    if let Some(label) = data["label"].as_str() {
+                        eprintln!("[tool] {label}");
+                    }
+                }
+                "chat_error" => {
+                    println!();
+                    anyhow::bail!(
+                        "chat error: {}",
+                        data["error"].as_str().unwrap_or("unknown")
+                    );
+                }
+                "chat_complete" => {
+                    println!();
+                    return Ok(true);
+                }
+                _ => {}
+            }
+        }
     }
 
     if interactive {
@@ -513,56 +596,20 @@ async fn run_chat(
                     if line == "exit" || line == "quit" {
                         break;
                     }
-                    send_chat_message(providers[0].as_ref(), &line).await?;
+                    tx.send(WsMessage::Text(send_prompt(line).into())).await?;
+                    if !pump(&mut rx, &session_id).await? {
+                        break;
+                    }
                 }
                 None => break,
             }
         }
     } else if let Some(prompt) = prompt {
-        send_chat_message(providers[0].as_ref(), &prompt).await?;
+        tx.send(WsMessage::Text(send_prompt(prompt).into())).await?;
+        pump(&mut rx, &session_id).await?;
     } else {
         println!("Usage: nebo chat 'your prompt' or nebo chat -i for interactive mode");
     }
-
-    Ok(())
-}
-
-async fn send_chat_message(provider: &dyn ai::Provider, prompt: &str) -> anyhow::Result<()> {
-    let req = ai::ChatRequest {
-        tool_choice: Default::default(),
-        messages: vec![ai::Message {
-            role: "user".into(),
-            content: prompt.into(),
-            ..Default::default()
-        }],
-        tools: vec![],
-        max_tokens: 4096,
-        temperature: 0.7,
-        system: String::new(),
-        static_system: String::new(),
-        model: String::new(),
-        enable_thinking: false,
-        metadata: None,
-        cache_breakpoints: vec![],
-        cancel_token: None,
-        trace: None,
-    };
-
-    let mut rx = provider
-        .stream(&req)
-        .await
-        .map_err(|e| anyhow::anyhow!("provider error: {e}"))?;
-
-    while let Some(event) = rx.recv().await {
-        match event.event_type {
-            ai::StreamEventType::Text => {
-                print!("{}", event.text);
-            }
-            ai::StreamEventType::Done => break,
-            _ => {}
-        }
-    }
-    println!();
 
     Ok(())
 }

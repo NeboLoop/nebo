@@ -582,11 +582,17 @@ impl DynTool for SkillTool {
                     }
                     let path = skill_dir.join("SKILL.md");
                     match std::fs::write(&path, final_content) {
-                        Ok(_) => ToolResult::ok(format!(
-                            "Created skill '{}' at {}",
-                            name,
-                            path.display()
-                        )),
+                        Ok(_) => {
+                            // Make the skill (and its triggers) live NOW — the fs
+                            // watcher is not instant and first-call trigger tests
+                            // race it. Same pattern as the install paths.
+                            self.loader.reload_from_disk().await;
+                            ToolResult::ok(format!(
+                                "Created skill '{}' at {}",
+                                name,
+                                path.display()
+                            ))
+                        }
                         Err(e) => ToolResult::error(format!("Failed to write skill: {}. Do not retry — this is a filesystem error.", e)),
                     }
                 }

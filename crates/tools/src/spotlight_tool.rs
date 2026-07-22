@@ -95,7 +95,29 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let results: Vec<&str> = text.lines().take(limit).collect();
                 if results.is_empty() {
-                    ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")")
+                    // Spotlight does not index ~/Library (app data lives there), so
+                    // fall back to a bounded find when a dir was given, and say why
+                    // otherwise.
+                    if !dir.is_empty() {
+                        if let Ok(out) = tokio::process::Command::new("find")
+                            .arg(dir)
+                            .args(["-maxdepth", "8", "-iname"])
+                            .arg(format!("*{}*", query))
+                            .output()
+                            .await
+                        {
+                            let text = String::from_utf8_lossy(&out.stdout);
+                            let found: Vec<&str> = text.lines().take(limit).collect();
+                            if !found.is_empty() {
+                                return ToolResult::ok(format!(
+                                    "Found {} results (find fallback — Spotlight does not index this location):\n{}",
+                                    found.len(),
+                                    found.join("\n")
+                                ));
+                            }
+                        }
+                    }
+                    ToolResult::ok("No files found. Note: Spotlight does not index ~/Library — for app data pass dir: \"~/Library\" (a find fallback runs there). For name/extension patterns use glob: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")")
                 } else {
                     ToolResult::ok(format!(
                         "Found {} results:\n{}",

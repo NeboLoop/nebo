@@ -266,7 +266,17 @@ async fn handle_window_list() -> ToolResult {
                 return windowList
             end tell
         "#;
-        return run_osascript(script).await;
+        let result = run_osascript(script).await;
+        // System Events silently yields zero windows when this process lacks
+        // Accessibility/Automation permission — say so instead of "no windows".
+        if !result.is_error && result.content.trim().is_empty() {
+            return ToolResult::ok(
+                "No windows reported. If windows are open, this process likely lacks \
+                 Automation/Accessibility permission for System Events (System Settings \
+                 → Privacy & Security).",
+            );
+        }
+        return result;
     }
     #[cfg(target_os = "linux")]
     {
@@ -1213,10 +1223,18 @@ async fn clipboard_write(text: &str) -> ToolResult {
         };
         if let Some(stdin) = child.stdin.as_mut() {
             use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(text.as_bytes()).await;
+            if let Err(e) = stdin.write_all(text.as_bytes()).await {
+                return ToolResult::error(format!("Failed to write clipboard: {}", e));
+            }
         }
-        let _ = child.wait().await;
-        return ToolResult::ok("Clipboard updated");
+        return match child.wait().await {
+            Ok(status) if status.success() => ToolResult::ok("Clipboard updated"),
+            Ok(status) => ToolResult::error(format!(
+                "pbcopy exited with {} — clipboard NOT updated",
+                status
+            )),
+            Err(e) => ToolResult::error(format!("Failed to write clipboard: {}", e)),
+        };
     }
     #[cfg(target_os = "linux")]
     {
