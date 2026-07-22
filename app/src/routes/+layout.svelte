@@ -6,6 +6,7 @@
   import { goto, appPath } from '$lib/nav';
   import { beforeNavigate } from '$app/navigation';
   import { base } from '$app/paths';
+  import { mobileAgentsOpen } from '$lib/stores/mobileNav';
   import { onMount } from 'svelte';
 
   // Under the tunnel base (/t/<botID>/), goto() is base-aware via $lib/nav but
@@ -179,19 +180,29 @@
     <span class="loading loading-spinner loading-lg"></span>
   </div>
 {:else}
-  <div class="flex flex-col h-screen">
+  <div class="flex flex-col h-dvh">
     {#if !isMinimalChrome}
-      <header class="h-14 border-b border-base-300 bg-base-100 flex items-center px-4 shrink-0">
-        <a href="/" class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-4">
+      <header class="h-14 border-b border-base-300 bg-base-100 flex items-center px-2 md:px-4 shrink-0">
+        {#if activeSection === 'agents'}
+          <!-- Mobile: opens the Employees drawer (the sidebar is a slide-over below md) -->
+          <button
+            class="md:hidden w-9 h-9 mr-1 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70"
+            aria-label="Employees"
+            onclick={() => mobileAgentsOpen.update((v) => !v)}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
+        {/if}
+        <a href="/" class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-2 md:mr-4">
           <div class="w-5 h-5 rounded bg-primary text-primary-content flex items-center justify-center font-mono text-sm font-bold">N</div>
-          Nebo
+          <span class="hidden sm:inline">Nebo</span>
         </a>
-        <nav class="flex items-center h-full gap-1">
+        <nav class="flex items-center h-full gap-0.5 md:gap-1">
           {#each sections as s}
             <a
               href={s.path}
               data-tour={s.id}
-              class="px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors {activeSection === s.id
+              class="px-2 md:px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors {activeSection === s.id
                 ? 'border-primary text-base-content'
                 : 'border-transparent text-base-content/70 hover:text-base-content'}"
             >{$t(s.label)}</a>
@@ -201,10 +212,10 @@
         <button
           onclick={() => (showCommandPalette = true)}
           data-tour="search"
-          class="flex items-center h-8 w-48 rounded-field px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
+          class="flex items-center h-8 w-auto md:w-48 rounded-field px-2 md:px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
         >
           <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200">&#x2318;K</span>
-          <span class="text-base-content/70">{$t('nav.searchOrRun')}</span>
+          <span class="text-base-content/70 hidden md:inline">{$t('nav.searchOrRun')}</span>
         </button>
         <NotificationBell />
       </header>

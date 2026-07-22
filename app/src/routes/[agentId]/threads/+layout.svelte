@@ -4,6 +4,7 @@
   import { t } from 'svelte-i18n';
   import { getContext } from 'svelte';
   import AgentTabBar from '$lib/components/AgentTabBar.svelte';
+  import { mobileChatsOpen } from '$lib/stores/mobileNav';
   import type { AgentPageContext } from '$lib/types/agentPage';
   import { deleteChat, updateChat } from '$lib/api/nebo';
 
@@ -105,8 +106,11 @@
   </div>
 {/if}
 
-<!-- Column 2: Thread list -->
-<div class="w-[260px] min-w-[260px] border-r border-base-content/10 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.06)] relative shrink-0 flex flex-col bg-base-200/50">
+<!-- Column 2: Thread list (mobile: slide-over toggled from the threads bar) -->
+{#if $mobileChatsOpen}
+  <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => mobileChatsOpen.set(false)} role="presentation"></div>
+{/if}
+<div class="md:w-[260px] md:min-w-[260px] max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-transform {$mobileChatsOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full'} border-r border-base-content/10 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.06)] relative shrink-0 flex flex-col bg-base-200/50 max-md:bg-base-200">
   <AgentTabBar agentId={agentId} agentName={agent?.name ?? ''} agentInitial={agent?.initial ?? ''} status={agentStatus} isApp={ctx.isApp} />
 
   <div class="flex-1 overflow-y-auto">
@@ -167,5 +171,16 @@
 
 <!-- Column 3: Chat content from child page -->
 <div class="flex-1 flex flex-col bg-base-100 min-w-0 min-h-0">
+  <!-- Mobile threads bar: the drawer toggle (chat list is a slide-over below md) -->
+  <div class="md:hidden h-10 shrink-0 border-b border-base-300 flex items-center gap-2 px-2">
+    <button
+      class="h-8 px-2.5 rounded-md flex items-center gap-1.5 text-sm font-medium border-none bg-transparent cursor-pointer text-base-content/80"
+      onclick={() => mobileChatsOpen.update((v) => !v)}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      {$t('components.agentTabBar.chats')}
+    </button>
+    <span class="text-sm text-base-content/60 truncate">{agent?.name ?? ''}</span>
+  </div>
   {@render children()}
 </div>

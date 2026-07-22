@@ -71,6 +71,7 @@ class WebSocketClient {
 	private closedByUser = false;
 	private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 	private reconnectAttempts = 0;
+	private visibilityHooked = false;
 	private authToken: string | null = null;
 
 	// Presence tracking state
@@ -93,6 +94,17 @@ class WebSocketClient {
 	connect(token?: string): void {
 		if (token) {
 			this.authToken = token;
+		}
+		// Mobile browsers (iOS especially) suspend WebSockets in background tabs
+		// and standalone PWAs. Reconnect the moment the page is visible again so
+		// resume feels instant instead of waiting out the backoff timer.
+		if (typeof document !== 'undefined' && !this.visibilityHooked) {
+			this.visibilityHooked = true;
+			document.addEventListener('visibilitychange', () => {
+				if (document.visibilityState === 'visible' && this.ws?.readyState !== WebSocket.OPEN) {
+					this.connect();
+				}
+			});
 		}
 		if (this.ws?.readyState === WebSocket.OPEN) {
 			return;

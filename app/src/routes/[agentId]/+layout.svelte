@@ -9,6 +9,14 @@
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
+  import { mobileAgentsOpen, mobileChatsOpen } from '$lib/stores/mobileNav';
+
+  // Mobile drawers close on any navigation (open → pick → see content).
+  $effect(() => {
+    void $page.url.pathname;
+    mobileAgentsOpen.set(false);
+    mobileChatsOpen.set(false);
+  });
   const sidebarCollapsed = sidebarCollapsedFor('agents');
   import { devMode } from '$lib/stores/devmode.js';
   import type { AgentDisplay, EnrichedChat, AgentRun, WorkflowStatsLocal, WorkflowConfig } from '$lib/types/agentPage';
@@ -670,7 +678,11 @@
 {/if}
 
 <!-- Column 1: Agent roster -->
-<div data-tour="agents" class="{$sidebarCollapsed ? 'w-12 min-w-12' : 'w-[260px] min-w-[260px]'} border-r border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150">
+{#if $mobileAgentsOpen}
+  <!-- Mobile drawer backdrop -->
+  <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => mobileAgentsOpen.set(false)} role="presentation"></div>
+{/if}
+<div data-tour="agents" class="{$sidebarCollapsed ? 'md:w-12 md:min-w-12' : 'md:w-[260px] md:min-w-[260px]'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-transform {$mobileAgentsOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full'} border-r border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150">
   <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed ? 'justify-center' : 'px-3.5 justify-between'}">
     {#if !$sidebarCollapsed}
       <span class="text-sm font-semibold flex-1">{$t('sidebar.agents')}</span>
