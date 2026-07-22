@@ -87,11 +87,37 @@ fn shannon_entropy(s: &str) -> f64 {
 /// Shannon entropy ≥ 4.5 bits/char.
 fn is_high_entropy_token(token: &str) -> bool {
     let t = token.trim_matches(|c: char| matches!(c, '.' | ',' | ';' | ':' | '"' | '\'' | '(' | ')'));
-    t.len() >= HIGH_ENTROPY_MIN_LEN
+    if t.len() >= HIGH_ENTROPY_MIN_LEN
         && t.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-'))
         && t.chars().any(|c| c.is_ascii_digit())
         && shannon_entropy(t) >= HIGH_ENTROPY_THRESHOLD
+    {
+        return true;
+    }
+    // Dot-segmented compound tokens (SendGrid `SG.x.y`, JWT `a.b.c`): the dots
+    // break the contiguous-charset check above, so evaluate the segments —
+    // live-caught gap: a real SendGrid-shaped key stored verbatim. Segments
+    // must be strict base64url (no '/' or ':'), which keeps URLs and prose
+    // out: any scheme/path token fails the charset before entropy is measured.
+    let segments: Vec<&str> = t.split('.').collect();
+    if segments.len() >= 2 && t.len() >= HIGH_ENTROPY_MIN_LEN {
+        let all_base64url = segments.iter().all(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '='))
+        });
+        if all_base64url {
+            let joined: String = segments.concat();
+            if joined.len() >= HIGH_ENTROPY_MIN_LEN
+                && joined.chars().any(|c| c.is_ascii_digit())
+                && shannon_entropy(&joined) >= HIGH_ENTROPY_THRESHOLD
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Credential-shape classification — ONE pattern list, two consumers
@@ -372,6 +398,9 @@ mod tests {
             "passphrase = correct-horse-battery-staple-9",
             "Xj9kLq2Vm8Zr4Tb7Nc1Pw5Ys0",
             "the deploy token is Xj9kLq2Vm8Zr4Tb7Nc1Pw5Ys0.",
+            // Dot-segmented compounds (live-caught gap): SendGrid + JWT shapes
+            "SG.kX9mPqR2vTn4wYz8.aB3cD5eF7gH1jK2LmN4pQ6rS8tU0vW9xY1zA3bC5d",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQ5eF7gH1jK2m",
         ];
         for v in cases {
             assert!(classify_credential(v).is_some(), "expected credential: {v}");
@@ -391,6 +420,12 @@ mod tests {
             "Provo-Utah-84604-Building-7",
             "MyDropboxFolder2026Backup",
             "conference-room-building-seven",
+            // dotted but NOT credentials: URLs/hosts fail the strict-base64url
+            // segment charset (':' '/') or the entropy floor
+            "See https://docs.example.com/path/to/page for details",
+            "backup.server.internal",
+            "app.config.production.settings",
+            "version 2.7.1 released on schedule",
             // bare hex (commit SHA shape) stays below on purpose
             "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
             // prose mentioning passwords without a labeled value
