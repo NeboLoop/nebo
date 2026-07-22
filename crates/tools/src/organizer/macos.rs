@@ -22,18 +22,45 @@ pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
             .await
         }
         "read" => {
-            let limit = input.limit.unwrap_or(10).clamp(1, 50);
-            let mailbox = if input.mailbox.is_empty() {
-                "inbox".to_string()
+            // Content snippets cost ~0.8s/message via AppleScript, so the cap is
+            // 20 (not 50) to stay inside the 30s subprocess budget.
+            let limit = input.limit.unwrap_or(10).clamp(1, 20);
+            // A bare `mailbox "X"` only resolves "On My Mac" mailboxes — account
+            // mailboxes (the normal case) need resolving through their account,
+            // so non-inbox reads search every account for the name.
+            let resolve = if input.mailbox.is_empty() {
+                "set box to inbox".to_string()
             } else {
-                format!("mailbox \"{}\"", escape_applescript(&input.mailbox))
+                format!(
+                    r#"set box to missing value
+    set wanted to "{name}"
+    repeat with acct in accounts
+        repeat with mb in (mailboxes of acct)
+            if name of mb is wanted then
+                set box to mb
+                exit repeat
+            end if
+        end repeat
+        if box is not missing value then exit repeat
+    end repeat
+    if box is missing value then return "Mailbox '" & wanted & "' not found in any account""#,
+                    name = escape_applescript(&input.mailbox)
+                )
             };
             let script = format!(
                 r#"tell application "Mail"
-    set msgs to (messages 1 through {limit} of {mailbox})
+    {resolve}
+    set n to count of messages of box
+    if n is 0 then return "No messages"
+    set lim to {limit}
+    if n < lim then set lim to n
     set output to ""
-    repeat with m in msgs
-        set output to output & "From: " & (sender of m) & linefeed & "Subject: " & (subject of m) & linefeed & "Date: " & (date received of m as text) & linefeed & "---" & linefeed
+    repeat with i from 1 to lim
+        set m to message i of box
+        set c to content of m
+        if c is missing value then set c to ""
+        if length of c > 200 then set c to (characters 1 through 200 of c) as string
+        set output to output & "From: " & (sender of m) & linefeed & "Subject: " & (subject of m) & linefeed & "Date: " & (date received of m as text) & linefeed & c & linefeed & "---" & linefeed
     end repeat
     return output
 end tell"#,
@@ -79,18 +106,22 @@ end tell"#,
             if query.is_empty() {
                 return ToolResult::error("'query' parameter required for search");
             }
+            // Mail's scripting suite has NO `search` verb (the previous
+            // `search inbox for …` never even parsed) — a whose-clause over
+            // subject + sender is the supported query form, and it's fast
+            // (measured ~0.15s over a few-hundred-message inbox).
             let limit = input.limit.unwrap_or(20).clamp(1, 50);
             let script = format!(
                 r#"tell application "Mail"
-    set found to (search inbox for "{query}")
+    set found to (messages of inbox whose subject contains "{query}" or sender contains "{query}")
+    if (count of found) is 0 then return "No messages found"
     set output to ""
     set i to 0
     repeat with m in found
         if i >= {limit} then exit repeat
-        set output to output & "From: " & (sender of m) & " | Subject: " & (subject of m) & linefeed
+        set output to output & "From: " & (sender of m) & " | Subject: " & (subject of m) & " | " & (date received of m as text) & linefeed
         set i to i + 1
     end repeat
-    if output is "" then return "No messages found"
     return output
 end tell"#,
                 query = escape_applescript(query),
