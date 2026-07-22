@@ -56,6 +56,11 @@
 		else if (price === 'paid') result = result.filter((it) => !it.free);
 		if (category) result = result.filter((it) => slugify(it.category) === category);
 		if (publisher) result = result.filter((it) => it.author === publisher);
+		// Sidebar map filter (same scheme as the website): agents narrow by
+		// department; tool-type kinds and collections narrow by tool category.
+		if (kind === 'agents' && deptFilter) result = result.filter((it) => mapOf(it)?.dept === deptFilter);
+		else if (tcFilter && ['apps', 'skills', 'plugins', 'connectors', 'collections'].includes(kind))
+			result = result.filter((it) => mapOf(it)?.tc === tcFilter);
 		return result;
 	});
 

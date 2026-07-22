@@ -19,9 +19,11 @@
   import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
   let { children } = $props();
 
-  // Mobile: the nav sidebar becomes a sliding drawer; closed by default, closes on navigation.
+  // Mobile: the nav sidebar becomes a sliding drawer and search becomes a
+  // full-screen overlay; both closed by default, both close on navigation.
   let mobileFiltersOpen = $state(false);
-  afterNavigate(() => (mobileFiltersOpen = false));
+  let mobileSearchOpen = $state(false);
+  afterNavigate(() => { mobileFiltersOpen = false; mobileSearchOpen = false; });
 
   type MarketItem = { id: string; name: string; desc: string; category: string; rating: number; installs: number; featured: boolean; price: string; code: string; type: string; path: string; private: boolean; org?: Record<string, unknown> };
   let categories = $state<{ slug: string; name: string; emoji: string; count: number }[]>([]);
@@ -123,10 +125,13 @@
   // param (all/agents/apps/...). Everywhere else it derives from the pathname.
   const activeKind = $derived($page.url.searchParams.get('kind') || 'all');
   const activeFilter = $derived($page.url.searchParams.get('filter') || '');
-  // Curated map drives the sidebar for the Employees/Tools views (departments /
-  // tool categories, same single source as the website).
+  // Curated map drives the sidebar per tab, same single source as the website:
+  // employee-type tabs filter by department, tool-type tabs (incl. collections,
+  // which the website filters by tool category too) by tool category.
   let mktMap: MarketplaceMap | null = $state(null);
   onMount(() => { loadMarketplaceMap().then((m) => (mktMap = m)); });
+  const DEPT_KINDS = ['employees', 'agents'];
+  const TC_KINDS = ['tools', 'apps', 'skills', 'plugins', 'connectors', 'collections'];
   const activePrice = $derived($page.url.searchParams.get('price') || 'all');
   const activeCategory = $derived($page.url.searchParams.get('category') || '');
   // Detail pages (/marketplace/<type>/<id>) shouldn't show the kind filter bar.
@@ -197,6 +202,41 @@
 
 <svelte:head><title>Marketplace - Nebo</title></svelte:head>
 
+<!-- Shared search result rows — rendered in the desktop dropdown and the mobile overlay -->
+{#snippet searchRows()}
+  {#if searchResults.length > 0}
+    {#each searchResults as item}
+      <button
+        class="w-full flex items-center gap-3 px-3.5 py-2.5 text-left cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-b border-b-base-300 last:border-b-0"
+        onmousedown={() => selectResult(item.path)}
+      >
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium truncate flex items-center gap-1.5">
+            {#if item.private}
+              <Lock class="w-3 h-3 text-base-content/50 shrink-0" />
+            {/if}
+            {item.name}
+          </div>
+          <div class="text-xs text-base-content/70 truncate">{item.desc}</div>
+        </div>
+        {#if item.private && item.org}
+          <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-accent/10 text-accent shrink-0">{item.org.name}</span>
+        {:else}
+          <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70 shrink-0">{$t(typeLabelKeys[item.type])}</span>
+        {/if}
+      </button>
+    {/each}
+    <button
+      class="w-full px-3.5 py-2.5 text-left text-sm font-medium text-primary cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-t border-t-base-300"
+      onmousedown={submitSearch}
+    >{$t('marketplace.seeAllResults', { values: { query: debouncedQuery } })}</button>
+  {:else if searchLoading}
+    <div class="px-3.5 py-4 text-center text-xs text-base-content/50">{$t('marketplace.searching')}</div>
+  {:else}
+    <div class="px-3.5 py-4 text-center text-xs text-base-content/50">{$t('marketplace.noResultsFor', { values: { query: debouncedQuery } })}</div>
+  {/if}
+{/snippet}
+
 <!-- Left panel: marketplace nav — sliding drawer below md -->
 {#if mobileFiltersOpen}
   <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => (mobileFiltersOpen = false)} role="presentation"></div>
@@ -260,12 +300,12 @@
     </div>
 
     <div class="flex-1 overflow-y-auto">
-      {#if activeKind === 'employees' && mktMap}
+      {#if DEPT_KINDS.includes(activeKind) && mktMap}
         <!-- Departments — the website's employees nav -->
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.departments')}</div>
         <div class="px-1.5">
           <a
-            href="/marketplace?kind=employees"
+            href="/marketplace?kind={activeKind}"
             class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {!activeFilter
               ? 'bg-base-100 border-base-300 shadow-sm font-medium'
               : 'border-transparent hover:bg-base-100/70'}"
@@ -274,7 +314,7 @@
           </a>
           {#each mktMap.departments as d}
             <a
-              href="/marketplace?kind=employees&filter={mapSlugify(d)}"
+              href="/marketplace?kind={activeKind}&filter={mapSlugify(d)}"
               class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {activeFilter === mapSlugify(d)
                 ? 'bg-base-100 border-base-300 shadow-sm font-medium'
                 : 'border-transparent hover:bg-base-100/70'}"
@@ -283,12 +323,12 @@
             </a>
           {/each}
         </div>
-      {:else if activeKind === 'tools' && mktMap}
-        <!-- Tool categories — the website's tools nav -->
+      {:else if TC_KINDS.includes(activeKind) && mktMap}
+        <!-- Tool categories — the website's tools/collections nav -->
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.toolCategories')}</div>
         <div class="px-1.5">
           <a
-            href="/marketplace?kind=tools"
+            href="/marketplace?kind={activeKind}"
             class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {!activeFilter
               ? 'bg-base-100 border-base-300 shadow-sm font-medium'
               : 'border-transparent hover:bg-base-100/70'}"
@@ -297,7 +337,7 @@
           </a>
           {#each mktMap.toolCategories as c}
             <a
-              href="/marketplace?kind=tools&filter={mapSlugify(c)}"
+              href="/marketplace?kind={activeKind}&filter={mapSlugify(c)}"
               class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {activeFilter === mapSlugify(c)
                 ? 'bg-base-100 border-base-300 shadow-sm font-medium'
                 : 'border-transparent hover:bg-base-100/70'}"
@@ -378,8 +418,16 @@
     {:else}
       <div class="flex-1"></div>
     {/if}
-    <div class="relative ml-auto shrink-0">
-      <form class="flex items-center h-[26px] w-[220px] max-md:w-[150px] rounded-[5px] px-[9px] gap-1.5 text-sm border border-base-300 bg-base-100" onsubmit={(e) => { e.preventDefault(); submitSearch(); }}>
+    <!-- Mobile: search is a full-screen overlay, so the header only carries the trigger -->
+    <button
+      class="md:hidden ml-auto w-8 h-8 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border border-base-300 shrink-0"
+      onclick={() => (mobileSearchOpen = true)}
+      title={$t('marketplace.searchPlaceholder')}
+    >
+      <Search class="w-4 h-4" />
+    </button>
+    <div class="max-md:hidden relative ml-auto shrink-0">
+      <form class="flex items-center h-[26px] w-[220px] rounded-[5px] px-[9px] gap-1.5 text-sm border border-base-300 bg-base-100" onsubmit={(e) => { e.preventDefault(); submitSearch(); }}>
         <Search class="w-3 h-3 text-base-content/50 shrink-0" />
         <input
           type="text"
@@ -397,41 +445,43 @@
       </form>
       {#if showResults}
         <div class="absolute top-full right-0 mt-1 w-[340px] bg-base-100 border border-base-300 rounded-lg shadow-xl z-50 overflow-hidden">
-          {#if searchResults.length > 0}
-            {#each searchResults as item}
-              <button
-                class="w-full flex items-center gap-3 px-3.5 py-2.5 text-left cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-b border-b-base-300 last:border-b-0"
-                onmousedown={() => selectResult(item.path)}
-              >
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm font-medium truncate flex items-center gap-1.5">
-                    {#if item.private}
-                      <Lock class="w-3 h-3 text-base-content/50 shrink-0" />
-                    {/if}
-                    {item.name}
-                  </div>
-                  <div class="text-xs text-base-content/70 truncate">{item.desc}</div>
-                </div>
-                {#if item.private && item.org}
-                  <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-accent/10 text-accent shrink-0">{item.org.name}</span>
-                {:else}
-                  <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70 shrink-0">{$t(typeLabelKeys[item.type])}</span>
-                {/if}
-              </button>
-            {/each}
-            <button
-              class="w-full px-3.5 py-2.5 text-left text-sm font-medium text-primary cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-t border-t-base-300"
-              onmousedown={submitSearch}
-            >{$t('marketplace.seeAllResults', { values: { query: debouncedQuery } })}</button>
-          {:else if searchLoading}
-            <div class="px-3.5 py-4 text-center text-xs text-base-content/50">{$t('marketplace.searching')}</div>
-          {:else}
-            <div class="px-3.5 py-4 text-center text-xs text-base-content/50">{$t('marketplace.noResultsFor', { values: { query: debouncedQuery } })}</div>
-          {/if}
+          {@render searchRows()}
         </div>
       {/if}
     </div>
   </div>
+  {#if mobileSearchOpen}
+    <!-- Mobile search overlay: full-screen takeover with live results -->
+    <div class="md:hidden fixed inset-0 z-50 bg-base-100 flex flex-col">
+      <div class="h-12 px-3 border-b border-base-300 flex items-center gap-2 shrink-0">
+        <form class="flex items-center flex-1 h-9 rounded-md px-2.5 gap-1.5 border border-base-300 bg-base-100 min-w-0" onsubmit={(e) => { e.preventDefault(); submitSearch(); }}>
+          <Search class="w-4 h-4 text-base-content/50 shrink-0" />
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            type="text"
+            bind:value={searchQuery}
+            placeholder={$t('marketplace.searchPlaceholder')}
+            autofocus
+            class="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50 min-w-0"
+          />
+          {#if searchQuery}
+            <button type="button" class="p-0 bg-transparent border-none cursor-pointer shrink-0" onclick={clearSearch}>
+              <X class="w-3.5 h-3.5 text-base-content/50" />
+            </button>
+          {/if}
+        </form>
+        <button
+          class="h-9 px-2.5 rounded-md text-sm font-medium border-none bg-transparent cursor-pointer text-base-content/80 shrink-0"
+          onclick={() => { mobileSearchOpen = false; clearSearch(); }}
+        >{$t('common.cancel')}</button>
+      </div>
+      <div class="flex-1 overflow-y-auto">
+        {#if debouncedQuery.trim()}
+          {@render searchRows()}
+        {/if}
+      </div>
+    </div>
+  {/if}
   <div class="flex-1 min-h-0 overflow-y-auto">
     {@render children()}
   </div>
