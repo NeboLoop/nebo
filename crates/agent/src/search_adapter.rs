@@ -61,7 +61,21 @@ pub async fn prewarm(store: &Arc<Store>, provider: &dyn ai::EmbeddingProvider) {
     };
     let mut built = 0usize;
     for user_id in users {
-        if let Some(index) = search::load_vector_index(store, &user_id, model) {
+        // spawn_blocking: the load is a full SQLite embedding scan plus
+        // per-vector quantization — tens of seconds of sync CPU for a large
+        // user. Run inline it pins a runtime worker, and on a single-worker
+        // runtime (1-vCPU cloud pod) that starves the HTTP accept loop until
+        // the liveness probe kills the healthy server (2026-07-22 incident).
+        let store_b = store.clone();
+        let model_b = model.to_string();
+        let uid = user_id.clone();
+        let index = tokio::task::spawn_blocking(move || {
+            search::load_vector_index(&store_b, &uid, &model_b)
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(index) = index {
             if let Ok(mut map) = index_cache().write() {
                 map.insert(user_id, Arc::new(index));
                 built += 1;
@@ -91,7 +105,7 @@ impl HybridSearchAdapter {
         }
     }
 
-    fn get_or_load_index(&self, user_id: &str) -> Option<Arc<IdMapIndex>> {
+    async fn get_or_load_index(&self, user_id: &str) -> Option<Arc<IdMapIndex>> {
         // Fast path: index already loaded
         if let Ok(map) = index_cache().read() {
             if let Some(idx) = map.get(user_id) {
@@ -99,9 +113,16 @@ impl HybridSearchAdapter {
             }
         }
 
-        // Slow path: load from DB
+        // Slow path: load from DB — sync scan + quantization, off the runtime
+        // workers for the same reason as prewarm() above.
         let model = self.embedding_provider.as_ref()?.id().to_string();
-        let index = search::load_vector_index(&self.store, user_id, &model)?;
+        let store = self.store.clone();
+        let uid = user_id.to_string();
+        let index =
+            tokio::task::spawn_blocking(move || search::load_vector_index(&store, &uid, &model))
+                .await
+                .ok()
+                .flatten()?;
         let index = Arc::new(index);
 
         if let Ok(mut map) = index_cache().write() {
@@ -134,7 +155,7 @@ impl HybridSearcher for HybridSearchAdapter {
             let provider_ref: Option<&dyn ai::EmbeddingProvider> =
                 self.embedding_provider.as_deref();
 
-            let index = self.get_or_load_index(user_id);
+            let index = self.get_or_load_index(user_id).await;
             let index_ref = index.as_deref();
 
             let results = search::hybrid_search(
