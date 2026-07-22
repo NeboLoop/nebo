@@ -848,11 +848,18 @@ impl Loader {
             use notify::{Event, EventKind, RecursiveMode, Watcher};
             use tokio::sync::mpsc;
 
-            let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(32);
+            // Unbounded + non-blocking send: the callback runs on notify's
+            // event-loop thread, and watcher.watch() below round-trips through
+            // that same thread. A bounded channel that filled during the watch()
+            // setup window blocked the notify thread in blocking_send, which
+            // deadlocked watch() → notify → consumer on a single-worker runtime
+            // (2026-07-22 cloud incident: 1-vCPU pods froze at end of boot).
+            // Same pattern at every notify watcher site in the workspace.
+            let (tx, mut rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
 
             let mut watcher = match notify::RecommendedWatcher::new(
                 move |res| {
-                    let _ = tx.blocking_send(res);
+                    let _ = tx.send(res);
                 },
                 notify::Config::default().with_poll_interval(std::time::Duration::from_secs(2)),
             ) {

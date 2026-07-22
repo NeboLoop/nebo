@@ -1524,11 +1524,11 @@ async fn folder_watch_loop(
         }
     }
 
-    let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(64);
+    let (tx, mut rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
 
     let mut watcher = match notify::RecommendedWatcher::new(
         move |res| {
-            let _ = tx.blocking_send(res);
+            let _ = tx.send(res);
         },
         notify::Config::default().with_poll_interval(std::time::Duration::from_secs(2)),
     ) {
