@@ -467,6 +467,12 @@ impl CommPlugin for NeboAIPlugin {
             if !auth_result.token.is_empty() {
                 *self.rotated_token.write().await = Some(auth_result.token.clone());
 
+                // The gateway invalidated the connect token the moment it rotated
+                // (token_issued_at check in the loop's REST middleware), so the
+                // REST client must switch to the rotated token NOW — not on next
+                // boot — or every channel/group API call 401s with "stale token".
+                api.set_token(auth_result.token.clone());
+
                 // Persist rotated token to cache file immediately — if the process
                 // is killed (e.g. hot reload) before the caller can persist to DB,
                 // the next startup reads this file and avoids "stale token" failure.
