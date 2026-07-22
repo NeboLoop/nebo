@@ -53,11 +53,11 @@
 
 <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
   <!-- Header -->
-  <div class="px-5 py-3.5 flex items-center gap-2 border-b border-base-content/10 shrink-0">
+  <div class="px-5 max-md:px-3 py-3.5 flex flex-wrap items-center gap-2 max-md:gap-y-2 border-b border-base-content/10 shrink-0">
     <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-lg" onclick={goPrev}>‹</button>
     <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-lg" onclick={goNext}>›</button>
 
-    <h1 class="text-xl font-bold tracking-tight ml-1">{dateLabel}</h1>
+    <h1 class="text-xl max-md:text-base font-bold tracking-tight ml-1">{dateLabel}</h1>
     {#if dateSub}
       <span class="text-xs text-base-content/70">{dateSub}</span>
     {/if}

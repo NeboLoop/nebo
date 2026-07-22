@@ -411,6 +411,45 @@
       {/if}
     </div>
   </div>
+  {#if !isDetail && mktMap && (activeKind === 'employees' || activeKind === 'tools')}
+    <!-- Mobile filter chips — the sidebar (departments / tool categories) is
+         hidden below md, so surface the same navigation as a chip scroller. -->
+    <div class="md:hidden border-b border-base-content/10 shrink-0 overflow-x-auto">
+      <div class="flex items-center gap-1.5 px-3 py-2 w-max">
+        {#if activeKind === 'employees'}
+          <a
+            href="/marketplace?kind=employees"
+            class="shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors border {!activeFilter
+              ? 'bg-base-content text-base-100 border-transparent'
+              : 'border-base-300 text-base-content/70 hover:bg-base-200'}"
+          >{$t('marketplace.allDepartments')}</a>
+          {#each mktMap.departments as d}
+            <a
+              href="/marketplace?kind=employees&filter={mapSlugify(d)}"
+              class="shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors border {activeFilter === mapSlugify(d)
+                ? 'bg-base-content text-base-100 border-transparent'
+                : 'border-base-300 text-base-content/70 hover:bg-base-200'}"
+            >{d}</a>
+          {/each}
+        {:else}
+          <a
+            href="/marketplace?kind=tools"
+            class="shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors border {!activeFilter
+              ? 'bg-base-content text-base-100 border-transparent'
+              : 'border-base-300 text-base-content/70 hover:bg-base-200'}"
+          >{$t('marketplace.allToolCategories')}</a>
+          {#each mktMap.toolCategories as c}
+            <a
+              href="/marketplace?kind=tools&filter={mapSlugify(c)}"
+              class="shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors border {activeFilter === mapSlugify(c)
+                ? 'bg-base-content text-base-100 border-transparent'
+                : 'border-base-300 text-base-content/70 hover:bg-base-200'}"
+            >{c}</a>
+          {/each}
+        {/if}
+      </div>
+    </div>
+  {/if}
   <div class="flex-1 min-h-0 overflow-y-auto">
     {@render children()}
   </div>

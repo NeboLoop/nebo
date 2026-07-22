@@ -9,8 +9,8 @@
 	import SectionListGrid from '$lib/components/marketplace/sections/SectionListGrid.svelte';
 	import MarketplaceGrid from '$lib/components/MarketplaceGrid.svelte';
 	import ListCard from '$lib/components/marketplace/ListCard.svelte';
-	import { listStoreProducts, listStoreFeatured, listStoreCategories } from '$lib/api/nebo';
-	import { type AppItem, toAppItem } from '$lib/types/marketplace';
+	import { loadStoreCatalog } from '$lib/data/storeCatalog';
+	import { type AppItem } from '$lib/types/marketplace';
 	import ResumeCard from '$lib/components/marketplace/ResumeCard.svelte';
 	import { loadMarketplaceMap, deptFromSlug, toolCatFromSlug, type MarketplaceMap } from '$lib/data/marketplaceMap';
 	import { slugify, categoryMeta } from '$lib/data/categories';
@@ -38,47 +38,13 @@
 	let featured: AppItem[] = $state([]);
 	let categoryOrder: string[] = $state([]);
 
-	// The proxy caps at 100/page. Fetch page 1, read `total`, then fetch only the
-	// remaining pages that actually have data (in parallel) — no fixed page count
-	// to over-fetch empty pages or under-fetch as the catalog grows.
-	const PAGE_SIZE = 100;
-	async function fetchAllProducts(): Promise<AppItem[]> {
-		const first = (await listStoreProducts(undefined, undefined, 1, PAGE_SIZE).catch(
-			() => ({ products: [], total: 0 })
-		)) as { products?: any[]; total?: number };
-		const total = Number(first?.total ?? (first?.products?.length ?? 0));
-		const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-		const rest = await Promise.all(
-			Array.from({ length: pages - 1 }, (_, i) =>
-				listStoreProducts(undefined, undefined, i + 2, PAGE_SIZE).catch(() => ({ products: [] }))
-			)
-		);
-		const seen = new Set<string>();
-		const out: AppItem[] = [];
-		for (const res of [first, ...rest]) {
-			for (const r of ((res as { products?: any[] })?.products as any[]) || []) {
-				const id = String(r?.id ?? '');
-				if (!id || seen.has(id)) continue;
-				seen.add(id);
-				out.push(toAppItem(r, out.length));
-			}
-		}
-		return out;
-	}
-
 	onMount(async () => {
 		try {
-			const [products, featuredRes, catsRes, mapRes] = await Promise.all([
-				fetchAllProducts(),
-				listStoreFeatured().catch(() => ({ products: [] })),
-				listStoreCategories().catch(() => ({ categories: [] })),
-				loadMarketplaceMap()
-			]);
+			const [catalog, mapRes] = await Promise.all([loadStoreCatalog(), loadMarketplaceMap()]);
 			mktMap = mapRes;
-			items = products;
-			featured = (((featuredRes as { products?: any[] })?.products as any[]) || []).map((r, i) => toAppItem(r, i));
-			const cats = ((catsRes as { categories?: any[] })?.categories as any[]) || [];
-			categoryOrder = cats.map((c) => String(c.name || ''));
+			items = catalog.items;
+			featured = catalog.featured;
+			categoryOrder = catalog.categoryOrder;
 		} catch { /* ignore */ }
 		loading = false;
 	});
