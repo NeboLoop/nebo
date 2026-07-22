@@ -12,6 +12,7 @@ mod heartbeat;
 pub mod middleware;
 mod migration;
 mod plugin_commands;
+pub(crate) mod plugin_oauth;
 mod plugin_provider;
 mod redact;
 pub mod routes;
@@ -748,6 +749,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         gemini = cli_statuses.gemini.installed,
         "CLI detection complete"
     );
+
+    // Seed the provider_models catalog BEFORE building providers. On a fresh
+    // database (first boot of a provisioned cloud pod) build_providers' Janus
+    // has-active-chat-models gate reads this table — seeding it afterwards
+    // left every newly provisioned bot with NO LLM provider until a restart
+    // (observed live: providers built at t+0.0s, catalog seeded at t+1.3s).
+    {
+        let boot_models_cfg = config::ModelsConfig::load();
+        seed_models_from_catalog(&store, &boot_models_cfg);
+        info!("seeded provider_models from embedded catalog (pre-provider-build)");
+    }
 
     // Build AI providers from database auth profiles + active CLI providers
     let mut providers = build_providers(&store, &cfg, Some(&cli_statuses));
@@ -1703,9 +1715,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Recover incomplete sub-agent tasks from previous crash
     orch_handle.get().unwrap().recover().await;
 
-    // Seed provider_models table from the models catalog loaded earlier
-    seed_models_from_catalog(&store, &models_cfg);
-    info!("seeded provider_models from embedded catalog");
+    // provider_models is seeded earlier, BEFORE build_providers (fresh-DB
+    // first boots need the catalog present when the Janus gate reads it).
     let models_config = Arc::new(models_cfg);
 
     // Create snapshot store for browser accessibility snapshots
