@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { afterNavigate } from '$app/navigation';
   import { goto, appPath } from '$lib/nav';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
@@ -15,7 +16,12 @@
   import Search from 'lucide-svelte/icons/search';
   import X from 'lucide-svelte/icons/x';
   import Lock from 'lucide-svelte/icons/lock';
+  import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
   let { children } = $props();
+
+  // Mobile: the nav sidebar becomes a sliding drawer; closed by default, closes on navigation.
+  let mobileFiltersOpen = $state(false);
+  afterNavigate(() => (mobileFiltersOpen = false));
 
   type MarketItem = { id: string; name: string; desc: string; category: string; rating: number; installs: number; featured: boolean; price: string; code: string; type: string; path: string; private: boolean; org?: Record<string, unknown> };
   let categories = $state<{ slug: string; name: string; emoji: string; count: number }[]>([]);
@@ -191,18 +197,24 @@
 
 <svelte:head><title>Marketplace - Nebo</title></svelte:head>
 
-<!-- Left panel: marketplace nav -->
-<div class="max-md:hidden {$sidebarCollapsed ? 'w-12 min-w-12' : 'w-[220px] min-w-[220px]'} border-r border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
-  <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed ? 'justify-center' : 'px-3.5 justify-between'}">
-    {#if !$sidebarCollapsed}
+<!-- Left panel: marketplace nav — sliding drawer below md -->
+{#if mobileFiltersOpen}
+  <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => (mobileFiltersOpen = false)} role="presentation"></div>
+{/if}
+<div class="{$sidebarCollapsed ? 'md:w-12 md:min-w-12' : 'md:w-[220px] md:min-w-[220px]'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-transform {mobileFiltersOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full'} border-r border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
+  <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed && !mobileFiltersOpen ? 'md:justify-center px-3.5 max-md:justify-between' : 'px-3.5 justify-between'}">
+    {#if !$sidebarCollapsed || mobileFiltersOpen}
       <span class="text-sm font-semibold flex-1">{$t('marketplace.title')}</span>
     {/if}
-    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}>
+    <button class="max-md:hidden w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}>
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="3" x2="5.5" y2="13" stroke="currentColor" stroke-width="1.2"/></svg>
+    </button>
+    <button class="md:hidden w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => (mobileFiltersOpen = false)} title={$t('common.close')}>
+      <X class="w-4 h-4" />
     </button>
   </div>
 
-  {#if $sidebarCollapsed}
+  {#if $sidebarCollapsed && !mobileFiltersOpen}
     <div class="flex-1 overflow-y-auto">
       <div class="flex flex-col items-center gap-1 py-2">
         {#each navItems as item}
@@ -344,6 +356,15 @@
 <div class="flex-1 flex flex-col bg-base-100 min-w-0">
   <div class="h-12 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
     {#if !isDetail}
+      <button
+        class="md:hidden w-8 h-8 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border border-base-300 shrink-0"
+        onclick={() => (mobileFiltersOpen = true)}
+        title={$t('marketplace.title')}
+      >
+        <SlidersHorizontal class="w-4 h-4" />
+      </button>
+    {/if}
+    {#if !isDetail}
       <div class="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
         {#each navItems as item}
           <a
@@ -411,45 +432,6 @@
       {/if}
     </div>
   </div>
-  {#if !isDetail && mktMap && (activeKind === 'employees' || activeKind === 'tools')}
-    <!-- Mobile filter chips — the sidebar (departments / tool categories) is
-         hidden below md, so surface the same navigation as a chip scroller. -->
-    <div class="md:hidden border-b border-base-content/10 shrink-0 overflow-x-auto">
-      <div class="flex items-center gap-1.5 px-3 py-2 w-max">
-        {#if activeKind === 'employees'}
-          <a
-            href="/marketplace?kind=employees"
-            class="shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors border {!activeFilter
-              ? 'bg-base-content text-base-100 border-transparent'
-              : 'border-base-300 text-base-content/70 hover:bg-base-200'}"
-          >{$t('marketplace.allDepartments')}</a>
-          {#each mktMap.departments as d}
-            <a
-              href="/marketplace?kind=employees&filter={mapSlugify(d)}"
-              class="shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors border {activeFilter === mapSlugify(d)
-                ? 'bg-base-content text-base-100 border-transparent'
-                : 'border-base-300 text-base-content/70 hover:bg-base-200'}"
-            >{d}</a>
-          {/each}
-        {:else}
-          <a
-            href="/marketplace?kind=tools"
-            class="shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors border {!activeFilter
-              ? 'bg-base-content text-base-100 border-transparent'
-              : 'border-base-300 text-base-content/70 hover:bg-base-200'}"
-          >{$t('marketplace.allToolCategories')}</a>
-          {#each mktMap.toolCategories as c}
-            <a
-              href="/marketplace?kind=tools&filter={mapSlugify(c)}"
-              class="shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors border {activeFilter === mapSlugify(c)
-                ? 'bg-base-content text-base-100 border-transparent'
-                : 'border-base-300 text-base-content/70 hover:bg-base-200'}"
-            >{c}</a>
-          {/each}
-        {/if}
-      </div>
-    </div>
-  {/if}
   <div class="flex-1 min-h-0 overflow-y-auto">
     {@render children()}
   </div>
