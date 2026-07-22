@@ -13,6 +13,12 @@ pub fn routes() -> Router<AppState> {
             "/plugins/events",
             axum::routing::get(handlers::plugins::list_all_plugin_events),
         )
+        // Hub-relayed OAuth callback for tunnel-accessed bots. Static segment
+        // wins over `/plugins/{slug}/...`; nonce-in-state is the auth.
+        .route(
+            "/plugins/oauth/relay",
+            axum::routing::get(handlers::plugins::oauth_relay),
+        )
         .route(
             "/plugins/{slug}",
             axum::routing::delete(handlers::plugins::remove_plugin),
