@@ -142,6 +142,58 @@ fn persist_capability_grant(store: &Store, category: &str) -> Result<(), String>
         .map_err(|e| e.to_string())
 }
 
+/// "Approve Always" on an MCP tool call → pin an explicit Always-allow override
+/// in the server's tool-permission map — the SAME store Settings → MCP → Tool
+/// permissions edits (tools::policy::McpServerPermissions on the integration row).
+fn persist_mcp_tool_allow(store: &Store, integration_id: &str, tool: &str) -> Result<(), String> {
+    let mut perms = tools::policy::McpServerPermissions::from_json(
+        store
+            .get_mcp_tool_permissions(integration_id)
+            .map_err(|e| e.to_string())?
+            .as_deref(),
+    );
+    perms
+        .tools
+        .insert(tool.to_string(), tools::policy::McpToolAccess::Allow);
+    store
+        .set_mcp_tool_permissions(integration_id, &perms.to_json())
+        .map_err(|e| e.to_string())
+}
+
+/// One tool-approval round-trip (PERMISSIONS_SME §11): register a oneshot keyed
+/// by the tool_call id, emit `approval_request`, and await the ApprovalModal
+/// decision ("deny" / "once" / "always"). Run cancellation resolves to "deny".
+/// The ONE ask pathway shared by the capability gate and the MCP tri-state gate.
+async fn ask_tool_approval(
+    channels: &tools::ApprovalChannels,
+    tx: &mpsc::Sender<StreamEvent>,
+    cancel_token: &CancellationToken,
+    tool_call: &ai::ToolCall,
+    session_id: &str,
+    gate: &str,
+) -> String {
+    let request_id = tool_call.id.clone();
+    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    channels.lock().await.insert(request_id.clone(), resp_tx);
+    let _ = tx
+        .send(StreamEvent::approval_request(tool_call.clone()))
+        .await;
+    info!(
+        session_id,
+        request_id = %request_id,
+        gate,
+        tool = %tool_call.name,
+        "tool approval: waiting for user decision"
+    );
+    tokio::select! {
+        _ = cancel_token.cancelled() => {
+            channels.lock().await.remove(&request_id);
+            "deny".to_string()
+        }
+        result = resp_rx => result.unwrap_or_else(|_| "deny".to_string()),
+    }
+}
+
 /// Stable per-turn identity for spiral detection: tool name + action (e.g.
 /// "os:glob", "os:read", "web:navigate"). Resource is omitted — the action alone
 /// distinguishes glob/read/exec/navigate, and the os tool infers resource from
@@ -434,6 +486,9 @@ pub struct Runner {
     /// handler. Set via `set_approval_channels`.
     approval_channels: Option<tools::ApprovalChannels>,
     embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    /// The SAME hybrid-search adapter instance the memory tool uses (shared
+    /// TurboVec index cache) — powers per-message prompt recall.
+    hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
     /// Optional broadcast/loop-push sink for auto-generated chat titles.
     title_sink: std::sync::OnceLock<Arc<dyn ChatTitleSink>>,
 }
@@ -464,6 +519,7 @@ impl Runner {
             agent_registry,
             skill_loader,
             embedding_provider: None,
+            hybrid_searcher: None,
             title_sink: std::sync::OnceLock::new(),
         }
     }
@@ -495,6 +551,14 @@ impl Runner {
     /// Set the embedding provider for transcript indexing and memory embedding.
     pub fn set_embedding_provider(mut self, provider: Arc<dyn ai::EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
+        self
+    }
+
+    /// Set the hybrid searcher for per-message prompt memory recall — pass the
+    /// same adapter instance wired into the memory tool so both share one
+    /// pathway and one index cache.
+    pub fn set_hybrid_searcher(mut self, searcher: Arc<dyn tools::HybridSearcher>) -> Self {
+        self.hybrid_searcher = Some(searcher);
         self
     }
 
@@ -836,6 +900,7 @@ impl Runner {
         let approval_channels = self.approval_channels.clone();
         let full_access = req.full_access;
         let embedding_provider = self.embedding_provider.clone();
+        let hybrid_searcher = self.hybrid_searcher.clone();
         let tool_scope = req.tool_scope.clone();
         let plan_mode = req.plan_mode;
         let preactivate_tools = req.preactivate_tools.clone();
@@ -929,6 +994,7 @@ impl Runner {
                         approval_channels.as_ref(),
                         full_access,
                         embedding_provider.as_ref(),
+                        hybrid_searcher.as_ref(),
                         tool_scope.as_deref(),
                         false, // no plan_mode for forks
                         &preactivate_tools,
@@ -1011,6 +1077,7 @@ impl Runner {
                 approval_channels.as_ref(),
                 full_access,
                 embedding_provider.as_ref(),
+                hybrid_searcher.as_ref(),
                 tool_scope.as_deref(),
                 plan_mode,
                 &preactivate_tools,
@@ -1211,6 +1278,7 @@ async fn run_loop(
     approval_channels: Option<&tools::ApprovalChannels>,
     full_access: bool,
     embedding_provider: Option<&Arc<dyn ai::EmbeddingProvider>>,
+    hybrid_searcher: Option<&Arc<dyn tools::HybridSearcher>>,
     tool_scope: Option<&str>,
     plan_mode: bool,
     preactivate_tools: &[String],
@@ -1472,27 +1540,54 @@ async fn run_loop(
         }
     }
 
-    // Pre-load prompt-relevant memories via FTS (surfaces memories the decay scoring may miss)
+    // Pre-load prompt-relevant memories through the canonical hybrid search
+    // (FTS + vector when an embedding provider exists, FTS-only otherwise) —
+    // surfaces memories the decay scoring may miss.
+    let mut recalled_ids: Vec<i64> = Vec::new();
     if !user_prompt.is_empty() {
-        let t_fts = std::time::Instant::now();
+        let t_recall = std::time::Instant::now();
         let existing_ids: std::collections::HashSet<i64> = db_ctx
             .tacit_memories
             .iter()
             .map(|sm| sm.memory.id)
             .collect();
-        let relevant = db_context::load_prompt_relevant_memories(
-            store,
+        let (relevant, ids) = db_context::load_prompt_relevant_memories(
+            hybrid_searcher.map(|s| s.as_ref()),
             &memory_user_id,
             user_prompt,
             &existing_ids,
-        );
+        )
+        .await;
+        recalled_ids = ids;
         if !relevant.is_empty() {
             db_context_formatted.push_str(&relevant);
         }
         info!(
-            ms = t_fts.elapsed().as_millis() as u64,
-            session_id, "[telemetry] FTS memory search"
+            ms = t_recall.elapsed().as_millis() as u64,
+            session_id, "[telemetry] hybrid memory recall"
         );
+    }
+
+    // Access accounting: memories actually injected into this prompt — the
+    // identity slice plus per-message recall — get their access_count bumped
+    // so decay ranking reflects real usefulness (without this, a new correct
+    // memory loses to an old touched one forever). Spawned: never blocks the
+    // hot path.
+    {
+        let mut injected_ids: Vec<i64> = db_ctx
+            .tacit_memories
+            .iter()
+            .map(|sm| sm.memory.id)
+            .collect();
+        injected_ids.extend(&recalled_ids);
+        if !injected_ids.is_empty() {
+            let store_bump = store.clone();
+            tokio::spawn(async move {
+                for id in injected_ids {
+                    let _ = store_bump.increment_memory_access(id);
+                }
+            });
+        }
     }
 
     // Get active task (mutable: refreshed periodically to catch async detect_objective)
@@ -2023,6 +2118,7 @@ async fn run_loop(
                         session_id,
                         &memory_user_id,
                         &memory_topics,
+                        embedding_provider.cloned(),
                     )
                     .await;
                 }
@@ -3370,6 +3466,112 @@ async fn run_loop(
                 if blocked_results[idx].is_some() {
                     continue;
                 }
+                // ── MCP tri-state gate (Settings → MCP → Tool permissions) ────
+                // Per-server default + per-tool override, decided by
+                // tools::policy::McpServerPermissions: Allow auto-approves,
+                // Ask runs the SAME ApprovalGate round-trip as capabilities,
+                // Deny refuses with an error naming the setting. This gate is
+                // the ONE enforcement site for MCP tool permissions; MCP
+                // proxies carry no ambient capability, so the loop `continue`s
+                // here and never reaches the capability gate below.
+                if tool_calls[idx].name.starts_with("mcp__") {
+                    if let Some((integration_id, original)) =
+                        tools.mcp_proxy_info(&tool_calls[idx].name).await
+                    {
+                        let perms = tools::policy::McpServerPermissions::from_json(
+                            store
+                                .get_mcp_tool_permissions(&integration_id)
+                                .unwrap_or_default()
+                                .as_deref(),
+                        );
+                        // mcp__<server>__<tool> — the server slug, for messages.
+                        let server = tool_calls[idx]
+                            .name
+                            .split("__")
+                            .nth(1)
+                            .unwrap_or("server")
+                            .to_string();
+                        match perms.decide(&original) {
+                            tools::policy::McpToolAccess::Allow => {}
+                            tools::policy::McpToolAccess::Deny => {
+                                blocked_results[idx] = Some((
+                                    tool_calls[idx].clone(),
+                                    ToolResult::error(format!(
+                                        "Blocked: the MCP tool '{original}' on server \
+                                         '{server}' is set to Blocked in Settings → MCP → \
+                                         Tool permissions. Tell the user this tool is \
+                                         blocked by that setting and stop — do not retry \
+                                         or work around it."
+                                    )),
+                                ));
+                            }
+                            tools::policy::McpToolAccess::Ask if full_access => {
+                                // Full Access bypasses the ask, same as the
+                                // capability gate. Blocked above still blocks.
+                            }
+                            tools::policy::McpToolAccess::Ask => {
+                                match approval_channels {
+                                    Some(chs)
+                                        if tools::ExecutionMode::from(origin)
+                                            == tools::ExecutionMode::Interactive =>
+                                    {
+                                        let decision = ask_tool_approval(
+                                            chs,
+                                            tx,
+                                            cancel_token,
+                                            &tool_calls[idx],
+                                            session_id,
+                                            "mcp",
+                                        )
+                                        .await;
+                                        match decision.as_str() {
+                                            "always" => {
+                                                if let Err(e) = persist_mcp_tool_allow(
+                                                    store,
+                                                    &integration_id,
+                                                    &original,
+                                                ) {
+                                                    warn!(session_id, tool = %original, error = %e, "failed to persist MCP tool grant");
+                                                }
+                                            }
+                                            "once" | "approve" | "approved" | "yes" | "true" => {}
+                                            _ => {
+                                                blocked_results[idx] = Some((
+                                                    tool_calls[idx].clone(),
+                                                    ToolResult::error(format!(
+                                                        "The user declined to allow the MCP \
+                                                         tool '{original}' on server \
+                                                         '{server}'. Tell the user it needs \
+                                                         their approval and stop — do not \
+                                                         retry or work around it."
+                                                    )),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    // Unattended (cron/workflow/comm/subagent) or no
+                                    // channel: nobody can answer — refuse instead of
+                                    // hanging on a prompt nobody sees. Unlike the
+                                    // capability gate there is no registry backstop
+                                    // for MCP tools, so the refusal happens here.
+                                    _ => {
+                                        blocked_results[idx] = Some((
+                                            tool_calls[idx].clone(),
+                                            ToolResult::error(format!(
+                                                "The MCP tool '{original}' on server \
+                                                 '{server}' needs the user's approval \
+                                                 (Settings → MCP → Tool permissions) and no \
+                                                 one is available to approve it in this \
+                                                 run. Report this and stop."
+                                            )),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let category = match tools::capabilities::gating_capability(
                     &tool_calls[idx].name,
                     &tool_calls[idx].input,
@@ -3411,26 +3613,15 @@ async fn run_loop(
                     // registry Phase 1c hard-blocks (safe).
                     None => continue,
                 };
-                let request_id = tool_calls[idx].id.clone();
-                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                chs.lock().await.insert(request_id.clone(), resp_tx);
-                let _ = tx
-                    .send(StreamEvent::approval_request(tool_calls[idx].clone()))
-                    .await;
-                info!(
+                let decision = ask_tool_approval(
+                    chs,
+                    tx,
+                    cancel_token,
+                    &tool_calls[idx],
                     session_id,
-                    request_id = %request_id,
                     category,
-                    tool = %tool_calls[idx].name,
-                    "tool approval: waiting for user decision"
-                );
-                let decision = tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        chs.lock().await.remove(&request_id);
-                        "deny".to_string()
-                    }
-                    result = resp_rx => result.unwrap_or_else(|_| "deny".to_string()),
-                };
+                )
+                .await;
                 match decision.as_str() {
                     "always" => {
                         approved_cats.insert(category.to_string());

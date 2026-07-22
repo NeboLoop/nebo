@@ -365,6 +365,33 @@ impl Store {
         Ok(())
     }
 
+    /// The per-server MCP tool-permission map (tools::policy::McpServerPermissions
+    /// JSON). None until the first sync or edit writes it — callers treat that
+    /// as all-defaults (everything asks).
+    pub fn get_mcp_tool_permissions(&self, id: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT tool_permissions FROM mcp_integrations WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(v) => Ok(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(NeboError::Database(e.to_string())),
+        }
+    }
+
+    /// Persist the per-server MCP tool-permission map (JSON).
+    pub fn set_mcp_tool_permissions(&self, id: &str, json: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE mcp_integrations SET tool_permissions = ?1, updated_at = unixepoch() WHERE id = ?2",
+            params![json, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn set_mcp_connection_status(
         &self,
         id: &str,

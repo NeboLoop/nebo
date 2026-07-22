@@ -1007,6 +1007,28 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         agent::search_adapter::HybridSearchAdapter::new(store.clone(), embedding_provider.clone()),
     );
 
+    // Embed-on-store hook: explicit memory-tool stores go through the SAME
+    // chunk+embed pathway as automatic extraction. Absent when no embedding
+    // provider is configured (the hook would have nothing to embed with).
+    let memory_embedder: Option<Arc<dyn tools::MemoryEmbedder>> =
+        embedding_provider.clone().map(|ep| {
+            Arc::new(agent::search_adapter::MemoryEmbedAdapter::new(
+                store.clone(),
+                ep,
+            )) as Arc<dyn tools::MemoryEmbedder>
+        });
+
+    // Background boot backfill: embed memories that have no vector embeddings —
+    // victims of the migration-0113 dangling-FK bug plus rows stored before all
+    // write paths embedded. Batched + rate-limited inside; skipped entirely
+    // when no embedding provider exists.
+    if let Some(ep) = embedding_provider.clone() {
+        let store_backfill = store.clone();
+        tokio::spawn(async move {
+            agent::memory::backfill_missing_embeddings(store_backfill, ep).await;
+        });
+    }
+
     // Initialize napp package registry
     let napp_config = napp::RegistryConfig {
         installed_tools_dir: data_dir.join("nebo").join("tools"),
@@ -1072,7 +1094,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             orch_handle.clone(),
             Some(skill_loader.clone()),
             advisor_runner,
-            Some(hybrid_searcher),
+            Some(hybrid_searcher.clone()),
+            memory_embedder,
             structured_agent,
             None, // workflow_manager registered separately after Runner is created
             None,
@@ -1364,7 +1387,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(skill_loader.clone()),
     )
     .set_ask_channels(ask_channels.clone())
-    .set_approval_channels(approval_channels.clone());
+    .set_approval_channels(approval_channels.clone())
+    // Same adapter instance as the memory tool — one search pathway, one
+    // TurboVec index cache — powering per-message prompt recall.
+    .set_hybrid_searcher(hybrid_searcher);
 
     if let Some(ep) = embedding_provider {
         runner_builder = runner_builder.set_embedding_provider(ep);

@@ -79,6 +79,20 @@ impl Store {
         Ok(())
     }
 
+    /// Delete every chunk for a memory (embeddings follow via the
+    /// `memory_embeddings.chunk_id ON DELETE CASCADE` FK; the FTS index follows
+    /// via the `memory_chunks_ad` trigger). Used by the embedding backfill to
+    /// clear orphaned unembedded chunks before re-chunking.
+    pub fn delete_chunks_for_memory(&self, memory_id: i64) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM memory_chunks WHERE memory_id = ?1",
+            params![memory_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// Get all embeddings for a user and model.
     /// Returns (chunk_id, embedding_blob) pairs.
     pub fn get_all_embeddings_by_user(

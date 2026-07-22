@@ -1435,6 +1435,113 @@ mod tests {
     }
 }
 
+/// Build the tool-permission view for one integration: the server-wide default
+/// plus one row per synced tool (name, live description, explicit override,
+/// effective decision). The ONE view builder shared by GET and PUT.
+async fn tool_permissions_view(
+    state: &AppState,
+    integration: &db::models::McpIntegration,
+    perms: &tools::policy::McpServerPermissions,
+) -> serde_json::Value {
+    let slug = slugify_name(&integration.name);
+    let mut rows = Vec::with_capacity(perms.known.len());
+    for tool in &perms.known {
+        // Description comes from the live registry (registered at connect);
+        // None when the server is currently disconnected.
+        let proxy_name = mcp::bridge::make_tool_name(&slug, tool);
+        let description = state.tools.get_tool_description(&proxy_name).await;
+        rows.push(serde_json::json!({
+            "name": tool,
+            "description": description,
+            "override": perms.tools.get(tool).map(|a| a.as_str()),
+            "effective": perms.decide(tool).as_str(),
+        }));
+    }
+    serde_json::json!({
+        "default": perms.default.as_str(),
+        "tools": rows,
+        "total": rows.len(),
+    })
+}
+
+/// GET /api/v1/integrations/:id/tool-permissions — the server's tri-state tool
+/// permission map (server-wide default + per-tool overrides).
+pub async fn get_tool_permissions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let integration = state
+        .store
+        .get_mcp_integration(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let perms = tools::policy::McpServerPermissions::from_json(
+        state
+            .store
+            .get_mcp_tool_permissions(&id)
+            .map_err(to_error_response)?
+            .as_deref(),
+    );
+    Ok(Json(tool_permissions_view(&state, &integration, &perms).await))
+}
+
+/// PUT /api/v1/integrations/:id/tool-permissions body: the full replacement
+/// state — server-wide default plus the explicit per-tool overrides (tools
+/// omitted from the map fall back to the default).
+#[derive(serde::Deserialize)]
+pub struct UpdateToolPermissionsBody {
+    pub default: String,
+    #[serde(default)]
+    pub tools: std::collections::HashMap<String, String>,
+}
+
+/// PUT /api/v1/integrations/:id/tool-permissions — replace the server's default
+/// and per-tool overrides. The synced tool list (`known`) is server-owned and
+/// preserved; it only changes through the connect/refresh sync.
+pub async fn update_tool_permissions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateToolPermissionsBody>,
+) -> HandlerResult<serde_json::Value> {
+    let integration = state
+        .store
+        .get_mcp_integration(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let default = tools::policy::McpToolAccess::parse(&body.default).ok_or_else(|| {
+        to_error_response(types::NeboError::Validation(format!(
+            "invalid default '{}' — expected allow, ask, or deny",
+            body.default
+        )))
+    })?;
+    let mut overrides = std::collections::HashMap::new();
+    for (tool, access) in &body.tools {
+        let access = tools::policy::McpToolAccess::parse(access).ok_or_else(|| {
+            to_error_response(types::NeboError::Validation(format!(
+                "invalid access '{access}' for tool '{tool}' — expected allow, ask, or deny"
+            )))
+        })?;
+        overrides.insert(tool.clone(), access);
+    }
+
+    let mut perms = tools::policy::McpServerPermissions::from_json(
+        state
+            .store
+            .get_mcp_tool_permissions(&id)
+            .map_err(to_error_response)?
+            .as_deref(),
+    );
+    perms.default = default;
+    perms.tools = overrides;
+    state
+        .store
+        .set_mcp_tool_permissions(&id, &perms.to_json())
+        .map_err(to_error_response)?;
+
+    Ok(Json(tool_permissions_view(&state, &integration, &perms).await))
+}
+
 /// GET /api/v1/integrations/tools
 pub async fn list_tools(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     // Return all registered tools (built-in + MCP)

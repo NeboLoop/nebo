@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ai::Provider;
+use ai::{EmbeddingProvider, Provider};
 use db::Store;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -73,6 +73,7 @@ struct PendingFlush {
     session_id: String,
     user_id: String,
     topics: Vec<napp::agent::MemoryTopic>,
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 /// Overlap guard: prevents concurrent memory extractions.
@@ -135,6 +136,7 @@ pub async fn run_memory_flush(
     session_id: &str,
     user_id: &str,
     topics: &[napp::agent::MemoryTopic],
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 ) {
     // Check if an extraction is already in progress.
     if FLUSH_IN_PROGRESS.load(std::sync::atomic::Ordering::Acquire) {
@@ -144,6 +146,7 @@ pub async fn run_memory_flush(
             session_id: session_id.to_string(),
             user_id: user_id.to_string(),
             topics: topics.to_vec(),
+            embedding_provider,
         });
         debug!(session_id, "memory flush already in progress — stashed as pending");
         return;
@@ -152,7 +155,15 @@ pub async fn run_memory_flush(
     // Mark in-progress.
     FLUSH_IN_PROGRESS.store(true, std::sync::atomic::Ordering::Release);
 
-    run_flush_inner(provider, store, session_id, user_id, topics).await;
+    run_flush_inner(
+        provider,
+        store,
+        session_id,
+        user_id,
+        topics,
+        embedding_provider,
+    )
+    .await;
 
     // Finished — check for pending context.
     FLUSH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::Release);
@@ -169,7 +180,15 @@ pub async fn run_memory_flush(
         );
         // Mark in-progress again for the trailing run.
         FLUSH_IN_PROGRESS.store(true, std::sync::atomic::Ordering::Release);
-        run_flush_inner(provider, store, &ctx.session_id, &ctx.user_id, &ctx.topics).await;
+        run_flush_inner(
+            provider,
+            store,
+            &ctx.session_id,
+            &ctx.user_id,
+            &ctx.topics,
+            ctx.embedding_provider,
+        )
+        .await;
         FLUSH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::Release);
     }
 }
@@ -181,6 +200,7 @@ async fn run_flush_inner(
     session_id: &str,
     user_id: &str,
     topics: &[napp::agent::MemoryTopic],
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 ) {
     let messages = match store.get_chat_messages(session_id) {
         Ok(msgs) => msgs,
@@ -204,7 +224,7 @@ async fn run_flush_inner(
     if let Some(facts) =
         memory::extract_facts(provider, &messages, Some(store), Some(user_id), topics, "").await
     {
-        memory::store_facts(store, &facts, user_id, None, topics);
+        memory::store_facts(store, &facts, user_id, embedding_provider, topics);
         debug!(session_id, "memory flush extraction complete");
     }
 

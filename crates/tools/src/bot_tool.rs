@@ -87,21 +87,41 @@ pub trait StructuredAgent: Send + Sync {
 /// Trait for hybrid memory search (implemented by agent::search wrapper).
 /// Combines FTS5 text search + vector cosine similarity with adaptive weights.
 pub trait HybridSearcher: Send + Sync {
+    /// `min_score` overrides the searcher's default relevance floor when
+    /// `Some` (the tool uses the default; prompt recall passes `Some(0.0)`
+    /// so FTS-only installs still surface their top-ranked matches).
     fn search<'a>(
         &'a self,
         query: &'a str,
         user_id: &'a str,
         limit: usize,
+        min_score: Option<f64>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<HybridSearchResult>> + Send + 'a>>;
 }
 
 /// Result from hybrid memory search.
 #[derive(Debug, Clone)]
 pub struct HybridSearchResult {
+    /// Backing memory row, when the hit resolves to one (session chunks have
+    /// none). Lets prompt recall dedupe against the identity slice and bump
+    /// access accounting for injected memories.
+    pub memory_id: Option<i64>,
     pub key: String,
     pub value: String,
     pub namespace: String,
     pub score: f64,
+}
+
+/// Fire-and-forget embedding hook for explicitly stored memories (implemented
+/// by `agent::search_adapter::MemoryEmbedAdapter`). Same adapter-injection
+/// pattern as [`HybridSearcher`]: the tools crate cannot depend on the agent
+/// crate (which owns the embedding pipeline), so the server injects this at
+/// wiring time. Keeps explicit `memory store` writes on the SAME chunk+embed
+/// pathway (`agent::memory::embed_memories_async`) as automatic extraction.
+pub trait MemoryEmbedder: Send + Sync {
+    /// Chunk + embed the memory stored at (namespace, key) for `user_id`.
+    /// Must spawn its work in the background — never blocks the tool call.
+    fn embed(&self, namespace: &str, key: &str, user_id: &str);
 }
 
 /// AgentTool is the agent's self-management domain tool.
@@ -111,6 +131,7 @@ pub struct AgentTool {
     orchestrator: OrchestratorHandle,
     advisor_runner: Option<Arc<dyn AdvisorDeliberator>>,
     hybrid_searcher: Option<Arc<dyn HybridSearcher>>,
+    memory_embedder: Option<Arc<dyn MemoryEmbedder>>,
     structured_agent: Option<Arc<dyn StructuredAgent>>,
     run_querier: RunQuerierHandle,
     persona: Option<crate::agent_tool::PersonaTool>,
@@ -123,6 +144,7 @@ impl AgentTool {
             orchestrator,
             advisor_runner: None,
             hybrid_searcher: None,
+            memory_embedder: None,
             structured_agent: None,
             run_querier: crate::run_querier::new_handle(),
             persona: None,
@@ -151,6 +173,11 @@ impl AgentTool {
 
     pub fn with_hybrid_searcher(mut self, searcher: Arc<dyn HybridSearcher>) -> Self {
         self.hybrid_searcher = Some(searcher);
+        self
+    }
+
+    pub fn with_memory_embedder(mut self, embedder: Arc<dyn MemoryEmbedder>) -> Self {
+        self.memory_embedder = Some(embedder);
         self
     }
 
@@ -260,6 +287,12 @@ impl AgentTool {
                                 "memory store verify read failed"
                             ),
                         }
+                        // Explicit stores get the same background chunk+embed
+                        // treatment as automatic extraction, so they surface in
+                        // vector recall too (hook absent = no embedding provider).
+                        if let Some(ref embedder) = self.memory_embedder {
+                            embedder.embed(namespace, key, &ctx.user_id);
+                        }
                         ToolResult::ok(format!(
                             "Stored memory: [{}] {} = {}",
                             namespace, key, value
@@ -366,7 +399,7 @@ impl AgentTool {
 
                 // Use hybrid search (FTS5 + vector) when available
                 if let Some(ref searcher) = self.hybrid_searcher {
-                    let results = searcher.search(query, &ctx.user_id, limit).await;
+                    let results = searcher.search(query, &ctx.user_id, limit, None).await;
                     if !results.is_empty() {
                         let lines: Vec<String> = results
                             .iter()
@@ -1896,4 +1929,76 @@ fn open_url(url: &str) {
     #[cfg(target_os = "windows")]
     let cmd = ("cmd", vec!["/C", "start", url]);
     let _ = std::process::Command::new(cmd.0).args(cmd.1).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Stub embedder that records every (namespace, key, user_id) it was asked to embed.
+    struct RecordingEmbedder {
+        calls: Mutex<Vec<(String, String, String)>>,
+    }
+
+    impl MemoryEmbedder for RecordingEmbedder {
+        fn embed(&self, namespace: &str, key: &str, user_id: &str) {
+            self.calls.lock().unwrap().push((
+                namespace.to_string(),
+                key.to_string(),
+                user_id.to_string(),
+            ));
+        }
+    }
+
+    /// Temp-file store: the r2d2 pool would give each `:memory:` connection its
+    /// own database, and the store path verifies writes on a second connection.
+    fn agent_tool_with_embedder(name: &str) -> (AgentTool, Arc<RecordingEmbedder>) {
+        let path =
+            std::env::temp_dir().join(format!("nebo-{name}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = Arc::new(db::Store::new(&path.to_string_lossy()).unwrap());
+        let embedder = Arc::new(RecordingEmbedder {
+            calls: Mutex::new(Vec::new()),
+        });
+        let tool = AgentTool::new(store, crate::orchestrator::new_handle())
+            .with_memory_embedder(embedder.clone());
+        (tool, embedder)
+    }
+
+    #[tokio::test]
+    async fn test_explicit_store_invokes_embed_hook() {
+        let (tool, embedder) = agent_tool_with_embedder("embed-hook-test");
+        let ctx = ToolContext {
+            user_id: "user-1".to_string(),
+            ..Default::default()
+        };
+        let input = serde_json::json!({
+            "action": "store",
+            "key": "person/alice",
+            "value": "Alice is the lead engineer on the migration project.",
+        });
+        let result = tool.handle_memory(&input, &ctx).await;
+        assert!(!result.is_error, "store failed: {}", result.content);
+
+        let calls = embedder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "embed hook should fire exactly once");
+        assert_eq!(calls[0].0, "tacit/general");
+        assert_eq!(calls[0].1, "person/alice");
+        assert_eq!(calls[0].2, "user-1");
+    }
+
+    #[tokio::test]
+    async fn test_rejected_store_skips_embed_hook() {
+        let (tool, embedder) = agent_tool_with_embedder("embed-skip-test");
+        let ctx = ToolContext {
+            user_id: "user-1".to_string(),
+            ..Default::default()
+        };
+        // Missing value → parameter error before any store/embed.
+        let input = serde_json::json!({ "action": "store", "key": "person/alice" });
+        let result = tool.handle_memory(&input, &ctx).await;
+        assert!(result.is_error);
+        assert!(embedder.calls.lock().unwrap().is_empty());
+    }
 }

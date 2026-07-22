@@ -331,49 +331,77 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     result
 }
 
-/// Search for memories relevant to the user's current prompt using FTS.
-/// Returns a formatted string to append to the system prompt, excluding
-/// memories already present in the tacit_memories list.
-pub fn load_prompt_relevant_memories(
-    store: &Store,
+/// Character budget for the per-message "Relevant to This Conversation" slice.
+/// ~1,200 chars ≈ 300 tokens: room for roughly 5-8 short facts while keeping
+/// recall a small, bounded fraction of the system prompt. A char budget
+/// replaces the old bare 5-line cap, which could blow past any size target
+/// with long values or waste headroom on short ones.
+const PROMPT_MEMORY_CHAR_BUDGET: usize = 1200;
+
+/// How many candidates to request from hybrid search before dedupe/budget
+/// trimming (same as the old FTS candidate count).
+const PROMPT_MEMORY_CANDIDATES: usize = 10;
+
+/// Search for memories relevant to the user's current prompt through the ONE
+/// hybrid search pathway the memory tool uses (`agent::search::hybrid_search`
+/// behind the [`HybridSearcher`] adapter): FTS + vector cosine when an
+/// embedding provider exists, graceful FTS-only degradation when not — the
+/// scope chain is derived inside `hybrid_search` from `user_id` exactly as the
+/// old direct-FTS call did. Returns the formatted prompt section (excluding
+/// memories already in the tacit identity slice) plus the ids of the memories
+/// actually injected, so the caller can bump access accounting.
+pub async fn load_prompt_relevant_memories(
+    searcher: Option<&dyn tools::HybridSearcher>,
     user_id: &str,
     prompt: &str,
     existing_memory_ids: &HashSet<i64>,
-) -> String {
+) -> (String, Vec<i64>) {
+    let Some(searcher) = searcher else {
+        // No search machinery wired (bare Runner) — no recall possible.
+        return (String::new(), Vec::new());
+    };
     if prompt.is_empty() {
-        return String::new();
+        return (String::new(), Vec::new());
     }
 
-    // FTS search against memories table, across the full read-scope chain so
-    // an agent also surfaces owner-level facts.
-    let scope_chain = crate::memory::memory_scope_chain(user_id);
-    let fts_results = match store.search_memories_fts(prompt, &scope_chain, 10) {
-        Ok(results) => results,
-        Err(_) => return String::new(),
-    };
+    // min_score 0: hybrid_search's default floor (0.3) assumes vector-scale
+    // scores; FTS-only installs would filter out nearly everything. The old
+    // FTS injection had no floor either — top-ranked candidates flow, and the
+    // budget below bounds the slice.
+    let results = searcher
+        .search(prompt, user_id, PROMPT_MEMORY_CANDIDATES, Some(0.0))
+        .await;
 
-    // Fetch full memories, filtering out duplicates
     let mut lines = Vec::new();
-    for (mem_id, _rank) in fts_results {
-        if existing_memory_ids.contains(&mem_id) {
+    let mut injected_ids: Vec<i64> = Vec::new();
+    let mut used_chars = 0usize;
+    for r in results {
+        // Session chunks with no parent memory are transcript fragments, not
+        // durable facts — skip them for prompt injection.
+        let Some(mem_id) = r.memory_id else { continue };
+        if existing_memory_ids.contains(&mem_id) || injected_ids.contains(&mem_id) {
             continue;
         }
-        if let Ok(Some(mem)) = store.get_memory(mem_id) {
-            lines.push(format!("{}: {}", mem.key, mem.value));
-            if lines.len() >= 5 {
-                break;
-            }
+        let line = format!("{}: {}", r.key, r.value);
+        if !lines.is_empty() && used_chars + line.len() > PROMPT_MEMORY_CHAR_BUDGET {
+            break;
         }
+        used_chars += line.len();
+        lines.push(line);
+        injected_ids.push(mem_id);
     }
 
     if lines.is_empty() {
-        return String::new();
+        return (String::new(), Vec::new());
     }
 
     debug!(count = lines.len(), "injected prompt-relevant memories");
-    format!(
-        "\n\n## Relevant to This Conversation\n{}",
-        group_memories_by_section(&lines)
+    (
+        format!(
+            "\n\n## Relevant to This Conversation\n{}",
+            group_memories_by_section(&lines)
+        ),
+        injected_ids,
     )
 }
 
@@ -537,6 +565,102 @@ fn personality_preset_prompt(preset: Option<&str>) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    /// Temp-file store: the r2d2 pool would give each `:memory:` connection
+    /// its own database, so file-backed is required for cross-connection reads.
+    fn test_store(name: &str) -> (Arc<Store>, std::path::PathBuf) {
+        let path =
+            std::env::temp_dir().join(format!("nebo-{name}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
+        (store, path)
+    }
+
+    /// No embedding provider → hybrid search degrades to FTS-only and results
+    /// still flow into the prompt slice (the memory-wave regression guard).
+    #[tokio::test]
+    async fn test_prompt_recall_fts_only_degradation() {
+        let (store, path) = test_store("recall-degradation-test");
+        store
+            .upsert_memory(
+                "tacit/general",
+                "person/alice",
+                "Alice leads the migration project",
+                None,
+                None,
+                "u1",
+            )
+            .unwrap();
+        let adapter = crate::search_adapter::HybridSearchAdapter::new(store.clone(), None);
+
+        let (text, ids) = load_prompt_relevant_memories(
+            Some(&adapter),
+            "u1",
+            "what is alice working on",
+            &HashSet::new(),
+        )
+        .await;
+        assert!(
+            text.contains("Alice leads the migration project"),
+            "FTS-only recall should still inject: {text:?}"
+        );
+        assert_eq!(ids.len(), 1);
+
+        // Memories already in the identity slice are deduped out.
+        let existing: HashSet<i64> = ids.iter().copied().collect();
+        let (text, ids) = load_prompt_relevant_memories(
+            Some(&adapter),
+            "u1",
+            "what is alice working on",
+            &existing,
+        )
+        .await;
+        assert!(text.is_empty());
+        assert!(ids.is_empty());
+
+        // No searcher wired → no recall, no panic.
+        let (text, ids) =
+            load_prompt_relevant_memories(None, "u1", "alice", &HashSet::new()).await;
+        assert!(text.is_empty());
+        assert!(ids.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The injected slice is bounded by PROMPT_MEMORY_CHAR_BUDGET, not a bare
+    /// line count: long values stop early, and at least one line always fits.
+    #[tokio::test]
+    async fn test_prompt_recall_respects_char_budget() {
+        let (store, path) = test_store("recall-budget-test");
+        let long_value = format!("zebra fact {}", "x".repeat(400));
+        for i in 0..8 {
+            store
+                .upsert_memory(
+                    "tacit/general",
+                    &format!("fact/zebra-{i}"),
+                    &long_value,
+                    None,
+                    None,
+                    "u1",
+                )
+                .unwrap();
+        }
+        let adapter = crate::search_adapter::HybridSearchAdapter::new(store.clone(), None);
+
+        let (text, ids) =
+            load_prompt_relevant_memories(Some(&adapter), "u1", "zebra", &HashSet::new()).await;
+        assert!(!ids.is_empty(), "at least one line always fits");
+        // Each line is ~425 chars, so the 1,200-char budget admits at most 3.
+        assert!(
+            ids.len() <= 3,
+            "budget should stop injection well before all 8 candidates: {}",
+            ids.len()
+        );
+        assert!(!text.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn test_format_empty_context() {

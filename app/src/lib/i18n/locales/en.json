@@ -2481,7 +2481,19 @@
 		"serverUrlPlaceholder": "https://mcp.example.com/server",
 		"serverUrlHint": "The MCP server's endpoint URL (Streamable HTTP)",
 		"oauthNote": "This server uses OAuth. You'll be redirected to authorize after adding.",
-		"noneNote": "No authentication required. The server will be connected directly."
+		"noneNote": "No authentication required. The server will be connected directly.",
+		"copyUrl": "Copy server URL",
+		"urlCopied": "Copied",
+		"moreActions": "More actions",
+		"refreshTools": "Refresh tools list",
+		"toolPermissions": "Tool permissions",
+		"toolPermissionsDesc": "Choose how each tool from this server can run. New tools default to Needs approval.",
+		"serverDefault": "Default for all tools",
+		"alwaysAllow": "Always allow",
+		"needsApproval": "Needs approval",
+		"blocked": "Blocked",
+		"noToolsSynced": "No tools synced yet — connect the server or refresh the tools list.",
+		"viaDefault": "default"
 	},
 	"settingsUpdates": {
 		"updateFailedDetail": "Update failed: {error}",

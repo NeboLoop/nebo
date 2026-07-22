@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use db::Store;
-use tools::bot_tool::{HybridSearchResult, HybridSearcher};
+use tools::bot_tool::{HybridSearchResult, HybridSearcher, MemoryEmbedder};
 use tracing::debug;
 use turbovec::IdMapIndex;
 
@@ -57,13 +57,17 @@ impl HybridSearcher for HybridSearchAdapter {
         query: &'a str,
         user_id: &'a str,
         limit: usize,
+        min_score: Option<f64>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<HybridSearchResult>> + Send + 'a>>
     {
         Box::pin(async move {
-            let config = search::SearchConfig {
+            let mut config = search::SearchConfig {
                 limit,
                 ..Default::default()
             };
+            if let Some(floor) = min_score {
+                config.min_score = floor;
+            }
 
             let provider_ref: Option<&dyn ai::EmbeddingProvider> =
                 self.embedding_provider.as_deref();
@@ -84,6 +88,7 @@ impl HybridSearcher for HybridSearchAdapter {
             results
                 .into_iter()
                 .map(|r| HybridSearchResult {
+                    memory_id: r.memory_id,
                     key: r.key,
                     value: r.value,
                     namespace: r.namespace,
@@ -91,5 +96,34 @@ impl HybridSearcher for HybridSearchAdapter {
                 })
                 .collect()
         })
+    }
+}
+
+/// Adapter that bridges the tools crate's [`MemoryEmbedder`] hook to the ONE
+/// chunk+embed pathway (`memory::embed_memories_async`), so explicit memory-tool
+/// stores get the same background embedding treatment as automatic extraction.
+/// Only constructed when an embedding provider exists (see server wiring).
+pub struct MemoryEmbedAdapter {
+    store: Arc<Store>,
+    embedding_provider: Arc<dyn ai::EmbeddingProvider>,
+}
+
+impl MemoryEmbedAdapter {
+    pub fn new(store: Arc<Store>, embedding_provider: Arc<dyn ai::EmbeddingProvider>) -> Self {
+        Self {
+            store,
+            embedding_provider,
+        }
+    }
+}
+
+impl MemoryEmbedder for MemoryEmbedAdapter {
+    fn embed(&self, namespace: &str, key: &str, user_id: &str) {
+        crate::memory::embed_memories_async(
+            self.store.clone(),
+            self.embedding_provider.clone(),
+            vec![(namespace.to_string(), key.to_string())],
+            user_id.to_string(),
+        );
     }
 }

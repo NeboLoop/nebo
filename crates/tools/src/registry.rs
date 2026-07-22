@@ -173,6 +173,12 @@ pub trait DynTool: Send + Sync {
     fn is_concurrent_safe(&self, _input: &serde_json::Value) -> bool {
         false
     }
+    /// For MCP proxy tools: the `(integration_id, original tool name)` this
+    /// proxy forwards to — what the runner's approval gate uses to look up the
+    /// server's tri-state tool permissions. `None` for every built-in tool.
+    fn mcp_proxy_info(&self) -> Option<(String, String)> {
+        None
+    }
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
@@ -425,6 +431,14 @@ impl Registry {
     pub async fn get_tool_description(&self, name: &str) -> Option<String> {
         let cache = self.def_cache.read().await;
         cache.get(name).map(|def| def.description.clone())
+    }
+
+    /// The `(integration_id, original tool name)` behind a registered MCP proxy
+    /// tool (`mcp__<server>__<tool>`), or `None` for any other tool. The runner's
+    /// approval gate uses this to resolve the server's tri-state tool permissions.
+    pub async fn mcp_proxy_info(&self, name: &str) -> Option<(String, String)> {
+        let tools = self.tools.read().await;
+        tools.get(name).and_then(|t| t.mcp_proxy_info())
     }
 
     /// Check whether a tool call is safe to run concurrently with other tools.
@@ -691,6 +705,7 @@ impl Registry {
             skill_loader,
             advisor_runner,
             hybrid_searcher,
+            None, // memory_embedder
             None, // structured_agent
             None, // workflow_manager
             None, // permissions
@@ -715,6 +730,7 @@ impl Registry {
         skill_loader: Option<Arc<crate::skills::Loader>>,
         advisor_runner: Option<Arc<dyn crate::bot_tool::AdvisorDeliberator>>,
         hybrid_searcher: Option<Arc<dyn crate::bot_tool::HybridSearcher>>,
+        memory_embedder: Option<Arc<dyn crate::bot_tool::MemoryEmbedder>>,
         structured_agent: Option<Arc<dyn crate::bot_tool::StructuredAgent>>,
         workflow_manager: Option<Arc<dyn crate::workflows::WorkflowManager>>,
         permissions: Option<&HashMap<String, bool>>,
@@ -782,6 +798,9 @@ impl Registry {
         }
         if let Some(searcher) = hybrid_searcher {
             agent_tool = agent_tool.with_hybrid_searcher(searcher);
+        }
+        if let Some(embedder) = memory_embedder {
+            agent_tool = agent_tool.with_memory_embedder(embedder);
         }
         if let Some(sa) = structured_agent {
             agent_tool = agent_tool.with_structured_agent(sa);
@@ -950,6 +969,10 @@ impl DynTool for McpProxyTool {
         true
     }
 
+    fn mcp_proxy_info(&self) -> Option<(String, String)> {
+        Some((self.integration_id.clone(), self.original_name.clone()))
+    }
+
     fn execute_dyn<'a>(
         &'a self,
         _ctx: &'a crate::origin::ToolContext,
@@ -1014,6 +1037,35 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(self.unregister(&name));
             });
+        }
+    }
+
+    fn tools_synced(&self, integration_id: &str, tool_names: &[String]) {
+        let store = match self.store.read().unwrap().as_ref() {
+            Some(s) => s.clone(),
+            None => {
+                warn!(
+                    integration = %integration_id,
+                    "cannot sync MCP tool permissions: store not set"
+                );
+                return;
+            }
+        };
+        let mut perms = crate::policy::McpServerPermissions::from_json(
+            store
+                .get_mcp_tool_permissions(integration_id)
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        if perms.sync_tools(tool_names) {
+            if let Err(e) = store.set_mcp_tool_permissions(integration_id, &perms.to_json()) {
+                warn!(
+                    integration = %integration_id,
+                    error = %e,
+                    "failed to persist MCP tool permissions after sync"
+                );
+            }
         }
     }
 }

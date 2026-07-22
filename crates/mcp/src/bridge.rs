@@ -26,6 +26,11 @@ pub trait ProxyToolRegistry: Send + Sync {
         integration_id: &str,
     );
     fn unregister_proxy(&self, name: &str);
+    /// Called after a connect finishes registering a server's tools — the ONE
+    /// hook where the server's persisted tool-permission map reconciles with
+    /// the live tool list (new tools default to needs-approval, vanished tools
+    /// are pruned). `tool_names` are the server's original tool names.
+    fn tools_synced(&self, integration_id: &str, tool_names: &[String]);
 }
 
 /// Launch spec for a local stdio MCP server, parsed from an integration's
@@ -134,6 +139,11 @@ impl Bridge {
             );
         }
 
+        // Every connect IS the tool sync (startup reconnect, settings connect,
+        // OAuth callback, refresh) — reconcile the persisted tool-permission
+        // map with what the server offers right now.
+        self.registry.tools_synced(integration_id, &original_names);
+
         let mut conns = self.connections.lock().await;
         conns.insert(
             integration_id.to_string(),
@@ -233,7 +243,7 @@ impl Bridge {
 }
 
 /// Generate a namespaced tool name: mcp__{server_type}__{tool_name}
-fn make_tool_name(server_type: &str, original: &str) -> String {
+pub fn make_tool_name(server_type: &str, original: &str) -> String {
     let st = server_type.to_lowercase().replace(' ', "_");
     let tn = original.to_lowercase().replace(' ', "_");
     format!("mcp__{}__{}", st, tn)

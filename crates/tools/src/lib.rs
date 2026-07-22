@@ -90,6 +90,7 @@ pub use agent_tool::{
 pub use app_tool::AppTool;
 pub use bot_tool::{
     AdvisorDeliberator, AgentTool, CodeInstaller, HybridSearchResult, HybridSearcher,
+    MemoryEmbedder,
 };
 pub use channel_bridge::{
     ChannelBridgeHandle, ChannelBridgeRegistry, OpResult, PendingOps, channel_bridge_key,

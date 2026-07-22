@@ -9,7 +9,13 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import X from 'lucide-svelte/icons/x';
   import ChevronLeft from 'lucide-svelte/icons/chevron-left';
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import KeyRound from 'lucide-svelte/icons/key-round';
+  import Copy from 'lucide-svelte/icons/copy';
+  import Check from 'lucide-svelte/icons/check';
+  import Hand from 'lucide-svelte/icons/hand';
+  import Ban from 'lucide-svelte/icons/ban';
+  import EllipsisVertical from 'lucide-svelte/icons/ellipsis-vertical';
   import type { McpIntegration } from '$lib/api/nebo';
 
   type ConnectionStatus = 'connected' | 'disconnected' | 'error' | 'needs_reauth';
@@ -272,11 +278,103 @@
   }
 
   async function removeIntegration(id: string) {
+    (document.activeElement as HTMLElement | null)?.blur();
     integrations = integrations.filter(i => i.id !== id);
+    if (expandedId === id) expandedId = null;
     try {
       const api = await import('$lib/api/nebo');
       await api.deleteIntegration(id);
     } catch { /* local state already updated */ }
+  }
+
+  // ── Per-tool permissions (server default + tri-state per tool) ──
+  type ToolAccess = 'allow' | 'ask' | 'deny';
+  interface ToolPermRow { name: string; description: string | null; override: ToolAccess | null; effective: ToolAccess }
+  interface ToolPerms { default: ToolAccess; tools: ToolPermRow[] }
+
+  let expandedId = $state<string | null>(null);
+  let toolPerms = $state<Record<string, ToolPerms>>({});
+  let permsLoading = $state<string | null>(null);
+  let copiedId = $state<string | null>(null);
+  let refreshingId = $state<string | null>(null);
+
+  const accessStates = $derived([
+    { value: 'allow' as const, label: $t('settingsMcp.alwaysAllow'), icon: Check, activeClass: 'btn-active text-success' },
+    { value: 'ask' as const, label: $t('settingsMcp.needsApproval'), icon: Hand, activeClass: 'btn-active text-warning' },
+    { value: 'deny' as const, label: $t('settingsMcp.blocked'), icon: Ban, activeClass: 'btn-active text-error' },
+  ]);
+
+  async function toggleExpand(id: string) {
+    expandedId = expandedId === id ? null : id;
+    if (expandedId) await loadToolPerms(id);
+  }
+
+  async function loadToolPerms(id: string) {
+    permsLoading = id;
+    try {
+      const api = await import('$lib/api/nebo');
+      toolPerms[id] = (await api.getToolPermissions(id)) as ToolPerms;
+    } catch { /* keep whatever we had */ } finally {
+      if (permsLoading === id) permsLoading = null;
+    }
+  }
+
+  /** PUT the full permission state (default + explicit overrides); state refreshes from the response. */
+  async function saveToolPerms(id: string, def: ToolAccess, overrides: Record<string, ToolAccess>) {
+    try {
+      const api = await import('$lib/api/nebo');
+      toolPerms[id] = (await api.updateToolPermissions(id, { default: def, tools: overrides })) as ToolPerms;
+    } catch { await loadToolPerms(id); }
+  }
+
+  function overridesOf(p: ToolPerms): Record<string, ToolAccess> {
+    const map: Record<string, ToolAccess> = {};
+    for (const row of p.tools) if (row.override) map[row.name] = row.override;
+    return map;
+  }
+
+  async function setServerDefault(id: string, value: ToolAccess) {
+    const p = toolPerms[id];
+    if (!p) return;
+    await saveToolPerms(id, value, overridesOf(p));
+  }
+
+  async function setToolState(id: string, tool: string, value: ToolAccess) {
+    const p = toolPerms[id];
+    if (!p) return;
+    const overrides = overridesOf(p);
+    // Clicking the already-explicit state clears the override (back to the server default).
+    if (overrides[tool] === value) delete overrides[tool];
+    else overrides[tool] = value;
+    await saveToolPerms(id, p.default, overrides);
+  }
+
+  async function copyUrl(integration: MCPIntegration) {
+    try {
+      await navigator.clipboard.writeText(integration.serverUrl);
+      copiedId = integration.id;
+      setTimeout(() => { if (copiedId === integration.id) copiedId = null; }, 1500);
+    } catch { /* clipboard unavailable */ }
+  }
+
+  /** "Refresh tools list" — re-runs the SAME connect pathway used at connect time (it re-syncs the server's tools). */
+  async function refreshTools(id: string) {
+    (document.activeElement as HTMLElement | null)?.blur();
+    refreshingId = id;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.connectIntegration(id) as { success?: boolean; toolCount?: number; message?: string };
+      if (resp?.success) {
+        updateIntegrationById(id, { isEnabled: true, connectionStatus: 'connected', toolCount: resp.toolCount ?? 0, lastError: null });
+      } else {
+        updateIntegrationById(id, { lastError: resp?.message || $t('settingsMcp.connectionFailed') });
+      }
+      if (expandedId === id) await loadToolPerms(id);
+    } catch {
+      updateIntegrationById(id, { lastError: $t('settingsMcp.connectionFailed') });
+    } finally {
+      refreshingId = null;
+    }
   }
 
   const connectedCount = $derived(integrations.filter(i => i.connectionStatus === 'connected').length);
@@ -325,63 +423,164 @@
   </div>
 
   <div class="flex flex-col gap-1.5">
-    {#each integrations as integration}
-      <div class="flex items-center gap-3 p-3.5 rounded-lg border border-base-300 bg-base-100">
-        <div class="w-2 h-2 rounded-full shrink-0 {integration.connectionStatus === 'connected' ? 'bg-success' : integration.lastError ? 'bg-error' : 'bg-base-content/20'}" title={integration.connectionStatus === 'connected' ? $t('common.connected') : integration.lastError ?? $t('common.disconnected')}></div>
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2 mb-0.5">
-            <span class="text-sm font-semibold">{integration.name}</span>
-            <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70">{integration.authType === 'oauth' ? $t('settingsMcp.badgeOauth') : integration.authType === 'none' ? $t('settingsMcp.authNone') : $t('onboarding.apiKey.apiKeyLabel')}</span>
-            {#if integration.toolCount > 0}
-              <span class="text-xs text-base-content/50">{$t('settingsStatus.toolsCount', { values: { count: integration.toolCount } })}</span>
+    {#each integrations as integration (integration.id)}
+      <div class="rounded-lg border border-base-300 bg-base-100">
+        <div class="flex items-center gap-3 p-3.5">
+          <div class="w-2 h-2 rounded-full shrink-0 {integration.connectionStatus === 'connected' ? 'bg-success' : integration.lastError ? 'bg-error' : 'bg-base-content/20'}" title={integration.connectionStatus === 'connected' ? $t('common.connected') : integration.lastError ?? $t('common.disconnected')}></div>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-0.5">
+              <span class="text-sm font-semibold">{integration.name}</span>
+              <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70">{integration.authType === 'oauth' ? $t('settingsMcp.badgeOauth') : integration.authType === 'none' ? $t('settingsMcp.authNone') : $t('onboarding.apiKey.apiKeyLabel')}</span>
+              {#if integration.toolCount > 0}
+                <span class="text-xs text-base-content/50">{$t('settingsStatus.toolsCount', { values: { count: integration.toolCount } })}</span>
+              {/if}
+            </div>
+            {#if integration.serverUrl}
+              <div class="flex items-center gap-1 min-w-0">
+                <span class="text-xs font-mono text-base-content/50 truncate">{integration.serverUrl}</span>
+                <button
+                  onclick={() => copyUrl(integration)}
+                  class="p-0.5 rounded hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none shrink-0"
+                  title={copiedId === integration.id ? $t('settingsMcp.urlCopied') : $t('settingsMcp.copyUrl')}
+                >
+                  {#if copiedId === integration.id}
+                    <Check class="w-3 h-3 text-success" />
+                  {:else}
+                    <Copy class="w-3 h-3 text-base-content/50" />
+                  {/if}
+                </button>
+              </div>
+            {/if}
+            {#if integration.lastError}
+              <div class="text-xs text-error mt-0.5">{integration.lastError}</div>
             {/if}
           </div>
-          <div class="text-xs font-mono text-base-content/50 truncate">{integration.serverUrl}</div>
-          {#if integration.lastError}
-            <div class="text-xs text-error mt-0.5">{integration.lastError}</div>
-          {/if}
-        </div>
-        <div class="flex items-center gap-1.5 shrink-0">
-          {#if integration.authType === 'oauth' && (integration.connectionStatus === 'error' || integration.connectionStatus === 'needs_reauth')}
+          <div class="flex items-center gap-1.5 shrink-0">
+            {#if integration.authType === 'oauth' && (integration.connectionStatus === 'error' || integration.connectionStatus === 'needs_reauth')}
+              <button
+                onclick={() => reauthenticate(integration.id)}
+                class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
+                title={$t('settingsMcp.reauthenticateOauth')}
+              >
+                <KeyRound class="w-4 h-4 text-warning" />
+              </button>
+            {/if}
+            {#if integration.authType === 'api_key'}
+              <button
+                onclick={() => openKeyPrompt(integration.id)}
+                class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
+                title={integration.connectionStatus === 'connected' ? $t('settingsMcp.replaceApiKey') : $t('settingsMcp.enterApiKey')}
+              >
+                <KeyRound class="w-4 h-4 {integration.connectionStatus === 'connected' ? 'text-base-content/50' : 'text-warning'}" />
+              </button>
+            {/if}
             <button
-              onclick={() => reauthenticate(integration.id)}
+              onclick={() => toggleEnabled(integration.id)}
               class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
-              title={$t('settingsMcp.reauthenticateOauth')}
+              title={integration.isEnabled ? $t('settingsPlugins.disconnect') : $t('settingsPlugins.connect')}
             >
-              <KeyRound class="w-4 h-4 text-warning" />
+              <Power class="w-4 h-4 {integration.isEnabled ? 'text-success' : 'text-base-content/30'}" />
             </button>
-          {/if}
-          {#if integration.authType === 'api_key'}
             <button
-              onclick={() => openKeyPrompt(integration.id)}
+              onclick={() => testConnection(integration.id)}
               class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
-              title={integration.connectionStatus === 'connected' ? $t('settingsMcp.replaceApiKey') : $t('settingsMcp.enterApiKey')}
+              title={$t('settingsMcp.testConnection')}
             >
-              <KeyRound class="w-4 h-4 {integration.connectionStatus === 'connected' ? 'text-base-content/50' : 'text-warning'}" />
+              <RefreshCw class="w-4 h-4 text-base-content/50" />
             </button>
-          {/if}
-          <button
-            onclick={() => toggleEnabled(integration.id)}
-            class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
-            title={integration.isEnabled ? $t('settingsPlugins.disconnect') : $t('settingsPlugins.connect')}
-          >
-            <Power class="w-4 h-4 {integration.isEnabled ? 'text-success' : 'text-base-content/30'}" />
-          </button>
-          <button
-            onclick={() => testConnection(integration.id)}
-            class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
-            title={$t('settingsMcp.testConnection')}
-          >
-            <RefreshCw class="w-4 h-4 text-base-content/50" />
-          </button>
-          <button
-            onclick={() => removeIntegration(integration.id)}
-            class="p-1.5 rounded-md hover:bg-error/10 transition-colors cursor-pointer bg-transparent border-none"
-            title={$t('common.remove')}
-          >
-            <Trash2 class="w-4 h-4 text-error/60" />
-          </button>
+            <button
+              onclick={() => toggleExpand(integration.id)}
+              class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
+              title={$t('settingsMcp.toolPermissions')}
+            >
+              <ChevronDown class="w-4 h-4 text-base-content/50 transition-transform {expandedId === integration.id ? 'rotate-180' : ''}" />
+            </button>
+            <div class="dropdown dropdown-end">
+              <button
+                tabindex="0"
+                class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none"
+                title={$t('settingsMcp.moreActions')}
+              >
+                <EllipsisVertical class="w-4 h-4 text-base-content/50" />
+              </button>
+              <ul class="dropdown-content menu bg-base-100 border border-base-300 rounded-box shadow-md w-52 p-1 z-20">
+                <li>
+                  <button onclick={() => refreshTools(integration.id)} disabled={refreshingId === integration.id}>
+                    <RefreshCw class="w-3.5 h-3.5 {refreshingId === integration.id ? 'animate-spin' : ''}" />
+                    {$t('settingsMcp.refreshTools')}
+                  </button>
+                </li>
+                <li>
+                  <button class="text-error" onclick={() => removeIntegration(integration.id)}>
+                    <Trash2 class="w-3.5 h-3.5" />
+                    {$t('common.remove')}
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
+
+        {#if expandedId === integration.id}
+          {@const perms = toolPerms[integration.id]}
+          <div class="border-t border-base-content/10 px-3.5 py-3">
+            <div class="flex items-start justify-between gap-3 flex-wrap mb-2">
+              <div class="min-w-0">
+                <div class="text-sm font-medium">{$t('settingsMcp.toolPermissions')}</div>
+                <div class="text-xs text-base-content/70">{$t('settingsMcp.toolPermissionsDesc')}</div>
+              </div>
+              {#if perms}
+                <label class="flex items-center gap-2 shrink-0">
+                  <span class="text-xs text-base-content/50">{$t('settingsMcp.serverDefault')}</span>
+                  <select
+                    class="select select-sm text-xs"
+                    value={perms.default}
+                    onchange={(e) => setServerDefault(integration.id, (e.currentTarget as HTMLSelectElement).value as ToolAccess)}
+                  >
+                    <option value="allow">{$t('settingsMcp.alwaysAllow')}</option>
+                    <option value="ask">{$t('settingsMcp.needsApproval')}</option>
+                    <option value="deny">{$t('settingsMcp.blocked')}</option>
+                  </select>
+                </label>
+              {/if}
+            </div>
+            {#if permsLoading === integration.id && !perms}
+              <div class="flex justify-center py-4"><span class="loading loading-spinner loading-sm"></span></div>
+            {:else if !perms || perms.tools.length === 0}
+              <div class="text-xs text-base-content/50 py-2">{$t('settingsMcp.noToolsSynced')}</div>
+            {:else}
+              <div class="divide-y divide-base-content/10">
+                {#each perms.tools as row (row.name)}
+                  <div class="flex items-center gap-3 py-2 flex-wrap">
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-xs font-mono truncate">{row.name}</span>
+                        {#if !row.override}
+                          <span class="text-xs text-base-content/50 shrink-0">{$t('settingsMcp.viaDefault')}</span>
+                        {/if}
+                      </div>
+                      {#if row.description}
+                        <div class="text-xs text-base-content/50 truncate">{row.description}</div>
+                      {/if}
+                    </div>
+                    <div class="join shrink-0">
+                      {#each accessStates as s (s.value)}
+                        <button
+                          class="btn btn-xs join-item {row.effective === s.value ? s.activeClass : 'btn-ghost text-base-content/50'} {row.effective === s.value && !row.override ? 'opacity-70' : ''}"
+                          title={s.label}
+                          onclick={() => setToolState(integration.id, row.name, s.value)}
+                        >
+                          <s.icon class="w-3 h-3" />
+                          <span class="hidden sm:inline">{s.label}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
       </div>
     {/each}
   </div>
