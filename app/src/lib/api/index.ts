@@ -7,14 +7,17 @@ import webapi from './gocliRequest';
 import type * as components from './neboComponents';
 
 // Export api object containing all API methods
+import { backendBase } from './base';
+
 export const nebo = api;
 
 // API Configuration - base URL is loaded from browser origin
 export const API_CONFIG = {
 	get baseURL() {
-		// In browser, use the current origin; in SSR, default to localhost
+		// In browser, backendBase() (origin + tunnel prefix when applicable);
+		// in SSR, default to localhost
 		if (typeof window !== 'undefined') {
-			return window.location.origin;
+			return backendBase();
 		}
 		return 'http://localhost:8847';
 	}

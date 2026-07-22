@@ -1,3 +1,4 @@
+import { backendBase } from './base';
 export type Method =
 	| 'get'
 	| 'GET'
@@ -58,7 +59,7 @@ export function genUrl(url: string, params: any) {
  */
 function getBaseUrl(): string {
 	if (typeof window !== 'undefined') {
-		return window.location.origin;
+		return backendBase();
 	}
 	// SSR fallback - relative URLs will work
 	return '';

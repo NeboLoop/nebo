@@ -1,3 +1,4 @@
+import { backendBase } from './base';
 import type { UploadedAttachment } from '$lib/types/attachment';
 
 /**
@@ -35,7 +36,7 @@ export function uploadFile(
 		xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
 
 		const token = localStorage.getItem('nebo_token');
-		xhr.open('POST', `${window.location.origin}/api/v1/files/upload`);
+		xhr.open('POST', `${backendBase()}/api/v1/files/upload`);
 		if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 		xhr.send(formData);
 	});
