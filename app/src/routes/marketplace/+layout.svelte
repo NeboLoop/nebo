@@ -129,6 +129,8 @@
 
   const navItems = [
     { id: 'all', path: '/marketplace', labelKey: 'marketplace.nav.all' },
+    { id: 'employees', path: '/marketplace?kind=employees', labelKey: 'marketplace.nav.employees' },
+    { id: 'tools', path: '/marketplace?kind=tools', labelKey: 'marketplace.nav.tools' },
     { id: 'agents', path: '/marketplace?kind=agents', labelKey: 'marketplace.nav.agents' },
     { id: 'apps', path: '/marketplace?kind=apps', labelKey: 'marketplace.nav.apps' },
     { id: 'skills', path: '/marketplace?kind=skills', labelKey: 'marketplace.skills' },

@@ -11,6 +11,8 @@
 	import ListCard from '$lib/components/marketplace/ListCard.svelte';
 	import { listStoreProducts, listStoreFeatured, listStoreCategories } from '$lib/api/nebo';
 	import { type AppItem, toAppItem } from '$lib/types/marketplace';
+	import ResumeCard from '$lib/components/marketplace/ResumeCard.svelte';
+	import { loadMarketplaceMap, type MarketplaceMap } from '$lib/data/marketplaceMap';
 	import { slugify, categoryMeta } from '$lib/data/categories';
 
 	const KIND_TYPE: Record<string, string> = {
@@ -31,6 +33,8 @@
 
 	let loading = $state(true);
 	let items: AppItem[] = $state([]);
+	// Curated Employees/Tools presentation map (same single source as the website).
+	let mktMap: MarketplaceMap | null = $state(null);
 	let featured: AppItem[] = $state([]);
 	let categoryOrder: string[] = $state([]);
 
@@ -64,11 +68,13 @@
 
 	onMount(async () => {
 		try {
-			const [products, featuredRes, catsRes] = await Promise.all([
+			const [products, featuredRes, catsRes, mapRes] = await Promise.all([
 				fetchAllProducts(),
 				listStoreFeatured().catch(() => ({ products: [] })),
-				listStoreCategories().catch(() => ({ categories: [] }))
+				listStoreCategories().catch(() => ({ categories: [] })),
+				loadMarketplaceMap()
 			]);
+			mktMap = mapRes;
 			items = products;
 			featured = (((featuredRes as { products?: any[] })?.products as any[]) || []).map((r, i) => toAppItem(r, i));
 			const cats = ((catsRes as { categories?: any[] })?.categories as any[]) || [];
@@ -88,6 +94,24 @@
 	});
 
 	const spotlight = $derived(featured[0] ?? items[0] ?? null);
+
+	// ── Employees / Tools views (map-driven, joined on artifact Code) ──
+	const mapOf = (it: AppItem) => mktMap?.entries[it.code];
+	const respOf = (it: AppItem) => mktMap?.responsibilities[mapOf(it)?.role ?? ''] ?? [];
+	const employees = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'E') : []);
+	const employeesByDept = $derived.by(() => {
+		if (!mktMap) return [] as { name: string; roles: AppItem[] }[];
+		return mktMap.departments
+			.map((d) => ({ name: d, roles: employees.filter((e) => mapOf(e)?.dept === d) }))
+			.filter((g) => g.roles.length > 0);
+	});
+	const toolItems = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'T') : []);
+	const toolsByCategory = $derived.by(() => {
+		if (!mktMap) return [] as { name: string; items: AppItem[] }[];
+		return mktMap.toolCategories
+			.map((c) => ({ name: c, items: toolItems.filter((t) => mapOf(t)?.tc === c) }))
+			.filter((g) => g.items.length > 0);
+	});
 
 	// A category on its own (no kind/price/publisher) gets the editorial
 	// storefront treatment: headline + lede + featured + Top + All.
@@ -149,6 +173,58 @@
 			{#if categoryItems.length > 6}
 				<SectionListGrid title={$t('marketplace.allIn', { values: { name: categoryName } })} items={categoryItems.slice(6)} />
 			{/if}
+		{/if}
+	</div>
+{:else if kind === 'employees'}
+	<!-- Employees — the website's hiring view: departments of roles as resume cards -->
+	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
+		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.employeesHeadline')}</h1>
+		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.employeesLede')}</p>
+		{#if !mktMap || employees.length === 0}
+			<div class="flex flex-col items-center justify-center py-16 text-center">
+				<Search class="w-10 h-10 text-base-content/40 mb-3" />
+				<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
+			</div>
+		{:else}
+			{#each employeesByDept as group}
+				<section class="mt-10">
+					<div class="flex items-baseline gap-3 mb-4">
+						<h2 class="text-xl font-bold tracking-tight">{group.name}</h2>
+						<span class="text-sm text-base-content/50">{group.roles.length} {group.roles.length === 1 ? 'role' : 'roles'}</span>
+					</div>
+					<div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+						{#each group.roles as e (e.id)}
+							<ResumeCard item={e} department={group.name} title={mapOf(e)?.role} responsibilities={respOf(e)} />
+						{/each}
+					</div>
+				</section>
+			{/each}
+		{/if}
+	</div>
+{:else if kind === 'tools'}
+	<!-- Tools — the website's tool-category view over the same catalog -->
+	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
+		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.toolsHeadline')}</h1>
+		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.toolsLede')}</p>
+		{#if !mktMap || toolItems.length === 0}
+			<div class="flex flex-col items-center justify-center py-16 text-center">
+				<Search class="w-10 h-10 text-base-content/40 mb-3" />
+				<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
+			</div>
+		{:else}
+			{#each toolsByCategory as group}
+				<section class="mt-8">
+					<div class="flex items-baseline gap-3 mb-3">
+						<h2 class="text-lg font-bold tracking-tight">{group.name}</h2>
+						<span class="text-sm text-base-content/50">{group.items.length}</span>
+					</div>
+					<MarketplaceGrid>
+						{#each group.items as item (item.id)}
+							<ListCard {item} />
+						{/each}
+					</MarketplaceGrid>
+				</section>
+			{/each}
 		{/if}
 	</div>
 {:else if isFiltering}
