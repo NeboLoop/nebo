@@ -307,6 +307,18 @@ pub(crate) fn is_installed(slug: &str, _name: &str, artifact_type: &str, _store:
         "plugin" => "plugins",
         _ => "skills",
     };
+    if dir_type == "agents" {
+        // Truthful check via the loader's own discovery criteria: the dir must
+        // contain something the agent loader actually loads (an AGENT.md tree
+        // or a sealed .napp). A bare directory left behind by a failed install
+        // used to satisfy the plain `exists()` check and show "Installed" for
+        // an agent that never materialized.
+        let (Ok(user_dir), Ok(nebo_dir)) = (config::user_dir(), config::nebo_dir()) else {
+            return false;
+        };
+        return napp::agent_loader::dir_contains_agent(&user_dir.join("agents").join(slug))
+            || napp::agent_loader::dir_contains_agent(&nebo_dir.join("agents").join(slug));
+    }
     is_locally_installed(slug, dir_type)
 }
 

@@ -806,7 +806,11 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         let _ = deregister_agent_from_loop(state, &existing.name).await;
     }
 
-    // Fetch artifact content from NeboAI and persist to DB + filesystem
+    // Fetch artifact content from NeboAI and persist to DB + filesystem.
+    // A persist failure is an install FAILURE — propagate it so the UI shows the
+    // real error via the code_result event. (This used to be swallowed with a
+    // warn and the handler reported "Installed agent" while nebo/agents/<slug>
+    // sat empty and the marketplace showed the agent as installed.)
     let persist_result =
         match tools::persist_agent_from_api(&api, &artifact_id, &artifact_name, code, &state.store)
             .await
@@ -814,7 +818,9 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             Ok(result) => Some(result),
             Err(e) => {
                 warn!(code, error = %e, "failed to persist agent artifact after redeem");
-                None
+                return Err(NeboError::Internal(format!(
+                    "install agent '{artifact_name}': {e}"
+                )));
             }
         };
 

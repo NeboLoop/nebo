@@ -57,6 +57,7 @@ fn test_manifest(slug: &str, binary_name: &str) -> PluginManifest {
         triggers: Vec::new(),
         channel: None,
         setup: None,
+        interface_bindings: HashMap::new(),
     }
 }
 

@@ -1415,6 +1415,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             .set_license_keys(cached_license_keys.clone())
             .await;
     }
+    // Self-heal failed-install debris BEFORE the first scan: an EMPTY
+    // agents/<slug>/ dir (the pre-atomic installer created the dir before the
+    // payload arrived) can never load, but it made the marketplace report the
+    // agent as "installed" and blocked reinstall. Removing it is safe — an
+    // empty dir contains no user data — and unblocks reinstall.
+    heal_agent_install_debris(&data_dir.join("nebo"));
     agent_loader.load_all().await;
     let (_watcher_handle, agent_fs_rx) = agent_loader.watch();
     tool_registry.set_agent_loader(agent_loader.clone());
@@ -2640,6 +2646,72 @@ async fn handle_agent_fs_events(
     }
 
     warn!("agent filesystem event channel closed");
+}
+
+/// Remove failed-install debris under `<nebo>/agents` at boot:
+/// - EMPTY `agents/<slug>/` dirs — the pre-atomic installer created the dir
+///   before downloading the payload, so a failed download left an empty dir
+///   that the marketplace read as "installed" while the agent never existed.
+///   Uses `fs::remove_dir`, which only succeeds on EMPTY directories, so real
+///   agent content can never be deleted.
+/// - Any leftover `.staging/` payloads from an install interrupted mid-flight
+///   (the atomic installer stages there and renames into place on success).
+fn heal_agent_install_debris(nebo_dir: &std::path::Path) {
+    let agents_root = nebo_dir.join("agents");
+    if let Ok(entries) = std::fs::read_dir(&agents_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let is_empty = std::fs::read_dir(&path)
+                .map(|mut e| e.next().is_none())
+                .unwrap_or(false);
+            if !is_empty {
+                continue;
+            }
+            match std::fs::remove_dir(&path) {
+                Ok(()) => tracing::error!(
+                    dir = %path.display(),
+                    "removed EMPTY agent directory — debris from a failed install (the agent was never actually installed); reinstall it from the marketplace"
+                ),
+                Err(e) => warn!(dir = %path.display(), error = %e, "failed to remove empty agent directory"),
+            }
+        }
+    }
+    let staging = nebo_dir.join(".staging");
+    if staging.is_dir() {
+        match std::fs::remove_dir_all(&staging) {
+            Ok(()) => warn!(dir = %staging.display(), "removed leftover install staging directory (install was interrupted mid-flight)"),
+            Err(e) => warn!(dir = %staging.display(), error = %e, "failed to remove leftover install staging directory"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod install_debris_tests {
+    use super::heal_agent_install_debris;
+
+    #[test]
+    fn removes_only_empty_agent_dirs_and_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nebo = tmp.path();
+        // Debris: empty dir from a failed install.
+        std::fs::create_dir_all(nebo.join("agents").join("sdr")).unwrap();
+        // Real install: must be untouched.
+        let real = nebo.join("agents").join("closer").join("1.0.0");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("AGENT.md"), "---\nname: Closer\n---\n").unwrap();
+        // Leftover staging payload from an interrupted install.
+        std::fs::create_dir_all(nebo.join(".staging").join("agent-x-1")).unwrap();
+        std::fs::write(nebo.join(".staging").join("agent-x-1").join("1.0.0.napp"), b"partial").unwrap();
+
+        heal_agent_install_debris(nebo);
+
+        assert!(!nebo.join("agents").join("sdr").exists(), "empty dir removed");
+        assert!(real.join("AGENT.md").exists(), "real install preserved");
+        assert!(!nebo.join(".staging").exists(), "staging swept");
+    }
 }
 
 /// Sync workflow bindings from an AgentConfig into the agent_workflows table.

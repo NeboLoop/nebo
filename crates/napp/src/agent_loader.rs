@@ -601,6 +601,38 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
     })
 }
 
+/// True when `dir` contains something the agent loader would actually load:
+/// an extracted `AGENT.md` anywhere beneath it (free agents — the same marker
+/// `scan_installed_agents` walks for) or a sealed `.napp` archive (paid agents,
+/// loaded in memory once a license key is present). This is the loader's own
+/// discovery criteria, exposed so install-state checks stay truthful: a bare
+/// directory — debris from a failed install — is NOT an installed agent.
+pub fn dir_contains_agent(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let mut found = false;
+    crate::reader::walk_for_marker(dir, "AGENT.md", &mut |_| found = true);
+    found || has_napp_file(dir)
+}
+
+fn has_napp_file(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if has_napp_file(&path) {
+                return true;
+            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("napp") {
+            return true;
+        }
+    }
+    false
+}
+
 /// Scan installed (nebo/) agents directory for extracted agent directories
 /// and sealed .napp archives.
 pub fn scan_installed_agents(dir: &Path) -> Vec<LoadedAgent> {
@@ -856,6 +888,35 @@ mod tests {
             Some("binary"),
             "bin/ sidecar must resolve"
         );
+    }
+
+    // Install-state truthfulness: an existing-but-EMPTY agent dir (debris from
+    // a failed install) must NOT count as an installed agent — that false
+    // positive made the marketplace show "Installed" for an agent that never
+    // materialized.
+    #[test]
+    fn empty_dir_does_not_contain_an_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("sdr");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!dir_contains_agent(&dir));
+        assert!(!dir_contains_agent(&tmp.path().join("never-created")));
+    }
+
+    // Both real install layouts count: extracted version dir with AGENT.md
+    // (free) and a sealed .napp archive (paid).
+    #[test]
+    fn extracted_and_sealed_layouts_contain_an_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let free = tmp.path().join("sdr");
+        std::fs::create_dir_all(free.join("1.0.0")).unwrap();
+        std::fs::write(free.join("1.0.0").join("AGENT.md"), "---\nname: Sdr\n---\n").unwrap();
+        assert!(dir_contains_agent(&free));
+
+        let sealed = tmp.path().join("closer");
+        std::fs::create_dir_all(&sealed).unwrap();
+        std::fs::write(sealed.join("1.0.0.napp"), b"sealed-bytes").unwrap();
+        assert!(dir_contains_agent(&sealed));
     }
 
     // A plain agent (no type) stays a non-app: no is_app, no ui/bin probing.
