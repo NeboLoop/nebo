@@ -430,7 +430,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             seen.clear();
                                         }
                                     }
-                                    dispatch_chat(&state, &parsed, &cleanup_token).await;
+                                    dispatch_chat(&state, &parsed).await;
                                 }
                                 "cancel" => {
                                     let data = &parsed["data"];
@@ -1562,7 +1562,14 @@ async fn handle_builtin_slash(
 }
 
 /// Dispatch a chat message to the agent runner via the unified chat pipeline.
-async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &CancellationToken) {
+///
+/// The run's cancel token is deliberately INDEPENDENT of the WS connection: a
+/// phone locking its screen (or any tunnel blip) drops the socket, and a run
+/// that died with it lost the user's work mid-stream — observed live when a
+/// cloud bot's report run was killed twice by mobile disconnects. Runs finish
+/// server-side and persist; explicit cancellation goes through the RunRegistry
+/// (the "cancel" WS message), never through connection lifetime.
+async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     let data = &msg["data"];
     let session_id = data["session_id"].as_str().unwrap_or("default").to_string();
     let prompt = data["prompt"].as_str().unwrap_or("").to_string();
@@ -1870,7 +1877,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &C
             channel: channel.clone(),
             origin: Origin::User,
             agent_id: agent_id.clone(),
-            cancel_token: conn_token.child_token(),
+            cancel_token: CancellationToken::new(),
             lane: lanes::MAIN.to_string(),
             comm_reply,
             entity_config,

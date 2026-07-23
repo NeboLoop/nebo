@@ -1241,6 +1241,18 @@ impl WebTool {
             ));
         }
 
+        // Cloud bots have no extension and no bundled browser — "connect the
+        // extension" is impossible advice there, and the disconnect nudge would
+        // toast the user about a browser that can't exist. Redirect the model to
+        // the fetch pathway instead.
+        if crate::server_mode() && !executor.is_connected() {
+            return ToolResult::error(
+                "Browser automation isn't available on this cloud bot. Use \
+                 web(action: \"fetch\", url: ...) instead — it returns the page's \
+                 extracted text — or web(action: \"search\", query: ...).",
+            );
+        }
+
         // Nudge to install the extension whenever it isn't connected — even if the built-in
         // CDP browser is handling this action. The extension is the intended path.
         if !executor.extension_connected() {
