@@ -281,7 +281,7 @@
         <div class="flex-1 min-w-0">
           <div class="text-sm font-medium mb-1">{$t('onboardingPage.termsTitle')}</div>
           <p class="text-xs text-base-content/70 leading-relaxed mb-3">
-            {$t('onboardingPage.termsBody')} <a href="/terms" class="text-primary underline">{$t('onboardingPage.termsOfService')}</a> {$t('onboardingPage.termsAnd')} <a href="/privacy" class="text-primary underline">{$t('onboardingPage.privacyPolicy')}</a>.
+            {$t('onboardingPage.termsBody')} <a href="https://neboai.com/terms" target="_blank" rel="noreferrer" class="text-primary underline">{$t('onboardingPage.termsOfService')}</a> {$t('onboardingPage.termsAnd')} <a href="https://neboai.com/privacy" target="_blank" rel="noreferrer" class="text-primary underline">{$t('onboardingPage.privacyPolicy')}</a>.
           </p>
           <label class="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" bind:checked={tcAccepted} />
