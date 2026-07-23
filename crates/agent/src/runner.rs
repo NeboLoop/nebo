@@ -4033,7 +4033,7 @@ async fn run_loop(
                 }
                 // Capture pre-truncation snapshots for the summarizer (only name + short content)
                 summary_tool_calls.push(tc.clone());
-                summary_tool_results.push(ToolResult {
+                summary_tool_results.push(ToolResult { payload: None,
                     content: crate::runner::truncate_str(&result.content, 300).to_string(),
                     is_error: result.is_error,
                     image_url: None,

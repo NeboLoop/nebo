@@ -189,7 +189,7 @@ impl ShellTool {
             tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
 
         match result {
-            Err(_) => ToolResult {
+            Err(_) => ToolResult { payload: None,
                 content: format!(
                     "Command timed out after {}s: `{}`\n\
                      The command did not complete within the timeout. \
@@ -248,7 +248,7 @@ impl ShellTool {
                         result.push_str(&msg);
                     }
                     if is_error {
-                        return ToolResult {
+                        return ToolResult { payload: None,
                             content: format!("Command exited with code {}\n{}", code, result),
                             is_error: true,
                             image_url: None,

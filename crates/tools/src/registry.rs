@@ -74,6 +74,13 @@ pub struct ToolResult {
     /// This is error *classification*, not a failure counter.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub terminal: bool,
+    /// Optional structured rendering payload for the app UI, alongside the
+    /// model-facing `content` text (which stays the source of truth for the
+    /// model). `{"kind": "...", ...}` — the frontend renders known kinds as
+    /// rich cards (e.g. `search_results`) and ignores unknown ones. ONE channel
+    /// for every producer; never a second text format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
 }
 
 impl ToolResult {
@@ -115,6 +122,12 @@ impl ToolResult {
     /// and surfaces it to the app as a "Work" artifact.
     pub fn with_image_url(mut self, url: impl Into<String>) -> Self {
         self.image_url = Some(url.into());
+        self
+    }
+
+    /// Attach a structured rendering payload for the app UI (builder).
+    pub fn with_payload(mut self, payload: serde_json::Value) -> Self {
+        self.payload = Some(payload);
         self
     }
 }

@@ -1301,7 +1301,7 @@ impl WebTool {
                         url = %url,
                         "navigate cache hit — returning cached page instead of re-visiting"
                     );
-                    return ToolResult {
+                    return ToolResult { payload: None,
                         content: format!("[Already visited this page recently — cached content]\n\n{}", cached.content),
                         is_error: cached.is_error,
                         image_url: None,
@@ -1694,7 +1694,7 @@ impl WebTool {
                                 .unwrap_or("");
                             if !page_content.is_empty() {
                                 let content = spill_large_result(page_content, None);
-                                return ToolResult {
+                                return ToolResult { payload: None,
                                     content,
                                     is_error: false,
                                     image_url: None,
@@ -1822,7 +1822,7 @@ impl WebTool {
                     }
                 }
 
-                ToolResult {
+                ToolResult { payload: None,
                     content: text_result,
                     is_error: false,
                     image_url: screenshot_b64,
@@ -2670,7 +2670,7 @@ struct SearchResult {
 /// Wrap a cached search hit as a ToolResult (shared by the fast-path cache check
 /// and the single-flight follower path).
 fn cached_search_result(cached: &VisitedPage) -> ToolResult {
-    ToolResult {
+    ToolResult { payload: None,
         content: format!(
             "[Already searched this recently — cached results]\n\n{}",
             cached.content

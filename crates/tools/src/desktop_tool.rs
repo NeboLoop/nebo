@@ -660,7 +660,7 @@ async fn handle_input(
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 let type_result = input_type(text).await;
-                return ToolResult {
+                return ToolResult { payload: None,
                     content: format!("Clicked '{}' at ({},{}) and typed text", label, x, y),
                     is_error: type_result.is_error,
                     image_url: None,
@@ -700,7 +700,7 @@ async fn handle_input(
             } else {
                 format!("'{}' at ({},{})", label, x, y)
             };
-            ToolResult {
+            ToolResult { payload: None,
                 content: format!("{} {}", how, where_),
                 is_error: r.is_error,
                 image_url: None,
@@ -1500,7 +1500,7 @@ async fn capture_see(
         "elements": elements_json,
     });
 
-    ToolResult {
+    ToolResult { payload: None,
         content: serde_json::to_string_pretty(&response).unwrap_or_default(),
         is_error: false,
         image_url: screenshot.image_url,
@@ -1763,7 +1763,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, summary: &str) -> ToolResult {
         ),
         None => summary.to_string(),
     };
-    ToolResult {
+    ToolResult { payload: None,
         content,
         is_error: false,
         image_url: Some(data_uri),
