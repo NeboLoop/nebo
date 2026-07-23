@@ -48,13 +48,26 @@ RUN MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) && \
 FROM debian:bookworm-slim
 # Runtime .so for the GUI crates the binary links (loaded but unused on a server).
 # Runtime .so set matches ldd of the binary — nothing speculative.
+#
+# Below the .so line: the agent's toolbox. A cloud pod is the employee's
+# computer, and sudo is (correctly) hard-blocked — so anything the agent
+# should be able to use must ship in the image. Standard dev/scripting
+# tools + media processing (ffmpeg pairs with audio/video attachments).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libssl3 libopenblas0-pthread \
       libwayland-client0 libxkbcommon0 \
+      git openssh-client curl wget \
+      python3 python3-pip python3-venv \
+      nodejs npm \
+      jq unzip zip ripgrep less procps sqlite3 \
+      ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -u 1000 -m nebo
 COPY --from=build /src/target/server/nebo-cli /usr/local/bin/nebo-cli
 USER 1000
-ENV NEBO_HOST=0.0.0.0 NEBO_DATA_DIR=/data NEBO_SERVER_MODE=1
+# pip installs land in ~/.local (PEP 668 would otherwise refuse outside a venv
+# — a disposable per-tenant container is exactly the case where that's noise).
+ENV NEBO_HOST=0.0.0.0 NEBO_DATA_DIR=/data NEBO_SERVER_MODE=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 PATH="/home/nebo/.local/bin:${PATH}"
 EXPOSE 27895
 ENTRYPOINT ["nebo-cli", "serve"]
