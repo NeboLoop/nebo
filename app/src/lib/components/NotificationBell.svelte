@@ -5,8 +5,10 @@
   import X from 'lucide-svelte/icons/x';
   import CheckCheck from 'lucide-svelte/icons/check-check';
   import { notifications, unreadCount, markAsRead, markAllRead, removeNotification, type Notification } from '$lib/stores/notifications.js';
+  import NotificationModal from './NotificationModal.svelte';
 
   let open = $state(false);
+  let selected = $state<Notification | null>(null);
 
   const typeColors: Record<string, string> = {
     agent: 'bg-success',
@@ -15,12 +17,17 @@
     error: 'bg-error',
   };
 
+  // Open the detail modal (pretty-formatted). The modal offers a route-to-action
+  // button when the notification carries a link.
   function handleClick(notif: Notification) {
     markAsRead(notif.id);
-    if (notif.link) {
-      open = false;
-      goto(notif.link);
-    }
+    open = false;
+    selected = notif;
+  }
+
+  function takeAction(notif: Notification) {
+    selected = null;
+    if (notif.link) goto(notif.link);
   }
 </script>
 
@@ -86,5 +93,9 @@
         {/if}
       </div>
     </div>
+  {/if}
+
+  {#if selected}
+    <NotificationModal notif={selected} onClose={() => (selected = null)} onAction={takeAction} />
   {/if}
 </div>

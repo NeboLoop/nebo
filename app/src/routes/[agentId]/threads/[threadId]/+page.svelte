@@ -225,6 +225,7 @@
     // Tool results live on the tool-role rows, keyed by tool_call_id; join them
     // up front so history reloads show real Request/Response like live streams.
     const resultsById = new Map<string, string>();
+    const payloadsById = new Map<string, { kind: string; [k: string]: unknown }>();
     for (const m of rawMessages) {
       if (!m.toolResults) continue;
       try {
@@ -236,6 +237,9 @@
                 r.tool_call_id,
                 typeof r.content === 'string' ? r.content : JSON.stringify(r.content, null, 2)
               );
+              if (r.payload && typeof r.payload === 'object' && r.payload.kind) {
+                payloadsById.set(r.tool_call_id, r.payload);
+              }
             }
           }
         }
@@ -296,6 +300,9 @@
           status: tc.status === 'error' ? 'error' : 'success',
           request,
           response: resultsById.get(callIds[callIdx] ?? '') ?? '',
+          ...(payloadsById.has(callIds[callIdx] ?? '')
+            ? { payload: payloadsById.get(callIds[callIdx] ?? '') }
+            : {}),
         });
       };
 

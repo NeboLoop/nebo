@@ -66,6 +66,9 @@ export interface ToolUse {
   statusText?: string;
   startedAt?: number;
   durationMs?: number;
+  /** Structured rendering payload from the backend (ToolResult.payload).
+   *  Known kinds render as rich cards (e.g. search_results). */
+  payload?: { kind: string; [k: string]: unknown };
 }
 
 export type ChatMessage =
@@ -555,6 +558,7 @@ export function createChatController(config: ChatControllerConfig) {
         status,
         response,
         outcome: data.outcome,
+        ...(data.payload && typeof data.payload === 'object' ? { payload: data.payload } : {}),
         durationMs: started ? Date.now() - started : undefined,
       };
       messages[i] = { ...m, tools };

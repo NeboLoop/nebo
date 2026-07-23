@@ -83,11 +83,42 @@ NDJSON, one event per line, flushed after each write. Inbound events represent s
   "user": "U0987654321",
   "thread_ts": "1700000000.123456",
   "ts": "1700000060.234567",
+  "channel_type": "channel",
+  "mentions_bot": false,
+  "mentions_other": false,
   "placeholder_ts": "1700000061.345678"
 }
 ```
 
 Required fields: `text`, `channel`. Recommended: `user`, `thread_ts`, `placeholder_ts` — the timestamp of a "_Thinking..._" placeholder the bridge posts immediately on receiving an inbound message, so Nebo can later update it with the final agent reply.
+
+### Respond-scope facts (`channel_type`, `mentions_bot`, `mentions_other`)
+
+Nebo — not the bridge — enforces the ONE respond-scope rule for multi-party
+surfaces (`agent_worker::channel_message_in_scope`): the bot responds only to
+**(a)** messages that directly @mention its own platform user, **(b)** DMs,
+and **(c)** un-addressed replies within a thread the bot is already
+participating in. A message that @mentions a *different* user never triggers a
+run. The bridge is a pipe, not a policy — it forwards every message event and
+reports the platform facts Nebo can't derive itself:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `channel_type` | string | `"im"` (DM), `"mpim"`, `"channel"`, `"group"` — the platform's surface type. `"im"`/`"dm"` marks the message always-in-scope. |
+| `mentions_bot` | bool | The message text @mentions THIS bot's own platform user id (e.g. Slack `<@UBOT…>`). Mention syntax is platform-specific, so the bridge parses it. |
+| `mentions_other` | bool | The message @mentions some *other* user. |
+
+Payloads that carry **neither** `channel_type` nor `mentions_bot` are treated
+as coming from a bridge that doesn't distinguish multi-party surfaces
+(single-party plugins, older bridges) and dispatch unconditionally — but any
+plugin bridging a multi-party platform SHOULD emit all three fields, or its
+agent will answer messages addressed to other people.
+
+Consistency note for the Working Indicator Pattern below: only add the 👀
+reaction for the locally-decidable in-scope cases (DMs and direct @mentions of
+this bot). Thread-continuation replies are decided nebo-side and post without
+the indicator; eyes on a message the bot will never answer reads as a promise
+to reply.
 
 ### stdin — outbound (Nebo → plugin)
 

@@ -35,7 +35,7 @@ export async function loadNotifications(): Promise<void> {
       type: (n.type as NotificationType) || 'system',
       title: n.title,
       message: n.body || '',
-      time: formatRelativeTime(n.createdAt),
+      time: n.createdAt ? formatRelativeTime(n.createdAt * 1000) : 'just now',
       read: !!n.readAt,
       link: n.actionUrl || undefined,
     }));

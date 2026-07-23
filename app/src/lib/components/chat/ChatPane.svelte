@@ -44,6 +44,15 @@
   // One tool invocation in an assistant reply's timeline. Tools live ON the reply
   // they belong to (`assistant.tools[]`) — never as sibling messages — so they
   // can't orphan or reorder. Matches the controller's ToolUse + NeboLoop.
+  interface SearchResultItem {
+    title: string;
+    url: string;
+    snippet?: string;
+  }
+  interface SearchResultsPayload {
+    kind: 'search_results';
+    groups: { query: string; results: SearchResultItem[] }[];
+  }
   interface ToolMsg {
     name: string;
     status: string;
@@ -53,6 +62,9 @@
     label?: string;     // human activity label (gerund), from the start phase
     outcome?: string;   // past-tense outcome, from the result phase
     durationMs?: number;
+    /** Structured rendering payload (ToolResult.payload) — known kinds render
+     *  as rich cards; unknown kinds are ignored. */
+    payload?: { kind: string; [k: string]: unknown };
   }
 
   type Message =
@@ -356,6 +368,20 @@
    *  authenticated proxy; artifact-derived ones keep their local url. */
   function attSrc(att: UploadedAttachment): string {
     return att.fileId ? attachmentMediaUrl(att, backendBase()) : att.url;
+  }
+
+  /** Hostname for a search-result row (favicon + domain column). */
+  function resultHost(url: string): string {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '');
+    } catch {
+      return url;
+    }
+  }
+  function searchPayload(tool: ToolMsg): SearchResultsPayload | null {
+    return tool.payload?.kind === 'search_results' && Array.isArray((tool.payload as unknown as SearchResultsPayload).groups)
+      ? (tool.payload as unknown as SearchResultsPayload)
+      : null;
   }
 
   function startEdit(idx: number, content: string) {
@@ -909,6 +935,27 @@
                     <span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>
                     {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
                   </div>
+                  {#if searchPayload(tool)}
+                    {#each searchPayload(tool)!.groups as g}
+                      <div class="mt-2 max-w-[560px]">
+                        <div class="flex items-baseline gap-2 text-xs">
+                          <span class="text-base-content/70 truncate">{g.query}</span>
+                          <span class="ml-auto text-base-content/50 font-mono shrink-0">{g.results.length} {g.results.length === 1 ? 'result' : 'results'}</span>
+                        </div>
+                        {#if g.results.length}
+                          <div class="mt-1.5 rounded-xl border border-base-300 bg-base-100 divide-y divide-base-content/5 overflow-hidden">
+                            {#each g.results.slice(0, 6) as r}
+                              <a href={r.url} target="_blank" rel="noopener noreferrer" class="flex items-center gap-2.5 px-3 py-2 hover:bg-base-200/50 transition-colors no-underline text-inherit">
+                                <img src="https://www.google.com/s2/favicons?domain={resultHost(r.url)}&sz=32" alt="" loading="lazy" class="w-4 h-4 rounded-sm shrink-0" onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')} />
+                                <span class="text-xs font-medium truncate flex-1">{r.title}</span>
+                                <span class="text-xs text-base-content/50 truncate max-w-[160px] shrink-0">{resultHost(r.url)}</span>
+                              </a>
+                            {/each}
+                          </div>
+                        {/if}
+                      </div>
+                    {/each}
+                  {/if}
                   {#if tool.status !== 'running'}
                     {#if isExpanded}
                       <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-hidden">

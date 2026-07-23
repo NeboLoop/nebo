@@ -3,6 +3,7 @@
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import { getWebSocketClient } from '$lib/websocket/client';
+  import PrettyJson from '$lib/components/PrettyJson.svelte';
   import type { AgentPageContext, AgentRun, WorkflowActivity } from '$lib/types/agentPage';
   import type { WorkflowRun, WorkflowActivityResult, PendingTask } from '$lib/api/neboComponents';
 
@@ -130,18 +131,26 @@
     return map;
   });
 
-  // Run inputs (e.g., event payload)
-  const runInputs = $derived.by((): string | null => {
+  // Run inputs (e.g., event payload). `runInputData` is the parsed object for the
+  // pretty (default) view; `runInputs` is the raw JSON string for the Raw toggle.
+  const runInputData = $derived.by((): unknown => {
     const inp = runDetail?.inputs;
     if (!inp) return null;
     try {
       const parsed = typeof inp === 'string' ? JSON.parse(inp) : inp;
-      if (typeof parsed === 'object' && Object.keys(parsed).length > 0) {
-        return JSON.stringify(parsed, null, 2);
+      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+        return parsed;
       }
     } catch { /* ignore */ }
+    return null;
+  });
+  const runInputs = $derived.by((): string | null => {
+    const inp = runDetail?.inputs;
+    if (!inp) return null;
+    if (runInputData) return JSON.stringify(runInputData, null, 2);
     return typeof inp === 'string' && inp.length > 0 ? inp : null;
   });
+  let showRawInput = $state(false);
 
   const duration = $derived.by(() => {
     if (runDetail?.startedAt && runDetail?.completedAt) {
@@ -276,12 +285,23 @@
         </div>
       {/if}
 
-      <!-- Run inputs (event payload, etc.) -->
+      <!-- Run inputs (event payload, etc.) — pretty by default, Raw on toggle -->
       {#if runInputs}
         <div class="mb-4">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('agentActivity.input')}</div>
-          <div class="p-3 rounded-lg border border-base-300 bg-base-200/30">
-            <pre class="text-xs text-base-content/70 whitespace-pre-wrap font-mono m-0">{runInputs}</pre>
+          <div class="flex items-center justify-between mb-1">
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentActivity.input')}</div>
+            {#if runInputData}
+              <button type="button" class="btn btn-ghost btn-xs" onclick={() => (showRawInput = !showRawInput)}>
+                {showRawInput ? $t('agentActivity.viewPretty') : $t('agentActivity.viewRaw')}
+              </button>
+            {/if}
+          </div>
+          <div class="p-3 rounded-lg border border-base-300 bg-base-200/30 overflow-x-auto">
+            {#if runInputData && !showRawInput}
+              <PrettyJson value={runInputData} />
+            {:else}
+              <pre class="text-xs text-base-content/70 whitespace-pre-wrap font-mono m-0">{runInputs}</pre>
+            {/if}
           </div>
         </div>
       {/if}
