@@ -41,6 +41,12 @@
 
 	let { requestId, prompt, widgets, response, disabled = false, onSubmit }: Props = $props();
 
+	// The prompt is agent/harness-authored text (e.g. the deep-research plan)
+	// and uses markdown like every other agent message — render it, don't show
+	// raw ** markers. Same marked pipeline as the chat transcript.
+	import { marked } from 'marked';
+	const promptHtml = $derived(marked.parse(prompt, { async: false }) as string);
+
 	const widget = $derived(widgets?.[0]);
 	const options = $derived(normalizeOptions(widget?.options));
 	const isMulti = $derived(widget?.multiSelect === true || widget?.type === 'checkbox');
@@ -80,7 +86,7 @@
 <svelte:window onkeydown={onKeydown} />
 
 <div class="rounded-xl bg-base-200 px-4 py-3 mb-1 max-w-md">
-	<p class="text-sm font-medium mb-2">{prompt}</p>
+	<div class="text-sm font-medium mb-2 prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html promptHtml}</div>
 
 	{#if answered}
 		{#if wasSkipped}
