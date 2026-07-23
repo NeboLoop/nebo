@@ -57,17 +57,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libssl3 libopenblas0-pthread \
       libwayland-client0 libxkbcommon0 \
       git openssh-client curl wget \
-      python3 python3-pip python3-venv \
+      python3 python3-pip python3-venv python3-dev \
       nodejs npm \
+      build-essential pkg-config \
       jq unzip zip ripgrep less procps sqlite3 \
       ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -u 1000 -m nebo
 COPY --from=build /src/target/server/nebo-cli /usr/local/bin/nebo-cli
+# $HOME lives on the persistent /data volume so toolchains the agent installs
+# (rustup, Go, nvm, pip --user) survive restarts and consent-update rolls —
+# an ephemeral homedir silently eats them, which reads as "my tools vanished".
+RUN printf '#!/bin/sh\nmkdir -p "$HOME"\nexec nebo-cli serve "$@"\n' \
+      > /usr/local/bin/nebo-entry && chmod +x /usr/local/bin/nebo-entry
 USER 1000
 # pip installs land in ~/.local (PEP 668 would otherwise refuse outside a venv
 # — a disposable per-tenant container is exactly the case where that's noise).
 ENV NEBO_HOST=0.0.0.0 NEBO_DATA_DIR=/data NEBO_SERVER_MODE=1 \
-    PIP_BREAK_SYSTEM_PACKAGES=1 PATH="/home/nebo/.local/bin:${PATH}"
+    HOME=/data/home/nebo \
+    PIP_BREAK_SYSTEM_PACKAGES=1 PATH="/data/home/nebo/.local/bin:${PATH}"
 EXPOSE 27895
-ENTRYPOINT ["nebo-cli", "serve"]
+ENTRYPOINT ["nebo-entry"]
