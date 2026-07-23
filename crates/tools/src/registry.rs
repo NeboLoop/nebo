@@ -926,7 +926,7 @@ impl Registry {
         self.register_deferred(Box::new(crate::vm_tool::VmTool::new()))
             .await;
 
-        // Loop tool (NeboAI comms: dm, channel, group, topic) — requires "loop" permission.
+        // Loop tool (NeboAI comms: dm, channel, loop, topic) — requires "loop" permission.
         // The comm handle exists from startup; the real LoopTool's per-action
         // `is_connected()` check reflects the live connection state, so it is always
         // registered when the handle is available (even before NeboAI connects).
