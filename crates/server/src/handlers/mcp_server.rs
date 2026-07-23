@@ -256,7 +256,12 @@ async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (Strin
         session_key,
         prompt: message,
         channel: "mcp".into(),
-        origin: Origin::User,
+        // External MCP clients (Claude Desktop, Cursor) are Origin::Mcp:
+        // Autonomous-class (HITL asks blocked — nobody sees our modal from
+        // another app) and subject to the Mcp origin deny list. Tagging them
+        // User gave an external client the same trust as our own UI (TD: this
+        // was the gap flagged in the 2026-07-23 execution-path audit).
+        origin: Origin::Mcp,
         cancel_token: cancel_token.clone(),
         ..Default::default()
     };

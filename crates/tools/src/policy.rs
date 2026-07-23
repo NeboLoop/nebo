@@ -467,7 +467,10 @@ fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
     let mut deny_list = HashMap::new();
     deny_list.insert(Origin::Comm, shell_deny.clone());
     deny_list.insert(Origin::App, shell_deny.clone());
-    deny_list.insert(Origin::Skill, shell_deny);
+    deny_list.insert(Origin::Skill, shell_deny.clone());
+    // External MCP clients: at most comm-level trust. An authenticated client
+    // is still another program injecting prompts from outside our UI.
+    deny_list.insert(Origin::Mcp, shell_deny);
     deny_list
 }
 

@@ -141,10 +141,13 @@ pub struct ToolContext {
     /// normal run.
     pub memory_writes_disabled: bool,
     /// Capability categories the runner has cleared for execution this turn —
-    /// either pre-granted (capability ON), user-approved via the ApprovalModal,
-    /// or bypassed by autonomous mode. The permission gate (registry Phase 1c)
-    /// treats an OFF capability as allowed when its category is present here, so
-    /// "off" means ASK (runner round-trip) rather than a hard error. Empty for
+    /// pre-granted (capability ON), covered by Full Access, matched by the
+    /// per-command allowlist, or user-approved via the ApprovalModal. In
+    /// UNATTENDED runs an OFF capability is never inserted here — there is no
+    /// autonomy bypass; the category stays ungranted and Phase 1b/1c
+    /// hard-blocks (OFF means OFF when nobody can answer a prompt). The gate
+    /// treats an OFF capability as allowed only when its category is present,
+    /// so interactively "off" means ASK rather than a hard error. Empty for
     /// callers that don't run the approval gate (their OFF capabilities still
     /// hard-block, preserving enforcement).
     pub approved_categories: std::collections::HashSet<String>,
