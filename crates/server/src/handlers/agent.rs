@@ -582,8 +582,48 @@ pub async fn update_heartbeat(
     Ok(Json(serde_json::json!({"success": true})))
 }
 
+/// Display form of a server image ref: just the tag ("main-…-abc1234"), not
+/// the full registry path.
+fn image_display(image: &str) -> &str {
+    image.rsplit(':').next().unwrap_or(image)
+}
+
+/// Cloud-bot update state from the loop, mapped to the same camelCase shape as
+/// `updater::CheckResult` so the ONE frontend update store/banner drives both.
+pub(crate) async fn cloud_update_check(
+    state: &AppState,
+) -> Result<serde_json::Value, types::NeboError> {
+    let api = crate::codes::build_api_client(state)?;
+    let status = api
+        .bot_update_status()
+        .await
+        .map_err(|e| types::NeboError::Internal(format!("bot update status: {e}")))?;
+    let current = status.get("current").and_then(|v| v.as_str()).unwrap_or("");
+    let latest = status.get("latest").and_then(|v| v.as_str()).unwrap_or("");
+    let available = status
+        .get("updateAvailable")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Ok(serde_json::json!({
+        "available": available,
+        "currentVersion": image_display(current),
+        "latestVersion": image_display(latest),
+        "installMethod": "cloud",
+        // The pod can't self-swap its binary — applying re-pins via the loop
+        // and the reconciler restarts the pod, so there's nothing to download.
+        "canAutoUpdate": false,
+    }))
+}
+
 /// GET /api/v1/update/check
-pub async fn update_check() -> HandlerResult<serde_json::Value> {
+pub async fn update_check(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    // Cloud pod: the desktop CDN feed is meaningless (the image is the binary).
+    // Update state comes from the loop's per-bot pinned image instead.
+    if tools::server_mode() {
+        return Ok(Json(
+            cloud_update_check(&state).await.map_err(to_error_response)?,
+        ));
+    }
     let result = updater::check(crate::VERSION)
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
@@ -592,6 +632,19 @@ pub async fn update_check() -> HandlerResult<serde_json::Value> {
 
 /// POST /api/v1/update/apply
 pub async fn update_apply(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    // Cloud pod: consent → re-pin via the loop; the reconciler restarts this
+    // pod on the new image within ~a minute. Never the binary self-swap below —
+    // a swapped binary would silently revert on the next container restart.
+    if tools::server_mode() {
+        let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
+        api.bot_update_apply()
+            .await
+            .map_err(|e| to_error_response(types::NeboError::Internal(format!("bot update apply: {e}"))))?;
+        return Ok(Json(
+            serde_json::json!({"status": "applying", "restart": "pending"}),
+        ));
+    }
+
     // Try to use a staged binary first (already downloaded + verified)
     let pending = state.update_pending.lock().await.take();
 

@@ -2165,6 +2165,31 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Spawn background update checker (skip in debug/dev builds)
     if cfg!(debug_assertions) {
         tracing::debug!("skipping background update checker in dev build");
+    } else if tools::server_mode() {
+        // Cloud pod: poll the loop's per-bot pinned-image state instead of the
+        // desktop CDN feed. Notify-only — the banner offers "Update"; applying
+        // is the owner's consent (update_apply re-pins via the loop and the
+        // reconciler restarts the pod). Never auto-download, never self-swap.
+        let update_hub = state.hub.clone();
+        let update_state = state.clone();
+        tokio::spawn(async move {
+            // Let comms/credentials come up before the first check.
+            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            loop {
+                match crate::handlers::agent::cloud_update_check(&update_state).await {
+                    Ok(check) => {
+                        if check.get("available").and_then(|v| v.as_bool()) == Some(true) {
+                            update_hub.broadcast("update_available", check.clone());
+                            // No download phase in the cloud — available IS ready,
+                            // which is what surfaces the banner.
+                            update_hub.broadcast("update_ready", check);
+                        }
+                    }
+                    Err(e) => tracing::debug!(error = %e, "cloud update check failed"),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
     } else {
         let update_hub = state.hub.clone();
         let download_hub = state.hub.clone();
