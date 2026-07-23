@@ -99,4 +99,12 @@ pub fn routes() -> Router<AppState> {
             "/neboai/reconnect",
             axum::routing::post(handlers::neboai::force_reconnect),
         )
+        .route(
+            "/neboai/share/targets",
+            axum::routing::get(handlers::neboai::share_targets),
+        )
+        .route(
+            "/neboai/share",
+            axum::routing::post(handlers::neboai::share_artifact),
+        )
 }

@@ -627,6 +627,27 @@ export interface Setting {
 	fullAccess: boolean
 }
 
+export interface ShareChannel {
+	channelId: string
+	channelName: string
+	loopId: string
+	loopName: string
+}
+
+export interface ShareMember {
+	botId: string
+	botName: string
+	loopId: string
+	loopName: string
+	isOnline: boolean
+}
+
+export interface ShareTargetsResponse {
+	connected: boolean
+	channels: ShareChannel[]
+	members: ShareMember[]
+}
+
 export interface SkillSecretInfo {
 	key: string
 	label: string
@@ -1391,6 +1412,15 @@ export interface NeboAIJanusUsageResponse {
 
 export interface NeboAIOpenNeboaiResponse {
 	ok: boolean
+}
+
+export interface NeboAIShareArtifactResponse {
+	shared: boolean
+}
+
+export interface OauthRelayResponse {
+	status: string
+	message: string
 }
 
 export interface PickFilesResponse {

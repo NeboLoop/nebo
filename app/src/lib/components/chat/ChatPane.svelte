@@ -2,10 +2,13 @@
   import { t } from 'svelte-i18n';
   import ChatComposer from './ChatComposer.svelte';
   import WorkViewer from './WorkViewer.svelte';
+  import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { downloadArtifact } from '$lib/chat/download';
+  import { backendUrl } from '$lib/api/base';
+  import { addToast } from '$lib/stores/toast';
   import { marked } from 'marked';
   import FileText from 'lucide-svelte/icons/file-text';
   import Code from 'lucide-svelte/icons/code';
@@ -227,6 +230,32 @@
   // Preview ↔ Code toggle for the active artifact (compiled artifacts pair
   // their source via codeUrl; plain html shows its own markup).
   let viewSource = $state(false);
+
+  // Share dialog for the active artifact (loop channels / members).
+  let shareOpen = $state(false);
+
+  // Text-like formats copy their content; binaries copy the file's URL.
+  const COPYABLE_EXTS = ['md', 'txt', 'html', 'htm', 'csv', 'tsv', 'json', 'js', 'mjs', 'cjs',
+    'ts', 'tsx', 'jsx', 'py', 'rs', 'go', 'sh', 'bash', 'css', 'yaml', 'yml', 'toml', 'sql',
+    'svelte', 'rb', 'java', 'c', 'h', 'cpp', 'xml', 'markdown', 'log'];
+
+  async function copyArtifact() {
+    if (!activeArtifact?.url) return;
+    const src = backendUrl(activeArtifact.url);
+    const ext = (activeArtifact.title.split('.').pop() || '').toLowerCase();
+    try {
+      if (COPYABLE_EXTS.includes(ext)) {
+        const res = await fetch(src);
+        if (!res.ok) throw new Error(`${res.status}`);
+        await navigator.clipboard.writeText(await res.text());
+      } else {
+        await navigator.clipboard.writeText(new URL(src, window.location.origin).href);
+      }
+      addToast($t('chat.copied'), 'success');
+    } catch {
+      addToast($t('chat.copyFailed'), 'error');
+    }
+  }
 
   function openArtifact(id: string) {
     activeArtifactId = id;
@@ -1254,15 +1283,31 @@
         >{$t('chat.restore')}</button>
       {/if}
       {#if activeArtifact?.url}
-        <a
-          href={activeArtifact.url}
-          download={activeArtifact.title}
-          onclick={(e) => downloadArtifact(e, activeArtifact?.url ?? '', activeArtifact?.title)}
-          class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 text-base-content/70 hover:text-base-content transition-colors shrink-0"
-          title={$t('chat.downloadFile', { values: { title: activeArtifact.title } })}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        </a>
+        <div class="dropdown dropdown-end shrink-0">
+          <button
+            tabindex="0"
+            class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors"
+            title={$t('chat.downloadFile', { values: { title: activeArtifact.title } })}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+          <ul class="dropdown-content menu menu-sm z-30 mt-1 w-44 rounded-lg bg-base-100 border border-base-300 shadow-lg p-1">
+            <li>
+              <a
+                href={activeArtifact.url}
+                download={activeArtifact.title}
+                onclick={(e) => { downloadArtifact(e, activeArtifact?.url ?? '', activeArtifact?.title); (document.activeElement as HTMLElement | null)?.blur(); }}
+                class="text-xs"
+              >{$t('common.download')}</a>
+            </li>
+            <li>
+              <button class="text-xs" onclick={() => { copyArtifact(); (document.activeElement as HTMLElement | null)?.blur(); }}>{$t('chat.copyContent')}</button>
+            </li>
+            <li>
+              <button class="text-xs" onclick={() => { shareOpen = true; (document.activeElement as HTMLElement | null)?.blur(); }}>{$t('chat.share')}</button>
+            </li>
+          </ul>
+        </div>
       {/if}
       <button
         class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors shrink-0"
@@ -1329,5 +1374,9 @@
   >
     <img src={lightboxUrl} alt={$t('chat.fullSize')} class="max-w-full max-h-full rounded-lg object-contain" />
   </button>
+{/if}
+
+{#if activeArtifact?.url}
+  <ShareArtifactModal bind:show={shareOpen} url={activeArtifact.url} title={activeArtifact.title} />
 {/if}
 </div>

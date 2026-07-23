@@ -1084,6 +1084,20 @@ export function neboAIReferralCode() {
 }
 
 /**
+ * @description "Nebo a i share artifact"
+ */
+export function neboAIShareArtifact(req: Record<string, unknown> = {}) {
+	return webapi.post<components.NeboAIShareArtifactResponse>(`/api/v1/neboai/share`, req)
+}
+
+/**
+ * @description "Nebo a i share targets"
+ */
+export function neboAIShareTargets() {
+	return webapi.get<components.ShareTargetsResponse>(`/api/v1/neboai/share/targets`)
+}
+
+/**
  * @description "Nebo a i bot status"
  */
 export function neboAIBotStatus() {
@@ -1137,6 +1151,13 @@ export function listPlugins() {
  */
 export function listAllPluginEvents() {
 	return webapi.get<components.ListAllPluginEventsResponse>(`/api/v1/plugins/events`)
+}
+
+/**
+ * @description "Oauth relay"
+ */
+export function oauthRelay() {
+	return webapi.get<components.OauthRelayResponse>(`/api/v1/plugins/oauth/relay`)
 }
 
 /**

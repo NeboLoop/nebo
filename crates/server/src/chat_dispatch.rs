@@ -1595,7 +1595,7 @@ pub async fn run_chat_events(
 /// Best-effort: each artifact that can't be read or uploaded is logged and
 /// skipped so the text reply is never blocked. Returns the successfully
 /// uploaded attachments in input order.
-async fn resolve_comm_attachments(
+pub(crate) async fn resolve_comm_attachments(
     comm_manager: &Option<Arc<comm::PluginManager>>,
     plugin_store: &Arc<napp::plugin::PluginStore>,
     artifacts: &[String],
