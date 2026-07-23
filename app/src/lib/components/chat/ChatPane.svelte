@@ -16,7 +16,8 @@
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
-  import { getAttachmentType, formatFileSize } from '$lib/types/attachment';
+  import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
+  import { backendBase } from '$lib/api/base';
 
   // Configure marked for streaming-friendly rendering
   marked.setOptions({
@@ -349,6 +350,12 @@
     if (copiedTimeout) clearTimeout(copiedTimeout);
     copiedIdx = idx;
     copiedTimeout = setTimeout(() => { copiedIdx = null; }, 1500);
+  }
+
+  /** Loop-uploaded attachments (have a fileId) render through the local
+   *  authenticated proxy; artifact-derived ones keep their local url. */
+  function attSrc(att: UploadedAttachment): string {
+    return att.fileId ? attachmentMediaUrl(att, backendBase()) : att.url;
   }
 
   function startEdit(idx: number, content: string) {
@@ -915,9 +922,9 @@
                   {#each msg.attachments as att}
                     {@const attType = getAttachmentType(att.mimeType)}
                     {#if attType === 'image'}
-                      <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = att.url)} aria-label={$t('chat.viewImage')}>
+                      <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = attSrc(att))} aria-label={$t('chat.viewImage')}>
                         <img
-                          src={att.thumbnailUrl || att.url}
+                          src={attSrc(att)}
                           alt={att.filename}
                           class="max-w-[240px] max-h-[180px] rounded-lg border border-base-content/15 object-cover"
                           loading="lazy"
@@ -925,16 +932,18 @@
                       </button>
                     {:else if attType === 'video'}
                       <video
-                        src={att.url}
+                        src={attSrc(att)}
                         controls
                         preload="metadata"
                         class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
                       >
                         <track kind="captions" />
                       </video>
+                    {:else if attType === 'audio'}
+                      <audio src={attSrc(att)} controls preload="metadata" class="max-w-[280px]"></audio>
                     {:else}
                       <a
-                        href={att.url}
+                        href={attSrc(att)}
                         download={att.filename}
                         class="flex items-center gap-2 py-2 px-3 rounded-lg border border-base-content/15 bg-base-200/50 hover:bg-base-200 transition-colors no-underline text-inherit"
                       >
@@ -1029,9 +1038,9 @@
               {#each msg.attachments as att}
                 {@const attType = getAttachmentType(att.mimeType)}
                 {#if attType === 'image'}
-                  <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = att.url)} aria-label={$t('chat.viewImage')}>
+                  <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = attSrc(att))} aria-label={$t('chat.viewImage')}>
                     <img
-                      src={att.thumbnailUrl || att.url}
+                      src={attSrc(att)}
                       alt={att.filename}
                       class="max-w-[240px] max-h-[180px] rounded-lg border border-base-content/15 object-cover"
                       loading="lazy"
@@ -1039,16 +1048,18 @@
                   </button>
                 {:else if attType === 'video'}
                   <video
-                    src={att.url}
+                    src={attSrc(att)}
                     controls
                     preload="metadata"
                     class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
                   >
                     <track kind="captions" />
                   </video>
+                {:else if attType === 'audio'}
+                  <audio src={attSrc(att)} controls preload="metadata" class="max-w-[280px]"></audio>
                 {:else}
                   <a
-                    href={att.url}
+                    href={attSrc(att)}
                     download={att.filename}
                     class="flex items-center gap-2 py-2 px-3 rounded-lg border border-base-content/15 bg-base-200/50 hover:bg-base-200 transition-colors no-underline text-inherit"
                   >

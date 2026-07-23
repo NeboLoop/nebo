@@ -143,6 +143,52 @@ pub async fn upload_file(
     Ok(Json(serde_json::to_value(attachment).unwrap_or_default()))
 }
 
+/// GET /api/v1/comm-files/{id} — stream a loop attachment through the bot's
+/// own credentials. The loop's `/api/v1/files/{id}` is auth-gated, and an
+/// `<img>`/`<video>`/`<audio>` tag can't attach a bearer token — so uploaded
+/// media in chat renders through this proxy (desktop and tunnel alike).
+/// `?mime=` sets the response type but only media prefixes are honored —
+/// anything else (e.g. text/html) is forced to octet-stream so a crafted
+/// query can't turn the proxy into an XSS vector.
+pub async fn serve_comm_file(
+    State(state): State<AppState>,
+    Path(file_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
+    // The id is interpolated into the loop URL — restrict to uuid characters
+    // so it can't traverse into other loop endpoints.
+    if file_id.is_empty()
+        || !file_id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        return Err(to_error_response(types::NeboError::Validation(
+            "invalid file id".into(),
+        )));
+    }
+    let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
+    let bytes = api
+        .download_file(&file_id)
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+
+    let mime = params
+        .get("mime")
+        .filter(|m| {
+            // svg is script-capable — never serve it inline from this origin.
+            !m.starts_with("image/svg")
+                && (m.starts_with("image/") || m.starts_with("video/") || m.starts_with("audio/"))
+        })
+        .cloned()
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    Ok(axum::response::Response::builder()
+        .header("Content-Type", mime)
+        .header("Cache-Control", "private, max-age=3600")
+        .body(axum::body::Body::from(bytes))
+        .unwrap_or_default())
+}
+
 /// GET /api/v1/files/*path
 ///
 /// `?preview=pdf` on a presentation file serves an on-demand PDF rendering

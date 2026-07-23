@@ -4532,14 +4532,38 @@ async fn process_comm_attachments(
                 }
             }
         } else {
-            // Append a text description for non-image attachments
+            // Non-image attachments (video, audio, documents): download to
+            // <data_dir>/files/uploads/ and hand the agent the LOCAL PATH — a
+            // bare "[Attached: name]" gives it nothing to operate on, and the
+            // loop URL needs auth its tools don't have.
             let size_kb = att.size / 1024;
             let size_label = if size_kb >= 1024 {
                 format!("{:.1} MB", size_kb as f64 / 1024.0)
             } else {
                 format!("{} KB", size_kb)
             };
-            prompt.push_str(&format!("\n[Attached: {} ({})]", att.filename, size_label));
+            let saved = match api.download_file(&att.file_id).await {
+                Ok(bytes) => config::data_dir().ok().and_then(|d| {
+                    let dir = d.join("files").join("uploads");
+                    std::fs::create_dir_all(&dir).ok()?;
+                    // file_id-prefixed name: unique, stable across re-sends.
+                    let short_id: String = att.file_id.chars().take(8).collect();
+                    let path = dir.join(format!("{}-{}", short_id, att.filename));
+                    std::fs::write(&path, &bytes).ok()?;
+                    Some(path.to_string_lossy().to_string())
+                }),
+                Err(e) => {
+                    tracing::warn!(file_id = %att.file_id, error = %e, "failed to download attachment");
+                    None
+                }
+            };
+            match saved {
+                Some(path) => prompt.push_str(&format!(
+                    "\n[Attached: {} ({}) — saved at {}]",
+                    att.filename, size_label, path
+                )),
+                None => prompt.push_str(&format!("\n[Attached: {} ({})]", att.filename, size_label)),
+            }
         }
     }
 

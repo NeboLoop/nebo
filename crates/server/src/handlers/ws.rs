@@ -1659,17 +1659,22 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         info!(count = images.len(), "extracted images from prompt");
     }
 
-    // Convert uploaded image attachments to vision content
+    // Convert uploaded attachments: images become vision content; other files
+    // (video, audio, documents) are saved locally and referenced in the prompt
+    // so the agent can operate on them.
+    let mut prompt = prompt;
     if !ws_attachments.is_empty() {
-        let mut att_prompt = prompt.clone();
         let att_images =
-            crate::process_comm_attachments(state, &ws_attachments, &mut att_prompt).await;
+            crate::process_comm_attachments(state, &ws_attachments, &mut prompt).await;
         if !att_images.is_empty() {
             info!(count = att_images.len(), "extracted images from attachments");
             images.extend(att_images);
         }
-        // att_prompt may have non-image descriptions appended — not needed for local user chat
-        // since the user already sees the filenames in the composer
+        // An image-only send has no text at all — give the stored message an
+        // honest stand-in so providers that reject empty text blocks are safe.
+        if prompt.is_empty() && !images.is_empty() {
+            prompt = "[Attached image]".to_string();
+        }
     }
 
     // Redact sensitive slash command arguments before the prompt enters storage
