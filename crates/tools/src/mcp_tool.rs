@@ -219,6 +219,47 @@ async fn maybe_refresh_token(store: &db::Store, bridge: &mcp::Bridge, integratio
     }
 }
 
+/// Repair model-stringified structured args against the tool's input schema.
+///
+/// Weaker models (and some OpenAI-compatible gateways) emit object/array-typed
+/// parameters as JSON *strings* — `{"policy": "{\"default_route\":...}"}` instead
+/// of `{"policy": {...}}` — which the server then rejects as "type string, want
+/// object". For each top-level property the schema declares as `object`/`array`,
+/// if the model supplied a string that parses to that type, replace it with the
+/// parsed value. Values that already match the declared type are left untouched,
+/// so a legitimately string-typed field is never mangled.
+pub(crate) fn coerce_schema_types(input: &mut serde_json::Value, schema: &serde_json::Value) {
+    let (Some(obj), Some(props)) = (
+        input.as_object_mut(),
+        schema.get("properties").and_then(|p| p.as_object()),
+    ) else {
+        return;
+    };
+    for (key, val) in obj.iter_mut() {
+        let serde_json::Value::String(s) = val else {
+            continue;
+        };
+        let Some(types) = props.get(key).and_then(|p| p.get("type")) else {
+            continue;
+        };
+        let accepts = |t: &str| match types {
+            serde_json::Value::String(one) => one == t,
+            serde_json::Value::Array(many) => many.iter().any(|v| v.as_str() == Some(t)),
+            _ => false,
+        };
+        let wants_object = accepts("object");
+        let wants_array = accepts("array");
+        if !wants_object && !wants_array {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
+            if (wants_object && parsed.is_object()) || (wants_array && parsed.is_array()) {
+                *val = parsed;
+            }
+        }
+    }
+}
+
 /// Canonical MCP tool execution: proactive token refresh, call via the bridge, and a
 /// single 401-retry that refreshes the token before retrying. This is THE call pathway
 /// for MCP tools — invoked by the per-tool proxy tools (`McpProxyTool`). The input is
@@ -369,5 +410,42 @@ impl DynTool for McpTool {
                 lines.join("\n")
             ))
         })
+    }
+}
+
+#[cfg(test)]
+mod coerce_tests {
+    use super::coerce_schema_types;
+    use serde_json::json;
+
+    #[test]
+    fn parses_stringified_object_and_array_leaves_strings_alone() {
+        let schema = json!({
+            "properties": {
+                "policy": {"type": ["null", "object"]},
+                "tags":   {"type": "array"},
+                "key":    {"type": "string"},
+            }
+        });
+        let mut input = json!({
+            "policy": "{\"default_route\":{\"provider\":\"dashscope\",\"model\":\"glm-5.2\"}}",
+            "tags":   "[\"a\",\"b\"]",
+            "key":    "{\"not\":\"parsed\"}",
+        });
+        coerce_schema_types(&mut input, &schema);
+
+        assert_eq!(input["policy"]["default_route"]["model"], "glm-5.2");
+        assert!(input["tags"].is_array());
+        // string-typed field is never mangled, even though it looks like JSON
+        assert_eq!(input["key"], "{\"not\":\"parsed\"}");
+    }
+
+    #[test]
+    fn already_correct_object_is_untouched() {
+        let schema = json!({"properties": {"policy": {"type": "object"}}});
+        let mut input = json!({"policy": {"default_route": {"model": "x"}}});
+        let before = input.clone();
+        coerce_schema_types(&mut input, &schema);
+        assert_eq!(input, before);
     }
 }

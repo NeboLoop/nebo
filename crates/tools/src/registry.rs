@@ -989,8 +989,13 @@ impl DynTool for McpProxyTool {
     fn execute_dyn<'a>(
         &'a self,
         _ctx: &'a crate::origin::ToolContext,
-        input: serde_json::Value,
+        mut input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+        // Repair model-stringified object/array args against the server's real
+        // schema before forwarding (see coerce_schema_types).
+        if let Some(schema) = &self.tool_schema {
+            crate::mcp_tool::coerce_schema_types(&mut input, schema);
+        }
         Box::pin(async move {
             crate::mcp_tool::call_mcp_tool(
                 &self.store,
