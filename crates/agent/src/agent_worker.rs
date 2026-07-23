@@ -2023,7 +2023,7 @@ async fn channel_loop(
                                 continue;
                             }
 
-                            let payload: serde_json::Value = match serde_json::from_str(&line) {
+                            let mut payload: serde_json::Value = match serde_json::from_str(&line) {
                                 Ok(v) => v,
                                 Err(e) => {
                                     warn!(
@@ -2035,6 +2035,38 @@ async fn channel_loop(
                                     continue;
                                 }
                             };
+
+                            // Channel etiquette: a reply to a TOP-LEVEL channel
+                            // message threads on that message (thread anchor =
+                            // its `ts`), matching how agent platforms behave on
+                            // Slack — the response lands in a thread under the
+                            // mention instead of pushing the channel down. DMs
+                            // keep flat replies (threads there read as odd), and
+                            // an existing thread_ts always wins. Setting it on
+                            // the payload feeds every consumer at once: the
+                            // reply op copy AND the run's ChannelContext (so
+                            // uploads/tool posts target the same thread).
+                            {
+                                let is_dm = payload
+                                    .get("channel_type")
+                                    .and_then(|v| v.as_str())
+                                    == Some("im");
+                                let has_thread = payload
+                                    .get("thread_ts")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| !s.is_empty())
+                                    .unwrap_or(false);
+                                if !is_dm && !has_thread {
+                                    if let Some(ts) = payload
+                                        .get("ts")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string())
+                                    {
+                                        payload["thread_ts"] =
+                                            serde_json::Value::String(ts);
+                                    }
+                                }
+                            }
 
                             // Bridge keepalive: reset watchdog. Status is
                             // logged for observability; future versions can
@@ -2625,7 +2657,7 @@ async fn shared_channel_loop(
                                 continue;
                             }
 
-                            let payload: serde_json::Value = match serde_json::from_str(&line) {
+                            let mut payload: serde_json::Value = match serde_json::from_str(&line) {
                                 Ok(v) => v,
                                 Err(e) => {
                                     warn!(
@@ -2636,6 +2668,32 @@ async fn shared_channel_loop(
                                     continue;
                                 }
                             };
+
+                            // Same thread-on-trigger default as the per-agent
+                            // pathway above: top-level channel messages carry
+                            // their own ts as the reply thread anchor; DMs and
+                            // existing threads are untouched.
+                            {
+                                let is_dm = payload
+                                    .get("channel_type")
+                                    .and_then(|v| v.as_str())
+                                    == Some("im");
+                                let has_thread = payload
+                                    .get("thread_ts")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| !s.is_empty())
+                                    .unwrap_or(false);
+                                if !is_dm && !has_thread {
+                                    if let Some(ts) = payload
+                                        .get("ts")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string())
+                                    {
+                                        payload["thread_ts"] =
+                                            serde_json::Value::String(ts);
+                                    }
+                                }
+                            }
 
                             // Bridge keepalive resets the watchdog. Must be
                             // checked BEFORE the catch-all event drop below.
