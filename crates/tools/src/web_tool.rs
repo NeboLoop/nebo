@@ -33,6 +33,9 @@ struct VisitedPage {
     is_error: bool,
     visited_by: String,
     timestamp: std::time::Instant,
+    /// Structured rendering payload carried alongside the text (see
+    /// ToolResult::payload) so cache hits render the same rich cards.
+    payload: Option<serde_json::Value>,
 }
 
 /// WebTool consolidates web operations: HTTP fetch, search, and browser automation.
@@ -172,6 +175,7 @@ impl WebTool {
         content: &str,
         is_error: bool,
         session_id: &str,
+        payload: Option<serde_json::Value>,
     ) {
         if let Ok(mut guard) = self.visited_pages.lock() {
             // Evict expired entries so memory stays bounded by recent activity
@@ -188,6 +192,7 @@ impl WebTool {
                     is_error,
                     visited_by: session_id.to_string(),
                     timestamp: std::time::Instant::now(),
+                    payload,
                 },
             );
         }
@@ -486,16 +491,63 @@ impl WebTool {
     }
 
     async fn handle_search(&self, input: &serde_json::Value, session_id: &str, group_key: &str) -> ToolResult {
-        let raw_query = match input.get("query").and_then(|v| v.as_str()) {
-            Some(q) => q,
-            None => {
-                return ToolResult::error(crate::errors::missing_param(
-                    "search",
-                    "query",
-                    "web(action: \"search\", query: \"rust async tutorial\")",
-                ))
+        // Multi-angle fan-out: `queries` runs several searches CONCURRENTLY in
+        // ONE call (server-side, so it works identically for models that never
+        // batch parallel tool calls). Each query reuses the same single-flight
+        // dedupe + visited cache as a lone search; results merge into one
+        // response with one combined `search_results` payload.
+        if let Some(arr) = input.get("queries").and_then(|v| v.as_array()) {
+            let queries: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|q| q.trim().to_string())
+                .filter(|q| !q.is_empty())
+                .take(8)
+                .collect();
+            if queries.len() > 1 {
+                let futs = queries.iter().map(|q| self.search_single(q, session_id, group_key));
+                let results = futures::future::join_all(futs).await;
+                let mut texts = Vec::with_capacity(results.len());
+                let mut groups = Vec::new();
+                for r in &results {
+                    texts.push(r.content.clone());
+                    if let Some(g) = r
+                        .payload
+                        .as_ref()
+                        .and_then(|p| p.get("groups"))
+                        .and_then(|g| g.as_array())
+                    {
+                        groups.extend(g.iter().cloned());
+                    }
+                }
+                let joined = texts.join("\n\n———\n\n");
+                let mut merged = if results.iter().all(|r| r.is_error) {
+                    ToolResult::error(joined)
+                } else {
+                    ToolResult::ok(joined)
+                };
+                if !groups.is_empty() {
+                    merged = merged
+                        .with_payload(serde_json::json!({"kind": "search_results", "groups": groups}));
+                }
+                return merged;
             }
-        };
+            if let Some(q) = queries.first() {
+                return self.search_single(q, session_id, group_key).await;
+            }
+        }
+        match input.get("query").and_then(|v| v.as_str()) {
+            Some(q) => self.search_single(q, session_id, group_key).await,
+            None => ToolResult::error(crate::errors::missing_param(
+                "search",
+                "query (or queries)",
+                "web(action: \"search\", queries: [\"angle one\", \"angle two\"]) — or a single query: web(action: \"search\", query: \"rust async tutorial\")",
+            )),
+        }
+    }
+
+    /// One search: normalize → cache check → single-flight → tier chain.
+    async fn search_single(&self, raw_query: &str, session_id: &str, group_key: &str) -> ToolResult {
         // Weak models stuff queries with stacked `site:` filters and run them hundreds of chars
         // long; keyword engines (DuckDuckGo) reject those and return nothing. Normalize to a clean
         // keyword query the engine will actually accept.
@@ -585,7 +637,7 @@ impl WebTool {
             match self.search_via_janus(query).await {
                 Ok(results) if !results.is_empty() => {
                     let result = format_search_results(query, &results, "janus");
-                    self.record_visited(group_key, search_key, &result.content, false, session_id);
+                    self.record_visited(group_key, search_key, &result.content, false, session_id, result.payload.clone());
                     return result;
                 }
                 Ok(_) => {
@@ -618,7 +670,7 @@ impl WebTool {
                         {
                             Ok(results) if !results.is_empty() => {
                                 let result = format_search_results(query, &results, provider);
-                                self.record_visited(group_key, search_key, &result.content, false, session_id);
+                                self.record_visited(group_key, search_key, &result.content, false, session_id, result.payload.clone());
                                 return result;
                             }
                             Err(e) => {
@@ -637,7 +689,7 @@ impl WebTool {
             tracing::info!(query, "browser available — searching via browser/extension");
             let browser_result = self.search_via_browser(query, session_id).await;
             if !browser_result.is_error {
-                self.record_visited(group_key, search_key, &browser_result.content, false, session_id);
+                self.record_visited(group_key, search_key, &browser_result.content, false, session_id, browser_result.payload.clone());
                 return browser_result;
             }
             tracing::warn!(query, "browser search failed — falling back to DDG scraping");
@@ -649,7 +701,7 @@ impl WebTool {
         tracing::info!(query, "trying direct scrape chain (DDG → Brave)");
         let result = self.search_duckduckgo_html(query).await;
         if !result.is_error {
-            self.record_visited(group_key, search_key, &result.content, false, session_id);
+            self.record_visited(group_key, search_key, &result.content, false, session_id, result.payload.clone());
         }
         result
     }
@@ -1319,7 +1371,7 @@ impl WebTool {
         if action == "navigate" && !result.is_error {
             if let Some(url) = input.get("url").and_then(|v| v.as_str()) {
                 let nav_key = format!("nav:{}", url);
-                self.record_visited(group_key, &nav_key, &result.content, false, session_id);
+                self.record_visited(group_key, &nav_key, &result.content, false, session_id, None);
             }
         }
 
@@ -1849,7 +1901,8 @@ impl DynTool for WebTool {
          - web(resource: \"http\", action: \"fetch\", url: \"https://...\") — GET (also: get, post, put, delete, head)\n\
          - web(resource: \"http\", action: \"post\", url: \"https://...\", body: \"...\", headers: {{...}})\n\
          - web(resource: \"http\", action: \"sanitize\", url: \"https://...\") — fetch HTML, extract text\n\
-         - web(action: \"search\", query: \"...\") — web search returning structured results\n\n\
+         - web(action: \"search\", queries: [\"angle one\", \"angle two\", ...]) — CONCURRENT multi-angle search in ONE call. For any research-shaped question, send 3-6 distinct queries covering different facets instead of searching one at a time.\n\
+         - web(action: \"search\", query: \"...\") — single web search\n\n\
          ## Browser — Controls the user's real Chrome browser\n\
          Every mutation action (click, type, fill, press, scroll, etc.) returns a page snapshot automatically — \
          you do NOT need to call read_page after actions. The snapshot shows interactive elements with refs.\n\n\
@@ -1914,6 +1967,13 @@ impl DynTool for WebTool {
                         `site:` operators or paste lists of domains — search engines reject long queries and \
                         return nothing. To dig deeper, run a NEW query with different keywords, not more filters. \
                         For find: a natural-language description of the element(s) to locate."
+                },
+                "queries": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "For search: MULTIPLE short keyword queries run CONCURRENTLY in one call \
+                        (max 8). Prefer this for research — 3-6 distinct angles on the question (news, \
+                        technical, comparison, recent-year) beat sequential single searches."
                 },
                 "offset": {
                     "type": "integer",
@@ -2670,7 +2730,7 @@ struct SearchResult {
 /// Wrap a cached search hit as a ToolResult (shared by the fast-path cache check
 /// and the single-flight follower path).
 fn cached_search_result(cached: &VisitedPage) -> ToolResult {
-    ToolResult { payload: None,
+    ToolResult {
         content: format!(
             "[Already searched this recently — cached results]\n\n{}",
             cached.content
@@ -2679,6 +2739,7 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
         image_url: None,
         http_status: None,
         terminal: false,
+        payload: cached.payload.clone(),
     }
 }
 
@@ -2699,8 +2760,19 @@ fn format_search_results(query: &str, results: &[SearchResult], tier: &str) -> T
         with_snippets,
         "web search results"
     );
+    let payload = serde_json::json!({
+        "kind": "search_results",
+        "groups": [{
+            "query": query,
+            "results": results.iter().map(|r| serde_json::json!({
+                "title": clamp_text(&r.title, 200),
+                "url": r.url,
+                "snippet": clamp_text(r.snippet.trim(), 200),
+            })).collect::<Vec<_>>(),
+        }],
+    });
     if results.is_empty() {
-        return ToolResult::ok(format!("No results for \"{query}\"."));
+        return ToolResult::ok(format!("No results for \"{query}\".")).with_payload(payload);
     }
     let formatted: Vec<String> = results
         .iter()
@@ -2725,7 +2797,7 @@ fn format_search_results(query: &str, results: &[SearchResult], tier: &str) -> T
             "\n\n(no preview text available from this search tier — use web read_page or fetch on a result URL to view its content)",
         );
     }
-    ToolResult::ok(out)
+    ToolResult::ok(out).with_payload(payload)
 }
 
 /// Char-boundary-safe truncation with an ellipsis.
@@ -3255,7 +3327,7 @@ link "Create account" [ref_5]"#;
     #[test]
     fn record_visited_evicts_expired_entries() {
         let tool = WebTool::new();
-        tool.record_visited("group-a", "nav:https://a.com", "page a", false, "s1");
+        tool.record_visited("group-a", "nav:https://a.com", "page a", false, "s1", None);
 
         // Manually age the entry past the TTL. checked_sub: backdating an
         // Instant past the monotonic clock's origin panics, so skip the test
@@ -3276,7 +3348,7 @@ link "Create account" [ref_5]"#;
         assert!(tool.check_visited("group-a", "nav:https://a.com").is_none());
 
         // A new insert prunes the expired entry and its now-empty group.
-        tool.record_visited("group-b", "nav:https://b.com", "page b", false, "s2");
+        tool.record_visited("group-b", "nav:https://b.com", "page b", false, "s2", None);
         let guard = tool.visited_pages.lock().unwrap();
         assert!(!guard.contains_key("group-a"), "expired group should be evicted");
         assert!(guard.contains_key("group-b"));

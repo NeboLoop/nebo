@@ -833,6 +833,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "result": event.text,
                                     "is_error": event.error.is_some(),
                                     "outcome": outcome,
+                                    "payload": event.payload,
                                 ),
                             );
                             // Mirror the tool result to the loop (char-safe, capped
@@ -1582,7 +1583,7 @@ pub async fn run_chat_events(
             },
             Err(e) => {
                 let _ = tx
-                    .send(ai::StreamEvent {
+                    .send(ai::StreamEvent { payload: None,
                         event_type: ai::StreamEventType::Error,
                         text: String::new(),
                         tool_call: None,

@@ -95,11 +95,14 @@ pub struct StreamEvent {
     /// or a local filesystem path under `<data_dir>/files/`. Used by chat_dispatch
     /// to auto-attach run-produced files to outbound comm replies.
     pub image_url: Option<String>,
+    /// Structured rendering payload from ToolResult.payload (ToolResult events
+    /// only) — forwarded to the app so known kinds render as rich cards.
+    pub payload: Option<serde_json::Value>,
 }
 
 impl StreamEvent {
     pub fn text(text: impl Into<String>) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::Text,
             text: text.into(),
             tool_call: None,
@@ -114,7 +117,7 @@ impl StreamEvent {
     }
 
     pub fn thinking(text: impl Into<String>) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::Thinking,
             text: text.into(),
             tool_call: None,
@@ -133,7 +136,7 @@ impl StreamEvent {
     /// "terminal_tool_error"). Consumers surface it as status — reply
     /// accumulators must ignore it by type.
     pub fn control_notice(text: impl Into<String>, stop_reason: impl Into<String>) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::ControlNotice,
             text: text.into(),
             tool_call: None,
@@ -148,7 +151,7 @@ impl StreamEvent {
     }
 
     pub fn tool_call(tc: ToolCall) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::ToolCall,
             text: String::new(),
             tool_call: Some(tc),
@@ -163,7 +166,7 @@ impl StreamEvent {
     }
 
     pub fn error(msg: impl Into<String>) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::Error,
             text: String::new(),
             tool_call: None,
@@ -178,7 +181,7 @@ impl StreamEvent {
     }
 
     pub fn done() -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::Done,
             text: String::new(),
             tool_call: None,
@@ -198,7 +201,7 @@ impl StreamEvent {
     pub fn subagent_start(id: impl Into<String>, description: impl Into<String>) -> Self {
         let id = id.into();
         let description = description.into();
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::SubagentStart,
             text: description.clone(),
             tool_call: None,
@@ -220,7 +223,7 @@ impl StreamEvent {
     ) -> Self {
         let id = id.into();
         let description = description.into();
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::SubagentComplete,
             text: description.clone(),
             tool_call: None,
@@ -237,7 +240,7 @@ impl StreamEvent {
     }
 
     pub fn done_with_reason(reason: impl Into<String>) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::Done,
             text: String::new(),
             tool_call: None,
@@ -252,7 +255,7 @@ impl StreamEvent {
     }
 
     pub fn usage(info: UsageInfo) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::Usage,
             text: String::new(),
             tool_call: None,
@@ -267,7 +270,7 @@ impl StreamEvent {
     }
 
     pub fn rate_limit_info(meta: RateLimitMeta) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::RateLimit,
             text: String::new(),
             tool_call: None,
@@ -282,7 +285,7 @@ impl StreamEvent {
     }
 
     pub fn approval_request(tc: ToolCall) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::ApprovalRequest,
             text: String::new(),
             tool_call: Some(tc),
@@ -297,7 +300,7 @@ impl StreamEvent {
     }
 
     pub fn tool_summary(text: impl Into<String>) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::ToolSummary,
             text: text.into(),
             tool_call: None,
@@ -316,7 +319,7 @@ impl StreamEvent {
         prompt: impl Into<String>,
         widgets: Option<serde_json::Value>,
     ) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::AskRequest,
             text: prompt.into(),
             tool_call: None,
@@ -336,7 +339,7 @@ impl StreamEvent {
         plan: impl Into<String>,
         tools: Vec<String>,
     ) -> Self {
-        Self {
+        Self { payload: None,
             event_type: StreamEventType::PlanApproval,
             text: plan.into(),
             tool_call: None,

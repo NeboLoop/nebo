@@ -319,6 +319,10 @@ struct ToolResultRow {
     is_error: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     image_url: Option<String>,
+    /// Structured rendering payload (ToolResult::payload) so reloaded history
+    /// renders the same rich cards as the live stream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload: Option<serde_json::Value>,
 }
 
 /// Input parameters for a run.
@@ -3014,7 +3018,7 @@ async fn run_loop(
                             if !state.quota_warning_sent {
                                 state.quota_warning_sent = true;
                                 let _ = tx
-                                    .send(StreamEvent {
+                                    .send(StreamEvent { payload: None,
                                         event_type: StreamEventType::RateLimit,
                                         text: warning_text,
                                         tool_call: None,
@@ -3777,7 +3781,7 @@ async fn run_loop(
                 let (idx, tc, result) = item;
                 // Send tool result event immediately as each completes
                 let _ = tx
-                    .send(StreamEvent {
+                    .send(StreamEvent { payload: result.payload.clone(),
                         event_type: StreamEventType::ToolResult,
                         text: result.content.clone(),
                         tool_call: Some(ai::ToolCall {
@@ -3831,7 +3835,7 @@ async fn run_loop(
                 let result_log = truncate_str(&result.content, 300);
                 info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
                 let _ = tx
-                    .send(StreamEvent {
+                    .send(StreamEvent { payload: result.payload.clone(),
                         event_type: StreamEventType::ToolResult,
                         text: result.content.clone(),
                         tool_call: Some(ai::ToolCall {
@@ -3862,7 +3866,7 @@ async fn run_loop(
             for (idx, blocked) in blocked_results.into_iter().enumerate() {
                 if let Some((tc, result)) = blocked {
                     let _ = tx
-                        .send(StreamEvent {
+                        .send(StreamEvent { payload: None,
                             event_type: StreamEventType::ToolResult,
                             text: result.content.clone(),
                             tool_call: Some(ai::ToolCall {
@@ -4206,6 +4210,7 @@ async fn run_loop(
                     content: result.content,
                     is_error: result.is_error,
                     image_url: result.image_url,
+                    payload: result.payload,
                 };
                 let tr_json = serde_json::json!([row]).to_string();
 

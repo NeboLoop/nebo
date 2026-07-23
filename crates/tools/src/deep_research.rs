@@ -973,7 +973,7 @@ type ProgressTx = Option<tokio::sync::mpsc::Sender<ai::StreamEvent>>;
 
 fn emit_progress(tx: &ProgressTx, text: impl Into<String>) {
     if let Some(tx) = tx {
-        let _ = tx.try_send(ai::StreamEvent {
+        let _ = tx.try_send(ai::StreamEvent { payload: None,
             event_type: ai::StreamEventType::SubagentProgress,
             text: text.into(),
             tool_call: None,

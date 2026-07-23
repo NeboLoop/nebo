@@ -391,7 +391,7 @@ impl Provider for CLIProvider {
                                             .and_then(|v| v.as_bool())
                                             .unwrap_or(false);
                                         let _ = tx
-                                            .send(StreamEvent {
+                                            .send(StreamEvent { payload: None,
                                                 event_type: StreamEventType::ToolResult,
                                                 text,
                                                 tool_call: Some(ToolCall {
