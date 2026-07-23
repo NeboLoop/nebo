@@ -625,26 +625,43 @@
     }
   });
 
+  // Follow ("sticky") is an INTENT bit, per the reference ScrollBox model:
+  // set by send / the scroll button / arriving at the bottom, cleared ONLY by
+  // explicit user input (wheel up, touch drag) — NEVER inferred from scroll
+  // events. Scroll events can come from our own programmatic pins arriving a
+  // frame late, and inferring intent from them is exactly the race that broke
+  // send-follow in 0.12.7. Geometry may re-engage follow (a false positive
+  // just resumes following at the bottom, which is what the user wants);
+  // geometry must never disengage it.
+  let touchActive = false;
+
+  function handleWheel(e: WheelEvent) {
+    if (e.deltaY < 0) autoScrollEnabled = false; // user is looking up
+  }
+  function handleTouchStart() {
+    touchActive = true;
+  }
+  function handleTouchEnd() {
+    touchActive = false;
+  }
+
   function handleScroll() {
     if (!messagesContainer) return;
-    const programmatic = isProgrammaticScroll();
     const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
     const dist = scrollHeight - scrollTop - clientHeight;
     const scrolledUp = scrollTop < lastScrollTop - 1;
     lastScrollTop = scrollTop;
     showScrollButton = dist > NEAR_BOTTOM_PX;
 
-    // Disengage only on genuine user intent — an UPWARD scroll away from the
-    // bottom. Position alone can't distinguish "user scrolled away" from a
-    // pin that hasn't caught up with fresh content yet.
-    if (!programmatic && scrolledUp && dist > NEAR_BOTTOM_PX) {
+    // Touch scrolls are user intent by construction (finger on glass).
+    if (touchActive && scrolledUp && dist > NEAR_BOTTOM_PX) {
       autoScrollEnabled = false;
     } else if (dist <= NEAR_BOTTOM_PX) {
       autoScrollEnabled = true;
     }
 
     // Load older messages when scrolled near top
-    if (!programmatic && scrollTop < 100 && hasMore && !isLoadingMore && onloadmore) {
+    if (!isProgrammaticScroll() && scrollTop < 100 && hasMore && !isLoadingMore && onloadmore) {
       onloadmore();
     }
   }
@@ -653,7 +670,11 @@
     pinToBottom(true);
   }
 
-  /** Re-enable follow and pin before the parent appends the user message. */
+  /** Re-engage follow on send. Positioning is OWNED by the turn-model effect
+   *  (user message to top + reserved reply room) — pinning to bottom here
+   *  raced it: two programmatic scrolls in one frame window, and the pin's
+   *  settle loop outlived its suppression flag, so the turn-scroll's events
+   *  read as user movement and killed follow (the 0.12.7 no-scroll bug). */
   function handleSend(
     text: string,
     files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[],
@@ -661,7 +682,6 @@
   ) {
     autoScrollEnabled = true;
     showScrollButton = false;
-    if (initialScrollDone) pinToBottom(false);
     (onsend as ((t: string, f: typeof files, ...r: unknown[]) => void) | undefined)?.(text, files, ...rest);
   }
 
@@ -835,7 +855,7 @@
         </button>
       </div>
     {/if}
-  <div bind:this={messagesContainer} onscroll={handleScroll} class="h-full overflow-y-auto p-[18px_24px]">
+  <div bind:this={messagesContainer} role="log" onscroll={handleScroll} onwheel={handleWheel} ontouchstart={handleTouchStart} ontouchend={handleTouchEnd} class="h-full overflow-y-auto p-[18px_24px]">
   <div bind:this={messagesContent} class="max-w-3xl mx-auto flex flex-col gap-1" data-selectable>
     {#if isLoadingMore}
       <div class="flex justify-center py-3">
